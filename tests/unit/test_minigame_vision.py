@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import threading
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -232,6 +233,52 @@ async def test_cancel_ignoring_provider_retains_capacity(monkeypatch, scenario):
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*list(vision._active_operations), return_exceptions=True)
+        await asyncio.sleep(0)
+    assert not vision._active_operations
+
+
+@pytest.mark.parametrize("mode", ["disconnected", "superseded", "cancel"])
+@pytest.mark.asyncio
+async def test_legacy_image_worker_keeps_slot_and_never_calls_late_model(monkeypatch, scenario, mode):
+    payload, state, current = scenario
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    finish = threading.Event()
+    original = vision._validated_image
+
+    def slow_image(value):
+        assert threading.get_ident() != loop_thread
+        loop.call_soon_threadsafe(entered.set)
+        assert finish.wait(5)
+        return original(value)
+
+    monkeypatch.setattr(vision, "_validated_image", slow_image)
+    monkeypatch.setattr(vision, "MAX_ACTIVE_OPERATIONS", 1)
+    monkeypatch.setattr(vision, "_analyze", lambda *args: pytest.fail("cancelled decode called the model"))
+    request = Request(payload)
+    task = asyncio.create_task(vision.game_sdk_vision_analyze("example-game", request))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert (await vision.game_sdk_vision_analyze("example-game", Request(payload)))["reason"] == "busy"
+        if mode == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            if mode == "disconnected":
+                request.disconnected = True
+            else:
+                current[0] = dict(state)
+            assert (await asyncio.wait_for(task, 2))["reason"] == ("cancelled" if mode == "disconnected" else "route_inactive")
+        assert len(vision._active_operations) == 1
+        assert (await vision.game_sdk_vision_analyze("example-game", Request(payload)))["reason"] == "busy"
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await asyncio.gather(*list(vision._active_operations), return_exceptions=True)
         await asyncio.sleep(0)
     assert not vision._active_operations

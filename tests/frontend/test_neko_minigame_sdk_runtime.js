@@ -519,7 +519,7 @@ async function main() {
       assert(completed.length === 8 && completed.every(code => code === reason),
         `command body did not settle on ${reason}`);
       assert(signals.every(signal => signal.aborted), 'command body lost cancellation signal');
-      const overflow = await game.commands.execute('round:input', { text: 'overflow' })
+      const overflow = await game.commands.execute('round:input', { text: 'overflow' }, { timeoutMs: 250 })
         .then(() => 'unexpected_success', error => error.code);
       assert(overflow === 'busy' && bodies.length === 8,
         'cancelled command bodies freed raw capacity before settling');
@@ -1160,6 +1160,38 @@ async function main() {
     } catch (error) { commandRequestError = error; }
     assert(commandRequestError?.code === 'invalid_manifest',
       `a command ${shape} request schema was accepted at connect time`);
+  }
+
+  // JSON Schema checks shape; connect additionally enforces shared budgets.
+  const nestedSchema = (depth) => {
+    let schema = { type: 'boolean' };
+    for (let i = 0; i < depth; i++) schema = { type: 'object', properties: { value: schema } };
+    return schema;
+  };
+  const commandsWithNodes = (extra) => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+    `probe-${index}`, { request: { type: 'object', properties: Object.fromEntries(
+      Array.from({ length: 62 + (index === 3 ? extra : 0) }, (_v, field) => [`field${field}`, { type: 'boolean' }]),
+    ) }, response: { type: 'boolean' } },
+  ]));
+  const commandsWithChars = (extra) => Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `probe-${index}`, { request: { type: 'object' },
+      response: { type: 'string', enum: ['x'.repeat(16375 + (index ? extra : 0))] } },
+  ]));
+  for (const [label, commands, accepted] of [
+    ['depth 12', { probe: { request: nestedSchema(12), response: { type: 'boolean' } } }, true],
+    ['depth 13', { probe: { request: nestedSchema(13), response: { type: 'boolean' } } }, false],
+    ['nodes 256', commandsWithNodes(0), true], ['nodes 257', commandsWithNodes(1), false],
+    ['chars 65536', commandsWithChars(0), true], ['chars 65538', commandsWithChars(1), false],
+  ]) {
+    let connected = null; let failure = null;
+    try {
+      connected = await window.NekoMiniGame.connect({ id: 'example-game', version: '1',
+        requiredCapabilities: ['runtime', 'logging'], contracts: { commands },
+      }, { transport: { ...transport, dispose() {} } });
+    } catch (error) { failure = error; }
+    finally { connected?.dispose(); }
+    assert(accepted ? connected !== null : failure?.code === 'invalid_manifest',
+      `command schema boundary ${label} was not enforced`);
   }
 
   const SCALAR_COMMAND_RESPONSE_CASES = [

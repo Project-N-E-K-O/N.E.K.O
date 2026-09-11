@@ -161,7 +161,7 @@
   const MANDATORY_CAPABILITIES = Object.freeze(['logging']);
   const PUBLIC_TRANSPORT_ERROR_CODES = Object.freeze([
     'invalid_image', 'image_unavailable', 'unsupported_attachment',
-    'invalid_region', 'capture_unavailable', 'capture_source_mismatch', 'capture_denied', 'capture_changed',
+    'invalid_region', 'invalid_timeout', 'capture_unavailable', 'capture_source_mismatch', 'capture_denied', 'capture_changed',
     'invalid_manifest',
     'invalid_handshake',
     'invalid_contract',

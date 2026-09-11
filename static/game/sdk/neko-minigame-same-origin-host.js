@@ -431,9 +431,9 @@
         lanlanName: '',
       };
       this._characterBindingLocked = false;
-      this._fetchImpl = options.fetchImpl || window.fetch.bind(window);
-      this._navigator = options.navigatorImpl || window.navigator;
       this._window = options.windowImpl || window;
+      this._fetchImpl = options.fetchImpl || this._window.fetch.bind(this._window);
+      this._navigator = options.navigatorImpl || this._window.navigator;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
       this._avatarCleanup = [];
@@ -700,7 +700,7 @@
         'logging',
         'voice-input',
         'speech-output',
-        ...(window.NekoMiniGameVisionHost?.available(this._window) ? ['vision'] : []),
+        ...(this._window.NekoMiniGameVisionHost?.available(this._window) ? ['vision'] : []),
         'context-read',
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
@@ -1314,7 +1314,7 @@
       return {
         name: data.lanlan_name,
         model: path ? { type, path } : null,
-        rendererAvailable: Boolean(path && ['live2d', 'vrm'].includes(type)),
+        rendererAvailable: Boolean(path && ['live2d', 'vrm', 'mmd'].includes(type)),
         languagePreference: { locale: data.language || '', resolved: data.language_preference_resolved === true },
         fallbackModels,
       };
@@ -1646,11 +1646,11 @@
         let capture;
         let attachments;
         if (attached) {
-          attachments = await window.NekoMiniGameVisionHost.normalizeAttachments(payload.attachments, {
+          attachments = await this._window.NekoMiniGameVisionHost.normalizeAttachments(payload.attachments, {
             windowImpl:this._window, signal:controller.signal,
           });
         } else {
-          capture = await window.NekoMiniGameVisionHost.capture(input.region, {
+          capture = await this._window.NekoMiniGameVisionHost.capture(input.region, {
             windowImpl: this._window, signal: controller.signal, timeoutMs: Math.min(options.timeoutMs || 30000, 30000),
           });
         }

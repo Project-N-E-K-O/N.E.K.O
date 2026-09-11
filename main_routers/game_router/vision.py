@@ -12,7 +12,7 @@ from fastapi import Request
 from PIL import Image
 
 from main_routers.system_router._shared import _validate_local_mutation_request
-from utils.game_vision import MAX_DATA_URL_CHARS, analyze_game_vision
+from utils.game_vision import MAX_DATA_URL_CHARS, analyze_game_vision, run_vision_preprocessing
 from utils.game_route_state import _get_active_game_route_state
 
 from ._shared import router
@@ -111,7 +111,8 @@ async def _process(game_type: str, request: Request, progress: dict) -> dict:
     progress["current"] = current
     # No competing ASGI receive while the request body is being consumed.
     progress["body_read"] = True
-    image = None if "attachments" in data else _validated_image(data["image_data_url"])
+    image = (None if "attachments" in data else
+             await run_vision_preprocessing(_validated_image, data["image_data_url"]))
     if not current():
         return _failure("route_inactive")
     text = await _analyze(data, image, current)

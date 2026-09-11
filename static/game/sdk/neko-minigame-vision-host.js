@@ -126,7 +126,7 @@
           if (!['http:', 'https:', 'blob:'].includes(url.protocol) || url.username || url.password
             || (url.protocol === 'blob:' && url.origin !== w.location.origin)) invalidImage();
           // Browser CORS remains authoritative; never proxy private URLs via the server.
-          const response = await w.fetch(url.href, { signal, mode:'cors', credentials:'same-origin', redirect:'error', referrerPolicy:'no-referrer' });
+          const response = await w.fetch(url.href, { signal, mode:'cors', credentials:'omit', redirect:'error', referrerPolicy:'no-referrer' });
           if (signal?.aborted || !response.ok || response.type === 'opaque') {
             const cancellation = response.body?.cancel?.(); cancellation?.catch?.(() => {});
             check(); throw error('image_unavailable', 'Image URL is unavailable or not CORS-readable');
@@ -187,7 +187,7 @@
     if (occupied.has(w)) throw error('busy', 'A capture or permission picker is still pending');
     const rect = resolveRegion(region, w);
     const initialView = viewport(w);
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw error('invalid_region', 'Invalid capture timeout');
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw error('invalid_timeout', 'Invalid capture timeout');
     occupied.add(w);
     const media = w.navigator.mediaDevices;
     const handle = w.crypto.randomUUID();
