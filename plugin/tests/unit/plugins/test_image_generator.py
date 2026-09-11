@@ -3242,3 +3242,106 @@ async def test_full_generation_pipeline_with_simulated_windows_thumbnails(
     assert len(history) == 2
     serialized = json.dumps(history, ensure_ascii=False)
     assert SECRET not in serialized
+
+@pytest.mark.parametrize("lossless", [False, True])
+def test_webp_requires_complete_image_chunks(lossless):
+    output = io.BytesIO()
+    Image.new("RGB", (8, 6), (18, 108, 214)).save(output, format="WEBP", lossless=lossless)
+    data = output.getvalue()
+    assert image_generator_module._read_webp_geometry(data) == (8, 6, False)
+    header_only = b"RIFF" + (22).to_bytes(4, "little") + b"WEBPVP8X" + (10).to_bytes(4, "little") + b"\x00" * 10
+    truncated = data[:-3]
+    rebounded = truncated[:4] + (len(truncated) - 8).to_bytes(4, "little") + truncated[8:]
+    for invalid in (header_only, truncated, rebounded):
+        with pytest.raises(image_generator_module._GenerationFailure):
+            image_generator_module._read_webp_geometry(invalid)
+
+
+@pytest.mark.asyncio
+async def test_manifest_load_failure_blocks_generation_save_and_reset(monkeypatch):
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+
+    async def fail(**kwargs):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(type(plugin.config), "dump", lambda *a, **kw: fail())
+    await plugin.startup()
+    try:
+        with pytest.raises(SdkError):
+            await plugin._generation_config_snapshot()
+        assert (await plugin.reset_settings()).is_err()
+        assert (await plugin.save_settings()).is_err()
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_dedup_normalizes_omitted_defaults(monkeypatch):
+    plugin, _, _ = make_plugin()
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0)
+        return Ok(kwargs)
+
+    monkeypatch.setattr(plugin, "_run_dedup_generation", generate)
+    results = await asyncio.gather(
+        plugin.generate_image(prompt=" cat "),
+        plugin.generate_image(prompt="cat", size=DEFAULT_SETTINGS["default_size"],
+                              quality=DEFAULT_SETTINGS["default_quality"],
+                              style=DEFAULT_SETTINGS["default_style"]),
+    )
+    assert all(result.is_ok() for result in results)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_lowering_limits_waits_for_active_generation(monkeypatch):
+    plugin, _, _ = make_plugin()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(**kwargs):
+        started.set()
+        await release.wait()
+        return Ok({})
+
+    monkeypatch.setattr(plugin, "_execute_generation", generate)
+    task = asyncio.create_task(plugin.test_generation(prompt="cat"))
+    await started.wait()
+    try:
+        payload = await encrypted_save_payload(plugin, cache_max_count=1)
+        assert (await plugin.save_settings(**payload)).is_err()
+        plugin._settings["cache_max_count"] = DEFAULT_SETTINGS["cache_max_count"] + 1
+        assert (await plugin.reset_settings()).is_err()
+    finally:
+        release.set()
+        await task
+    assert plugin._active_generations == 0
+    assert (await plugin.reset_settings()).is_ok()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_clear_history_drains_delete_under_lock(monkeypatch):
+    plugin, _, store = make_plugin()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delete(key):
+        started.set()
+        await release.wait()
+        store.data.pop(key, None)
+        return True, True
+
+    monkeypatch.setattr(plugin, "_store_delete", delete)
+    task = asyncio.create_task(plugin.clear_history())
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert plugin._history_lock.locked()
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not plugin._history_lock.locked()

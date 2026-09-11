@@ -880,55 +880,57 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
 
 
 def _read_webp_geometry(data: bytes) -> tuple[int, int, bool]:
-    """Return (width, height, animated) for a WebP byte string."""
-    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
-        raise _GenerationFailure(
-            "图片服务返回了损坏、截断或尺寸不安全的图片",
-            "InvalidImageData",
+    """Validate RIFF chunk bounds and require an actual WebP image payload."""
+    def invalid():
+        return _GenerationFailure(
+            "图片服务返回了损坏、截断或尺寸不安全的图片", "InvalidImageData"
         )
-    chunk = data[12:16]
-    animated = False
-    if chunk == b"VP8X":
-        if len(data) < 30:
-            raise _GenerationFailure(
-                "图片服务返回了损坏、截断或尺寸不安全的图片",
-                "InvalidImageData",
-            )
-        flags = data[20]
-        animated = bool(flags & 0x02)
-        width = 1 + int.from_bytes(data[24:27], "little")
-        height = 1 + int.from_bytes(data[27:30], "little")
-        return width, height, animated
-    if chunk == b"VP8L":
-        if len(data) < 25:
-            raise _GenerationFailure(
-                "图片服务返回了损坏、截断或尺寸不安全的图片",
-                "InvalidImageData",
-            )
-        bits = int.from_bytes(data[21:25], "little")
-        width = (bits & 0x3FFF) + 1
-        height = ((bits >> 14) & 0x3FFF) + 1
-        return width, height, animated
-    if chunk == b"VP8 ":
-        if len(data) < 30:
-            raise _GenerationFailure(
-                "图片服务返回了损坏、截断或尺寸不安全的图片",
-                "InvalidImageData",
-            )
-        # Frame tag (3 bytes) + start code (3 bytes) precede dimensions.
-        if data[23:26] != b"\x9d\x01\x2a":
-            raise _GenerationFailure(
-                "图片服务返回了损坏、截断或尺寸不安全的图片",
-                "InvalidImageData",
-            )
-        width = int.from_bytes(data[26:28], "little") & 0x3FFF
-        height = int.from_bytes(data[28:30], "little") & 0x3FFF
-        return width, height, animated
-    raise _GenerationFailure(
-        "图片服务返回了损坏、截断或尺寸不安全的图片",
-        "InvalidImageData",
-    )
 
+    if (len(data) < 20 or data[:4] != b"RIFF" or data[8:12] != b"WEBP"
+            or int.from_bytes(data[4:8], "little") + 8 != len(data)):
+        raise invalid()
+    offset = 12
+    canvas = None
+    geometry = None
+    animated = False
+    while offset < len(data):
+        if offset + 8 > len(data):
+            raise invalid()
+        kind = data[offset:offset + 4]
+        length = int.from_bytes(data[offset + 4:offset + 8], "little")
+        start = offset + 8
+        end = start + length
+        offset = end + (length & 1)
+        if offset > len(data):
+            raise invalid()
+        body = data[start:end]
+        if kind == b"VP8X":
+            if length != 10 or canvas is not None:
+                raise invalid()
+            animated = bool(body[0] & 0x02)
+            canvas = (1 + int.from_bytes(body[4:7], "little"),
+                      1 + int.from_bytes(body[7:10], "little"))
+        elif kind == b"VP8L":
+            if length <= 5 or body[0] != 0x2f or body[4] & 0xe0:
+                raise invalid()
+            bits = int.from_bytes(body[1:5], "little")
+            geometry = ((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+        elif kind == b"VP8 ":
+            if length <= 10 or body[3:6] != b"\x9d\x01\x2a" or body[0] & 1:
+                raise invalid()
+            partition_length = int.from_bytes(body[:3], "little") >> 5
+            if partition_length + 10 > length:
+                raise invalid()
+            geometry = (int.from_bytes(body[6:8], "little") & 0x3fff,
+                        int.from_bytes(body[8:10], "little") & 0x3fff)
+        elif kind in (b"ANIM", b"ANMF"):
+            # Animated images are rejected by the caller, never cached.
+            animated = True
+    if animated and canvas is not None:
+        return *canvas, True
+    if geometry is None or (canvas is not None and canvas != geometry):
+        raise invalid()
+    return *geometry, False
 
 def _verified_image_format(data: bytes) -> str:
     if not data:
@@ -1551,6 +1553,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         self._api_state = "idle"
         self._configuration_warning: str | None = None
         self._settings_available = True
+        self._manifest_available = True
+        self._active_generations = 0
         self._last_request: dict[str, Any] = {
             "status": "not_requested",
             "time": None,
@@ -1573,14 +1577,17 @@ class ImageGeneratorPlugin(NekoPluginBase):
 
     @lifecycle(id="startup")
     async def startup(self, **_: Any):
+        manifest_available = True
         try:
             config = await self.config.dump(timeout=5.0)
+            manifest_available = isinstance(config, Mapping)
         except Exception as exc:
             self.logger.warning(
                 "ImageGenerator config load failed: failure_class={}",
                 type(exc).__name__,
             )
             config = {}
+            manifest_available = False
 
         plugin_section = config.get("plugin") if isinstance(config, Mapping) else None
         store_section = (
@@ -1601,6 +1608,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         try:
             manifest_settings = _normalize_manifest_settings(raw_defaults)
         except SdkError:
+            manifest_available = False
             manifest_settings = {
                 key: (list(value) if isinstance(value, list) else value)
                 for key, value in DEFAULT_SETTINGS.items()
@@ -1613,6 +1621,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         settings_available, stored_settings = await self._store_get_checked(
             _SETTINGS_STORE_KEY, None
         )
+        settings_available = settings_available and manifest_available
         if not settings_available:
             configuration_warning = "无法安全读取已保存设置，请重新启动插件后重试"
         effective_settings = manifest_settings
@@ -1635,6 +1644,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             self._manifest_settings = manifest_settings
             self._settings = effective_settings
             self._settings_available = settings_available
+            self._manifest_available = manifest_available
             self._configuration_warning = configuration_warning
             self._running = True
 
@@ -3383,10 +3393,20 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # is user-driven and must always run fresh.
         dedup_key: str | None = None
         if action == "generate_image":
+            settings = self._settings_snapshot()
+            try:
+                prompt, size, quality, style = self._resolve_generation_options(
+                    settings=settings, prompt=prompt, size=size,
+                    quality=quality, style=style,
+                )
+            except SdkError as exc:
+                return Err(exc)
             candidate_key = hashlib.sha256(
                 json.dumps(
-                    [prompt, size, quality, style, auto_show_override],
-                    ensure_ascii=False, separators=(",", ":"), default=repr,
+                    [prompt, size, quality, style,
+                     settings["auto_show_in_chat"] if auto_show_override is None
+                     else auto_show_override, settings],
+                    ensure_ascii=False, separators=(",", ":"), sort_keys=True,
                 ).encode("utf-8")
             ).hexdigest()
             # Check-and-register must be atomic: a lookup here followed by
@@ -3449,7 +3469,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
             auto_show_override=auto_show_override,
         )
 
-    async def _run_dedup_generation(
+    async def _run_dedup_generation(self, **kwargs: Any):
+        self._active_generations += 1
+        try:
+            return await self._execute_generation(**kwargs)
+        finally:
+            self._active_generations -= 1
+
+    def _cache_limits_decrease(self, settings: Mapping[str, Any]) -> bool:
+        current = self._settings_snapshot()
+        return bool(self._active_generations) and any(
+            settings[key] < current[key]
+            for key in ("cache_max_bytes", "cache_max_count", "max_download_bytes")
+        )
+
+    async def _execute_generation(
         self,
         *,
         prompt: Any,
@@ -3860,6 +3894,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         key_id: str = "",
         **extra: Any,
     ):
+        if not self._manifest_available:
+            return Err(SdkError("无法安全读取插件配置，请重新启动插件后重试"))
         unexpected = sorted(key for key in extra if key != "_ctx")
         if unexpected:
             return Err(SdkError("保存设置仅接受一次性加密载荷，请刷新管理面板"))
@@ -3929,6 +3965,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     base=self._manifest_settings,
                     require_all=True,
                 )
+                if self._cache_limits_decrease(validated):
+                    return Err(SdkError("图片正在生成，请完成后再降低缓存或下载限额"))
                 new_api_key = (
                     ""
                     if clear_api_key
@@ -4154,6 +4192,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         metadata={"agent_hidden": True},
     )
     async def reset_settings(self, **_: Any):
+        if not self._manifest_available:
+            return Err(SdkError("无法安全读取插件配置，请重新启动插件后重试"))
         if not bool(getattr(self.store, "enabled", False)):
             return Err(SdkError("插件存储已禁用，无法恢复默认设置"))
         async with self._config_lock:
@@ -4170,6 +4210,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 key: (list(value) if isinstance(value, list) else value)
                 for key, value in self._manifest_settings.items()
             }
+            if self._cache_limits_decrease(target_settings):
+                return Err(SdkError("图片正在生成，请完成后再降低缓存或下载限额"))
             if _settings_contain_secret(target_settings, secrets):
                 return Err(
                     SdkError(
@@ -4319,7 +4361,18 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return Err(SdkError("插件存储已禁用，无法清除历史记录"))
         await self._acquire_lock(self._history_lock)
         try:
-            deleted_ok, existed = await self._store_delete(_HISTORY_STORE_KEY)
+            worker = asyncio.create_task(self._store_delete(_HISTORY_STORE_KEY))
+            try:
+                deleted_ok, existed = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                if not worker.cancelled():
+                    worker.exception()
+                raise
         finally:
             self._history_lock.release()
         if not deleted_ok:
