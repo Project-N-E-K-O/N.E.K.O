@@ -9,7 +9,7 @@ class Media extends EventTarget {
 const audios=[];
 globalThis.HTMLVideoElement=Media;
 globalThis.Audio=class extends Media{constructor(){super();audios.push(this);}};
-globalThis.AudioContext=class {createAnalyser(){return {connect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(){return {connect(){}};}async resume(){}async close(){}};
+globalThis.AudioContext=class {createAnalyser(){return {connect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(){return {connect(){}};}createGain(){return {gain:{value:1},connect(){}};}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){}};}async resume(){}async close(){}};
 globalThis.window={};globalThis.document=new EventTarget();
 globalThis.fetch=async()=>({ok:true,blob:async()=>new Blob(['audio'])});
 let nextFrame=null;

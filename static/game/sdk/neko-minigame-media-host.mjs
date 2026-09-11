@@ -86,7 +86,16 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (disposed) throw Error('Media controller disposed');
       if (!context) {
         context = new AudioContext(); analyser=context.createAnalyser();analyser.fftSize=256;
-        context.createMediaElementSource(audio).connect(analyser);analyser.connect(context.destination);
+        // Lift quiet reactions above the soundtrack without boosting the video.
+        const voiceGain = context.createGain(), compressor = context.createDynamicsCompressor();
+        voiceGain.gain.value = 2;
+        compressor.threshold.value = -3;
+        compressor.knee.value = 3;
+        compressor.ratio.value = 20;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.1;
+        context.createMediaElementSource(audio).connect(analyser);
+        analyser.connect(voiceGain);voiceGain.connect(compressor);compressor.connect(context.destination);
       }
       await context.resume();
       if (!release) {
