@@ -9818,3 +9818,32 @@ async def test_soccer_sdk_end_preserves_memory_consent_and_match_payload(monkeyp
     assert len(submitted) == int(enabled)
     if enabled:
         assert submitted[0]["finalScore"] == {"player": 2, "ai": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("example-game", "metadata-session", "Lan")
+        state["_sdk_route_instance_id"] = "metadata-generation"
+        state["preGameContext"] = {"openingLine": "Ready"}
+        state["pre_game_context_source"] = "fallback"
+        state["pre_game_context_error"] = "x" * 2000
+        body = {
+            "session_id": "metadata-session", "lanlan_name": "Lan",
+            "sdk_route_instance_id": "metadata-generation",
+            "scopes": ["pregame-context"],
+        }
+        result = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert result["scopes"]["pregame-context"] == {"openingLine": "Ready"}
+        metadata = result["scope_metadata"]["pregame-context"]
+        assert metadata["source"] == "fallback"
+        assert len(metadata["error"]) <= 500
+        body["scopes"] = ["current-state"]
+        other = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert other["scope_metadata"] == {}
+        body["sdk_route_instance_id"] = "stale-generation"
+        stale = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert stale["ok"] is False
+        assert "scope_metadata" not in stale

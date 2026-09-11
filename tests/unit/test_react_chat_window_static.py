@@ -3103,3 +3103,64 @@ def test_text_mode_screenshot_payload_always_tags_interaction_request():
     assert "if (text)" not in screenshot_block
     assert "msg.request_id = requestId" not in screenshot_block
     assert "request_id: requestId" in text_block
+
+
+def test_deferred_enter_submission_requests_auto_collapse_once_before_queue_flush():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    public_send_block = script.split("async function sendTextPayload(rawText, options)", 1)[1].split(
+        "mod.sendTextPayload = sendTextPayload",
+        1,
+    )[0]
+    deferral_block = public_send_block.split("if (options.skipAvatarInteractionDeferral !== true", 1)[1].split(
+        "return sendTextPayloadInternal",
+        1,
+    )[0]
+
+    assert "var deferredOptions = Object.assign({}, options);" in deferral_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)" in deferral_block
+    assert "deferredOptions.autoCollapseAfterEnterRequested = true;" in deferral_block
+    assert "queueDeferredTextSubmission(text, deferredOptions);" in deferral_block
+    assert deferral_block.index("requestChatAutoCollapseAfterAcceptedEnter") < deferral_block.index(
+        "queueDeferredTextSubmission"
+    )
+
+    internal_send_block = script.split("async function sendTextPayloadInternal(rawText, options)", 1)[1].split(
+        "function shouldAppendLegacyUserMessage()",
+        1,
+    )[0]
+    assert "if (options.autoCollapseAfterEnterRequested !== true)" in internal_send_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(options, requestId);" in internal_send_block
+
+
+def test_special_enter_submission_paths_request_auto_collapse_only_after_acceptance():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    submit_block = script.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+
+    helper_block = script.split("function requestAutoCollapseAfterAcceptedEnter(detail)", 1)[1].split(
+        "function handleComposerSubmit(payload)",
+        1,
+    )[0]
+    assert "detail.submitMethod !== 'enter'" in helper_block
+    assert "window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: detail.requestId });" in helper_block
+
+    cat_block = submit_block.split("if (typeof isCatLocalChatActive", 1)[1].split(
+        "var hasAttachments",
+        1,
+    )[0]
+    assert "if (submitCatLocalChatText(detail))" in cat_block
+    assert "requestAutoCollapseAfterAcceptedEnter(detail);" in cat_block
+    assert cat_block.index("submitCatLocalChatText(detail)") < cat_block.index(
+        "requestAutoCollapseAfterAcceptedEnter(detail)"
+    )
+
+    icebreaker_block = submit_block.split(
+        "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker')",
+        1,
+    )[1].split("if (typeof state.onComposerSubmit", 1)[0]
+    assert "requestAutoCollapseAfterAcceptedEnter(detail);" in icebreaker_block
+    assert icebreaker_block.index("dispatchHostEvent('icebreaker-free-text-submit'") < icebreaker_block.index(
+        "requestAutoCollapseAfterAcceptedEnter(detail)"
+    )

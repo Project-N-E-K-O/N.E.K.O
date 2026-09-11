@@ -1928,18 +1928,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.modelName = null;
     }
 
-    // 配置渲染纹理数量以支持更多蒙版
+    // 模型尚未加入舞台，蒙版纹理也尚未创建；此时调整数量即可让首帧
+    // 按三个缓冲区分配。不要再次 initialize()，该方法会向现有的
+    // ClippingContext/Drawable 映射追加数据，导致每次调用都产生重复项。
     if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
         model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-        if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
-            model.internalModel.renderer._clippingManager.initialize(
-                model.internalModel.coreModel,
-                model.internalModel.coreModel.getDrawableCount(),
-                model.internalModel.coreModel.getDrawableMasks(),
-                model.internalModel.coreModel.getDrawableMaskCounts(),
-                3
-            );
-        }
         console.log('渲染纹理数量已设置为3');
     }
 
