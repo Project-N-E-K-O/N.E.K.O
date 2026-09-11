@@ -47,6 +47,7 @@ export async function run(game, character) {
   async function end() {
     clearInterval(progressTimer); progressTimer = null;
     record({type:'exit'}); media?.dispose(); media = null;
+    $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
     if (!['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
@@ -91,7 +92,9 @@ export async function run(game, character) {
           onCue:cue=>{ $('bubble').textContent = cue?.text || ''; avatar?.setEmotion(cue?'happy':'neutral'); }});
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
       }
-      await media.play(); status(t('playing'));
+      await media.play();
+      $('video').controls = true; $('play').hidden = true;
+      status(t('playing'));
       prefetchNext();
     } catch(error) {
       try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
@@ -102,7 +105,7 @@ export async function run(game, character) {
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
   game.voice.onTranscript(() => media?.interrupt());
   game.voice.onState(state => {if(state.active || state.starting)media?.interrupt();});
-  game.events.on('runtime-inactive',()=>{media?.dispose();media=null;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{media?.dispose();media=null;$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
     if(nextQueue.busy)return;
