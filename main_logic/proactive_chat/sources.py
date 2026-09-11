@@ -20,6 +20,7 @@ from typing import Any
 
 from config import PROACTIVE_PHASE1_FETCH_PER_SOURCE
 from utils.logger_config import get_module_logger
+from utils.social_base import social_base_url
 from utils.screenshot_utils import (
     COMPRESS_JPEG_QUALITY,
     COMPRESS_TARGET_HEIGHT,
@@ -158,15 +159,15 @@ def _extract_links_from_raw(
                 if title and url:
                     link = {"title": title, "url": url, "source": "喵宇宙社区"}
                     post_id = str(post.get("id") or "").strip()
-                    if post_id:
-                        # The public feed does not always expose per-card permalinks.
-                        # Keep card identity internal so discover-page fallback URLs do
-                        # not collapse every community card into one history entry.
-                        link["dedupe_key"] = f"neko-community:{post_id}"
-                    else:
-                        link["dedupe_key"] = (
-                            f"neko-community:{url}|{str(title).strip().casefold()}"
-                        )
+                    card_key = str(post.get("dedupe_key") or post_id).strip()
+                    if not card_key:
+                        card_key = f"{url}|{str(title).strip().casefold()}"
+                    # The public feed does not always expose per-card permalinks.
+                    # Keep card identity internal, including the configured community
+                    # origin, so fallback URLs and self-hosted instances do not share
+                    # a proactive-chat cooldown entry.
+                    community_origin = social_base_url().rstrip("/").casefold()
+                    link["dedupe_key"] = f"neko-community:{community_origin}|{card_key}"
                     content = post.get("content", "")
                     if content and content != title:
                         link["description_hint"] = content

@@ -62,6 +62,8 @@ NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
 NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
 NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
 NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
+NEKO_COMMUNITY_TAG_MAX_COUNT = 8
+NEKO_COMMUNITY_TAG_MAX_CHARS = 80
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -96,6 +98,17 @@ def _neko_community_legacy_session_path() -> Path | None:
         from utils.config_manager import get_config_manager
 
         return Path(get_config_manager().memory_dir).parent / "social_session.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _neko_community_legacy_auth_path() -> Path | None:
+    """Return the pre-Electron community credential file without router imports."""
+
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().memory_dir).parent / "community_auth.json"
     except Exception:  # noqa: BLE001
         return None
 
@@ -138,6 +151,17 @@ def _load_neko_community_access_token(feed_api: str) -> str:
         base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
         if access_token and base_url and _same_community_origin(base_url, feed_api):
             return access_token
+
+    legacy_auth_path = _neko_community_legacy_auth_path()
+    try:
+        legacy_auth = json.loads(legacy_auth_path.read_text(encoding="utf-8"))
+    except (AttributeError, OSError, ValueError, TypeError):
+        legacy_auth = None
+    legacy_access_token = str(
+        legacy_auth.get("access_token") if isinstance(legacy_auth, dict) else ""
+    ).strip()
+    if legacy_access_token and _same_community_origin(social_base_url(), feed_api):
+        return legacy_access_token
     return ""
 
 
@@ -1924,9 +1948,12 @@ def normalize_neko_community_feed(
             or raw.get("creator")
         )
         author = _community_text(author_data)[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
-        labels = _community_label_values(
-            raw.get("tags") or raw.get("topics") or raw.get("categories")
-        )
+        labels = [
+            label[:NEKO_COMMUNITY_TAG_MAX_CHARS]
+            for label in _community_label_values(
+                raw.get("tags") or raw.get("topics") or raw.get("categories")
+            )[:NEKO_COMMUNITY_TAG_MAX_COUNT]
+        ]
         url = _community_card_url(raw)
         item_id = _community_identifier(
             raw.get("id") or raw.get("post_id") or raw.get("uuid")
@@ -1939,6 +1966,7 @@ def normalize_neko_community_feed(
         posts.append(
             {
                 "id": item_id,
+                "dedupe_key": dedupe_key,
                 "title": title,
                 "content": content,
                 "author": author,

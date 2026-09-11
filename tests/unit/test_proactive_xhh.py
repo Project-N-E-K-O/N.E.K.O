@@ -163,6 +163,7 @@ def test_normalize_and_format_neko_community_feed():
     assert posts == [
         {
             "id": "post-1",
+            "dedupe_key": "post-1",
             "title": "猫娘们正在讨论的新点子",
             "content": "一起来分享今天的灵感和小发现。",
             "author": "小猫",
@@ -172,6 +173,7 @@ def test_normalize_and_format_neko_community_feed():
         },
         {
             "id": "post-2",
+            "dedupe_key": "post-2",
             "title": "没有标题时也应当可用。",
             "content": "没有标题时也应当可用。",
             "author": "",
@@ -206,6 +208,7 @@ def test_normalize_neko_community_feed_uses_live_card_story_and_author_name():
     assert posts == [
         {
             "id": "3916440e-04a2-4245-9aeb-8e6d4c62a7a9",
+            "dedupe_key": "3916440e-04a2-4245-9aeb-8e6d4c62a7a9",
             "title": "咕咕嘎嘎警报",
             "content": "水水的耳朵越听越竖，反复扑过去抓挠。",
             "author": "神碑之泉有点甜",
@@ -261,6 +264,21 @@ def test_normalize_neko_community_feed_bounds_title_and_author():
     assert posts[0]["author"] == author[: trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
 
 
+def test_normalize_neko_community_feed_bounds_tags():
+    tags = [
+        f"tag-{index}-" + "x" * trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS
+        for index in range(trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT + 1)
+    ]
+
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": "tag-card", "title": "标签卡牌", "tags": tags}]}
+    )
+
+    assert len(posts[0]["tags"]) == trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT
+    assert all(
+        len(tag) <= trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS
+        for tag in posts[0]["tags"]
+    )
 def test_normalize_neko_community_feed_bounds_published_at():
     published_at = "p" * (
         trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS + 1
@@ -553,6 +571,24 @@ async def test_neko_community_access_token_falls_back_to_legacy_session(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_neko_community_access_token_falls_back_to_legacy_auth(tmp_path, monkeypatch):
+    legacy_auth = tmp_path / "community_auth.json"
+    legacy_auth.write_text('{"access_token": "legacy-auth-token"}', encoding="utf-8")
+    monkeypatch.setattr(trending_content, "_neko_community_session_paths", lambda: [])
+    monkeypatch.setattr(
+        trending_content, "_neko_community_legacy_auth_path", lambda: legacy_auth
+    )
+    monkeypatch.setattr(
+        trending_content, "social_base_url", lambda: "https://community.example.test"
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "legacy-auth-token"
+    assert await trending_content._neko_community_access_token(
+        "https://other.example.test/api/feed"
+    ) == ""
+@pytest.mark.asyncio
 async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
     class CommunityResponse(_FakeResponse):
         status_code = 200
@@ -629,7 +665,7 @@ async def test_community_mode_fetches_only_neko_community_cards():
             "title": "猫娘们正在讨论的新点子",
             "url": "https://community.project-neko.cn/posts/post-1",
             "source": "喵宇宙社区",
-            "dedupe_key": "neko-community:post-1",
+            "dedupe_key": "neko-community:https://community.project-neko.cn|post-1",
             "description_hint": "一起来分享今天的灵感和小发现。",
             "author": "小猫",
             "tags": ["灵感", "闲聊"],
@@ -831,11 +867,28 @@ def test_community_links_use_neko_community_cards():
             "title": "社区卡牌",
             "url": "https://community.project-neko.cn/discover",
             "source": "喵宇宙社区",
-            "dedupe_key": "neko-community:https://community.project-neko.cn/discover|社区卡牌",
+            "dedupe_key": "neko-community:https://community.project-neko.cn|https://community.project-neko.cn/discover|社区卡牌",
         }
     ]
 
 
+def test_normalized_idless_community_cards_keep_pre_truncation_dedupe_keys():
+    prefix = "标题" * trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {"title": prefix + "甲", "url": "/discover"},
+                {"title": prefix + "乙", "url": "/discover"},
+            ]
+        },
+        limit=2,
+    )
+
+    assert len(posts) == 2
+    assert posts[0]["title"] == posts[1]["title"]
+    assert posts[0]["dedupe_key"] != posts[1]["dedupe_key"]
+    links = _extract_links_from_raw("community", {"posts": posts})
+    assert links[0]["dedupe_key"] != links[1]["dedupe_key"]
 def test_community_cards_use_distinct_dedupe_keys_with_shared_discover_url():
     links = _extract_links_from_raw(
         "community",
@@ -860,11 +913,26 @@ def test_community_cards_use_distinct_dedupe_keys_with_shared_discover_url():
     )
 
     assert [link["dedupe_key"] for link in selected["community"]] == [
-        "neko-community:card-1",
-        "neko-community:card-2",
+        "neko-community:https://community.project-neko.cn|card-1",
+        "neko-community:https://community.project-neko.cn|card-2",
     ]
 
 
+def test_community_card_dedupe_keys_include_configured_origin(monkeypatch):
+    monkeypatch.setattr(
+        proactive_sources, "social_base_url", lambda: "https://self-hosted.example.test"
+    )
+
+    links = _extract_links_from_raw(
+        "community",
+        {
+            "posts": [
+                {"id": "card-1", "title": "社区卡牌", "url": "https://self-hosted.example.test/discover"}
+            ]
+        },
+    )
+
+    assert links[0]["dedupe_key"] == "neko-community:https://self-hosted.example.test|card-1"
 def test_idless_community_cards_use_title_specific_dedupe_keys():
     links = _extract_links_from_raw(
         "community",
@@ -881,8 +949,8 @@ def test_idless_community_cards_use_title_specific_dedupe_keys():
     )
 
     assert [link["dedupe_key"] for link in selected["community"]] == [
-        "neko-community:https://community.project-neko.cn/discover|第一张卡",
-        "neko-community:https://community.project-neko.cn/discover|第二张卡",
+        "neko-community:https://community.project-neko.cn|https://community.project-neko.cn/discover|第一张卡",
+        "neko-community:https://community.project-neko.cn|https://community.project-neko.cn/discover|第二张卡",
     ]
 
 
@@ -902,7 +970,7 @@ def test_community_pool_can_skip_cooled_cards_beyond_the_first_page_window(monke
     )
     cooled_keys = {
         candidate_selection._source_hash(
-            f"neko-community:card-{index}", f"社区卡 {index}"
+            f"neko-community:https://community.project-neko.cn|card-{index}", f"社区卡 {index}"
         )
         for index in range(10)
     }
@@ -915,7 +983,7 @@ def test_community_pool_can_skip_cooled_cards_beyond_the_first_page_window(monke
         ["community"], {"community": {"links": links}}, total=1
     )
 
-    assert selected["community"][0]["dedupe_key"] == "neko-community:card-10"
+    assert selected["community"][0]["dedupe_key"] == "neko-community:https://community.project-neko.cn|card-10"
 
 
 def test_community_link_candidate_includes_summary_and_metadata():
