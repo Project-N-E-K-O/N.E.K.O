@@ -232,6 +232,30 @@ def test_normalize_neko_community_feed_resolves_relative_card_permalink():
     assert posts[0]["url"] == "https://community.project-neko.cn/posts/post-1"
 
 
+def test_normalize_neko_community_feed_accepts_default_https_port_permalink(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        trending_content,
+        "social_base_url",
+        lambda: "https://community.example.test",
+    )
+
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "default-port",
+                    "title": "默认端口卡牌",
+                    "url": "https://community.example.test:443/posts/default-port",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["url"] == "https://community.example.test:443/posts/default-port"
+
+
 def test_normalize_neko_community_feed_rejects_cross_origin_card_permalink():
     posts = normalize_neko_community_feed(
         {
@@ -350,6 +374,38 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     assert kwargs["params"] == {"offset": 0, "limit": 60}
     assert kwargs["headers"]["Referer"] == "https://community.example.test/discover"
     assert result["authenticated"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_neko_community_feed_does_not_read_oauth_for_http():
+    class CommunityResponse(_FakeResponse):
+        def json(self):
+            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+
+    class CommunityClient(_FakeClient):
+        async def get(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return CommunityResponse()
+
+    client = CommunityClient()
+    access_token = AsyncMock(return_value="desktop-access-token")
+    with patch(
+        "utils.web_scraper.trending_content.get_external_http_client",
+        return_value=client,
+    ), patch(
+        "utils.web_scraper.trending_content.social_base_url",
+        return_value="http://community.example.test",
+    ), patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=access_token,
+    ):
+        result = await fetch_neko_community_feed(limit=1)
+
+    access_token.assert_not_awaited()
+    assert result["success"] is True
+    assert result["authenticated"] is False
+    _, kwargs = client.call
+    assert "Authorization" not in kwargs["headers"]
 
 
 @pytest.mark.asyncio

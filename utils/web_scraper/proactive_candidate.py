@@ -31,6 +31,21 @@ def _escape_community_card_text(value: Any) -> str:
     )
 
 
+_COMMUNITY_PHASE2_MAX_TAGS = 8
+_COMMUNITY_PHASE2_MAX_TAG_CHARS = 80
+
+
+def _format_community_tags(value: Any) -> str:
+    """Bound untrusted tag metadata before inserting it into the Phase 2 prompt."""
+
+    tags = value if isinstance(value, list) else [value]
+    return "、".join(
+        _escape_community_card_text(tag)[:_COMMUNITY_PHASE2_MAX_TAG_CHARS]
+        for tag in tags[:_COMMUNITY_PHASE2_MAX_TAGS]
+        if str(tag).strip()
+    )
+
+
 def _format_neko_community_phase2_context(candidate: dict[str, Any]) -> str:
     """Render the selected community card without discarding its prompt evidence."""
 
@@ -42,13 +57,7 @@ def _format_neko_community_phase2_context(candidate: dict[str, Any]) -> str:
     ]
     if candidate.get("author"):
         lines.append(f"作者：{_escape_community_card_text(candidate['author'])}")
-    tags = candidate.get("tags")
-    if isinstance(tags, list):
-        tag_text = "、".join(
-            _escape_community_card_text(tag) for tag in tags if str(tag).strip()
-        )
-    else:
-        tag_text = _escape_community_card_text(tags)
+    tag_text = _format_community_tags(candidate.get("tags"))
     if tag_text:
         lines.append(f"标签：{tag_text}")
     summary = _escape_community_card_text(candidate.get("description_hint") or "")

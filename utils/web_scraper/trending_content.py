@@ -74,13 +74,16 @@ def _same_community_origin(left: str, right: str) -> bool:
     try:
         left_url = urlparse(left)
         right_url = urlparse(right)
-        return (
-            left_url.scheme.lower() in {"http", "https"}
-            and left_url.scheme.lower() == right_url.scheme.lower()
-            and bool(left_url.hostname)
-            and left_url.hostname.casefold() == (right_url.hostname or "").casefold()
-            and left_url.port == right_url.port
-        )
+        scheme = left_url.scheme.lower()
+        if (
+            scheme not in {"http", "https"}
+            or scheme != right_url.scheme.lower()
+            or not left_url.hostname
+            or left_url.hostname.casefold() != (right_url.hostname or "").casefold()
+        ):
+            return False
+        default_port = 443 if scheme == "https" else 80
+        return (left_url.port or default_port) == (right_url.port or default_port)
     except ValueError:
         return False
 
@@ -1825,7 +1828,6 @@ def _community_identifier(value: Any) -> str:
 
 def _community_card_url(raw: dict[str, Any]) -> str:
     _, discover_url = _neko_community_urls()
-    community_origin = urlparse(discover_url)
     for key in (
         "url",
         "link",
@@ -1850,13 +1852,10 @@ def _community_card_url(raw: dict[str, Any]) -> str:
         else:
             resolved_url = urljoin(discover_url, candidate)
         try:
-            parsed_url = urlparse(resolved_url)
+            urlparse(resolved_url)
         except ValueError:
             continue
-        if (
-            parsed_url.scheme.lower() == community_origin.scheme.lower()
-            and parsed_url.netloc.casefold() == community_origin.netloc.casefold()
-        ):
+        if _same_community_origin(resolved_url, discover_url):
             return resolved_url
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
@@ -1951,7 +1950,9 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "User-Agent": XHH_USER_AGENT,
         }
         params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
-        access_token = await _neko_community_access_token(feed_api)
+        access_token = ""
+        if urlparse(feed_api).scheme.lower() == "https":
+            access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
         if authenticated:
             # Never put a refreshable community bearer into the process-wide client:

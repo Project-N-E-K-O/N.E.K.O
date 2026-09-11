@@ -147,6 +147,30 @@ async def test_selected_community_candidate_escapes_data_boundary_markers():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_selected_community_candidate_bounds_phase2_tags():
+    candidate = {
+        "mode": "community",
+        "title": "标签边界",
+        "tags": [f"tag-{index}-{'x' * 120}" for index in range(12)],
+    }
+
+    _, topic = await proactive_candidate.prepare_selected_web_candidate(
+        candidate,
+        fallback_topic="unused",
+        language="zh",
+    )
+
+    tag_line = next(line for line in topic.splitlines() if line.startswith("标签："))
+    rendered_tags = tag_line.removeprefix("标签：").split("、")
+    assert len(rendered_tags) == proactive_candidate._COMMUNITY_PHASE2_MAX_TAGS
+    assert all(
+        len(tag) <= proactive_candidate._COMMUNITY_PHASE2_MAX_TAG_CHARS
+        for tag in rendered_tags
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_selected_web_candidate_adapter_dispatches_bilibili(monkeypatch):
     async def fake_enrich(candidate, *, language, is_preempted):
         assert language == "zh"
