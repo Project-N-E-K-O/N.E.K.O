@@ -359,7 +359,7 @@ def _watch_together_available(manager) -> bool:
         if manager is None or not manager._config_manager.get_model_api_config('vision').get('api_key'):
             return False
         worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
-        credentials_available = bool(key) or provider in ('vllm_omni', 'local_cosyvoice')
+        credentials_available = bool(key) or provider in ('vllm_omni', 'local_cosyvoice', 'gptsovits')
         return bool(not disabled and credentials_available and manager._tts_worker_supports_completion(worker, provider, config))
     except Exception:
         return False
