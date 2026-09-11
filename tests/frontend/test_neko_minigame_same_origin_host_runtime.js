@@ -181,7 +181,7 @@ async function main() {
     },
   };
   const defaultCapabilities = [
-    'runtime', 'dialogue', 'logging', 'voice-input', 'speech-output',
+    'runtime', 'dialogue', 'logging', 'voice-input', 'speech-output', 'media-timeline',
     'context-read', 'memory', 'storage', 'leaderboard-local', 'quick-lines',
   ];
   const hostLaunchRegistrations = Object.fromEntries(
@@ -310,6 +310,7 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
+    mediaHost: { mount: async () => ({ dispose() {} }) },
     capabilityProviders: {
       quickLines: async () => jsonResponse({ ok: true, lines: ['forged'] }),
     },
@@ -322,12 +323,30 @@ async function main() {
       requiredCapabilities: ['runtime', 'logging'],
       optionalCapabilities: [
         'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
-        'voice-input',
+        'voice-input', 'media-timeline',
       ],
     },
   });
   assert(handshake.grantedCapabilities.includes('context-read'),
     'same-origin host did not grant its context adapter');
+  const normalFetch = host._fetchImpl;
+  let pendingMediaSignal;
+  host._fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
+    pendingMediaSignal = init.signal;
+    init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name:'AbortError'})));
+  });
+  const mediaAbort = new AbortController();
+  const pendingMedia = host.mountMedia({job:'job', version:'version', signal:mediaAbort.signal});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  mediaAbort.abort();
+  let mediaError;
+  try { await pendingMedia; } catch(error) { mediaError=error; }
+  assert(mediaError?.code === 'cancelled' && pendingMediaSignal.aborted,
+    'media mount did not cancel its pending timeline request');
+  assert(host._pendingRequests.size === 0, 'cancelled timeline request retained its pending slot');
+  host._fetchImpl = async () => jsonResponse({id:'job', version:'version', status:'ready'});
+  await host.mountMedia({job:'job', version:'version'});
+  host._fetchImpl = normalFetch;
   assert(handshake.grantedCapabilities.includes('memory'),
     'same-origin host did not grant its memory adapter');
   assert(handshake.grantedCapabilities.includes('quick-lines'),

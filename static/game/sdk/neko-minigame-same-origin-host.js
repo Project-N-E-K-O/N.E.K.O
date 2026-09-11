@@ -908,7 +908,7 @@
       return provider.mount(config);
     }
 
-    async requestMedia(action, payload = {}) {
+    async requestMedia(action, payload = {}, options = {}) {
       this._requireGrantedCapability('media-timeline', 'media.request');
       let response;
       if (action === 'history') response = await this._request('/api/watch-together/history');
@@ -917,7 +917,7 @@
       else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});
       else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || '', exclude: payload.exclude || []}, {timeoutMs: 190000});
       else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
-      else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`);
+      else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`, {}, options);
       else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
       else throw this._hostError('invalid_request', 'Unknown media operation');
       if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
@@ -927,7 +927,7 @@
     async mountMedia(config) {
       this._requireGrantedCapability('media-timeline', 'media.mount');
       if (this._disposed) throw this._hostError('disposed', 'Host disposed');
-      const timeline = await this.requestMedia('load', { job: config.job, version: config.version });
+      const timeline = await this.requestMedia('load', { job: config.job, version: config.version }, {signal: config.signal});
       if (config.signal?.aborted || this._disposed) throw this._hostError('cancelled', 'Media mount cancelled');
       return this._mediaHost.mount({ ...config, timeline });
     }
