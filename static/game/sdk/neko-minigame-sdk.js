@@ -15,6 +15,7 @@
   const MIN_CONNECT_TIMEOUT_MS = 250;
   const MAX_CONNECT_TIMEOUT_MS = 30000;
   const MAX_REQUEST_TIMEOUT_MS = 120000;
+  const DEFAULT_VOICE_STATE_TIMEOUT_MS = 15000;
   const MAX_CAPABILITIES = 32;
   const MAX_LISTENERS_PER_EVENT = 32;
   const MAX_CONTRACTS_PER_KIND = 64;
@@ -2004,6 +2005,11 @@
     let disposed = false;
     let disposing = false;
     let voiceBridgeStarted = false;
+    // One verified snapshot and one bounded query per client, retired with the route.
+    let voiceStateSnapshot = null;
+    let voiceStateRevision = 0;
+    let voiceStateSync = null;
+    const voiceStatePendingRequests = new Set();
     let speechBridgeStarted = false;
     let speechPlaybackRawState = null;
     let speechPlaybackTransportSource = '';
@@ -2052,10 +2058,56 @@
     }
 
     function voicePayloadMatchesActiveRoute(payload) {
+      if (disposed || disposing) return false;
       if (!runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)) return false;
       const expected = String(runtimeRouteInstanceId || '').trim();
       const actual = String(payload?.sdk_route_instance_id || '').trim();
       return !expected || actual === expected;
+    }
+
+    function publishVoiceState(state) {
+      if (!voicePayloadMatchesActiveRoute(state)) return;
+      voiceStateSnapshot = Object.freeze({ ...(state || {}) });
+      voiceStateRevision += 1;
+      emit('voice-state', voiceStateSnapshot);
+    }
+
+    function clearVoiceState() {
+      voiceStateSnapshot = null;
+      voiceStateSync = null;
+      abortManagedRequests(voiceStatePendingRequests, disposing ? 'disposed' : 'cancelled');
+    }
+
+    function synchronizeVoiceState() {
+      if (disposed || disposing || !voiceBridgeStarted || !grantedSet.has('voice-input')
+          || !runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)
+          || voiceStateSync) return;
+      const sync = { routeInstanceId: runtimeRouteInstanceId, revision: voiceStateRevision };
+      voiceStateSync = sync;
+      const isCurrent = () => voiceStateSync === sync && !disposed && !disposing
+        && runtimeRouteEstablished && runtimeRouteInstanceId === sync.routeInstanceId;
+      // Do not await this from runtime.start(): an absent voice host must not hold
+      // up the game. Managed cancellation also bounds transports that ignore abort.
+      void performManagedHostRequest({
+        operation: 'voice.query',
+        pendingSet: voiceStatePendingRequests,
+        limit: 1,
+        timeoutMs: DEFAULT_VOICE_STATE_TIMEOUT_MS,
+        invoke: (requestOptions) => transport.requestVoiceControl('query', {
+          ...requestOptions,
+          sdkRouteInstanceId: sync.routeInstanceId,
+        }),
+      }).then((state) => {
+        // Same-origin transports deliver the reply through the bridge as well.
+        // Do not duplicate it or overwrite a newer unsolicited state with a reply.
+        if (isCurrent() && voiceStateRevision === sync.revision) publishVoiceState(state);
+      }).catch((error) => {
+        if (isCurrent() && voiceStateRevision === sync.revision) {
+          emit('voice-error', Object.freeze({ error, source: 'state-sync' }));
+        }
+      }).finally(() => {
+        if (voiceStateSync === sync) voiceStateSync = null;
+      });
     }
     const heartbeatLifecycle = {
       timer: null,
@@ -2303,11 +2355,15 @@
       if (runtimePhase === normalized) return;
       const previous = runtimePhase;
       runtimePhase = normalized;
+      if (!runtimeRouteEstablished || !['running', 'degraded'].includes(normalized)) {
+        clearVoiceState();
+      }
       void publishRuntimeEvent('runtime-state', Object.freeze({
         previous,
         current: normalized,
         reason: String(reason || ''),
       }));
+      synchronizeVoiceState();
     }
 
     function boundedRuntimeNumber(value, fallback, maximum = MAX_RUNTIME_INTERVAL_MS) {
@@ -3225,11 +3281,7 @@
     if (grantedSet.has('voice-input')) {
       try {
         voiceBridgeStarted = transport.startVoiceControlBridge({
-          onState: (state) => {
-            if (voicePayloadMatchesActiveRoute(state)) {
-              emit('voice-state', Object.freeze({ ...(state || {}) }));
-            }
-          },
+          onState: publishVoiceState,
           onTranscript: (payload) => {
             if (!voicePayloadMatchesActiveRoute(payload)) return;
             const transcript = normalizeTranscript(payload);
@@ -4562,7 +4614,12 @@
       toggle(requestOptions) { return requestVoice('toggle', requestOptions); },
       onState(handler) {
         requireCapability('voice-input', 'voice.onState');
-        return subscribe('voice-state', handler);
+        const unsubscribe = subscribe('voice-state', handler);
+        if (voiceStateSnapshot && voicePayloadMatchesActiveRoute(voiceStateSnapshot)) {
+          try { handler(voiceStateSnapshot); }
+          catch (error) { global.console?.error?.('[NekoMiniGame] voice-state listener failed', error); }
+        } else synchronizeVoiceState();
+        return unsubscribe;
       },
       onTranscript(handler) {
         requireCapability('voice-input', 'voice.onTranscript');

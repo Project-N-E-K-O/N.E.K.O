@@ -451,6 +451,10 @@ declare namespace NekoMiniGame {
     start(options?: RequestOptions): Promise<unknown>;
     stop(options?: RequestOptions): Promise<unknown>;
     toggle(options?: RequestOptions): Promise<unknown>;
+    /** Replays the current route's verified snapshot synchronously, if available.
+     * The SDK queries state after route activation; games need not call query to initialize UI.
+     * Snapshots are discarded when the route leaves its active phase. Sync failures reach onError.
+     */
     onState(handler: (state: Readonly<Record<string, unknown>>) => void): () => void;
     onTranscript(handler: (transcript: VoiceTranscript) => void): () => void;
     onError(handler: (error: Readonly<Record<string, unknown>>) => void): () => void;
