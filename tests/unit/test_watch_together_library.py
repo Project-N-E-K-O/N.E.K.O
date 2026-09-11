@@ -9,7 +9,9 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
-@pytest.mark.parametrize('events', [None, {}, 'invalid', 42, [None], ['invalid'], [42]])
+@pytest.mark.parametrize('events', [None, {}, 'invalid', 42, [None], ['invalid'], [42],
+                                  [{}], [{'at': '1'}], [{'at': True}], [{'at': float('inf')}],
+                                  [{'at': -1}], [{'at': 1, 'audio': 'clip', 'duration': None}]])
 def test_malformed_legacy_events_remain_readable_as_incomplete(tmp_path, events):
     archive = source(tmp_path, 'malformed')
     path = archive / JOB / 'timeline.json'
@@ -82,7 +84,7 @@ def source(tmp_path, name, audio=b"original"):
     folder.mkdir(parents=True)
     (folder / "laugh.mp3").write_bytes(audio)
     (folder / "timeline.json").write_text(json.dumps({
-        "id": JOB, "status": "ready", "events": [{"audio": f"/media/{JOB}/laugh.mp3"}],
+        "id": JOB, "status": "ready", "events": [{"at": 1, "duration": 1, "audio": f"/media/{JOB}/laugh.mp3"}],
         "usage": {"input_tokens": 24652, "output_tokens": 918, "total_tokens": 25570},
     }))
     return root

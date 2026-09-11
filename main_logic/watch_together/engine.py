@@ -41,6 +41,22 @@ def subtitle_priority(track, language):
     return 0 if actual == wanted else 1 if actual.split('-')[0] == wanted.split('-')[0] else 2
 
 
+async def fetch_subtitles(client, tracks, language):
+    for track in sorted(tracks, key=lambda t: subtitle_priority(t, language)):
+        try:
+            url = track['subtitle_url']
+            if url.startswith('//'):
+                url = 'https:' + url
+            response = await client.get(url)
+            response.raise_for_status()
+            body = response.json().get('body', [])
+            if isinstance(body, list) and body and all(isinstance(row, dict) for row in body):
+                return body
+        except Exception:
+            continue
+    return []
+
+
 def dash_audio(dash):
     streams = list(dash.get("audio") or [])
     for group in ("dolby", "flac"):
@@ -250,7 +266,7 @@ def normalize_events(raw, length):
             continue
         if not all(map(math.isfinite, (at, evidence_at, confidence))):
             continue
-        if not (0 <= evidence_at <= at < length - 0.5) or confidence < 0.65:
+        if not (0 <= evidence_at <= at < length - 0.5) or not 0.65 <= confidence <= 1:
             continue
         kind = item.get("kind")
         reason = str(item.get("reason", "")).strip()[:240]
@@ -367,14 +383,7 @@ class Engine:
         async with httpx.AsyncClient(headers=headers, timeout=60, follow_redirects=True) as client:
             try:
                 tracks = (await asyncio.wait_for(v.get_subtitle(cid=cid), 25)).get("subtitles", [])
-                tracks.sort(key=lambda t: subtitle_priority(t, self.language))
-                if tracks:
-                    sub_url = tracks[0]["subtitle_url"]
-                    if sub_url.startswith("//"):
-                        sub_url = "https:" + sub_url
-                    response = await client.get(sub_url)
-                    response.raise_for_status()
-                    subtitles = response.json().get("body", [])
+                subtitles = await fetch_subtitles(client, tracks, self.language)
             except Exception:
                 job["warning_keys"].append("noSubtitles")
             if not subtitles and not job["warning_keys"]:

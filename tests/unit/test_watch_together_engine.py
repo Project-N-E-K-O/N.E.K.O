@@ -57,6 +57,33 @@ def test_rejects_spoilers_nan_weak_evidence_and_dense_cues():
     assert [e["at"] for e in actual] == [10, 40]
 
 
+@pytest.mark.parametrize('confidence,accepted', [(1, True), (.65, True), (1.01, False), (100, False)])
+def test_confidence_range(confidence, accepted):
+    event = dict(at=2, evidence_at=1, kind='laugh', reason='visual gag', confidence=confidence)
+    assert bool(normalize_events([event], 60)) is accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['missing', 'http', 'empty'])
+async def test_subtitles_try_remaining_tracks(failure):
+    import httpx
+    from main_logic.watch_together.engine import fetch_subtitles
+    tracks = [{'lan': 'en', 'subtitle_url': 'https://subs.test/fallback'},
+              {'lan': 'zh-Hans', 'subtitle_url': 'https://subs.test/preferred'}]
+    if failure == 'missing':
+        tracks[1].pop('subtitle_url')
+    calls = []
+    def respond(request):
+        calls.append(request.url.path)
+        if request.url.path == '/preferred':
+            return httpx.Response(403 if failure == 'http' else 200, json={'body': []})
+        return httpx.Response(200, json={'body': [{'from': 0, 'to': 1, 'content': 'spoken context'}]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        body = await fetch_subtitles(client, tracks, 'zh-CN')
+    assert body[0]['content'] == 'spoken context'
+    assert calls == (['/fallback'] if failure == 'missing' else ['/preferred', '/fallback'])
+
+
 def test_hotspots_cover_middle_and_deduplicate_spam():
     dm = [{"at": 3, "text": "哈哈"}] * 100 + [{"at": 48, "text": "绷不住了"}, {"at": 49, "text": "还有高手"}, {"at": 81, "text": "坠机了"}]
     spots = danmaku_hotspots(dm, 100)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -200,6 +201,14 @@ class Library:
         if timeline.get('status') == 'ready':
             events = timeline.get('events', [])
             if not isinstance(events, list) or any(not isinstance(cue, dict) for cue in events):
+                timeline['status'] = 'incomplete'
+                return timeline
+            def valid_time(value):
+                return type(value) in (int, float) and math.isfinite(value) and value >= 0
+            if any(not valid_time(cue.get('at')) or
+                   (cue.get('audio') and (not isinstance(cue['audio'], str) or
+                                         not valid_time(cue.get('duration')) or cue['duration'] == 0))
+                   for cue in events):
                 timeline['status'] = 'incomplete'
                 return timeline
             manifest = self.manifest(job, version)
