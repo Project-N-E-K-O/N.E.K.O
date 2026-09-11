@@ -6,6 +6,10 @@ import pytest
 from main_logic.watch_together import preparation
 
 
+async def speech_ready(*args, **kwargs):
+    return {'ok': True}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("accepted", [True, False])
 async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, monkeypatch, accepted):
@@ -27,7 +31,7 @@ async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, 
     monkeypatch.setattr(preparation, 'jobs', {})
     monkeypatch.setattr(preparation, 'tasks', set())
     monkeypatch.setattr(preparation, 'pending_confirmations', {})
-    manager = SimpleNamespace(game_speech_audio_cache_identity=lambda *a, **kw: ('key', 'voice'))
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready, game_speech_audio_cache_identity=lambda *a, **kw: ('key', 'voice'))
     result = await preparation.prepare('video', manager, 'cat')
     tasks = list(preparation.tasks)
     await asyncio.sleep(0)
@@ -60,7 +64,7 @@ async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, 
         calls.append(render_language)
         return {"ok": True}
 
-    manager = SimpleNamespace(user_language="en", _conversation_render_language="ja", lanlan_prompt='Current persona',
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready, user_language="en", _conversation_render_language="ja", lanlan_prompt='Current persona',
                               _user_language_explicit=explicit,
                               game_speech_audio_cache_identity=identity, preload_game_speech_audio=preload)
 
@@ -108,7 +112,7 @@ async def test_import_failure_is_terminal_and_preserves_staging(tmp_path, monkey
     monkeypatch.setattr(preparation, "application_library", lambda: SimpleNamespace(root=tmp_path, import_sources=fail_import))
     monkeypatch.setattr(preparation, "jobs", {})
     monkeypatch.setattr(preparation, "tasks", set())
-    manager = SimpleNamespace(game_speech_audio_cache_identity=lambda *args, **kwargs: ("key", "voice"))
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready, game_speech_audio_cache_identity=lambda *args, **kwargs: ("key", "voice"))
     result = await preparation.prepare("video", manager, "cat")
     await asyncio.gather(*preparation.tasks)
     job = preparation.jobs[result["id"]]
@@ -137,3 +141,36 @@ async def test_library_initialization_yields_and_rechecks_preparation_slot(monke
         release.set()
     with pytest.raises(ValueError, match='already being prepared'):
         await pending
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('disabled,supported', [(True, True), (False, False)])
+async def test_speech_preflight_checks_provider_before_cache(disabled, supported):
+    from main_logic.core.tts_runtime import TtsRuntimeMixin
+    manager = SimpleNamespace(
+        _resolve_tts_worker_spec=lambda: (None, '', '', 'provider', disabled, {}),
+        _tts_worker_supports_completion=lambda *args: supported,
+    )
+    result = await TtsRuntimeMixin.preflight_game_speech_audio(manager, 'probe', render_language='zh-CN')
+    assert result['ok'] is False
+
+
+@pytest.mark.asyncio
+async def test_unavailable_speech_prevents_video_analysis(tmp_path, monkeypatch):
+    analyzed = []
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def prepare(self, *args, **kwargs):
+            analyzed.append(True)
+    async def unavailable(*args, **kwargs):
+        return {'ok': False}
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=unavailable,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert not analyzed
+    assert preparation.jobs[result['id']]['status'] == 'error'

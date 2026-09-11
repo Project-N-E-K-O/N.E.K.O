@@ -72,6 +72,11 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800):
+                from config.prompts.prompts_watch_together import LAUGH_TEXT_BY_LANGUAGE
+                probe = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])
+                speech = await manager.preflight_game_speech_audio(probe, render_language=language)
+                if not speech.get("ok"):
+                    raise ValueError("Character speech unavailable")
                 await engine.prepare(job, url, character, automatic=automatic,
                                      confirmed_duration=confirmed_duration, confirm_download=confirm_download)
         except asyncio.CancelledError:

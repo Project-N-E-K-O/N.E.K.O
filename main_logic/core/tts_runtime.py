@@ -647,6 +647,15 @@ class TtsRuntimeMixin:
             except Exception:
                 pass
 
+    async def preflight_game_speech_audio(self, text: str, *, render_language: str = "") -> dict:
+        """Validate the current provider even when the probe audio is cached."""
+        worker, _key, _voice, provider, disabled, config = self._resolve_tts_worker_spec()
+        if disabled:
+            return {"ok": False, "reason": "tts_disabled"}
+        if not self._tts_worker_supports_completion(worker, provider, config):
+            return {"ok": False, "reason": "completion_unavailable"}
+        return await self.preload_game_speech_audio([text], render_language=render_language)
+
     async def preload_game_speech_audio(
         self,
         lines: list[str],

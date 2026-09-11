@@ -147,3 +147,20 @@ for (const failOld of [false,true]) {
   assert.match(racing.elements.get('status').textContent,/ready/);
 }
 console.log('watch-together scene: superseded load success and failure preserve newest selection');
+const shutdown=await fixture(false,false,{total_tokens:1});
+await shutdown.elements.get('play').onclick();
+let finishShutdown, endCalls=0;
+shutdown.game.runtime.end=()=>{
+  endCalls++;
+  if(endCalls>1)throw Error('busy');
+  shutdown.game.runtime.state='ending';
+  return new Promise(resolve=>{finishShutdown=()=>{shutdown.game.runtime.state='ended';resolve();};});
+};
+const historyButton=shutdown.elements.get('history').children[0];
+const firstSelection=historyButton.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+const secondSelection=historyButton.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(endCalls,1,'overlapping selections share runtime shutdown');
+finishShutdown();await Promise.all([firstSelection,secondSelection]);
+assert.match(shutdown.elements.get('status').textContent,/ready/);
+assert.equal(shutdown.elements.get('play').disabled,false);
+console.log('watch-together scene: overlapping selections serialize active shutdown');

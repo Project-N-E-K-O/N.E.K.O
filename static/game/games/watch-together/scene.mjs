@@ -7,6 +7,7 @@ export async function run(game, character) {
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
   let selectionGeneration = 0;
+  let ending = null;
   let progressTimer = null;
   let nextRow=null, queuedFor=null, preparing=false;
   const seenVideos=new Set();
@@ -48,7 +49,12 @@ export async function run(game, character) {
       .then(refreshWatches)
       .catch(error => status(error.message));
   };
-  async function end() {
+  function end() {
+    if(ending)return ending;
+    ending=finishEnd().finally(()=>{ending=null;});
+    return ending;
+  }
+  async function finishEnd() {
     clearInterval(progressTimer); progressTimer = null;
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
