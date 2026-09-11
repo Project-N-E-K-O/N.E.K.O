@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import {run} from '../../static/game/games/watch-together/scene.mjs';
 
-async function fixture(confirm, afterDownload=false) {
+async function fixture(confirm, afterDownload=false, usage=null) {
   const elements = new Map();
-  globalThis.document = {getElementById(id) {
+  globalThis.document = {createElement(){return {};},getElementById(id) {
     if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,replaceChildren(){},append(){}});
     return elements.get(id);
   }};
   document.getElementById('url');document.getElementById('topic');
-  globalThis.location = {search:''};
+  globalThis.location = {search:usage?'?job=selected':'',href:'http://localhost/watch_together'};
+  globalThis.history = {replaceState(){}};
   const prompts = [];
   globalThis.window = {i18n:{t:key=>key},confirm:message=>{prompts.push(message);return confirm;}};
   const calls = [];
@@ -18,7 +19,8 @@ async function fixture(confirm, afterDownload=false) {
     media:{async request(action,payload) {
       calls.push({action,payload});
       if(action==='character')return {lanlan_name:'cat'};
-      if(action==='history')return {analyses:[],watches:[]};
+      if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches:[]};
+      if(action==='load')return {id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
       if(action==='discover')return {video:null};
       if(action==='prepare') {
         if(afterDownload) {
@@ -65,3 +67,11 @@ for (const accepted of [true,false]) {
   assert.equal(decision.confirmed_duration,300.04);
 }
 console.log('watch-together scene: post-download confirmation and cancellation passed');
+const legacy = await fixture(false,false,{input_tokens:24652,output_tokens:918,total_tokens:25570});
+assert.match(legacy.elements.get('usage').textContent,/24652/);
+assert.match(legacy.elements.get('usage').textContent,/25570/);
+await legacy.elements.get('discover').onsubmit({preventDefault(){}});
+assert.deepEqual(legacy.calls.at(-1).payload,{topic:'Cats',exclude:['BV1GJ411x7h7']});
+const missing = await fixture(false,false,{input_tokens:0,calls:[]});
+assert.match(missing.elements.get('usage').textContent,/unrecorded/);
+console.log('watch-together scene: legacy totals and manual discovery exclusions passed');

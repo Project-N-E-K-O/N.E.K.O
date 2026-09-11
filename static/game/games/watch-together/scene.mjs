@@ -34,7 +34,7 @@ export async function run(game, character) {
     if (!stats) { $('usage').textContent=t('unrecorded');return; }
     const value={...stats};
     for(const key of ['input_tokens','output_tokens','total_tokens']) {
-      if(!(stats.calls || []).some(call=>call[key]!=null)) value[key]=t('unrecorded');
+      if(stats[key]==null || (Array.isArray(stats.calls) && !stats.calls.some(call=>call[key]!=null))) value[key]=t('unrecorded');
     }
     $('usage').textContent=`${t('usageNote')}\n\n${JSON.stringify(value,null,2)}`;
   }
@@ -154,7 +154,7 @@ export async function run(game, character) {
     try {
       status(t('searching'));
       const topic = $('topic').value.trim() || selected?.title || '';
-      const result = await game.media.request('discover',{topic});
+      const result = await game.media.request('discover',{topic,exclude:[...seenVideos].slice(-128)});
       if (!result.video) {status(t('noCandidates'));return;}
       const info = result.video;
       $('url').value=info.url;

@@ -30,7 +30,7 @@ body{margin:0;background:#101725;color:#edf2ff;font:16px system-ui}main{max-widt
 <script src="/static/libs/index.min.js"></script>
 <script src="/static/game/sdk/neko-minigame-avatar-host.js"></script>
 <script type="importmap">{"imports":{"three":"/static/libs/three.module.js","three/addons/":"/static/libs/three/addons/","@pixiv/three-vrm":"/static/libs/three-vrm.module.min.js"}}</script>
-<script id="neko-minigame-host-launch" type="application/json">{"registrations":{"watch-together":{"mode":"registered","gameId":"watch-together","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["logging","runtime","media-timeline","speech-output","voice-input","avatar-renderer"]}}}</script>
+<script id="neko-minigame-host-launch" type="application/json">{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"watch-together":{"mode":"registered","gameId":"watch-together","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["logging","runtime","media-timeline","speech-output","voice-input","avatar-renderer"]}}}</script>
 <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js"></script>
 <script type="module" src="/static/game/games/watch-together/host.mjs"></script>
 </body></html>
