@@ -81,8 +81,13 @@ def test_phase1_selection_accepts_neko_community_source_alias():
     }
     distractor = {"title": "社区卡牌", "source": "其他来源"}
 
-    assert sr_parsing._is_neko_community_phase1_source("N.E.K.O Community")
-    assert proactive_service._is_neko_community_phase1_source("N.E.K.O Community")
+    for alias in (
+        "N.E.K.O Community",
+        "N.E.K.O \u30b3\u30df\u30e5\u30cb\u30c6\u30a3",
+        "喵宇宙社群",
+    ):
+        assert sr_parsing._is_neko_community_phase1_source(alias)
+        assert proactive_service._is_neko_community_phase1_source(alias)
     assert (
         sr_parsing._lookup_link_by_phase1_selection(
             {"title": "社区卡牌", "source": "N.E.K.O Community", "number": "1"},

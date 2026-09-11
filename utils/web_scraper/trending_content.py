@@ -61,6 +61,7 @@ XHH_USER_AGENT = (
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
 NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
 NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
+NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -134,8 +135,8 @@ def _load_neko_community_access_token(feed_api: str) -> str:
         if not isinstance(data, dict):
             continue
         access_token = str(data.get("token") or data.get("access_token") or "").strip()
-        base_url = str(data.get("baseUrl") or social_base_url()).strip()
-        if access_token and _same_community_origin(base_url, feed_api):
+        base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
+        if access_token and base_url and _same_community_origin(base_url, feed_api):
             return access_token
     return ""
 
@@ -1886,9 +1887,11 @@ def normalize_neko_community_feed(
     posts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in _community_feed_items(payload):
-        title = _community_text(
-            raw.get("title") or raw.get("headline") or raw.get("subject")
-        )
+        title = ""
+        for field in ("title", "headline", "subject"):
+            title = _community_text(raw.get(field))
+            if title:
+                break
         content = ""
         for field in (
             "story_md",
@@ -1902,6 +1905,14 @@ def normalize_neko_community_feed(
             content = _community_text(raw.get(field))
             if content:
                 break
+        published_at = ""
+        for field in ("created_at", "createdAt"):
+            value = raw.get(field)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                published_at = _plain_xhh_text(str(value))
+            if published_at:
+                break
+        published_at = published_at[:NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS]
         if not title:
             title = content[:80]
         if not title:
@@ -1933,7 +1944,7 @@ def normalize_neko_community_feed(
                 "author": author,
                 "tags": labels,
                 "url": url,
-                "created_at": raw.get("created_at") or raw.get("createdAt"),
+                "created_at": published_at or None,
             }
         )
         if len(posts) >= max(1, int(limit)):

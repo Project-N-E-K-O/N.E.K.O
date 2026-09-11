@@ -2103,8 +2103,14 @@ def _link_matches_phase1_title(title: str, link: dict) -> bool:
 
 _NEKO_COMMUNITY_PHASE1_SOURCE_ALIASES = {
     "喵宇宙社区",
+    "喵宇宙社群",
     "neko community",
     "n.e.k.o community",
+    "n.e.k.o \u30b3\u30df\u30e5\u30cb\u30c6\u30a3",
+    "n.e.k.o \ucee4\ubba4\ub2c8\ud2f0",
+    "\u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u043e n.e.k.o",
+    "comunidad n.e.k.o",
+    "comunidade n.e.k.o",
 }
 
 

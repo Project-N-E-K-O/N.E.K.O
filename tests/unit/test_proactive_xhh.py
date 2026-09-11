@@ -233,6 +233,22 @@ def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
     assert posts[0]["content"] == "可用的后备摘要。"
 
 
+def test_normalize_neko_community_feed_falls_back_after_blank_title():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "blank-title",
+                    "title": " \t",
+                    "headline": "后备标题",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["title"] == "后备标题"
+
+
 def test_normalize_neko_community_feed_bounds_title_and_author():
     title = "t" * (trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS + 1)
     author = "a" * (trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS + 1)
@@ -243,6 +259,23 @@ def test_normalize_neko_community_feed_bounds_title_and_author():
 
     assert posts[0]["title"] == title[: trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS]
     assert posts[0]["author"] == author[: trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
+
+
+def test_normalize_neko_community_feed_bounds_published_at():
+    published_at = "p" * (
+        trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS + 1
+    )
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {"id": "long-time", "title": "时间卡牌", "created_at": published_at}
+            ]
+        }
+    )
+
+    assert posts[0]["created_at"] == published_at[
+        : trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS
+    ]
 
 
 def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication():
@@ -460,6 +493,35 @@ async def test_neko_community_access_token_uses_only_matching_oauth_origin(
     ) == "desktop-access-token"
     assert await trending_content._neko_community_access_token(
         "https://other.example.test/api/feed"
+    ) == ""
+
+
+@pytest.mark.asyncio
+async def test_neko_community_access_token_requires_session_origin(tmp_path, monkeypatch):
+    session_path = tmp_path / "social_session.json"
+    session_path.write_text(
+        """{
+  "base_url": "https://old-community.example.test",
+  "token": "old-origin-token"
+}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        trending_content,
+        "_neko_community_session_paths",
+        lambda: [session_path],
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://new-community.example.test/api/feed"
+    ) == ""
+    assert await trending_content._neko_community_access_token(
+        "https://old-community.example.test/api/feed"
+    ) == "old-origin-token"
+
+    session_path.write_text('{"token": "originless-token"}', encoding="utf-8")
+    assert await trending_content._neko_community_access_token(
+        "https://old-community.example.test/api/feed"
     ) == ""
 
 
