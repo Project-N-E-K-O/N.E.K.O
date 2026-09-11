@@ -198,9 +198,13 @@ class Library:
             return value
         timeline = {**remap(data), "id": job, "version": version}
         if timeline.get('status') == 'ready':
+            events = timeline.get('events', [])
+            if not isinstance(events, list) or any(not isinstance(cue, dict) for cue in events):
+                timeline['status'] = 'incomplete'
+                return timeline
             manifest = self.manifest(job, version)
             references = [timeline.get('video')]
-            references.extend(cue.get('audio') for cue in timeline.get('events', []) if cue.get('audio'))
+            references.extend(cue.get('audio') for cue in events if cue.get('audio'))
             for url in references:
                 name = url[len(prefix):] if isinstance(url, str) and url.startswith(prefix) else None
                 entry = manifest.get(name)

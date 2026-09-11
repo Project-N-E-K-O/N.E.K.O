@@ -9,6 +9,21 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('events', [None, {}, 'invalid', 42, [None], ['invalid'], [42]])
+def test_malformed_legacy_events_remain_readable_as_incomplete(tmp_path, events):
+    archive = source(tmp_path, 'malformed')
+    path = archive / JOB / 'timeline.json'
+    data = json.loads(path.read_text())
+    data['events'] = events
+    path.write_text(json.dumps(data))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['status'] == 'incomplete'
+    assert library.timeline(JOB, row['version'])['status'] == 'incomplete'
+    assert json.loads(library.resource(JOB, row['version'], 'timeline.json').read_text())['events'] == events
+
+
 @pytest.mark.parametrize('missing', ['video.mp4', 'laugh.mp3', None])
 def test_partial_ready_history_is_incomplete(tmp_path, missing):
     archive = source(tmp_path, 'partial')
