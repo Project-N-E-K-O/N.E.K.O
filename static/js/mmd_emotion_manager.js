@@ -164,6 +164,7 @@
         const selectionId = currentSelectionId;
 
         currentModelInfo = modelInfo;
+        saveBtn.disabled = true;
         modelSelect.value = modelName;
         modelSingleselectText.textContent = modelName;
         modelSingleselect.classList.remove('active', 'open-up', 'open-down');
@@ -175,9 +176,10 @@
             item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
 
-        loadModelMorphs(modelName, selectionId).then((success) => {
+        loadModelMorphs(modelName, selectionId).then(async (success) => {
             if (success && selectionId === currentSelectionId) {
-                loadEmotionMapping(modelName, selectionId);
+                await loadEmotionMapping(modelName, selectionId);
+                if (selectionId === currentSelectionId) saveBtn.disabled = false;
             }
         });
     }
@@ -412,7 +414,10 @@
     }
 
     // 填充下拉菜单
-    function populateSelects() {
+    function populateSelects(savedMorphs = []) {
+        // 当前模型未在父窗口加载时，候选列表不完整；仍保留已保存名称，不能下次保存时丢失。
+        // 每次重建，不向 availableMorphs 累加，避免跨模型/多次加载残留。
+        const candidates = [...new Set([...availableMorphs, ...savedMorphs])];
         emotions.forEach(emotion => {
             const morphContainer = document.querySelector(`.emotion-morph-select[data-emotion="${emotion}"] .multiselect-options`);
 
@@ -420,7 +425,7 @@
                 morphContainer.innerHTML = '';
                 morphContainer.onclick = (e) => e.stopPropagation();
 
-                availableMorphs.forEach(morph => {
+                candidates.forEach(morph => {
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';
                     item.setAttribute('role', 'option');
@@ -480,6 +485,12 @@
 
             if (data.success && data.mapping && Object.keys(data.mapping).length > 0) {
                 const config = data.mapping;
+                const savedMorphs = emotions.flatMap(emotion => {
+                    const names = config[emotion];
+                    return Array.isArray(names) ? names.filter(name => typeof name === 'string')
+                        : typeof names === 'string' ? [names] : [];
+                });
+                populateSelects(savedMorphs);
 
                 emotions.forEach(emotion => {
                     const morphMS = document.querySelector(`.emotion-morph-select[data-emotion="${emotion}"]`);
@@ -489,8 +500,10 @@
                         updateMultiselectHeader(morphMS);
                     }
 
-                    if (config[emotion]) {
-                        const morphNames = Array.isArray(config[emotion]) ? config[emotion] : [config[emotion]];
+                    const configured = Object.prototype.hasOwnProperty.call(config, emotion)
+                        ? config[emotion] : defaultMoodMap[emotion];
+                    if (configured) {
+                        const morphNames = Array.isArray(configured) ? configured : [configured];
                         if (morphMS) {
                             morphNames.forEach(name => {
                                 const cb = morphMS.querySelector(`input[value="${CSS.escape(name)}"]`);
@@ -535,11 +548,13 @@
 
     // 保存情感映射配置
     async function saveEmotionMapping() {
+        if (saveBtn.disabled) return;
         if (!currentModelInfo) {
             showStatus(t('mmdEmotionManager.pleaseSelectModelFirst', '请先选择模型'), 'error');
             return;
         }
 
+        const modelName = currentModelInfo.name;
         const mapping = {};
 
         emotions.forEach(emotion => {
@@ -547,7 +562,7 @@
 
             if (morphMS) {
                 const selected = Array.from(morphMS.querySelectorAll('input:checked')).map(cb => cb.value);
-                if (selected.length > 0) mapping[emotion] = selected;
+                mapping[emotion] = selected;
             }
         });
 
@@ -558,7 +573,7 @@
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    model: currentModelInfo.name,
+                    model: modelName,
                     mapping: mapping
                 })
             });
@@ -574,11 +589,18 @@
             if (data.success) {
                 showStatus(t('mmdEmotionManager.configSaveSuccess', '配置保存成功！'), 'success');
 
-                // 通知父窗口重新加载 moodMap（仅当父窗口当前模型与编辑的模型一致时）
-                if (window.opener && !window.opener.closed && window.opener.mmdManager && window.opener.mmdManager.expression) {
-                    const parentModel = window.opener.mmdManager.currentModel;
-                    if (parentModel && parentModel.name === currentModelInfo.name) {
-                        window.opener.mmdManager.expression.loadMoodMap(currentModelInfo.name);
+                // 主页面和模型预览窗口均可能持有模型；同源通知也适用于没有 opener 的 Electron 窗口。
+                // 通知只携带配置名，接收方从后端重读；存储项立即删除，不累积状态。
+                try {
+                    localStorage.setItem('neko_mmd_emotion_mapping_changed', JSON.stringify({ model: modelName }));
+                    localStorage.removeItem('neko_mmd_emotion_mapping_changed');
+                } catch (error) {
+                    console.warn('[MMD Emotion] 跨窗口配置通知失败，尝试通知父窗口:', error);
+                    if (window.opener && !window.opener.closed) {
+                        const parentManager = window.opener.mmdManager;
+                        if (parentManager?.currentModel?.configName === modelName) {
+                            void parentManager.expression?.loadMoodMap(modelName);
+                        }
                     }
                 }
             } else {
