@@ -27,3 +27,22 @@ runtime.end(null);
 runtime.configure({ payload: () => 42 });
 // @ts-expect-error Scalar page-exit callbacks must not satisfy the payload contract.
 runtime.configure({ pageExit: { payload: () => false } });
+
+// Nested declarations accept the same readonly string shorthand as the root.
+const states = ['ready', 'done'] as const;
+const nestedContract: NekoMiniGame.ContractDeclaration = {
+  type: 'object',
+  properties: {
+    state: states,
+    history: { type: 'array', items: states },
+    rounds: { type: 'array', items: { type: 'object', properties: { state: states } } },
+  },
+};
+const manifestContracts: NekoMiniGame.ManifestContracts = { events: { progress: nestedContract } };
+void manifestContracts;
+// @ts-expect-error Shorthand enum values must remain strings.
+const invalidItems: NekoMiniGame.ContractSchema = { type: 'array', items: [1, 2] };
+// @ts-expect-error Nested properties must declare a schema or string shorthand.
+const invalidProperty: NekoMiniGame.ContractSchema = { type: 'object', properties: { state: 42 } };
+void invalidItems;
+void invalidProperty;

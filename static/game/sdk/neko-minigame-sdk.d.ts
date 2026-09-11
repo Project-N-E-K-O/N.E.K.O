@@ -37,8 +37,8 @@ declare namespace NekoMiniGame {
     maxLength?: number;
     minItems?: number;
     maxItems?: number;
-    items?: ContractSchema;
-    properties?: Readonly<Record<string, ContractSchema>>;
+    items?: ContractDeclaration;
+    properties?: Readonly<Record<string, ContractDeclaration>>;
     required?: readonly string[];
     additionalProperties?: boolean;
   }
