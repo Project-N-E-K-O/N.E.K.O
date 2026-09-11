@@ -139,6 +139,37 @@ async function factories() {
   const overflowGame = await overflow.game(overflow.host(), false);
   assert.equal(boundedCleanup, 17, 'cleanup overflow leaked a partial allocation');
   overflowGame.dispose();
+
+  for (const failedInitialization of [false, true]) {
+    let registerCleanup;
+    let releasedLate = 0;
+    const unhandled = [];
+    const onUnhandled = error => unhandled.push(error.message);
+    const env = await environment(({ onCleanup }) => {
+      registerCleanup = onCleanup;
+      if (failedInitialization) throw new Error('initialization failed');
+      return { mount() {}, dispose() {} };
+    });
+    const host = env.host();
+    if (!failedInitialization) host.dispose();
+    process.on('unhandledRejection', onUnhandled);
+    let synchronousError;
+    try {
+      try {
+        registerCleanup(() => { releasedLate++; throw new Error('late sync cleanup'); });
+      } catch (error) { synchronousError = error.message; }
+      registerCleanup(async () => { releasedLate++; throw new Error('late async cleanup'); });
+      registerCleanup(() => { releasedLate++; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual({ synchronousError, unhandled }, { synchronousError: undefined, unhandled: [] },
+        'late cleanup failures escaped the host after disposal or failed initialization');
+      assert.equal(releasedLate, 3, 'late cleanup failure prevented remaining resource release');
+      assert.equal(host._avatarCleanup.length, 0, 'late callbacks were retained after release');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      host.dispose();
+    }
+  }
 }
 
 async function queries() {

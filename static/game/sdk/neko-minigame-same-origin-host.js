@@ -515,7 +515,7 @@
                 throw this._hostError('invalid_request', 'Avatar factory cleanup limit reached');
               }
               if (this._disposed || this._avatarFactoryController.signal.aborted) {
-                cleanup();
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release late allocation */ }
                 return;
               }
               this._avatarCleanup.push(cleanup);
