@@ -88,7 +88,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
         context = new AudioContext(); analyser=context.createAnalyser();analyser.fftSize=256;
         // Lift quiet reactions above the soundtrack without boosting the video.
         const voiceGain = context.createGain(), compressor = context.createDynamicsCompressor();
-        voiceGain.gain.value = 2;
+        voiceGain.gain.value = 3;
         compressor.threshold.value = -3;
         compressor.knee.value = 3;
         compressor.ratio.value = 20;
