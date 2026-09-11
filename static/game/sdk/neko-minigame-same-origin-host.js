@@ -913,7 +913,7 @@
       let response;
       if (action === 'history') response = await this._request('/api/watch-together/history');
       else if (action === 'character') response = await this._readCharacter(payload.name || '');
-      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 75000});
+      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});
       else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || '', exclude: payload.exclude || []}, {timeoutMs: 190000});
       else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
       else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`);

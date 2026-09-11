@@ -5,6 +5,8 @@ import { initializeDisplay } from './display.mjs';
 import { create as createLive2D } from './live2d-host.mjs';
 import { create as createVRM } from './vrm-host.mjs';
 let renderer = null;
+// The bootstrap exports window.i18n before localechange on success or fallback.
+if (!window.i18n) await new Promise(resolve=>window.addEventListener('localechange',resolve,{once:true}));
 initializeDisplay();
 const container = document.getElementById('avatar');
 const avatarHost = NekoMiniGameAvatarHost.create({slots:{companion:{container,createController:({config})=>{

@@ -4,7 +4,7 @@ import {run} from '../../static/game/games/watch-together/scene.mjs';
 async function fixture(confirm, afterDownload=false, usage=null, discover=null) {
   const elements = new Map();
   globalThis.document = {createElement(){return {};},getElementById(id) {
-    if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,replaceChildren(){},append(){}});
+    if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,children:[],replaceChildren(){this.children=[];},append(child){this.children.push(child);}});
     return elements.get(id);
   }};
   document.getElementById('url');document.getElementById('topic');
@@ -16,7 +16,7 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
   let watches = [], record;
   const handlers = {};
   const game = {
-    runtime:{state:'idle',configure(){},async end(){},async start(){this.state='running';return {ok:true};}},
+    runtime:{state:'idle',configure(){},reset(){this.state='idle';},async end(){},async start(){this.state='running';return {ok:true};}},
     speech:{onState(){}},voice:{onState(){},onTranscript(){}},events:{on(name,fn){handlers[name]=fn;}},
     media:{async mount(options){record=options.onEvent;return {async play(){},dispose(){}};},async request(action,payload) {
       calls.push({action,payload});
@@ -38,7 +38,7 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
     }}
   };
   await run(game,'cat');
-  return {elements,calls,prompts,handlers,record:event=>record(event)};
+  return {game,elements,calls,prompts,handlers,record:event=>record(event)};
 }
 const cancel = await fixture(false);
 cancel.elements.get('url').value='BV1GJ411x7h7';
@@ -104,3 +104,24 @@ await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(discoveryCount,2,'queue release retries current selection exactly once');
 retrying.handlers['runtime-inactive']();
 console.log('watch-together scene: queue release retries current playback without duplicate prefetch');
+const takeover=await fixture(false,false,{total_tokens:1});
+const originalRequest=takeover.game.media.request;
+let finishForeground;
+takeover.game.media.request=async(action,payload)=>{
+  if(action==='prepare')return {id:'foreground'};
+  if(action==='preparation')return new Promise(resolve=>{finishForeground=resolve;});
+  const result=await originalRequest(action,payload);
+  if(action==='history')result.analyses.push({job:'foreground',version:'v',status:'ready'});
+  return result;
+};
+const preparingForeground=takeover.elements.get('prepare').onsubmit({preventDefault(){}});
+await new Promise(resolve=>setTimeout(resolve,0));
+await takeover.elements.get('history').children[0].onclick();
+await takeover.elements.get('play').onclick();
+const loadsBeforeReady=takeover.calls.filter(c=>c.action==='load').length;
+finishForeground({status:'ready'});
+await preparingForeground;
+assert.equal(takeover.calls.filter(c=>c.action==='load').length,loadsBeforeReady,'foreground result cannot replace newer history selection');
+assert.match(takeover.elements.get('status').textContent,/playing/);
+takeover.handlers['runtime-inactive']();
+console.log('watch-together scene: foreground completion preserves newer playback');

@@ -6,6 +6,7 @@ export async function run(game, character) {
   const renderLanguage = () => document.documentElement?.lang || window.i18n?.language || new URLSearchParams(location.search).get('ui_lang') || '';
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
+  let selectionGeneration = 0;
   let progressTimer = null;
   let nextRow=null, queuedFor=null, preparing=false;
   const seenVideos=new Set();
@@ -55,6 +56,7 @@ export async function run(game, character) {
     if (!['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row) {
+    selectionGeneration++;
     nextQueue.clear();queuedFor=null;
     $('play').disabled = true;
     const previous = selected;
@@ -113,6 +115,7 @@ export async function run(game, character) {
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
     if(nextQueue.busy)return;
+    const selection = selectionGeneration;
     preparing=true;updatePrepareButtons();
     try {
       status(t('checking'));
@@ -124,11 +127,13 @@ export async function run(game, character) {
         }
         result = await game.media.request('prepare',{url:info.url,source,lanlan_name:character,confirmed_duration:info.duration,render_language:renderLanguage()});
       }
-      await end();
+      if(selection===selectionGeneration)await end();
       while (!game.disposed) {
         const state = await game.media.request('preparation',{job:result.id});
-        status(state.stage_key ? t(state.stage_key) : state.stage);
-        if (state.usage) renderUsage(state.usage);
+        if(selection===selectionGeneration) {
+          status(state.stage_key ? t(state.stage_key) : state.stage);
+          if (state.usage) renderUsage(state.usage);
+        }
         if (state.status === 'awaiting_confirmation' && state.confirmation_required) {
           const info = state.confirmation_video;
           const accepted = window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`);
@@ -141,7 +146,7 @@ export async function run(game, character) {
           const history = await game.media.request('history');
           renderHistory(history.analyses);
           const row = history.analyses.find(item=>item.job===result.id && item.status==='ready');
-          if (row) { await load(row); break; }
+          if (row) { if(selection===selectionGeneration)await load(row); break; }
         }
         await new Promise(resolve=>setTimeout(resolve,1000));
       }
