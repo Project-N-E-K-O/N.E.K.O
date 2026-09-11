@@ -59,8 +59,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         chunks = GAME_SPEECH_AUDIO_CACHE.get(key)
         if not chunks:
             raise ValueError("Synthesized audio unavailable")
-        from .audio import write_speech_wav
-        await asyncio.to_thread(write_speech_wav, chunks, output)
+        from .audio import write_speech_wav_async
+        await write_speech_wav_async(chunks, output)
 
     async def run():
         staging = library.root / "preparations"

@@ -3,7 +3,19 @@ from pathlib import Path
 import tempfile
 import wave
 
-from .engine import run_media
+from .engine import run_media, run_media_async
+
+
+async def write_speech_wav_async(chunks, output):
+    payload = b"".join(chunks)
+    if not payload.startswith(b"OggS"):
+        write_speech_wav([payload], output)
+        return
+    with tempfile.TemporaryDirectory(prefix="neko-watch-audio-") as directory:
+        source = Path(directory) / "speech.ogg"
+        source.write_bytes(payload)
+        await run_media_async("ffmpeg", "-y", "-i", source, "-ac", "1", "-ar", "48000",
+                              "-c:a", "pcm_s16le", output)
 
 
 def write_speech_wav(chunks, output):
