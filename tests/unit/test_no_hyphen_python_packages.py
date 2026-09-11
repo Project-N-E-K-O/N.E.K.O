@@ -77,7 +77,6 @@ _VENV_DIR_PATTERN = re.compile(r"^\.venv")
 # 匹配，会把未来可能出现的 ``plugin/<某 feature>/frontend/``、``plugin/<x>/docs/``
 # 等子目录也静默吞掉，反而盖住该 lint 想抓的 hyphen 违规。
 _EXCLUDED_PATH_FRAGMENTS = (
-    ("local_server", "cosyvoice_server", "CosyVoice"),  # vendored
     ("frontend",),  # 顶层 JS/Vue 项目，连字符是其命名惯例
     ("docs",),  # 顶层纯文档站
     (".github",),  # CI yaml 等
