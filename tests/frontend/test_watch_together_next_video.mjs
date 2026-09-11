@@ -53,3 +53,15 @@ await pendingWork;
 assert.deepEqual(invalidatedUpdates.find(s=>s.history)?.history.analyses,[row]);
 assert.equal(invalidatedUpdates.some(s=>s.row || s.status==='ready'),false,'stale result updates history only');
 console.log('next-video queue: invalidated preparation refreshes history without changing next selection');
+for(const failure of ['error','cancelled']) {
+  const states=[];
+  const failing={media:{async request(action){
+    if(action==='discover')return {video:{bvid:'retryable',url:'video',title:'Retry'}};
+    if(action==='prepare')return {id:'failed'};
+    if(action==='preparation')return {status:failure};
+    throw Error(action);
+  }}};
+  const retryQueue=createNextVideoQueue(failing,state=>states.push(state));
+  await retryQueue.start({topic:'cats'});
+  assert.equal(states.some(state=>state.candidate),false,'failed preparation must remain eligible for discovery');
+}

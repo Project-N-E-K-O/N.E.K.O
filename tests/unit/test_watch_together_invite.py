@@ -5,10 +5,10 @@ from main_logic.proactive_chat import mini_game_invite as invites
 from main_logic.watch_together import engine
 
 
-def manager(vision=True, disabled=False, supported=True, key='tts-key'):
+def manager(vision=True, disabled=False, supported=True, key='tts-key', provider='provider'):
     return SimpleNamespace(
         _config_manager=SimpleNamespace(get_model_api_config=lambda _: {'api_key': 'vision-key' if vision else ''}),
-        _resolve_tts_worker_spec=lambda: (None, key, '', 'provider', disabled, {}),
+        _resolve_tts_worker_spec=lambda: (None, key, '', provider, disabled, {}),
         _tts_worker_supports_completion=lambda *args: supported,
     )
 
@@ -17,6 +17,13 @@ def manager(vision=True, disabled=False, supported=True, key='tts-key'):
 def test_invitation_checks_vision_and_speech_without_synthesis(monkeypatch, options):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
     assert invites._watch_together_available(manager(**options)) is (not options)
+
+
+@pytest.mark.parametrize('provider', ['vllm_omni', 'local_cosyvoice'])
+@pytest.mark.parametrize('supported', [True, False])
+def test_keyless_local_speech_still_requires_completion(monkeypatch, provider, supported):
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    assert invites._watch_together_available(manager(key='', provider=provider, supported=supported)) is supported
 
 
 @pytest.mark.parametrize('missing', ['ffmpeg', 'ffprobe', None])

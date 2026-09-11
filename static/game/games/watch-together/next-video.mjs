@@ -14,7 +14,6 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
         const found=await game.media.request('discover',{topic,exclude});
         if(disposed || game.disposed || token!==generation)return;
         if(!found.video){publish(token,{status:'empty',busy:true});return;}
-        changed({candidate:found.video.bvid});
         const title=found.video.title;
         publish(token,{status:'preparing',title,busy:true});
         const job=await game.media.request('prepare',{url:found.video.url,source:'discovery',lanlan_name:character,render_language});
@@ -26,6 +25,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
           if(['error','cancelled'].includes(state.status))throw Error(state.stage_key || 'prepareFailed');
           publish(token,{status:'preparing',title,stage:state.stage_key,progress:state.progress,busy:true});
           if(state.status==='ready') {
+            if(!disposed && !game.disposed)changed({candidate:found.video.bvid});
             const history=await game.media.request('history');
             if(!disposed && !game.disposed && token!==generation)changed({history});
             const row=history.analyses.find(item=>item.job===job.id && item.status==='ready');
