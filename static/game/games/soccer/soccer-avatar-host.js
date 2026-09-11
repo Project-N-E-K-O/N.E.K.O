@@ -160,7 +160,9 @@
       label = 'VRM',
       playIdle = true,
       viewport = null,
+      assertLive,
     } = options;
+    assertLive();
     if (!manager) throw new Error(`${label}: VRM manager missing`);
     if (!path) throw new Error(`${label}: VRM path required`);
     if (!canvasId || !containerId) throw new Error(`${label}: canvas/container required`);
@@ -169,15 +171,21 @@
         embed: true,
         resizeMode: 'fixed',
       });
+      // init can allocate renderer resources after the controller was disposed.
+      assertLive(() => observeAsyncDisposal(manager.dispose?.(), label));
     }
     const [{ GLTFLoader }, vrmModule] = await Promise.all([
       import('three/addons/loaders/GLTFLoader.js'),
       import('@pixiv/three-vrm'),
     ]);
+    assertLive();
     const loader = new GLTFLoader();
     loader.register((parser) => new vrmModule.VRMLoaderPlugin(parser));
     const gltf = await new Promise((resolve, reject) => loader.load(path, resolve, null, reject));
     const vrm = gltf.userData.vrm;
+    // The loader has no AbortSignal contract. Release a late scene before any
+    // attachment or animation touches a disposed manager.
+    assertLive(() => vrmModule.VRMUtils.deepDispose(vrm?.scene || gltf.scene));
     if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
     applyVrm0FixedCameraFacingFix(gltf, vrm, manager);
 
@@ -205,6 +213,7 @@
     const modelName = path.split('/').pop()?.replace(/\.vrm$/i, '') || '';
     try { await manager.expression?.loadMoodMap?.(modelName); }
     catch (error) { console.warn(`[${label}] mood map load failed:`, error); }
+    assertLive();
     if (playIdle) {
       try {
         await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
@@ -215,6 +224,7 @@
       } catch (error) {
         console.warn(`[${label}] idle animation failed (will keep T-pose):`, error);
       }
+      assertLive();
     }
     return manager.currentModel;
   }
@@ -324,6 +334,14 @@
         return error;
       }
 
+      function assertLive(cleanup) {
+        if (!state.disposed && !signal?.aborted) return;
+        try { cleanup?.(); }
+        catch (error) { console.warn(`[soccer-avatar-host] ${slot} late cleanup failed:`, error); }
+        throw lifecycleError(state.disposed ? 'disposed' : 'cancelled',
+          `soccer avatar slot is no longer active: ${slot}`);
+      }
+
       function waitForLive2DModel(manager, path, loadPromise, startedWithSameModel) {
         return new Promise((resolve, reject) => {
           const startedAt = Date.now();
@@ -378,7 +396,7 @@
 
       return {
         async setModel(model) {
-          if (state.disposed) throw new Error(`soccer avatar slot is disposed: ${slot}`);
+          assertLive();
           if (slot === 'player') {
             if (model.type !== 'vrm') throw new Error('player avatar: only vrm supported');
             if (typeof window.VRMManager !== 'function') throw new Error('VRMManager class not found');
@@ -391,7 +409,9 @@
               label: 'Player',
               playIdle: true,
               viewport: state.viewport,
+              assertLive,
             });
+            assertLive();
             state.model = model;
             onAvatarChanged('player', model, true);
             return;
@@ -410,11 +430,14 @@
                 containerId: 'ai-l2d-container',
                 label: 'AI VRM',
                 viewport: state.viewport,
+                assertLive,
               });
             } catch (error) {
+              assertLive();
               if (previousType === 'live2d') resumeAiRenderer('live2d');
               throw error;
             }
+            assertLive();
             resumeAiRenderer('vrm');
           } else if (model.type === 'live2d') {
             const manager = window.live2dManager;
@@ -423,14 +446,17 @@
             pauseAiRenderer('vrm');
             try {
               await ensureLive2DReady(state.viewport);
+              assertLive(() => manager.destroy?.());
               const previousUrl = manager.currentModel?.internalModel?.settings?.url || '';
               const startedWithSameModel = previousUrl === model.path || previousUrl.endsWith(model.path);
               const loadPromise = manager.loadModel(model.path);
               await waitForLive2DModel(manager, model.path, loadPromise, startedWithSameModel);
             } catch (error) {
+              assertLive();
               if (previousType === 'vrm') resumeAiRenderer('vrm');
               throw error;
             }
+            assertLive();
             resumeAiRenderer('live2d');
           } else {
             throw new Error('ai avatar: only live2d/vrm supported');
