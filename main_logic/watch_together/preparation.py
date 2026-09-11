@@ -2,7 +2,6 @@
 import asyncio
 import json
 import uuid
-import wave
 
 from .engine import Engine
 from .library import application_library
@@ -59,10 +58,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         chunks = GAME_SPEECH_AUDIO_CACHE.get(key)
         if not chunks:
             raise ValueError("Synthesized audio unavailable")
-        # All official workers normalize to signed 16-bit, mono, 48kHz PCM.
-        with wave.open(str(output), "wb") as stream:
-            stream.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
-            stream.writeframes(b"".join(chunks))
+        from .audio import write_speech_wav
+        await asyncio.to_thread(write_speech_wav, chunks, output)
 
     async def run():
         staging = library.root / "preparations"
