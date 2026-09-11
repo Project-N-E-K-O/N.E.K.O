@@ -45,6 +45,7 @@ class MMDManager {
         this._isLoadingModel = false;
         this._modelLoadState = 'idle';
         this._headScreenAnchorProjection = null;
+        this._embed = false;
 
         // 事件处理器
         this._coreWindowHandlers = [];
@@ -90,21 +91,22 @@ class MMDManager {
             throw new Error('[MMD Manager] MMDCore 模块未加载');
         }
 
+        this._embed = options.embed === true;
         await this.core.init(canvasId, containerId, options);
 
         // 初始化交互
-        if (this.interaction && options.embed !== true) {
+        if (this.interaction && !this._embed) {
             this.interaction.initDragAndZoom();
         }
 
         // 初始化鼠标跟踪
-        if (this.cursorFollow && options.embed !== true) {
+        if (this.cursorFollow && !this._embed) {
             this.cursorFollow.init();
             this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 设置浮动按钮
-        if (options.embed !== true && typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+        if (!this._embed && typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
             this.setupFloatingButtons();
         }
 
@@ -168,7 +170,7 @@ class MMDManager {
             // init() 阶段虽然也会调用，但若彼时 lanlan_config 还没切到 mmd（早期启动 / 跨模型切换），
             // 守卫会让 setup 静默退出，且不会再有第二次机会。loadModel 成功后必然处于 mmd 模式，
             // 在此补一刀确保按钮始终存在。
-            if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+            if (!this._embed && typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
                 try {
                     this.setupFloatingButtons();
                 } catch (err) {
@@ -224,7 +226,7 @@ class MMDManager {
                     }
 
                     // 兜底：回退模型加载成功后也补一次 setupFloatingButtons（与 VRM 对齐）
-                    if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+                    if (!this._embed && typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
                         try {
                             this.setupFloatingButtons();
                         } catch (err) {

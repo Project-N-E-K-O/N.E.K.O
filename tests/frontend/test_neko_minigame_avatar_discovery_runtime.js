@@ -173,6 +173,16 @@ async function factories() {
 }
 
 async function queries() {
+  const mmd = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
+    lanlan_name: 'Example MMD', model_type: 'live3d', live3d_sub_type: 'mmd', mmd_path: '/models/example.pmx',
+  }));
+  const mmdGame = await mmd.game(mmd.host());
+  try {
+    const character = await mmdGame.avatar.getCurrentCharacter();
+    assert.deepEqual(character.model, { type: 'mmd', path: '/models/example.pmx' });
+    assert.equal(character.rendererAvailable, true, 'valid MMD HTTP descriptor was marked unavailable');
+  } finally { mmdGame.dispose(); }
+  assert.equal(mmd.timers.size, 0);
   for (const length of [65, 128, 129]) {
     const name = '🐈'.repeat(length);
     const value = { ...descriptor, name };

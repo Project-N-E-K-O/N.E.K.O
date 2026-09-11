@@ -216,6 +216,13 @@ cross-field invariants that JSON Schema cannot express compactly, such as
 minimum/maximum ordering, declared required-property names and aggregate
 complexity limits.
 
+In particular, `connect()` limits schema depth to 12 (root depth 0), total
+schema nodes to 256, and its schema-string accounting budget to 65,536 JavaScript
+UTF-16 code units, shared across **all** contract maps including both command
+request and response schemas. This accounting is not a serialized JSON byte
+limit. A manifest passing JSON Schema alone can still exceed these aggregate
+runtime limits; run `connect()` validation during development as well.
+
 ## Runtime lifecycle and host events
 
 Games that declare `runtime` configure their route payload and monitoring once,
@@ -641,8 +648,8 @@ showObservation(observation.text);
 
 `source` accepts a relative/HTTP(S) URL, same-origin blob URL, image data URL,
 `Blob`/`File`, `Uint8Array` or `ArrayBuffer`. Supplied images do not open a screen
-sharing picker. URL reads happen in the browser with CORS, same-origin
-credentials only, no redirects and no referrer; inaccessible resources fail,
+sharing picker. URL reads happen in the browser with CORS, no credentials,
+no redirects and no referrer; resources requiring cookies fail,
 never fall back to a server URL proxy. Binary sources require `mimeType`;
 untyped Blobs also need it. MIME types must be `image/jpeg`, `image/png` or
 `image/webp`. The server verifies the actual static format (no SVG/GIF/animated
@@ -651,7 +658,8 @@ reduces to at most 1280×1280 before sending to the model.
 
 The attachment array preserves order in **one model request**, with optional
 labels (128 characters each). A bad image fails the whole request, not a partial
-analysis. Limits are 1–4 images, 2 MiB source bytes per image, 6 MiB total,
+analysis. Limits are 1–4 images, 2 MiB bytes per image and 6 MiB total (checked
+independently for both the sources and the re-encoded JPEGs),
 source dimensions at most 4096 on either axis and 4 megapixels per image,
 text at most 16384 characters, and output at most 8192 characters. Results are
 `{text}`; input images are not echoed. Only `type: 'image'` works today. Other
@@ -683,9 +691,11 @@ returns raw model text for the game to parse. Trusted system text is limited to
 and ≤300 seconds (default 35). The browser HTTP endpoint keeps its fixed
 55-second request deadline and default 35-second model budget; browser input
 cannot override the trusted-server timeout. Default output budget is 1024 tokens. All callers share four raw
-model slots with no waiting queue and `max_retries=0`. Cancellation uses normal
-task cancellation; even providers ignoring cancellation retain their slot until
-settlement. `ValueError` reasons include `busy`, `timeout`, `route_inactive`,
+analysis slots with no waiting queue and `max_retries=0`. Image decoding and
+encoding run off the event loop after admission. Cancellation settles the caller
+promptly, but a running image worker or cancellation-ignoring provider retains
+its raw slot until actual settlement; a retired image worker cannot start model
+inference. `ValueError` reasons include `busy`, `timeout`, `route_inactive`,
 `invalid_payload`, `invalid_image`, `unsupported_attachment`,
 `vision_unavailable`, `invalid_model_response` and `vision_failed`.
 
@@ -783,7 +793,7 @@ that arrives after cancellation is immediately stopped. A provider that ignores
 cancellation retains its backend slot until settlement rather than admitting
 unbounded work.
 
-Stable capture errors include `invalid_region`, `capture_denied`,
+Stable capture errors include `invalid_region`, `invalid_timeout`, `capture_denied`,
 `capture_unavailable`, `capture_source_mismatch`, and `capture_changed`; managed
 requests also use `busy`, `timeout`, `cancelled`, `disposed` and `request_failed`.
 Missing model configuration is a request failure, not a fabricated observation.

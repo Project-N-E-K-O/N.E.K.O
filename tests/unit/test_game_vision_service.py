@@ -1,6 +1,7 @@
 """The shared vision service is neutral, bounded and keeps images in one request."""
 import asyncio
 import base64
+import threading
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -94,6 +95,22 @@ def test_source_byte_total_is_enforced_after_valid_image_decoding():
         service.validate_vision_attachments([item] * 4)
 
 
+@pytest.mark.parametrize("limit", ["single", "total"])
+def test_reencoded_image_bytes_are_bounded(monkeypatch, limit):
+    item = picture()
+    original_size = len(base64.b64decode(item["image_data_url"].split(",", 1)[1]))
+    encoded_size = len(base64.b64decode(service.validate_vision_attachments([item])[0]["image_data_url"].split(",", 1)[1]))
+    assert encoded_size > original_size
+    if limit == "single":
+        monkeypatch.setattr(service, "MAX_IMAGE_BYTES", encoded_size - 1)
+        items = [item]
+    else:
+        monkeypatch.setattr(service, "MAX_TOTAL_BYTES", encoded_size * 2 - 1)
+        items = [item, item]
+    with pytest.raises(ValueError, match="^invalid_image$"):
+        service.validate_vision_attachments(items)
+
+
 def test_transparency_resize_and_animated_images():
     with Image.new("RGBA", (2048, 1024), (255, 0, 0, 0)) as image, BytesIO() as output:
         image.save(output, "PNG")
@@ -107,6 +124,74 @@ def test_transparency_resize_and_animated_images():
         item["image_data_url"] = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
     with pytest.raises(ValueError, match="invalid_image"):
         service.validate_vision_attachments([item])
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout", "supersede"])
+@pytest.mark.asyncio
+async def test_image_worker_retains_admission_until_actual_settlement(model, monkeypatch, mode):
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    finish = threading.Event()
+    current = True
+    original = service.validate_vision_attachments
+
+    def slow_images(items):
+        assert threading.get_ident() != loop_thread, "Pillow still runs on the event loop"
+        loop.call_soon_threadsafe(entered.set)
+        assert finish.wait(5), "test failed to release the image worker"
+        return original(items)
+
+    monkeypatch.setattr(service, "validate_vision_attachments", slow_images)
+    monkeypatch.setattr(service, "MAX_ACTIVE_ANALYSES", 1)
+    task = asyncio.create_task(service.analyze_game_vision(
+        text="Example", attachments=[picture()], timeout=.5 if mode == "timeout" else 3,
+        is_current=lambda: current,
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        # Running this coroutine while decode is blocked proves loop responsiveness.
+        with pytest.raises(ValueError, match="^busy$"):
+            await service.analyze_game_vision(text="Example", attachments=[picture()])
+        if mode == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            if mode == "supersede":
+                current = False
+            with pytest.raises(ValueError, match="^timeout$" if mode == "timeout" else "^route_inactive$"):
+                await asyncio.wait_for(task, 2)
+        assert len(service._active_analyses) == 1
+        # Repeated cancellation must not free a live worker's raw slot either.
+        for raw in service._active_analyses:
+            raw.cancel()
+        await asyncio.sleep(0)
+        with pytest.raises(ValueError, match="^busy$"):
+            await service.analyze_game_vision(text="Example", attachments=[picture()])
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*list(service._active_analyses), return_exceptions=True)
+        await asyncio.sleep(0)
+    assert model["calls"] == 0
+    assert not service._active_analyses
+
+
+@pytest.mark.asyncio
+async def test_multimodal_input_budget_boundaries(model):
+    text, system = "x" * 16384, "s" * 32768
+    await service.analyze_game_vision(text=text, system_prompt=system,
+                                    attachments=[{**picture(), "label": "l" * 128}] * 4)
+    assert model["messages"][0].content == system
+    assert model["messages"][1].content[0]["text"] == text
+    for kwargs in [{"text": text + "x"}, {"system_prompt": system + "s"}]:
+        with pytest.raises(ValueError, match="^invalid_payload$"):
+            await service.analyze_game_vision(**({"text": text, "system_prompt": system} | kwargs),
+                                            attachments=[picture()])
+    assert model["calls"] == 1
 
 
 @pytest.mark.asyncio

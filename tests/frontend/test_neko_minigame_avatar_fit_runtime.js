@@ -152,6 +152,7 @@ async function testPerspective() {
 }
 
 async function testEngineFramingOwnership(THREE) {
+  await testMmdEmbeddedControls();
   const engineWindow = { THREE, addEventListener() {} };
   const container = { clientWidth:200, clientHeight:300, style:{setProperty() {}} };
   const canvas = { id:'test-canvas' };
@@ -212,5 +213,29 @@ async function testEngineFramingOwnership(THREE) {
   assert.deepEqual(manager.camera.projectionMatrix.elements,mmdProjection);
   host.releasePerspectiveReference(mesh,manager.camera);
   mesh.geometry.dispose(); mesh.material.dispose();
+}
+async function testMmdEmbeddedControls() {
+  const w = { dispatchEvent() {} };
+  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../../static/mmd/mmd-manager.js'), 'utf8'), {
+    window: w, CustomEvent: class {}, console: { log() {}, warn() {}, error() {} },
+  });
+  const manager = new w.MMDManager();
+  let buttons = 0; let drag = 0; let tracking = 0; let fallback = false;
+  manager.setupFloatingButtons = () => { buttons++; };
+  manager.core = { init: async () => {}, loadModel: async model => {
+    if (fallback && model !== w.MMDManager.DEFAULT_MODEL_PATH) throw new Error('test fallback');
+    return { name: 'example' };
+  } };
+  manager.interaction = { initDragAndZoom() { drag++; } };
+  manager.cursorFollow = { init() { tracking++; }, refresh() {}, setLocalTrackingEnabled() {} };
+  for (const embed of [true, false]) {
+    const before = buttons;
+    await manager.init('canvas', 'container', { embed });
+    fallback = false; await manager.loadModel('/models/example.pmx');
+    fallback = true; await manager.loadModel('/models/example.pmx');
+    assert.equal(buttons - before, embed ? 0 : 3, 'MMD model/fallback load borrowed desktop buttons');
+    assert.equal(drag, embed ? 0 : 1);
+    assert.equal(tracking, embed ? 0 : 1);
+  }
 }
 testPerspective().catch(error => { console.error(error); process.exitCode = 1; });

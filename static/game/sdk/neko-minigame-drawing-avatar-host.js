@@ -95,6 +95,9 @@
     if (!Array.isArray(fileReferences.Motions.PreviewAll)) {
       fileReferences.Motions.PreviewAll = [];
     }
+    if (configuredMotionIndex(fileReferences.Motions.PreviewAll, configuredPath) < 0) {
+      fileReferences.Motions.PreviewAll.push({ File: comparableMotionPath(configuredPath) });
+    }
   }
 
   function boundedNumber(value, minimum, maximum, fallback) {

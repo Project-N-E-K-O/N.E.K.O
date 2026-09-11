@@ -520,6 +520,7 @@
       }
     },
     "commandContractMap": {
+      "$comment": "Structural checks only. NekoMiniGame.connect also enforces depth <= 12 (root = 0), <= 256 schema nodes and <= 65536 UTF-16 code units in its schema-accounting budget shared across ALL contract maps, including command request/response. This is not a serialized JSON byte limit.",
       "type": "object",
       "maxProperties": 64,
       "propertyNames": {

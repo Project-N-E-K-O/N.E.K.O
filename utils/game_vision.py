@@ -32,11 +32,35 @@ DEFAULT_SYSTEM_PROMPT = (
 _active_analyses: set[asyncio.Task] = set()
 
 
+async def run_vision_preprocessing(function, *args):
+    """Offload only from an admitted operation; retain its slot through cancel.
+
+    Cancelling an asyncio wrapper cannot terminate a Pillow worker. Keep the
+    owning raw operation alive until the worker actually settles, with no new
+    queue or registry. The HTTP/service caller can still time out immediately.
+    """
+    worker = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            worker.exception()  # consume a late image failure without private logs
+        raise
+
+
 def validate_vision_attachments(attachments: object) -> list[dict]:
     """Validate every image before any model call; sanitize metadata and size."""
     if not isinstance(attachments, (list, tuple)) or not 1 <= len(attachments) <= MAX_IMAGES:
         raise ValueError("invalid_payload")
     total = 0
+    encoded_total = 0
     result = []
     for item in attachments:
         if not isinstance(item, dict) or item.keys() - {"type", "image_data_url", "label"}:
@@ -70,8 +94,12 @@ def validate_vision_attachments(attachments: object) -> list[dict]:
                 with oriented.convert("RGBA") as rgba, Image.new("RGB", oriented.size, "white") as rgb, BytesIO() as output, rgba.getchannel("A") as alpha:
                     rgb.paste(rgba, mask=alpha)
                     rgb.save(output, "JPEG", quality=80)
+                    encoded = output.getvalue()
+                    encoded_total += len(encoded)
+                    if not 0 < len(encoded) <= MAX_IMAGE_BYTES or encoded_total > MAX_TOTAL_BYTES:
+                        raise ValueError("invalid_image")
                     result.append({"type": "image", "label": label,
-                                   "image_data_url": "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")})
+                                   "image_data_url": "data:image/jpeg;base64," + base64.b64encode(encoded).decode("ascii")})
         except (ValueError, OSError, binascii.Error, Image.DecompressionBombError) as exc:
             raise ValueError("invalid_image") from exc
     return result
@@ -99,7 +127,7 @@ async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, ti
             raise ValueError("route_inactive")
         # LLM_INPUT_BUDGET: <=4 sanitized 1280x1280 images, text<=16384,
         # trusted system<=32768 chars, labels<=128 each. No retries or history.
-        result = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])
+        result = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])  # noqa: LLM_INPUT_BUDGET # hard text/system/label/image caps above; no history
     content = getattr(result, "content", None)
     if not isinstance(content, str) or not content.strip() or len(content) > 8192:
         raise ValueError("invalid_model_response")
@@ -110,6 +138,13 @@ def _release(task):
     _active_analyses.discard(task)
     if not task.cancelled():
         task.exception()
+
+
+async def _prepare_and_invoke(*, attachments, is_current, **kwargs):
+    images = await run_vision_preprocessing(validate_vision_attachments, attachments)
+    if not is_current():
+        raise ValueError("route_inactive")
+    return await _invoke(attachments=images, is_current=is_current, **kwargs)
 
 
 async def analyze_game_vision(*, text: str, attachments, system_prompt: str | None = None,
@@ -134,10 +169,16 @@ async def analyze_game_vision(*, text: str, attachments, system_prompt: str | No
         raise ValueError("route_inactive")
     if len(_active_analyses) >= MAX_ACTIVE_ANALYSES:
         raise ValueError("busy")
-    images = validate_vision_attachments(attachments)
+    # Snapshot bounded immutable fields before the new await/thread boundary;
+    # a caller cannot swap image sources or labels after admission.
+    if (not isinstance(attachments, (list, tuple)) or not 1 <= len(attachments) <= MAX_IMAGES
+            or any(not isinstance(item, dict) or len(item) > 3
+                   or item.keys() - {"type", "image_data_url", "label"} for item in attachments)):
+        raise ValueError("invalid_payload")
+    images = [dict(item) for item in attachments]
     retired = False
     live = lambda: not retired and current()
-    task = asyncio.create_task(_invoke(text=text, attachments=images, system_prompt=system_prompt,
+    task = asyncio.create_task(_prepare_and_invoke(text=text, attachments=images, system_prompt=system_prompt,
                                       max_completion_tokens=max_completion_tokens, timeout=timeout,
                                       is_current=live))
     _active_analyses.add(task)
@@ -155,7 +196,8 @@ async def analyze_game_vision(*, text: str, attachments, system_prompt: str | No
             raise ValueError("route_inactive")
         return task.result()
     except ValueError as exc:
-        if str(exc) in {"busy", "timeout", "route_inactive", "vision_unavailable", "invalid_model_response"}:
+        if str(exc) in {"busy", "timeout", "route_inactive", "vision_unavailable", "invalid_model_response",
+                        "invalid_payload", "invalid_image", "unsupported_attachment"}:
             raise
         raise ValueError("vision_failed") from None
     except Exception:

@@ -70,6 +70,11 @@ function environment() {
 async function captureTests() {
   const env = environment(); const { w } = env;
   const region = helper.resolveRegion(rectangle, w);
+  for (const timeoutMs of [0, -1, NaN, Infinity]) {
+    await assert.rejects(helper.capture(rectangle, { windowImpl: w, timeoutMs }), { code: 'invalid_timeout' });
+    assert.equal(env.choices, 0);
+    assert.equal(env.timers.size, 0);
+  }
   for (const equivalent of [
     { ...rectangle, unit: 'percent', x: 10, y: 10, width: 40, height: 40 },
     { kind: 'element', selector: '#board' },
@@ -151,13 +156,15 @@ async function sdkTests() {
   vm.runInThisContext(fs.readFileSync(path.join(sdk, 'neko-minigame-same-origin-bootstrap.js'), 'utf8'));
   await w.nekoMiniGameSameOriginHostReady;
   vm.runInThisContext(fs.readFileSync(path.join(sdk, 'neko-minigame-sdk.js'), 'utf8'));
-  const host = w.createNekoMiniGameSameOriginHost({ gameType: 'example-game' });
+  // A distinct global realm must not override the explicitly injected host.
+  global.window = {};
+  const host = w.createNekoMiniGameSameOriginHost({ gameType: 'example-game', windowImpl: w });
   await assert.rejects(host.analyzeGameVision({}), { code: 'capability_denied' });
   const manifest = { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime', 'logging', 'vision'] };
   const game = await w.NekoMiniGame.connect(manifest, { transport: host, windowImpl: w, documentImpl: w.document });
   game.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
   const request = { region: rectangle, prompt: 'Describe this region.' };
-  await assert.rejects(game.vision.analyze(request));
+  await assert.rejects(game.vision.analyze(request), { code: 'invalid_state' });
   assert.equal(env.choices, 0, 'inactive route opened picker');
   await game.runtime.start({ lanlan_name: 'Example' });
   const result = await game.vision.analyze(request);
@@ -202,6 +209,7 @@ async function sdkTests() {
   game.dispose(); await tick();
   assert.equal(env.timers.size, 0);
   assert.equal(host._visionOperations.size, 0);
+  global.window = w;
 }
 
 async function attachmentTests() {
@@ -212,7 +220,7 @@ async function attachmentTests() {
   const bytes=new Uint8Array([1,2,3]);
   w.fetch=async (url,options)=>{
     requests++;
-    assert.equal(options.mode,'cors'); assert.equal(options.credentials,'same-origin');
+    assert.equal(options.mode,'cors'); assert.equal(options.credentials,'omit');
     assert.equal(options.redirect,'error'); assert.equal(options.referrerPolicy,'no-referrer');
     return new Response(bytes,{headers:{'Content-Type':'image/png'}});
   };

@@ -199,6 +199,8 @@ async function main() {
   let nextMmdAnimationGate = null;
   let onNextMmdAnimationLoad = null;
   let nextLive2DIdleFailure = null;
+  let previewEntries = null;
+  let lastPreparedPreview = [];
   let nextLive2DIdleGate = null;
   let nextLive2DIdleEmptyResult = false;
   let onNextLive2DIdleLoad = null;
@@ -326,6 +328,7 @@ async function main() {
       calls.push(['live2d-init']);
     }
     async loadModel(config, options) {
+      lastPreparedPreview = JSON.parse(JSON.stringify(config.FileReferences?.Motions?.PreviewAll || []));
       calls.push(['live2d-model', config.url, options?.suppressInitialIdle === true]);
       if (options?.suppressInitialIdle === true) {
         config.FileReferences.Motions.PreviewAll = [
@@ -620,7 +623,9 @@ async function main() {
     if (target === '/resolved/live.model3.json') {
       onLiveModelFetch?.();
       if (liveModelFetchGate) await liveModelFetchGate;
-      return jsonResponse({ Version: 3, FileReferences: {} });
+      return jsonResponse({ Version: 3, FileReferences: previewEntries === null ? {} : {
+        Motions: { PreviewAll: previewEntries.map(entry => ({ ...entry })) },
+      } });
     }
     const mmdSettingsMatch = target.match(/^\/api\/characters\/catgirl\/([^/]+)\/mmd_settings$/);
     if (mmdSettingsMatch) {
@@ -1062,6 +1067,17 @@ async function main() {
   'Live2D disposal did not retire the model and PIXI runtime while preserving the host canvas');
 
   const live2dDescriptor = descriptors.get('Live Neko');
+  const configuredIdle = '/animations/Live2D-Idle.motion3.json';
+  for (const existing of [null, [{ File: '/other.motion3.json' }], [{ File: configuredIdle }]]) {
+    previewEntries = existing;
+    const prepared = await host.mount(mountConfig('Live Neko', live2dDescriptor.model));
+    assert(lastPreparedPreview.filter(entry => entry.File === configuredIdle).length === 1,
+      'configured Live2D idle was omitted or duplicated in PreviewAll');
+    assert(lastPreparedPreview.length === (existing?.[0]?.File === '/other.motion3.json' ? 2 : 1),
+      'existing PreviewAll entries were replaced');
+    prepared.dispose();
+  }
+  previewEntries = null;
   let releaseLive2DExpression;
   nextLive2DExpressionGate = new Promise((resolve) => { releaseLive2DExpression = resolve; });
   let expressionGatedMountSettled = false;
