@@ -227,25 +227,47 @@
     const documentImpl = options.documentImpl || windowImpl.document;
     const fetchImpl = options.fetchImpl || windowImpl.fetch?.bind(windowImpl);
     const avatarRuntime = options.avatarRuntime || windowImpl.NekoMiniGameAvatarHost;
+    const slot = cleanString(options.slot, 64) || SLOT;
+    const containerId = cleanString(options.containerId, 128) || 'model-stage';
+    const mmdContainerId = cleanString(options.mmdContainerId, 128) || LAYERS.mmd;
+    const mmdCanvasId = cleanString(options.mmdCanvasId, 128) || 'mmd-canvas';
+    const pngContainerId = cleanString(options.pngContainerId, 128) || LAYERS.pngtuber;
+    const layers = options.extendedOnly
+      ? { mmd: mmdContainerId, pngtuber: pngContainerId } : LAYERS;
     if (!avatarRuntime || typeof avatarRuntime.create !== 'function') {
       fail('invalid_host', 'The trusted mini-game Avatar runtime is unavailable');
     }
     if (typeof fetchImpl !== 'function') fail('invalid_host', 'A trusted fetch implementation is required');
 
     const privateDescriptorsByName = new Map();
+    const lifetime = new (windowImpl.AbortController || AbortController)();
     let charactersPromise = null;
     let disposed = false;
 
-    function json(url, requestOptions = {}) {
-      return Promise.resolve(fetchImpl(url, {
-        cache: 'no-store', credentials: 'same-origin', ...requestOptions,
-      }))
-        .then((response) => {
-          if (!response?.ok) fail('request_failed', 'The Avatar character request failed', {
-            status: Number(response?.status || 0),
-          });
-          return response.json();
+    async function json(url, requestOptions = {}) {
+      const controller = new (windowImpl.AbortController || AbortController)();
+      const signals = [lifetime.signal, requestOptions.signal].filter(Boolean);
+      const abort = () => controller.abort();
+      for (const signal of signals) {
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }
+      const timer = windowImpl.setTimeout(abort, 10000);
+      try {
+        const response = await fetchImpl(url, {
+          cache: 'no-store', credentials: 'same-origin', ...requestOptions, signal: controller.signal,
         });
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        if (!response?.ok) fail('request_failed', 'The Avatar character request failed', {
+          status: Number(response?.status || 0),
+        });
+        const value = await response.json();
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        return value;
+      } finally {
+        windowImpl.clearTimeout(timer);
+        for (const signal of signals) signal.removeEventListener('abort', abort);
+      }
     }
 
     function loadCharacters() {
@@ -325,6 +347,10 @@
         ...configured,
         path: cleanString(configured.path),
       });
+      if (disposed) fail('disposed', 'The Avatar host was disposed during character lookup');
+      if (!privateDescriptorsByName.has(descriptor.name) && privateDescriptorsByName.size >= CHARACTER_LIMIT) {
+        privateDescriptorsByName.delete(privateDescriptorsByName.keys().next().value);
+      }
       privateDescriptorsByName.set(descriptor.name, descriptor);
       return publicDescriptor(descriptor);
     }
@@ -377,7 +403,7 @@
     }
 
     function setLayer(kind) {
-      for (const [candidate, id] of Object.entries(LAYERS)) {
+      for (const [candidate, id] of Object.entries(layers)) {
         const node = documentImpl?.getElementById?.(id);
         if (!node) continue;
         const hidden = candidate !== kind;
@@ -403,6 +429,7 @@
     }
 
     function createController({ config, viewport, signal }) {
+      const speechAnalyser = avatarRuntime.createSpeechAnalyser();
       const characterName = cleanString(config?.characterName, NAME_LIMIT);
       const descriptor = trustedDescriptorForModel(characterName, config?.model);
       const state = {
@@ -466,6 +493,7 @@
 
       function stopSpeaking() {
         state.speaking = false;
+        speechAnalyser.clear();
         stopLive2DMouth();
         const manager = state.manager;
         if (state.kind === 'vrm') {
@@ -687,7 +715,7 @@
       function fitRenderer() {
         if (!state.viewport || !state.manager) return;
         const manager = state.manager;
-        const layer = documentImpl.getElementById(`${state.kind}-container`);
+        const layer = documentImpl.getElementById(layers[state.kind]);
         if (layer?.style) Object.assign(layer.style, {
           position: 'absolute', left: '0', top: '0',
           width: `${state.viewport.width}px`, height: `${state.viewport.height}px`, overflow: 'hidden',
@@ -868,7 +896,7 @@
         const path = typeof windowImpl._mmdConvertPath === 'function'
           ? windowImpl._mmdConvertPath(model.path) : model.path;
         if (!manager.core?.renderer) {
-          await manager.init('mmd-canvas', 'mmd-container', { embed: true });
+          await manager.init(mmdCanvasId, mmdContainerId, { embed: true });
           await retireIfStale(manager, 'mmd', generation);
         }
         let savedSettings = null;
@@ -936,7 +964,7 @@
           null, null, 'pngtuber', signal,
         );
         ensureLoadActive(generation);
-        const manager = new windowImpl.PNGTuberManager('pngtuber-container');
+        const manager = new windowImpl.PNGTuberManager(pngContainerId);
         state.manager = manager;
         const applyTransform = manager.applyTransform?.bind(manager);
         manager.applyTransform = (...args) => {
@@ -988,14 +1016,14 @@
           ensureLoadActive(generation);
           state.ready = true;
           await raw.setView(state.view);
+          if (state.paused) raw.pause();
         } catch (error) {
           await disposeManager();
           throw error;
         }
       }
 
-      function beginLive2DMouth() {
-        const audioAnalyser = analyser();
+      function beginLive2DMouth(audioAnalyser = analyser()) {
         const core = live2dModel()?.internalModel?.coreModel;
         if (!audioAnalyser || !core || typeof core.setParameterValueById !== 'function') return false;
         const candidates = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamO'];
@@ -1028,6 +1056,33 @@
 
       const raw = {
         setModel,
+        async setSpeechPlayback(frame) {
+          if (state.disposed) return false;
+          if (!frame?.active || !frame.mouthFrame || state.paused || !state.ready) {
+            stopSpeaking();
+            return false;
+          }
+          // Keep an existing lip-sync loop attached; only replace its bounded
+          // samples. There is no per-frame timer or analyser allocation.
+          const alreadyAutomatic = state.speaking && state.automaticSpeech;
+          if (!alreadyAutomatic) stopSpeaking();
+          if (!speechAnalyser.update(frame.mouthFrame)) {
+            stopSpeaking();
+            return false;
+          }
+          state.automaticSpeech = true;
+          if (alreadyAutomatic) return true;
+          state.speaking = true;
+          if (state.kind === 'live2d') state.speaking = beginLive2DMouth(speechAnalyser);
+          else {
+            const target = state.kind === 'vrm' ? state.manager?.animation
+              : state.kind === 'mmd' ? state.manager?.animationModule : state.manager;
+            const method = state.kind === 'pngtuber' ? 'setSpeaking' : 'startLipSync';
+            if (typeof target?.[method] !== 'function') state.speaking = false;
+            else target[method](state.kind === 'pngtuber' ? true : speechAnalyser);
+          }
+          return state.speaking;
+        },
         async setView(value) {
           if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           state.view = normalizeView(value);
@@ -1038,6 +1093,7 @@
           if (typeof active !== 'boolean') fail('invalid_request', 'Avatar speaking state must be boolean');
           if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           stopSpeaking();
+          state.automaticSpeech = false;
           if (!active || !state.ready || state.paused) return false;
           state.speaking = true;
           const audioAnalyser = analyser();
@@ -1150,8 +1206,8 @@
       requestAnimationFrameImpl: options.requestAnimationFrameImpl,
       cancelAnimationFrameImpl: options.cancelAnimationFrameImpl,
       slots: {
-        [SLOT]: {
-          containerId: 'model-stage',
+        [slot]: {
+          containerId,
           createController,
         },
       },
@@ -1164,7 +1220,7 @@
       getCurrentCharacter() { return getCharacter(''); },
       listCharacters,
       async mount(config) {
-        if (String(config?.slot || '') !== SLOT) {
+        if (String(config?.slot || '') !== slot) {
           fail('slot_unavailable', 'The Drawing Guess Avatar slot is not registered');
         }
         let characterName = cleanString(config?.characterName, NAME_LIMIT);
@@ -1184,6 +1240,7 @@
       dispose() {
         if (disposed) return Promise.resolve();
         disposed = true;
+        lifetime.abort();
         privateDescriptorsByName.clear();
         return rendererHost.dispose();
       },

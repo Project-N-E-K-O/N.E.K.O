@@ -659,7 +659,11 @@ async function main() {
     _mmdConvertPath: (value) => `/mmd-resolved/${value}`,
     fetchMMDConfig: async () => true,
     ResizeObserver: ResizeObserverMock,
-    setTimeout(callback, delay) { return setTimeout(callback, delay); },
+    setTimeout(callback, delay) {
+      const timer = setTimeout(() => { activeTimeouts.delete(timer); callback(); }, delay);
+      activeTimeouts.add(timer);
+      return timer;
+    },
     clearTimeout(timer) { activeTimeouts.delete(timer); clearTimeout(timer); },
     clearInterval(timer) { activeIntervals.delete(timer); clearInterval(timer); },
     addEventListener(type, handler) {
@@ -685,6 +689,8 @@ async function main() {
   });
   vm.runInContext(fs.readFileSync(genericPath, 'utf8'), context, { filename: genericPath });
   vm.runInContext(fs.readFileSync(drawingPath, 'utf8'), context, { filename: drawingPath });
+  const sdkPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-sdk.js');
+  vm.runInContext(fs.readFileSync(sdkPath, 'utf8'), context, { filename: sdkPath });
 
   const host = windowMock.NekoMiniGameDrawingAvatarHost.create({
     windowImpl: windowMock,
@@ -841,7 +847,75 @@ async function main() {
     await controller.resume();
     assert(controller.getState().paused === false, `${expectedType} controller did not resume`);
     await controller.setSpeaking(false);
-    await controller.dispose();
+    // Auto playback supplies actual bounded samples even when this game
+    // window has no local audio player/analyser. No game setSpeaking call.
+    const remoteFrame = { active: true, mouthFrame: {
+      bins: Array(128).fill(110), sampleRate: 12000, rms: 0.2,
+    } };
+    await controller.setSpeechPlayback(remoteFrame);
+    assert(controller.getState().speaking === true, `${expectedType} automatic speech did not start`);
+    const starts = calls.filter(entry => entry[0] === `${expectedType}-speaking`).length;
+    await controller.setSpeechPlayback(remoteFrame);
+    assert(calls.filter(entry => entry[0] === `${expectedType}-speaking`).length === starts,
+      `${expectedType} restarted its lip-sync loop for every sample`);
+    await controller.setSpeechPlayback({ active: false, mouthFrame: null });
+    assert(controller.getState().speaking === false, `${expectedType} automatic speech did not stop`);
+    // Drive this actual provider through SDK ownership and lifecycle, not
+    // through per-line game calls to the raw controller.
+    let bridge;
+    let request;
+    const transport = {
+      logger: { log() {}, info() {}, warn() {}, error() {}, reset() {}, flush() {}, enable() {}, enableAfterRouteStart() {} },
+      connectGame: ({ manifest }) => ({ accepted: true, protocolVersion: '1', hostVersion: '1',
+        registration: { mode: 'development', gameId: manifest.id, version: manifest.version },
+        grantedCapabilities: manifest.requiredCapabilities }),
+      getRuntimeState: () => ({ sessionId: 'drawing-test', characterName: name }),
+      resetRuntime: () => ({ sessionId: 'drawing-test', characterName: name }),
+      applyRuntimeState() {}, start: async () => ({ ok: true, state: { game_route_active: true } }),
+      end: async () => ({ ok: true }), heartbeat: async () => ({ ok: true }), drain: async () => ({ ok: true, outputs: [] }),
+      startSpeechOutputBridge(options) { bridge = options; return true; }, stopSpeechOutputBridge() {},
+      requestSpeechOutput(payload) { request = payload; return Promise.resolve({ ok: true, audio_sent: true, speech_id: 'drawing-speech' }); },
+      preloadSpeechOutput: async () => ({ ok: true }), mirrorSpeechOutput: async () => ({ ok: true }),
+      mountAvatar: () => controller, dispose() {},
+    };
+    const game = await windowMock.NekoMiniGame.connect({ id: 'drawing-guess', version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'avatar-renderer', 'speech-output'] },
+    { transport, windowImpl: windowMock, documentImpl: windowMock.document });
+    const flushSpeech = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+    const emitSpeech = (patch = {}) => bridge.onState({ type: 'speech_playback_state', active: true,
+      speechId: 'drawing-speech', correlationId: request.sdk_speech_correlation_id,
+      remainingSeconds: 2, updatedAt: Date.now(), audioContextState: 'running',
+      mouthFrame: remoteFrame.mouthFrame, ...patch }, 'broadcast_channel');
+    try {
+      const avatar = await game.avatar.mount(mountConfig(name, descriptor.model));
+      game.runtime.configure({ pageExit: false, heartbeat: false, outputs: false });
+      await game.runtime.start();
+      await game.speech.speak({ text: 'Neutral test' }); await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: HTTP acceptance opened the mouth`);
+      emitSpeech(); await flushSpeech();
+      assert(controller.getState().speaking, `${expectedType}: SDK did not reach drawing renderer`);
+      avatar.pause(); await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: SDK pause retained speech`);
+      const pausedReloadStart = calls.length;
+      await avatar.setModel(descriptor.model); await flushSpeech();
+      assert(!controller.getState().speaking && controller.getState().paused,
+        `${expectedType}: paused reload resumed speech`);
+      assert(calls.slice(pausedReloadStart).some(entry => entry[0] === `${expectedType}-pause`),
+        `${expectedType}: paused reload did not pause the replacement renderer`);
+      avatar.resume(); await flushSpeech();
+      assert(controller.getState().speaking, `${expectedType}: SDK resume did not restore current speech`);
+      emitSpeech({ correlationId: 'other', speechId: 'other' }); await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: unrelated speech animated drawing renderer`);
+      emitSpeech(); await flushSpeech();
+      await avatar.setModel(descriptor.model); await flushSpeech();
+      emitSpeech(); await flushSpeech();
+      assert(controller.getState().speaking, `${expectedType}: replacement did not accept fresh speech`);
+      await game.runtime.end(); await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: end retained speech`);
+      emitSpeech(); await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: late ended speech restarted mouth`);
+    } finally { game.dispose(); await flushSpeech(); }
+    assert(frames.size === 0, `${expectedType}: disposal leaked mouth animation frames`);
   }
 
   assert(calls.some((entry) => entry[0] === 'live2d-model' && entry[1] === '/resolved/live.model3.json')
