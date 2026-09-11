@@ -2275,9 +2275,9 @@
         );
 
         elements.timeoutSeconds.value = String(numberValue(get('timeout_seconds', 120), 120));
-        elements.maxDownloadMiB.value = String(Number(bytesToMiB(get('max_download_bytes', 10 * 1024 * 1024)).toFixed(2)));
+        elements.maxDownloadMiB.value = String(Number(bytesToMiB(get('max_download_bytes', 10 * 1024 * 1024)).toFixed(3)));
         elements.cacheMaxCount.value = String(numberValue(get('cache_max_count', 20), 20));
-        elements.cacheMaxMiB.value = String(Number(bytesToMiB(get('cache_max_bytes', 100 * 1024 * 1024)).toFixed(2)));
+        elements.cacheMaxMiB.value = String(Number(bytesToMiB(get('cache_max_bytes', 100 * 1024 * 1024)).toFixed(3)));
         elements.historyLimit.value = String(numberValue(get('history_limit', 30), 30));
         elements.autoShow.checked = boolValue(get('auto_show_in_chat', true), true);
 

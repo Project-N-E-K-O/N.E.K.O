@@ -3345,3 +3345,93 @@ async def test_cancelled_clear_history_drains_delete_under_lock(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await task
     assert not plugin._history_lock.locked()
+
+
+def test_png_requires_nonempty_bounded_idat():
+    def chunk(kind, body):
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+    for body in (b"", chunk(b"IDAT", b""), (100).to_bytes(4, "big") + b"IDAT"):
+        with pytest.raises(image_generator_module._GenerationFailure):
+            image_generator_module._read_png_geometry(PNG_BYTES[:33] + body + chunk(b"IEND", b""))
+    assert image_generator_module._read_png_geometry(PNG_BYTES) == (8, 6, False)
+
+
+@pytest.mark.asyncio
+async def test_unavailable_startup_settings_skip_pruning(monkeypatch):
+    store = FakeStore()
+    store.fail_get = True
+    plugin, _, _ = make_plugin(store=store)
+    calls = []
+
+    async def prune():
+        calls.append(True)
+
+    monkeypatch.setattr(plugin, "_prune_cache", prune)
+    await plugin.startup()
+    try:
+        assert not plugin._settings_available
+        assert calls == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_history_write_finishes_before_next_record(monkeypatch):
+    plugin, _, store = make_plugin()
+    started, release = asyncio.Event(), asyncio.Event()
+    original_set = plugin._store_set
+
+    async def delayed_set(key, value):
+        if not started.is_set():
+            started.set()
+            await release.wait()
+        return await original_set(key, value)
+
+    monkeypatch.setattr(plugin, "_store_set", delayed_set)
+    async def record(prompt):
+        await plugin._record_history(prompt=prompt, model="test", status="failed", result_url="", api_key="")
+
+    first = asyncio.create_task(record("first"))
+    await started.wait()
+    first.cancel()
+    second = asyncio.create_task(record("second"))
+    await asyncio.sleep(0)
+    try:
+        assert plugin._history_lock.locked()
+        assert not first.done()
+        assert not second.done()
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+    assert [item["prompt_excerpt"] for item in store.data["recent_generations"]] == ["second", "first"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reset_publishes_after_delete_before_unlock(monkeypatch):
+    plugin, _, store = make_plugin(store=FakeStore(data={"settings": {"model": "old-model"}, "api_key": SECRET}))
+    plugin._settings["model"] = "old-model"
+    started, release = asyncio.Event(), asyncio.Event()
+    original_delete = plugin._store_delete
+
+    async def delayed_delete(key):
+        started.set()
+        await release.wait()
+        return await original_delete(key)
+
+    monkeypatch.setattr(plugin, "_store_delete", delayed_delete)
+    task = asyncio.create_task(plugin.reset_settings())
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert plugin._config_lock.locked()
+        assert plugin._settings["model"] == "old-model"
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not plugin._config_lock.locked()
+    assert "settings" not in store.data
+    assert plugin._settings == plugin._manifest_settings

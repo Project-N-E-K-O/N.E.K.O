@@ -249,7 +249,8 @@ def png_pixel_bomb(width: int = 20_000, height: int = 20_000) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IEND", b"")
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(b"\x00")) + chunk(b"IEND", b""))
 
 
 def stored_history(count: int) -> list[dict[str, Any]]:
@@ -1406,12 +1407,8 @@ def test_image_decoder_verifies_real_structure_and_rejects_adversarial_pngs() ->
         assert image.size == (11, 9)
         assert image.format == "PNG"
 
-    # The frozen host cannot rely on Pillow, so decoding uses a pure-Python
-    # container sniffer that only inspects the header (PNG signature + IHDR).
-    # A payload truncated *after* a valid header therefore passes the sniffer;
-    # integrity is the provider's transport concern, not something we can
-    # re-verify without a full decoder. Assert the sniffer's real contract:
-    # valid header → accepted; truncated-below-header → rejected.
+    # The frozen host uses a pure-Python container validator. It requires
+    # bounded image-data chunks and IEND in addition to a complete IHDR.
     header_truncated = real_png[:20]  # signature + partial IHDR
     with pytest.raises(image_generator_module._GenerationFailure) as truncated_error:
         image_generator_module._decode_b64_image(

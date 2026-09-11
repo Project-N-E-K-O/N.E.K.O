@@ -294,9 +294,9 @@ function settings(model) {
     output_format: 'auto',
     response_format: 'b64_json',
     timeout_seconds: 120,
-    max_download_bytes: 10 * 1024 * 1024,
+    max_download_bytes: Math.round(0.001 * 1024 * 1024),
     cache_max_count: 20,
-    cache_max_bytes: 100 * 1024 * 1024,
+    cache_max_bytes: Math.round(0.003 * 1024 * 1024),
     history_limit: 30,
     auto_show_in_chat: true,
   };
@@ -493,6 +493,8 @@ async function main() {
   );
 
   elements.get('apiKey').value = SECRET;
+  check(elements.get('maxDownloadMiB').value === '0.001', 'minimum MiB precision lost');
+  check(elements.get('cacheMaxMiB').value === '0.003', 'cache MiB precision lost');
   elements.get('model').value = 'edited-model-before-save';
   elements.get('settingsForm').dispatchEvent(new FakeEvent('submit'));
 
@@ -538,6 +540,8 @@ async function main() {
       keyPairs.get(saveArgs[1].key_id),
     );
     check(decrypted.api_key === SECRET, 'the replacement credential was not encrypted');
+    check(decrypted.max_download_bytes === Math.round(0.001 * 1024 * 1024), 'download limit changed');
+    check(decrypted.cache_max_bytes === Math.round(0.003 * 1024 * 1024), 'cache limit changed');
     check(
       decrypted.model === 'edited-model-before-save',
       `unexpected encrypted non-secret setting: ${decrypted.model}`,

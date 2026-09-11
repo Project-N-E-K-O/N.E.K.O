@@ -780,6 +780,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     height = int.from_bytes(data[20:24], "big")
     offset = 8
     animated = False
+    has_image_data = False
     while offset + 12 <= len(data):
         length = int.from_bytes(data[offset:offset + 4], "big")
         end = offset + 12 + length
@@ -788,7 +789,11 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         kind = data[offset + 4:offset + 8]
         if kind == b"acTL":
             animated = True
+        if kind == b"IDAT" and length > 0:
+            has_image_data = True
         if kind == b"IEND" and length == 0:
+            if not has_image_data:
+                break
             return width, height, animated
         offset = end
     raise _GenerationFailure("图片数据不完整", "InvalidImageData")
@@ -1655,7 +1660,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             with self._state_lock:
                 self._configuration_warning = configuration_warning
         try:
-            await self._prune_cache()
+            if self._settings_available:
+                await self._prune_cache()
         except Exception as exc:
             self.logger.warning(
                 "ImageGenerator cache startup sweep failed: failure_class={}",
@@ -3229,10 +3235,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 if history_limit is not None
                 else current_limit
             )
-            if not await self._store_set(
+            if not await self._drain_on_cancel(self._store_set(
                 _HISTORY_STORE_KEY,
                 history[:limit],
-            ):
+            )):
                 self.logger.warning(
                     "ImageGenerator history write failed: failure_class=StoreError"
                 )
@@ -4219,17 +4225,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "请检查 plugin.toml"
                     )
                 )
-            deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
-            if not deleted_ok:
+            async def commit_reset():
+                deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
+                if deleted_ok:
+                    with self._state_lock:
+                        self._settings = target_settings
+                        self._settings_available = True
+                        self._configuration_warning = (
+                            None
+                            if self._asset_dir is not None
+                            else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
+                        )
+                return deleted_ok
+
+            if not await self._drain_on_cancel(commit_reset()):
                 return Err(SdkError("恢复默认设置失败（StoreError）"))
-            with self._state_lock:
-                self._settings = target_settings
-                self._settings_available = True
-                self._configuration_warning = (
-                    None
-                    if self._asset_dir is not None
-                    else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
-                )
             try:
                 key_configured = bool(_validate_api_key(api_key)) if api_key else False
             except SdkError:
@@ -4349,6 +4359,24 @@ class ImageGeneratorPlugin(NekoPluginBase):
             )
         )
 
+    @staticmethod
+    async def _drain_on_cancel(operation):
+        """Finish a durable mutation before its caller releases the owning lock."""
+        worker = asyncio.ensure_future(operation)
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not worker.cancelled():
+                worker.exception()
+            raise
+
     @plugin_entry(
         id="clear_history",
         name="清除图片生成历史",
@@ -4361,18 +4389,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return Err(SdkError("插件存储已禁用，无法清除历史记录"))
         await self._acquire_lock(self._history_lock)
         try:
-            worker = asyncio.create_task(self._store_delete(_HISTORY_STORE_KEY))
-            try:
-                deleted_ok, existed = await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                while not worker.done():
-                    try:
-                        await asyncio.shield(worker)
-                    except asyncio.CancelledError:
-                        continue
-                if not worker.cancelled():
-                    worker.exception()
-                raise
+            deleted_ok, existed = await self._drain_on_cancel(
+                self._store_delete(_HISTORY_STORE_KEY)
+            )
         finally:
             self._history_lock.release()
         if not deleted_ok:
