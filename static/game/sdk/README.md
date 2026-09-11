@@ -682,6 +682,16 @@ engine controllers, and model resources.
 
 ## Ownership and disposal
 
+Managed context, memory, storage, leaderboard, dialogue, speech and protocol
+requests include response JSON consumption in their deadlines and cancellation
+scope. Pending waiters do not retire when only response headers arrive. The
+same-origin REST host buffers complete responses under its fetch signal/deadline
+and returns readable Response objects, preserving legacy HTTP status and clone
+behavior. A timed-out/cancelled waiter settles immediately; an underlying transport
+that ignores abort still occupies a bounded raw-work slot until settlement.
+This also prevents repeated retries from accumulating abandoned body readers.
+The host's streaming speech bridge is separate and is not buffered by this path.
+
 Games should dispose individual controllers when a slot is permanently removed
 and call `game.dispose()` when leaving the page. `game.dispose()` stops managed
 runtime monitoring; aborts in-flight lifecycle, protocol, context, dialogue,

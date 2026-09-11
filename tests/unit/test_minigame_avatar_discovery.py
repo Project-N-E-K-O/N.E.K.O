@@ -32,12 +32,20 @@ async def test_names_reject_unbounded_results(monkeypatch, nekos, status):
 
 
 @pytest.mark.unit
-def test_avatar_discovery_runtime():
+@pytest.mark.parametrize("suite, marker", [
+    ("avatar_discovery", "avatar discovery runtime test passed"),
+    ("context_memory", "context and memory runtime test passed"),
+    ("same_origin_host", "same-origin host runtime test passed"),
+    ("lifecycle", "lifecycle runtime test passed"),
+    ("voice_state", "voice state runtime regression passed"),
+    ("sdk", "mini-game SDK runtime test passed"),
+])
+def test_avatar_and_request_lifecycle_runtime(suite, marker):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is unavailable")
-    script = Path(__file__).resolve().parents[1] / "frontend" / "test_neko_minigame_avatar_discovery_runtime.js"
+    script = Path(__file__).resolve().parents[1] / "frontend" / f"test_neko_minigame_{suite}_runtime.js"
     result = run_node_script(node, f"require({json.dumps(str(script))});", timeout=30,
                              capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "avatar discovery runtime test passed" in result.stdout
+    assert marker in result.stdout

@@ -377,6 +377,7 @@
         1024,
       );
       this._pendingRequests = new Map();
+      this._rawRequests = new Set();
       this._pendingStorageLockLimit = boundedPositiveInteger(
         options.storageLockPendingLimit,
         DEFAULT_STORAGE_LOCK_PENDING_LIMIT,
@@ -933,12 +934,42 @@
       return `${operation}-${Date.now().toString(36)}-${this._nextRequestId.toString(36)}`;
     }
 
+    async _bufferResponse(response) {
+      // All _request callers consume finite REST responses, not streaming audio.
+      // Buffer before releasing the fetch signal/deadline, then hand back a fresh
+      // Response so legacy json()/clone(), headers and bodyUsed semantics survive.
+      const ResponseImpl = this._window.Response || globalThis.Response;
+      if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
+        const bytes = await response.arrayBuffer();
+        const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        });
+        for (const key of ['url', 'redirected', 'type']) {
+          Object.defineProperty(replay, key, { value: response[key] });
+        }
+        return replay;
+      }
+      // Lightweight trusted transports/tests may provide the JSON Response
+      // subset only. Preserve parse failures for the caller's existing policy.
+      if (typeof response?.json !== 'function') return response;
+      let data;
+      let failure;
+      try { data = await response.json(); } catch (error) { failure = error; }
+      const replay = () => ({
+        ...response,
+        json: async () => { if (failure) throw failure; return data; },
+        clone: replay,
+      });
+      return replay();
+    }
+
     async _request(url, init = {}, options = {}) {
       const operation = String(options.operation || 'request');
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, { operation });
       }
-      if (this._pendingRequests.size >= this._pendingRequestLimit) {
+      if (this._pendingRequests.size >= this._pendingRequestLimit
+        || this._rawRequests.size >= this._pendingRequestLimit) {
         throw this._hostError('busy', `${this.displayName} host pending request limit reached`, { operation });
       }
 
@@ -957,6 +988,13 @@
         externalSignal,
         externalAbortHandler: null,
         cancelReason: '',
+        rejectCancellation: null,
+      };
+      const cancellation = new Promise((_, reject) => { entry.rejectCancellation = reject; });
+      const cancel = (reason) => {
+        if (!entry.cancelReason) entry.cancelReason = reason;
+        try { controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(entry.cancelReason, 'Host request cancelled', { operation, requestId }));
       };
 
       if (externalSignal?.aborted) {
@@ -964,19 +1002,24 @@
       }
       if (externalSignal && typeof externalSignal.addEventListener === 'function') {
         entry.externalAbortHandler = () => {
-          if (!entry.cancelReason) entry.cancelReason = 'cancelled';
-          try { controller.abort(); } catch (_) { /* already aborted */ }
+          cancel('cancelled');
         };
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       entry.timeoutId = this._window.setTimeout(() => {
-        if (!entry.cancelReason) entry.cancelReason = 'timeout';
-        try { controller.abort(); } catch (_) { /* already aborted */ }
+        cancel('timeout');
       }, timeoutMs);
       this._pendingRequests.set(requestId, entry);
+      this._rawRequests.add(entry);
 
       try {
-        return await this._fetchImpl(url, { ...init, signal: controller.signal });
+        const work = Promise.resolve().then(() => {
+          if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+          return this._fetchImpl(url, { ...init, signal: controller.signal });
+        }).then(response => this._bufferResponse(response)).finally(() => this._rawRequests.delete(entry));
+        const response = await Promise.race([work, cancellation]);
+        if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+        return response;
       } catch (error) {
         const code = entry.cancelReason || (error?.name === 'AbortError' ? 'cancelled' : 'network_error');
         const message = code === 'timeout'
@@ -993,6 +1036,7 @@
           entry.externalSignal.removeEventListener?.('abort', entry.externalAbortHandler);
         }
         this._pendingRequests.delete(requestId);
+        entry.rejectCancellation = null;
       }
     }
 
@@ -1005,6 +1049,7 @@
         if (preserveOperations.has(entry.operation)) continue;
         entry.cancelReason = normalizedReason;
         try { entry.controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(normalizedReason, 'Host request cancelled', { operation: entry.operation }));
       }
     }
 
@@ -3125,6 +3170,10 @@
       this._pendingStorageLockControllers.clear();
       const preserveOperations = new Set(options.preservePendingOperations || []);
       this.cancelPendingRequests('disposed', { preserveOperations });
+      // Preserved route-end requests remain bounded by their original deadline.
+      for (const entry of this._rawRequests) {
+        if (!preserveOperations.has(entry.operation)) this._rawRequests.delete(entry);
+      }
       this.stopAllSpeechRecognition();
       this.stopSpeechPlaybackBridge();
       this.stopVoiceControlBridge('disposed');

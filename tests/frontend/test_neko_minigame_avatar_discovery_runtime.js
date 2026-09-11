@@ -204,9 +204,93 @@ async function queries() {
   }
 }
 
+async function hostBodies() {
+  for (const action of ['timeout', 'abort', 'dispose', 'success', 'bad-json']) {
+    const gate = deferred(); let signal;
+    const env = await environment(null, async (_url, options) => {
+      signal = options.signal;
+      return { ok: false, status: 409, json: async () => {
+        const value = await gate.promise;
+        if (action === 'bad-json') throw new SyntaxError('invalid JSON');
+        return value;
+      } };
+    });
+    const host = env.host({ pendingRequestLimit: 1 });
+    const abort = new AbortController();
+    let settled = false;
+    const waiting = host._request('/body', {}, { signal: abort.signal, timeoutMs: 250 })
+      .then(value => { settled = true; return value; }, error => { settled = true; return error; });
+    await tick();
+    assert.equal(settled, false, 'host retired request after response headers');
+    assert.equal(host._pendingRequests.size, 1);
+    await assert.rejects(host._request('/body'), { code: 'busy' });
+    if (action === 'abort') abort.abort();
+    else if (action === 'dispose') host.dispose();
+    else if (action === 'timeout') for (const timer of [...env.timers.values()]) timer.fn();
+    else gate.resolve({ detail: 'conflict' });
+    const result = await waiting;
+    if (['success', 'bad-json'].includes(action)) {
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 409);
+      if (action === 'bad-json') {
+        await assert.rejects(result.clone().json(), SyntaxError);
+        await assert.rejects(result.json(), SyntaxError);
+      } else {
+        assert.deepEqual(await result.clone().json(), { detail: 'conflict' });
+        assert.deepEqual(await result.json(), { detail: 'conflict' });
+      }
+    } else {
+      assert.equal(result.code, action === 'abort' ? 'cancelled' : action === 'dispose' ? 'disposed' : 'timeout');
+      assert.equal(signal.aborted, true);
+      if (action !== 'dispose') await assert.rejects(host._request('/body'), { code: 'busy' });
+    }
+    assert.equal(host._pendingRequests.size, 0);
+    assert.equal(env.timers.size, 0);
+    gate.resolve({ detail: 'late' });
+    await tick();
+    host.dispose();
+  }
+  // Native Response identity fields and one-shot body/clone semantics survive buffering.
+  const env = await environment(null, async () => new Response('{"value":1}', {
+    status: 201, headers: { 'content-type': 'application/json' },
+  }));
+  const host = env.host();
+  const native = await host._request('/body');
+  assert.equal(native.status, 201);
+  assert.equal(native.bodyUsed, false);
+  assert.deepEqual(await native.clone().json(), { value: 1 });
+  assert.deepEqual(await native.json(), { value: 1 });
+  assert.equal(native.bodyUsed, true);
+  host.dispose();
+  let networkCancelled = false;
+  const slow = await environment(null, async (_url, { signal }) => new Response(new ReadableStream({
+    start(controller) {
+      signal.addEventListener('abort', () => {
+        networkCancelled = true;
+        controller.error(new DOMException('aborted', 'AbortError'));
+      }, { once: true });
+      controller.enqueue(new TextEncoder().encode('{'));
+    },
+  })));
+  const slowHost = slow.host();
+  const abort = new AbortController();
+  const incomplete = slowHost._request('/body', {}, { signal: abort.signal }).catch(error => error);
+  await tick();
+  abort.abort();
+  assert.equal((await incomplete).code, 'cancelled');
+  await tick();
+  assert.equal(networkCancelled, true, 'fetch signal was detached before body consumption');
+  assert.equal(slowHost._rawRequests.size, 0, 'cancelled native body reader remained resident');
+  assert.equal(slow.timers.size, 0);
+  slowHost.dispose();
+}
+
 const watchdog = setTimeout(() => { throw new Error('Avatar discovery test did not settle'); }, 15000);
 (async () => {
-  if (!process.argv.includes('--queries-only')) await factories();
-  if (!process.argv.includes('--factories-only')) await queries();
+  if (!process.argv.includes('--bodies-only')) {
+    if (!process.argv.includes('--queries-only')) await factories();
+    if (!process.argv.includes('--factories-only')) await queries();
+  }
+  if (!process.argv.includes('--queries-only') && !process.argv.includes('--factories-only')) await hostBodies();
   console.log('mini-game avatar discovery runtime test passed');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(watchdog));

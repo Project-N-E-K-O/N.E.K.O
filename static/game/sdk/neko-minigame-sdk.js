@@ -2023,6 +2023,10 @@
     const speechPendingRequests = new Set();
     const speechPreloadPendingRequests = new Set();
     const protocolPendingRequests = new Set();
+    // Fixed SDK request groups only; each raw group shares its public limit.
+    // Ignoring abort cannot free capacity for unlimited abandoned body reads.
+    const managedHostInFlight = new Map();
+    const protocolInFlight = new Set();
     const contextPendingRequests = new Set();
     const dialoguePendingRequests = new Set();
     const memoryPendingRequests = new Set();
@@ -2368,6 +2372,10 @@
       runtimePhase = normalized;
       if (['ending', 'ended', 'inactive', 'disposed'].includes(normalized)) {
         cancelAvatarQueries(normalized === 'disposed' ? 'disposed' : 'cancelled');
+        const reason = normalized === 'disposed' ? 'disposed' : 'cancelled';
+        for (const pending of [contextPendingRequests, memoryPendingRequests, dialoguePendingRequests, protocolPendingRequests]) {
+          abortManagedRequests(pending, reason);
+        }
       }
       if (!runtimeRouteEstablished || !['running', 'degraded'].includes(normalized)) {
         clearVoiceState();
@@ -2984,9 +2992,12 @@
       maximumTimeoutMs = MAX_REQUEST_TIMEOUT_MS,
       requestOptions = {},
       invoke,
+      consume = null,
     }) {
       ensureActive(operation);
       if (pendingSet.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
+      const inFlight = managedHostInFlight.get(pendingSet) || new Set();
+      if (inFlight.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
       const externalSignal = requestOptions.signal || null;
       if (externalSignal?.aborted) fail('cancelled', 'The host request was cancelled', { operation });
       const normalizedTimeoutMs = normalizedRequestTimeout(
@@ -3020,6 +3031,10 @@
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       pendingSet.add(entry);
+      if (consume) {
+        inFlight.add(entry);
+        managedHostInFlight.set(pendingSet, inFlight);
+      }
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3043,6 +3058,11 @@
               signal: controller.signal,
               timeoutMs: normalizedTimeoutMs,
             });
+          }).then(value => consume ? consume(value) : value).finally(() => {
+            if (consume) {
+              inFlight.delete(entry);
+              if (!inFlight.size) managedHostInFlight.delete(pendingSet);
+            }
           }),
           timeoutPromise,
           cancellationPromise,
@@ -3109,7 +3129,8 @@
       if (typeof transport.publishGameProtocol !== 'function') {
         fail('transport_unavailable', 'The host game protocol transport is unavailable', { operation });
       }
-      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS) {
+      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS
+        || protocolInFlight.size >= MAX_CONTRACT_PENDING_REQUESTS) {
         fail('busy', 'Game protocol request limit reached', {
           operation,
           limit: MAX_CONTRACT_PENDING_REQUESTS,
@@ -3161,6 +3182,7 @@
         payload,
       });
       protocolPendingRequests.add(entry);
+      protocolInFlight.add(entry);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3175,7 +3197,7 @@
           kind,
           envelope,
           { signal: controller.signal, timeoutMs },
-        ));
+        )).then(normalizeTransportResponse).finally(() => protocolInFlight.delete(entry));
         const response = await Promise.race([transportPromise, timeoutPromise, cancellationPromise]);
         if (controller.signal.aborted) {
           fail(entry.reason === 'disposed' ? 'disposed' : (entry.reason || 'cancelled'),
@@ -3184,7 +3206,7 @@
               : 'The game protocol request was cancelled',
             { operation });
         }
-        return normalizeTransportResponse(response);
+        return response;
       } catch (error) {
         if (entry.reason === 'timeout') {
           fail('timeout', 'The game protocol request timed out', { operation });
@@ -3741,7 +3763,8 @@
         requireCapability('context-read', 'context.read');
         const scopes = normalizeContextScopes(scopesInput);
         const session = runtimeSession();
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'context.read',
           pendingSet: contextPendingRequests,
           limit: MAX_CONTEXT_PENDING_REQUESTS,
@@ -3752,7 +3775,6 @@
             session_id: session.id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'context response'),
@@ -3779,7 +3801,8 @@
         if (typeof enabledInput !== 'boolean') {
           fail('invalid_request', 'Memory consent must be a boolean');
         }
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.configureConsent',
           pendingSet: memoryPendingRequests,
           limit: 1,
@@ -3790,7 +3813,6 @@
             session_id: runtimeSession().id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         if (response.ok && response.data?.ok !== false) {
           memoryConsentEnabled = enabledInput;
           memoryConsentConfigured = true;
@@ -3816,7 +3838,8 @@
           });
         }
         const submission = normalizeMemorySubmission(value);
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.submit',
           pendingSet: memoryPendingRequests,
           limit: MAX_MEMORY_PENDING_REQUESTS,
@@ -3827,13 +3850,14 @@
             submission,
           }), options),
         });
-        return normalizeTransportResponse(rawResponse);
+        return response;
       },
     });
 
     async function requestStorage(operation, payload, requestOptions = {}) {
       requireCapability('storage', `storage.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `storage.${operation}`,
         pendingSet: storagePendingRequests,
         limit: MAX_STORAGE_PENDING_REQUESTS,
@@ -3844,7 +3868,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'storage response', MAX_STORAGE_VALUE_BYTES),
@@ -3886,7 +3909,8 @@
 
     async function requestLocalLeaderboardStorage(operation, boardId, payload, requestOptions = {}) {
       requireCapability('leaderboard-local', `leaderboard.local.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.local.${operation}`,
         pendingSet: localLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -3898,7 +3922,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'local leaderboard response', MAX_LEADERBOARD_STATE_BYTES),
@@ -4118,7 +4141,8 @@
       const method = operation === 'submit'
         ? 'submitServerLeaderboard'
         : (operation === 'list' ? 'listServerLeaderboard' : 'getServerLeaderboardBest');
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.server.${operation}`,
         pendingSet: serverLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -4131,7 +4155,6 @@
           ...payload,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedJson(response.data, 'server leaderboard response'),
@@ -4509,7 +4532,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.quickLines',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4517,7 +4541,6 @@
           requestOptions,
           invoke: (options) => transport.getQuickLines(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'quick lines response'),
@@ -4542,7 +4565,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.request',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4550,7 +4574,6 @@
           requestOptions,
           invoke: (options) => transport.requestDialogue(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         let responseData = normalizeBoundedJson(response.data, 'dialogue response');
         if (plainObject(responseData) && responseData.control !== undefined) {
           if (!plainObject(responseData.control)) {
@@ -4688,6 +4711,7 @@
         ...(request.renderLanguage ? { render_language: request.renderLanguage } : {}),
       });
       const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.preload',
         pendingSet: speechPreloadPendingRequests,
         limit: MAX_SPEECH_PRELOAD_PENDING_REQUESTS,
@@ -4696,7 +4720,7 @@
         requestOptions: options,
         invoke: (requestOptions) => transport.preloadSpeechOutput(payload, requestOptions),
       });
-      return normalizeTransportResponse(response);
+      return response;
     }
 
     async function requestSpeechOutput(requestInput, requestOptions = {}) {
@@ -4738,7 +4762,8 @@
       });
       let response;
       try {
-        response = await normalizeTransportResponse(await performManagedHostRequest({
+        response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'speech.speak',
           pendingSet: speechPendingRequests,
           limit: MAX_SPEECH_PENDING_REQUESTS,
@@ -4751,7 +4776,7 @@
               sdk_speech_correlation_id: correlationId,
             }), options);
           },
-        }));
+        });
       } catch (error) {
         speechCorrelationMetadata.delete(correlationId);
         throw error;
@@ -4797,14 +4822,15 @@
         ...(request.finalizeTurn !== undefined ? { finalize_turn: request.finalizeTurn } : {}),
         event: request.event,
       });
-      return normalizeTransportResponse(await performManagedHostRequest({
+      return performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.mirror',
         pendingSet: speechPendingRequests,
         limit: MAX_SPEECH_PENDING_REQUESTS,
         timeoutMs: DEFAULT_SPEECH_REQUEST_TIMEOUT_MS,
         requestOptions,
         invoke: (options) => transport.mirrorSpeechOutput(payload, options),
-      }));
+      });
     }
 
     const speech = Object.freeze({
@@ -5221,6 +5247,8 @@
         abortManagedRequests(contextPendingRequests, 'disposed');
         cancelAvatarQueries('disposed');
         avatarQueriesInFlight.clear();
+        managedHostInFlight.clear();
+        protocolInFlight.clear();
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');
         abortManagedRequests(storagePendingRequests, 'disposed');
