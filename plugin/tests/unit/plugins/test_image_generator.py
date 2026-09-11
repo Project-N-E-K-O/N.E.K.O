@@ -234,6 +234,7 @@ def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_pat
     monkeypatch.setattr(plugin, "register_static_ui", register)
     monkeypatch.setattr(image_generator_module.httpx, "Client", Client)
     assert plugin._frozen_static_ui_overrides_ignored() is ignored
+    assert registered[-1] == plugin._source_static_dir
     assert not (tmp_path / ".static_ui_probe").exists()
 
 
@@ -3515,12 +3516,12 @@ async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, exten
     class Process:
         returncode = 0
 
-        async def wait(self):
-            thumbnail.write_bytes(PNG_BYTES)
-            return b"", b""
+        async def communicate(self):
+            return base64.b64encode(PNG_BYTES), b""
 
     async def spawn(*args, **kwargs):
-        assert str(thumbnail) in args[-1]
+        assert str(thumbnail) not in args[-1]
+        assert "MemoryStream" in args[-1]
         return Process()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
@@ -3702,3 +3703,55 @@ async def test_dedup_executes_the_snapshot_it_hashed(monkeypatch):
     release.set()
     await asyncio.gather(first, second)
     assert sorted(snapshots) == sorted([DEFAULT_SETTINGS["model"], "new-model"])
+
+
+def test_overlong_model_is_rejected_before_normalization():
+    with pytest.raises(SdkError):
+        _validate_settings({"model": "m" * 129}, base=DEFAULT_SETTINGS, require_all=False)
+
+
+def test_webp_junk_payload_is_not_a_successful_image():
+    payload = b"\x2f\x00\x00\x00\x00\x00"
+    data = b"RIFF" + (12 + len(payload)).to_bytes(4, "little") + b"WEBPVP8L" + len(payload).to_bytes(4, "little") + payload
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(data)
+
+
+@pytest.mark.asyncio
+async def test_missing_webp_decoder_rejects_before_generation(monkeypatch):
+    plugin, _, _ = make_plugin()
+    plugin._settings["output_format"] = "webp"
+    monkeypatch.setattr(image_generator_module, "_PIL_Image", None)
+    with pytest.raises(SdkError, match="WebP"):
+        await plugin._generation_config_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_chat_reserves_budget_before_queued_settings_save(monkeypatch):
+    plugin, _, _ = make_plugin()
+    reading, finish_read, finish_generation = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    payload = await encrypted_save_payload(plugin, cache_max_count=1)
+    original_read = plugin._load_api_key_checked
+
+    async def read():
+        reading.set()
+        await finish_read.wait()
+        return await original_read()
+
+    async def generate(**kwargs):
+        await finish_generation.wait()
+        return Ok({})
+
+    monkeypatch.setattr(plugin, "_load_api_key_checked", read)
+    monkeypatch.setattr(plugin, "_execute_generation", generate)
+    generation = asyncio.create_task(plugin.generate_image(prompt="cat"))
+    await reading.wait()
+    saving = asyncio.create_task(plugin.save_settings(**payload))
+    await asyncio.sleep(0)
+    finish_read.set()
+    try:
+        assert (await saving).is_err()
+    finally:
+        finish_generation.set()
+        await generation
+    assert plugin._active_generations == 0

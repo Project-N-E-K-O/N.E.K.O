@@ -32,6 +32,11 @@ from uuid import uuid4
 import httpx
 
 try:
+    from PIL import Image as _PIL_Image
+except ImportError:  # Frozen hosts may contain extension stubs only.
+    _PIL_Image = None
+
+try:
     # The Steam frozen runtime ships pycryptodomex (complete with pure-Python
     # sources) but strips cryptography/Pillow down to extension stubs without
     # their .py files, so `from cryptography...` / `from PIL import ...` fail
@@ -614,6 +619,8 @@ def _validate_settings(
     elif provider != str(base.get("provider") or _DEFAULT_PROVIDER):
         result["api_base_url"] = str(preset["base_url"])
     if "model" in raw:
+        if len(str(raw["model"])) > _MODEL_MAX_CHARS:
+            raise SdkError("模型名称过长")
         model = _clean_text(
             raw["model"],
             label="模型",
@@ -1024,6 +1031,21 @@ def _verified_image_format(data: bytes) -> str:
             "暂不支持动画图片",
             "AnimatedImageUnsupported",
         )
+    if image_format == "WEBP":
+        if _PIL_Image is None:
+            raise _GenerationFailure(
+                "当前宿主缺少 WebP 解码器，请使用 PNG 或 JPEG 输出",
+                "UnsupportedImageFormat",
+            )
+        try:
+            with _PIL_Image.open(io.BytesIO(data)) as decoded:
+                decoded.load()
+                if decoded.format != "WEBP" or decoded.size != (width, height):
+                    raise ValueError("WebP geometry mismatch")
+        except Exception as exc:
+            raise _GenerationFailure(
+                "图片服务返回了无法解码的 WebP 图片", "InvalidImageData"
+            ) from exc
     return image_format
 
 def _image_geometry(data: bytes) -> tuple[int, int] | None:
@@ -1469,7 +1491,8 @@ def _atomic_write_bytes(
 ) -> None:
     if (
         not _GENERATED_TEMP_FILE_PATTERN.fullmatch(temp_name)
-        or not _GENERATED_FILE_PATTERN.fullmatch(target_name)
+        or not (_GENERATED_FILE_PATTERN.fullmatch(target_name)
+                or _GENERATED_THUMB_FILE_PATTERN.fullmatch(target_name))
     ):
         raise OSError("unsafe generated asset filename")
 
@@ -2077,6 +2100,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 raise SdkError(
                     "检测到设置字段包含 API 密钥；请在管理面板重新保存安全设置"
                 )
+            if settings.get("output_format") == "webp" and _PIL_Image is None:
+                raise SdkError("当前宿主缺少 WebP 解码器，请使用 PNG 或 JPEG 输出")
             return settings, api_key
 
     def _settings_snapshot(self) -> dict[str, Any]:
@@ -2295,6 +2320,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return True
         finally:
             if probe is not None:
+                # Registration changes host state even when HTTP probing fails.
+                self.register_static_ui(str(self._source_static_dir), cache_control="no-cache")
                 try:
                     probe.unlink(missing_ok=True)
                     if index is not None:
@@ -3308,7 +3335,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
         convenience, not a hard dependency.
         """
         thumb_name = f"thumb_{filename.rsplit('.', 1)[0]}.png"
-        thumb_path = target.with_name(thumb_name)
         # Windows-only: System.Drawing is the most reliable built-in image
         # resizer on the Steam deck (no PIL in the frozen runtime).
         ps_script = (
@@ -3320,18 +3346,27 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "$g = [System.Drawing.Graphics]::FromImage($bmp); "
             "$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; "
             "$g.DrawImage($img, 0, 0, $w, $h); "
-            "$bmp.Save('{dst}', [System.Drawing.Imaging.ImageFormat]::Png); "
-            "$g.Dispose(); $bmp.Dispose(); $img.Dispose()"
-        ).format(src=str(target).replace("'", "''"), dst=str(thumb_path).replace("'", "''"))
+            "$ms = New-Object System.IO.MemoryStream; "
+            "$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); "
+            "[Console]::Write([Convert]::ToBase64String($ms.ToArray())); "
+            "$ms.Dispose(); $g.Dispose(); $bmp.Dispose(); $img.Dispose()"
+        ).format(src=str(target).replace("'", "''"))
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "powershell", "-NoProfile", "-Command", ps_script,
-                stdout=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await asyncio.wait_for(proc.wait(), timeout=15.0)
-            if proc.returncode == 0 and thumb_path.is_file():
+            output, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+            if proc.returncode == 0 and output:
+                data = base64.b64decode(output, validate=True)
+                if _verified_image_format(data) != "PNG":
+                    return None
+                _atomic_write_bytes(
+                    self._writable_ui_dir, self._writable_ui_identity,
+                    f".{filename}.{uuid4().hex}.tmp", thumb_name, data,
+                )
                 return self._asset_url(thumb_name)
         except Exception:
             pass
@@ -3485,6 +3520,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     pass
             else:
                 dedup_key = candidate_key
+                # Reserve synchronously, before a queued settings save resumes.
+                self._active_generations += 1
                 self._inflight[dedup_key] = asyncio.ensure_future(
                     self._run_dedup_generation(
                         prompt=prompt,
@@ -3494,6 +3531,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         action=action,
                         auto_show_override=auto_show_override,
                         config_snapshot=(settings, api_key),
+                        reserved=True,
                     )
                 )
                 self.logger.info(
@@ -3504,6 +3542,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 task = self._inflight[dedup_key]
 
                 def discard(completed: asyncio.Task) -> None:
+                    self._active_generations -= 1
                     if self._inflight.get(candidate_key) is completed:
                         self._inflight.pop(candidate_key, None)
                     if not completed.cancelled():
@@ -3520,12 +3559,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
             auto_show_override=auto_show_override,
         )
 
-    async def _run_dedup_generation(self, **kwargs: Any):
-        self._active_generations += 1
+    async def _run_dedup_generation(self, reserved: bool = False, **kwargs: Any):
+        if not reserved:
+            self._active_generations += 1
         try:
             return await self._execute_generation(**kwargs)
         finally:
-            self._active_generations -= 1
+            if not reserved:
+                self._active_generations -= 1
 
     def _cache_limits_decrease(self, settings: Mapping[str, Any]) -> bool:
         current = self._settings_snapshot()

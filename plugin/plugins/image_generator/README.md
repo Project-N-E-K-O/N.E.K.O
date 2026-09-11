@@ -24,6 +24,10 @@ Content-Type: application/json
 `response_format = b64_json`；GPT Image 模型本身固定返回 Base64 且不支持该旧字段，
 因此插件会省略字段但仍只接受 Base64。响应可包含可选的 `revised_prompt`。
 
+WebP 输出需要宿主提供完整 Pillow/WebP 解码器，并在缓存前完成解码验证。
+仅包含扩展桩的冻结版宿主应选择 PNG 或 JPEG；显式选择 WebP 会在调用服务前失败，
+服务意外返回 WebP 时也不会缓存或报告生成成功。
+
 不同提供商对模型、尺寸、质量、风格、`output_format` 和
 `response_format = b64_json` 的支持不同。请把面板允许列表设置为提供商真实支持的值；
 提供商忽略或拒绝字段时，以其文档为准。Base URL 应包含版本路径（例如
