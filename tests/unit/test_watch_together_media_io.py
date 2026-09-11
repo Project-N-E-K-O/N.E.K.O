@@ -7,6 +7,18 @@ import pytest
 from main_logic.watch_together import engine
 
 
+@pytest.mark.asyncio
+async def test_dash_tracks_share_download_budget(tmp_path):
+    budget = {'remaining': 10}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b'123456'))) as client:
+        await engine.download_stream(client, {'url':'https://cdn.test/video'}, tmp_path / 'video', budget=budget)
+        assert budget['remaining'] == 4
+        with pytest.raises(ValueError, match='limit'):
+            await engine.download_stream(client, {'url':'https://cdn.test/audio'}, tmp_path / 'audio', budget=budget)
+    assert (tmp_path / 'video').read_bytes() == b'123456'
+    assert (tmp_path / 'audio').read_bytes() == b''
+
+
 def test_browser_codecs_copy_known_formats_and_convert_fallbacks():
     assert engine.browser_codec_args({'codecid': 7}, {'codecs': 'mp4a.40.2'}) == ['-c:v', 'copy', '-c:a', 'copy']
     fallback = engine.browser_codec_args({'codecid': 12}, {'codecs': 'ec-3'})

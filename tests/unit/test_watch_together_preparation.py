@@ -6,6 +6,34 @@ import pytest
 from main_logic.watch_together import preparation
 
 
+@pytest.fixture(autouse=True)
+def media_tools_available(monkeypatch):
+    monkeypatch.setattr(preparation, 'media_binary', lambda name: name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['ffmpeg', 'ffprobe'])
+async def test_missing_media_tool_prevents_speech(tmp_path, monkeypatch, missing):
+    probes = []
+    def binary(name):
+        if name == missing:
+            raise FileNotFoundError(name)
+        return name
+    async def probe(*args, **kwargs):
+        probes.append(True)
+        return {'ok': True}
+    monkeypatch.setattr(preparation, 'media_binary', binary)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=probe,
+                              game_speech_audio_cache_identity=lambda *a, **kw: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert not probes
+    assert preparation.jobs[result['id']]['error'] == 'FileNotFoundError'
+
+
 async def speech_ready(*args, **kwargs):
     return {'ok': True}
 

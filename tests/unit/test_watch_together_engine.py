@@ -63,6 +63,13 @@ def test_confidence_range(confidence, accepted):
     assert bool(normalize_events([event], 60)) is accepted
 
 
+@pytest.mark.parametrize('field', ['at', 'evidence_at', 'confidence'])
+def test_overflowing_model_cue_does_not_discard_valid_cues(field):
+    event = dict(at=2, evidence_at=1, kind='laugh', reason='visual gag', confidence=.8)
+    invalid = {**event, field: 10**1000}
+    assert normalize_events([invalid, event], 60) == normalize_events([event], 60)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['missing', 'http', 'empty'])
 async def test_subtitles_try_remaining_tracks(failure):

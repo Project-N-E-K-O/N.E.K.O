@@ -139,7 +139,9 @@ async def write_download_chunk(target, chunk, mode):
         raise asyncio.CancelledError()
 
 
-async def download_stream(client, representation, target):
+async def download_stream(client, representation, target, *, budget=None):
+    if budget is None:
+        budget = {'remaining': 1024 * 1024 * 1024}
     primary = representation.get('baseUrl') or representation.get('base_url') or representation.get('url')
     backups = representation.get('backupUrl') or representation.get('backup_url') or []
     addresses = list(dict.fromkeys([primary, *(backups if isinstance(backups, list) else [backups])]))
@@ -148,13 +150,12 @@ async def download_stream(client, representation, target):
         if not isinstance(address, str) or not address:
             continue
         try:
-            size = 0
             async with client.stream('GET', address) as response:
                 response.raise_for_status()
                 await write_download_chunk(target, b'', 'wb')
                 async for chunk in response.aiter_bytes(1024 * 1024):
-                    size += len(chunk)
-                    if size > 1024 * 1024 * 1024:
+                    budget['remaining'] -= len(chunk)
+                    if budget['remaining'] < 0:
                         raise ValueError('Video stream exceeds 1GB limit')
                     await write_download_chunk(target, chunk, 'ab')
             return
@@ -262,7 +263,7 @@ def normalize_events(raw, length):
         try:
             at, evidence_at = float(item["at"]), float(item["evidence_at"])
             confidence = float(item.get("confidence", 0))
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, OverflowError):
             continue
         if not all(map(math.isfinite, (at, evidence_at, confidence))):
             continue
@@ -410,10 +411,11 @@ class Engine:
                 streams = [s for s in dash["video"] if s.get("codecid") == 7] or dash["video"]
                 stream = min(streams, key=lambda s: abs(s.get("height", 720) - 720))
                 sound = dash_audio(dash)
-                await download_stream(client, stream, folder / "video.m4s")
+                budget = {'remaining': 1024 * 1024 * 1024}
+                await download_stream(client, stream, folder / "video.m4s", budget=budget)
                 audio_args = []
                 if sound:
-                    await download_stream(client, sound, folder / "audio.m4s")
+                    await download_stream(client, sound, folder / "audio.m4s", budget=budget)
                     audio_args = ["-i", folder / "audio.m4s"]
                 await run_media_async("ffmpeg", "-y", "-i", folder / "video.m4s", *audio_args,
                                         *browser_codec_args(stream, sound), "-movflags", "+faststart", target)

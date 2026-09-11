@@ -3,7 +3,7 @@ import asyncio
 import json
 import uuid
 
-from .engine import Engine
+from .engine import Engine, media_binary
 from .library import application_library
 
 jobs = {}
@@ -72,6 +72,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800):
+                media_binary('ffmpeg')
+                media_binary('ffprobe')
                 await engine.vision_config()
                 from config.prompts.prompts_watch_together import LAUGH_TEXT_BY_LANGUAGE
                 probe = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])
