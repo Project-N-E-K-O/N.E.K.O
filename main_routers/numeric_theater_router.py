@@ -324,11 +324,21 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
 def _public_performance(performance: Mapping[str, Any]) -> dict[str, Any]:
     """移除只供 Runtime 重放和校验使用的路线标识。"""  # noqa: DOCSTRING_CJK
 
-    return {
+    result = {
         str(key): value
         for key, value in performance.items()
         if key not in _INTERNAL_PERFORMANCE_FIELDS
     }
+    # Fixed pieces need text/placement on the client, never internal node IDs or
+    # saved name bindings. Persist the full records only on the server for replay.
+    if "fixed_narrations" in result:
+        result["fixed_narrations"] = [
+            {"text": item["text"], "position": item["position"]}
+            for item in result["fixed_narrations"]
+        ]
+    if isinstance(result.get("segments"), list):
+        result["segments"] = [_public_performance(part) for part in result["segments"]]
+    return result
 
 
 def _public_session(session: Any) -> dict[str, Any]:

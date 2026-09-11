@@ -490,6 +490,8 @@ class NumericV2BranchService:
                 "type": "ending",
                 "chapter": ending["title"],
                 "story_beat": {
+                    **({"fixed_narrations": deepcopy(ending["fixed_narrations"])}
+                       if "fixed_narrations" in ending else {}),
                     "summary": ending["summary"],
                     "opening_scene": ending["opening_scene"],
                     "goals": self._project_goals(
@@ -565,6 +567,8 @@ class NumericV2BranchService:
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
                 "story_beat": {
+                    **({"fixed_narrations": deepcopy(scene["fixed_narrations"])}
+                       if "fixed_narrations" in scene else {}),
                     "summary": scene["summary"],
                     "opening_scene": scene["opening_scene"],
                     "narrative_focus": scene["narrative_focus"],
@@ -1554,6 +1558,7 @@ class NumericV2BranchService:
             "catgirl_situation",
             "tone",
             "condition_key",
+            "fixed_narrations",
         }
         if set(result).difference(allowed):
             raise NumericV2BranchError("invalid_branch_ending")

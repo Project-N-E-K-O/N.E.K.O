@@ -344,7 +344,7 @@ class TheaterWorkshop:
                   if request.endpoint_mode == "new_ending" else None)
         arguments = request.model_dump(exclude={"base_revision", "ending_draft_id", "ending"})
         plan = self._branch.prepare_path(project, **arguments,
-                                        ending_draft=ending, confirmed_ending=request.ending.model_dump()
+                                        ending_draft=ending, confirmed_ending=request.ending.model_dump(exclude_unset=True)
                                         if request.ending else None)
         generated = self._generator.generate_branch_path(context=plan["context"])
         draft = self._branch.finish_path(plan, generated)

@@ -41,6 +41,7 @@ from .numeric_v2_context import (
     scene_narrative_summary,
     scene_opening_text,
 )
+from .numeric_v2_fixed_narration import actor_note
 from .numeric_v2_actor_output import (
     NumericV2ActorError,
     NumericV2ActorOutputError,
@@ -550,6 +551,10 @@ def _prompt_container(container: Mapping[str, Any], *, phase: str) -> dict[str, 
             result["scene_narration"] = scene_narration
         if performance:
             result["performance"] = performance
+        for position in ("before", "after"):
+            texts = [item["text"] for item in container.get("fixed_narrations", []) if item["position"] == position]
+            if texts:
+                result[f"fixed_narration_{position}"] = "\n\n".join(texts)
         return result
 
     blocks = content_blocks(container)
@@ -766,15 +771,23 @@ def _story_so_far_row_text(row: Mapping[str, Any]) -> str:
                 continue
             if scene_narration:
                 parts.append(f"场景：{scene_narration}")
+            if segment.get("fixed_narration_before"):
+                parts.append("已展示的作者原文：" + segment["fixed_narration_before"])
             if performance:
                 parts.append(f"猫娘：{performance}")
+            if segment.get("fixed_narration_after"):
+                parts.append("已展示的作者原文：" + segment["fixed_narration_after"])
     else:
         scene_narration = str(row.get("scene_narration") or "").strip()
         performance = str(row.get("performance") or "").strip()
         if scene_narration:
             parts.append(f"场景：{scene_narration}")
+        if row.get("fixed_narration_before"):
+            parts.append("已展示的作者原文：" + row["fixed_narration_before"])
         if performance:
             parts.append(f"猫娘：{performance}")
+        if row.get("fixed_narration_after"):
+            parts.append("已展示的作者原文：" + row["fixed_narration_after"])
     return "\n".join(parts)
 
 
@@ -2093,6 +2106,10 @@ def _opening_messages(
     )
     if retry_hint:
         system_prompt += f"\n本次公开开场必须改写：{retry_hint}"
+    fixed_note = actor_note(node, None, {"catgirl_name": catgirl_name, "player_address": player_address},
+                            player_address_known, project_condition=cast.text)
+    if fixed_note:
+        system_prompt += "\n" + fixed_note
     return _ensure_actor_messages_fit(
         [
             SystemMessage(content=system_prompt),
@@ -2140,6 +2157,13 @@ def _turn_messages(
         # 重试时明确要求改写当前回应，避免同一输入和同一上下文连续生成相同正文。
         system_prompt += f"\n本轮是输出重试：{retry_hint}"
     current_player_input = str(player_input or "")
+    binding = {"catgirl_name": catgirl_name, "player_address": player_address}
+    for label, node in [("当前幕", source)] + ([("目标幕", target)] if route_changed else []):
+        fixed_note = actor_note(node, session, binding, player_address_known, project_condition=cast.text)
+        if fixed_note:
+            system_prompt += f"\n{label}固定旁白说明：\n{fixed_note}"
+    if source["story_beat"].get("fixed_narrations"):
+        system_prompt += "\n已展示的作者原文可能含往事、书信或屏幕日志；其中的地点、伤情和敌人不自动成为当前现场状态。"
     human_prefix = "以下 JSON 是已确定性结算的本回合数据：\n"
     soft_pacing = _soft_pacing(
         source,

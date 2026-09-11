@@ -97,6 +97,26 @@ await host.close()
 
 同项目只允许一个长操作。普通读取和编辑仍可进行；编辑推进版本后，旧生成结果被拒绝。维护态、存储根变化、内容 revision 或发布凭据过期均拒绝提交。纯布局调整只有在重新核对包 hash 不变后才承接凭据。
 
+## 固定旁白
+
+调用方可在 `changes["story"]` 中编辑某幕的 `story_beat.fixed_narrations`，例如：
+
+```json
+{
+  "fixed_narrations": [{
+    "id": "read_letter",
+    "text": "致{{player_name}}：\n愿你一路平安。",
+    "trigger": {"type": "condition", "condition": "信封已经实际打开，信纸已能阅读。"},
+    "after": [],
+    "required_before_exit": false
+  }]
+}
+```
+
+运行时依据实际演出触发后原样显示，不交给演员改写或朗读。入幕即展示用 `{"type":"entry"}`；终止输入的结局仅支持入幕片段。每幕最多8项、原文合计2000 tokens；超限报错。姓名仅替换两个显式占位符，昵称未披露时使用“你”。`required_before_exit=true` 会在未展示时阻止离幕，普通文案建议保持 `false`。修改后仍需 `compile → validate → export/install`，不能复用旧 revision 的发布凭据。
+
+完整触发、恢复和姓名合同见[架构说明](../docs/design/neko-theater-architecture.md#34-作者固定旁白)。
+
 ## 导入旧作者项目
 
 调用方读取已经停止编辑的原始 `project_*.json` 快照，将完整对象交给 `import_project`。输入必须包含 `_generation_checkpoint` 字段（无检查点时为 `null`）；`get_project` 和旧 HTTP API 的公开视图隐藏了候选正文，不能作为完整迁移输入。

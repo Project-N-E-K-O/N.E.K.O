@@ -475,6 +475,10 @@ def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
     try:
         project = setup_project(host.sdk)
         generated = host.sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
+        from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
+        story = deepcopy(generated["story"])
+        story["nodes"][1]["story_beat"]["fixed_narrations"] = [_piece("report", REPORT, entry=True)]
+        generated = host.sdk.update_project(project["project_id"], base_revision=generated["revision"], changes={"story": story})
         scored = host.sdk.assess_quality(project["project_id"], base_revision=generated["revision"])["project"]
         assert scored["story"] == generated["story"]
         assert scored["revision"] == generated["revision"]
@@ -495,6 +499,8 @@ def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
 
 @pytest.mark.parametrize("new_ending", [False, True])
 def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, new_ending):
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
+    fixed = [_piece("report", REPORT, entry=True)]
     from .test_numeric_v2_branch import (
         branchable_project, _path_result_from_context, _ending_goal, _character_state,
     )
@@ -508,8 +514,10 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
                 "opening_scene":"没有寄出的信静静放在晨光下。",
                 "ordered_goals":[_ending_goal("结局开场已经展示旧信公开和两人共同承担后果")],
                 "irreversible_facts":["误会来源已经公开"], "character_state":_character_state(),
-                "catgirl_situation":"她不再独自保守秘密。", "tone":"释然"}, ensure_ascii=False)
-        return json.dumps(_path_result_from_context(context), ensure_ascii=False)
+                "catgirl_situation":"她不再独自保守秘密。", "tone":"释然", "fixed_narrations":fixed}, ensure_ascii=False)
+        path_result = _path_result_from_context(context)
+        path_result["scenes"][0]["fixed_narrations"] = fixed
+        return json.dumps(path_result, ensure_ascii=False)
     host = open_workshop(TestConfig(tmp_path), model_call=model)
     try:
         data = branchable_project()
@@ -540,6 +548,9 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
         duplicate = host.sdk.apply_branch(pid, draft["draft_id"], base_revision=revision)["project"]
         assert applied == duplicate
         assert applied["revision"] == revision + 1
+        fixed_nodes = [n for n in applied["story"]["nodes"] if "fixed_narrations" in n["story_beat"]]
+        assert len(fixed_nodes) == (2 if new_ending else 1)
+        assert all(n["story_beat"]["fixed_narrations"] == fixed for n in fixed_nodes)
     finally:
         host.sdk.close()
 
@@ -666,3 +677,32 @@ def test_failed_model_usage_is_available_on_error(opened):
     assert caught.value.attempts == len(caught.value.usage) == 3
     assert all(record["usage_reported"] is False for record in caught.value.usage)
     assert host.sdk.get_project(project["project_id"])["generation_error"]["details"]["attempts"] == 3
+
+
+def test_fixed_narration_generation_import_export_and_author_update(tmp_path):
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
+    outline = named_outline()
+    fixed = [_piece('report', REPORT, entry=True)]
+    outline['mainline_chapters'][0]['fixed_narrations'] = deepcopy(fixed)
+    outline['ending']['fixed_narrations'] = deepcopy(fixed)
+    host = open_workshop(TestConfig(tmp_path), model_call=lambda *a, **kw: json.dumps(outline, ensure_ascii=False))
+    try:
+        sdk = host.sdk
+        setup = setup_project(sdk)
+        project = sdk.generate(setup['project_id'], base_revision=setup['revision'])['project']
+        assert project['story']['nodes'][0]['story_beat']['fixed_narrations'] == fixed
+        assert project['story']['nodes'][-1]['story_beat']['fixed_narrations'] == fixed
+        sdk.compile(project['project_id'], base_revision=project['revision'])
+        checked = sdk.validate(project['project_id'], base_revision=project['revision'])
+        exported = sdk.export(project['project_id'], base_revision=checked['revision'])
+        imported = sdk.import_story(json.loads(exported.json_bytes))
+        assert imported['story']['nodes'][0]['story_beat']['fixed_narrations'] == fixed
+        edited_story = deepcopy(imported['story'])
+        edited_story['nodes'][0]['story_beat']['fixed_narrations'][0]['text'] += '\n作者追加原文。'
+        edited = sdk.update_project(imported['project_id'], base_revision=imported['revision'], changes={'story': edited_story})
+        sdk.compile(edited['project_id'], base_revision=edited['revision'])
+        checked = sdk.validate(edited['project_id'], base_revision=edited['revision'])
+        exported = sdk.export(edited['project_id'], base_revision=checked['revision'])
+        assert json.loads(exported.json_bytes)['nodes'][0]['story_beat']['fixed_narrations'][0]['text'].endswith('作者追加原文。')
+    finally:
+        host.sdk.close()

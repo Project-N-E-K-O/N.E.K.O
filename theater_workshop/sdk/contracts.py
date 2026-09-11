@@ -143,6 +143,8 @@ class BranchCharacterStatePayload(StrictPayload):
 
 
 class BranchEndingContractPayload(StrictPayload):
+    # Exact text is validated by the shared package compiler after projection.
+    fixed_narrations: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=4000)
     opening_scene: str = Field(min_length=1, max_length=4000)

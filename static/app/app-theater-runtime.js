@@ -263,7 +263,15 @@
                     sceneNarration = '';
                 }
                 if (sceneNarration) blocks.push(presentationBlock('narration', sceneNarration, 'scene'));
+                // Fixed text is committed by the runtime, outside the actor/TTS body.
+                var fixedNarrations = Array.isArray(container.fixed_narrations) ? container.fixed_narrations : [];
+                fixedNarrations.filter(function (item) { return item.position === 'before'; }).forEach(function (item) {
+                    blocks.push(presentationBlock('narration', item.text, 'scene'));
+                });
                 mixedPerformanceBlocks(container.performance, phase).forEach(function (block) { blocks.push(block); });
+                fixedNarrations.filter(function (item) { return item.position === 'after'; }).forEach(function (item) {
+                    blocks.push(presentationBlock('narration', item.text, 'scene'));
+                });
                 return;
             }
             var raw = Array.isArray(container && container.content) ? container.content : null;

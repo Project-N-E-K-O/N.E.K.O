@@ -1042,7 +1042,13 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_processed_turn_ids_mismatch")
 
     def _validate_chain(self, stored: NumericV2StoredSession) -> None:
+        from .numeric_v2_fixed_narration import validate_delivery
+
         self.engine.validate_session(stored.session)
+        try:
+            validate_delivery(self.engine.story, stored.session.opening_performance)
+        except ValueError as exc:
+            raise NumericV2StoreError("numeric_fixed_narration_invalid") from exc
         events = stored.ledger_events
         if len(events) != stored.session.revision:
             raise NumericV2StoreError("numeric_ledger_revision_mismatch")
@@ -1058,6 +1064,8 @@ class NumericV2SessionStore:
             opening_performance=stored.session.opening_performance,
             actor_budget_profile=stored.session.actor_budget_profile,
         )
+        if replay_session.opening_performance != stored.session.opening_performance:
+            raise NumericV2StoreError("numeric_fixed_narration_opening_missing")
         if len(stored.session.performance_history) != len(events):
             raise NumericV2StoreError("numeric_performance_history_mismatch")
         for event_index, event in enumerate(events):
@@ -1115,6 +1123,7 @@ class NumericV2SessionStore:
                 performance = stored.session.performance_history[event_index]
                 if not isinstance(performance, Mapping):
                     raise ValueError("performance_record_shape")
+                validate_delivery(self.engine.story, performance, session=replay_session)
             except Exception as exc:
                 raise NumericV2StoreError("numeric_ledger_replay_invalid") from exc
             expected_event = replayed.ledger_event
@@ -1230,10 +1239,10 @@ class NumericV2SessionStore:
                         or [segment.get("phase") for segment in segments]
                         != ["source_response", "transition_bridge", "target_opening"]
                         # 来源旁白是版本 3 的可选字段；旧记录无此字段仍可原样恢复。
-                        or set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+                        or set(segments[0]).difference({"fixed_narrations"}) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
                         or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
                         or set(segments[1]) != {"phase", "scene_narration"}
-                        or set(segments[2]) != {"phase", "scene_narration", "performance"}
+                        or set(segments[2]).difference({"fixed_narrations"}) != {"phase", "scene_narration", "performance"}
                         or not valid_mixed_performance_policy(
                             segments[0],
                             transition_source_dialogue_policy(

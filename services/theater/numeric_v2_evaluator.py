@@ -31,6 +31,7 @@ from .numeric_v2_context import (
 )
 from .llm_context import truncate_prompt_value
 from .numeric_v2_performance import content_blocks, performance_content_blocks
+from .numeric_v2_fixed_narration import MAX_FIXED_NARRATIONS, review_candidates
 from .numeric_v2_runtime import MetricChangeV2, NumericV2Engine, ScriptSessionV2, TurnOutcomeV2
 
 
@@ -102,6 +103,8 @@ class NumericV2TransitionOfferReview:
     acceptance_authorized: bool | None = None
     # 区分邀请本身去向错误与玩家尚未接受合法邀请；只有前者可撤下旧邀请。
     pending_invitation_invalid: bool | None = None
+    # Only the final reviewed draft may request program-owned narration delivery.
+    fixed_narration_triggers: tuple[dict[str, str], ...] = ()
 
     @property
     def player_action_preserved(self) -> bool:
@@ -851,14 +854,20 @@ def _build_transition_judge_messages(
         if target_is_ending
         else "跨阶段不限于换地点；可邀请玩家实质协助进入下一互动阶段，但正文须停在阶段边界前。"
     )
+    fixed_candidates = review_candidates(node, session)
+    review_shape = (
+        '{"offer_present":false,"valid":false,"body_violations":[],'
+        '"unsafe_suggestion_indexes":[],"failure_reason":""'
+        + (',"fixed_narration_triggers":[]' if fixed_candidates else '') + '}。'
+    )
     system = (
         "你是演绎输出复核器，只核对给定证据，不续写、不选路线、不评剧情完成度。"
-        "只输出一个完整 JSON，固定五字段："
-        '{\"offer_present\":false,\"valid\":false,\"body_violations\":[],'
-        '\"unsafe_suggestion_indexes\":[],\"failure_reason\":\"\"}。'
-        "两个布尔量必填；两个数组必填、去重，安全时为空；不要输出其它字段。\n"
+        + ("只输出一个完整 JSON，字段如下：" if fixed_candidates else "只输出一个完整 JSON，固定五字段：")
+        + review_shape
+        + ("两个布尔量必填；三个数组必填、去重，无对应项时为空；不要输出其它字段。\n" if fixed_candidates
+           else "两个布尔量必填；两个数组必填、去重，安全时为空；不要输出其它字段。\n")
         # 先隔离正文和按钮判断，避免错误推荐把合法澄清也拖入争议和改稿。
-        "先不看 suggested_inputs 判正文与邀请，再单独检查按钮；正文邀请合法时 valid=true，"
+        + "先不看 suggested_inputs 判正文与邀请，再单独检查按钮；正文邀请合法时 valid=true，"
         "不能因按钮错误改为 false，只有按钮有问题时仅填 unsafe_suggestion_indexes。"
         "猫娘承认旧邀请说错并公开提出符合实际出口的新安排，是保留玩家重新选择；"
         "不能因为玩家本轮只接受了旧安排、尚未接受新安排，就否定新的合法邀请；正文仍不得擅自执行新安排。\n"
@@ -1180,6 +1189,18 @@ def _build_transition_judge_messages(
         "旧回合尚在询问不否定本轮明确请求；仍须承接旧回合已发生的事实和未撤回的边界。"
     )
     data["player_input"] = data.pop("player_input")
+    if fixed_candidates:
+        data["fixed_narration_candidates"] = [
+            {**item, "condition": cast.text(item["condition"])} for item in fixed_candidates
+        ]
+        system += (
+            "\n本幕另有固定旁白候选，必须逐项判断并返回 fixed_narration_triggers 数组；未触发才返回空数组。"
+            "每项仅含 id 和 evidence，evidence 必须摘录玩家实际输入、已提交历史或本次来源正文中的短原话。"
+            '例如已实际接过铭牌时返回 {"id":"候选中的编号","evidence":"接过铭牌"}，而不是复述条件。'
+            "只有条件已经实际发生且不与正文违规相冲突才返回编号；考虑、邀请、推荐、未来计划或作者条件本身不算发生。"
+            "同次可按前置顺序选择多项；不得虚构引用或返回原文正文。目标幕尚未发生的动作不能触发来源片段。"
+            "已展示的固定原文可能是书信、往事或日志，不把引文中的敌人、位置和状态当作当前现场。"
+        )
     messages = [
         SystemMessage(content=system),
         HumanMessage(
@@ -1229,7 +1250,8 @@ def _build_transition_judge_messages(
 def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSessionV2 | None = None,
                                    acceptance_review: bool = False,
                                    recovery_session: ScriptSessionV2 | None = None,
-                                   recovery_evidence: tuple[str, ...] = ()) -> NumericV2TransitionOfferReview:
+                                   recovery_evidence: tuple[str, ...] = (),
+                                   fixed_narration_review: bool = False) -> NumericV2TransitionOfferReview:
     """接受严格判定字段，并限制可传给 Actor 的失败原因长度。"""  # noqa: DOCSTRING_CJK
 
     if not isinstance(content, str) or not content.strip():
@@ -1247,7 +1269,15 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         "body_violations",
         "unsafe_suggestion_indexes",
     }
+    if fixed_narration_review:
+        required_fields.add("fixed_narration_triggers")
     allowed_fields = required_fields | {"failure_reason"}
+    triggers = payload.get("fixed_narration_triggers", []) if isinstance(payload, dict) else []
+    if (not isinstance(triggers, list) or len(triggers) > MAX_FIXED_NARRATIONS
+            or any(not isinstance(item, dict) or set(item) != {"id", "evidence"}
+                   or any(not isinstance(value, str) or not value.strip() for value in item.values())
+                   or count_tokens(item["evidence"]) > 80 for item in triggers)):
+        raise NumericV2EvaluatorOutputError("numeric_v2_fixed_narration_review_invalid")
     # 只在主动转场复核扩展原文证据字段，不改变普通邀请和旧复核调用的输出合同。
     if initiation_session is not None:
         allowed_fields.update({"public_destination_quote", "initiation_authorized"})
@@ -1337,6 +1367,7 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
             else False if initiation_session is not None and "initiation_authorized" in payload else None),
         acceptance_authorized=payload.get("acceptance_authorized") if acceptance_review else None,
         pending_invitation_invalid=payload.get("pending_invitation_invalid") if acceptance_review else None,
+        fixed_narration_triggers=tuple(triggers),
     )
 
 
@@ -1584,6 +1615,10 @@ class NumericV2MetricEvaluator:
         output_budget = (NUMERIC_V2_DISPUTE_JUDGE_MAX_OUTPUT_TOKENS if dispute_review else
                          NUMERIC_V2_FORMAL_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS if transition_outcome is not None else
                          NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS)
+        if review_candidates(engine.nodes[session.current_node_id], session):
+            # Reuse existing output capacity for IDs/quotes; no extra request or
+            # larger input budget, and stories without pieces keep 190 tokens.
+            output_budget = max(output_budget, NUMERIC_V2_FORMAL_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS)
         set_call_type("theater_numeric_v2_transition_dispute" if dispute_review else "theater_numeric_v2_transition_judge")
         try:
             client = await create_chat_llm_async(
@@ -1637,6 +1672,7 @@ class NumericV2MetricEvaluator:
             recovery_session=session if check_missed_initiation and transition_outcome is None else None,
             # 用实际发送的编号表还原，不能重新检索后让编号指向另一条原文。
             recovery_evidence=tuple(json.loads(messages[1].content.split("：", 1)[1]).get("public_destination_evidence", [])) if check_missed_initiation and transition_outcome is None else (),
+            fixed_narration_review=bool(review_candidates(engine.nodes[session.current_node_id], session)),
         )
 
 __all__ = [

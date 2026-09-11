@@ -14,6 +14,7 @@ import string
 from typing import Any, Mapping
 
 from utils.tokenize import count_tokens
+from .numeric_v2_fixed_narration import validate_definitions
 
 
 STORY_SCHEMA = "neko.story.numeric.v2"
@@ -507,6 +508,7 @@ class NumericV2Compiler:
         c: _Collector, value: Any, path: str, *, cast_names: Mapping[str, Any] | None = None,
     ) -> None:
         beat = c.obj(value, path)
+        validate_definitions(c, beat, path)
         summary = c.require_text(beat.get("summary"), f"{path}.summary")
         # opening_scene 是显式可见开场；缺失时仅使用当前摘要首句作为作者输入。
         opening_path = f"{path}.opening_scene" if "opening_scene" in beat else f"{path}.summary"
@@ -901,6 +903,15 @@ class NumericV2Compiler:
             NumericV2Compiler._validate_story_beat(
                 c, node.get("story_beat"), f"{path}.story_beat", cast_names=cast_names,
             )
+            if node.get("type") == "ending" or node.get("terminal") is True:
+                beat = node.get("story_beat")
+                pieces = beat.get("fixed_narrations") if isinstance(beat, Mapping) else None
+                if isinstance(pieces, list) and any(
+                    isinstance(piece, Mapping) and isinstance(piece.get("trigger"), Mapping)
+                    and piece["trigger"].get("type") == "condition"
+                    for piece in pieces
+                ):
+                    c.add("fixed_narration_terminal_condition", path, "结局节点不再接收输入，只能声明入幕固定旁白。")
             if any(field in node for field in ("choices", "available_interaction_ids", "edges")):
                 c.add("legacy_node_field_forbidden", path, "Numeric v2 节点不能包含旧 Choice、interaction 或 Edge 字段。")
             routes = c.array(node.get("route_gates"), f"{path}.route_gates")

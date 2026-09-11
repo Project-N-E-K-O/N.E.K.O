@@ -70,6 +70,12 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
     return blocks
 
 
+def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[dict[str, str]]:
+    """Read server-owned text verbatim; it never becomes catgirl dialogue."""
+    return [{"type": "narration", "text": item["text"]}
+            for item in container.get("fixed_narrations", []) if item["position"] == position]
+
+
 def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
     """优先解析新混合正文；旧记录继续按原内容块或分离字段读取。"""  # noqa: DOCSTRING_CJK
 
@@ -78,7 +84,9 @@ def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
         scene_narration = str(container.get("scene_narration") or "").strip()
         if scene_narration:
             blocks.append({"type": "narration", "text": scene_narration})
+        blocks.extend(fixed_narration_blocks(container, "before"))
         blocks.extend(mixed_performance_blocks(container.get("performance")))
+        blocks.extend(fixed_narration_blocks(container, "after"))
         # 完整场景旁白是独立字段，不占混合 performance 自身的 16 块上限。
         return blocks
 

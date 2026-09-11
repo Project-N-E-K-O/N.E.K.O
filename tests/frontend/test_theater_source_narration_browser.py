@@ -10,8 +10,9 @@ from tests.frontend.test_theater_capsule_browser import _snapshot
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('bridge_narration', ['两人来到门边。', ''])
+@pytest.mark.parametrize('with_fixed_narration', [False, True])
 def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
-    mock_page: Page, running_server: str, bridge_narration: str,
+    mock_page: Page, running_server: str, bridge_narration: str, with_fixed_narration: bool,
 ):
     reply = '值班员回答：“编号是丙七。”'
     transition = {
@@ -23,6 +24,13 @@ def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
             {'phase': 'target_opening', 'scene_narration': '门外吹来微风。', 'performance': '这里安静些。'},
         ],
     }
+    log = '[0042]\n损坏率：87.4%\n“保留（原文）”\n[EOF]'
+    report = '[REPORT]\n00-Aoi'
+    if with_fixed_narration:
+        transition['segments'][0]['fixed_narrations'] = [
+            {'id': 'log', 'node_id': 'mainline_01', 'text': log, 'position': 'after'}]
+        transition['segments'][2]['fixed_narrations'] = [
+            {'id': 'report', 'node_id': 'mainline_02', 'text': report, 'position': 'before'}]
     current = _snapshot(revision=0)
     speech_indexes = []
 
@@ -74,6 +82,12 @@ def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
         assert '两人来到门边。' not in text
     # 空桥段不会生成播放块，后续TTS索引必须与服务端过滤后的内容一致。
     expected_indexes = [[1], [4 if bridge_narration else 3]]
+    if with_fixed_narration:
+        expected_indexes[1][0] += 2
+        assert text.index('记住了。') < text.index('[0042]') < text.index('门外吹来微风。')
+        assert text.index('门外吹来微风。') < text.index('[REPORT]') < text.index('这里安静些。')
+        expect(history.locator('.is-system').filter(has_text='[0042]')).to_contain_text(log)
+        expect(history.locator('.is-system').filter(has_text='[REPORT]')).to_have_count(1)
     assert speech_indexes == expected_indexes
 
     # 冷刷新从实际快照重建旁白，不重复播放已经保存的对白。
@@ -82,4 +96,6 @@ def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
         && window.nekoTheaterRuntime.getState().revision === 1
         && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'""")
     expect(mock_page.locator('.compact-export-history-anchor')).to_contain_text(reply)
+    if with_fixed_narration:
+        expect(mock_page.locator('.compact-export-history-anchor .is-system').filter(has_text='[0042]')).to_have_count(1)
     assert speech_indexes == expected_indexes

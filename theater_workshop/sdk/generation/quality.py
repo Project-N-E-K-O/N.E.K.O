@@ -552,6 +552,8 @@ class NumericV2QualityAssessor(ModelAgent):
                 "narrative_focus": str(beat.get("narrative_focus") or "").strip(),
                 "must_not_happen": deepcopy(beat.get("must_not_happen") or []),
                 "acting_contract": deepcopy(beat.get("acting_contract") or {}),
+                **({"fixed_narrations": deepcopy(beat["fixed_narrations"])}
+                   if "fixed_narrations" in beat else {}),
                 "goals": [
                     {
                         # 保留实际目标ID和交付依据，评分才能定位错位而非凭目标描述补猜。

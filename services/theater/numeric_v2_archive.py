@@ -974,6 +974,10 @@ def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tu
         if scene_narration:
             parts.append({"kind": "scene_narration", "phase": phase, "text": scene_narration})
             chunks.append(scene_narration)
+        for item in container.get("fixed_narrations", []):
+            if item["position"] == "before":
+                parts.append({"kind": "scene_narration", "phase": phase, "text": item["text"]})
+                chunks.append(item["text"])
         performance = str(container.get("performance") or "").strip()
         if performance:
             for block in mixed_performance_blocks(performance):
@@ -981,6 +985,10 @@ def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tu
                 visible_text = _visible_action(block["text"]) if kind == "action" else block["text"]
                 parts.append({"kind": kind, "phase": phase, "text": visible_text})
             chunks.append(performance)
+        for item in container.get("fixed_narrations", []):
+            if item["position"] == "after":
+                parts.append({"kind": "scene_narration", "phase": phase, "text": item["text"]})
+                chunks.append(item["text"])
         return parts, "\n\n".join(chunks)
 
     visible: list[str] = []

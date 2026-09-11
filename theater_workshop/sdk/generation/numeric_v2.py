@@ -27,6 +27,18 @@ from ..numeric_v2 import (
 # 禁止项还须保留主体与表达范围，避免把角色嘴硬扩大成所有角色都不能回应剧情结果。
 # 普通转场与自然结局分开编写；不为结局制造第二次邀请，也不替 Runtime 选路。
 _SCENE_PROCESS_AUTHORING_RULE = (
+    # 固定原文属于作者资产，模型只编排触发与前后反应，不承担逐字复制的运行职责。
+    "作者明确要求原样展示日志、信件等旁白时，可在章节、ending 或支线 scene/ending 对象中加入 fixed_narrations 数组；"
+    "没有这种需求则省略，不把普通台词或所有叙事冻结。每项仅含 id、text、trigger、after、required_before_exit。"
+    "id 同幕唯一；text 保存完整原文，只可用 {{catgirl_name}}、{{player_name}} 显式适配姓名，序列号等文字不替换。"
+    "trigger 为 {type:entry} 或 {type:condition,condition:具体可观察的完成事件}；after 是同幕更早片段 id 数组；"
+    "required_before_exit 为布尔值，只有作者明确要求离幕前必显才设 true。每幕最多八项，原文合计不超过2000 tokens，超限报错不截断。"
+    "入幕片段在场景旁白之后、猫娘回应之前展示；条件片段在动作实际发生并通过复核的当轮正文后展示，阅读反应留给下一轮。"
+    "条件不能仅写考虑、准备、同意或回合数，也不能替玩家完成操作；不依赖未公开内容或无法完成的条件。"
+    "终止输入的 ending 只用 entry，需玩家触发的日志放在之前仍可互动的场景。"
+    "固定原文不得预写玩家尚未作出的选择或可变历史；改用不依赖该选择的原文，不能为了兑现原文强迫玩家。"
+    "完善、续写与修订保留既有固定原文、触发条件与离幕标记，只调整本次允许的前后叙事；"
+    "评分可指出原文与上下文的具体冲突，但原文不在自动文本修订权限内，不能通过改写或删除掩盖冲突。"
     "角色名称规则：输入有 cast_names 或 intro/story_intro/characters 中的 player_name、catgirl_name 字段时，"
     "双主角使用该姓名及其角色归属，不另取名、不交换男女主、不退回占位姓名。"
     "下文男女主是职责说明；状态文本以对应完整姓名开头，owner、id 等结构值仍使用原协议枚举与引用。"
@@ -2139,6 +2151,8 @@ class NumericV2Generator(ModelAgent):
                 "min_turns": min_turns,
                 "recommended_turns": recommended_turns,
                 "story_beat": {
+                    **({"fixed_narrations": deepcopy(chapter["fixed_narrations"])}
+                       if "fixed_narrations" in chapter else {}),
                     "summary": chapter["narrative"].strip(),
                     "opening_scene": chapter["opening_scene"].strip(),
                     "narrative_focus": chapter["narrative_focus"].strip(),
@@ -2183,6 +2197,8 @@ class NumericV2Generator(ModelAgent):
             "type": "ending",
             "chapter": ending["title"].strip(),
             "story_beat": {
+                **({"fixed_narrations": deepcopy(ending["fixed_narrations"])}
+                   if "fixed_narrations" in ending else {}),
                 "summary": ending["summary"].strip(),
                 "opening_scene": ending["opening_scene"].strip(),
                 "goals": [{

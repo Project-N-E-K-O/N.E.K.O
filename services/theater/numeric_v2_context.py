@@ -105,6 +105,7 @@ def performance_history_records(session: Any) -> list[dict[str, Any]]:
             # 按完整旁白/角色演出字段装箱；两者不必一起塞入，避免短公开去向被同轮长对白挤掉。
             # 不切句、不截字段，仍保留各字段内部的条件和否定；旧格式按完整正文保留。
             texts = [str(part[key]).strip() for key in ("scene_narration", "performance") if part.get(key)]
+            texts.extend(item["text"] for item in part.get("fixed_narrations", []))
             if not texts:
                 texts = ["\n".join(block["text"] for block in performance_content_blocks(part))]
             for text in texts:

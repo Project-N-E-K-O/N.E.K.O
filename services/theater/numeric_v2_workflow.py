@@ -16,6 +16,7 @@ from .numeric_v2_actor import (
     NumericV2ActorOutputError,
 )
 from .numeric_v2_context import scene_opening_text
+from .numeric_v2_fixed_narration import add_entry, apply_triggers
 from .numeric_v2_history import lookup_history
 from .numeric_v2_evaluator import (
     NumericV2EvaluationResult,
@@ -404,6 +405,7 @@ async def execute_numeric_v2_turn(
     # 仅属于本次工作流的原文结果；所有正文重试与复核共享，不写入 Session 或 Ledger。
     history_lookup_result: dict[str, Any] | None = None
     invalidate_previous_offer = False
+    final_fixed_review: NumericV2TransitionOfferReview | None = None
     # 在正文重采样前冻结真实人格输入；推荐失败由内部降级，最终正文仍须属于同一角色世代。
     generation_binding = ensure_current_binding(current.session)
     generation_profile = actor._character_profile()
@@ -463,6 +465,8 @@ async def execute_numeric_v2_turn(
     ) -> dict[str, Any]:
         """按正式路径生成 Actor 正文；节奏只由同一次调用中的软提示引导。"""  # noqa: DOCSTRING_CJK
 
+        nonlocal final_fixed_review
+        final_fixed_review = None
         started_at = time.monotonic()
         try:
             generation_kwargs = {
@@ -479,11 +483,18 @@ async def execute_numeric_v2_turn(
             }
             if history_lookup_result is not None:
                 generation_kwargs["history_lookup"] = history_lookup_result
-            return await _generate_actor_turn_with_output_retry(
+            generated = await _generate_actor_turn_with_output_retry(
                 actor,
                 **generation_kwargs,
                 retry_hint=retry_hint,
             )
+            if outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]:
+                generated["segments"][2] = add_entry(
+                    runtime.engine.nodes[outcome.session.current_node_id], generated["segments"][2],
+                    outcome.session.catgirl_binding, outcome.session.player_address_known,
+                    session=current.session,
+                )
+            return generated
         finally:
             # Actor 只可能因格式、重复或明确边界问题重试；这里记录累计调用耗时和真实供应商请求数。
             diagnostics["actor_provider_calls"] = int(
@@ -508,6 +519,8 @@ async def execute_numeric_v2_turn(
     ) -> NumericV2TransitionOfferReview:
         """复核可见提议并累计调用成本；模型故障沿用原有保守撤销语义。"""  # noqa: DOCSTRING_CJK
 
+        nonlocal final_fixed_review
+        final_fixed_review = None
         transition_judge_started_at = time.monotonic()
         diagnostics["transition_judge_calls"] += 1
         try:
@@ -557,6 +570,8 @@ async def execute_numeric_v2_turn(
                     "initiation_authorized": result.initiation_authorized,
                     "acceptance_authorized": result.acceptance_authorized,
                     "pending_invitation_invalid": result.pending_invitation_invalid,
+                    **({"fixed_narration_triggers": list(result.fixed_narration_triggers)}
+                       if result.fixed_narration_triggers else {}),
                 })
 
             record_review(review, "fast")
@@ -576,6 +591,7 @@ async def execute_numeric_v2_turn(
                 else:
                     record_review(reviewed, "dispute")
                     review = reviewed
+            final_fixed_review = review
             return review
         except NumericV2EvaluatorError as exc:
             diagnostics["transition_judge_degraded"] = True
@@ -793,6 +809,12 @@ async def execute_numeric_v2_turn(
         ),
         invalidate_previous_offer=invalidate_previous_offer,
     )
+    if final_fixed_review is not None and not final_fixed_review.body_violations:
+        performance = apply_triggers(
+            runtime.engine.nodes[current.session.current_node_id], current.session, performance,
+            final_fixed_review.fixed_narration_triggers, turn.message,
+            known=outcome.session.player_address_known,
+        )
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
     commit_started_at = time.monotonic()
     try:

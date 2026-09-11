@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from utils.tokenize import truncate_to_tokens
 
 from .numeric_v2_context import pending_transition_record
+from .numeric_v2_fixed_narration import add_entry, required_pending, validate_delivery
 
 from .numeric_v2 import (
     CompiledNumericV2Package,
@@ -378,7 +379,10 @@ class NumericV2Engine:
             revision=0,
             status="active",
             processed_client_turn_ids=(),
-            opening_performance=deepcopy(dict(opening_performance)),
+            opening_performance=add_entry(
+                self.nodes[str(self.story["start_node_id"])], opening_performance,
+                catgirl_binding, bool(self.story["initial_state"]["player_address_known"]),
+            ),
             performance_history=(),
             actor_budget_profile=actor_budget_profile,
             player_address_known=bool(self.story["initial_state"]["player_address_known"]),
@@ -496,6 +500,10 @@ class NumericV2Engine:
                 if ending_target.get("type") == "ending" or ending_target.get("terminal") is True:
                     route = ending_route
 
+        # Only explicitly required immutable pieces gate departure; ordinary goals
+        # remain optional creative material and keep their existing semantics.
+        if route is not None and required_pending(source, session):
+            route, route_status = None, "playing"
         target_node_id = session.current_node_id
         next_status = "active"
         transition = None
@@ -680,7 +688,7 @@ class NumericV2Engine:
             or not all(isinstance(item, Mapping) for item in segments)
             or [item.get("phase") for item in segments]
             != ["source_response", "transition_bridge", "target_opening"]
-            or set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+            or set(segments[0]).difference({"fixed_narrations"}) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
             or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
             or set(segments[1]) != {"phase", "scene_narration"}
             or set(segments[2]) != {"phase", "performance"}
@@ -705,6 +713,10 @@ class NumericV2Engine:
         ]
         result["transition_delivered"] = True
         result["visible_node_id"] = target_node_id
+        result["segments"][2] = add_entry(
+            self.nodes[target_node_id], result["segments"][2], outcome.session.catgirl_binding,
+            outcome.session.player_address_known, session=outcome.session,
+        )
         return result
 
     def _select_route(self, node: Mapping[str, Any], metrics: Mapping[str, int]) -> tuple[dict[str, Any] | None, str]:
@@ -951,6 +963,8 @@ class NumericV2Runtime:
         outcome: TurnOutcomeV2,
         performance: Mapping[str, Any],
     ) -> NumericV2StoredSession:
+        validate_delivery(self.engine.story, performance, session=outcome.session,
+                          node_id=str(outcome.ledger_event["from_node_id"]))
         route_changed = outcome.ledger_event["from_node_id"] != outcome.ledger_event["to_node_id"]
         if route_changed:
             segments = performance.get("segments")
@@ -969,10 +983,10 @@ class NumericV2Runtime:
                 or (
                     new_contract
                     and (
-                        set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+                        set(segments[0]).difference({"fixed_narrations"}) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
                         or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
                         or set(segments[1]) != {"phase", "scene_narration"}
-                        or set(segments[2]) != {"phase", "scene_narration", "performance"}
+                        or set(segments[2]).difference({"fixed_narrations"}) != {"phase", "scene_narration", "performance"}
                         or not valid_mixed_performance_policy(
                             segments[0],
                             transition_source_dialogue_policy(
