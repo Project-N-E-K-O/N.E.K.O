@@ -359,6 +359,11 @@ def _watch_together_available(manager) -> bool:
         if manager is None or not manager._config_manager.get_model_api_config('vision').get('api_key'):
             return False
         worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
+        if provider == 'gptsovits':
+            from utils.gptsovits_config import is_valid_http_url, normalize_gsv_api_url
+            local_config = manager._config_manager.get_model_api_config('tts_custom')
+            if not is_valid_http_url(normalize_gsv_api_url(local_config.get('base_url'))):
+                return False
         credentials_available = bool(key) or provider in ('vllm_omni', 'local_cosyvoice', 'gptsovits')
         return bool(not disabled and credentials_available and manager._tts_worker_supports_completion(worker, provider, config))
     except Exception:
