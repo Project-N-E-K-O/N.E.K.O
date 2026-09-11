@@ -19,6 +19,9 @@ const response = (data) => ({ ok: true, status: 200, json: async () => data, clo
 async function main() {
   const calls = [];
   const storage = new Map();
+  const renderers = [];
+  let modelGate = null;
+  let mountGate = null;
   const listeners = new Map();
   const addEventListener = (type, handler) => {
     if (!listeners.has(type)) listeners.set(type, new Set());
@@ -37,7 +40,23 @@ async function main() {
   const window = {
     document, navigator: {}, location: { origin: 'http://localhost', search: '' },
     console, AbortController, setTimeout, clearTimeout,
-    createSoccerAvatarHost: () => ({ mount() { throw new Error('renderer not used in route test'); }, dispose() {} }),
+    createSoccerAvatarHost: () => ({ async mount(config) {
+      if (mountGate) await mountGate;
+      if (config.model.path === '/broken.pmx') throw new Error('asset_failed');
+      const renderer = { config, model: config.model, disposed: false, paused: false,
+        async setModel(model) {
+          if (modelGate) await modelGate;
+          if (model.path === '/broken.pmx') throw new Error('asset_failed');
+          this.model = model;
+        },
+        setSpeechPlayback() {}, setSpeaking() {}, setEmotion() {}, focus() {},
+        pause() { this.paused = true; }, resume() { this.paused = false; },
+        getState() { return { model: this.model, paused: this.paused }; },
+        dispose() { this.disposed = true; },
+      };
+      renderers.push(renderer);
+      return renderer;
+    }, dispose() {} }),
     setInterval: () => 1, clearInterval() {}, addEventListener, removeEventListener,
     lanlan_config: { lanlan_name: 'soccer_demo' },
     localStorage: {
@@ -132,6 +151,36 @@ async function main() {
     const firstBinding = vm.runInThisContext('ensureSoccerCharacterInfo()');
     assert.equal(vm.runInThisContext('ensureSoccerCharacterInfo()'), firstBinding, 'concurrent loaders must share one query');
     const descriptor = await firstBinding;
+    const avatarEvents = [];
+    sandbox.emitEvent = (name, data) => avatarEvents.push({ name, data });
+    install('const SOCCER_AVATAR_LAYOUT', '    (async () => {');
+    install('async function setPlayerAvatar(', 'function roundDebugNumber(');
+    await sandbox.setPlayerAvatar({ type: 'vrm', path: '/first.vrm' });
+    await sandbox.setPlayerAvatar({ type: 'vrm', path: '/second.vrm' });
+    assert.equal(avatarEvents.length, 2, 'model replacement did not emit its completion event');
+    assert.equal(renderers.length, 1, 'same-fit replacement should retain the controller');
+    await sandbox.setAiAvatar({ type: 'mmd', path: '/first.pmx' });
+    window.__SoccerAiAvatarController.pause();
+    const oldAi = renderers.at(-1);
+    await sandbox.setAiAvatar({ type: 'pngtuber', path: '/image.png' });
+    assert.equal(oldAi.disposed, true, 'cross-fit replacement retained the old renderer');
+    assert.equal(renderers.at(-1).config.fit.mode, 'contain');
+    assert.equal(renderers.at(-1).paused, true, 'replacement lost the paused state');
+    let releaseModel;
+    modelGate = new Promise(resolve => { releaseModel = resolve; });
+    const changing = sandbox.setAiAvatar({ type: 'pngtuber', path: '/next.png' });
+    await assert.rejects(sandbox.setAiAvatar({ type: 'vrm', path: '/competing.vrm' }), /busy/);
+    releaseModel();
+    await changing;
+    modelGate = null;
+    await assert.rejects(sandbox.setAiAvatar({ type: 'mmd', path: '/broken.pmx' }), /asset_failed/);
+    await sandbox.setAiAvatar({ type: 'vrm', path: '/recovered.vrm' });
+    assert.equal(renderers.at(-1).config.fit.mode, 'height', 'failed mount retained the operation lock');
+    await vm.runInThisContext(`mountSoccerCharacterAvatar({ model: {type:'mmd',path:'/broken.pmx'},
+      fallbackModels:[{type:'pngtuber',path:'/fallback.png'},{type:'vrm',path:'/unused.vrm'}] })`);
+    assert.equal(renderers.at(-1).model.path, '/fallback.png', 'fallback did not follow canonical order');
+    window.__SoccerPlayerAvatarController.dispose();
+    window.__SoccerAiAvatarController.dispose();
     assert.equal(descriptor.name, 'test-character');
     assert.equal(game.runtime.session.characterName, 'test-character', 'direct entry kept the placeholder identity');
     assert.equal(game.runtime.state, 'idle', 'binding prematurely started the route');
@@ -250,6 +299,16 @@ async function main() {
     assert.equal(vm.runInThisContext('soccerCharacterLanguagePreferenceResolved'), true);
     assert.deepEqual(cleared.fallbackModels, [], 'missing fallback invented a default model');
     host.getAvatarCharacter = originalCharacterQuery;
+    let releaseMount;
+    mountGate = new Promise(resolve => { releaseMount = resolve; });
+    const eventCountBeforeExit = avatarEvents.length;
+    const exitingAvatar = sandbox.setAiAvatar({ type: 'mmd', path: '/late.pmx' });
+    game.dispose();
+    releaseMount();
+    await assert.rejects(exitingAvatar, /disposed|cancelled/);
+    assert.equal(renderers.at(-1).disposed, true, 'late mount survived SDK disposal');
+    assert.equal(avatarEvents.length, eventCountBeforeExit, 'late mount emitted a success event');
+    assert.equal(vm.runInThisContext('soccerAvatarChanging.ai'), false, 'exit retained the slot fence');
   } finally { game.dispose(); }
   console.log('soccer SDK migration runtime test passed');
 }

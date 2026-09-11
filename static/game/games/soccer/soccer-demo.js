@@ -320,6 +320,55 @@
       };
     }
 
+    // Two fixed slots, no queued replacements. SDK disposal cancels any mount
+    // in progress; finally releases the game-side fence on every outcome.
+    const soccerAvatarChanging = { player: false, ai: false };
+    async function replaceSoccerAvatar(slot, model) {
+      if (soccerAvatarChanging[slot]) throw new Error('avatar_change_busy');
+      soccerAvatarChanging[slot] = true;
+      const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
+      let mounted = null;
+      try {
+        const previous = window[key];
+        if (previous && !previous.disposed
+            && previous.config.fit.mode === soccerAvatarFit(model).mode) {
+          await previous.setModel(model);
+          if (previous.disposed || soccerGame.disposed) throw new Error('avatar_change_cancelled');
+          return previous;
+        }
+        const paused = previous && !previous.disposed && previous.getState().paused;
+        if (previous && !previous.disposed) await previous.dispose();
+        window[key] = null;
+        mounted = await soccerGame.avatar.mount(soccerAvatarMountConfig(slot, model));
+        if (paused) await mounted.pause();
+        if (mounted.disposed || soccerGame.disposed) throw new Error('avatar_change_cancelled');
+        window[key] = mounted;
+        return mounted;
+      } catch (error) {
+        if (mounted) await mounted.dispose();
+        throw error;
+      } finally {
+        soccerAvatarChanging[slot] = false;
+      }
+    }
+
+    async function mountSoccerCharacterAvatar(character) {
+      // The public descriptor admits at most four character-owned fallbacks.
+      const candidates = [character.model, ...(character.fallbackModels || []).slice(0, 4)];
+      let lastError = new Error('character_avatar_unavailable');
+      for (const model of candidates) {
+        if (!model || !['vrm', 'live2d', 'mmd', 'pngtuber'].includes(model.type)) continue;
+        try {
+          return await replaceSoccerAvatar('ai', model);
+        } catch (error) {
+          if (soccerGame.disposed || ['cancelled', 'disposed', 'busy'].includes(error.code)
+              || ['avatar_change_cancelled', 'avatar_change_busy'].includes(error.message)) throw error;
+          lastError = error;
+        }
+      }
+      throw lastError;
+    }
+
     (async () => {
       const statusEl = document.getElementById('status');
       const soccerLoadingText = (key, fallback) => {
@@ -348,10 +397,6 @@
         }
       }
 
-      function prefersAiVrm(charData) {
-        return charData?.model?.type === 'vrm' && !!charData.model.path;
-      }
-
       // 等 vrm 模块链加载完
       await new Promise(resolve => {
         if (window.vrmModuleLoaded) return resolve();
@@ -368,52 +413,16 @@
         setStatus('initializing VRM renderer…');
         soccerGame.capabilities.require('avatar-renderer');
         setStatus('loading sensei.vrm…');
-        window.__SoccerPlayerAvatarController = await soccerGame.avatar.mount(
-          soccerAvatarMountConfig('player', {
-            type: 'vrm',
-            path: '/static/vrm/sensei.vrm',
-          }),
-        );
+        await replaceSoccerAvatar('player', {
+          type: 'vrm',
+          path: '/static/vrm/sensei.vrm',
+        });
         setStatus('VRM ready');
 
         // Render the character's selected model through the public Avatar API.
         try {
           const charData = await fetchSoccerCharacterInfo();
-          let loadedAiAvatar = false;
-
-          if (['mmd', 'pngtuber'].includes(charData.model?.type)) {
-            window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
-              soccerAvatarMountConfig('ai', charData.model),
-            );
-            loadedAiAvatar = true;
-          }
-          if (prefersAiVrm(charData)) {
-            try {
-              const aiVrmPath = charData.model.path;
-              setStatus('loading AI VRM…');
-              window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
-                soccerAvatarMountConfig('ai', { type: 'vrm', path: aiVrmPath }),
-              );
-              loadedAiAvatar = true;
-              console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.name, aiVrmPath);
-            } catch (vrmErr) {
-              markAiAvatar('vrm', charData.model.path, false);
-              console.warn('[soccer_demo] AI VRM 加载失败，回退 Live2D:', vrmErr);
-            }
-          }
-
-          if (!loadedAiAvatar) {
-            setStatus('loading AI Live2D…');
-            // Only use this character's canonical model or host-supplied fallback.
-            const aiL2dModel = charData.model?.type === 'live2d' ? charData.model
-              : charData.fallbackModels?.find(model => model.type === 'live2d');
-            if (!aiL2dModel) throw new Error('character_live2d_unavailable');
-            const aiL2dPath = aiL2dModel.path;
-            console.log('[soccer_demo] 使用当前角色 L2D:', charData.name, aiL2dPath);
-            window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
-              soccerAvatarMountConfig('ai', { type: 'live2d', path: aiL2dPath }),
-            );
-          }
+          await mountSoccerCharacterAvatar(charData);
 
           setStatus('all ready');
         } catch (avatarErr) {
@@ -2958,16 +2967,7 @@
         if (type !== 'vrm') throw new Error('player avatar: only vrm supported');
         if (!path) throw new Error('player avatar: path required');
         soccerGame.capabilities.require('avatar-renderer');
-        if (window.__SoccerPlayerAvatarController
-            && !window.__SoccerPlayerAvatarController.disposed) {
-          await window.__SoccerPlayerAvatarController.setModel({ type, path });
-          await window.__SoccerPlayerAvatarController.resize(SOCCER_AVATAR_LAYOUT.viewport, soccerAvatarFit({ type }));
-          emitEvent('player-avatar-changed', { type, path });
-          return;
-        }
-        window.__SoccerPlayerAvatarController = await soccerGame.avatar.mount(
-          soccerAvatarMountConfig('player', { type, path }),
-        );
+        await replaceSoccerAvatar('player', { type, path });
         emitEvent('player-avatar-changed', { type, path });
       }
 
@@ -2977,16 +2977,7 @@
           throw new Error('ai avatar: unsupported model type');
         }
         soccerGame.capabilities.require('avatar-renderer');
-        if (window.__SoccerAiAvatarController
-            && !window.__SoccerAiAvatarController.disposed) {
-          await window.__SoccerAiAvatarController.setModel({ type, path });
-          await window.__SoccerAiAvatarController.resize(SOCCER_AVATAR_LAYOUT.viewport, soccerAvatarFit({ type }));
-          emitEvent('ai-avatar-changed', { type, path });
-          return;
-        }
-        window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
-          soccerAvatarMountConfig('ai', { type, path }),
-        );
+        await replaceSoccerAvatar('ai', { type, path });
         emitEvent('ai-avatar-changed', { type, path });
       }
 

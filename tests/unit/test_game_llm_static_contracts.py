@@ -157,7 +157,9 @@ def test_soccer_avatar_rendering_uses_sdk_fixed_viewport_contract():
     assert "viewport: Object.freeze({ mode: 'fixed', width: 200, height: 300 })" in script
     assert "align: 'bottom-center'" in script
     assert "resize: Object.freeze({ mode: 'fixed' })" in script
-    assert script.count("soccerGame.avatar.mount(") >= 4
+    # Runtime coverage exercises both slots through the real public SDK wrapper,
+    # including cross-fit replacement. Call-site counts are not API contracts.
+    assert "soccerGame.avatar.mount(soccerAvatarMountConfig(slot, model))" in script
     assert "window.__SoccerAiAvatarController?.focus?." in script
     assert "window.__SoccerAiAvatarController?.setEmotion?." in script
     assert "window.NekoMiniGameAvatarHost.create({" in soccer_avatar_host
@@ -170,8 +172,8 @@ def test_soccer_avatar_rendering_uses_sdk_fixed_viewport_contract():
     assert "emitEvent('player-avatar-changed', { type, path });" in script
     assert "emitEvent('ai-avatar-changed', { type, path });" in script
     assert "characterName: window.__SoccerResolvedLanlanName" in script
-    assert "if (window.__SoccerPlayerAvatarController\n            && !window.__SoccerPlayerAvatarController.disposed)" in script
-    assert "if (window.__SoccerAiAvatarController\n            && !window.__SoccerAiAvatarController.disposed)" in script
+    assert "await replaceSoccerAvatar('player', { type, path });" in script
+    assert "await replaceSoccerAvatar('ai', { type, path });" in script
     assert "soccerAvatarControllers" not in script
     assert "requireSoccerAvatarLayout" not in script
     assert "new VRMManager()" not in script
