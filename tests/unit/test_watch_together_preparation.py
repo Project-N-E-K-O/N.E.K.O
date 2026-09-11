@@ -47,7 +47,8 @@ async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, monkeypatch):
+@pytest.mark.parametrize('requested,expected', [(None, 'ja'), ('zh-CN', 'zh-CN')])
+async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, monkeypatch, requested, expected):
     from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
     calls = []
 
@@ -59,12 +60,13 @@ async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, 
         calls.append(render_language)
         return {"ok": True}
 
-    manager = SimpleNamespace(user_language="en", _conversation_render_language="ja",
+    manager = SimpleNamespace(user_language="en", _conversation_render_language="ja", lanlan_prompt='Current persona',
                               game_speech_audio_cache_identity=identity, preload_game_speech_audio=preload)
 
     class Engine:
-        def __init__(self, root, synthesize, character, *, language):
-            assert language == "ja"
+        def __init__(self, root, synthesize, character, *, language, persona):
+            assert language == expected
+            assert persona == 'Current persona'
             self.root, self.synthesize = root, synthesize
 
         async def prepare(self, job, *_args, **_kwargs):
@@ -79,10 +81,10 @@ async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, 
     monkeypatch.setattr(preparation, "application_library", lambda: SimpleNamespace(root=tmp_path, import_sources=lambda *a, **kw: None))
     monkeypatch.setattr(preparation, "jobs", {})
     monkeypatch.setattr(preparation, "tasks", set())
-    result = await preparation.prepare("video", manager, "cat")
+    result = await preparation.prepare("video", manager, "cat", render_language=requested)
     await asyncio.gather(*preparation.tasks)
     assert preparation.jobs[result["id"]]["status"] == "ready"
-    assert calls == ["ja"] * 4
+    assert calls == [expected] * 4
 
 
 @pytest.mark.asyncio

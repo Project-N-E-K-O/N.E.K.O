@@ -153,9 +153,16 @@ def normalize_events(raw, length):
 
 
 class Engine:
-    def __init__(self, cache: Path, synthesize, character: str, language="en"):
+    def __init__(self, cache: Path, synthesize, character: str, language="en", persona=""):
         self.cache, self.synthesize, self.character = cache, synthesize, character
         self.language = language
+        self.director_prompt = (
+            f"Current character: {character}\nCharacter persona:\n{persona}\n\n"
+            + WATCH_TOGETHER_DIRECTOR_PROMPT
+            + f" Speak as {character}, using this character's personality, phrasing and relationship with the user."
+            + " Do not narrate as a generic commentator or invent personal experiences."
+            + f" Write all reaction text and explanations in {language}."
+        )
         self.laugh_text = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])
         self.cache.mkdir(parents=True, exist_ok=True)
         self._cm = None
@@ -182,8 +189,7 @@ class Engine:
             async with AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120, max_retries=0) as client:
                 response = await client.chat.completions.create(
                     model=cfg["model"], temperature=0.65,
-                    messages=[{"role":"system", "content":
-                        WATCH_TOGETHER_DIRECTOR_PROMPT + f" Write all reaction text and explanations in {self.language}."},
+                    messages=[{"role":"system", "content":self.director_prompt},
                         {"role":"user", "content":content}],
                     max_tokens=8192, **options)
                 record_usage(job, response, cfg["model"], job.get("stage", "Visual analysis"))

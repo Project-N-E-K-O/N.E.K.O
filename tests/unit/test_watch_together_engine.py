@@ -3,6 +3,14 @@ from main_logic.watch_together.engine import Engine
 from main_logic.watch_together.engine import subtitle_priority, dash_audio, media_binary
 
 
+def test_director_uses_current_persona_and_requested_language(tmp_path):
+    engine = Engine(tmp_path, None, 'Yui', language='zh-CN', persona='Gentle, playful; call the user captain.')
+    assert 'Gentle, playful; call the user captain.' in engine.director_prompt
+    assert 'Speak as Yui' in engine.director_prompt
+    assert 'in zh-CN' in engine.director_prompt
+    assert '======以上为' in engine.director_prompt
+
+
 def test_subtitle_script_and_generated_language_priority():
     tracks = [{"lan": "en"}, {"lan": "zh-Hans"}, {"lan": "zh-Hant"}]
     assert min(tracks, key=lambda t: subtitle_priority(t, "zh-TW"))["lan"] == "zh-Hant"

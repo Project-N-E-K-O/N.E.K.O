@@ -3,6 +3,7 @@ import {createNextVideoQueue} from './next-video.mjs';
 export async function run(game, character) {
   const $ = id => document.getElementById(id);
   const t = key => window.i18n?.t?.(`watchTogether.${key}`) || key;
+  const renderLanguage = () => document.documentElement?.lang || window.i18n?.language || new URLSearchParams(location.search).get('ui_lang') || '';
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
   let progressTimer = null;
@@ -26,7 +27,7 @@ export async function run(game, character) {
   function prefetchNext() {
     if(!$('prefetch-enabled').checked || !selected || nextQueue.busy || preparing || queuedFor===selected.id)return;
     queuedFor=selected.id;
-    void nextQueue.start({topic:$('topic').value.trim() || selected.title || '',exclude:[...seenVideos].slice(-128),character});
+    void nextQueue.start({topic:$('topic').value.trim() || selected.title || '',exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
   }
   const status = message => { $('status').textContent = message; };
   function renderUsage(stats) {
@@ -112,13 +113,13 @@ export async function run(game, character) {
     preparing=true;updatePrepareButtons();
     try {
       status(t('checking'));
-      let result = await game.media.request('prepare',{url,source,lanlan_name:character});
+      let result = await game.media.request('prepare',{url,source,lanlan_name:character,render_language:renderLanguage()});
       while (result.confirmation_required) {
         const info = result.video;
         if (!window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`)) {
           status(t('cancelled')); return;
         }
-        result = await game.media.request('prepare',{url:info.url,source,lanlan_name:character,confirmed_duration:info.duration});
+        result = await game.media.request('prepare',{url:info.url,source,lanlan_name:character,confirmed_duration:info.duration,render_language:renderLanguage()});
       }
       await end();
       while (!game.disposed) {

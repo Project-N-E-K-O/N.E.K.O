@@ -20,16 +20,17 @@ def confirm_preparation(identifier, manager, accepted, duration):
     return {"ok": True}
 
 
-async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None):
+async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None, render_language=None):
     if tasks:
         raise ValueError("A video is already being prepared")
     library = application_library()
     from utils.language_utils import get_global_language_full, normalize_language_code
     language = normalize_language_code(
-        getattr(manager, "_conversation_render_language", None)
+        render_language or getattr(manager, "_conversation_render_language", None)
         or getattr(manager, "_conversation_turn_language", None)
         or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
+    persona = str(getattr(manager, "lanlan_prompt", "") or "")
     job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": []}
     jobs[job["id"]] = job
 
@@ -64,7 +65,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     async def run():
         staging = library.root / "preparations"
         try:
-            engine = Engine(staging, synthesize, character, language=language)
+            engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800):
                 await engine.prepare(job, url, character, automatic=automatic,
                                      confirmed_duration=confirmed_duration, confirm_download=confirm_download)

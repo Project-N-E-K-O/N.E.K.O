@@ -116,7 +116,9 @@ async def prepare_video(request: Request):
         confirmed = data.get("confirmed_duration")
         if not enforce_policy(info, automatic=automatic, confirmed_duration=confirmed):
             return {"confirmation_required": True, "video": info}
-        return await prepare(info["url"], manager, name, automatic=automatic, confirmed_duration=confirmed)
+        from main_routers.game_router.char_info import _extract_request_render_language_full
+        return await prepare(info["url"], manager, name, automatic=automatic,
+                             confirmed_duration=confirmed, render_language=_extract_request_render_language_full(data))
     except ValueError as exc:
         raise HTTPException(409, str(exc))
 

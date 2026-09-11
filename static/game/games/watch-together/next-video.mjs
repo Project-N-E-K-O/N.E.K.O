@@ -6,7 +6,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
     get busy(){return busy;},
     clear(){generation++;changed({status:'idle',busy});},
     dispose(){disposed=true;generation++;},
-    async start({topic,exclude,character}) {
+    async start({topic,exclude,character,render_language}) {
       if(busy || disposed)return;
       busy=true;const token=++generation;
       publish(token,{status:'searching',busy:true});
@@ -16,7 +16,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
         if(!found.video){publish(token,{status:'empty',busy:true});return;}
         const title=found.video.title;
         publish(token,{status:'preparing',title,busy:true});
-        const job=await game.media.request('prepare',{url:found.video.url,source:'discovery',lanlan_name:character});
+        const job=await game.media.request('prepare',{url:found.video.url,source:'discovery',lanlan_name:character,render_language});
         if(job.confirmation_required || !job.id)throw Error('Invalid automatic preparation');
         // Finish tracking an already started job even when the selection changes.
         // This keeps the single preparation slot occupied until the backend frees it.
