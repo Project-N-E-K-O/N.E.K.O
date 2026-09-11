@@ -63,7 +63,7 @@ async function fixture({ voice = true, endOk = true, endThrows = false } = {}) {
     requestVoiceControl(action, options) {
       const result = deferred();
       requests.push({ action, options, ...result });
-      return result.promise; // Deliberately ignores abort: SDK must still settle and release.
+      return result.promise; // Ignores abort: the raw query must keep its capacity slot.
     },
     dispose() {},
   };
@@ -199,20 +199,29 @@ async function main() {
     } finally { ended.game.dispose(); }
   }
 
-  // Cancellation remains safe after a new generation has already begun.
+  // Repeated route replacement cannot accumulate transports that ignore abort.
   const replaced = await fixture();
   try {
     const first = replaced.game.runtime.start();
     await settle(); replaced.finishStart(); await first; await settle();
     const stale = replaced.state({ reason: 'stale' });
-    await replaced.game.runtime.end();
-    const second = replaced.game.runtime.start();
-    await settle(); replaced.finishStart(); await second; await settle();
+    const errors = [];
+    replaced.game.voice.onError(error => errors.push(error));
+    for (let i = 0; i < 8; i += 1) {
+      await replaced.game.runtime.end();
+      const next = replaced.game.runtime.start();
+      await settle(); replaced.finishStart(); await next; await settle();
+      assert.equal(replaced.requests.length, 1, 'cancellation freed an unresolved raw voice query slot');
+      assert.equal(replaced.timers.size, 0, 'abandoned query waiter retained its timeout');
+    }
+    assert.equal(errors.length, 0, 'waiting for a raw query slot must not report busy');
     const seen = [];
     replaced.game.voice.onState((state) => seen.push(state));
     replaced.requests[0].resolve(stale);
     await settle();
     assert.equal(seen.length, 0);
+    assert.equal(replaced.requests.length, 2, 'raw settlement must synchronize only the latest active route');
+    assert.equal(replaced.requests[1].options.sdkRouteInstanceId, replaced.generation);
     replaced.requests[1].resolve(replaced.state({ reason: 'current' }));
     await settle();
     assert.equal(seen.length, 1);
@@ -237,7 +246,30 @@ async function main() {
     assert.equal(timeout.timers.size, 0, 'timeout releases resources even if transport ignores abort');
     await settle();
     assert.equal(timeout.requests.length, 1, 'timeout must not start an unbounded retry loop');
+    timeout.requests[0].resolve(timeout.state());
+    await settle();
+    assert.equal(timeout.requests.length, 1, 'late settlement after timeout must not retry the same route');
+    assert.equal(timeout.timers.size, 0);
   } finally { timeout.game.dispose(); }
+
+  // A timed-out waiter is gone before route exit, but its raw query still blocks.
+  const timedOutRoute = await fixture();
+  try {
+    const start = timedOutRoute.game.runtime.start();
+    await settle(); timedOutRoute.finishStart(); await start; await settle();
+    [...timedOutRoute.timers.values()][0].fn();
+    await settle();
+    await timedOutRoute.game.runtime.end();
+    const successor = timedOutRoute.game.runtime.start();
+    await settle(); timedOutRoute.finishStart(); await successor; await settle();
+    assert.equal(timedOutRoute.requests.length, 1, 'route restart bypassed timed-out raw query capacity');
+    timedOutRoute.requests[0].reject(new Error('late timeout rejection'));
+    await settle();
+    assert.equal(timedOutRoute.requests.length, 2, 'timed-out predecessor left the new route unsynchronized');
+    timedOutRoute.requests[1].resolve(timedOutRoute.state());
+    await settle();
+    assert.equal(timedOutRoute.timers.size, 0);
+  } finally { timedOutRoute.game.dispose(); }
 
   for (const endThrows of [false, true]) {
     const recovering = await fixture({ endOk: false, endThrows });
@@ -251,18 +283,21 @@ async function main() {
       else await recovering.game.runtime.end();
       await settle();
       assert.equal(cancelled.options.signal.aborted, true);
+      assert.equal(recovering.requests.length, 1, 'failed end must wait for the old raw query to retire');
+      assert.equal(recovering.timers.size, 0, 'cancelled public waiter must release its timeout');
+      const states = [];
+      recovering.game.voice.onState((state) => states.push(state));
+      if (endThrows) cancelled.reject(new Error('late cancelled failure'));
+      else cancelled.resolve(recovering.state({ reason: 'stale cancelled reply' }));
+      await settle();
+      assert.equal(states.length, 0, 'cancelled query must not publish a recovered snapshot');
       assert.equal(recovering.requests.length, 2, 'failed end resynchronizes the still-owned route');
       assert.equal(errors.length, 0, 'recovery must wait for cancellation cleanup instead of reporting busy');
       assert.equal(recovering.timers.size, 1, 'only the recovery query timeout remains');
-      const states = [];
-      recovering.game.voice.onState((state) => states.push(state));
       recovering.requests[1].resolve(recovering.state());
       await settle();
       assert.equal(states.length, 1);
       assert.equal(recovering.timers.size, 0, 'recovered query releases its timer');
-      cancelled.resolve(recovering.state({ reason: 'stale cancelled reply' }));
-      await settle();
-      assert.equal(states.length, 1, 'canceled reply cannot replace the recovered snapshot');
     } finally { recovering.game.dispose(); }
   }
 

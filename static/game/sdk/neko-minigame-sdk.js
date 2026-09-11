@@ -2013,6 +2013,7 @@
     let voiceStateSnapshot = null;
     let voiceStateRevision = 0;
     let voiceStateSync = null;
+    let voiceStateGeneration = {};
     const voiceStatePendingRequests = new Set();
     let speechBridgeStarted = false;
     let speechPlaybackRawState = null;
@@ -2082,6 +2083,7 @@
 
     function clearVoiceState() {
       voiceStateSnapshot = null;
+      voiceStateGeneration = {};
       voiceStateSync = null;
       abortManagedRequests(voiceStatePendingRequests, disposing ? 'disposed' : 'cancelled');
     }
@@ -2089,8 +2091,13 @@
     function synchronizeVoiceState() {
       if (disposed || disposing || !voiceBridgeStarted || !grantedSet.has('voice-input')
           || !runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)
-          || voiceStateSync || voiceStatePendingRequests.size) return;
-      const sync = { routeInstanceId: runtimeRouteInstanceId, revision: voiceStateRevision };
+          || voiceStateSync || voiceStatePendingRequests.size
+          || managedHostInFlight.get(voiceStatePendingRequests)?.size) return;
+      const sync = {
+        routeInstanceId: runtimeRouteInstanceId,
+        revision: voiceStateRevision,
+        generation: voiceStateGeneration,
+      };
       voiceStateSync = sync;
       const isCurrent = () => voiceStateSync === sync && !disposed && !disposing
         && runtimeRouteEstablished && runtimeRouteInstanceId === sync.routeInstanceId;
@@ -2105,6 +2112,12 @@
           ...requestOptions,
           sdkRouteInstanceId: sync.routeInstanceId,
         }),
+        onRawSettled: () => {
+          // A cancelled waiter can finish long before an uncooperative transport.
+          // Recover a replaced route only when its predecessor releases capacity;
+          // an ordinary timeout or failure never retries itself.
+          if (sync.generation !== voiceStateGeneration) synchronizeVoiceState();
+        },
       }).then((state) => {
         // Same-origin transports deliver the reply through the bridge as well.
         // Do not duplicate it or overwrite a newer unsolicited state with a reply.
@@ -2117,9 +2130,8 @@
         if (voiceStateSync === sync) {
           voiceStateSync = null;
         } else if (!voiceStateSync) {
-          // A synchronous end failure can restore the route before the aborted
-          // managed request releases its slot. Recover only after that cleanup;
-          // ordinary query failures/timeouts above never trigger retries.
+          // Raw settlement may precede public cancellation cleanup, including a
+          // synchronous end failure. Both slots must be free before recovery.
           synchronizeVoiceState();
         }
       });
@@ -2993,6 +3005,7 @@
       requestOptions = {},
       invoke,
       consume = null,
+      onRawSettled = null,
     }) {
       ensureActive(operation);
       if (pendingSet.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
@@ -3031,10 +3044,8 @@
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       pendingSet.add(entry);
-      if (consume) {
-        inFlight.add(entry);
-        managedHostInFlight.set(pendingSet, inFlight);
-      }
+      inFlight.add(entry);
+      managedHostInFlight.set(pendingSet, inFlight);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3059,10 +3070,9 @@
               timeoutMs: normalizedTimeoutMs,
             });
           }).then(value => consume ? consume(value) : value).finally(() => {
-            if (consume) {
-              inFlight.delete(entry);
-              if (!inFlight.size) managedHostInFlight.delete(pendingSet);
-            }
+            inFlight.delete(entry);
+            if (!inFlight.size) managedHostInFlight.delete(pendingSet);
+            onRawSettled?.();
           }),
           timeoutPromise,
           cancellationPromise,
