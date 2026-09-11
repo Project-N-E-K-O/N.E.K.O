@@ -18,7 +18,7 @@ declare namespace NekoMiniGame {
     | 'leaderboard-local'
     | 'leaderboard-server'
     | (string & {});
-  type ContractKind = 'event' | 'state' | 'control' | 'result';
+  type ContractKind = 'event' | 'state' | 'control' | 'result' | 'command';
   type ContractSchemaType =
     | 'null'
     | 'boolean'
@@ -37,19 +37,32 @@ declare namespace NekoMiniGame {
     maxLength?: number;
     minItems?: number;
     maxItems?: number;
-    items?: ContractSchema;
-    properties?: Readonly<Record<string, ContractSchema>>;
+    items?: ContractDeclaration;
+    properties?: Readonly<Record<string, ContractDeclaration>>;
     required?: readonly string[];
     additionalProperties?: boolean;
   }
 
   type ContractDeclaration = ContractSchema | readonly string[];
 
+  interface CommandRequestSchema {
+    type: 'object';
+    properties?: Readonly<Record<string, ContractDeclaration>>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
+  interface CommandContract {
+    request: CommandRequestSchema;
+    response: ContractDeclaration;
+  }
+
   interface ManifestContracts {
     events?: Readonly<Record<string, ContractDeclaration>>;
     states?: Readonly<Record<string, ContractDeclaration>>;
     controls?: Readonly<Record<string, ContractDeclaration>>;
     results?: Readonly<Record<string, ContractDeclaration>>;
+    commands?: Readonly<Record<string, CommandContract>>;
   }
 
   interface Manifest {
@@ -158,6 +171,7 @@ declare namespace NekoMiniGame {
   interface RuntimeSession {
     readonly id: string;
     readonly characterName: string;
+    readonly routeInstanceId: string;
   }
 
   interface RuntimeEvent<T = unknown> {
@@ -230,6 +244,16 @@ declare namespace NekoMiniGame {
     readonly connected: boolean;
     on(type: string, handler: (control: ControlEnvelope) => void): () => void;
     onError(handler: (error: { code: string; message: string }) => void): () => void;
+  }
+
+  interface Commands {
+    readonly declared: readonly string[];
+    readonly pendingCount: number;
+    execute<T extends JsonValue = JsonValue>(
+      name: string,
+      payload: Readonly<Record<string, JsonValue>>,
+      options?: RequestOptions,
+    ): Promise<Response<T>>;
   }
 
   interface Dialogue {
@@ -553,9 +577,15 @@ declare namespace NekoMiniGame {
     disposeAll(): void;
   }
 
-  interface AvatarModel { type: 'live2d' | 'vrm'; path: string }
+  interface AvatarModel { type: 'live2d' | 'vrm' | 'mmd' | 'pngtuber'; path: string }
+  interface AvatarCharacterDescriptor {
+    readonly name: string;
+    readonly model: Readonly<AvatarModel> | null;
+    readonly rendererAvailable: boolean;
+  }
   interface AvatarMountConfiguration {
     slot: string;
+    characterName?: string;
     model: AvatarModel;
     viewport: { mode: 'fixed' | 'container' | 'host-window'; width?: number; height?: number };
     fit?: {
@@ -571,6 +601,8 @@ declare namespace NekoMiniGame {
     readonly disposed: boolean;
     readonly config: Readonly<AvatarMountConfiguration>;
     setModel(model: AvatarModel): Promise<unknown>;
+    setView(view: { scale: number; x: number; y: number }): unknown;
+    setSpeaking(active: boolean): unknown;
     focus(point: { x: number; y: number }): unknown;
     setEmotion(name: string): unknown;
     pause(): unknown;
@@ -581,6 +613,9 @@ declare namespace NekoMiniGame {
 
   interface Avatar {
     readonly activeCount: number;
+    getCurrentCharacter(): Promise<AvatarCharacterDescriptor | null>;
+    getCharacter(name: string): Promise<AvatarCharacterDescriptor | null>;
+    listCharacters(): Promise<readonly string[]>;
     mount(config: AvatarMountConfiguration): Promise<AvatarController>;
     disposeAll(): void;
   }
@@ -593,6 +628,7 @@ declare namespace NekoMiniGame {
     readonly events: Events;
     readonly state: StatePublisher;
     readonly controls: Controls;
+    readonly commands: Commands;
     readonly results: ResultPublisher;
     readonly context: ContextReader;
     readonly memory: Memory;

@@ -119,6 +119,16 @@
                         "minProperties": 1
                       }
                     }
+                  },
+                  {
+                    "required": [
+                      "commands"
+                    ],
+                    "properties": {
+                      "commands": {
+                        "minProperties": 1
+                      }
+                    }
                   }
                 ]
               }
@@ -432,6 +442,9 @@
         },
         "results": {
           "$ref": "#/$defs/contractMap"
+        },
+        "commands": {
+          "$ref": "#/$defs/commandContractMap"
         }
       }
     },
@@ -504,6 +517,149 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+      }
+    },
+    "commandContractMap": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9:-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/commandContract"
+      }
+    },
+    "commandContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "response"
+      ],
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/commandObjectSchema"
+        },
+        "response": {
+          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+        }
+      }
+    },
+    "commandContractSchemaOrEnumShorthand": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 1800000
+          }
+        },
+        {
+          "$ref": "#/$defs/commandStringSchema"
+        },
+        {
+          "$ref": "#/$defs/commandArraySchema"
+        },
+        {
+          "$ref": "#/$defs/commandObjectSchema"
+        }
+      ]
+    },
+    "commandStringSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "string"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        }
+      }
+    },
+    "commandArraySchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "items"
+      ],
+      "properties": {
+        "type": {
+          "const": "array"
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "items": {
+          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+        }
+      }
+    },
+    "commandObjectSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/contractPropertyName"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+          }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/contractPropertyName"
+          }
+        },
+        "additionalProperties": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "contractSchema": {

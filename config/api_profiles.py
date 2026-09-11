@@ -87,7 +87,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'grok': {
         'CORE_URL': "wss://api.x.ai/v1/realtime",
-        'CORE_MODEL': "grok-voice-fast-1.0",
+        'CORE_MODEL': "grok-voice-latest",
     },
 }
 

@@ -23,6 +23,11 @@
   const MAX_CONTRACT_PAYLOAD_NODES = 2048;
   const MAX_CONTRACT_PAYLOAD_BYTES = 256 * 1024;
   const MAX_CONTRACT_PENDING_REQUESTS = 8;
+  const MAX_COMMAND_PENDING_REQUESTS = 8;
+  const MAX_COMMAND_PAYLOAD_BYTES = 2 * 1024 * 1024;
+  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
+  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
+  const MAX_COMMAND_CONTRACT_STRING_CHARS = 1800000;
   const MAX_CONTEXT_SCOPES = 16;
   const MAX_CONTEXT_PENDING_REQUESTS = 2;
   const MAX_DIALOGUE_PENDING_REQUESTS = 4;
@@ -72,6 +77,27 @@
   const DEFAULT_HEARTBEAT_TIMEOUT_MS = 4500;
   const DEFAULT_OUTPUT_INTERVAL_MS = 700;
   const DEFAULT_OUTPUT_TIMEOUT_MS = 8000;
+  // These names mirror the same-origin host command boundary. A game command
+  // contract must describe only caller-owned data: identity and memory policy
+  // are stripped or replaced by the trusted host before the backend request.
+  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+  ]);
+  const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
+    'gamememoryenabled',
+    'gameplayerinteractionmemoryenabled',
+    'gamememoryplayerinteractionenabled',
+    'gameeventreplymemoryenabled',
+    'gamememoryeventreplyenabled',
+    'gamearchivememoryenabled',
+    'gamememoryarchiveenabled',
+    'gamepostgamecontextmemoryenabled',
+    'gamememorypostgamecontextenabled',
+  ]);
   const MANIFEST_TOP_LEVEL_FIELDS = Object.freeze(new Set([
     'id',
     'version',
@@ -90,7 +116,7 @@
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
     'memory', 'context-read', 'leaderboard-server', 'voice-input',
   ]);
-  const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results']);
+  const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results', 'commands']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
     'null', 'boolean', 'number', 'integer', 'string', 'array', 'object',
   ]);
@@ -105,7 +131,9 @@
   const CAPABILITY_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
   const AVATAR_SLOT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
   const AUDIO_SLOT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-  const AVATAR_TYPES = Object.freeze(['live2d', 'vrm']);
+  const AVATAR_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
+  const MAX_AVATAR_CHARACTERS = 256;
+  const MAX_AVATAR_CHARACTER_NAME_CHARS = 128;
   const AVATAR_VIEWPORT_MODES = Object.freeze(['fixed', 'container', 'host-window']);
   const AVATAR_FIT_MODES = Object.freeze(['contain', 'cover', 'native']);
   const AVATAR_ALIGNMENTS = Object.freeze([
@@ -259,6 +287,38 @@
     return prototype === Object.prototype || prototype === null;
   }
 
+  function isMemoryPolicyPayloadField(key) {
+    const normalized = String(key || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    if (normalized === 'memoryenabled' || normalized === 'enablegamememory') return true;
+    return MEMORY_POLICY_NORMALIZED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+  }
+
+  function hostReservedCommandRequestField(schema) {
+    const rootFields = new Set([
+      ...Object.keys(schema.properties || {}),
+      ...(schema.required || []),
+    ]);
+    for (const field of rootFields) {
+      if (COMMAND_PAYLOAD_HOST_IDENTITY_KEYS.includes(field) || isMemoryPolicyPayloadField(field)) {
+        return field;
+      }
+    }
+    // _trustedRuntimePayload also strips memory-policy aliases from a top-level
+    // event object, so declarations at that exact nested boundary are equally
+    // misleading and must be rejected.
+    const eventSchema = schema.properties?.event;
+    if (eventSchema?.type === 'object') {
+      const eventFields = new Set([
+        ...Object.keys(eventSchema.properties || {}),
+        ...(eventSchema.required || []),
+      ]);
+      for (const field of eventFields) {
+        if (isMemoryPolicyPayloadField(field)) return `event.${field}`;
+      }
+    }
+    return '';
+  }
+
   function contractInteger(value, fieldName, minimum, maximum, fallback) {
     if (value === undefined) return fallback;
     // No coercion. The published schema declares every one of these
@@ -273,7 +333,8 @@
     return value;
   }
 
-  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0) {
+  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0, options = {}) {
+    const maxStringChars = options.maxStringChars || 4096;
     state.nodes += 1;
     if (state.nodes > MAX_CONTRACT_SCHEMA_NODES || depth > 12) {
       fail('invalid_manifest', `${fieldName} exceeds the contract schema complexity limit`, {
@@ -286,9 +347,9 @@
       // `enum` form carries no such bound, so converting first dropped it and a
       // longer string connected against a schema that rejects it.
       for (const item of input) {
-        if (typeof item === 'string' && [...item].length > 4096) {
+        if (typeof item === 'string' && [...item].length > maxStringChars) {
           fail('invalid_manifest', `${fieldName} enum shorthand value exceeds its length limit`, {
-            limit: 4096,
+            limit: maxStringChars,
           });
         }
       }
@@ -367,8 +428,14 @@
       }
     }
     if (type === 'string') {
-      schema.minLength = contractInteger(input.minLength, `${fieldName}.minLength`, 0, 4096, 0);
-      schema.maxLength = contractInteger(input.maxLength, `${fieldName}.maxLength`, 0, 4096, 4096);
+      schema.minLength = contractInteger(input.minLength, `${fieldName}.minLength`, 0, maxStringChars, 0);
+      schema.maxLength = contractInteger(
+        input.maxLength,
+        `${fieldName}.maxLength`,
+        0,
+        maxStringChars,
+        maxStringChars,
+      );
       if (schema.minLength > schema.maxLength) {
         fail('invalid_manifest', `${fieldName}.minLength must not exceed maxLength`);
       }
@@ -380,7 +447,7 @@
         fail('invalid_manifest', `${fieldName}.minItems must not exceed maxItems`);
       }
       if (!input.items) fail('invalid_manifest', `${fieldName}.items is required for arrays`);
-      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1);
+      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1, options);
     }
     if (type === 'object') {
       // Same rule as manifest.contracts: only ABSENT defaults. The schema
@@ -410,6 +477,7 @@
           `${fieldName}.properties.${name}`,
           state,
           depth + 1,
+          options,
         );
       }
       const requiredInput = input.required === undefined ? [] : input.required;
@@ -475,15 +543,69 @@
         });
       }
       const normalized = {};
-      for (const [name, schema] of entries) {
+      for (const [name, declaration] of entries) {
         if (!RUNTIME_EVENT_PATTERN.test(name)) {
           fail('invalid_manifest', `Invalid ${kind} contract name`, { name });
         }
-        normalized[name] = normalizeContractSchema(
-          schema,
-          `manifest.contracts.${kind}.${name}`,
-          state,
-        );
+        if (kind === 'commands') {
+          if (!plainObject(declaration)) {
+            fail('invalid_manifest', `manifest.contracts.commands.${name} must be an object`);
+          }
+          for (const key of Object.keys(declaration)) {
+            if (!['request', 'response'].includes(key)) {
+              fail('invalid_manifest', `manifest.contracts.commands.${name} contains an unsupported field`, {
+                key,
+              });
+            }
+          }
+          if (declaration.request === undefined || declaration.response === undefined) {
+            fail('invalid_manifest', `manifest.contracts.commands.${name} requires request and response schemas`);
+          }
+          if (!plainObject(declaration.request) || declaration.request.type !== 'object') {
+            fail('invalid_manifest', `manifest.contracts.commands.${name}.request must declare an object schema`);
+          }
+          for (const key of Object.keys(declaration.request)) {
+            if (!['type', 'properties', 'required', 'additionalProperties'].includes(key)) {
+              fail(
+                'invalid_manifest',
+                `manifest.contracts.commands.${name}.request contains an unsupported object-schema keyword`,
+                { key },
+              );
+            }
+          }
+          const commandSchemaOptions = { maxStringChars: MAX_COMMAND_CONTRACT_STRING_CHARS };
+          const requestSchema = normalizeContractSchema(
+            declaration.request,
+            `manifest.contracts.commands.${name}.request`,
+            state,
+            0,
+            commandSchemaOptions,
+          );
+          const hostReservedField = hostReservedCommandRequestField(requestSchema);
+          if (hostReservedField) {
+            fail(
+              'invalid_manifest',
+              `manifest.contracts.commands.${name}.request declares a host-reserved field`,
+              { field: hostReservedField },
+            );
+          }
+          normalized[name] = Object.freeze({
+            request: requestSchema,
+            response: normalizeContractSchema(
+              declaration.response,
+              `manifest.contracts.commands.${name}.response`,
+              state,
+              0,
+              commandSchemaOptions,
+            ),
+          });
+        } else {
+          normalized[name] = normalizeContractSchema(
+            declaration,
+            `manifest.contracts.${kind}.${name}`,
+            state,
+          );
+        }
       }
       contracts[kind] = Object.freeze(normalized);
     }
@@ -823,7 +945,12 @@
     return Object.freeze(result);
   }
 
-  function normalizeContractPayload(value, schema, fieldName) {
+  function normalizeContractPayload(
+    value,
+    schema,
+    fieldName,
+    maximumBytes = MAX_CONTRACT_PAYLOAD_BYTES,
+  ) {
     let serialized;
     try { serialized = JSON.stringify(value); }
     catch (_) { fail('invalid_contract', `${fieldName} must be JSON-compatible`); }
@@ -832,20 +959,20 @@
     const byteLength = typeof TextEncoderImpl === 'function'
       ? new TextEncoderImpl().encode(serialized).byteLength
       : unescape(encodeURIComponent(serialized)).length;
-    if (byteLength > MAX_CONTRACT_PAYLOAD_BYTES) {
+    if (byteLength > maximumBytes) {
       fail('invalid_contract', `${fieldName} exceeds the contract payload size limit`, {
         bytes: byteLength,
-        limit: MAX_CONTRACT_PAYLOAD_BYTES,
+        limit: maximumBytes,
       });
     }
     // Same reason as normalizeBoundedJson: the pre-check measured a projection
     // of the input, so re-measure what validation actually produced.
     const validated = validateContractValue(value, schema, fieldName, { nodes: 0 });
     const validatedBytes = jsonByteLength(validated);
-    if (validatedBytes > MAX_CONTRACT_PAYLOAD_BYTES) {
+    if (validatedBytes > maximumBytes) {
       fail('invalid_contract', `${fieldName} exceeds the contract payload size limit`, {
         bytes: validatedBytes,
-        limit: MAX_CONTRACT_PAYLOAD_BYTES,
+        limit: maximumBytes,
       });
     }
     return validated;
@@ -1397,7 +1524,7 @@
     const type = String(value.type || '').trim().toLowerCase();
     const path = String(value.path || '').trim();
     if (!AVATAR_TYPES.includes(type)) {
-      fail('invalid_request', 'avatar model.type must be live2d or vrm', { type });
+      fail('invalid_request', 'avatar model.type must be live2d, vrm, mmd, or pngtuber', { type });
     }
     if (!path || path.length > 2048) {
       fail('invalid_request', 'avatar model.path is required and must not exceed 2048 characters');
@@ -1413,6 +1540,9 @@
     if (!AVATAR_SLOT_PATTERN.test(slot)) {
       fail('invalid_request', 'avatar slot must be a lowercase identifier');
     }
+    const characterName = value.characterName === undefined
+      ? ''
+      : normalizeAvatarCharacterName(value.characterName);
 
     const viewportInput = value.viewport || {};
     const viewportMode = String(viewportInput.mode || '').trim();
@@ -1468,6 +1598,7 @@
 
     return Object.freeze({
       slot,
+      ...(characterName ? { characterName } : {}),
       model: normalizeAvatarModel(value.model),
       viewport: Object.freeze(viewport),
       fit,
@@ -1483,6 +1614,58 @@
       x: finiteNumber(value.x, 'avatar focus.x', { minimum: -100000, maximum: 100000 }),
       y: finiteNumber(value.y, 'avatar focus.y', { minimum: -100000, maximum: 100000 }),
     });
+  }
+
+  function normalizeAvatarView(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      fail('invalid_request', 'avatar view must be an object');
+    }
+    return Object.freeze({
+      scale: finiteNumber(value.scale, 'avatar view.scale', { minimum: 0.5, maximum: 5000 }),
+      x: finiteNumber(value.x, 'avatar view.x', { minimum: -5000, maximum: 5000 }),
+      y: finiteNumber(value.y, 'avatar view.y', { minimum: -5000, maximum: 5000 }),
+    });
+  }
+
+  function normalizeAvatarCharacterName(value, options = {}) {
+    if (typeof value !== 'string') {
+      fail('invalid_request', 'avatar character name is invalid');
+    }
+    const name = value.trim();
+    if ((!name && options.required !== false) || name.length > MAX_AVATAR_CHARACTER_NAME_CHARS) {
+      fail('invalid_request', 'avatar character name is invalid');
+    }
+    return name;
+  }
+
+  function normalizeAvatarCharacterDescriptor(value) {
+    if (value == null) return null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      fail('transport_unavailable', 'The host returned an invalid avatar character descriptor');
+    }
+    const name = normalizeAvatarCharacterName(value.name);
+    const model = value.model == null ? null : normalizeAvatarModel(value.model);
+    return Object.freeze({
+      name,
+      model,
+      rendererAvailable: Boolean(model && value.rendererAvailable !== false),
+    });
+  }
+
+  function normalizeAvatarCharacterList(value) {
+    if (!Array.isArray(value) || value.length > MAX_AVATAR_CHARACTERS) {
+      fail('transport_unavailable', 'The host returned an invalid avatar character list');
+    }
+    const seen = new Set();
+    const names = [];
+    for (const rawName of value) {
+      const name = normalizeAvatarCharacterName(rawName);
+      if (!seen.has(name)) {
+        seen.add(name);
+        names.push(name);
+      }
+    }
+    return Object.freeze(names);
   }
 
   function cloneAudioContractValue(value, fieldName, state, depth = 0) {
@@ -1923,20 +2106,30 @@
     });
   }
 
-  async function normalizeTransportResponse(value) {
+  async function normalizeTransportResponse(value, options = {}) {
+    const allowScalarData = options.allowScalarData === true;
     if (value && typeof value.json === 'function') {
       let data = {};
       try { data = await value.json(); } catch (_) { /* invalid/empty response body */ }
+      const scalarData = data === null
+        || typeof data === 'string'
+        || typeof data === 'number'
+        || typeof data === 'boolean';
       return Object.freeze({
         ok: value.ok === true,
         status: Number(value.status || 0),
-        data: data && typeof data === 'object' ? data : {},
+        data: (data && typeof data === 'object') || (allowScalarData && scalarData) ? data : {},
       });
     }
-    const data = value && typeof value === 'object' ? value : {};
+    const objectData = !!value && typeof value === 'object';
+    const scalarData = value === null
+      || typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean';
+    const data = objectData || (allowScalarData && scalarData) ? value : {};
     return Object.freeze({
-      ok: data.ok !== false,
-      status: Number(data.status || 0),
+      ok: objectData ? value.ok !== false : true,
+      status: objectData ? Number(value.status || 0) : 0,
       data,
     });
   }
@@ -2013,6 +2206,7 @@
     const speechPendingRequests = new Set();
     const speechPreloadPendingRequests = new Set();
     const protocolPendingRequests = new Set();
+    const commandPendingRequests = new Set();
     const contextPendingRequests = new Set();
     const dialoguePendingRequests = new Set();
     const memoryPendingRequests = new Set();
@@ -2025,6 +2219,7 @@
     const bubblePresentations = new Set();
     const consentPresentations = new Set();
     let gameProtocolSequence = 0;
+    let gameCommandSequence = 0;
     let controlBridgeStarted = false;
     let lastControlSequence = 0;
     let memoryConsentEnabled = false;
@@ -2141,6 +2336,7 @@
         characterName: String(
           state.characterName || state.lanlanName || state.lanlan_name || '',
         ),
+        routeInstanceId: String(runtimeRouteInstanceId || ''),
       });
     }
 
@@ -2606,6 +2802,7 @@
           && String(data.reason || '') === 'route_instance_id_mismatch';
         if (data.active === false && (routeGenerationRetired || (response.ok && data.ok !== false))) {
           heartbeatLifecycle.failures = 0;
+          abortManagedRequests(commandPendingRequests, 'cancelled');
           runtimeRouteEstablished = false;
           // Retire the generation with the route. Capabilities that are allowed
           // before a route exists (speech.speak/mirror/preload, context.read)
@@ -3104,6 +3301,99 @@
       }
     }
 
+    function declaredCommandContract(nameInput, operation = 'commands.execute') {
+      ensureActive(operation);
+      const name = String(nameInput || '').trim();
+      const commandContracts = manifest.contracts.commands;
+      const contract = Object.prototype.hasOwnProperty.call(commandContracts, name)
+        ? commandContracts[name]
+        : null;
+      if (!contract) {
+        fail('invalid_contract', 'The command contract is not declared by this game', {
+          kind: 'commands',
+          type: name,
+          operation,
+        });
+      }
+      return { name, contract };
+    }
+
+    async function executeGameCommand(nameInput, payloadInput, requestOptions = {}) {
+      const operation = 'commands.execute';
+      requireCapability('runtime', operation);
+      requireActiveRuntimeRoute(operation);
+      if (typeof transport.executeGameCommand !== 'function') {
+        fail('transport_unavailable', 'The host game command transport is unavailable', { operation });
+      }
+      const { name, contract } = declaredCommandContract(nameInput, operation);
+      const session = runtimeSession();
+      const routeInstanceId = String(runtimeRouteInstanceId || '').trim();
+      if (!session.id || !routeInstanceId) {
+        fail('session_invalid', 'The game command requires an active route generation', { operation });
+      }
+      const payload = normalizeContractPayload(
+        payloadInput,
+        contract.request,
+        `${operation} request`,
+        MAX_COMMAND_PAYLOAD_BYTES,
+      );
+      gameCommandSequence = (gameCommandSequence % Number.MAX_SAFE_INTEGER) + 1;
+      const envelope = runtimeCapabilityPayload({
+        protocolVersion: SDK_PROTOCOL_VERSION,
+        sequence: gameCommandSequence,
+        type: name,
+        timestamp: Date.now(),
+        sessionId: session.id,
+        routeInstanceId,
+        payload,
+      });
+      const rawResponse = await performManagedHostRequest({
+        operation,
+        pendingSet: commandPendingRequests,
+        limit: MAX_COMMAND_PENDING_REQUESTS,
+        timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+        maximumTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
+        requestOptions,
+        invoke: (options) => transport.executeGameCommand(name, envelope, options),
+      });
+      const requireCurrentCommandRoute = () => {
+        const currentSession = runtimeSession();
+        if (
+          !runtimeRouteEstablished
+          || !['running', 'degraded'].includes(runtimePhase)
+          || currentSession.id !== session.id
+          || String(runtimeRouteInstanceId || '').trim() !== routeInstanceId
+        ) {
+          fail('session_invalid', 'The game command response belongs to an inactive route generation', {
+            operation,
+          });
+        }
+      };
+      requireCurrentCommandRoute();
+      const response = await normalizeTransportResponse(rawResponse, { allowScalarData: true });
+      requireCurrentCommandRoute();
+      // A failed HTTP or application response does not promise the command's
+      // success schema. Preserve its bounded diagnostic body and status rather
+      // than replacing the real failure with an unrelated invalid_contract.
+      const data = (response.ok && response.data?.ok !== false)
+        ? normalizeContractPayload(
+          response.data,
+          contract.response,
+          `${operation} response`,
+          MAX_COMMAND_PAYLOAD_BYTES,
+        )
+        : normalizeBoundedJson(
+          response.data,
+          `${operation} error response`,
+          MAX_COMMAND_PAYLOAD_BYTES,
+        );
+      return Object.freeze({
+        ok: response.ok,
+        status: response.status,
+        data,
+      });
+    }
+
     function publishControlEnvelope(rawEnvelope) {
       try {
         if (!rawEnvelope || typeof rawEnvelope !== 'object' || Array.isArray(rawEnvelope)) {
@@ -3180,9 +3470,14 @@
       (kind) => Object.keys(manifest.contracts[kind]).length > 0,
     );
     const controlsDeclared = Object.keys(manifest.contracts.controls).length > 0;
+    const commandsDeclared = Object.keys(manifest.contracts.commands).length > 0;
     if (outboundContractsDeclared && typeof transport.publishGameProtocol !== 'function') {
       try { transport.dispose?.(); } catch (_) { /* connection cleanup */ }
       fail('transport_unavailable', 'The host does not support declared game protocol messages');
+    }
+    if (commandsDeclared && typeof transport.executeGameCommand !== 'function') {
+      try { transport.dispose?.(); } catch (_) { /* connection cleanup */ }
+      fail('transport_unavailable', 'The host does not support declared game commands');
     }
     if (controlsDeclared) {
       if (
@@ -3376,6 +3671,7 @@
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
+        abortManagedRequests(commandPendingRequests, 'cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
         abortManagedRequests(dialoguePendingRequests, 'cancelled');
         abortManagedRequests(memoryPendingRequests, 'cancelled');
@@ -3409,6 +3705,7 @@
           characterName: String(
             normalized?.characterName || normalized?.lanlanName || normalized?.lanlan_name || '',
           ),
+          routeInstanceId: String(runtimeRouteInstanceId || ''),
         });
       },
       async start(payload = {}, requestOptions = {}) {
@@ -3532,6 +3829,7 @@
         if (runtimePhase === 'ending') {
           fail('busy', 'The runtime lifecycle is already ending');
         }
+        abortManagedRequests(commandPendingRequests, 'cancelled');
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         const operation = beginRuntimeOperation('end', endRequestOptions);
@@ -3633,6 +3931,14 @@
       onError(handler) {
         ensureActive('controls.onError');
         return subscribe('control-error', handler);
+      },
+    });
+
+    const commands = Object.freeze({
+      declared: Object.freeze(Object.keys(manifest.contracts.commands)),
+      get pendingCount() { return commandPendingRequests.size; },
+      execute(name, payload, requestOptions = {}) {
+        return executeGameCommand(name, payload, requestOptions);
       },
     });
 
@@ -4916,6 +5222,40 @@
 
     const avatar = Object.freeze({
       get activeCount() { return avatarRenderers.size; },
+      async getCurrentCharacter() {
+        requireCapability('avatar-renderer', 'avatar.getCurrentCharacter');
+        if (typeof transport.getAvatarCharacter !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
+        try {
+          return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(''));
+        } catch (error) {
+          throw normalizeTransportError(error, 'avatar.getCurrentCharacter');
+        }
+      },
+      async getCharacter(nameInput) {
+        requireCapability('avatar-renderer', 'avatar.getCharacter');
+        if (typeof transport.getAvatarCharacter !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
+        const name = normalizeAvatarCharacterName(nameInput);
+        try {
+          return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(name));
+        } catch (error) {
+          throw normalizeTransportError(error, 'avatar.getCharacter');
+        }
+      },
+      async listCharacters() {
+        requireCapability('avatar-renderer', 'avatar.listCharacters');
+        if (typeof transport.listAvatarCharacters !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
+        try {
+          return normalizeAvatarCharacterList(await transport.listAvatarCharacters());
+        } catch (error) {
+          throw normalizeTransportError(error, 'avatar.listCharacters');
+        }
+      },
       async mount(configInput) {
         requireCapability('avatar-renderer', 'avatar.mount');
         if (avatarRenderers.size + avatarMountsPending >= MAX_AVATAR_RENDERERS) {
@@ -4973,6 +5313,15 @@
           async setModel(modelInput) {
             return callController('setModel', () => raw.setModel(normalizeAvatarModel(modelInput)));
           },
+          setView(viewInput) {
+            return callController('setView', () => raw.setView(normalizeAvatarView(viewInput)));
+          },
+          setSpeaking(active) {
+            if (typeof active !== 'boolean') {
+              fail('invalid_request', 'avatar speaking state must be boolean');
+            }
+            return callController('setSpeaking', () => raw.setSpeaking(active));
+          },
           focus(pointInput) {
             return callController('focus', () => raw.focus(normalizeAvatarFocus(pointInput)));
           },
@@ -5017,6 +5366,7 @@
       events,
       state,
       controls,
+      commands,
       results,
       context,
       memory,
@@ -5039,6 +5389,7 @@
         stopRuntimeOperation({ preserveEnd: disposeOptions.preserveRuntimeEnd === true });
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
+        abortManagedRequests(commandPendingRequests, 'disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');

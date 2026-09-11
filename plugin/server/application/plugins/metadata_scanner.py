@@ -18,12 +18,13 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 import psutil
 
+from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
 from plugin.core import registry as registry_module
 from plugin.core.state import state
@@ -319,22 +320,29 @@ def _json_safe(value: Any) -> Any:
 def _event_meta_payload(meta: object) -> dict[str, object]:
     raw = getattr(meta, "__dict__", None)
     if isinstance(raw, dict):
-        normalized = _json_safe(raw)
-        if isinstance(normalized, dict):
-            return normalized
-
-    return {
-        "event_type": str(getattr(meta, "event_type", "plugin_entry") or "plugin_entry"),
-        "id": str(getattr(meta, "id", "") or ""),
-        "name": _json_safe(getattr(meta, "name", "")),
-        "description": _json_safe(getattr(meta, "description", "")),
-        "input_schema": _json_safe(getattr(meta, "input_schema", None)),
-        "kind": str(getattr(meta, "kind", "action") or "action"),
-        "auto_start": bool(getattr(meta, "auto_start", False)),
-        "enabled": bool(getattr(meta, "enabled", True)),
-        "dynamic": bool(getattr(meta, "dynamic", False)),
-        "metadata": _json_safe(getattr(meta, "metadata", None)),
-    }
+        payload = dict(raw)
+    else:
+        # SDK v2 EventMeta is slotted. Only its identity and display fields are
+        # read by name here; every control comes from the shared contract below,
+        # so a control added to the SDK is transported by adding it there once.
+        # ``enabled`` / ``dynamic`` exist on the legacy EventMeta only, so the
+        # contract cannot supply them for an SDK meta: write their defaults.
+        payload = {
+            "event_type": str(getattr(meta, "event_type", "plugin_entry") or "plugin_entry"),
+            "id": str(getattr(meta, "id", "") or ""),
+            "name": getattr(meta, "name", ""),
+            "description": getattr(meta, "description", ""),
+            "input_schema": getattr(meta, "input_schema", None),
+            "enabled": True,
+            "dynamic": False,
+        }
+    payload.update(entry_contract_fields(meta))
+    quick_action_config = payload.get("quick_action_config")
+    if is_dataclass(quick_action_config) and not isinstance(quick_action_config, type):
+        # This SDK field has a structured wire contract. Do not change how the
+        # general JSON adapter handles unrelated custom dataclass values.
+        payload["quick_action_config"] = asdict(quick_action_config)
+    return _json_safe(payload)
 
 
 def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:

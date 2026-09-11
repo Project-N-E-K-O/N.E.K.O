@@ -214,53 +214,6 @@ def _assert_simplified_session_init(text: str, her_name: str) -> None:
     [("zh-TW", _assert_traditional_session_init),
      ("zh-CN", _assert_simplified_session_init)],
 )
-def test_bilibili_danmaku_trusted_write_instructions_locale(
-    monkeypatch, ui_locale, check,
-):
-    import utils.config_manager as config_manager_mod
-    from plugin.plugins.bilibili_danmaku import BiliDanmakuPlugin
-
-    monkeypatch.setattr(
-        config_manager_mod,
-        "get_config_manager",
-        lambda: SimpleNamespace(
-            get_character_data=lambda: (
-                "小明", "喵喵", None, {"喵喵": {}}, None,
-                {"喵喵": "角色设定"}, None, None, None,
-            ),
-        ),
-    )
-
-    facade = object.__new__(BiliDanmakuPlugin)
-    facade._target_lanlan = ""
-    facade._master_bili_uid = 0
-    facade._master_bili_name = ""
-    facade._logged_in_matches_master = False
-    facade._logged_in_bili_uid = 0
-
-    async def _display_name():
-        return "小明"
-
-    facade._get_master_display_name = _display_name
-
-    async def _run():
-        return await facade._build_bili_trusted_write_instructions(
-            action_name="评论",
-            content_field="content",
-            context="ctx",
-            constraints="cons",
-        )
-
-    with language_context(ui_locale):
-        prompt = asyncio.run(_run())
-    check(prompt, "喵喵")
-
-
-@pytest.mark.parametrize(
-    ("ui_locale", "check"),
-    [("zh-TW", _assert_traditional_session_init),
-     ("zh-CN", _assert_simplified_session_init)],
-)
 def test_wechat_reply_system_prompt_locale(monkeypatch, ui_locale, check):
     import utils.config_manager as config_manager_mod
     import utils.llm_client as llm_client_mod

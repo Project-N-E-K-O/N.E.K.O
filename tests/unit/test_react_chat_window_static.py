@@ -1610,6 +1610,45 @@ def test_galgame_history_excludes_tutorial_guide_messages():
     assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
 
 
+def test_galgame_history_excludes_new_user_icebreaker_messages():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    history_block = react_host.split("function getRecentGalgameMessageHistory()", 1)[1].split(
+        "function pickAcceptLanguage",
+        1,
+    )[0]
+
+    assert "function isNewUserIcebreakerChatMessage(message)" in react_host
+    assert "if (isNewUserIcebreakerChatMessage(m))" in history_block
+    assert "if (!collected.length) return [];" in history_block
+    append_block = react_host.split("function appendMessage(message)", 1)[1].split(
+        "function updateMessage",
+        1,
+    )[0]
+    assert "normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)" in append_block
+    assert "invalidatePendingGalgameRequest();" in append_block
+
+
+def test_galgame_turn_end_listener_ignores_new_user_icebreaker():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    guard_block = react_host.split("function isNewUserIcebreakerTurnEndEvent(event)", 1)[1].split(
+        "window.addEventListener('neko-assistant-turn-end'",
+        1,
+    )[0]
+    listener_block = react_host.split(
+        "window.addEventListener('neko-assistant-turn-end', function (event)",
+        1,
+    )[1].split("\n        });", 1)[0]
+
+    assert "detail.meta" in guard_block
+    assert "meta.source === 'new_user_icebreaker'" in guard_block
+    assert "meta.kind === 'new_user_icebreaker'" in guard_block
+    assert "meta.event" in guard_block
+    assert "source === 'new_user_icebreaker'" in guard_block
+    assert "if (isNewUserIcebreakerTurnEndEvent(event)) return;" in listener_block
+
+
 def test_galgame_option_template_follows_interface_language():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

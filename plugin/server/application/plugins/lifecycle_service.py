@@ -24,6 +24,8 @@ from plugin.core.registry import (
     _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
     _find_missing_python_requirements,
+    _effective_entries,
+    _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
 )
@@ -59,7 +61,14 @@ from plugin.server.application.plugins.metadata_scanner import (
     install_isolated_plugin_metadata,
     scan_plugin_metadata_isolated,
 )
-from plugin.server.infrastructure.packaged_metadata import read_packaged_metadata
+from plugin.server.infrastructure.packaged_metadata import (
+    SourceTreeSnapshot,
+    entries_config_digest,
+    read_packaged_metadata,
+    refresh_stale_packaged_metadata,
+    snapshot_source_tree,
+    stale_packaged_schema_version,
+)
 from plugin.server.application.install_source import (
     InstallSourceError,
     get_install_source_manager,
@@ -157,12 +166,14 @@ def _read_packaged_isolated_metadata(
     worker in that case, since it mints keys under the id we pass it.
 
     An empty ``handlers`` mapping is an answer, not a gap: a background-only
-    plugin registers no entries, and schema v3 always writes the key. Treating
-    empty as "no metadata" sent exactly those plugins back through the worker —
+    plugin registers no entries, and the current schema always writes the key.
+    Treating empty as "no metadata" sent exactly those plugins back through the worker —
     one import for the scan, one for the host, so any module-level side effect
     (writing state, sending a notification, launching a helper) happened twice
-    (codex). There is no older package to protect: the version gate above only
-    accepts v3, and v1/v2 were never released.
+    (codex). An artifact written under an older schema is refused by the reader
+    and takes the worker path; ``start_plugin`` then rewrites it from that scan
+    (``_upgrade_stale_packaged_metadata``), so the cost is one import, not one
+    per start. Schema 3 never shipped in a release, so no in-memory migration.
 
     Returns ``None`` when there is no usable metadata at all.
     """
@@ -197,9 +208,78 @@ def _read_packaged_isolated_metadata(
         )
         return None
     return IsolatedPluginMetadata(
-        entries_preview=list(packaged.entries),
+        entries_preview=_overlay_entry_declaration(
+            packaged.entries,
+            dict(conf) if isinstance(conf, Mapping) else {},
+            dict(pdata) if isinstance(pdata, Mapping) else {},
+        ),
         handlers=dict(packaged.handlers),
         entry_methods=dict(packaged.entry_methods),
+    )
+
+
+def _snapshot_stale_package_tree(config_path: Path) -> SourceTreeSnapshot | None:
+    """Fingerprint the tree before the scan imports it, if an upgrade is in prospect.
+
+    Only a stale-schema package can be upgraded, so only that case pays for
+    the snapshot; every other start skips this entirely.
+    """
+    plugin_dir = Path(config_path).parent
+    if stale_packaged_schema_version(plugin_dir) is None:
+        return None
+    return snapshot_source_tree(plugin_dir)
+
+
+def _upgrade_stale_packaged_metadata(
+    config_path: Path,
+    plugin_id: str,
+    scanned: IsolatedPluginMetadata,
+    *,
+    before_scan: SourceTreeSnapshot | None,
+    conf: object,
+    pdata: object,
+) -> None:
+    """Turn the scan a stale package forced into the package's next fast path.
+
+    Only when the effective ``entries`` table is the manifest's own: the file
+    describes the package, and an active profile or runtime override that
+    rewrote the table would otherwise be frozen into it (the digest gate in
+    ``_read_packaged_isolated_metadata`` would then treat that machine's
+    overrides as the packaged baseline).
+    """
+    if before_scan is None:
+        return
+    plugin_dir = Path(config_path).parent
+    try:
+        manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    if str(manifest_pdata.get("id") or "") != plugin_id:
+        # handler 键里嵌着运行时 id。id 冲突把这个插件改名成 foo_1 之后，扫描出的
+        # 键全是 foo_1.*；写进 foo 的包里，冲突一消失就再也对不上归属检查（coderabbit）。
+        logger.info(
+            "stale packaged metadata left as is; the runtime id differs from the "
+            "manifest id: plugin_id={}, manifest_id={}",
+            plugin_id,
+            manifest_pdata.get("id"),
+        )
+        return
+    if entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
+        logger.info(
+            "stale packaged metadata left as is; the effective configuration "
+            "overrides the entries table: plugin_id={}",
+            plugin_id,
+        )
+        return
+    refresh_stale_packaged_metadata(
+        plugin_dir,
+        before_scan=before_scan,
+        entries=scanned.entries_preview,
+        handlers=scanned.handlers,
+        entry_methods=scanned.entry_methods,
+        conf=manifest,
+        pdata=manifest_pdata,
     )
 
 
@@ -1121,6 +1201,15 @@ class PluginLifecycleService:
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
+                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
+                # 该写的那份：写回去，下次启动走快路径。指纹在 import 之前先取一份，
+                # 之后比对，和打包器一样拒绝"import 改动了树"的情况。reload_all 有
+                # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
+                before_scan = (
+                    await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
+                    if start_deadline is None
+                    else None
+                )
                 isolated_metadata = await asyncio.to_thread(
                     scan_plugin_metadata_isolated,
                     plugin_id=current_plugin_id,
@@ -1131,6 +1220,15 @@ class PluginLifecycleService:
                     pdata=pdata,
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
+                )
+                await asyncio.to_thread(
+                    _upgrade_stale_packaged_metadata,
+                    config_path,
+                    current_plugin_id,
+                    isolated_metadata,
+                    before_scan=before_scan,
+                    conf=conf,
+                    pdata=pdata,
                 )
 
             if start_deadline is not None and startup_timeout_value is not None:

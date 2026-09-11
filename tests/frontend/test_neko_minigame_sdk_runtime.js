@@ -17,6 +17,7 @@ async function main() {
   let mountedAvatarConfig = null;
   const handshakeRequests = [];
   const protocolMessages = [];
+  const commandRequests = [];
   const voiceRequests = [];
   let controlBridgeOptions = null;
   let controlBridgeStopped = 0;
@@ -124,6 +125,10 @@ async function main() {
       }
       return { ok: true, accepted: true };
     },
+    executeGameCommand: async (name, envelope, options = {}) => {
+      commandRequests.push({ name, envelope, options });
+      return { ok: true, echo: envelope.payload.text };
+    },
     startGameControlBridge(options) {
       controlBridgeOptions = options;
       return true;
@@ -142,6 +147,15 @@ async function main() {
       };
     },
     stopVoiceControlBridge() { voiceStopped += 1; },
+    async getAvatarCharacter(name) {
+      return {
+        name: name || 'SDK Neko',
+        model: { type: 'mmd', path: '/models/sdk-neko.pmx' },
+        rendererAvailable: true,
+        privatePrompt: 'must-not-cross-sdk-boundary',
+      };
+    },
+    async listAvatarCharacters() { return ['SDK Neko', 'Second Neko']; },
     async mountAvatar(config) {
       if (avatarMountFailure) {
         throw Object.assign(new Error('viewport unavailable'), { code: 'viewport_unavailable' });
@@ -149,6 +163,8 @@ async function main() {
       mountedAvatarConfig = config;
       return {
         async setModel(model) { calls.push(['avatar-model', model]); },
+        setView(view) { calls.push(['avatar-view', view]); },
+        setSpeaking(active) { calls.push(['avatar-speaking', active]); },
         focus(point) {
           if (avatarFocusFailure) {
             throw Object.assign(new Error('avatar host busy'), { code: 'busy' });
@@ -221,6 +237,23 @@ async function main() {
       },
       controls: {
         stance: ['steady', 'press', 'retreat'],
+      },
+      commands: {
+        'round:input': {
+          request: {
+            type: 'object',
+            properties: { text: { type: 'string', minLength: 1, maxLength: 1800000 } },
+            required: ['text'],
+          },
+          response: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              echo: { type: 'string', maxLength: 1800000 },
+            },
+            required: ['ok', 'echo'],
+          },
+        },
       },
       results: {
         match: {
@@ -400,9 +433,71 @@ async function main() {
   catch (error) { inactiveDialogueError = error; }
   assert(inactiveDialogueError?.code === 'invalid_state',
     'dialogue request was allowed before an active runtime route existed');
+  let inactiveCommandError = null;
+  try { await game.commands.execute('round:input', { text: 'before start' }); }
+  catch (error) { inactiveCommandError = error; }
+  assert(inactiveCommandError?.code === 'invalid_state' && commandRequests.length === 0,
+    'game command reached the host before an active runtime route existed');
+  const resetSession = game.runtime.reset();
+  assert(resetSession.id === 'sdk-test-session'
+    && resetSession.characterName === ''
+    && resetSession.routeInstanceId === ''
+    && Object.isFrozen(resetSession),
+  'runtime reset did not return a complete immutable RuntimeSession');
   const started = await game.runtime.start({ mode: 'default' });
   assert(started.data.payload.mode === 'default', 'runtime start did not use the host transport');
   const routeInstanceId = started.data.payload.sdk_route_instance_id;
+  assert(game.runtime.session.routeInstanceId === routeInstanceId,
+    'runtime did not expose the active route generation');
+  const commandResult = await game.commands.execute('round:input', { text: 'hello' });
+  assert(commandResult.ok === true
+    && commandResult.data.echo === 'hello'
+    && Object.isFrozen(commandResult.data),
+  'game command response was not validated and frozen');
+  assert(commandRequests.at(-1).envelope.sessionId === 'sdk-test-session'
+    && commandRequests.at(-1).envelope.routeInstanceId === routeInstanceId,
+  'game command was not bound to the active runtime identity');
+
+  const successfulCommandTransport = transport.executeGameCommand;
+  transport.executeGameCommand = async () => ({
+    ok: false,
+    status: 422,
+    async json() { return { detail: 'bad request' }; },
+  });
+  const failedHttpCommand = await game.commands.execute('round:input', { text: 'http failure' });
+  assert(failedHttpCommand.ok === false
+    && failedHttpCommand.status === 422
+    && failedHttpCommand.data.detail === 'bad request'
+    && Object.isFrozen(failedHttpCommand.data),
+  'an HTTP command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({
+    ok: true,
+    status: 200,
+    async json() { return { ok: false, reason: 'session_busy' }; },
+  });
+  const failedApplicationCommand = await game.commands.execute(
+    'round:input', { text: 'application failure' },
+  );
+  assert(failedApplicationCommand.ok === true
+    && failedApplicationCommand.status === 200
+    && failedApplicationCommand.data.ok === false
+    && failedApplicationCommand.data.reason === 'session_busy'
+    && Object.isFrozen(failedApplicationCommand.data),
+  'an application command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({ ok: true });
+  let invalidSuccessfulCommandError = null;
+  try { await game.commands.execute('round:input', { text: 'invalid success' }); }
+  catch (error) { invalidSuccessfulCommandError = error; }
+  assert(invalidSuccessfulCommandError?.code === 'invalid_contract',
+    'a successful command response bypassed its declared response contract');
+  transport.executeGameCommand = successfulCommandTransport;
+
+  const wideCommandText = 'x'.repeat(300 * 1024);
+  const wideCommandResult = await game.commands.execute('round:input', { text: wideCommandText });
+  assert(wideCommandResult.data.echo.length === wideCommandText.length,
+    'the command payload budget still used the ordinary 256 KiB contract limit');
   // Validation and delivery, now that a route actually exists.
   controlBridgeOptions.onControl({
     protocolVersion: '1',
@@ -635,11 +730,29 @@ async function main() {
   assert(Object.isFrozen(mountedAvatarConfig.fit), 'avatar layout contract must be immutable');
   avatar.focus({ x: 12, y: 34 });
   avatar.setEmotion('smile');
+  avatar.setView({ scale: 190, x: 4, y: 28 });
+  avatar.setSpeaking(true);
   await avatar.setModel({ type: 'vrm', path: '/models/ai.vrm' });
   assert(calls.some((entry) => entry[0] === 'avatar-focus' && entry[1].x === 12),
     'avatar focus did not use the host controller');
   assert(calls.some((entry) => entry[0] === 'avatar-model' && entry[1].type === 'vrm'),
     'avatar model switch did not use the host controller');
+  assert(calls.some((entry) => entry[0] === 'avatar-view' && entry[1].scale === 190)
+    && calls.some((entry) => entry[0] === 'avatar-speaking' && entry[1] === true),
+  'avatar view or speaking state bypassed the host controller');
+  const currentAvatarCharacter = await game.avatar.getCurrentCharacter();
+  const namedAvatarCharacter = await game.avatar.getCharacter('Second Neko');
+  const avatarCharacters = await game.avatar.listCharacters();
+  assert(currentAvatarCharacter.name === 'SDK Neko'
+    && currentAvatarCharacter.model.type === 'mmd'
+    && currentAvatarCharacter.privatePrompt === undefined
+    && Object.isFrozen(currentAvatarCharacter)
+    && Object.isFrozen(currentAvatarCharacter.model),
+  'avatar discovery did not project and freeze the host descriptor');
+  assert(namedAvatarCharacter.name === 'Second Neko'
+    && Object.isFrozen(avatarCharacters)
+    && avatarCharacters.join(',') === 'SDK Neko,Second Neko',
+  'avatar discovery facade did not use the host transport');
   const boundedAvatars = [avatar];
   for (let index = 1; index < 8; index += 1) {
     boundedAvatars.push(await game.avatar.mount({
@@ -921,6 +1034,96 @@ async function main() {
 
   // Placed last: these connect extra clients, and every assertion above counts
   // handshakes and protocol messages on the shared transport.
+
+  // Command payloads are merged with trusted route identity by the host, so
+  // their root schema must be an object. Keep all other schema roots available
+  // for responses: only the request side has this transport constraint.
+  const INVALID_COMMAND_REQUEST_SCHEMAS = [
+    ['null', null],
+    ['boolean', { type: 'boolean' }],
+    ['number', { type: 'number' }],
+    ['integer', { type: 'integer' }],
+    ['string', { type: 'string' }],
+    ['array', { type: 'array', items: { type: 'string' } }],
+    ['enum shorthand', ['ready', 'waiting']],
+    ['object with scalar keyword', { type: 'object', minLength: 1 }],
+  ];
+  for (const [shape, request] of INVALID_COMMAND_REQUEST_SCHEMAS) {
+    let commandRequestError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `command-${shape.replace(/ /g, '-')}-request-test`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            'round:probe': {
+              request,
+              response: { type: 'object' },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { commandRequestError = error; }
+    assert(commandRequestError?.code === 'invalid_manifest',
+      `a command ${shape} request schema was accepted at connect time`);
+  }
+
+  const SCALAR_COMMAND_RESPONSE_CASES = [
+    ['string', { type: 'string', maxLength: 32 }, 'ready'],
+    ['number', { type: 'number' }, 42.5],
+    ['boolean', { type: 'boolean' }, false],
+    ['null', { type: 'null' }, null],
+  ];
+  for (const [shape, responseSchema, responseValue] of SCALAR_COMMAND_RESPONSE_CASES) {
+    const scalarCommandTransport = {
+      ...transport,
+      dispose() {},
+      executeGameCommand: async () => ({
+        ok: true,
+        status: 200,
+        async json() { return responseValue; },
+      }),
+    };
+    const scalarCommandResponseGame = await window.NekoMiniGame.connect({
+      id: `command-${shape}-response-test`,
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          'round:probe': {
+            request: { type: 'object' },
+            response: responseSchema,
+          },
+        },
+      },
+    }, { transport: scalarCommandTransport });
+    assert(scalarCommandResponseGame.manifest.contracts.commands['round:probe'].response.type === shape,
+      `a ${shape} command response schema stopped connecting`);
+    await scalarCommandResponseGame.runtime.start();
+    const scalarCommandResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+    assert(scalarCommandResponse.ok === true && Object.is(scalarCommandResponse.data, responseValue),
+      `a ${shape} JSON command response was replaced before contract validation`);
+
+    if (shape === 'string') {
+      scalarCommandTransport.executeGameCommand = async () => 'direct-ready';
+      const directScalarResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(directScalarResponse.ok === true && directScalarResponse.data === 'direct-ready',
+        'a direct-transport scalar command response was replaced before contract validation');
+
+      scalarCommandTransport.executeGameCommand = async () => ({
+        ok: false,
+        status: 503,
+        async json() { return 'temporarily unavailable'; },
+      });
+      const scalarErrorResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(scalarErrorResponse.ok === false
+        && scalarErrorResponse.status === 503
+        && scalarErrorResponse.data === 'temporarily unavailable',
+      'a scalar HTTP error body was discarded or success-validated');
+    }
+    scalarCommandResponseGame.dispose();
+  }
 
   // The published schema declares minimum/maximum as numbers. `Number()`
   // coercion accepted a numeric-looking string, and turned `minimum: null` --
@@ -1289,6 +1492,76 @@ async function main() {
   } catch (error) { numericRequiredError = error; }
   assert(numericRequiredError?.code === 'invalid_manifest',
     'a non-string required entry was coerced into a matching property name');
+
+  // Command payload identity and memory policy are owned by the host. A game
+  // contract that declares either would validate one value in the SDK and send
+  // a stripped or replaced value to the backend.
+  const hostReservedCommandFields = [
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+    'memory_enabled', 'enable_game_memory', 'legacyGameMemoryArchiveEnabled',
+  ];
+  for (const [index, field] of hostReservedCommandFields.entries()) {
+    let reservedFieldError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `reserved-command-field-${index}`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            probe: {
+              request: {
+                type: 'object',
+                properties: { [field]: { type: 'boolean' } },
+                required: index % 2 ? [field] : [],
+                additionalProperties: false,
+              },
+              response: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: true,
+              },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { reservedFieldError = error; }
+    assert(reservedFieldError?.code === 'invalid_manifest',
+      `a command contract declared the host-reserved field ${field}`);
+  }
+  let nestedMemoryPolicyError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'nested-reserved-command-field',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          probe: {
+            request: {
+              type: 'object',
+              properties: {
+                event: {
+                  type: 'object',
+                  properties: { legacyGameMemoryArchiveEnabled: { type: 'boolean' } },
+                  required: ['legacyGameMemoryArchiveEnabled'],
+                },
+              },
+              required: ['event'],
+            },
+            response: { type: 'object', additionalProperties: true },
+          },
+        },
+      },
+    }, { transport });
+  } catch (error) { nestedMemoryPolicyError = error; }
+  assert(nestedMemoryPolicyError?.code === 'invalid_manifest',
+    'a command contract declared memory policy inside the host-filtered event object');
 
   // `String(true)` is 'true', which matches the score-field pattern, so a boolean
   // silently became a board keyed on a field no entry will ever carry.

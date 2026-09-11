@@ -846,9 +846,148 @@ _tutorial_store_instance: Path | None = None
 _tutorial_store_instances: dict[str, Path] = {}
 _tutorial_store_lock = threading.RLock()
 _tutorial_migrated_paths: set[Path] = set()
+_GALGAME_TUTORIAL_MIGRATION_RETRY_COOLDOWN_SECONDS = 60.0
+_galgame_tutorial_migration_retry_after: dict[Path, float] = {}
 
 
-def _run_tutorial_migrations(store_path: Path, *, plugin_id: str) -> None:
+def _read_legacy_galgame_tutorial_progress(
+    legacy_store_path: Path,
+) -> dict[str, Any] | None:
+    raw = json.loads(legacy_store_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("galgame store json root is not an object")
+    progress = raw.get("tutorial_progress")
+    return dict(progress) if isinstance(progress, dict) else None
+
+
+def _load_legacy_galgame_tutorial_progress(
+    registration: InstallPluginRegistration,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    runtime_store_path = (
+        resolve_runtime_data_root()
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json"
+    )
+    if runtime_store_path.is_file():
+        try:
+            progress = _read_legacy_galgame_tutorial_progress(runtime_store_path)
+        except Exception:  # noqa: BLE001 - corrupt legacy data must not break the API.
+            logger.warning(
+                "failed to read legacy galgame tutorial progress from {}; trying backup",
+                runtime_store_path,
+                exc_info=True,
+            )
+            backup_path = runtime_store_path.with_name(
+                f"{runtime_store_path.name}.bak"
+            )
+            if backup_path.is_file():
+                try:
+                    progress = _read_legacy_galgame_tutorial_progress(backup_path)
+                except Exception:  # noqa: BLE001 - fall through to selected source.
+                    logger.warning(
+                        "failed to recover legacy galgame tutorial progress from {}",
+                        backup_path,
+                        exc_info=True,
+                    )
+                else:
+                    if progress is not None:
+                        return progress, backup_path
+        else:
+            if progress is not None:
+                return progress, runtime_store_path
+
+    config_path = registration.config_path
+    if config_path is None:
+        return None, None
+    selected_store_path = config_path.parent / "data" / "galgame_store.json"
+    if selected_store_path == runtime_store_path or not selected_store_path.is_file():
+        return None, None
+    try:
+        progress = _read_legacy_galgame_tutorial_progress(selected_store_path)
+    except Exception:  # noqa: BLE001 - corrupt legacy data must not break the API.
+        logger.warning(
+            "failed to read selected-source galgame tutorial progress from {}",
+            selected_store_path,
+            exc_info=True,
+        )
+        return None, None
+    if progress is None:
+        return None, None
+    return progress, selected_store_path
+
+
+def _write_migrated_tutorial_progress(
+    store_path: Path,
+    progress: dict[str, Any],
+) -> bool:
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = store_path.with_name(
+        f".{store_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as tmp_file:
+            json.dump(progress, tmp_file, ensure_ascii=False, sort_keys=True, indent=2)
+            tmp_file.write("\n")
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        if store_path.exists():
+            return False
+        os.replace(tmp_path, store_path)
+        return True
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _migrate_legacy_galgame_tutorial_progress(
+    store_path: Path,
+    *,
+    registration: InstallPluginRegistration | None,
+) -> None:
+    with _tutorial_store_lock:
+        if registration is None or registration.plugin_id != "galgame_plugin":
+            return
+        if store_path.exists():
+            _galgame_tutorial_migration_retry_after.pop(store_path, None)
+            return
+        if time.monotonic() < _galgame_tutorial_migration_retry_after.get(store_path, 0.0):
+            return
+        try:
+            progress, source_path = _load_legacy_galgame_tutorial_progress(registration)
+            if progress is None or source_path is None:
+                return
+            if _write_migrated_tutorial_progress(store_path, progress):
+                logger.info(
+                    "galgame tutorial progress migrated from legacy store: {} -> {}",
+                    source_path,
+                    store_path,
+                )
+        except Exception:  # noqa: BLE001 - migration is best effort and must not break the API.
+            logger.warning(
+                "galgame tutorial progress migration failed for {}",
+                store_path,
+                exc_info=True,
+            )
+        finally:
+            if store_path.exists():
+                _galgame_tutorial_migration_retry_after.pop(store_path, None)
+            else:
+                _galgame_tutorial_migration_retry_after[store_path] = (
+                    time.monotonic() + _GALGAME_TUTORIAL_MIGRATION_RETRY_COOLDOWN_SECONDS
+                )
+
+
+def _run_tutorial_migrations(
+    store_path: Path,
+    *,
+    plugin_id: str,
+    registration: InstallPluginRegistration | None = None,
+) -> None:
+    _migrate_legacy_galgame_tutorial_progress(
+        store_path,
+        registration=registration,
+    )
     if store_path in _tutorial_migrated_paths:
         return
     for hook in install_registry.tutorial_migration_hooks_for(plugin_id):
@@ -856,24 +995,33 @@ def _run_tutorial_migrations(store_path: Path, *, plugin_id: str) -> None:
     _tutorial_migrated_paths.add(store_path)
 
 
-def _tutorial_store(plugin_id: str = "") -> Path:
+def _tutorial_store(
+    plugin_id: str = "",
+    registration: InstallPluginRegistration | None = None,
+) -> Path:
     global _tutorial_store_instance
     normalized_plugin_id = _normalize_registered_plugin_id(plugin_id) if plugin_id else ""
     with _tutorial_store_lock:
         if not normalized_plugin_id and _tutorial_store_instance is not None:
-            return _tutorial_store_instance
-        existing = _tutorial_store_instances.get(normalized_plugin_id)
-        if existing is not None:
-            return existing
-        store_dir = resolve_runtime_data_root() / "server" / "plugin_install"
-        if normalized_plugin_id:
-            store_dir = store_dir / normalized_plugin_id
-        store_path = store_dir / "tutorial_progress.json"
-        _run_tutorial_migrations(store_path, plugin_id=normalized_plugin_id)
-        if normalized_plugin_id:
-            _tutorial_store_instances[normalized_plugin_id] = store_path
+            store_path = _tutorial_store_instance
         else:
-            _tutorial_store_instance = store_path
+            existing = _tutorial_store_instances.get(normalized_plugin_id)
+            if existing is not None:
+                store_path = existing
+            else:
+                store_dir = resolve_runtime_data_root() / "server" / "plugin_install"
+                if normalized_plugin_id:
+                    store_dir = store_dir / normalized_plugin_id
+                store_path = store_dir / "tutorial_progress.json"
+                if normalized_plugin_id:
+                    _tutorial_store_instances[normalized_plugin_id] = store_path
+                else:
+                    _tutorial_store_instance = store_path
+        _run_tutorial_migrations(
+            store_path,
+            plugin_id=normalized_plugin_id,
+            registration=registration,
+        )
         return store_path
 
 
@@ -885,8 +1033,11 @@ class TutorialProgressPayload(BaseModel):
     completed_at: float = 0.0
 
 
-def _read_tutorial_progress(plugin_id: str = "") -> dict[str, Any] | None:
-    store_path = _tutorial_store(plugin_id)
+def _read_tutorial_progress(
+    plugin_id: str = "",
+    registration: InstallPluginRegistration | None = None,
+) -> dict[str, Any] | None:
+    store_path = _tutorial_store(plugin_id, registration)
     if not store_path.is_file():
         return None
     try:
@@ -899,8 +1050,12 @@ def _read_tutorial_progress(plugin_id: str = "") -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _write_tutorial_progress(progress: dict[str, Any], plugin_id: str = "") -> None:
-    store_path = _tutorial_store(plugin_id)
+def _write_tutorial_progress(
+    progress: dict[str, Any],
+    plugin_id: str = "",
+    registration: InstallPluginRegistration | None = None,
+) -> None:
+    store_path = _tutorial_store(plugin_id, registration)
     store_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = store_path.with_suffix(store_path.suffix + ".tmp")
     try:
@@ -946,7 +1101,7 @@ async def get_tutorial_status(plugin_id: str) -> JSONResponse:
     registration = await _get_plugin_registration(plugin_id)
     _ensure_tutorial_enabled(registration)
     try:
-        raw = await _run_blocking(_read_tutorial_progress, plugin_id)
+        raw = await _run_blocking(_read_tutorial_progress, plugin_id, registration)
     except Exception:
         logger.error("tutorial progress status read failed", exc_info=True)
         return JSONResponse(
@@ -965,7 +1120,9 @@ async def save_tutorial_progress(
     _ensure_tutorial_enabled(registration)
     payload = body.model_dump(exclude_unset=True)
     try:
-        current = _normalize_tutorial_progress(await _run_blocking(_read_tutorial_progress, plugin_id))
+        current = _normalize_tutorial_progress(
+            await _run_blocking(_read_tutorial_progress, plugin_id, registration)
+        )
     except Exception:
         logger.error("tutorial progress save aborted after read failure", exc_info=True)
         return JSONResponse(
@@ -988,7 +1145,12 @@ async def save_tutorial_progress(
     if not current["completed"] and not current["skipped"]:
         current["completed_at"] = _TUTORIAL_DEFAULTS["completed_at"]
     try:
-        await _run_blocking(_write_tutorial_progress, current, plugin_id)
+        await _run_blocking(
+            _write_tutorial_progress,
+            current,
+            plugin_id,
+            registration,
+        )
     except Exception:
         logger.warning("tutorial progress save failed", exc_info=True)
         return JSONResponse(

@@ -377,6 +377,26 @@
             await resizeState(state, 'model-changed');
           });
         },
+        setView(view) {
+          return enqueueStateOperation(state, 'setView', () => {
+            if (typeof state.raw.setView !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setView', {
+                operation: 'setView',
+              });
+            }
+            return state.raw.setView(view);
+          });
+        },
+        setSpeaking(active) {
+          return enqueueStateOperation(state, 'setSpeaking', () => {
+            if (typeof state.raw.setSpeaking !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setSpeaking', {
+                operation: 'setSpeaking',
+              });
+            }
+            return state.raw.setSpeaking(active);
+          });
+        },
         focus(point) {
           ensureState(state, 'focus');
           return state.raw.focus(point);

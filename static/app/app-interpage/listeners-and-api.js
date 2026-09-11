@@ -367,6 +367,42 @@
                 throw new Error('missing_lanlan_name');
             }
 
+            async function ensureReturnedFromGoodbye() {
+                // 标准回来链会恢复 Electron Pet 的完整 viewport、解除资源暂停并
+                // 清掉 goodbye 标志。无条件调用还能加入一条已经开始、但 manager
+                // 标志恰好已清除的 return lifecycle。
+                if (window.appUi && typeof window.appUi.returnFromGoodbye === 'function') {
+                    var returnedFromGoodbye = await window.appUi.returnFromGoodbye({
+                        source: 'reset-to-default-model',
+                        retryViewportRestore: true
+                    });
+                    if (!returnedFromGoodbye) {
+                        throw new Error('goodbye_return_failed');
+                    }
+                    return;
+                }
+
+                var visibleReturnContainer = document.querySelector(
+                    '[id$="-return-button-container"][data-neko-return-visible="true"]'
+                );
+                var goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!(
+                        (window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked)
+                    );
+                var returnTransitionActive = typeof window.isNekoModelCatTransitionActive === 'function'
+                    && window.isNekoModelCatTransitionActive();
+                if (goodbyeActive || visibleReturnContainer || returnTransitionActive) {
+                    throw new Error('goodbye_return_unavailable');
+                }
+            }
+
+            // 直接热重载会移除唯一可见的回来控件，却把新的 Live2D 留在
+            // 160x160 carrier 外。持久化前先完整回来。
+            await ensureReturnedFromGoodbye();
+
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
             var putResp = await fetch(putUrl, {

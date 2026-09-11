@@ -260,6 +260,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
         llm_fields = getattr(meta, "llm_result_fields", None)
         if llm_fields:
             meta_dict["llm_result_fields"] = list(llm_fields)
+        # 控制字段随注册一起过去，宿主才能按声明的预算调用、按声明的 schema 读结果。
+        for name in ("timeout", "model_validate", "persist"):
+            value = getattr(meta, name, None)
+            if value is not None:
+                meta_dict[name] = value
+        llm_schema = getattr(meta, "llm_result_schema", None)
+        if isinstance(llm_schema, Mapping):
+            meta_dict["llm_result_schema"] = dict(llm_schema)
         self._notify_host_comm({
             "type": "ENTRY_UPDATE",
             "action": "register",

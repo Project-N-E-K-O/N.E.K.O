@@ -110,7 +110,7 @@ capabilities use stable public error codes rather than transport-specific data.
 Games can inspect the immutable `game.host` result but never receive registry
 records, launch tickets, endpoints or credentials.
 
-## Declared event, state, control and result contracts
+## Declared event, state, control, command and result contracts
 
 Game-specific protocol names and payloads stay in the game manifest. The SDK
 provides only the validated envelope and delivery mechanism:
@@ -139,6 +139,20 @@ const game = await NekoMiniGame.connect({
       },
     },
     controls: { stance: ['ready', 'paused'] },
+    commands: {
+      'round:review': {
+        request: {
+          type: 'object',
+          properties: { image_data_url: { type: 'string', maxLength: 1800000 } },
+          required: ['image_data_url'],
+        },
+        response: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+      },
+    },
     results: {
       match: {
         type: 'object',
@@ -154,6 +168,7 @@ const game = await NekoMiniGame.connect({
 await game.events.emit('round-started', { round: 1 });
 await game.state.update('score', { player: 2, opponent: 1 });
 await game.results.submit('match', { winner: 'player' });
+const review = await game.commands.execute('round:review', { image_data_url: screenshot });
 
 const unsubscribeStance = game.controls.on('stance', ({ payload }) => {
   applyGameStance(payload);
@@ -167,9 +182,22 @@ rejects undeclared names, invalid payloads, another session, incompatible
 protocols and replayed/out-of-order sequence numbers. `result` submits a typed
 game outcome and does not itself end the runtime.
 
+`command` is a typed request/response operation bound to the active runtime
+session and route generation. A trusted launch registration maps each declared
+command name to a relative host route and independently caps its request bytes
+and timeout; the mapping is not exposed to game code. The SDK and host retain
+global ceilings of 2 MiB and six minutes, while the SDK admits at most eight
+concurrent command requests. Games without `contracts.commands` do not require
+a command transport. A command request schema must have `type: 'object'` because
+the trusted host merges route identity into that request body. It must not
+declare host-owned route identity or memory-policy fields; those values are
+stripped or replaced at the trust boundary. Response schemas may use any
+supported JSON type.
+
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
-supports scalar types/enums and bounded object/array composition. Undeclared
+supports scalar types/enums and bounded object/array composition (including
+inside command request objects and at the root of command responses). Undeclared
 object fields are rejected unless that schema explicitly sets
 `additionalProperties: true`. Contract declarations, payload size, payload
 complexity, listener count and pending requests all have hard limits. The
@@ -214,6 +242,9 @@ rejected or failed start enters `degraded` state and keeps output polling
 available without sending heartbeats. `runtime.end()` and `game.dispose()` stop
 timers, remove the listener, and abort in-flight lifecycle requests. Games can
 inspect `game.runtime.state` and the immutable `game.runtime.session` snapshot.
+The session snapshot includes `routeInstanceId` while a route generation is
+active, so integrations can correlate work without inventing their own route
+identity.
 
 After the host has resolved the session character, `context.read()`,
 `dialogue.quickLines()`, `speech.preload()`, `speech.speak()`, and
@@ -585,7 +616,8 @@ The public game mounts an Avatar through `game.avatar`:
 ```js
 const avatar = await game.avatar.mount({
   slot: 'opponent',
-  model: { type: 'live2d', path: '/models/opponent.model3.json' },
+  characterName: 'Opponent Neko',
+  model: { type: 'mmd', path: '/models/opponent.pmx' },
   viewport: { mode: 'fixed', width: 200, height: 300 },
   fit: {
     mode: 'contain',
@@ -598,9 +630,19 @@ const avatar = await game.avatar.mount({
 
 avatar.focus({ x: 320, y: 180 });
 avatar.setEmotion('happy');
+avatar.setView({ scale: 190, x: 0, y: 28 });
+avatar.setSpeaking(true);
 await avatar.setModel({ type: 'vrm', path: '/models/opponent.vrm' });
 avatar.dispose();
 ```
+
+When the trusted host provides character discovery, games can call
+`avatar.listCharacters()`, `avatar.getCurrentCharacter()` and
+`avatar.getCharacter(name)` before mounting. Descriptors expose only the
+character name, approved model (`live2d`, `vrm`, `mmd` or `pngtuber`) and
+renderer availability. Discovery and the optional `setView`/`setSpeaking`
+controller operations are feature-detected; older hosts continue to work for
+games that do not call them.
 
 Viewport and resize modes have matching values:
 
@@ -634,7 +676,7 @@ including page-exit and partially completed mount paths.
 
 `NekoMiniGameAvatarHost` is a trusted host helper, not a public game API. It
 owns viewport measurement and resize lifecycle while N.E.K.O-owned engine
-adapters provide Live2D/VRM loading, focus, emotion, pause/resume, refit, and
+adapters provide Live2D/VRM/MMD/PNG-tuber loading, focus, emotion, pause/resume, refit, and
 resource disposal for registered slots.
 
 ## Public artifacts
