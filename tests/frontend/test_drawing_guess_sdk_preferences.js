@@ -1097,6 +1097,7 @@ async function testCharacterBindingIsSharedRetiredAndRebound() {
       assertEqual(options.timeoutMs, 8000, 'binding lost its timeout');
       const request = deferred();
       pending.push({ name, request });
+      options.signal?.addEventListener('abort', () => request.reject(new Error('cancelled')), { once: true });
       return request.promise.then(descriptor => {
         this.session.characterName = descriptor.name;
         return descriptor;
@@ -1119,10 +1120,28 @@ async function testCharacterBindingIsSharedRetiredAndRebound() {
   pending[1].request.resolve({ name: 'Mimi' });
   await second;
   client.runtime.session = { id: 'third', characterName: '' };
+  const oldTarget = api.bindDrawingCharacter(client, 'Mimi');
+  const oldResult = oldTarget.then(() => 'accepted', () => 'cancelled');
+  const newTarget = api.bindDrawingCharacter(client, 'Nana');
+  assert(newTarget !== oldTarget, 'different character reused an in-flight binding');
+  assertEqual(api.bindDrawingCharacter(client, 'Nana'), newTarget, 'successor binding was not shared');
+  await api.bindDrawingCharacter(client, 'Third').then(
+    () => { throw new Error('unbounded replacement binding was admitted'); }, () => {});
+  await waitFor(() => pending.length === 4, 'replacement binding did not start after cancellation');
+  pending[3].request.resolve({ name: 'Nana' });
+  assertEqual((await newTarget).name, 'Nana', 'replacement got the old descriptor');
+  assertEqual(await oldResult, 'cancelled', 'superseded binding was accepted');
+  assertEqual(api.state.sdkCharacterBindingRequest, null, 'binding record remained resident');
+  client.runtime.session = { id: 'fourth', characterName: '' };
+  const staleSession = api.bindDrawingCharacter(client, 'Mimi');
+  client.runtime.session = { id: 'fifth', characterName: '' };
+  pending[4].request.resolve({ name: 'Mimi' });
+  await staleSession.then(() => { throw new Error('old session binding was accepted'); }, () => {});
+  assertEqual(api.state.sdkBoundCharacter, null, 'old session populated the cache');
   const exiting = api.bindDrawingCharacter(client, 'Mimi');
   client.disposed = true;
   api.handleSdkPageExit();
-  pending[2].request.resolve({ name: 'Mimi' });
+  pending[pending.length - 1].request.resolve({ name: 'Mimi' });
   await exiting.then(() => { throw new Error('late binding succeeded after exit'); }, () => {});
   assertEqual(api.state.sdkBoundCharacter, null, 'late response restored the released descriptor');
   assertEqual(api.state.sdkCharacterBindingPromise, null, 'page exit retained the request');

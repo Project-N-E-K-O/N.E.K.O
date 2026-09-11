@@ -124,6 +124,8 @@
     sdkClient: null,
     sdkConnectPromise: null,
     sdkCharacterBindingPromise: null,
+    sdkCharacterBindingRequest: null,
+    sdkBoundCharacterClient: null,
     sdkBoundCharacter: null,
     sdkBoundCharacterSessionId: '',
     sdkStartPromise: null,
@@ -1722,6 +1724,11 @@
   }
 
   function handleSdkPageExit() {
+    var binding = state.sdkCharacterBindingRequest;
+    binding?.controller.abort();
+    binding?.previous?.controller.abort();
+    state.sdkCharacterBindingRequest = null;
+    state.sdkBoundCharacterClient = null;
     state.sdkBoundCharacter = null;
     state.sdkBoundCharacterSessionId = '';
     state.sdkCharacterBindingPromise = null;
@@ -3937,32 +3944,67 @@
     return trackedMount;
   }
 
-  // One descriptor and one bounded request per page, retired on page exit.
+  // One descriptor, one active request and at most one cancelling successor.
+  // All binding state is retired on page exit.
   // Preview discovery stays read-only; gameplay explicitly binds before requests.
   function bindDrawingCharacter(client, name) {
     var requestedName = String(name || '').trim();
+    var sessionId = client.runtime.session.id;
     if (client.disposed) return Promise.reject(new Error('character_binding_cancelled'));
-    if (state.sdkCharacterBindingPromise) return state.sdkCharacterBindingPromise;
+    var previous = state.sdkCharacterBindingRequest;
+    if (previous) {
+      if (previous.client === client && previous.sessionId === sessionId
+          && previous.name === requestedName) return previous.promise;
+      // One active request and one successor at most. Do not build a queue of
+      // promises when several UI actions compete during cancellation.
+      if (previous.previous) return Promise.reject(new Error('character_binding_busy'));
+      previous.controller.abort();
+    }
     var cached = state.sdkBoundCharacter;
-    if (cached && (!requestedName || cached.name === requestedName)
+    if (!previous && cached && state.sdkBoundCharacterClient === client
+        && (!requestedName || cached.name === requestedName)
         && client.runtime.session.characterName === cached.name
         && client.runtime.session.id === state.sdkBoundCharacterSessionId) {
       return Promise.resolve(cached);
     }
     state.sdkBoundCharacter = null;
     state.sdkBoundCharacterSessionId = '';
-    var binding = client.runtime.bindCharacter(requestedName || undefined, { timeoutMs: 8000 })
+    state.sdkBoundCharacterClient = null;
+    var request = { client: client, sessionId: sessionId, name: requestedName,
+      controller: new AbortController(), previous: previous, promise: null };
+    state.sdkCharacterBindingRequest = request;
+    function assertCurrent() {
+      if (client.disposed || request.controller.signal.aborted
+          || client.runtime.session.id !== sessionId
+          || state.sdkCharacterBindingRequest !== request) {
+        throw new Error('character_binding_cancelled');
+      }
+    }
+    async function startBinding() {
+      request.previous = null;
+      assertCurrent();
+      return client.runtime.bindCharacter(requestedName || undefined,
+        { timeoutMs: 8000, signal: request.controller.signal });
+    }
+    // Wait for the SDK's binding fence to release before starting the successor.
+    var pending = previous ? previous.promise.catch(function () {}).then(startBinding) : startBinding();
+    var binding = pending
       .then(function (descriptor) {
-        if (client.disposed || state.sdkCharacterBindingPromise !== binding) {
-          throw new Error('character_binding_cancelled');
+        assertCurrent();
+        if (!descriptor || !descriptor.name || (requestedName && descriptor.name !== requestedName)) {
+          throw new Error('character_unavailable');
         }
-        if (!descriptor || !descriptor.name) throw new Error('character_unavailable');
         state.sdkBoundCharacter = descriptor;
-        state.sdkBoundCharacterSessionId = client.runtime.session.id;
+        state.sdkBoundCharacterSessionId = sessionId;
+        state.sdkBoundCharacterClient = client;
         return descriptor;
       }).finally(function () {
-        if (state.sdkCharacterBindingPromise === binding) state.sdkCharacterBindingPromise = null;
+        if (state.sdkCharacterBindingRequest === request) {
+          state.sdkCharacterBindingRequest = null;
+          state.sdkCharacterBindingPromise = null;
+        }
       });
+    request.promise = binding;
     state.sdkCharacterBindingPromise = binding;
     return binding;
   }
