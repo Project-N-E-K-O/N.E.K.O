@@ -13,6 +13,8 @@ JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
                                   [{}], [{'at': '1'}], [{'at': True}], [{'at': float('inf')}],
                                   [{'at': -1}], [{'at': 10**1000}],
                                   [{'at': 1, 'audio': 'clip', 'duration': 10**1000}],
+                                  [{'at': 1, 'audio': False}], [{'at': 1, 'audio': 0}],
+                                  [{'at': 1, 'audio': []}],
                                   [{'at': 1, 'audio': 'clip', 'duration': None}]])
 def test_malformed_legacy_events_remain_readable_as_incomplete(tmp_path, events):
     archive = source(tmp_path, 'malformed')

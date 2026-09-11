@@ -211,7 +211,7 @@ class Library:
                 except OverflowError:
                     return False
             if any(not valid_time(cue.get('at')) or
-                   (cue.get('audio') and (not isinstance(cue['audio'], str) or
+                   (cue.get('audio') is not None and cue.get('audio') != '' and (not isinstance(cue['audio'], str) or
                                          not valid_time(cue.get('duration')) or cue['duration'] == 0))
                    for cue in events):
                 timeline['status'] = 'incomplete'
