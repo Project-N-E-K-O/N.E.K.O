@@ -9496,3 +9496,43 @@ async def test_game_end_skips_postgame_on_manual_return_to_start(monkeypatch):
     assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
     assert mgr.prepare_calls == []
     assert state["exit_reason"] == "manual_return_to_start"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_soccer_sdk_end_preserves_memory_consent_and_match_payload(monkeypatch, enabled):
+    """An SDK generation must retain the legacy game's real archive channel."""
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = gr_runtime._activate_game_route("soccer", "sdk_match", "Lan")
+    state["_sdk_route_instance_id"] = "sdk-generation"
+    _set_soccer_game_memory_policy(state, enabled=enabled)
+    _mark_game_started(state)
+    submitted = []
+
+    async def fake_submit(archive):
+        submitted.append(archive)
+        return {"ok": True, "status": "cached", "count": 1}
+
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fake_submit)
+    result = await gr_runtime.game_end("soccer", _FakeRequest({
+        "session_id": "sdk_match",
+        "lanlan_name": "Lan",
+        "sdk_route_instance_id": "sdk-generation",
+        "sdk_route_instance_ids": ["sdk-generation"],
+        "game_memory_enabled": enabled,
+        "game_memory_archive_enabled": enabled,
+        "game_memory_player_interaction_enabled": enabled,
+        "game_memory_event_reply_enabled": enabled,
+        "game_memory_postgame_context_enabled": enabled,
+        "game_started": True,
+        "game_started_elapsed_ms": 20_000,
+        "currentState": {"score": {"player": 2, "ai": 1}, "round": 3},
+        "reason": "manual_user_exit",
+        "postgameProactive": False,
+    }))
+    assert result["ok"] is True
+    assert state["game_route_active"] is False
+    assert len(submitted) == int(enabled)
+    if enabled:
+        assert submitted[0]["finalScore"] == {"player": 2, "ai": 1}

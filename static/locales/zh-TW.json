@@ -5235,6 +5235,7 @@
         },
         "startScreen": {
             "readyToStart": "準備完成，點擊開始",
+            "startFailedRetry": "啟動失敗，請重試",
             "ready": "準備完成",
             "startButton": "開始"
         },

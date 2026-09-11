@@ -528,7 +528,9 @@ def test_soccer_uses_sdk_voice_and_speech_facades_instead_of_host_bypasses():
     assert "soccerHost.mirrorAssistant" not in script
     assert "soccerHost.getQuickLines" not in script
     direct_host_calls = set(re.findall(r"soccerHost\.([A-Za-z0-9_]+)", script))
-    assert direct_host_calls == {"getCharacter", "evaluatePassiveGuard"}
+    # Soccer-only legacy preference migration is deliberately outside the
+    # public SDK; ordinary reads/writes still use client.storage.
+    assert direct_host_calls == {"getCharacter", "evaluatePassiveGuard", "migrateLegacySettings"}
     assert "'storage'" in script.split("optionalCapabilities:", 1)[1].split("]", 1)[0]
     assert "soccerGame.storage.get(SOCCER_VOICE_MIX_STORAGE_KEY)" in script
     assert "soccerGame.storage.set(SOCCER_VOICE_MIX_STORAGE_KEY" in script
@@ -727,7 +729,7 @@ def test_soccer_voice_chat_uses_official_host_microphone_bridge():
     assert 'role="status" aria-live="polite"' in template
 
     assert "window.NekoMiniGame.connect({" in script
-    assert "requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output']" in script
+    assert "requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output', 'memory', 'context-read']" in script
     assert "soccerGame.runtime.start(" in script
     assert "soccerGame.runtime.end(" in script
     assert "soccerGame.session" not in script

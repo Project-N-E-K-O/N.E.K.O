@@ -82,18 +82,26 @@
         id: 'soccer',
         version: '1.0.0',
         protocolVersion: '1',
-        requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output'],
+        requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output', 'memory', 'context-read'],
         optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'avatar-renderer', 'storage'],
+        contracts: {
+          controls: {
+            mood: ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'],
+            difficulty: ['max', 'lv2', 'lv3', 'lv4'],
+            reason: { type: 'string', maxLength: 120 },
+          },
+        },
       }, {
         // Temporary trusted same-origin transport. Public game code only uses
         // the SDK facade; a later iframe/Electron bridge can replace this
         // transport without changing the public capability calls below.
         transport: soccerHost,
       });
+      await soccerHost.migrateLegacySettings(soccerGame);
       const _runtimeSessionId = () => soccerGame.runtime.session.id;
       const _runtimeCharacterName = () => soccerGame.runtime.session.characterName;
       window.__SoccerLoading = (() => {
-        const state = { assets: false, route: false, routeStarting: false, started: false };
+        const state = { assets: false, route: false, choosing: false, routeStarting: false, started: false };
         const textEl = () => document.getElementById('loading-text');
         const overlayEl = () => document.getElementById('loading-overlay');
         const spinnerEl = () => document.getElementById('loading-spinner');
@@ -149,7 +157,7 @@
           return _fillFallback(fallback, params);
         };
         const syncStartScreen = (fallbackText = '') => {
-          if (state.assets && state.route && !state.routeStarting && !state.started) {
+          if (state.assets && (state.route || state.choosing) && !state.routeStarting && !state.started) {
             updateText(fallbackText || _localized('startScreen.readyToStart', '准备完成，点击开始'));
             setSpinnerVisible(false);
             setStartVisible(true, true);
@@ -183,7 +191,11 @@
           isReady() {
             return state.assets && state.route && state.started;
           },
+          canStart() {
+            return state.assets && state.choosing && !state.routeStarting && !state.started;
+          },
           beginStart(text = _localized('loading.beginStartDefault', '分析开局上下文…')) {
+            state.choosing = false;
             state.route = false;
             state.routeStarting = true;
             state.started = false;
@@ -214,7 +226,8 @@
             showOverlay();
           },
           showStart(text = _localized('startScreen.readyToStart', '准备完成，点击开始')) {
-            state.route = true;
+            state.route = false;
+            state.choosing = true;
             state.routeStarting = false;
             state.started = false;
             syncStartScreen(text);
@@ -4445,7 +4458,7 @@
         const soccerGameMemoryEnabled = _isGameMemoryEnabled();
         _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
         const routeLanlanName = _runtimeCharacterName() || _soccerConversationCharacterName();
-        return JSON.stringify({
+        return {
           session_id: _runtimeSessionId(),
           ...(routeLanlanName ? { lanlan_name: routeLanlanName } : {}),
           currentState: SoccerDemo._snapshot(),
@@ -4463,7 +4476,7 @@
           // mgr.user_language，后者仅用于当前请求的模板选择。
           ..._conversationLanguagePayload(),
           ...extra,
-        });
+        };
       }
 
       async function _sendGameRouteHeartbeat(force = false) {
@@ -4505,7 +4518,9 @@
             window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
             resetSoccerSessionDebugLogEnableState();
             await ensureSoccerCharacterInfo();
-            const resp = await soccerGame.runtime.start(_gameRoutePayload(_readGameRouteStartOptions()));
+            const consent = await soccerGame.memory.configureConsent(_isGameMemoryEnabled());
+            if (!consent.ok || consent.data?.ok === false) throw new Error('memory_consent_failed');
+            const resp = await soccerGame.runtime.start(_gameRoutePayload(_gameRouteStartOptions));
             const data = resp.data || {};
             if (data.ok) {
               await _enableSoccerSessionDebugLogAfterRouteStart();
@@ -4513,25 +4528,33 @@
                 window.__SoccerResolvedLanlanName = _runtimeCharacterName();
               }
               console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
-              _applyPreGameContext(data.state);
+              const context = await soccerGame.context.read(['pregame-context']);
+              if (!context.ok || context.data?.ok === false) throw new Error('pregame_context_read_failed');
+              _applyPreGameContext({
+                ...data.state,
+                preGameContext: context.data?.scopes?.['pregame-context'],
+                pre_game_context_source: context.data?.scope_metadata?.['pregame-context']?.source,
+                pre_game_context_error: context.data?.scope_metadata?.['pregame-context']?.error,
+              });
               window.__SoccerLoading?.done('route', _i18n('loading.routeDone', '开局上下文准备完成'));
+              return true;
             } else {
               _recordFallbackDiagnostic('开局路由接管', {
-                fallback: '使用本地默认继续游戏',
+                fallback: '取消本次启动，清理 route 后允许重试',
                 reason: data.reason || data.error || 'route_start_failed',
                 key: 'route-start-failed',
               });
               soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
-              window.__SoccerLoading?.done('route', _i18n('loading.routeFallback', '开局上下文使用本地默认'));
+              throw new Error(data.reason || 'route_start_failed');
             }
           } catch (e) {
             _recordFallbackDiagnostic('开局路由接管', {
-              fallback: '继续游戏',
+              fallback: '取消本次启动，清理 route 后允许重试',
               reason: String(e),
               key: 'route-start-request-failed',
             });
             soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
-            window.__SoccerLoading?.done('route', _i18n('loading.routeFailed', '开局上下文请求失败，继续游戏'));
+            throw e;
           }
         }
 
@@ -5714,21 +5737,49 @@
       }
 
       let _prepareStartInFlight = false;
-      async function _prepareGameForStartScreen(text = _i18n('loading.beginStartDefault', '分析开局上下文…')) {
+      let _gameRouteStartOptions = {};
+      async function _prepareGameForStartScreen() {
         if (_prepareStartInFlight) return;
         _prepareStartInFlight = true;
         try {
           _renderGameVoiceChatControl({ available: false, reason: 'connecting' });
           _resetGameRouteRuntime({ active: true, newSession: true });
           _resetGameFieldForStartScreen();
-          window.__SoccerLoading?.beginStart?.(text);
-          await _startGameRoute();
+          _gameRouteStartOptions = _readGameRouteStartOptions();
+          if (gameMemoryToggle) gameMemoryToggle.disabled = false;
+          window.__SoccerLoading?.showStart?.();
         } finally {
           _prepareStartInFlight = false;
         }
       }
 
-      function _startGameFromStartScreen() {
+      async function _startGameFromStartScreen() {
+        if (_prepareStartInFlight || _llm.gameStarted || !window.__SoccerLoading?.canStart?.()) return;
+        _prepareStartInFlight = true;
+        if (gameMemoryToggle) gameMemoryToggle.disabled = true;
+        // Unlock browser audio in the user gesture, before network awaits.
+        void soccerGameAudio.unlock();
+        try {
+          await _startGameRoute();
+        } catch (error) {
+          let released = soccerGame.runtime.state === 'idle';
+          if (!released) {
+            try {
+              const result = await soccerGame.runtime.end(_gameRouteEndPayload(false, { reason: 'start_failed' }));
+              released = result.ok && result.data?.ok !== false;
+            } catch (_) { /* keep the unresolved generation for page-exit cleanup */ }
+          }
+          if (released) {
+            soccerGame.runtime.reset({ newSession: true });
+            if (gameMemoryToggle) gameMemoryToggle.disabled = false;
+            window.__SoccerLoading?.showStart?.(_i18n('startScreen.startFailedRetry', '启动失败，请重试'));
+          } else {
+            window.__SoccerLoading?.ended?.();
+          }
+          return;
+        } finally {
+          _prepareStartInFlight = false;
+        }
         const started = window.__SoccerLoading?.startGame?.();
         if (!started) return;
         _resetPassiveGuardForNewGame();

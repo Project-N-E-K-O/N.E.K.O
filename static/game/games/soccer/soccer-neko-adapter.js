@@ -33,6 +33,29 @@
       },
     });
     window.SoccerNekoHostError = window.NekoMiniGameHostError;
+    Object.defineProperty(host, 'migrateLegacySettings', {
+      value: async function migrateLegacySettings(game) {
+        if (!game.capabilities.has('storage')) return;
+        // Fixed, soccer-only compatibility keys. Never erase the old value,
+        // and never replace a preference already saved through the SDK.
+        for (const [legacyKey, key, parse] of [
+          ['neko.soccerGameAudio.voiceMix', 'settings/voice-mix-percent',
+            (raw) => raw.trim() && Number.isFinite(Number(raw))
+              ? Math.round(Math.max(0, Math.min(100, Number(raw)))) : undefined],
+          ['neko.soccer.surrenderReminderEnabled', 'settings/surrender-reminder-enabled',
+            (raw) => raw === 'true' ? true : raw === 'false' ? false : undefined],
+        ]) {
+          try {
+            const current = await game.storage.get(key);
+            if (!current.ok || current.data?.found !== false) continue;
+            const raw = window.localStorage?.getItem(legacyKey);
+            if (raw == null) continue;
+            const value = parse(raw);
+            if (value !== undefined) await game.storage.set(key, value);
+          } catch (_) { /* optional storage: retain defaults and retry next page load */ }
+        }
+      },
+    });
     return host;
   };
 })();

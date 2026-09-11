@@ -5235,6 +5235,7 @@
         },
         "startScreen": {
             "readyToStart": "準備完了 — クリックで開始",
+            "startFailedRetry": "開始できませんでした。もう一度お試しください。",
             "ready": "準備完了",
             "startButton": "開始"
         },

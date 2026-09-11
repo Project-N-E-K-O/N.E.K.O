@@ -5235,6 +5235,7 @@
         },
         "startScreen": {
             "readyToStart": "Ready — click to start",
+            "startFailedRetry": "Could not start. Please try again.",
             "ready": "Ready",
             "startButton": "Start"
         },

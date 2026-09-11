@@ -5235,6 +5235,7 @@
         },
         "startScreen": {
             "readyToStart": "Готово — нажмите, чтобы начать",
+            "startFailedRetry": "Не удалось начать. Попробуйте ещё раз.",
             "ready": "Готово",
             "startButton": "Старт"
         },

@@ -5235,6 +5235,7 @@
         },
         "startScreen": {
             "readyToStart": "准备完成，点击开始",
+            "startFailedRetry": "启动失败，请重试",
             "ready": "准备完成",
             "startButton": "开始"
         },
