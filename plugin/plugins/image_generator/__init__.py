@@ -862,6 +862,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     seen_header = False
     seen_palette = False
     palette_entries = 0
+    seen_transparency = False
     seen_idat = False
     ended_idat = False
     image_chunks = []
@@ -891,6 +892,18 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
             if ended_idat or (data[25] == 3 and not seen_palette):
                 break
             seen_idat = True
+        elif kind == b"tRNS":
+            body = data[offset + 8:end - 4]
+            if seen_transparency or seen_idat or data[25] in (4, 6):
+                break
+            if data[25] == 3:
+                if not seen_palette or not 1 <= length <= palette_entries:
+                    break
+            elif (length != (2 if data[25] == 0 else 6)
+                  or any(int.from_bytes(body[i:i + 2], "big") >= 2 ** data[24]
+                         for i in range(0, length, 2))):
+                break
+            seen_transparency = True
         if seen_idat and kind != b"IDAT":
             ended_idat = True
         if kind == b"acTL":
@@ -2717,7 +2730,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
 
             async def thumbnail_and_prune():
-                preview = await self._generate_thumbnail(target, filename, extension)
+                preview = await self._generate_thumbnail(target, filename, extension, source_data=data)
+                if not self._asset_dir_is_safe() or target.is_symlink():
+                    for unsafe_name in (filename, f"thumb_{filename.rsplit('.', 1)[0]}.png"):
+                        try:
+                            self._unlink_cached_file(unsafe_name)
+                        except OSError:
+                            pass
+                    raise _GenerationFailure("本地图片缓存路径在缩略图生成期间发生变化", "AssetCacheUnsafe")
                 stats = self._cache_stats_sync()
                 # The preview is optional: keep the paid original when the
                 # additional thumbnail would exceed the byte budget.
@@ -3416,6 +3436,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         target: Path,
         filename: str,
         extension: str,
+        *,
+        source_data: bytes,
     ) -> str | None:
         """Generate a 280px thumbnail next to the original so the chat preview
         does not blow up the dialog.
@@ -3430,7 +3452,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # resizer on the Steam deck (no PIL in the frozen runtime).
         ps_script = (
             "Add-Type -AssemblyName System.Drawing; "
-            "$img = [System.Drawing.Image]::FromFile('{src}'); "
+            "$src = [Convert]::FromBase64String([Console]::In.ReadToEnd()); "
+            "$inputStream = New-Object System.IO.MemoryStream(,$src); "
+            "$img = [System.Drawing.Image]::FromStream($inputStream); "
             "$ratio = [Math]::Min(280 / $img.Width, 280 / $img.Height); "
             "$w = [int]($img.Width * $ratio); $h = [int]($img.Height * $ratio); "
             "$bmp = New-Object System.Drawing.Bitmap($w, $h); "
@@ -3440,16 +3464,17 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "$ms = New-Object System.IO.MemoryStream; "
             "$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); "
             "[Console]::Write([Convert]::ToBase64String($ms.ToArray())); "
-            "$ms.Dispose(); $g.Dispose(); $bmp.Dispose(); $img.Dispose()"
-        ).format(src=str(target).replace("'", "''"))
+            "$ms.Dispose(); $g.Dispose(); $bmp.Dispose(); $img.Dispose(); $inputStream.Dispose()"
+        )
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "powershell", "-NoProfile", "-Command", ps_script,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            output, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+            output, _ = await asyncio.wait_for(proc.communicate(base64.b64encode(source_data)), timeout=15.0)
             if proc.returncode == 0 and output:
                 data = base64.b64decode(output, validate=True)
                 if _verified_image_format(data) != "PNG":
@@ -4156,7 +4181,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 candidate_new_key,
             )
             if _value_contains_secret(
-                [raw_settings, self._manifest_settings],
+                raw_settings,
                 secrets,
             ):
                 return Err(
@@ -4517,7 +4542,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 [
                     stored_settings,
                     current_settings,
-                    self._manifest_settings,
                 ],
                 secrets,
             ):

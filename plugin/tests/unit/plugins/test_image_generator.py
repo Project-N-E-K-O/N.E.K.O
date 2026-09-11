@@ -271,7 +271,7 @@ async def test_thumbnail_write_holds_cache_lock_and_respects_budget(monkeypatch,
     plugin._settings["cache_max_bytes"] = len(PNG_BYTES)
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def thumbnail(target, filename, extension):
+    async def thumbnail(target, filename, extension, **kwargs):
         assert plugin._cache_lock.locked()
         started.set()
         await release.wait()
@@ -3228,7 +3228,7 @@ async def test_full_generation_pipeline_with_simulated_windows_thumbnails(
 
     real_thumbnail = plugin._generate_thumbnail
 
-    async def fake_thumbnail(target, filename, extension):
+    async def fake_thumbnail(target, filename, extension, **kwargs):
         thumb_name = f"thumb_{filename}"
         (target.with_name(thumb_name)).write_bytes(PNG_BYTES)
         return plugin._asset_url(thumb_name)
@@ -3517,7 +3517,7 @@ async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, exten
     class Process:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, source):
             return base64.b64encode(PNG_BYTES), b""
 
     async def spawn(*args, **kwargs):
@@ -3526,7 +3526,7 @@ async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, exten
         return Process()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    url = await plugin._generate_thumbnail(original, original.name, extension)
+    url = await plugin._generate_thumbnail(original, original.name, extension, source_data=PNG_BYTES)
     assert url.endswith(thumbnail.name)
     assert plugin._cache_stats_sync()["count"] == 1
     plugin._prune_cache_sync({**plugin._settings_snapshot(), "cache_max_count": 0})
@@ -3921,7 +3921,7 @@ async def test_save_preserves_new_asset_when_timestamps_tie(monkeypatch, tmp_pat
         os.utime(assets / filename, (100, 100))
     class FixedUuid:
         hex = "a" * 32
-    async def no_thumbnail(*args):
+    async def no_thumbnail(*args, **kwargs):
         return None
     monkeypatch.setattr(image_generator_module, "uuid4", FixedUuid)
     monkeypatch.setattr(image_generator_module, "_atomic_write_bytes", write)
@@ -3929,3 +3929,66 @@ async def test_save_preserves_new_asset_when_timestamps_tie(monkeypatch, tmp_pat
     await plugin._save_asset(PNG_BYTES, extension="png")
     assert (assets / ("a" * 32 + ".png")).is_file()
     assert not old.exists()
+
+
+@pytest.mark.parametrize("kind", ["oversized", "duplicate", "late", "before_palette"])
+def test_indexed_png_rejects_invalid_transparency_chunks(kind):
+    def chunk(name, body):
+        return len(body).to_bytes(4, "big") + name + body + zlib.crc32(name + body).to_bytes(4, "big")
+    header = chunk(b"IHDR", (1).to_bytes(4, "big") * 2 + bytes([1, 3, 0, 0, 0]))
+    palette = chunk(b"PLTE", b"\x00\x00\x00")
+    transparency = chunk(b"tRNS", b"\x00")
+    pixels = chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+    invalid = {
+        "oversized": palette + chunk(b"tRNS", b"\x00\x00") + pixels,
+        "duplicate": palette + transparency + transparency + pixels,
+        "late": palette + pixels + transparency,
+        "before_palette": transparency + palette + pixels,
+    }[kind]
+    signature = b"\x89PNG\r\n\x1a\n"
+    ending = chunk(b"IEND", b"")
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(signature + header + invalid + ending)
+    assert image_generator_module._verified_image_format(signature + header + palette + transparency + pixels + ending) == "PNG"
+
+
+@pytest.mark.asyncio
+async def test_manifest_value_key_collision_can_be_recovered():
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": DEFAULT_SETTINGS["model"]}))
+    plugin._settings_available = False
+    payload = await encrypted_save_payload(plugin, model="safe-replacement-model", clear_api_key=True)
+    assert (await plugin.save_settings(**payload)).is_ok()
+    assert not store.data.get("api_key")
+    assert plugin._settings_available
+    settings, key = await plugin._generation_config_snapshot()
+    assert settings["model"] == "safe-replacement-model"
+    assert key == ""
+
+
+@pytest.mark.asyncio
+async def test_original_replacement_during_thumbnail_is_rejected(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    changed = []
+    real_safe = plugin._asset_dir_is_safe
+    async def thumbnail(target, filename, extension, *, source_data):
+        assert source_data == PNG_BYTES
+        changed.append(True)
+        return None
+    monkeypatch.setattr(plugin, "_generate_thumbnail", thumbnail)
+    monkeypatch.setattr(plugin, "_asset_dir_is_safe", lambda: not changed and real_safe())
+    with pytest.raises(image_generator_module._GenerationFailure, match="缩略图"):
+        await plugin._save_asset(PNG_BYTES, extension="png")
+    assert not list(assets.glob("*.png"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows System.Drawing integration")
+async def test_windows_thumbnail_reads_original_bytes_from_stdin(tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    filename = "a" * 32 + ".png"
+    # The source path does not exist: the renderer must consume stdin bytes.
+    result = await plugin._generate_thumbnail(assets / filename, filename, "png", source_data=PNG_BYTES)
+    assert result == plugin._asset_url("thumb_" + filename)
+    assert (assets / ("thumb_" + filename)).is_file()
