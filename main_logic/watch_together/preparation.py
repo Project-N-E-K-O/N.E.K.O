@@ -9,6 +9,16 @@ from .library import application_library
 
 jobs = {}
 tasks = set()
+pending_confirmations = {}
+
+
+def confirm_preparation(identifier, manager, accepted, duration):
+    pending = pending_confirmations.get(identifier)
+    if (not pending or pending[0] is not manager or pending[1].done()
+            or not isinstance(accepted, bool) or duration != pending[2]):
+        raise ValueError("Preparation confirmation is no longer valid")
+    pending[1].set_result(accepted)
+    return {"ok": True}
 
 
 async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None):
@@ -23,6 +33,20 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
     job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": []}
     jobs[job["id"]] = job
+
+    async def confirm_download(title, duration):
+        future = asyncio.get_running_loop().create_future()
+        pending_confirmations[job["id"]] = (manager, future, duration)
+        job.update(status="awaiting_confirmation", confirmation_required=True,
+                   confirmation_video={"title": title, "duration": duration}, stage_key="longWarning")
+        try:
+            accepted = await asyncio.wait_for(future, 300)
+            job.update(status="working", stage_key="checking")
+            return accepted
+        finally:
+            pending_confirmations.pop(job["id"], None)
+            job.pop("confirmation_required", None)
+            job.pop("confirmation_video", None)
 
     async def synthesize(text, output):
         from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
@@ -45,7 +69,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         try:
             engine = Engine(staging, synthesize, character, language=language)
             async with asyncio.timeout(1800):
-                await engine.prepare(job, url, character, automatic=automatic, confirmed_duration=confirmed_duration)
+                await engine.prepare(job, url, character, automatic=automatic,
+                                     confirmed_duration=confirmed_duration, confirm_download=confirm_download)
         except asyncio.CancelledError:
             job.update(status="cancelled", stage="Cancelled", stage_key="cancelled")
             raise

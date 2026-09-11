@@ -199,7 +199,7 @@ class Engine:
             raise ValueError("Invalid timeline response")
         return result.value
 
-    async def prepare(self, job, url, voice_name, *, automatic=False, confirmed_duration=None):
+    async def prepare(self, job, url, voice_name, *, automatic=False, confirmed_duration=None, confirm_download=None):
         # Fail before downloading or paying for analysis when prerequisites are absent.
         media_binary("ffmpeg")
         media_binary("ffprobe")
@@ -307,7 +307,10 @@ class Engine:
                                "danmaku": info.get("stat", {}).get("danmaku")},
                               metadata_duration=float(part["duration"]),
                               automatic=automatic, confirmed_duration=confirmed_duration):
-            raise ValueError("Downloaded duration requires renewed confirmation")
+            if confirm_download is None:
+                raise ValueError("Downloaded duration requires renewed confirmation")
+            if not await confirm_download(info["title"], length):
+                raise asyncio.CancelledError()
         job["duration"] = length
         progress("extractingFrames", 35)
         frames_dir = folder / "frames"

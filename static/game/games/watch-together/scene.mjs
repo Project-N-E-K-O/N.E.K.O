@@ -122,6 +122,13 @@ export async function run(game, character) {
         const state = await game.media.request('preparation',{job:result.id});
         status(state.stage_key ? t(state.stage_key) : state.stage);
         if (state.usage) renderUsage(state.usage);
+        if (state.status === 'awaiting_confirmation' && state.confirmation_required) {
+          const info = state.confirmation_video;
+          const accepted = window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`);
+          await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted,confirmed_duration:info.duration});
+          if (!accepted) {status(t('cancelled'));return;}
+          continue;
+        }
         if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
         if (state.status === 'ready') {
           const history = await game.media.request('history');

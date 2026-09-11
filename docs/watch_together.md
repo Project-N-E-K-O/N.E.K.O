@@ -52,7 +52,10 @@ must supply these prerequisites or set the variables to their bundled tools.
 This repository does not bundle media binaries. Preparation checks both tools
 before downloading or making paid model calls; existing history can still play.
 The downloaded duration is checked again before frame extraction and analysis.
-If it no longer satisfies selection or confirmation, preparation stops safely.
+If it no longer satisfies automatic selection, preparation stops safely. Manual
+videos found to exceed five minutes after download pause before analysis and
+ask for confirmation using the actual duration. Accepting resumes that same
+job; cancelling stops it. Unanswered requests expire after five minutes.
 
 The trusted media host preloads reaction files, owns the only reaction audio
 output, and uses `video.currentTime` for scheduling. Pause/buffering stops audio,

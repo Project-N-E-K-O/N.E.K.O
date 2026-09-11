@@ -97,6 +97,15 @@ async def prepare_video(request: Request):
     manager = get_session_manager().get(name)
     if not manager:
         raise HTTPException(409, "Character session unavailable")
+    if "confirmation_job" in data:
+        from main_logic.watch_together.preparation import confirm_preparation
+        if not isinstance(data["confirmation_job"], str):
+            raise HTTPException(400, "Invalid preparation job")
+        try:
+            return confirm_preparation(data["confirmation_job"], manager,
+                                       data.get("accepted"), data.get("confirmed_duration"))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
     url = data.get("url")
     if not isinstance(url, str) or not 5 <= len(url) <= 1000:
         raise HTTPException(400, "Invalid video URL")
