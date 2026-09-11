@@ -208,6 +208,8 @@ async def test_task_json_preserves_timeout_classification(method):
                                             ([407] * 10, True), ([302] * 10, True)])
 def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path, statuses, ignored):
     plugin, _, _ = make_plugin()
+    monkeypatch.setenv("NEKO_PLUGIN_SERVER_ORIGIN", "https://public-proxy.example")
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49876")
     monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
     registered = []
 
@@ -230,6 +232,7 @@ def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_pat
 
         def get(self, url):
             assert registered
+            assert url.startswith("http://127.0.0.1:49876/plugin/image_generator/ui/")
             return httpx.Response(statuses.pop(0), text="ok")
 
     monkeypatch.setattr(plugin, "register_static_ui", register)
@@ -294,7 +297,7 @@ async def test_thumbnail_write_holds_cache_lock_and_respects_budget(monkeypatch,
         else:
             _, _, preview = await saving
             assert preview is None
-        assert sum(path.stat().st_size for path in asset_dir.iterdir()) == len(PNG_BYTES)
+        assert sum(path.stat().st_size for path in asset_dir.iterdir()) == (0 if cancel else len(PNG_BYTES))
         assert not list(asset_dir.glob("thumb_*"))
     finally:
         release.set()
@@ -2213,6 +2216,8 @@ async def test_cancelled_asset_write_finishes_pruning_before_releasing_cache_loc
     with pytest.raises(asyncio.CancelledError):
         await task
     assert plugin._cache_stats_sync()["count"] <= 1
+    assert list(asset_dir.iterdir()) == [old_file]
+    assert old_file.read_bytes() == PNG_BYTES
 
 
 @pytest.mark.asyncio
@@ -4098,3 +4103,25 @@ async def test_failed_reset_restores_evicted_images(tmp_path):
     assert (await plugin.reset_settings()).is_err()
     assert {path.name: path.read_bytes() for path in assets.iterdir()} == before
     assert plugin._settings_snapshot()["cache_max_count"] == DEFAULT_SETTINGS["cache_max_count"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_cache_rejects_limit_save(monkeypatch, tmp_path):
+    plugin, _, store = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    original = assets / ("a" * 32 + ".png")
+    original.write_bytes(PNG_BYTES)
+    enumerate_directory = Path.iterdir
+    def unreadable(path):
+        if path == assets:
+            raise PermissionError("cannot enumerate cache")
+        return enumerate_directory(path)
+    monkeypatch.setattr(Path, "iterdir", unreadable)
+    before = plugin._settings_snapshot()
+    payload = await encrypted_save_payload(plugin, cache_max_count=1)
+    assert (await plugin.save_settings(**payload)).is_err()
+    assert plugin._settings_snapshot() == before
+    assert "settings" not in store.data
+    assert original.read_bytes() == PNG_BYTES
+    with pytest.raises(PermissionError):
+        plugin._cache_stats_sync(strict=True)

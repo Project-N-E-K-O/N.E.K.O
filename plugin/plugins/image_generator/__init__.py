@@ -2398,7 +2398,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 # An unverified override must not enable generated assets.
                 return True
             url = (
-                f"{self._resolve_public_origin().rstrip('/')}"
+                f"{self._resolve_local_origin().rstrip('/')}"
                 f"/plugin/{quote(self.plugin_id, safe='')}/ui/{probe.name}"
             )
             # _register_writable_static_ui is synchronous (called from the
@@ -2464,16 +2464,24 @@ class ImageGeneratorPlugin(NekoPluginBase):
             filename,
         )
 
-    def _cache_files(self) -> list[Path]:
+    def _cache_files(self, *, strict: bool = False) -> list[Path]:
         asset_dir = self._asset_dir
-        if asset_dir is None or not self._asset_dir_is_safe() or not asset_dir.is_dir():
+        if asset_dir is None:
+            return []
+        if not self._asset_dir_is_safe() or not asset_dir.is_dir():
+            if strict:
+                raise OSError("generated cache cannot be inspected safely")
             return []
         files: list[Path] = []
         try:
             candidates = list(asset_dir.iterdir())
         except OSError:
+            if strict:
+                raise
             return []
         for path in candidates:
+            if strict and not path.is_symlink():
+                path.stat()
             if (
                 path.is_file()
                 and not path.is_symlink()
@@ -2495,7 +2503,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
 
     def _prune_cache_sync(self, settings: Mapping[str, Any], *, newest: str | None = None) -> dict[str, int]:
         files_with_stats: list[tuple[Path, int, float]] = []
-        for path in self._cache_files():
+        for path in self._cache_files(strict=True):
             if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name):
                 try:
                     self._unlink_cached_file(path.name)
@@ -2548,7 +2556,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     pass
         # Report actual on-disk state, including files whose deletion failed,
         # instead of optimistic counters from the intended pruning plan.
-        return self._cache_stats_sync()
+        return self._cache_stats_sync(strict=True)
 
     async def _prune_cache(self) -> dict[str, int]:
         await self._acquire_lock(self._cache_lock)
@@ -2560,7 +2568,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         finally:
             self._cache_lock.release()
 
-    def _cache_stats_sync(self) -> dict[str, int]:
+    def _cache_stats_sync(self, *, strict: bool = False) -> dict[str, int]:
         # ``count`` is measured in generation groups (an original plus its
         # chat-preview thumbnail), matching the pruning unit in
         # _prune_cache_sync and the cache_max_count semantics enforced by
@@ -2568,12 +2576,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
         count = 0
         total_bytes = 0
         seen_groups: set[str] = set()
-        for path in self._cache_files():
+        for path in self._cache_files(strict=strict):
             name = path.name
             key = name.removeprefix("thumb_").rsplit(".", 1)[0]
             try:
                 total_bytes += path.stat().st_size
             except OSError:
+                if strict:
+                    raise
                 continue
             if _GENERATED_TEMP_FILE_PATTERN.fullmatch(name):
                 continue
@@ -2606,6 +2616,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 and not parsed.params
             ):
                 return f"{parsed.scheme.lower()}://{parsed.netloc}"
+        return self._resolve_local_origin()
+
+    def _resolve_local_origin(self) -> str:
         try:
             port = int(str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "")).strip())
             if 1 <= port <= 65535:
@@ -2677,6 +2690,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
             settings = self._settings_snapshot()
 
+            write_cancelled = threading.Event()
+
             def write_and_prune() -> dict[str, int]:
                 _atomic_write_bytes(
                     writable_ui,
@@ -2690,6 +2705,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "本地图片缓存路径在写入期间发生变化，已拒绝结果",
                         "AssetCacheUnsafe",
                     )
+                if write_cancelled.is_set():
+                    return self._cache_stats_sync(strict=True)
                 return self._prune_cache_sync(settings, newest=filename)
 
             worker = asyncio.create_task(
@@ -2698,9 +2715,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
             try:
                 stats = await asyncio.shield(worker)
             except asyncio.CancelledError:
+                write_cancelled.set()
                 # to_thread cannot stop a filesystem write. Keep the cache
-                # lock until that worker has also enforced the configured
-                # bounds, then propagate cancellation to the caller.
+                # lock until it finishes, then remove the canceled output
+                # before releasing the lock or propagating cancellation.
                 while not worker.done():
                     try:
                         await asyncio.shield(worker)
@@ -2764,8 +2782,25 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     except Exception:
                         break
                 if not thumbnail_worker.cancelled():
-                    thumbnail_worker.exception()
+                    try:
+                        thumbnail_worker.exception()
+                    except BaseException:
+                        pass
                 raise
+        except asyncio.CancelledError:
+            def cleanup_cancelled_asset():
+                for name in (filename, f"thumb_{filename.rsplit('.', 1)[0]}.png"):
+                    try:
+                        self._unlink_cached_file(name)
+                    except OSError:
+                        pass
+                self._prune_cache_sync(settings)
+
+            try:
+                await self._drain_on_cancel(asyncio.to_thread(cleanup_cancelled_asset))
+            except Exception as exc:
+                self.logger.warning("Cancelled asset cleanup failed: failure_class={}", type(exc).__name__)
+            raise
         except _GenerationFailure:
             raise
         except Exception:
@@ -4087,7 +4122,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         return Ok(_redact_structure(payload, secrets))
 
     def _backup_cache_sync(self, directory: Path) -> None:
-        for path in self._cache_files():
+        for path in self._cache_files(strict=True):
             if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name):
                 continue
             before = path.lstat()
