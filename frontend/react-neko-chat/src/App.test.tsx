@@ -328,7 +328,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '  你好  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'button' });
     expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
     expect(container.querySelector('[data-compact-chat-state="input"]')).not.toBeNull();
 
@@ -353,7 +353,7 @@ describe('App', () => {
       target: { value: 'cat draft' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft' });
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft', submitMethod: 'button' });
 
     rerender(
       <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
@@ -383,7 +383,21 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '喵一下' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下', submitMethod: 'button' });
+  });
+
+  it('marks a plain Enter submission from the full chat surface', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'full Enter send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({
+      text: 'full Enter send',
+      submitMethod: 'enter',
+    });
   });
 
   it('keeps the ordinary full-chat draft separate from the temporary cat draft', () => {
@@ -403,7 +417,7 @@ describe('App', () => {
       target: { value: 'full cat draft' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft' });
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft', submitMethod: 'button' });
 
     rerender(
       <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
@@ -7267,7 +7281,9 @@ describe('App', () => {
 
   it('gives the compact surface the full chat liquid-glass edge hierarchy', () => {
     const steadyFrameRule = compactChatStyles.match(/\.compact-chat-surface-frame\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(compactChatStyles).toContain('--compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);');
+    expect(compactChatStyles).toContain(
+      '--compact-chat-surface-edge-top: rgba(255, 255, 255, calc(0.7 * var(--neko-chat-opacity-factor, 1)));',
+    );
     expect(compactChatStyles).toContain('border-width: 2px 1px 1px 1px;');
     expect(compactChatStyles).toContain('box-shadow: var(--compact-chat-surface-shadow);');
     expect(steadyFrameRule).not.toContain('clip-path: inset(0 round 999px);');
@@ -7278,7 +7294,9 @@ describe('App', () => {
     expect(compactChatStyles).toMatch(
       /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.compact-chat-surface-frame::after\s*\{\s*animation: none;/,
     );
-    expect(compactChatStyles).toContain('--compact-chat-surface-edge-top: rgba(196, 228, 255, 0.44);');
+    expect(compactChatStyles).toContain(
+      '--compact-chat-surface-edge-top: rgba(196, 228, 255, calc(0.44 * var(--neko-chat-opacity-factor, 1)));',
+    );
   });
 
   it('keeps the backdrop layer pill-clipped while compact reveal masks are active', () => {
@@ -7289,19 +7307,19 @@ describe('App', () => {
 
   it('frosts the backdrop while strengthening compact surface opacity', () => {
     expect(compactChatStyles).toMatch(
-      /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, 0\.035\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
+      /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, calc\(0\.035 \* var\(--neko-chat-opacity-factor, 1\)\)\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(242, 249, 255, 0.42) 46%, rgba(219, 238, 253, 0.48))',
+      'linear-gradient(180deg,\n      rgba(255, 255, 255, calc(0.58 * var(--neko-chat-opacity-factor, 1))),\n      rgba(242, 249, 255, calc(0.42 * var(--neko-chat-opacity-factor, 1))) 46%,\n      rgba(219, 238, 253, calc(0.48 * var(--neko-chat-opacity-factor, 1))))',
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(31, 48, 66, 0.80), rgba(15, 29, 46, 0.76) 58%, rgba(8, 17, 30, 0.72))',
+      'linear-gradient(180deg,\n      rgba(31, 48, 66, calc(0.80 * var(--neko-chat-opacity-factor, 1))),\n      rgba(15, 29, 46, calc(0.76 * var(--neko-chat-opacity-factor, 1))) 58%,\n      rgba(8, 17, 30, calc(0.72 * var(--neko-chat-opacity-factor, 1))))',
     );
     expect(compactChatStyles).toContain(
-      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 249, 255, 0.68) 46%, rgba(219, 238, 253, 0.72));',
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg,\n      rgba(255, 255, 255, calc(0.78 * var(--neko-chat-opacity-factor, 1))),\n      rgba(242, 249, 255, calc(0.68 * var(--neko-chat-opacity-factor, 1))) 46%,\n      rgba(219, 238, 253, calc(0.72 * var(--neko-chat-opacity-factor, 1))));',
     );
     expect(compactChatStyles).toContain(
-      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(31, 48, 66, 0.86), rgba(15, 29, 46, 0.82) 58%, rgba(8, 17, 30, 0.78));',
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg,\n      rgba(31, 48, 66, calc(0.86 * var(--neko-chat-opacity-factor, 1))),\n      rgba(15, 29, 46, calc(0.82 * var(--neko-chat-opacity-factor, 1))) 58%,\n      rgba(8, 17, 30, calc(0.78 * var(--neko-chat-opacity-factor, 1))));',
     );
     expect(compactChatStyles).toMatch(
       /\.compact-chat-surface-frame\[data-compact-chat-state="default"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="options"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="input"\]::before\s*\{[\s\S]*?background: var\(--compact-chat-capsule-surface-bg\);/,
@@ -9252,7 +9270,7 @@ describe('App', () => {
     expect(sendButton.querySelector('img')).toHaveAttribute('src', '/static/icons/send_new_icon.png');
     fireEvent.click(sendButton);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send', submitMethod: 'button' });
   });
 
   it('keeps controlled compact input focused after submitting text for continuous typing', async () => {
@@ -9279,7 +9297,7 @@ describe('App', () => {
     expect(document.activeElement).toBe(sendButton);
     fireEvent.click(sendButton);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message', submitMethod: 'button' });
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
     expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
     await waitFor(() => {
@@ -9457,11 +9475,50 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'Test send' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    const enterDispatchResult = fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(enterDispatchResult).toBe(false);
+    expect(input).toHaveValue('Test send');
     expect(onComposerSubmit).not.toHaveBeenCalled();
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send', submitMethod: 'enter' });
+  });
+
+  it('finishes a plain Enter submission when the compact input blurs before keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Send on blur' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.blur(input);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledTimes(1);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send on blur', submitMethod: 'enter' });
+    expect(input).toHaveValue('');
+  });
+
+  it('does not turn Shift+Enter or IME confirmation into a submission on blur', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Keep draft' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    fireEvent.blur(input);
+
+    fireEvent.focus(input);
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+    });
+    fireEvent.blur(input);
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('Keep draft');
   });
 
   it('submits plain Enter when WebKit inserts a line break before keyup', () => {
@@ -9477,7 +9534,7 @@ describe('App', () => {
     });
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline', submitMethod: 'enter' });
     expect(input).toHaveValue('');
   });
 
@@ -9493,7 +9550,7 @@ describe('App', () => {
     });
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send', submitMethod: 'enter' });
   });
 
   it('treats an inputType-less text replacement as an IME candidate commit', () => {
@@ -9512,7 +9569,7 @@ describe('App', () => {
     expect(input).toHaveValue('candidate');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate', submitMethod: 'enter' });
   });
 
   it('keeps a Shift+Enter line break without submitting', () => {
@@ -9521,7 +9578,12 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'First line' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    const shiftEnterDispatchResult = fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: true,
+    });
+    expect(shiftEnterDispatchResult).toBe(true);
     fireEvent.input(input, {
       target: { value: 'First line\n' },
       inputType: 'insertLineBreak',
@@ -9552,7 +9614,7 @@ describe('App', () => {
     expect(input).toHaveValue('你好');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('treats macOS WebKit keyCode 229 as IME confirmation until keyup', () => {
@@ -9580,7 +9642,7 @@ describe('App', () => {
     expect(input).toHaveValue('你好');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('submits on the first Enter after an IME commit completed without Enter', () => {
@@ -9593,7 +9655,7 @@ describe('App', () => {
     fireEvent.compositionEnd(input);
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('does not submit an ASCII candidate committed without composition metadata', () => {
@@ -9614,7 +9676,7 @@ describe('App', () => {
     expect(input).toHaveValue('ok');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok', submitMethod: 'enter' });
   });
 
   it('allows an explicit pointer send while an IME composition is active', () => {
@@ -9626,7 +9688,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '你好' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }), { detail: 1 });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'button' });
   });
 
   it('disables composer submission while the home tutorial owns interaction', () => {
@@ -9675,7 +9737,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
     pressEnter(input);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble', submitMethod: 'enter' });
     expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();
     expect(screen.queryByText('You')).not.toBeInTheDocument();
   });

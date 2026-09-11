@@ -83,15 +83,15 @@
             transform: none;
             border-radius: 22px;
             /* 液态边缘反光 — 顶部最亮、左次之，模拟顶光 */
-            border-top: 2px solid rgba(255, 255, 255, 0.7);
-            border-left: 1px solid rgba(255, 255, 255, 0.35);
-            border-right: 1px solid rgba(255, 255, 255, 0.15);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            border-top: 2px solid rgba(255, 255, 255, calc(0.7 * var(--neko-chat-opacity-factor, 1)));
+            border-left: 1px solid rgba(255, 255, 255, calc(0.35 * var(--neko-chat-opacity-factor, 1)));
+            border-right: 1px solid rgba(255, 255, 255, calc(0.15 * var(--neko-chat-opacity-factor, 1)));
+            border-bottom: 1px solid rgba(255, 255, 255, calc(0.06 * var(--neko-chat-opacity-factor, 1)));
             /* 收敛外阴影（落在 30px inset 留白内，不被窗口边缘裁掉）+ 玻璃内高光带 */
             box-shadow:
                 0 8px 20px rgba(12, 20, 34, 0.28),
-                inset 0 2px 4px rgba(255, 255, 255, 0.5),
-                inset 0 -1px 2px rgba(255, 255, 255, 0.08);
+                inset 0 2px 4px rgba(255, 255, 255, calc(0.5 * var(--neko-chat-opacity-factor, 1))),
+                inset 0 -1px 2px rgba(255, 255, 255, calc(0.08 * var(--neko-chat-opacity-factor, 1)));
         }
         /* 三色流光关键帧：7 个径向光斑各自缓慢漂移，模拟玻璃折射 */
         @keyframes liquidFlow {
@@ -114,17 +114,17 @@
             pointer-events: none;
             z-index: 0;
             box-shadow:
-                inset 0 2px 6px rgba(255, 255, 255, 0.5),
-                inset 0 -1px 3px rgba(255, 255, 255, 0.1),
-                inset 2px 0 4px rgba(255, 255, 255, 0.15),
-                inset -2px 0 4px rgba(255, 255, 255, 0.08);
+                inset 0 2px 6px rgba(255, 255, 255, calc(0.5 * var(--neko-chat-opacity-factor, 1))),
+                inset 0 -1px 3px rgba(255, 255, 255, calc(0.1 * var(--neko-chat-opacity-factor, 1))),
+                inset 2px 0 4px rgba(255, 255, 255, calc(0.15 * var(--neko-chat-opacity-factor, 1))),
+                inset -2px 0 4px rgba(255, 255, 255, calc(0.08 * var(--neko-chat-opacity-factor, 1)));
             background: linear-gradient(
                 180deg,
-                rgba(255, 255, 255, 0.25) 0%,
-                rgba(255, 255, 255, 0.08) 8%,
+                rgba(255, 255, 255, calc(0.25 * var(--neko-chat-opacity-factor, 1))) 0%,
+                rgba(255, 255, 255, calc(0.08 * var(--neko-chat-opacity-factor, 1))) 8%,
                 transparent 20%,
                 transparent 85%,
-                rgba(255, 255, 255, 0.04) 100%
+                rgba(255, 255, 255, calc(0.04 * var(--neko-chat-opacity-factor, 1))) 100%
             );
         }
         /* 三色流光层 — 三色径向渐变缓慢漂移，模拟玻璃折射（z-index:10，输入区 z-index:15
@@ -138,13 +138,13 @@
             pointer-events: none;
             z-index: 10;
             background-image:
-                radial-gradient(circle at 15% 10%, rgba(100,180,255,0.14) 0%, transparent 22%),
-                radial-gradient(circle at 75% 15%, rgba(180,140,255,0.11) 0%, transparent 20%),
-                radial-gradient(circle at 40% 35%, rgba(220,140,240,0.12) 0%, transparent 18%),
-                radial-gradient(circle at 85% 50%, rgba(120,200,255,0.13) 0%, transparent 20%),
-                radial-gradient(circle at 25% 65%, rgba(200,160,255,0.10) 0%, transparent 19%),
-                radial-gradient(circle at 60% 80%, rgba(100,190,255,0.12) 0%, transparent 21%),
-                radial-gradient(circle at 90% 85%, rgba(240,150,200,0.10) 0%, transparent 17%);
+                radial-gradient(circle at 15% 10%, rgba(100,180,255,calc(0.14 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 22%),
+                radial-gradient(circle at 75% 15%, rgba(180,140,255,calc(0.11 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 20%),
+                radial-gradient(circle at 40% 35%, rgba(220,140,240,calc(0.12 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 18%),
+                radial-gradient(circle at 85% 50%, rgba(120,200,255,calc(0.13 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 20%),
+                radial-gradient(circle at 25% 65%, rgba(200,160,255,calc(0.10 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 19%),
+                radial-gradient(circle at 60% 80%, rgba(100,190,255,calc(0.12 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 21%),
+                radial-gradient(circle at 90% 85%, rgba(240,150,200,calc(0.10 * var(--neko-chat-opacity-factor, 1))) 0%, transparent 17%);
             background-size: 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%;
             background-repeat: no-repeat;
             animation: liquidFlow 20s ease-in-out infinite;
@@ -182,10 +182,10 @@
            注：full 窗口 transparent:true 且同期 lanlan_frd 无 vibrancy/acrylic（已核 git 全史），
            桌面是锐透出来的、非 OS 磨砂 —— 与当年一致，纯 CSS 半透明，无需 lanlan_frd 配合。 */
         body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
-            background: rgba(255, 255, 255, 0.35);
+            background: rgba(255, 255, 255, calc(0.35 * var(--neko-chat-opacity-factor, 1) + 0.3 * max(0, var(--neko-chat-opacity-factor, 1) - 1)));
         }
         [data-theme="dark"] body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
-            background: rgba(50, 50, 72, 0.35);
+            background: rgba(50, 50, 72, calc(0.35 * var(--neko-chat-opacity-factor, 1) + 0.3 * max(0, var(--neko-chat-opacity-factor, 1) - 1)));
         }
         /* ──────────────────────────────────────────────────────────────────────
            full 形态在**共享 /chat（compact）**上不注入，仅在此留档：
@@ -1257,14 +1257,141 @@
             }, 100);
         }
 
+        var _drawingGuessChatHiddenSnap = null;
+        var _drawingGuessChatHideActive = false;
+        var _drawingGuessChatWasVisible = null;
+        var _drawingGuessChatHideGeneration = 0;
+        var _drawingGuessChatDocumentVisibilityEpoch = 0;
+        var _drawingGuessChatPendingShow = null;
+
+        document.addEventListener('visibilitychange', function() {
+            _drawingGuessChatDocumentVisibilityEpoch += 1;
+        });
+
+        function _isDrawingGuessGame(detail) {
+            var gameType = String((detail && detail.gameType) || '').toLowerCase().replace(/-/g, '_');
+            return gameType === 'drawing_guess';
+        }
+
+        function _drawingGuessChatVisibilitySnapshot() {
+            var visible = !document.hidden;
+            var epoch = _drawingGuessChatDocumentVisibilityEpoch;
+            if (typeof W.isIdleTargetAvailable === 'function') {
+                try {
+                    visible = W.isIdleTargetAvailable() === true;
+                } catch (_) {
+                    visible = false;
+                }
+            }
+            if (typeof W.getIdleTargetAvailabilityEpoch === 'function') {
+                try {
+                    var bridgeEpoch = Number(W.getIdleTargetAvailabilityEpoch());
+                    if (Number.isFinite(bridgeEpoch) && bridgeEpoch >= 0) epoch = bridgeEpoch;
+                } catch (_) {
+                    // The document visibility epoch remains a safe fallback.
+                }
+            }
+            return { visible: visible, epoch: epoch };
+        }
+
+        function _isDrawingGuessChatVisible() {
+            var visibility = _drawingGuessChatVisibilitySnapshot();
+            var pendingShow = _drawingGuessChatPendingShow;
+            _drawingGuessChatPendingShow = null;
+            // W.show() is one-way IPC. Until visibility advances, a following
+            // game must supersede that outstanding show with a matching hide.
+            return visibility.visible || !!(
+                pendingShow && pendingShow.epoch === visibility.epoch
+            );
+        }
+
+        function _hideChatForDrawingGuess() {
+            if (!_gameWindowActive) return;
+            if (typeof W.hide !== 'function' || typeof W.show !== 'function') {
+                _gameMinimizeForGame();
+                return;
+            }
+            if (!_drawingGuessChatHideActive) {
+                // Latch this before getBounds or hide: repeated reconciliation
+                // runs after W.hide() must not overwrite the pre-game state.
+                _drawingGuessChatWasVisible = _isDrawingGuessChatVisible();
+                _drawingGuessChatHideActive = true;
+                _drawingGuessChatHideGeneration += 1;
+            }
+            if (typeof W.setCompactChatBallTemporarilyHidden === 'function') {
+                W.setCompactChatBallTemporarilyHidden(true);
+            }
+            if (_drawingGuessChatHiddenSnap) {
+                if (_drawingGuessChatHiddenSnap.wasVisible) W.hide();
+                return;
+            }
+            if (animating) {
+                requestAnimationFrame(_hideChatForDrawingGuess);
+                return;
+            }
+            var hideGeneration = _drawingGuessChatHideGeneration;
+            function hideWithSnap(b0) {
+                if (hideGeneration !== _drawingGuessChatHideGeneration
+                    || !_drawingGuessChatHideActive || !_gameWindowActive || _drawingGuessChatHiddenSnap) return;
+                _drawingGuessChatHiddenSnap = {
+                    bounds: b0 ? { x: b0.x, y: b0.y, width: b0.width, height: b0.height } : null,
+                    savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null,
+                    wasVisible: _drawingGuessChatWasVisible === true
+                };
+                if (_drawingGuessChatHiddenSnap.wasVisible) W.hide();
+            }
+            if (typeof W.getBounds !== 'function') {
+                hideWithSnap(null);
+                return;
+            }
+            W.getBounds().then(hideWithSnap).catch(function() {
+                hideWithSnap(null);
+            });
+        }
+
+        function _restoreChatAfterDrawingGuess() {
+            // Invalidate getBounds callbacks before clearing the current
+            // ownership state; a later game round must not reuse old bounds.
+            _drawingGuessChatHideGeneration += 1;
+            _drawingGuessChatHideActive = false;
+            var snap = _drawingGuessChatHiddenSnap;
+            _drawingGuessChatHiddenSnap = null;
+            _drawingGuessChatWasVisible = null;
+            if (typeof W.show !== 'function') {
+                _gameRestoreAfterGame();
+                return;
+            }
+            if (typeof W.setCompactChatBallTemporarilyHidden === 'function') {
+                W.setCompactChatBallTemporarilyHidden(false);
+            }
+            if (snap && snap.wasVisible) {
+                var visibilityBeforeShow = _drawingGuessChatVisibilitySnapshot();
+                _drawingGuessChatPendingShow = { epoch: visibilityBeforeShow.epoch };
+                W.show();
+            }
+            if (!snap) return;
+            if (snap.bounds && typeof W.setBounds === 'function') {
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+            }
+            if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+        }
+
         window.addEventListener('neko-game-window-state-change', function(ev) {
             var detail = ev && ev.detail ? ev.detail : {};
             if (detail.action === 'opened') {
                 _gameWindowActive = true;
-                _gameMinimizeForGame();
+                if (_isDrawingGuessGame(detail)) {
+                    _hideChatForDrawingGuess();
+                } else {
+                    _gameMinimizeForGame();
+                }
             } else if (detail.action === 'closed') {
                 _gameWindowActive = false;
-                _gameRestoreAfterGame();
+                if (_drawingGuessChatHideActive || _drawingGuessChatHiddenSnap) {
+                    _restoreChatAfterDrawingGuess();
+                } else {
+                    _gameRestoreAfterGame();
+                }
             }
         });
 

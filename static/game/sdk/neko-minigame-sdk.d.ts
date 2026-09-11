@@ -38,8 +38,8 @@ declare namespace NekoMiniGame {
     maxLength?: number;
     minItems?: number;
     maxItems?: number;
-    items?: ContractSchema;
-    properties?: Readonly<Record<string, ContractSchema>>;
+    items?: ContractDeclaration;
+    properties?: Readonly<Record<string, ContractDeclaration>>;
     required?: readonly string[];
     additionalProperties?: boolean;
   }
@@ -171,10 +171,15 @@ declare namespace NekoMiniGame {
   }
 
   interface RuntimeConfiguration {
-    payload?: () => unknown;
+    /**
+     * Return a bounded plain JSON object. The object type only excludes primitives;
+     * arrays, functions, Date/Map objects and class instances are rejected at runtime.
+     */
+    payload?: () => object;
     heartbeat?: false | { intervalMs?: number; timeoutMs?: number };
     outputs?: false | { intervalMs?: number; timeoutMs?: number; limit?: number };
-    pageExit?: false | true | { payload?: (context: unknown) => unknown };
+    /** The page-exit payload follows the same static/runtime contract as payload. */
+    pageExit?: false | true | { payload?: (context: unknown) => object };
   }
 
   interface Runtime {
@@ -182,8 +187,14 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
-    start(payload?: unknown, options?: RequestOptions): Promise<Response>;
-    end(payload?: unknown, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
+    /**
+     * Accepts object interfaces without index signatures. Static checking only
+     * excludes primitives; runtime requires a bounded plain JSON object and rejects
+     * arrays, functions, Date/Map objects and class instances with invalid_request.
+     */
+    start(payload?: object, options?: RequestOptions): Promise<Response>;
+    /** Uses the same static/runtime payload contract as start. */
+    end(payload?: object, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
     pulse(force?: boolean): Promise<unknown>;
     pollOutputs(): Promise<unknown>;
     startMonitoring(options?: { heartbeat?: boolean; outputs?: boolean }): void;
@@ -452,6 +463,10 @@ declare namespace NekoMiniGame {
     start(options?: RequestOptions): Promise<unknown>;
     stop(options?: RequestOptions): Promise<unknown>;
     toggle(options?: RequestOptions): Promise<unknown>;
+    /** Replays the current route's verified snapshot synchronously, if available.
+     * The SDK queries state after route activation; games need not call query to initialize UI.
+     * Snapshots are discarded when the route leaves its active phase. Sync failures reach onError.
+     */
     onState(handler: (state: Readonly<Record<string, unknown>>) => void): () => void;
     onTranscript(handler: (transcript: VoiceTranscript) => void): () => void;
     onError(handler: (error: Readonly<Record<string, unknown>>) => void): () => void;
@@ -555,6 +570,11 @@ declare namespace NekoMiniGame {
   }
 
   interface AvatarModel { type: 'live2d' | 'vrm'; path: string }
+  interface AvatarCharacterDescriptor {
+    readonly name: string;
+    readonly model: Readonly<{ type: 'live2d' | 'vrm' | 'mmd' | 'pngtuber'; path: string }> | null;
+    readonly rendererAvailable: boolean;
+  }
   interface AvatarMountConfiguration {
     slot: string;
     model: AvatarModel;
@@ -582,6 +602,12 @@ declare namespace NekoMiniGame {
 
   interface Avatar {
     readonly activeCount: number;
+    /** At most four queries, including transports still settling after cancellation. */
+    readonly pendingQueryCount: number;
+    /** Display-only metadata; default deadline 10s, maximum 30s. */
+    getCurrentCharacter(options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
+    getCharacter(name: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
+    listCharacters(options?: RequestOptions): Promise<readonly string[]>;
     mount(config: AvatarMountConfiguration): Promise<AvatarController>;
     disposeAll(): void;
   }

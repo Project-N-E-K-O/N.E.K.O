@@ -417,6 +417,53 @@ async function main() {
   assert(dependencyError?.code === 'invalid_manifest',
     'memory capability without runtime was not rejected at manifest validation');
 
+  for (const action of ['timeout', 'abort', 'dispose', 'reset', 'end']) {
+    const bodyHost = createTransport();
+    let resolveBody;
+    const body = new Promise(resolve => { resolveBody = resolve; });
+    let entered = 0;
+    const signals = [];
+    bodyHost.transport.readGameContext = (_payload, options) => {
+      signals.push(options.signal);
+      return { ok: true, status: 200, json() { entered++; return body; } };
+    };
+    const bodyGame = await window.NekoMiniGame.connect({ id: 'example-game', version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'context-read'],
+    }, { transport: bodyHost.transport });
+    if (action === 'end') await bodyGame.runtime.start();
+    const abort = new AbortController();
+    const requests = Array.from({ length: 2 }, () => bodyGame.context.read(['current-state'], {
+      timeoutMs: 250, signal: abort.signal,
+    }).then(() => 'success', error => error.code));
+    for (let i = 0; i < 25; i++) await Promise.resolve();
+    assert(entered === 2 && bodyGame.context.pendingCount === 2,
+      `response headers retired context slots: entered=${entered}, pending=${bodyGame.context.pendingCount}`);
+    const overCapacity = await bodyGame.context.read(['current-state']).catch(error => error);
+    assert(overCapacity?.code === 'busy', 'hanging response bodies bypassed concurrency limit');
+    if (action === 'abort') abort.abort();
+    if (action === 'dispose') bodyGame.dispose();
+    if (action === 'reset') bodyGame.runtime.reset();
+    if (action === 'end') await bodyGame.runtime.end();
+    const outcomes = await Promise.all(requests);
+    const expected = action === 'timeout' ? 'timeout' : action === 'dispose' ? 'disposed' : 'cancelled';
+    assert(outcomes.every(code => code === expected), `${action}: hanging JSON body did not settle`);
+    assert(bodyGame.context.pendingCount === 0 && signals.every(signal => signal.aborted),
+      'body cancellation retained pending slots or lost the transport abort signal');
+    if (action !== 'dispose') {
+      const retry = await bodyGame.context.read(['current-state']).catch(error => error);
+      assert(retry?.code === 'busy', 'ignored cancellation allowed abandoned body reads to accumulate');
+    }
+    resolveBody({ ok: true, scopes: { 'current-state': {} } });
+    for (let i = 0; i < 25; i++) await Promise.resolve();
+    if (action !== 'dispose') {
+      assert((await bodyGame.context.read(['current-state'])).ok, 'settled body did not release its raw slot');
+      bodyHost.transport.readGameContext = () => ({ ok: false, status: 409, async json() { throw new SyntaxError('bad JSON'); } });
+      const badResponse = await bodyGame.context.read(['current-state']);
+      assert(badResponse.ok === false && badResponse.status === 409 && Object.keys(badResponse.data).length === 0,
+        'HTTP error or invalid JSON policy changed during managed consumption');
+    }
+    bodyGame.dispose();
+  }
   process.stdout.write('mini-game context and memory runtime test passed\n');
 }
 

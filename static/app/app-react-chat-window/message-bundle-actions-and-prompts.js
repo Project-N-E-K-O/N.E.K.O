@@ -336,6 +336,22 @@
         I.dispatchHostEvent('action', detail);
     }
 
+    function requestAutoCollapseAfterAcceptedEnter(detail) {
+        if (
+            !detail
+            || detail.submitMethod !== 'enter'
+            || !window.nekoChatWindow
+            || typeof window.nekoChatWindow.requestAutoCollapseAfterEnter !== 'function'
+        ) return false;
+        try {
+            window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: detail.requestId });
+            return true;
+        } catch (error) {
+            console.warn('[ReactChatWindow] request auto-collapse after Enter failed:', error);
+            return false;
+        }
+    }
+
     I.handleComposerSubmit = function handleComposerSubmit(payload) {
         if (
             I.state.homeTutorialInteractionLocked
@@ -350,13 +366,18 @@
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         var detail = {
             text: payload && typeof payload.text === 'string' ? payload.text : '',
-            requestId: requestId
+            requestId: requestId,
+            submitMethod: payload && (payload.submitMethod === 'enter' || payload.submitMethod === 'button')
+                ? payload.submitMethod
+                : 'button'
         };
 
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
             if (!detail.text.trim()) return;
             if (typeof I.submitCatLocalChatText === 'function') {
-                I.submitCatLocalChatText(detail);
+                if (I.submitCatLocalChatText(detail)) {
+                    requestAutoCollapseAfterAcceptedEnter(detail);
+                }
             }
             return;
         }
@@ -411,6 +432,7 @@
             } catch (error) {
                 console.warn('[NewUserIcebreaker] free text broadcast failed:', error);
             }
+            requestAutoCollapseAfterAcceptedEnter(detail);
             return;
         }
 
@@ -421,7 +443,11 @@
                 console.error('[ReactChatWindow] onComposerSubmit failed:', error);
             }
         } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
-            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window', requestId: detail.requestId });
+            window.appButtons.sendTextPayload(detail.text, {
+                source: 'react-chat-window',
+                requestId: detail.requestId,
+                submitMethod: detail.submitMethod
+            });
         } else {
             var input = I.$('textInputBox');
             var sendButton = I.$('textSendButton');

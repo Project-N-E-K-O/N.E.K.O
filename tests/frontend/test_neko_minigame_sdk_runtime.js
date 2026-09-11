@@ -699,6 +699,44 @@ async function main() {
   assert(listenerLimitError?.code === 'busy', 'listener growth was not bounded');
   stateListeners.forEach((unsubscribe) => unsubscribe());
 
+  const originalPublishProtocol = transport.publishGameProtocol;
+  let settleProtocolBody;
+  const protocolBody = new Promise(resolve => { settleProtocolBody = resolve; });
+  const bodySignals = [];
+  transport.publishGameProtocol = (_kind, _payload, options) => {
+    bodySignals.push(options.signal);
+    return { ok: false, status: 409, json: () => protocolBody };
+  };
+  const bodyAbort = new AbortController();
+  const bodyProtocolCalls = Array.from({ length: 8 }, (_, index) => game.events.emit(
+    'round-started', { round: index + 1 }, { signal: bodyAbort.signal, timeoutMs: 250 },
+  ).then(() => 'success', error => error.code));
+  await new Promise(resolve => setImmediate(resolve));
+  let bodyBusy;
+  void game.events.emit('round-started', { round: 9 }).then(
+    () => { bodyBusy = { code: 'unexpected_success' }; }, error => { bodyBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyBusy?.code === 'busy', 'protocol headers retired the slot before the JSON body');
+  bodyAbort.abort();
+  assert((await Promise.all(bodyProtocolCalls)).every(code => code === 'cancelled'),
+    'protocol body ignored cancellation after response headers');
+  assert(bodySignals.every(signal => signal.aborted), 'protocol cancellation lost the transport signal');
+  let bodyStillBusy;
+  void game.events.emit('round-started', { round: 10 }).then(
+    () => { bodyStillBusy = { code: 'unexpected_success' }; }, error => { bodyStillBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyStillBusy?.code === 'busy',
+    'a cancelled protocol request freed its slot before the abandoned body settled');
+  settleProtocolBody({ detail: 'late conflict' });
+  await new Promise(resolve => setImmediate(resolve));
+  transport.publishGameProtocol = originalPublishProtocol;
+
+  const recoveredProtocol = await game.events.emit('round-started', { round: 11 });
+  assert(recoveredProtocol.ok === true && recoveredProtocol.data.accepted === true,
+    'protocol request did not succeed after abandoned response bodies settled');
+
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })

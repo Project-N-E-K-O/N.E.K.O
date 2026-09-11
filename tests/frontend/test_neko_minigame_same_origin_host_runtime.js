@@ -125,7 +125,11 @@ async function main() {
         return {
           ok: true,
           status: 200,
-          async json() { return responseData; },
+          async json() {
+            markDelayedDrainStarted();
+            await delayedDrainGate;
+            return responseData;
+          },
           clone() {
             return {
               async json() {

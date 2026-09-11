@@ -59,6 +59,33 @@ def _route_state_key(lanlan_name: str, game_type: str) -> _RouteStateKey:
     return (str(lanlan_name or ""), str(game_type or ""))
 
 
+def game_route_identity_mismatch_reason(
+    *,
+    expected_session_id: object = "",
+    expected_sdk_route_instance_id: object = "",
+    actual_session_id: object = "",
+    actual_sdk_route_instance_id: object = "",
+) -> str | None:
+    """Return the first mismatch between two game-route identities.
+
+    Omitted session ids retain legacy compatibility. SDK generations are
+    strict once either side supplies one, preventing stale game windows from
+    issuing commands against a replacement route.
+    """
+    expected_session = str(expected_session_id or "").strip()
+    actual_session = str(actual_session_id or "").strip()
+    if actual_session and actual_session != expected_session:
+        return "session_id_mismatch"
+
+    expected_generation = str(expected_sdk_route_instance_id or "").strip()
+    actual_generation = str(actual_sdk_route_instance_id or "").strip()
+    if (
+        expected_generation or actual_generation
+    ) and actual_generation != expected_generation:
+        return "route_instance_id_mismatch"
+    return None
+
+
 # Per-(lanlan_name, game_type) ``asyncio.Lock`` registry.
 #
 # Used by ``main_routers/game_router`` to serialize lifecycle transitions

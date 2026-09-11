@@ -46,6 +46,9 @@
         quickLines: typeof rawProviders?.quickLines === 'function'
           ? rawProviders.quickLines
           : null,
+        avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
+          ? rawProviders.avatarHostFactory
+          : null,
       });
       result[gameId] = Object.freeze({
         mode,

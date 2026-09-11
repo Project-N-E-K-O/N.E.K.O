@@ -139,6 +139,39 @@ def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("master_entry", (None, "invalid", []))
+def test_character_info_normalizes_non_mapping_master_data(monkeypatch, master_entry):
+    class FakeConfigManager:
+        def load_characters(self):
+            return {"当前猫娘": "Lan", "主人": master_entry}
+
+        def get_character_data(self):
+            return (
+                "",
+                "Lan",
+                {},
+                {"Lan": {}},
+                {},
+                {"Lan": "You are {LANLAN_NAME}; player is {MASTER_NAME}."},
+                {},
+                {},
+                [],
+            )
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "game_main"
+            return {}
+
+    monkeypatch.setattr(gr_char_info, "get_config_manager", FakeConfigManager)
+    monkeypatch.setattr(gr_char_info, "_resolve_game_prompt_locale", lambda _name: "en")
+
+    info = gr_char_info._get_character_info("Lan")
+
+    assert info["master_name"] == "玩家"
+    assert info["lanlan_prompt"] == "You are Lan; player is 玩家."
+
+
+@pytest.mark.unit
 def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
     manager = SimpleNamespace(
         user_language="en",
@@ -4037,6 +4070,42 @@ def test_build_game_llm_visible_event_filters_soccer_internal_fields():
 
 
 @pytest.mark.unit
+def test_drawing_guess_visible_event_recursively_hides_user_draw_answer():
+    event = {
+        "kind": "user-text",
+        "user_draw_answer": {"id": "top-level-secret"},
+        "currentState": {
+            "phase": "user_drawing",
+            "scores": {"player": 1, "ai": 0},
+            "user_draw_answer": {"id": "state-secret"},
+        },
+        "pendingItems": [{
+            "kind": "user-text",
+            "snapshot": {
+                "phase": "user_drawing",
+                "userDrawAnswer": {"id": "snapshot-secret"},
+            },
+        }],
+    }
+
+    visible = gr_visible_events._build_game_llm_visible_event(
+        "drawing_guess",
+        event,
+    )
+
+    encoded = json.dumps(visible, ensure_ascii=False)
+    assert "top-level-secret" not in encoded
+    assert "state-secret" not in encoded
+    assert "snapshot-secret" not in encoded
+    assert visible["currentState"]["scores"] == {"player": 1, "ai": 0}
+    assert visible["pendingItems"][0]["snapshot"]["phase"] == "user_drawing"
+    assert event["currentState"]["user_draw_answer"]["id"] == "state-secret"
+    assert event["pendingItems"][0]["snapshot"]["userDrawAnswer"]["id"] == (
+        "snapshot-secret"
+    )
+
+
+@pytest.mark.unit
 def test_build_game_llm_visible_event_filters_badminton_memory_flags_from_camel_case():
     event = {
         "kind": "shot-made",
@@ -6067,6 +6136,133 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_drawing_voice_final_is_mirrored_once_for_sdk_command_owner(
+    monkeypatch,
+):
+    mgr = _FakeGameRouteManager()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    state = gr_runtime._activate_game_route(
+        "drawing_guess", "drawing-session", "Lan"
+    )
+    state["_sdk_route_instance_id"] = "drawing-route-A"
+    state["last_state"] = {
+        "phase": "user_drawing",
+        "user_draw_answer": {"id": "private-answer"},
+    }
+
+    generic_chat = AsyncMock(
+        side_effect=AssertionError("drawing voice must not enter generic chat")
+    )
+    _gr_patch_all(monkeypatch, "_run_game_chat", generic_chat)
+    from main_routers.game_router import drawing_guess as drawing_guess_router
+
+    drawing_handler = AsyncMock(
+        side_effect=AssertionError("the SDK page owns drawing voice input")
+    )
+    monkeypatch.setattr(
+        drawing_guess_router,
+        "handle_external_drawing_guess_transcript",
+        drawing_handler,
+    )
+    log_records = []
+
+    def capture_info(message, *args, **_kwargs):
+        log_records.append(message % args if args else str(message))
+
+    monkeypatch.setattr(gr_runtime.logger, "info", capture_info)
+    private_transcript = "private voice transcript 7931"
+
+    first = await gr_runtime.route_external_voice_transcript(
+        "Lan",
+        private_transcript,
+        request_id="drawing-voice-1",
+        game_type="drawing_guess",
+        session_id="drawing-session",
+        sdk_route_instance_id="drawing-route-A",
+    )
+    duplicate = await gr_runtime.route_external_voice_transcript(
+        "Lan",
+        private_transcript,
+        request_id="drawing-voice-1",
+        game_type="drawing_guess",
+        session_id="drawing-session",
+        sdk_route_instance_id="drawing-route-A",
+    )
+
+    assert first is True and duplicate is True
+    assert len(mgr.mirrored) == 1
+    assert mgr.mirrored[0][0] == private_transcript
+    assert mgr.mirrored[0][1]["send_to_frontend"] is True
+    assert mgr.mirrored[0][1]["metadata"]["sdk_route_instance_id"] == (
+        "drawing-route-A"
+    )
+    assert mgr.user_activity_count == 1
+    assert state["game_dialog_log"] == []
+    assert state["pending_outputs"] == []
+    generic_chat.assert_not_awaited()
+    drawing_handler.assert_not_awaited()
+    rendered_logs = "\n".join(log_records)
+    assert private_transcript not in rendered_logs
+    assert "request_id_present=True" in rendered_logs
+    assert f"text_length={len(private_transcript)}" in rendered_logs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_drawing_external_text_uses_feature_handler_not_generic_llm(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    state = gr_runtime._activate_game_route(
+        "drawing_guess", "drawing-session", "Lan"
+    )
+    state["_sdk_route_instance_id"] = "drawing-route-A"
+    state["last_state"] = {
+        "phase": "user_drawing",
+        "user_draw_answer": {"id": "private-answer"},
+    }
+    generic_chat = AsyncMock(
+        side_effect=AssertionError("drawing text must not enter generic chat")
+    )
+    _gr_patch_all(monkeypatch, "_run_game_chat", generic_chat)
+    from main_routers.game_router import drawing_guess as drawing_guess_router
+
+    drawing_handler = AsyncMock(return_value={"ok": True, "handled": True})
+    monkeypatch.setattr(
+        drawing_guess_router,
+        "handle_external_drawing_guess_transcript",
+        drawing_handler,
+    )
+
+    handled = await gr_runtime.route_external_stream_message(
+        "Lan",
+        {
+            "input_type": "text",
+            "data": "keep drawing",
+            "request_id": "drawing-text-1",
+        },
+        expected_state=state,
+    )
+
+    assert handled is True
+    assert len(mgr.mirrored) == 1
+    assert mgr.mirrored[0][1]["send_to_frontend"] is False
+    assert mgr.user_activity_count == 1
+    drawing_handler.assert_awaited_once_with(
+        "Lan",
+        "drawing-session",
+        "keep drawing",
+        route_state=state,
+        request_id="drawing-text-1",
+        source="external_text_route",
+        kind="user-text",
+    )
+    generic_chat.assert_not_awaited()
+    assert state["game_dialog_log"] == []
+    assert state["pending_outputs"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_external_route_drops_a_superseded_chat_result_without_post_side_effects(monkeypatch):
     mgr = _FakeGameRouteManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
@@ -6853,6 +7049,59 @@ async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
     assert result["archive_memory"]["reason"] == "game_memory_archive_disabled"
     assert result["archive"]["game_memory_enabled"] is False
     assert result["archive"]["memory_skipped"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feature_owned_memory_skips_generic_archive_after_policy_refresh(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = gr_runtime._activate_game_route("drawing_guess", "drawing-1", "Lan")
+    _mark_game_started(state)
+    state["game_memory_archive_owner"] = "feature"
+
+    # Trusted SDK heartbeats and route/end payloads refresh consent fields. The
+    # persistence owner is server-owned and must remain independent from those
+    # repeatedly supplied booleans.
+    gr_runtime._update_game_memory_enabled_from_payload(
+        state,
+        {
+            "game_memory_enabled": True,
+            "game_memory_archive_enabled": True,
+        },
+        "drawing_guess",
+    )
+    assert state["game_memory_archive_enabled"] is True
+    assert state["game_memory_archive_owner"] == "feature"
+
+    async def fail_submit(_archive):
+        raise AssertionError("feature-owned memory must not also write a generic archive")
+
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fail_submit)
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="manual",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_owned_by_feature"
+    assert result["archive"]["game_memory_archive_owner"] == "feature"
+    assert result["archive"]["game_memory_archive_enabled"] is True
+    assert result["archive"]["memory_skipped"] is True
+    assert state["game_context_organizer"]["error"] == "archive_disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feature_archive_owner_is_a_sink_level_guard():
+    result = await gr_archive._submit_game_archive_to_memory({
+        "game_memory_enabled": True,
+        "game_memory_archive_enabled": True,
+        "game_memory_archive_owner": "feature",
+    })
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "game_memory_archive_owned_by_feature"
 
 
 @pytest.mark.unit
@@ -9326,3 +9575,32 @@ async def test_game_end_skips_postgame_on_manual_return_to_start(monkeypatch):
     assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
     assert mgr.prepare_calls == []
     assert state["exit_reason"] == "manual_return_to_start"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("example-game", "metadata-session", "Lan")
+        state["_sdk_route_instance_id"] = "metadata-generation"
+        state["preGameContext"] = {"openingLine": "Ready"}
+        state["pre_game_context_source"] = "fallback"
+        state["pre_game_context_error"] = "x" * 2000
+        body = {
+            "session_id": "metadata-session", "lanlan_name": "Lan",
+            "sdk_route_instance_id": "metadata-generation",
+            "scopes": ["pregame-context"],
+        }
+        result = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert result["scopes"]["pregame-context"] == {"openingLine": "Ready"}
+        metadata = result["scope_metadata"]["pregame-context"]
+        assert metadata["source"] == "fallback"
+        assert len(metadata["error"]) <= 500
+        body["scopes"] = ["current-state"]
+        other = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert other["scope_metadata"] == {}
+        body["sdk_route_instance_id"] = "stale-generation"
+        stale = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert stale["ok"] is False
+        assert "scope_metadata" not in stale
