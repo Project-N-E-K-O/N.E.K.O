@@ -5236,7 +5236,8 @@
         catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
         if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
-        return transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId });
+        try { return await transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId }); }
+        catch(error) { throw normalizeTransportError(error, 'media.request'); }
       },
       async mount(config) {
         requireCapability('media-timeline', 'media.mount');
@@ -5247,6 +5248,7 @@
         mediaMountAbort = new AbortControllerImpl();
         let controller;
         try { controller = await transport.mountMedia({ ...config, signal:mediaMountAbort.signal }); }
+        catch(error) { throw normalizeTransportError(error, 'media.mount'); }
         finally { mediaMountPending = false; mediaMountAbort = null; }
         if (disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
           controller.dispose(); fail('cancelled', 'Media route changed while loading');

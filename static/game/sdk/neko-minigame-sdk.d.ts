@@ -614,7 +614,7 @@ declare namespace NekoMiniGame {
 
   interface Client {
     readonly media: {
-      request(action: 'history' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover', payload?: Record<string, JsonValue>): Promise<JsonValue>;
+      request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover', payload?: Record<string, JsonValue>): Promise<JsonValue>;
       mount(config: { video: HTMLVideoElement; job: string; version: string; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
         play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
       }>;

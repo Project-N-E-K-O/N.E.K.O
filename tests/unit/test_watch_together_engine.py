@@ -70,3 +70,14 @@ def test_hotspots_cover_middle_and_deduplicate_spam():
 def test_hotspot_frames_stay_inside_video():
     frames = hotspot_frame_times([{"at": .2}, {"at": 9.5}], 10)
     assert all(0 <= t < 9.9 for t in frames)
+
+
+def test_danmaku_sample_is_bounded_and_time_balanced():
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import sample_danmaku
+    messages = (SimpleNamespace(dm_time=second, text='x' * 200)
+                for second in range(180) for _ in range(1000))
+    sampled = sample_danmaku(messages, 180)
+    assert len(sampled) == 60 * 12
+    assert {int(item['at'] // 3) for item in sampled} == set(range(60))
+    assert all(len(item['text']) == 120 for item in sampled)

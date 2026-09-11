@@ -154,7 +154,10 @@ class CustomStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         if path.endswith(".js"):
             response.headers["Content-Type"] = "application/javascript"
-        if _has_generated_asset_version(scope.get("query_string", b"")):
+        if path.replace("\\", "/").startswith("game/") and path.endswith(".mjs"):
+            # Relative module imports keep stable URLs, so revalidate the graph.
+            response.headers["Cache-Control"] = "no-cache"
+        elif _has_generated_asset_version(scope.get("query_string", b"")):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

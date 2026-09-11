@@ -6,6 +6,7 @@ import base64
 import json
 import math
 import os
+import random
 from pathlib import Path
 import re
 import shutil
@@ -170,6 +171,30 @@ def parse_video_url(value):
 def json_object(text):
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     return json.loads(text[text.index("{"):text.rindex("}") + 1])
+
+
+def sample_danmaku(messages, length):
+    """Retain at most 12 messages per three seconds, evenly across the video."""
+    buckets, counts = {}, {}
+    rng = random.Random(0)
+    for message in messages:
+        try:
+            at = float(message.dm_time)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(at) or not 0 <= at < length:
+            continue
+        key = int(at // 3)
+        bucket = buckets.setdefault(key, [])
+        counts[key] = counts.get(key, 0) + 1
+        item = {"at": at, "text": str(message.text)[:120]}
+        if len(bucket) < 12:
+            bucket.append(item)
+        else:
+            index = rng.randrange(counts[key])
+            if index < 12:
+                bucket[index] = item
+    return sorted((item for bucket in buckets.values() for item in bucket), key=lambda item: item["at"])
 
 
 def danmaku_hotspots(messages, length):
@@ -356,7 +381,8 @@ class Engine:
                 job["warning_keys"].append("noSubtitles")
             try:
                 messages = await asyncio.wait_for(v.get_danmakus(cid=cid), 35)
-                danmaku = [{"at": d.dm_time, "text": d.text[:120]} for d in messages]
+                danmaku = await asyncio.to_thread(sample_danmaku, messages, length)
+                del messages
             except Exception:
                 job["warning_keys"].append("noDanmaku")
             cover = None
