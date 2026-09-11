@@ -931,7 +931,11 @@ def test_every_plugin_offline_client_settles_the_region():
     import ast
 
     files = _plugin_files_constructing_offline_clients()
-    assert files, '未发现任何构造 OmniOfflineClient 的插件文件，本断言已失效'
+    if not files:
+        # 本 PR 删掉了 qq_auto_reply、main 又移出了 bilibili_danmaku，仓库里已没有构造
+        # OmniOfflineClient 的插件，发现集为空时这条守卫没有标的。跳过而不是断言失败：
+        # 将来再有插件用这个模式，守卫会自动重新生效（这正是"发现式"而非硬编码清单的意义）。
+        pytest.skip('仓库内已无构造 OmniOfflineClient 的插件文件，本守卫暂时无标的')
 
     problems = []
     for path in files:
