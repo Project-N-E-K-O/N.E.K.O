@@ -14,6 +14,8 @@ def test_malformed_legacy_events_remain_readable_as_incomplete(tmp_path, events)
     archive = source(tmp_path, 'malformed')
     path = archive / JOB / 'timeline.json'
     data = json.loads(path.read_text())
+    (archive / JOB / 'video.mp4').write_bytes(b'video')
+    data['video'] = f'/media/{JOB}/video.mp4'
     data['events'] = events
     path.write_text(json.dumps(data))
     library = Library(tmp_path / 'data')
