@@ -1911,7 +1911,8 @@
         const configured = boolValue(currentState.api_key_configured, false);
         const cacheAvailable = boolValue(currentState.asset_cache_available, true);
         const configurationWarning = redactText(currentState.configuration_warning || '');
-        elements.testButton.disabled = !(running && configured && cacheAvailable);
+        const settingsAvailable = boolValue(currentState.settings_available, false);
+        elements.testButton.disabled = !(running && configured && cacheAvailable && settingsAvailable);
         elements.testButton.title = elements.testButton.disabled
           ? (configurationWarning || (configured
             ? t('badge.unavailable', '连接失败')

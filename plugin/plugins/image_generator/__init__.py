@@ -3855,6 +3855,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "configuration_warning": configuration_warning,
             "store_enabled": bool(getattr(self.store, "enabled", False)),
             "asset_cache_available": self._asset_dir is not None,
+            "settings_available": self._settings_available,
             "api_key_configured": bool(api_key),
             "settings": settings,
             "defaults": defaults,

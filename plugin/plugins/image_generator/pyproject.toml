@@ -12,3 +12,6 @@ dependencies = [
 
 [tool.neko.build]
 exclude = ["static/generated", "static/generated/**"]
+
+[tool.neko.pack]
+exclude = ["static/generated", "static/generated/**"]

@@ -2824,17 +2824,21 @@ validateCacheCapacity(10, 20);
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_built_archive_contains_backend_panel_readme_and_all_locales(
     tmp_path: Path,
+    legacy: bool,
 ) -> None:
+    from plugin.neko_plugin_cli.public.pack import pack_plugin
     package_path = tmp_path / "image_generator.neko-plugin"
     source = tmp_path / "source"
     shutil.copytree(PLUGIN_DIR, source)
     generated = source / "static" / "generated"
     generated.mkdir(exist_ok=True)
     (generated / "private.png").write_bytes(PNG_BYTES)
-    result = build_plugin(source, package_path)
-    assert result.plugin_id == "image_generator"
+    result = (pack_plugin if legacy else build_plugin)(source, package_path)
+    if not legacy:
+        assert result.plugin_id == "image_generator"
     assert package_path.is_file()
 
     with zipfile.ZipFile(package_path) as archive:
@@ -2852,7 +2856,8 @@ def test_built_archive_contains_backend_panel_readme_and_all_locales(
         assert any(name.endswith(suffix) for name in names), suffix
     assert not any("__pycache__" in name for name in names)
     assert not any("/generated/" in name for name in names)
-    assert "payload/dependencies.toml" in names
+    if not legacy:
+        assert "payload/dependencies.toml" in names
 
 
 @pytest.mark.parametrize("legacy", [False, True])

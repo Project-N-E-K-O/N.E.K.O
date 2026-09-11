@@ -333,7 +333,8 @@ function panelState(envelope, configured, model) {
     configuration_warning: '',
     store_enabled: true,
     asset_cache_available: true,
-    api_key_configured: configured,
+    settings_available: model !== 'initial-model',
+    api_key_configured: configured || model === 'initial-model',
     secret_envelope: envelope,
     settings: settings(model),
     defaults: settings('default-model'),
@@ -493,6 +494,7 @@ async function main() {
   );
 
   elements.get('apiKey').value = SECRET;
+  check(elements.get('testButton').disabled, 'unavailable settings enabled test generation');
   check(elements.get('maxDownloadMiB').value === '0.001', 'minimum MiB precision lost');
   check(elements.get('cacheMaxMiB').value === '0.003', 'cache MiB precision lost');
   elements.get('model').value = 'edited-model-before-save';
