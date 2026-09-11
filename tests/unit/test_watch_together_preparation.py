@@ -116,3 +116,24 @@ async def test_import_failure_is_terminal_and_preserves_staging(tmp_path, monkey
     assert job["stage"] == "Saving preparation failed"
     assert job["error"] == type(failure).__name__
     assert (tmp_path / "preparations" / result["id"] / "timeline.json").exists()
+
+@pytest.mark.asyncio
+async def test_library_initialization_yields_and_rechecks_preparation_slot(monkeypatch):
+    import threading
+    event_thread = threading.get_ident()
+    started, release = threading.Event(), threading.Event()
+    def library():
+        assert threading.get_ident() != event_thread
+        started.set()
+        assert release.wait(5)
+        return SimpleNamespace()
+    monkeypatch.setattr(preparation, 'application_library', library)
+    monkeypatch.setattr(preparation, 'tasks', set())
+    pending = asyncio.create_task(preparation.prepare('video', SimpleNamespace(), 'cat'))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        preparation.tasks.add(object())
+    finally:
+        release.set()
+    with pytest.raises(ValueError, match='already being prepared'):
+        await pending

@@ -18,7 +18,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   } catch(error) {for(const url of resources.values())URL.revokeObjectURL(url);throw error;}
   const clock = new ReactionClock(timeline.events || []);
   let active = null, disposed = false, waiting = false, frame = 0, release = null;
-  let generation = 0, playingGeneration = -1;
+  let generation = 0, playingGeneration = -1, playAttempt = 0;
   const audio = new Audio();
   let context = null, analyser = null, soundtrack = null;
   const voiceNodes = [];
@@ -31,6 +31,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     if (soundtrack) soundtrack.gain.setTargetAtTime(value ? 0.25 : 1, context.currentTime, value ? 0.03 : 0.15);
   };
   function stop(clear = false) {
+    playAttempt++;
     audio.pause();
     duckSoundtrack(false);
     onMouth(0);
@@ -44,9 +45,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     if (audio.paused) {
       audio.currentTime = offset;
       playingGeneration = generation;
-      const attemptGeneration = generation, attemptCue = active;
+      const attemptGeneration = generation, attemptCue = active, attempt = ++playAttempt;
       audio.play().catch(() => {
-        if (disposed || generation !== attemptGeneration || active !== attemptCue) return;
+        if (disposed || attempt !== playAttempt || generation !== attemptGeneration || active !== attemptCue) return;
         video.pause(); stop(true);
       });
     } else if (Math.abs(audio.currentTime - offset) > 0.15) audio.currentTime = offset;

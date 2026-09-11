@@ -23,7 +23,10 @@ def confirm_preparation(identifier, manager, accepted, duration):
 async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None, render_language=None):
     if tasks:
         raise ValueError("A video is already being prepared")
-    library = application_library()
+    library = await asyncio.to_thread(application_library)
+    # Another request may have claimed the single slot during initialization.
+    if tasks:
+        raise ValueError("A video is already being prepared")
     from utils.language_utils import get_global_language_full, normalize_language_code
     explicit_language = (getattr(manager, "user_language", None)
                          if getattr(manager, "_user_language_explicit", False) else None)
