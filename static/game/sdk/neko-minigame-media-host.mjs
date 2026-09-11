@@ -3,11 +3,11 @@ import { ReactionClock } from './media-clock.mjs';
 
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {} }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
-  const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}/`;
+  const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
   const resources = new Map();
   try {
     for (const url of new Set((timeline.events || []).map(cue=>cue.audio))) {
-      if (typeof url !== 'string' || !url.startsWith(prefix)) throw Error('Unregistered timeline resource');
+      if (typeof url !== 'string' || !url.startsWith(`${prefix}/`)) throw Error('Unregistered timeline resource');
       const response = await fetch(url, {signal});
       if (!response.ok) throw Error('Reaction preload failed');
       resources.set(url, URL.createObjectURL(await response.blob()));
