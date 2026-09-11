@@ -1,5 +1,29 @@
 # Create your first plugin with the N.E.K.O Plugin CLI
 
+## Develop with an installed N.E.K.O application
+
+For an existing valid plugin source folder, you do not need to clone the main repository or run a source checkout of the backend:
+
+Development-directory APIs are available only to the local desktop application and loopback web pages. Remote LAN pages and reverse-proxy access are not supported yet.
+
+Development archives are stored separately and downloaded through the local development page. They do not appear in the ordinary package list. Removing a registration or disabling developer mode preserves the local-only download restriction. Downloaded files can be installed through the normal import flow.
+
+1. Open the plugin manager, select **Developer mode** below **Server logs** in the sidebar, and enable its switch.
+2. Choose **Load unpacked plugin** and select the folder containing `plugin.toml`. In a browser, enter an absolute folder path on the **backend machine**; uploading a browser-local folder does not provide in-place development.
+3. Validate the name, ID, version, entry point and path, then load. Failed startup keeps the registration and error so you can fix the source and retry.
+4. Edit in your own editor and click **Reload**. Entry code and plugin submodules are read again. Restart the plugin after changing dependencies too.
+5. Click **Build package** and download the `.neko-plugin` file. Import it into another clean N.E.K.O installation to verify distribution. A stopped plugin can also be packaged.
+
+The folder name must match the entry package name, and the plugin ID must not conflict with another source. Existing dependency declarations and `vendor/` rules apply; dependencies are not installed automatically. Use **Change folder** after moving source. Changing the plugin ID requires removing the old association and registering again.
+
+Disabling developer mode stops development plugins and retains their associations. Start them manually after restarting the application. **Remove association** stops the plugin and keeps its source and runtime data. A failed stop does not count as successful removal.
+
+Do not edit source during a build: detected changes require a retry. Existing packaging exclusions apply and do not guarantee removal of every secret. Successful packaging is separate from functional testing and market review.
+
+Before packaging, the source folder name must also match the plugin ID: the existing package format installs into that directory. If they differ, rename the folder, update its entry/imports, and rebind it before retrying. Packaging does not rewrite your source.
+
+The CLI tutorial below covers source-based scaffolding, checks and release automation.
+
 This page confirms that the Plugin CLI included with N.E.K.O works, then uses it to create a Hello World plugin that you can run and continue developing immediately.
 
 Plugins under development live directly in `N.E.K.O/plugin/plugins/`. You will finish with a `hello_world` project containing example code, configuration, tests, code checks, and GitHub release workflows.

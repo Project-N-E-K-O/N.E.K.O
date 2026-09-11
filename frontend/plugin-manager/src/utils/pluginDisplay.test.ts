@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findDuplicatePluginDisplayNameIds, resolvePluginDisplayText } from './pluginDisplay'
+import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin, resolvePluginDisplayText } from './pluginDisplay'
 import type { PluginMeta } from '@/types/api'
 
 function pluginFixture(): PluginMeta {
@@ -26,6 +26,19 @@ function pluginFixture(): PluginMeta {
     },
   }
 }
+
+describe('isOrdinaryPlugin', () => {
+  it('keeps managed cards while excluding both public and legacy development metadata', () => {
+    const installed = { ...pluginFixture(), source: 'user' }
+    const builtin = { ...pluginFixture(), id: 'builtin', source: 'builtin' }
+    const legacyOrdinary = { ...pluginFixture(), id: 'legacy' }
+    const publicDevelopment = { ...pluginFixture(), id: 'external', source: 'development' }
+    const legacyDevelopment = { ...pluginFixture(), id: 'external_legacy', development_ref: { registration_id: 'local-only' } }
+
+    expect([installed, publicDevelopment, builtin, legacyDevelopment, legacyOrdinary].filter(isOrdinaryPlugin))
+      .toEqual([installed, builtin, legacyOrdinary])
+  })
+})
 
 describe('resolvePluginDisplayText', () => {
   it('resolves card text from plugin i18n for the active locale', () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePackageManager } from './usePackageManager'
 import {
+  buildPluginCli,
   getPluginCliPackages,
   getPluginCliPlugins,
   installPluginPackage,
@@ -118,6 +119,36 @@ beforeEach(() => {
 })
 
 describe('usePackageManager external plugin selection', () => {
+  it.each([true, false])('builds all listed managed sources without implicit development sources (refs=%s)', async (withRefs) => {
+    vi.mocked(getPluginCliPlugins).mockResolvedValue({
+      count: 1,
+      plugins: ['demo_plugin'],
+      plugin_refs: withRefs ? [pluginRef] : [],
+    })
+    vi.mocked(buildPluginCli).mockResolvedValue({
+      built: [{
+        plugin_id: 'demo_plugin', package_type: 'plugin', plugin_ids: ['demo_plugin'],
+        package_path: '/packages/demo.neko-plugin', profile_files: [], staged_files: [],
+        payload_hash: 'hash', package_size_bytes: 1, staged_file_count: 0, profile_file_count: 0,
+      }],
+      built_count: 1, failed: [], failed_count: 0, ok: true,
+    })
+    const manager = usePackageManager()
+    await manager.refreshPluginSources()
+    manager.buildMode.value = 'all'
+    await manager.handleBuild()
+
+    expect(buildPluginCli).toHaveBeenCalledExactlyOnceWith({
+      mode: 'selected',
+      plugin_refs: withRefs ? [{ root_id: 'builtin', directory_name: 'demo_plugin' }] : undefined,
+      plugins: withRefs ? undefined : ['demo_plugin'],
+      target_dir: undefined,
+      keep_staging: false,
+    }, { timeout: 300_000 })
+    expect(manager.packageRef.value.package).toBe('/packages/demo.neko-plugin')
+    expect(manager.activeTab.value).toBe('inspect')
+  })
+
   it('maps plugin list selections to package build targets', async () => {
     const selectedFromPluginList = ref(['demo_plugin'])
     const manager = usePackageManager({
