@@ -960,6 +960,12 @@ def test_theater_capsule_rebuilds_committed_history_after_idempotent_retry(
         timeout=10000,
     )
 
+    # Startup translation hydration can briefly return an object; errors still
+    # have to cross the React presentation contract as a string.
+    mock_page.evaluate("""() => {
+        const translate = window.t;
+        window.t = (key, ...args) => key === 'theater.inputFailed' ? {} : translate(key, ...args);
+    }""")
     mock_page.evaluate(
         "() => window.nekoTheaterRuntime.handleComposerSubmit('检查那封旧信')"
     )
@@ -1591,6 +1597,11 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
         route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
 
     mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        json={'success': True, 'initialized': True, 'revision': 1, 'state': {'completedRounds': [1, 2, 3, 4, 5, 6, 7]}}))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        json={'success': True, 'state': {'status': 'completed'}}))
     mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
     mock_page.clock.install()
@@ -1614,3 +1625,44 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
             'neko-assistant-speech-' + kind, {detail:{turnId:'long-speech'}}))""", completion)
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == snapshot["suggested_inputs"]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('end_ok', [True, False])
+def test_end_response_cannot_close_resumed_same_revision(mock_page: Page, running_server: str, end_ok):
+    snapshot = _snapshot(revision=0)
+    snapshot['session']['lifecycle_revision'] = 0
+    pending = {}
+
+    def handler(route: Route):
+        if '/session/end' in route.request.url:
+            pending['end'] = route
+        elif '/session/capsule-browser-session' in route.request.url:
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(snapshot))
+        else:
+            route.continue_()
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("window.sessionStorage.setItem('neko.theater.numeric.v2.capsule-pointer.v1', JSON.stringify({story_id:'capsule-browser-story',session_id:'capsule-browser-session'}))")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime?.getState().phase === 'awaiting_player'")
+    with mock_page.expect_request('**/session/end'):
+        mock_page.evaluate("""() => {
+            window.openOrFocusWindow = () => null;
+            window.showConfirm = () => Promise.resolve(true);
+            window.__endResult = null;
+            window.nekoTheaterRuntime.requestEnd().then(value => window.__endResult = value);
+        }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'ending'")
+    snapshot['session']['lifecycle_revision'] = 2
+    mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1',action:'theater:launch-request',
+        launch_id:'resumed-same-session',launch_action:'continue', story_id:'capsule-browser-story',
+        session_id:'capsule-browser-session',revision:0},location.origin)""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player' && window.nekoTheaterRuntime.getState().lifecycleRevision === 2")
+    pending['end'].fulfill(status=200, content_type='application/json', body=json.dumps({
+        'ok': end_ok, 'session': {**snapshot['session'], 'status': 'ended', 'lifecycle_revision': 1},
+        'end_receipt_id': 'stale-receipt', 'archive_status': 'pending'}))
+    mock_page.wait_for_function('() => window.__endResult === false')
+    state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
+    assert state['active'] and state['phase'] == 'awaiting_player'
+    assert state['lifecycleRevision'] == 2 and state['pendingEnd'] is None

@@ -13,6 +13,7 @@
         active: '/api/theater-numeric/session/active',
         archive: '/api/theater-numeric/session/archive',
         skipArchive: '/api/theater-numeric/session/archive/skip',
+        memoryStories: '/api/theater-numeric/memory/stories',
         memoryArchives: '/api/theater-numeric/memory/archives',
         memoryArchive: '/api/theater-numeric/memory/archive',
         pinMemoryArchive: '/api/theater-numeric/memory/archive/pin',
@@ -37,7 +38,7 @@
     function t(key, fallback, options) {
         if (typeof window.t === 'function') {
             var value = window.t(key, options);
-            if (value && value !== key) return value;
+            if (typeof value === 'string' && value && value !== key) return value;
         }
         return fallback;
     }
@@ -68,6 +69,14 @@
         }
         return sent;
     }
+    var pendingEndSelection = null;
+    function selectPendingEnd(receipt) {
+        if (state.pendingEnd !== receipt) return;
+        selectStory(String(receipt.story_id)).catch(function () {
+            setStatus('theater.failed', '出错了');
+            setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
+        });
+    }
     function setBusy(busy) {
         state.busy = busy;
         ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
@@ -76,6 +85,11 @@
         });
         document.querySelectorAll('[data-theater-pin-session], [data-theater-view-session]').forEach(function (node) { node.disabled = busy; });
         renderActions();
+        if (!busy && pendingEndSelection) {
+            var receipt = pendingEndSelection;
+            pendingEndSelection = null;
+            selectPendingEnd(receipt);
+        }
     }
     function selectedStory() {
         return state.stories.find(function (story) { return String(story.story_id || '') === state.storyId; }) || null;
@@ -93,21 +107,24 @@
     // 玩家主动退出的记录允许继续或重新开始；剧情自然结局只能重新开始。
     function renderActions() {
         var kind = sessionKind();
+        var memoryOnly = !!(selectedStory() || {}).memory_only;
         var startButton = $('theater-start-btn');
         var startKey = state.session ? 'theater.restartSession' : 'theater.start';
         startButton.textContent = state.session
             ? t(startKey, '重新开始')
             : t(startKey, '开始');
         startButton.setAttribute('data-i18n', startKey);
-        startButton.disabled = state.busy || !state.storyId || kind === 'active';
+        startButton.disabled = memoryOnly || state.busy || !state.storyId || kind === 'active';
         $('theater-continue-btn').disabled = state.busy || (state.session && state.session.continuation_allowed === false) || (kind !== 'active' && kind !== 'paused');
         var endButton = $('theater-end-btn');
         endButton.hidden = kind !== 'active';
         endButton.disabled = state.busy || kind !== 'active';
-        $('theater-delete-btn').disabled = state.busy || !state.storyId;
+        $('theater-delete-btn').disabled = memoryOnly || state.busy || !state.storyId;
         startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
         $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
-        $('theater-session-hint').textContent = state.session && state.session.continuation_allowed === false
+        $('theater-session-hint').textContent = memoryOnly
+            ? t('theater.deletedStoryMemoryHint', '剧本已删除，可查看保留的记忆摘要或选择忘记。重新导入剧本后才能演绎。')
+            : state.session && state.session.continuation_allowed === false
             ? t('theater.sessionHintPackageChanged', '剧本已更新，旧进度无法继续；结束旧演绎后可以重新开始。')
             : kind === 'active'
             ? t('theater.sessionHintActive', '演绎正在进行，点击“继续”返回演绎。')
@@ -117,7 +134,7 @@
                 ? t('theater.sessionHintEndedRestart', '本次演绎已结束，点击“重新开始”创建新的演绎。')
                 : t('theater.sessionHintNew', '点击“开始”创建本次演绎。');
         var badge = $('theater-session-badge');
-        badge.textContent = kind === 'active'
+        badge.textContent = memoryOnly ? t('theater.deletedStoryMemory', '已删除 · 记忆管理') : kind === 'active'
             ? t('theater.running', '演出中')
             : kind === 'paused'
                 ? t('theater.paused', '已退出')
@@ -140,7 +157,7 @@
             var title = document.createElement('strong');
             title.textContent = String(story.title || story.story_id || '');
             var meta = document.createElement('span');
-            meta.textContent = [story.author, story.language].filter(Boolean).join(' · ');
+            meta.textContent = story.memory_only ? t('theater.deletedStoryMemory', '已删除 · 记忆管理') : [story.author, story.language].filter(Boolean).join(' · ');
             button.append(title, meta);
             button.addEventListener('click', function () {
                 selectStory(button.dataset.storyId).catch(function () {
@@ -169,7 +186,13 @@
         if (!story) return;
         var intro = story.display_intro || {};
         $('theater-detail-title').textContent = String(story.title || story.story_id || '');
-        $('theater-detail-meta').textContent = [story.author, story.language, 'rev.' + story.revision].filter(Boolean).join(' · ');
+        $('theater-detail-meta').textContent = story.memory_only ? t('theater.deletedStoryMemory', '已删除 · 记忆管理') : [story.author, story.language, 'rev.' + story.revision].filter(Boolean).join(' · ');
+        document.querySelectorAll('.theater-intro-background, .theater-role-grid').forEach(function (node) { node.hidden = !!story.memory_only; });
+        var memoryHeading = document.querySelector('.theater-memory-heading h2');
+        var memoryHeadingKey = story.memory_only ? 'memory.summary' : 'theater.savedPerformances';
+        memoryHeading.setAttribute('data-i18n', memoryHeadingKey);
+        memoryHeading.textContent = t(memoryHeadingKey, story.memory_only ? '摘要' : '已保存的演绎');
+        document.querySelector('.theater-memory-heading p').hidden = !!story.memory_only;
         $('theater-detail-background').textContent = String(intro.background || '');
         $('theater-detail-player').textContent = String(intro.player_identity || '');
         $('theater-detail-catgirl').textContent = String(intro.catgirl_identity || '');
@@ -181,7 +204,13 @@
         var empty = $('theater-memory-empty');
         if (!list || !empty) return;
         list.textContent = '';
-        empty.hidden = state.archives.length > 0;
+        var summaries = (selectedStory() || {}).memory_summaries || [];
+        empty.hidden = state.archives.length > 0 || summaries.length > 0;
+        summaries.forEach(function (summary) {
+            var row = document.createElement('p');
+            row.textContent = String(summary);
+            list.appendChild(row);
+        });
         state.archives.forEach(function (archive, index) {
             var row = document.createElement('div');
             row.className = 'theater-memory-row';
@@ -307,6 +336,11 @@
         renderStories();
         renderDetail();
         setStatus('theater.loadingSession', '正在读取演绎进度...');
+        if ((selectedStory() || {}).memory_only) {
+            setStatus('theater.ready', '就绪');
+            if (selectedStory().forget_pending) setFeedback(t('theater.storyMemoryForgetFailed', '剧本记忆删除失败，请重试。'), true);
+            return true;
+        }
         var result;
         try {
             result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
@@ -534,7 +568,7 @@
             if (targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
             state.session = result.session;
-            state.pendingEnd = result.end_receipt_id ? {
+            state.pendingEnd = result.end_receipt_id && result.archive_status !== 'skipped' && result.archive_status !== 'written' ? {
                 story_id: targetStoryId,
                 session_id: result.session.session_id,
                 revision: result.session.revision,
@@ -597,11 +631,7 @@
             if (!result.ok) throw new Error('delete_failed');
             // 服务端已级联删除该剧本的 Session；通知所有本体释放仍在展示的胶囊运行态。
             postMessage({ action: 'theater:story-deleted', story_id: deletedStoryId });
-            state.stories = state.stories.filter(function (story) { return String(story.story_id) !== deletedStoryId; });
-            state.storyId = String((state.stories[0] || {}).story_id || ''); state.session = null; state.archives = [];
-            renderStories(); renderDetail();
-            // 删除动作尚处于 busy 状态；内部刷新必须显式放行，否则详情会停留在旧剧本。
-            if (state.storyId && !(await selectStory(state.storyId, true))) return;
+            await loadStories(deletedStoryId);
             setStatus('theater.storyDeleted', '剧本已删除');
         } catch (_) { setFeedback(t('theater.storyDeleteFailed', '剧本删除失败，请重试。'), true); }
         finally { setBusy(false); }
@@ -648,7 +678,7 @@
             if (!result.ok) throw new Error('forget_failed');
             state.archives = [];
             state.pendingEnd = null;
-            renderMemoryArchives();
+            await loadStories(targetStoryId);
             setFeedback(t('theater.storyMemoryForgotten', '已忘记该剧本的演绎记忆。'));
         } catch (_) {
             setFeedback(t('theater.storyMemoryForgetFailed', '剧本记忆删除失败，请重试。'), true);
@@ -730,7 +760,24 @@
             }
         }
     }
+    var memoryListEpoch = 0;
+    async function loadMemoryStories(expectedCharacterEpoch, expectedListEpoch) {
+        var result;
+        try { result = await requestJson(api.memoryStories); } catch (_) { result = {ok: false}; }
+        if (characterEpoch !== expectedCharacterEpoch || memoryListEpoch !== expectedListEpoch) return;
+        if (!result.ok || result.character_id !== state.characterId) {
+            setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
+            return;
+        }
+        (result.stories || []).forEach(function (story) {
+            if (!state.stories.some(function (existing) { return existing.story_id === story.story_id; })) state.stories.push(story);
+        });
+        renderStories();
+        if (!state.storyId && state.stories.length) await selectStory(String(state.stories[0].story_id), true);
+        if (result.memory_available === false) setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
+    }
     async function loadStories(preferredStoryId, expectedCharacterEpoch) {
+        var listEpoch = ++memoryListEpoch;
         var storiesCharacterEpoch = expectedCharacterEpoch === undefined
             ? characterEpoch
             : expectedCharacterEpoch;
@@ -748,6 +795,10 @@
         if (state.storyId) {
             if (!(await selectStory(state.storyId, true))) return false;
         } else setStatus('theater.ready', '就绪');
+        // Memory-server reads do not delay starting an installed story.
+        loadMemoryStories(storiesCharacterEpoch, listEpoch).catch(function () {
+            if (memoryListEpoch === listEpoch) setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
+        });
         return true;
     }
     // 本体结束演绎后只传定位回执；选择页重新读取服务端状态再显示询问。
@@ -760,10 +811,8 @@
             // BroadcastChannel、opener 或重复 ready 都可能重送同一事实；按服务端稳定回执 ID 去重。
             if (state.pendingEnd && state.pendingEnd.end_receipt_id === message.end_receipt_id) return;
             state.pendingEnd = message;
-            selectStory(String(message.story_id)).catch(function () {
-                setStatus('theater.failed', '出错了');
-                setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
-            });
+            if (state.busy) pendingEndSelection = message;
+            else selectPendingEnd(message);
         } else if (message.action === 'catgirl_switched') {
             // 清除旧角色详情和确认框，并让所有已经发出的同 story_id 请求失效后重新读取当前角色。
             characterEpoch += 1;

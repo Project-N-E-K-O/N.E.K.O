@@ -367,6 +367,17 @@ class NumericV2Engine:
     ) -> ScriptSessionV2:
         if actor_budget_profile not in NUMERIC_V2_ACTOR_BUDGET_PROFILES:
             raise NumericV2RuntimeError("numeric_actor_budget_profile_invalid")
+        generated_opening = add_entry(
+            self.nodes[str(self.story["start_node_id"])],
+            {key: value for key, value in opening_performance.items() if key != "fixed_narrations"},
+            catgirl_binding, bool(self.story["initial_state"]["player_address_known"]),
+        )
+        # Public creation accepts only our current entry projection, never caller
+        # claims about condition triggers or different display-name bindings.
+        if ("fixed_narrations" in opening_performance
+                and opening_performance["fixed_narrations"] != generated_opening.get("fixed_narrations", [])):
+            raise NumericV2RuntimeError("numeric_fixed_narration_invalid")
+        validate_delivery(self.story, generated_opening)
         return ScriptSessionV2(
             session_id=_stable_id(session_id, "session_id"),
             story_package_id=self.story_id,
@@ -379,10 +390,7 @@ class NumericV2Engine:
             revision=0,
             status="active",
             processed_client_turn_ids=(),
-            opening_performance=add_entry(
-                self.nodes[str(self.story["start_node_id"])], opening_performance,
-                catgirl_binding, bool(self.story["initial_state"]["player_address_known"]),
-            ),
+            opening_performance=generated_opening,
             performance_history=(),
             actor_budget_profile=actor_budget_profile,
             player_address_known=bool(self.story["initial_state"]["player_address_known"]),

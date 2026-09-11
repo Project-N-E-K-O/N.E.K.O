@@ -5476,3 +5476,86 @@ async def test_final_storage_mutation_holds_cloud_lock_and_waits_on_cancel(tmp_p
     assert events == ["locked", "finished"]
     assert (tmp_path / "saved.txt").read_text(encoding="utf-8") == "complete"
     assert not fence._process_holds_cloud_apply_lock()
+
+
+def test_memory_summary_respects_forget_and_requested_revision_range(tmp_path):
+    session = SimpleNamespace(story_package_id='story', session_id='session', revision=2,
+        forgotten_through_revision=2, catgirl_binding={'character_id': 'character', 'catgirl_name': 'Lan'},
+        opening_performance={'performance': 'Forgotten opening'}, performance_history=(
+            {'revision': 1, 'performance': 'First turn'}, {'revision': 2, 'performance': 'Forgotten last turn'},))
+    receipt = NumericV2ArchiveStore(tmp_path).create_or_get(session)
+    assert receipt['status'] == 'skipped'
+    assert build_numeric_v2_memory_messages(title='Story', session=session, ending=None, include_opening=False) == []
+    session.forgotten_through_revision = 0
+    messages = build_numeric_v2_memory_messages(title='Story', session=session, ending={'summary': 'Later ending'},
+        archive_from_revision=1, archive_through_revision=1, include_opening=False)
+    assert messages[0]['content'][0]['text'] == 'First turn'
+
+
+@pytest.mark.parametrize('memory_available', [True, False])
+def test_deleted_package_keeps_pending_forget_discoverable_and_retryable(tmp_path, monkeypatch, memory_available):
+    class MemoryClient:
+        async def get(self, url, **kwargs):
+            if not memory_available:
+                raise OSError('memory offline')
+            return SimpleNamespace(is_success=True, json=lambda: {'ok': True, 'stories': []})
+
+        async def post(self, url, **kwargs):
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    client = _client(tmp_path, monkeypatch)
+    scope = {'story_id': 'numeric_v2_contract', 'character_id': 'character_' + '1' * 32}
+    store = NumericV2ArchiveStore(tmp_path / 'theater')
+    with client:
+        assert client.post('/api/theater-numeric/session/start', json={'story_id': scope['story_id'], 'session_id': 'forget_deleted'}).status_code == 200
+        store.prepare_forget(**scope, legacy_catgirl_name='测试猫娘', session=SimpleNamespace(session_id='forget_deleted', revision=0))
+        store.prepare_forget(story_id='other_story', character_id='other_character', legacy_catgirl_name='Other')
+        assert client.delete('/api/theater-numeric/packages/' + scope['story_id']).status_code == 200
+        pending = store.pending_forget(**scope)
+        listed = client.get('/api/theater-numeric/memory/stories').json()
+        assert listed == {'ok': True, 'character_id': scope['character_id'], 'memory_available': memory_available,
+            'stories': [{'story_id': scope['story_id'], 'title': scope['story_id'], 'memory_summaries': [], 'forget_pending': True, 'memory_only': True}]}
+        assert store.pending_forget(**scope) == pending
+        assert client.post('/api/theater-numeric/memory/forget', json=scope).status_code == 200
+        assert store.pending_forget(**scope) is None
+        assert client.get('/api/theater-numeric/memory/stories').json()['stories'] == []
+        assert client.post('/api/theater-numeric/packages/import', json=numeric_v2_story()).status_code == 200
+        assert client.post('/api/theater-numeric/session/start', json={'story_id': scope['story_id'], 'session_id': 'after_retry'}).status_code == 200
+    assert store.pending_forget('other_story', 'other_character') is not None
+
+
+def test_deleted_story_summary_list_excludes_installed_packages(tmp_path, monkeypatch):
+    rows = [dict(story_id=key, title='Title', memory_summaries=['公开摘要']) for key in ['numeric_v2_contract', 'deleted_story']]
+
+    class MemoryClient:
+        async def get(self, url, **kwargs):
+            assert numeric_theater_router.character_config_mutation_lock.locked()
+            return SimpleNamespace(is_success=True, json=lambda: {'ok': True, 'stories': rows})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    with _client(tmp_path, monkeypatch) as client:
+        listed = client.get('/api/theater-numeric/memory/stories').json()
+    assert listed['stories'] == [{**rows[1], 'memory_only': True}]
+
+
+def test_forget_then_exit_without_new_turn_cannot_archive_old_content(tmp_path, monkeypatch):
+    memory_calls = []
+
+    class MemoryClient:
+        async def post(self, url, **kwargs):
+            memory_calls.append(url)
+            return SimpleNamespace(is_success=True, content=b'{}', json=lambda: {'ok': True})
+
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: MemoryClient())
+    scope = {'story_id': 'numeric_v2_contract', 'session_id': 'forget_exit'}
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.post('/api/theater-numeric/session/start', json=scope).status_code == 200
+        assert client.post('/api/theater-numeric/memory/forget', json={'story_id': scope['story_id'], 'character_id': 'character_' + '1' * 32}).status_code == 200
+        ended = client.post('/api/theater-numeric/session/end', json={**scope, 'base_revision': 0, 'base_lifecycle_revision': 0}).json()
+        assert ended['archive_status'] == 'skipped'
+        response = client.post('/api/theater-numeric/session/archive', json={**scope, 'revision': 0,
+            'end_receipt_id': ended['end_receipt_id'], 'archive_request_id': ended['archive_request_id']})
+        assert response.status_code == 409
+        assert response.json()['reason'] == 'numeric_archive_already_skipped'
+    assert len(memory_calls) == 1 and memory_calls[0].endswith('/theater/forget')

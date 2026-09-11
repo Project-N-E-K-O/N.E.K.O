@@ -466,6 +466,48 @@ async def list_numeric_stories():
         return _error("numeric_story_list_failed", 500)
 
 
+@router.get("/memory/stories")
+async def list_numeric_memory_stories():
+    """List deleted packages' public summaries and unfinished forget operations."""
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    config_manager = get_config_manager()
+    async with character_config_mutation_lock:
+        binding = _current_catgirl_binding(config_manager)
+        store = _archive_store(config_manager)
+        pending_ids = await asyncio.to_thread(store.pending_forget_story_ids, binding["character_id"])
+        available = True
+        try:
+            response = await get_internal_http_client().get(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
+                f"{quote(binding['catgirl_name'], safe='')}/theater/stories", timeout=8.0,
+            )
+            data = response.json()
+            if not response.is_success or data.get("ok") is not True or not isinstance(data.get("stories"), list):
+                raise ValueError("numeric_memory_story_list_failed")
+            stories = {str(row["story_id"]): row for row in data["stories"]}
+        except Exception:
+            # Installed stories remain usable; local forget retries stay reachable
+            # even while the memory service is unavailable.
+            available = False
+            stories = {}
+        for story_id in pending_ids:
+            stories.setdefault(story_id, {"story_id": story_id, "title": story_id, "memory_summaries": []})
+            stories[story_id]["forget_pending"] = True
+        registry = NumericV2PackageRegistry(_numeric_root(config_manager) / "numeric_v2" / "packages")
+        result = []
+        for story_id, row in stories.items():
+            try:
+                path = registry.package_path(story_id)
+            except NumericV2PackageError:
+                continue
+            if not await asyncio.to_thread(path.is_file):
+                result.append({**row, "memory_only": True})
+        return {"ok": True, "stories": result, "character_id": binding["character_id"],
+                "memory_available": available}
+
+
 @router.post("/packages/import")
 async def import_numeric_story(request: Request):
     payload = await _json_object(request)
@@ -1351,6 +1393,11 @@ async def archive_numeric_session(request: Request):
                     ),
                     include_opening=bool(receipt.get("include_opening", True)),
                 )
+                if not messages:
+                    # Old pending receipts may predate the forget watermark fix.
+                    # Empty ranges must never reintroduce the previous performance.
+                    await store.aupdate(receipt, status="skipped")
+                    return {"ok": True, "status": "skipped"}
                 from config import MEMORY_SERVER_PORT
                 from utils.internal_http_client import get_internal_http_client
 

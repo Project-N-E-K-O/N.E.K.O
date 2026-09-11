@@ -37,7 +37,7 @@
     function t(key, fallback) {
         if (typeof window.t === 'function') {
             var value = window.t(key);
-            if (value && value !== key) return value;
+            if (typeof value === 'string' && value && value !== key) return value;
         }
         return fallback;
     }
@@ -909,11 +909,14 @@
         var requestedSessionId = state.sessionId;
         var requestedRevision = state.revision;
         var requestedLifecycleRevision = state.lifecycleRevision;
+        var requestedLaunchEpoch = launchEpoch;
         function isCurrentEndRequest() {
             return state.active
                 && state.storyId === requestedStoryId
                 && state.sessionId === requestedSessionId
-                && state.revision === requestedRevision;
+                && state.revision === requestedRevision
+                && state.lifecycleRevision === requestedLifecycleRevision
+                && launchEpoch === requestedLaunchEpoch;
         }
         endConfirmationPending = true;
         var confirmed = false;

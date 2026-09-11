@@ -87,7 +87,7 @@ def _install_selector_routes(
                 deleted["value"] = True
             _fulfill(route, {"ok": True, "deleted_session_count": 1})
             return
-        route.continue_()
+        route.fallback()
 
     page.route("**/api/theater-numeric/**", handler)
 
@@ -158,7 +158,7 @@ def test_selector_recovers_status_when_story_detail_request_loses_network(
         if path.endswith("/api/theater-numeric/memory/archives"):
             _fulfill(route, {"ok": True, "archives": []})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -197,7 +197,7 @@ def test_selector_reports_archive_list_failure_instead_of_empty_history(
         if path.endswith("/api/theater-numeric/memory/archives"):
             _fulfill(route, {"ok": False, "reason": "numeric_archive_read_failed"}, 500)
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -246,7 +246,7 @@ def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, runni
             forgotten["value"] = True
             _fulfill(route, {"ok": True, "removed_archives": 1})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -321,7 +321,7 @@ def test_selector_opens_identity_checked_performance_archive(
                 "ending": {"title": "雨停之后", "summary": "两人终于说开旧事。"},
             }})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -599,7 +599,7 @@ def test_selector_queues_post_end_memory_prompt_behind_open_confirmation(
         if path.endswith("/api/theater-numeric/memory/archives"):
             _fulfill(route, {"ok": True, "archives": []})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -687,7 +687,7 @@ def test_selector_drops_restart_confirmation_after_story_switch(
         if path.endswith("/api/theater-numeric/memory/archives"):
             _fulfill(route, {"ok": True, "archives": []})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -770,7 +770,7 @@ def test_post_end_receipt_prompts_memory_on_selector_and_archives_once(
             archive_calls.append(json.loads(request.post_data or "{}"))
             _fulfill(route, {"ok": True, "status": "written"})
             return
-        route.continue_()
+        route.fallback()
 
     mock_page.route("**/api/theater-numeric/**", handler)
     mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
@@ -835,3 +835,82 @@ def test_selector_end_without_receipt_allows_retrying_pending_forget(mock_page: 
     expect(mock_page.locator("#theater-modal-title")).to_have_text("忘记该剧本？")
     mock_page.locator("#theater-modal-cancel").click()
     expect(mock_page.locator("#theater-modal")).to_be_hidden()
+
+
+@pytest.fixture(autouse=True)
+def empty_deleted_story_memories(mock_page: Page):
+    mock_page.route('**/api/theater-numeric/memory/stories', lambda route: _fulfill(route, {
+        'ok': True, 'stories': [], 'character_id': CHARACTER_ID, 'memory_available': True}))
+
+
+@pytest.mark.frontend
+def test_post_end_received_while_pin_is_busy_is_processed(mock_page: Page, running_server: str):
+    ended = {'value': False}
+    pending = {}
+    skips = []
+
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/session/active'):
+            payload = {'ok': True, 'session': {'session_id': 'busy-session', 'revision': 2,
+                'status': 'ended' if ended['value'] else 'active'}}
+            if ended['value']:
+                payload.update(end_receipt_id='busy-receipt', archive_status='pending')
+            _fulfill(route, payload)
+        elif path.endswith('/memory/archives'):
+            _fulfill(route, {'ok': True, 'archives': [{'session_id': 'archive', 'revision': 1}]})
+        elif path.endswith('/memory/archive/pin'):
+            pending['pin'] = route
+        elif path.endswith('/session/archive/skip'):
+            skips.append(route.request.post_data)
+            _fulfill(route, {'ok': True})
+        else:
+            route.fallback()
+
+    _install_selector_routes(mock_page)
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.goto(f'{running_server}/theater', wait_until='domcontentloaded')
+    with mock_page.expect_request('**/memory/archive/pin'):
+        mock_page.locator('[data-theater-pin-session]').click()
+    ended['value'] = True
+    mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1',action:'theater:post-end',
+        story_id:'numeric_browser_story',session_id:'busy-session',revision:2,end_receipt_id:'busy-receipt'},location.origin)""")
+    expect(mock_page.locator('#theater-import-btn')).to_be_disabled()
+    pending['pin'].fulfill(status=200, content_type='application/json', body='{"ok":true}')
+    expect(mock_page.locator('#theater-modal-title')).to_contain_text('记下本次演绎内容')
+    mock_page.locator('#theater-modal-cancel').click()
+    expect(mock_page.locator('#theater-modal')).to_be_hidden()
+    assert len(skips) == 1
+
+
+@pytest.mark.frontend
+def test_deleted_story_retains_summary_and_forget_retry(mock_page: Page, running_server: str):
+    forgotten = {'value': False}
+    memory = {**STORY, 'memory_only': True, 'forget_pending': True,
+              'memory_summaries': ['我们在星火之后重逢。<script>不得执行</script>']}
+    requests = []
+
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/memory/stories'):
+            _fulfill(route, {'ok': True, 'character_id': CHARACTER_ID, 'memory_available': True,
+                'stories': [] if forgotten['value'] else [memory]})
+        elif path.endswith('/memory/forget'):
+            requests.append(json.loads(route.request.post_data or '{}'))
+            forgotten['value'] = True
+            _fulfill(route, {'ok': True})
+        else:
+            route.fallback()
+
+    _install_selector_routes(mock_page, deleted={'value': True})
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.goto(f'{running_server}/theater', wait_until='domcontentloaded')
+    expect(mock_page.locator('#theater-session-badge')).to_have_text('已删除 · 记忆管理')
+    expect(mock_page.locator('#theater-memory-list')).to_contain_text(memory['memory_summaries'][0])
+    expect(mock_page.locator('#theater-start-btn')).to_be_disabled()
+    expect(mock_page.locator('#theater-delete-btn')).to_be_disabled()
+    expect(mock_page.locator('#theater-forget-memory-btn')).to_be_enabled()
+    mock_page.locator('#theater-forget-memory-btn').click()
+    mock_page.locator('#theater-modal-confirm').click()
+    expect(mock_page.locator('#theater-empty-state')).to_be_visible()
+    assert requests == [{'story_id': STORY['story_id'], 'character_id': CHARACTER_ID}]

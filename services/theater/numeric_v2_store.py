@@ -144,10 +144,10 @@ def _write_story_session_slots(
             suffix=".tmp",
             delete=False,
         ) as temporary:
+            temporary_path = Path(temporary.name)
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
         os.replace(temporary_path, path)
         temporary_path = None
     finally:
@@ -171,10 +171,10 @@ def _atomic_write_json_payload(path: Path, payload: Mapping[str, Any]) -> None:
             suffix=".tmp",
             delete=False,
         ) as temporary:
+            temporary_path = Path(temporary.name)
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
         os.replace(temporary_path, path)
         temporary_path = None
     finally:
@@ -309,12 +309,16 @@ def list_numeric_v2_public_archives(
             if raise_on_io_error:
                 raise
             continue
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            if raise_on_io_error:
+                raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
             continue
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != "neko.theater.numeric.v2.public-archive"
         ):
+            if raise_on_io_error:
+                raise NumericV2StoreError("numeric_public_archive_read_failed")
             continue
         summary = {
             "session_id": str(payload.get("session_id") or "").strip(),
@@ -358,8 +362,13 @@ async def numeric_v2_session_files_guard(theater_storage_root: Path):
 
 
 async def delete_numeric_v2_sessions(theater_storage_root: Path, **scope) -> list[dict[str, str]]:
+    from .numeric_v2_storage_transaction import run_storage_mutation
+
     async with numeric_v2_session_files_guard(theater_storage_root):
-        return _delete_numeric_v2_sessions_unlocked(theater_storage_root, **scope)
+        # Keep file locks until the worker finishes, including caller cancellation.
+        return await run_storage_mutation(
+            nullcontext, _delete_numeric_v2_sessions_unlocked, theater_storage_root, **scope,
+        )
 
 
 def _delete_numeric_v2_sessions_unlocked(
@@ -493,12 +502,12 @@ async def update_numeric_v2_character_bindings(
         raise NumericV2StoreError("numeric_character_id_required")
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
-    candidates = list_numeric_v2_sessions(
-        theater_storage_root,
-        character_id=normalized_character_id,
-        legacy_catgirl_name=legacy_catgirl_name,
-    )
     async with _lock(index_path):
+        candidates = list_numeric_v2_sessions(
+            theater_storage_root,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=legacy_catgirl_name,
+        )
         stories = _read_story_session_slots(index_path)
         updated = 0
         for candidate in candidates:
@@ -526,9 +535,13 @@ async def update_numeric_v2_character_bindings(
                 story_id = str(raw_session.get("story_package_id") or "").strip()
                 session_id = str(raw_session.get("session_id") or path.stem).strip()
                 if story_id and session_id:
-                    stories.setdefault(story_id, {})[
-                        normalized_character_id
-                    ] = session_id
+                    slots = stories.get(story_id, {})
+                    legacy_key = str(legacy_catgirl_name or "").strip()
+                    # Rename only migrates an existing slot; snapshots stay unpublished.
+                    # An established character-ID slot wins over a stale legacy slot.
+                    if legacy_key != normalized_character_id and slots.get(legacy_key) == session_id:
+                        slots.pop(legacy_key)
+                        slots.setdefault(normalized_character_id, session_id)
                 updated += 1
         _write_story_session_slots(index_path, stories)
         return updated
@@ -699,6 +712,9 @@ class NumericV2SessionStore:
         next_path = self._path(session.session_id)
         if previous_path == next_path:
             raise NumericV2StoreError("numeric_replacement_session_id_reused")
+        character_id = str(session.catgirl_binding.get("character_id") or "").strip()
+        if not character_id:
+            raise NumericV2StoreError("numeric_story_session_index_invalid")
         index_path = self._story_session_index_path
         async with _lock(index_path):
             async with _lock(previous_path):
@@ -716,7 +732,7 @@ class NumericV2SessionStore:
                         stories = self._read_story_session_index()
                         previous_stories = deepcopy(stories)
                         stories.setdefault(session.story_package_id, {})[
-                            str(session.catgirl_binding.get("character_id") or "")
+                            character_id
                         ] = session.session_id
                         self._write(next_path, stored, exclusive=True)
                         try:
@@ -1061,11 +1077,13 @@ class NumericV2SessionStore:
         replay_session = self.engine.create_session(
             session_id=stored.session.session_id,
             catgirl_binding=stored.session.catgirl_binding,
-            opening_performance=stored.session.opening_performance,
+            opening_performance={key: value for key, value in stored.session.opening_performance.items()
+                                 if key != "fixed_narrations"},
             actor_budget_profile=stored.session.actor_budget_profile,
         )
-        if replay_session.opening_performance != stored.session.opening_performance:
-            raise NumericV2StoreError("numeric_fixed_narration_opening_missing")
+        # Delivery was validated above against its captured names. Renaming must
+        # not rewrite already displayed text while replaying the ledger.
+        replay_session = replace(replay_session, opening_performance=stored.session.opening_performance)
         if len(stored.session.performance_history) != len(events):
             raise NumericV2StoreError("numeric_performance_history_mismatch")
         for event_index, event in enumerate(events):
@@ -1311,10 +1329,10 @@ class NumericV2SessionStore:
         temporary_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
                 temporary.write(encoded)
                 temporary.flush()
                 os.fsync(temporary.fileno())
-                temporary_path = Path(temporary.name)
             if exclusive:
                 try:
                     os.link(temporary_path, path)

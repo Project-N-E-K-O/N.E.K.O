@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 小剧场入口与恢复提示新增了 key；递增版本让 Electron、Docker 的长期缓存重新拉取语言包。
-    const LOCALE_VERSION = '2026-09-11-theater-session-lifecycle';
+    const LOCALE_VERSION = '2026-09-11-theater-memory-management';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -1513,3 +1513,135 @@ async def test_session_commit_rechecks_fence_after_waiting_for_file_lock(tmp_pat
     with pytest.raises(PermissionError, match="maintenance"):
         await task
     assert await runtime.restore_session("fenced") == current
+
+
+@pytest.mark.parametrize('writer', ['index', 'payload', 'session', 'exclusive'])
+@pytest.mark.parametrize('failure', ['write', 'flush', 'fsync'])
+def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writer, failure):
+    from contextlib import contextmanager
+
+    path = tmp_path / 'original.json'
+    path.write_bytes(b'original')
+    original = numeric_v2_store.tempfile.NamedTemporaryFile
+
+    @contextmanager
+    def failing_temporary(**kwargs):
+        with original(**kwargs) as stream:
+            class Proxy:
+                name = stream.name
+
+                def __getattr__(self, name):
+                    if name == failure:
+                        def fail(*args):
+                            raise OSError('disk failure')
+                        return fail
+                    return getattr(stream, name)
+            yield Proxy()
+
+    monkeypatch.setattr(numeric_v2_store.tempfile, 'NamedTemporaryFile', failing_temporary)
+    if failure == 'fsync':
+        def fail_fsync(*args):
+            raise OSError('disk failure')
+        monkeypatch.setattr(numeric_v2_store.os, 'fsync', fail_fsync)
+    with pytest.raises(OSError, match='disk failure'):
+        if writer == 'index':
+            numeric_v2_store._write_story_session_slots(path, {'story': {'character': 'session'}})
+        elif writer == 'payload':
+            numeric_v2_store._atomic_write_json_payload(path, {'next': True})
+        else:
+            engine = NumericV2Engine.from_mapping(_branch_story())
+            session = engine.create_session(session_id='write', catgirl_binding=_binding(), opening_performance=_opening())
+            numeric_v2_store.NumericV2SessionStore(tmp_path, engine)._write(
+                path, numeric_v2_store.NumericV2StoredSession(session, ()), exclusive=writer == 'exclusive',
+            )
+    assert path.read_bytes() == b'original'
+    assert list(tmp_path.glob('.*.tmp')) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('character_id', ['', '  ', None])
+async def test_replace_rejects_empty_character_before_mutation(tmp_path, character_id):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    original = await runtime.start_session(session_id='old', catgirl_binding=_binding(), opening_performance=_opening())
+    replacement = runtime.engine.create_session(session_id='next', catgirl_binding={**_binding(), 'character_id': character_id or ''}, opening_performance=_opening())
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match='numeric_story_session_index_invalid'):
+        await runtime.store.replace_active('old', replacement)
+    assert await runtime.restore_story_session(_binding()) == original
+    assert not runtime.store._path('next').exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_rename_never_publishes_isolated_snapshots(tmp_path, monkeypatch, legacy):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(session_id='middle', catgirl_binding=_binding(), opening_performance=_opening())
+    for name in ['aaa-isolated', 'zzz-isolated']:
+        await runtime.store.create_isolated_snapshot(replace(stored, session=replace(stored.session, session_id=name)))
+    index_path = runtime.store._story_session_index_path
+    if legacy:
+        numeric_v2_store._write_story_session_slots(index_path, {runtime.engine.story_id: {'Lan': 'middle'}})
+    original_list = numeric_v2_store.list_numeric_v2_sessions
+
+    def list_under_index_lock(*args, **kwargs):
+        assert numeric_v2_store._lock(index_path).locked()
+        return original_list(*args, **kwargs)
+
+    monkeypatch.setattr(numeric_v2_store, 'list_numeric_v2_sessions', list_under_index_lock)
+    binding = {**_binding(), 'catgirl_name': 'Renamed'}
+    await update_numeric_v2_character_bindings(tmp_path, character_id=binding['character_id'], legacy_catgirl_name='Lan', catgirl_binding=binding)
+    assert (await runtime.restore_story_session(binding)).session.session_id == 'middle'
+    assert numeric_v2_store._read_story_session_slots(index_path) == {runtime.engine.story_id: {binding['character_id']: 'middle'}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('corrupt_bytes', [b'{broken-json', b'\xff', b'{}'])
+async def test_delete_preserves_unidentifiable_public_archive(tmp_path, corrupt_bytes):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(session_id='keep', catgirl_binding=_binding(), opening_performance=_opening())
+    archive_path = tmp_path / 'numeric_v2/public_archives/broken.json'
+    archive_path.parent.mkdir()
+    archive_path.write_bytes(corrupt_bytes)
+    assert numeric_v2_store.list_numeric_v2_public_archives(tmp_path) == []
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match='numeric_public_archive_read_failed'):
+        await numeric_v2_store.delete_numeric_v2_sessions(tmp_path, story_id=runtime.engine.story_id)
+    assert archive_path.read_bytes() == corrupt_bytes
+    assert await runtime.restore_story_session(_binding()) == stored
+
+
+@pytest.mark.asyncio
+async def test_session_delete_worker_keeps_lock_until_cancellation_finishes(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    main_thread = threading.get_ident()
+
+    def delete(*args, **kwargs):
+        assert threading.get_ident() != main_thread
+        started.set()
+        assert release.wait(3)
+        return []
+
+    monkeypatch.setattr(numeric_v2_store, '_delete_numeric_v2_sessions_unlocked', delete)
+    task = asyncio.create_task(numeric_v2_store.delete_numeric_v2_sessions(tmp_path, story_id='story'))
+    assert await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    lock = numeric_v2_store._lock(tmp_path / 'numeric_v2/story_sessions.json')
+    try:
+        assert lock.locked() and not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_replacement_normalizes_character_slot(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    await runtime.start_session(session_id='previous', catgirl_binding=_binding(), opening_performance=_opening())
+    binding = {**_binding(), 'character_id': '  ' + _binding()['character_id'] + '  '}
+    replacement = runtime.engine.create_session(session_id='replacement', catgirl_binding=binding, opening_performance=_opening())
+    await runtime.store.replace_active('previous', replacement)
+    assert await runtime.store.get_story_session_id(runtime.engine.story_id, _binding()['character_id']) == 'replacement'

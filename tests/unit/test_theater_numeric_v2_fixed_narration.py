@@ -251,3 +251,47 @@ def test_review_extension_is_optional_and_does_not_change_other_stories():
     assert result.fixed_narration_triggers == _claims()
     with pytest.raises(NumericV2EvaluatorOutputError):
         _parse_transition_judge_output(json.dumps(raw))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('forgery', ['text', 'bindings', 'condition'])
+async def test_opening_rejects_injected_fixed_text_before_storage(tmp_path, forgery):
+    engine = _engine()
+    opening = engine.create_session(session_id='expected', catgirl_binding=_binding(), opening_performance=OPENING).opening_performance
+    if forgery == 'condition':
+        opening['fixed_narrations'].append({'node_id': 'start', 'id': 'log', 'text': LOG,
+            'bindings': opening['fixed_narrations'][0]['bindings'], 'position': 'after'})
+    else:
+        opening['fixed_narrations'][0][forgery] = 'forged' if forgery == 'text' else {'catgirl_name': 'Other', 'player_name': '你'}
+    with pytest.raises(ValueError, match='numeric_fixed_narration_invalid'):
+        await NumericV2Runtime(engine, tmp_path).start_session(session_id='injected', catgirl_binding=_binding(), opening_performance=opening)
+    assert not list(tmp_path.rglob('*.json'))
+
+
+def test_context_preserves_fixed_narration_display_order():
+    from services.theater.numeric_v2_context import performance_history_records
+
+    engine = _engine()
+    session = engine.create_session(session_id='order', catgirl_binding=_binding(), opening_performance=OPENING)
+    record = {'scene_narration': '场景', 'performance': '角色正文', 'fixed_narrations': [
+        {'text': '入幕原文\n完整', 'position': 'before'}, {'text': '条件原文\n完整', 'position': 'after'}]}
+    session = replace(session, opening_performance=record, performance_history=({'revision': 1, 'segments': [record]},))
+    texts = [row['text'] for row in performance_history_records(session)]
+    assert texts == ['场景', '入幕原文\n完整', '角色正文', '条件原文\n完整'] * 2
+
+
+@pytest.mark.asyncio
+async def test_generated_opening_replays_with_original_names_after_rename(tmp_path):
+    from services.theater.numeric_v2_store import update_numeric_v2_character_bindings
+
+    story = deepcopy(_engine().story)
+    story['nodes'][0]['story_beat']['fixed_narrations'][0]['text'] = '{{catgirl_name}}：{{player_name}}'
+    engine = NumericV2Engine.from_mapping(story)
+    opening = engine.create_session(session_id='original', catgirl_binding=_binding(), opening_performance=OPENING).opening_performance
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id='original', catgirl_binding=_binding(), opening_performance=opening)
+    renamed = {**_binding(), 'catgirl_name': '新名字'}
+    await update_numeric_v2_character_bindings(tmp_path, character_id=renamed['character_id'], legacy_catgirl_name='Lan', catgirl_binding=renamed)
+    restored = await NumericV2Runtime(engine, tmp_path).restore_session('original')
+    assert restored.session.opening_performance == stored.session.opening_performance
+    assert restored.session.catgirl_binding['catgirl_name'] == '新名字'

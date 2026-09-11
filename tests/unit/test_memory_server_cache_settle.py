@@ -1008,3 +1008,20 @@ async def test_settle_empty_payload_persists_explicit_locale():
         render_language=None,
         locale_admission_order=314,
     )
+
+
+@pytest.mark.asyncio
+async def test_theater_memory_list_exposes_only_latest_public_summaries():
+    from app import memory_server
+    from utils.llm_client import SystemMessage, HumanMessage
+
+    metadata = {'source': 'theater_numeric_v2', 'story_id': 'deleted_story',
+                'session_id': 'run', 'story_title': '星火之后', 'episode_summary': '旧摘要'}
+    history = [HumanMessage(content='私人日常聊天'), SystemMessage(content='旧文本', metadata=metadata),
+               SystemMessage(content='公开文本', metadata={**metadata, 'episode_summary': '重逢。', 'hidden_debug': '不能返回'})]
+    with patch.object(memory_server.runtime._config_manager, 'aload_characters', AsyncMock(return_value={'猫娘': {'测试角色': {}}})), \
+         patch.object(memory_server.runtime, 'recent_history_manager', MagicMock(aget_recent_history=AsyncMock(return_value=history))) as recent:
+        from app.memory_server import routes
+        result = await routes.list_theater_memory_stories('测试角色')
+    assert result == {'ok': True, 'stories': [{'story_id': 'deleted_story', 'title': '星火之后', 'memory_summaries': ['重逢。']}]}
+    recent.aget_recent_history.assert_awaited_once_with('测试角色')

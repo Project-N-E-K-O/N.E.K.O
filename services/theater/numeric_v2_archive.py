@@ -75,6 +75,18 @@ class NumericV2ArchiveStore:
             raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
         return pending
 
+    def pending_forget_story_ids(self, character_id: str) -> list[str]:
+        """Keep interrupted forget operations discoverable without their packages."""
+        result = []
+        for path in sorted((self.root.parent / "forget_transactions").glob("*.json")):
+            pending = self._read(path)
+            if pending and pending.get("character_id") == character_id:
+                story_id = str(pending.get("story_id") or "")
+                if self.pending_forget(story_id, character_id) != pending:
+                    raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+                result.append(story_id)
+        return result
+
     def prepare_forget(self, *, story_id: str, character_id: str,
                        legacy_catgirl_name: str, session: Any = None) -> dict[str, Any]:
         """Freeze targets and the revision boundary before either service deletes data."""
@@ -272,7 +284,7 @@ class NumericV2ArchiveStore:
                 "revision": int(session.revision),
                 "character_id": str(session.catgirl_binding.get("character_id") or ""),
                 "catgirl_name": str(session.catgirl_binding.get("catgirl_name") or ""),
-                "status": "pending",
+                "status": "skipped" if archived_through_revision >= int(session.revision) else "pending",
                 "archive_request_id": f"theater_archive_{digest}",
                 "archive_from_revision": max(1, archived_through_revision + 1),
                 "archive_through_revision": int(session.revision),
@@ -1063,18 +1075,29 @@ def _compact_episode_summary(
     ending: Mapping[str, Any] | None,
     *,
     max_chars: int = 360,
+    archive_from_revision: int = 1,
+    archive_through_revision: int | None = None,
+    include_opening: bool = True,
 ) -> str:
     """确定性生成单集摘要；完整公开正文由 Theater 冷档案承接。"""  # noqa: DOCSTRING_CJK
 
-    ending_summary = str((ending or {}).get("summary") or "").strip()
-    if ending_summary:
-        return ending_summary
-    if session.performance_history:
-        source = session.performance_history[-1]
+    through = session.revision if archive_through_revision is None else archive_through_revision
+    forgotten = getattr(session, "forgotten_through_revision", -1)
+    if not isinstance(forgotten, int) or isinstance(forgotten, bool):
+        forgotten = -1
+    history = [row for row in session.performance_history
+               if max(archive_from_revision, forgotten + 1) <= row.get("revision", 0) <= through]
+    if history:
+        source = history[-1]
         fallback_phase = "ordinary"
-    else:
+    elif include_opening and forgotten < 0:
         source = session.opening_performance
         fallback_phase = "opening"
+    else:
+        return ""
+    ending_summary = str((ending or {}).get("summary") or "").strip()
+    if ending_summary and history and history[-1].get("revision") == session.revision:
+        return ending_summary
     _, text = _performance_memory_projection(source, fallback_phase=fallback_phase)
     normalized = " ".join(text.split())
     if len(normalized) <= max_chars:
@@ -1157,7 +1180,12 @@ def build_numeric_v2_memory_messages(
         session.revision if archive_through_revision is None else archive_through_revision
     )
     from_revision = max(1, int(archive_from_revision))
-    episode_summary = _compact_episode_summary(session, ending)
+    episode_summary = _compact_episode_summary(
+        session, ending, archive_from_revision=from_revision,
+        archive_through_revision=through_revision, include_opening=include_opening,
+    )
+    if not episode_summary:
+        return []
     episode = _episode_metadata(
         title=title,
         session=session,
@@ -1166,8 +1194,6 @@ def build_numeric_v2_memory_messages(
         archive_through_revision=through_revision,
         episode_summary=episode_summary,
     )
-    # include_opening 继续保留在函数签名中兼容旧回执；摘要胶囊不再复制开场正文。
-    _ = include_opening
     return [{
         "role": "system",
         "content": [{"type": "text", "text": episode_summary}],

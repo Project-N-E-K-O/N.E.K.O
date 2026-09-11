@@ -182,6 +182,8 @@ def validate_delivery(story: Mapping[str, Any], performance: Mapping[str, Any], 
                     or part.get("phase") == "transition_bridge"):
                 raise ValueError("numeric_fixed_narration_invalid")
             item = allowed[piece["id"]]
+            if (session is None or part.get("phase") == "target_opening") and item["trigger"]["type"] != "entry":
+                raise ValueError("numeric_fixed_narration_invalid")
             key = (expected_node, piece["id"])
             names = piece["bindings"]
             if (not isinstance(names, dict) or set(names) != {"catgirl_name", "player_name"}

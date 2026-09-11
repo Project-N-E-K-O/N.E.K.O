@@ -1148,6 +1148,28 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             return {"status": "error", "message": str(e)}
 
 
+@app.get("/internal/memory/{lanlan_name}/theater/stories")
+async def list_theater_memory_stories(lanlan_name: str):
+    """Expose saved public summaries for management after a package is deleted."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    characters = await runtime._config_manager.aload_characters()
+    if lanlan_name not in characters.get("猫娘", {}):
+        raise HTTPException(status_code=404, detail="character_not_found")
+    async with runtime._get_settle_lock(lanlan_name):
+        history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+        latest, _ = _theater_memory_render_state(history)
+    stories = {}
+    for (story_id, _), metadata in latest.items():
+        if not story_id:
+            continue
+        story = stories.setdefault(story_id, {"story_id": story_id, "title": "", "memory_summaries": []})
+        story["title"] = str(metadata.get("story_title") or story["title"] or story_id)
+        summary = str(metadata.get("episode_summary") or metadata.get("ending_summary") or "").strip()
+        if summary:
+            story["memory_summaries"].append(summary)
+    return {"ok": True, "stories": list(stories.values())}
+
+
 @app.post("/internal/memory/{lanlan_name}/theater/forget")
 async def forget_theater_memory(
     lanlan_name: str,

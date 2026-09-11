@@ -53,7 +53,6 @@ class TTSProviderMeta:
     output_streaming: bool          # 输出是否流式（音频分块返回）
     client_sentence_split: bool     # 客户端是否做句子分割
     audio_format: str               # 原始音频格式，如 "PCM 24kHz", "OGG OPUS 48kHz"
-    allows_empty_api_key: bool = False  # 是否允许连接免鉴权的兼容端点
     notes: str = ""                 # 特殊说明
     # worker 认 TTS_SOFT_FLUSH_SENTINEL：文本空闲时先把攒着的尾句合成出来，
     # 之后同一 speech_id 还能继续说。core 只对 True 的 provider 发这个哨兵。
@@ -131,7 +130,6 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         output_streaming=True,
         client_sentence_split=True,
         audio_format="PCM 24kHz → resample 48kHz",
-        allows_empty_api_key=True,
         notes="gpt-4o-mini-tts；按句切分后流式接收音频",
     ),
     "custom": TTSProviderMeta(
