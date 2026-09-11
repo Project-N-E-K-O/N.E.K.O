@@ -55,12 +55,13 @@ def enforce_download_policy(info, *, metadata_duration, automatic=False, confirm
     """Recheck stream limits without equating container timestamps to metadata.
 
     The caller has already validated metadata for this video's selected part.
-    Long-video consent applies to that selection, not an exact floating duration.
+    Allow two seconds of container rounding, but reconfirm larger increases.
     """
     seconds = info["duration"]
     if not math.isfinite(seconds) or not 0 < seconds <= MAX_SECONDS:
         raise ValueError("Downloaded video duration exceeds the supported limit")
-    consent = metadata_duration > 300 and confirmed_duration == metadata_duration
+    consent = (metadata_duration > 300 and confirmed_duration == metadata_duration
+               and seconds <= metadata_duration + 2)
     return enforce_policy(info, automatic=automatic,
                           confirmed_duration=seconds if consent else None)
 

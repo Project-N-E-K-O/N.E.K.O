@@ -47,8 +47,8 @@ async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('requested,expected', [(None, 'ja'), ('zh-CN', 'zh-CN')])
-async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, monkeypatch, requested, expected):
+@pytest.mark.parametrize('requested,explicit,expected', [(None, False, 'ja'), ('zh-CN', False, 'zh-CN'), ('zh-CN', True, 'en')])
+async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, monkeypatch, requested, explicit, expected):
     from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
     calls = []
 
@@ -61,6 +61,7 @@ async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, 
         return {"ok": True}
 
     manager = SimpleNamespace(user_language="en", _conversation_render_language="ja", lanlan_prompt='Current persona',
+                              _user_language_explicit=explicit,
                               game_speech_audio_cache_identity=identity, preload_game_speech_audio=preload)
 
     class Engine:

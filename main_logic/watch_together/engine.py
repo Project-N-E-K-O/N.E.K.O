@@ -76,6 +76,7 @@ async def run_media_async(*args):
             try:
                 process.kill()
             except ProcessLookupError:
+                # The process exited between checking returncode and kill().
                 pass
             await process.communicate()
 

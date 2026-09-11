@@ -43,6 +43,7 @@ export async function run(game, character) {
     if (!watch || game.runtime.state !== 'running') return;
     const payload = {id:watch, position:event.position ?? $('video').currentTime,event};
     writing = writing.then(() => game.media.request('watch', payload))
+      .then(refreshWatches)
       .catch(error => status(error.message));
   };
   async function end() {
@@ -89,6 +90,7 @@ export async function run(game, character) {
         if (!response.ok || response.data?.ok === false) throw Error(response.data?.reason || 'Scene start failed');
         const started = await game.media.request('watch',{action:'start',job:selected.id,version:selected.version});
         watch = started.id;
+        await refreshWatches();
         media = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,onEvent:record,
           onCue:cue=>{ $('bubble').textContent = cue?.text || ''; avatar?.setEmotion(cue?'happy':'neutral'); }});
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
@@ -177,6 +179,13 @@ export async function run(game, character) {
     await end(); game.dispose(); window.close();
     setTimeout(()=>{if(!window.closed)location.href='/';},100);
   };
+  async function refreshWatches() {
+    try { renderWatches((await game.media.request('history')).watches); }
+    catch(error) { status(error.message); }
+  }
+  function renderWatches(rows) {
+    $('watches').textContent = rows.length ? rows.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
+  }
   function renderHistory(rows) {
     $('history').replaceChildren();
     for (const row of rows) {
@@ -198,7 +207,7 @@ export async function run(game, character) {
     }
     const data = await game.media.request('history');
     renderHistory(data.analyses);
-    $('watches').textContent = data.watches.length ? data.watches.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
+    renderWatches(data.watches);
     status(t('choose'));
     const job = new URLSearchParams(location.search).get('job');
     const version = new URLSearchParams(location.search).get('version');

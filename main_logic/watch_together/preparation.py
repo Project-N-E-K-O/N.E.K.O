@@ -25,8 +25,10 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         raise ValueError("A video is already being prepared")
     library = application_library()
     from utils.language_utils import get_global_language_full, normalize_language_code
+    explicit_language = (getattr(manager, "user_language", None)
+                         if getattr(manager, "_user_language_explicit", False) else None)
     language = normalize_language_code(
-        render_language or getattr(manager, "_conversation_render_language", None)
+        explicit_language or render_language or getattr(manager, "_conversation_render_language", None)
         or getattr(manager, "_conversation_turn_language", None)
         or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]

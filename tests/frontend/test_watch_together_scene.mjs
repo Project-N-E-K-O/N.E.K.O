@@ -13,13 +13,16 @@ async function fixture(confirm, afterDownload=false, usage=null) {
   const prompts = [];
   globalThis.window = {i18n:{t:key=>key},confirm:message=>{prompts.push(message);return confirm;}};
   const calls = [];
+  let watches = [], record;
+  const handlers = {};
   const game = {
-    runtime:{state:'idle',configure(){},async end(){}},
-    speech:{onState(){}},voice:{onState(){},onTranscript(){}},events:{on(){}},
-    media:{async request(action,payload) {
+    runtime:{state:'idle',configure(){},async end(){},async start(){this.state='running';return {ok:true};}},
+    speech:{onState(){}},voice:{onState(){},onTranscript(){}},events:{on(name,fn){handlers[name]=fn;}},
+    media:{async mount(options){record=options.onEvent;return {async play(){},dispose(){}};},async request(action,payload) {
       calls.push({action,payload});
       if(action==='character')return {lanlan_name:'cat'};
-      if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches:[]};
+      if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
+      if(action==='watch'){watches=[{job:'selected',progress:payload.position || 0,last_watched:'now'}];return {id:'watch-1'};}
       if(action==='load')return {id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
       if(action==='discover')return {video:null};
       if(action==='prepare') {
@@ -35,7 +38,7 @@ async function fixture(confirm, afterDownload=false, usage=null) {
     }}
   };
   await run(game,'cat');
-  return {elements,calls,prompts};
+  return {elements,calls,prompts,handlers,record:event=>record(event)};
 }
 const cancel = await fixture(false);
 cancel.elements.get('url').value='BV1GJ411x7h7';
@@ -75,3 +78,12 @@ assert.deepEqual(legacy.calls.at(-1).payload,{topic:'Cats',exclude:['BV1GJ411x7h
 const missing = await fixture(false,false,{input_tokens:0,calls:[]});
 assert.match(missing.elements.get('usage').textContent,/unrecorded/);
 console.log('watch-together scene: legacy totals and manual discovery exclusions passed');
+const watching = await fixture(false,false,{total_tokens:1});
+assert.match(watching.elements.get('watches').textContent,/noWatches/);
+await watching.elements.get('play').onclick();
+assert.match(watching.elements.get('watches').textContent,/selected.*0s/);
+watching.record({type:'ended',position:122});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.match(watching.elements.get('watches').textContent,/selected.*122s/);
+watching.handlers['runtime-inactive']();
+console.log('watch-together scene: persisted watch start and completion refresh without reload');

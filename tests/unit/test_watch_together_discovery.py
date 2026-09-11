@@ -34,6 +34,7 @@ def test_long_confirmation_and_changed_duration():
 
 @pytest.mark.parametrize("metadata,actual,confirmed,allowed", [
     (301, 301.25, 301, True), (301, 300.9, 301, True),
+    (301, 303, 301, True), (301, 303.01, 301, False), (301, 1200, 301, False),
     (301, 301.25, None, False), (300, 300.01, None, False),
     (300, 300.01, 300, False), (302, 302.1, 301, False),
 ])
