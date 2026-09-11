@@ -4,7 +4,7 @@ import {run} from '../../static/game/games/watch-together/scene.mjs';
 async function fixture(confirm) {
   const elements = new Map();
   globalThis.document = {getElementById(id) {
-    if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false});
+    if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,replaceChildren(){},append(){}});
     return elements.get(id);
   }};
   document.getElementById('url');document.getElementById('topic');

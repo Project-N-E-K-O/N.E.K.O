@@ -14,6 +14,7 @@ import re
 import sqlite3
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 JOB_ID = re.compile(r"[a-f0-9]{32}")
@@ -51,10 +52,15 @@ class Library:
                     PRIMARY KEY(name, sha256));
             """)
 
+    @contextmanager
     def connect(self):
         db = sqlite3.connect(self.root / "library.sqlite3", timeout=30)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def store(self, source: Path) -> dict:
         """Commit only a verified copy. Interrupted temporary copies are reusable garbage."""
@@ -77,7 +83,7 @@ class Library:
                 Path(temporary).unlink(missing_ok=True)
         return {"sha256": before, "bytes": target.stat().st_size}
 
-    def import_sources(self, sources: list[Path]) -> dict:
+    def import_sources(self, sources: list[Path], *, only_job=None, write_report=True) -> dict:
         report = {"sources": [], "jobs": 0, "versions": 0, "files": 0,
                   "bytes": 0, "differences": [], "verified": True}
         observed = {}
@@ -98,6 +104,8 @@ class Library:
             encountered = set()
             count = 0
             for folder in sorted(source.iterdir()):
+                if only_job is not None and folder.name != only_job:
+                    continue
                 if not folder.is_dir() or not JOB_ID.fullmatch(folder.name):
                     continue
                 if folder.is_symlink():
@@ -142,8 +150,9 @@ class Library:
                                       "archive_checks": len(expected)})
         report.update(jobs=len(jobs), versions=len(versions), unique_files=len(observed))
         report_path = self.root / f"migration-{uuid.uuid4().hex}.json"
-        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        return {**report, "report": str(report_path)}
+        if write_report:
+            report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {**report, "report": str(report_path) if write_report else None}
 
     def import_audio_assets(self, source: Path) -> list[dict]:
         result = []
@@ -173,6 +182,8 @@ class Library:
 
     def timeline(self, job: str, version: str) -> dict:
         data = json.loads(self.resource(job, version, "timeline.json").read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("Timeline must be an object")
         prefix = f"/api/watch-together/media/{job}/{version}/"
         def remap(value):
             if isinstance(value, str) and value.startswith(f"/media/{job}/"):

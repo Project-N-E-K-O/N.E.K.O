@@ -5338,6 +5338,17 @@
         }
     },
   "watchTogether": {
+    "readingVideo": "動画情報を読み込み中…",
+    "downloading": "動画をダウンロード中…",
+    "extractingFrames": "フレームを抽出中…",
+    "extractingHotspots": "弾幕集中箇所のフレームを抽出中…",
+    "analyzing": "動画を分析中…",
+    "synthesizing": "リアクション音声を準備中…",
+    "noSubtitles": "字幕がないため、言葉による笑いを見落とす可能性があります。",
+    "noDanmaku": "弾幕を取得できません。",
+    "noCover": "表紙を取得できません。",
+    "prepareFailed": "動画の準備に失敗しました。",
+    "saveFailed": "準備結果の保存に失敗しました。",
     "topic": "話題（任意）",
     "discover": "猫娘に動画を探してもらう",
     "discoveryRule": "3分未満、毎分100件超の弾幕がある動画のみ。空欄なら現在の動画に関連する内容、未選択なら人気動画から探します。",

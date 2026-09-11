@@ -5338,6 +5338,17 @@
         }
     },
   "watchTogether": {
+    "readingVideo": "영상 정보 읽는 중…",
+    "downloading": "영상 다운로드 중…",
+    "extractingFrames": "프레임 추출 중…",
+    "extractingHotspots": "탄막 집중 구간 프레임 추출 중…",
+    "analyzing": "영상 분석 중…",
+    "synthesizing": "반응 음성 준비 중…",
+    "noSubtitles": "자막이 없어 말로 하는 농담을 놓칠 수 있습니다.",
+    "noDanmaku": "탄막을 사용할 수 없습니다.",
+    "noCover": "표지를 사용할 수 없습니다.",
+    "prepareFailed": "영상 준비에 실패했습니다.",
+    "saveFailed": "준비 결과 저장에 실패했습니다.",
     "topic": "주제 (선택)",
     "discover": "고양이 소녀가 영상 찾기",
     "discoveryRule": "3분 미만, 분당 탄막 100개 초과 영상만 선택합니다. 비워 두면 현재 영상의 관련 주제로, 선택된 영상이 없으면 인기 영상에서 찾습니다.",

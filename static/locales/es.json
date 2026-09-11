@@ -5338,6 +5338,17 @@
         }
     },
   "watchTogether": {
+    "readingVideo": "Leyendo metadatos…",
+    "downloading": "Descargando vídeo…",
+    "extractingFrames": "Extrayendo fotogramas…",
+    "extractingHotspots": "Extrayendo fotogramas de momentos destacados…",
+    "analyzing": "Analizando vídeo…",
+    "synthesizing": "Preparando audio de reacciones…",
+    "noSubtitles": "Sin subtítulos; pueden perderse bromas habladas.",
+    "noDanmaku": "Danmaku no disponible.",
+    "noCover": "Portada no disponible.",
+    "prepareFailed": "La preparación del vídeo falló.",
+    "saveFailed": "No se pudo guardar la preparación.",
     "topic": "Tema (opcional)",
     "discover": "Que la compañera elija",
     "discoveryRule": "Solo vídeos de menos de 3 minutos y más de 100 comentarios danmaku/min. En blanco: tema del vídeo actual, o vídeos populares si no hay ninguno seleccionado.",

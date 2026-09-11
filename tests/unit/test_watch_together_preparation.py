@@ -9,11 +9,13 @@ from main_logic.watch_together import preparation
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [OSError("disk error"), RuntimeError("database locked")])
 async def test_import_failure_is_terminal_and_preserves_staging(tmp_path, monkeypatch, failure):
-    def fail_import(_sources):
+    def fail_import(_sources, **kwargs):
+        assert kwargs["only_job"]
+        assert kwargs["write_report"] is False
         raise failure
 
     class Engine:
-        def __init__(self, root, *_args):
+        def __init__(self, root, *_args, **_kwargs):
             self.root = root
 
         async def prepare(self, job, *_args, **_kwargs):

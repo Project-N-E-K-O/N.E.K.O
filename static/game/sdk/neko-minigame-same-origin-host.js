@@ -912,9 +912,9 @@
       this._requireGrantedCapability('media-timeline', 'media.request');
       let response;
       if (action === 'history') response = await this._request('/api/watch-together/history');
-      else if (action === 'character') response = await this.getCharacter(payload.name || '');
-      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload));
-      else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || ''});
+      else if (action === 'character') response = await this._readCharacter(payload.name || '');
+      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 75000});
+      else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || ''}, {timeoutMs: 190000});
       else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
       else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`);
       else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
@@ -1306,6 +1306,10 @@
     /** @deprecated Existing adapters only. New games must use game.avatar discovery. */
     async getCharacter(lanlanName = '') {
       this._requireGrantedCapability('avatar-renderer', 'character');
+      return this._readCharacter(lanlanName);
+    }
+
+    async _readCharacter(lanlanName = '') {
       const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
       if (lanlanName && lanlanName !== this.source) {
         url.searchParams.set('lanlan_name', lanlanName);

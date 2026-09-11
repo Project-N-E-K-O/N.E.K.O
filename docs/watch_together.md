@@ -66,6 +66,14 @@ format attempts. Cached/reasoning tokens are subsets, and TTS is separate.
 Missing usage is displayed as unrecorded. New audio comes from the character's
 provider-neutral official PCM cache, with voice-change detection.
 
+New preparations snapshot the character session language, prefer matching
+subtitles, and generate reactions and laughter in that language. Progress and
+warning keys are localized across all eight locales; legacy text/audio remains
+unchanged. Discovery has a 180-second backend deadline and a 190-second host
+timeout; metadata preparation uses a 75-second host timeout. Each preparation
+imports only its own job without writing a migration report. Staging artifacts
+remain available for recovery. SQLite connections close after each transaction.
+
 ## Validation and remaining boundaries
 
 Automatic discovery is exposed through SDK `media.request('discover', {topic})`.

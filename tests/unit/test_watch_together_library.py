@@ -9,6 +9,32 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize("value", [None, [], 3, "text"])
+def test_non_object_legacy_timeline_remains_incomplete(tmp_path, value):
+    src = source(tmp_path, "legacy")
+    (src / JOB / "timeline.json").write_text(json.dumps(value))
+    library = Library(tmp_path / "data")
+    library.import_sources([src])
+    assert library.history()[0]["status"] == "incomplete"
+
+
+def test_single_job_import_skips_old_jobs_and_report(tmp_path):
+    src = source(tmp_path, "legacy")
+    other = src / ("a" * 32)
+    other.mkdir()
+    (other / "timeline.json").write_text('{}')
+    library = Library(tmp_path / "data")
+    result = library.import_sources([src], only_job=JOB, write_report=False)
+    assert result["jobs"] == 1
+    assert result["report"] is None
+    assert not list(library.root.glob('migration-*.json'))
+    with library.connect() as connection:
+        connection.execute('SELECT 1')
+    import sqlite3
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute('SELECT 1')
+
+
 def source(tmp_path, name, audio=b"original"):
     root = tmp_path / name
     folder = root / JOB

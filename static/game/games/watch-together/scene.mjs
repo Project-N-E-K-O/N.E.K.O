@@ -28,6 +28,8 @@ export async function run(game, character) {
   }
   async function load(row) {
     $('play').disabled = true;
+    const previous = selected;
+    try {
     await end();
     if (game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
     selected = await game.media.request('load', row);
@@ -37,7 +39,7 @@ export async function run(game, character) {
     $('title').textContent = selected.title;
     $('video').poster = selected.cover || '';
     $('voice-label').textContent = `${t('savedAudio')} · ${selected.voice || t('unknown')}`;
-    $('warnings').textContent = (selected.warnings || []).join('\n');
+    $('warnings').textContent = [...(selected.warnings || []),...(selected.warning_keys || []).map(t)].join('\n');
     renderUsage(selected.usage);
     $('events').replaceChildren();
     for (const cue of selected.events || []) {
@@ -48,6 +50,8 @@ export async function run(game, character) {
       $('events').append(button);
     }
     status(t('ready')); $('play').disabled = false;
+    } catch(error) { selected = previous; throw error; }
+    finally { $('play').disabled = !selected; }
   }
   $('play').onclick = async () => {
     $('play').disabled = true;
@@ -62,7 +66,10 @@ export async function run(game, character) {
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
       }
       await media.play(); status(t('playing'));
-    } catch(error) { status(error.message); }
+    } catch(error) {
+      try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
+      status(error.message);
+    }
     finally { $('play').disabled = false; }
   };
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
@@ -85,11 +92,12 @@ export async function run(game, character) {
       await end();
       while (!game.disposed) {
         const state = await game.media.request('preparation',{job:result.id});
-        status(state.stage);
+        status(state.stage_key ? t(state.stage_key) : state.stage);
         if (state.usage) renderUsage(state.usage);
-        if (['error','cancelled'].includes(state.status)) throw Error(state.error || state.stage);
+        if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
         if (state.status === 'ready') {
           const history = await game.media.request('history');
+          renderHistory(history.analyses);
           const row = history.analyses.find(item=>item.job===result.id && item.status==='ready');
           if (row) { await load(row); break; }
         }
@@ -115,7 +123,20 @@ export async function run(game, character) {
     } catch(error) {status(error.message);}
     finally {$('discover-button').disabled=false;$('prepare-button').disabled=false;}
   };
-  $('exit').onclick = async () => {await end();game.dispose();location.href='/';};
+  $('exit').onclick = async () => {
+    await end(); game.dispose(); window.close();
+    setTimeout(()=>{if(!window.closed)location.href='/';},100);
+  };
+  function renderHistory(rows) {
+    $('history').replaceChildren();
+    for (const row of rows) {
+      const button = document.createElement('button');
+      button.textContent = `${row.title} · ${row.job.slice(0,8)} · ${row.version.slice(0,8)}`;
+      button.disabled = row.status !== 'ready';
+      button.onclick = () => load(row).catch(error=>status(error.message));
+      $('history').append(button);
+    }
+  }
   try {
     const info = await game.media.request('character',{name:character});
     character = info.lanlan_name || character;
@@ -126,13 +147,7 @@ export async function run(game, character) {
       catch(error) { $('avatar').textContent = error.message; }
     }
     const data = await game.media.request('history');
-    for (const row of data.analyses) {
-      const button = document.createElement('button');
-      button.textContent = `${row.title} · ${row.job.slice(0,8)} · ${row.version.slice(0,8)}`;
-      button.disabled = row.status !== 'ready';
-      button.onclick = () => load(row).catch(error=>status(error.message));
-      $('history').append(button);
-    }
+    renderHistory(data.analyses);
     $('watches').textContent = data.watches.length ? data.watches.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
     status(t('choose'));
     const job = new URLSearchParams(location.search).get('job');

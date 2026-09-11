@@ -7,6 +7,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   const resources = new Map();
   try {
     for (const url of new Set((timeline.events || []).map(cue=>cue.audio))) {
+      if (url == null || url === '') continue;
       if (typeof url !== 'string' || !url.startsWith(`${prefix}/`)) throw Error('Unregistered timeline resource');
       const response = await fetch(url, {signal});
       if (!response.ok) throw Error('Reaction preload failed');
@@ -36,10 +37,17 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     if (audio.paused) {
       audio.currentTime = offset;
       playingGeneration = generation;
-      audio.play().catch(() => { video.pause(); stop(true); });
+      const attemptGeneration = generation, attemptCue = active;
+      audio.play().catch(() => {
+        if (disposed || generation !== attemptGeneration || active !== attemptCue) return;
+        video.pause(); stop(true);
+      });
     } else if (Math.abs(audio.currentTime - offset) > 0.15) audio.currentTime = offset;
   }
   function listen(target, type, fn) { target.addEventListener(type, fn); listeners.push(() => target.removeEventListener(type, fn)); }
+  const syncVolume = () => { audio.volume = video.volume; audio.muted = video.muted; };
+  syncVolume();
+  listen(video, 'volumechange', syncVolume);
   listen(audio, 'playing', () => {
     if (!running() || playingGeneration !== generation) { stop(); return; }
     emit('audio-started', active?.id); onCue(active);

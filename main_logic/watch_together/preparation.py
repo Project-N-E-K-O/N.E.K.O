@@ -16,7 +16,9 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         raise ValueError("A video is already being prepared")
     library = application_library()
     voice_signature = manager.current_game_speech_audio_runtime_signature()
-    job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "events": []}
+    from utils.language_utils import get_global_language_full, normalize_language_code
+    language = normalize_language_code(getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+    job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": []}
     jobs[job["id"]] = job
 
     async def synthesize(text, output):
@@ -38,25 +40,25 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     async def run():
         staging = library.root / "preparations"
         try:
-            engine = Engine(staging, synthesize, character)
+            engine = Engine(staging, synthesize, character, language=language)
             async with asyncio.timeout(1800):
                 await engine.prepare(job, url, character, automatic=automatic, confirmed_duration=confirmed_duration)
         except asyncio.CancelledError:
-            job.update(status="cancelled", stage="Cancelled")
+            job.update(status="cancelled", stage="Cancelled", stage_key="cancelled")
             raise
         except Exception as exc:
-            job.update(status="error", stage="Preparation failed", error=type(exc).__name__)
+            job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__)
             print(f"Watch preparation failed: {type(exc).__name__}")
         finally:
             folder = staging / job["id"]
             try:
                 if folder.exists():
                     (folder / "timeline.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
-                    await asyncio.to_thread(library.import_sources, [staging])
+                    await asyncio.to_thread(library.import_sources, [staging], only_job=job["id"], write_report=False)
             except Exception as exc:
                 # Keep staged artifacts for recovery, but give polling clients a
                 # terminal state even when the history transaction never commits.
-                job.update(status="error", stage="Saving preparation failed", error=type(exc).__name__)
+                job.update(status="error", stage="Saving preparation failed", stage_key="saveFailed", error=type(exc).__name__)
                 print(f"Watch preparation persistence failed: {type(exc).__name__}")
 
     task = asyncio.create_task(run())

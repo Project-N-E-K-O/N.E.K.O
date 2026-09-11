@@ -5338,6 +5338,17 @@
         }
     },
   "watchTogether": {
+    "readingVideo": "讀取影片資料…",
+    "downloading": "下載影片…",
+    "extractingFrames": "擷取影片影格…",
+    "extractingHotspots": "擷取彈幕熱點影格…",
+    "analyzing": "分析影片…",
+    "synthesizing": "準備反應音訊…",
+    "noSubtitles": "字幕無法使用，可能漏掉純口頭笑點。",
+    "noDanmaku": "彈幕無法使用。",
+    "noCover": "封面無法使用。",
+    "prepareFailed": "影片準備失敗。",
+    "saveFailed": "儲存準備結果失敗。",
     "topic": "話題（選填）",
     "discover": "讓貓娘找影片",
     "discoveryRule": "只選時長小於 3 分鐘、每分鐘彈幕大於 100 的影片。話題留空時找目前影片的相關內容；未選影片時從熱門榜挑選。",

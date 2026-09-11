@@ -1,5 +1,13 @@
 import pytest
+from main_logic.watch_together.engine import Engine
 from main_logic.watch_together.engine import normalize_events, parse_video_url, danmaku_hotspots, hotspot_frame_times
+
+
+@pytest.mark.parametrize("language,laugh", [("en", "Hehe, haha!"), ("ja", "ふふ、あはは！"), ("zh-TW", "捏嘿嘿，哈哈！")])
+def test_character_language_selects_laughter_without_changing_legacy_baseline(tmp_path, language, laugh):
+    engine = Engine(tmp_path, None, "cat", language=language)
+    assert engine.language == language
+    assert engine.laugh_text == laugh
 
 
 def test_links_reject_unrelated_hosts_and_keep_page():

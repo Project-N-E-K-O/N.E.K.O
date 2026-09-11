@@ -136,6 +136,7 @@ async def discover_video(request: Request):
         raise HTTPException(400, "Topic too long")
     from main_logic.watch_together.discovery import discover
     try:
-        return await discover(topic)
+        async with asyncio.timeout(180):
+            return await discover(topic)
     except (ValueError, TimeoutError):
         raise HTTPException(502, "Video search unavailable")

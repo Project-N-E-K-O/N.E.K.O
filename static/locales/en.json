@@ -5338,6 +5338,17 @@
         }
     },
   "watchTogether": {
+    "readingVideo": "Reading video metadata…",
+    "downloading": "Downloading video…",
+    "extractingFrames": "Extracting frames…",
+    "extractingHotspots": "Extracting hotspot frames…",
+    "analyzing": "Analyzing video…",
+    "synthesizing": "Preparing reaction audio…",
+    "noSubtitles": "Subtitles unavailable; spoken jokes may be missed.",
+    "noDanmaku": "Danmaku unavailable.",
+    "noCover": "Cover unavailable.",
+    "prepareFailed": "Video preparation failed.",
+    "saveFailed": "Saving the preparation failed.",
     "topic": "Topic (optional)",
     "discover": "Let the companion choose",
     "discoveryRule": "Under 3 minutes and over 100 danmaku/minute. If blank, uses the current video topic, or popular videos when none is selected.",

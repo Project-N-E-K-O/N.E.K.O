@@ -34,3 +34,24 @@ controller.dispose();assert.equal(nextFrame,null);assert.equal(audios[0].paused,
 await assert.rejects(controller.play(),/disposed/);
 assert.ok(events.some(e=>e.type==='audio-started'),'records actual audio playing event');
 console.log('watch-together media runtime: 12 playback assertions passed');
+
+const {ReactionClock}=await import('../../static/game/sdk/media-clock.mjs');
+const duplicateClock=new ReactionClock([{at:1,id:'same'},{at:2,id:'same'},{at:3}]);
+assert.equal(duplicateClock.tick(1,true).at,1);
+assert.equal(duplicateClock.tick(2,true).at,2);
+assert.equal(duplicateClock.tick(3,true).at,3);
+duplicateClock.seek(2);assert.equal(duplicateClock.tick(2,true).at,2);
+const v2=new Media();v2.volume=.25;v2.muted=true;
+const c2=await mount({video:v2,timeline:{id:'job',version:'version',status:'ready',video:'/video',events:[{at:0},cue]}});
+const a2=audios.at(-1);assert.equal(a2.volume,.25);assert.equal(a2.muted,true);
+v2.volume=.5;v2.muted=false;v2.dispatchEvent(new Event('volumechange'));
+assert.equal(a2.volume,.5);assert.equal(a2.muted,false);
+let rejectOld;
+a2.play=()=>{a2.paused=false;return new Promise((_resolve,reject)=>{rejectOld=reject;});};
+await c2.play();v2.currentTime=3.95;nextFrame();v2.currentTime=4.05;nextFrame();
+v2.dispatchEvent(new Event('seeking'));v2.currentTime=8;v2.dispatchEvent(new Event('seeked'));
+rejectOld(Error('obsolete'));await Promise.resolve();
+assert.equal(v2.paused,false,'obsolete audio failure does not pause new video position');
+c2.dispose();
+await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'version',status:'ready',events:[{audio:'/unregistered'}]}}),/Unregistered/);
+console.log('watch-together review regressions: cue identity, silent cues, volume and stale failures passed');

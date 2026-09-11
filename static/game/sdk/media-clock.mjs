@@ -4,7 +4,7 @@ export class ReactionClock {
   reset(events) { this.events = [...events].sort((a,b) => a.at-b.at); this.used = new Set(); this.last = null; }
   seek(time) {
     // Explicit rewind rearms future cues; skip-forward never dumps old cues.
-    this.used = new Set(this.events.filter(e => e.at < time - 0.08).map(e => e.id));
+    this.used = new Set(this.events.filter(e => e.at < time - 0.08));
     this.last = time - 0.08;
   }
   tick(time, running) {
@@ -15,8 +15,8 @@ export class ReactionClock {
     const previous = this.last ?? time - 0.08;
     this.last = time;
     for (const e of this.events) {
-      if (this.used.has(e.id) || e.at > time) continue;
-      this.used.add(e.id);
+      if (this.used.has(e) || e.at > time) continue;
+      this.used.add(e);
       if (e.at >= previous - 0.025 && time - e.at <= 0.3) return e;
     }
     return null;
