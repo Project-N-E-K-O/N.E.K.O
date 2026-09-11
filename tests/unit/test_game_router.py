@@ -2969,15 +2969,19 @@ async def test_game_character_uses_canonical_live2d_fallback_when_saved_path_is_
 
 
 @pytest.mark.unit
-def test_soccer_live2d_emergency_fallback_matches_main_page_default():
+def test_soccer_live2d_fallback_uses_public_character_descriptor():
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[2].joinpath(
         "static/game/games/soccer/soccer-demo.js"
     ).read_text(encoding="utf-8")
 
-    assert "charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json'" in source
-    assert "charData.live2d_path || '/static/mao_pro/mao_pro.model3.json'" not in source
+    assert "charData.model?.type === 'live2d' ? charData.model" in source
+    assert "charData.fallbackModels?.find(model => model.type === 'live2d')" in source
+    assert "if (!aiL2dModel) throw new Error('character_live2d_unavailable');" in source
+    assert "charData.live2d_path" not in source
+    assert "'/static/yui-lolita/yui-lolita.model3.json'" not in source
+    assert "'/static/mao_pro/mao_pro.model3.json'" not in source
 
 
 @pytest.mark.unit

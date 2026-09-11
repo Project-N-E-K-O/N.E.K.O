@@ -37,8 +37,9 @@ async function main() {
   const window = {
     document, navigator: {}, location: { origin: 'http://localhost', search: '' },
     console, AbortController, setTimeout, clearTimeout,
+    createSoccerAvatarHost: () => ({ mount() { throw new Error('renderer not used in route test'); }, dispose() {} }),
     setInterval: () => 1, clearInterval() {}, addEventListener, removeEventListener,
-    lanlan_config: { lanlan_name: 'test-character' },
+    lanlan_config: { lanlan_name: 'soccer_demo' },
     localStorage: {
       get length() { return storage.size; },
       key: (i) => [...storage.keys()][i] ?? null,
@@ -53,6 +54,9 @@ async function main() {
     fetch: async (url, options = {}) => {
       const payload = options.body ? JSON.parse(options.body) : {};
       calls.push({ url, payload });
+      if (url.includes('/character')) return response({ lanlan_name: 'test-character',
+        model_type: 'vrm', vrm_path: '/test.vrm', live2d_path: '/fallback.model3.json',
+        language: 'ja', language_preference_resolved: true });
       if (url.endsWith('/route/start')) return response({ ok: true, state: {
         game_route_active: true, lanlan_name: 'test-character',
         sdk_route_instance_id: payload.sdk_route_instance_id,
@@ -108,7 +112,7 @@ async function main() {
       _soccerGameMemoryPolicyPayload: (enabled) => ({ game_memory_enabled: enabled }),
       _conversationLanguagePayload: () => ({ language: 'zh' }),
       _gameRouteStartOptions: {}, _i18n: (_key, fallback) => fallback,
-      resetSoccerSessionDebugLogEnableState() {}, ensureSoccerCharacterInfo: async () => {},
+      resetSoccerSessionDebugLogEnableState() {},
       _enableSoccerSessionDebugLogAfterRouteStart: async () => {},
       _applyPreGameContext: (state) => {
         assert.equal(state.pre_game_context_source, 'fallback');
@@ -124,6 +128,17 @@ async function main() {
       assert.notEqual(to, -1, `Missing end anchor: ${end}`);
       return vm.runInThisContext(page.slice(from, to));
     };
+    install('const normalizeSoccerExplicitLanguage', 'const SOCCER_AVATAR_LAYOUT');
+    const firstBinding = vm.runInThisContext('ensureSoccerCharacterInfo()');
+    assert.equal(vm.runInThisContext('ensureSoccerCharacterInfo()'), firstBinding, 'concurrent loaders must share one query');
+    const descriptor = await firstBinding;
+    assert.equal(descriptor.name, 'test-character');
+    assert.equal(game.runtime.session.characterName, 'test-character', 'direct entry kept the placeholder identity');
+    assert.equal(game.runtime.state, 'idle', 'binding prematurely started the route');
+    assert.equal(vm.runInThisContext('soccerCharacterExplicitLanguage'), 'ja');
+    assert.deepEqual(descriptor.model, { type: 'vrm', path: '/test.vrm' });
+    assert.deepEqual(descriptor.fallbackModels, [{ type: 'live2d', path: '/fallback.model3.json' }]);
+    assert.equal(calls.filter(c => c.url.includes('/character')).length, 1);
     install('function _gameRoutePayload(', 'async function _sendGameRouteHeartbeat(');
     install('async function _startGameRoute()', 'function _scoreDiffOf(');
     install('function _gameRouteEndPayload(', 'async function _endGameLLMSession(');
@@ -132,6 +147,10 @@ async function main() {
     await sandbox._startGameRoute();
     assert.equal(appliedContext.initialMood, 'happy');
     const start = calls.find((c) => c.url.endsWith('/route/start')).payload;
+    assert.equal(start.lanlan_name, 'test-character');
+    for (const request of calls.filter(c => c.url.endsWith('/context/read') || c.url.endsWith('/preload'))) {
+      assert.equal(request.payload.lanlan_name, 'test-character', 'pregame request used the wrong identity');
+    }
     assert.equal(start.game_started, true);
     assert.equal(start.game_started_elapsed_ms, 20000);
     assert.equal(start.currentState.score.player, 2);
@@ -161,8 +180,10 @@ async function main() {
     assert.equal(end.game_memory_archive_enabled, true);
     assert.equal(end.currentState.score.player, 2);
     game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
     sandbox._isGameMemoryEnabled = () => false;
     await sandbox._startGameRoute();
+    assert.equal(calls.filter(c => c.url.includes('/character')).length, 2, 'restart did not rebind the character');
     const disabled = calls.findLast((c) => c.url.endsWith('/route/start')).payload;
     assert.equal(disabled.game_memory_enabled, false);
     assert.equal(disabled.game_memory_archive_enabled, false);
@@ -171,6 +192,7 @@ async function main() {
     assert.equal(disabled.game_memory_postgame_context_enabled, false);
     await game.runtime.end({});
     game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
     const configureConsent = host.configureGameMemoryConsent;
     host.configureGameMemoryConsent = async () => ({ ok: false });
     const startsBeforeRejection = calls.filter((c) => c.url.endsWith('/route/start')).length;
@@ -203,6 +225,31 @@ async function main() {
     assert.equal(sandbox.gameMemoryToggle.disabled, false);
     assert.equal(sandbox._llm.gameStarted, false);
     host.configureGameMemoryConsent = configureConsent;
+    // A reset must retire the page cache as well as the SDK query generation.
+    const originalCharacterQuery = host.getAvatarCharacter;
+    let releaseLateCharacter;
+    host.getAvatarCharacter = () => new Promise(resolve => { releaseLateCharacter = resolve; });
+    const lateBinding = vm.runInThisContext('ensureSoccerCharacterInfo()');
+    for (let i = 0; i < 10 && !releaseLateCharacter; i++) await Promise.resolve();
+    assert(releaseLateCharacter, 'delayed query did not start');
+    game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
+    await assert.rejects(lateBinding);
+    releaseLateCharacter({ name: 'retired-character', model: null });
+    await Promise.resolve();
+    assert.equal(window.__SoccerResolvedLanlanName, 'test-character', 'late query restored retired identity');
+    host.getAvatarCharacter = async () => null;
+    const startsBeforeMissingCharacter = calls.filter(c => c.url.endsWith('/route/start')).length;
+    await assert.rejects(sandbox._startGameRoute(), /character_unavailable/);
+    assert.equal(calls.filter(c => c.url.endsWith('/route/start')).length, startsBeforeMissingCharacter,
+      'missing character still established a route');
+    host.getAvatarCharacter = async () => ({ name: 'test-character', model: null,
+      languagePreference: { resolved: true, locale: '' }, fallbackModels: [] });
+    const cleared = await vm.runInThisContext('ensureSoccerCharacterInfo()');
+    assert.equal(vm.runInThisContext('soccerCharacterExplicitLanguage'), '', 'explicitly cleared language kept the old locale');
+    assert.equal(vm.runInThisContext('soccerCharacterLanguagePreferenceResolved'), true);
+    assert.deepEqual(cleared.fallbackModels, [], 'missing fallback invented a default model');
+    host.getAvatarCharacter = originalCharacterQuery;
   } finally { game.dispose(); }
   console.log('soccer SDK migration runtime test passed');
 }

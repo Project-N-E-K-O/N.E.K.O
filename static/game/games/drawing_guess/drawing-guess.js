@@ -123,6 +123,9 @@
     routeEnding: false,
     sdkClient: null,
     sdkConnectPromise: null,
+    sdkCharacterBindingPromise: null,
+    sdkBoundCharacter: null,
+    sdkBoundCharacterSessionId: '',
     sdkStartPromise: null,
     sdkReconcilePromise: null,
     sdkStateUnsubscribe: null,
@@ -156,10 +159,6 @@
     nekoVoiceQueue: [],
     nekoVoiceInFlight: false,
     nekoVoiceController: null,
-    lipSyncActive: false,
-    lipSyncRetryTimer: null,
-    lipSyncStopTimer: null,
-    lipSyncRetryDeadline: 0,
     voiceRouteActive: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
@@ -212,9 +211,9 @@
     modelKind: 'fallback',
     modelLoadState: 'idle',
     modelView: {
-      scale: 325.63,
-      x: -0.96,
-      y: 66.41
+      scale: 100,
+      x: 0,
+      y: 0
     },
     modelViewSettings: [],
     modelDrag: null,
@@ -365,9 +364,9 @@
   };
 
   var MODEL_VIEW_DEFAULTS = {
-    scale: 325.63,
-    x: -0.96,
-    y: 66.41
+    scale: 100,
+    x: 0,
+    y: 0
   };
 
   var SIDE_SPLIT_DEFAULT_RATIO = 0.64;
@@ -1132,64 +1131,6 @@
     return node;
   }
 
-  function stopDrawingGuessLipSync() {
-    clearTimeout(state.lipSyncRetryTimer);
-    clearTimeout(state.lipSyncStopTimer);
-    state.lipSyncRetryTimer = null;
-    state.lipSyncStopTimer = null;
-    state.lipSyncRetryDeadline = 0;
-    if (state.avatarController && !state.avatarController.disposed) {
-      Promise.resolve(state.avatarController.setSpeaking(false)).catch(function () {});
-    }
-    state.lipSyncActive = false;
-  }
-
-  function startDrawingGuessLipSync() {
-    if (state.routeEnding || !state.routeActive) return false;
-    if (!state.avatarController || state.avatarController.disposed) return false;
-    if (state.lipSyncActive) return true;
-    state.lipSyncActive = true;
-    Promise.resolve(state.avatarController.setSpeaking(true)).then(function (started) {
-      if (started === false) {
-        state.lipSyncActive = false;
-        if (Date.now() < state.lipSyncRetryDeadline && !state.lipSyncRetryTimer) {
-          state.lipSyncRetryTimer = setTimeout(function () {
-            state.lipSyncRetryTimer = null;
-            startDrawingGuessLipSync();
-          }, 120);
-        }
-      }
-    }).catch(function () {
-      state.lipSyncActive = false;
-    });
-    return true;
-  }
-
-  function scheduleDrawingGuessLipSyncStart() {
-    clearTimeout(state.lipSyncRetryTimer);
-    state.lipSyncRetryTimer = null;
-    if (state.routeEnding || !state.routeActive) return;
-    state.lipSyncRetryDeadline = Date.now() + 5000;
-    if (startDrawingGuessLipSync()) return;
-    function retry() {
-      state.lipSyncRetryTimer = null;
-      if (startDrawingGuessLipSync()) return;
-      if (Date.now() < state.lipSyncRetryDeadline) {
-        state.lipSyncRetryTimer = setTimeout(retry, 120);
-      }
-    }
-    state.lipSyncRetryTimer = setTimeout(retry, 120);
-  }
-
-  function isSpeechPlaybackAudible(detail) {
-    if (!detail || !detail.active) return false;
-    var remaining = Number(detail.remainingSeconds || 0);
-    if (remaining > 0.05) return true;
-    var scheduledEnd = Number(detail.scheduledEndAudioTime || detail.playbackEndAudioTime || 0);
-    var audioTime = Number(detail.audioContextTime || 0);
-    return scheduledEnd > 0 && audioTime > 0 && scheduledEnd - audioTime > 0.05;
-  }
-
   function speechPlaybackHasPendingAudioWork(detail) {
     return !!(detail && (
       detail.pendingAudioWork === true
@@ -1197,28 +1138,9 @@
     ));
   }
 
-  function armDrawingGuessLipSyncStop(detail) {
-    clearTimeout(state.lipSyncStopTimer);
-    state.lipSyncStopTimer = null;
-    var remaining = Number(detail && detail.remainingSeconds || 0);
-    if (!Number.isFinite(remaining) || remaining <= 0.05) return;
-    var delay = Math.max(140, Math.min(30000, remaining * 1000 + 260));
-    state.lipSyncStopTimer = setTimeout(function () {
-      state.lipSyncStopTimer = null;
-      stopDrawingGuessLipSync();
-    }, delay);
-  }
-
   function handleSpeechPlaybackState(playbackState) {
     var detail = (playbackState && playbackState.detail) || playbackState || {};
-    if (isSpeechPlaybackAudible(detail)) {
-      state.speechPlaybackActive = true;
-      scheduleDrawingGuessLipSyncStart();
-      armDrawingGuessLipSyncStop(detail);
-      return;
-    }
     state.speechPlaybackActive = !!detail.active || speechPlaybackHasPendingAudioWork(detail);
-    stopDrawingGuessLipSync();
   }
 
   function clearNekoVoiceQueue() {
@@ -1228,7 +1150,6 @@
       state.nekoVoiceController = null;
     }
     state.nekoVoiceInFlight = false;
-    stopDrawingGuessLipSync();
   }
 
   function flushNekoVoiceQueue() {
@@ -1801,6 +1722,9 @@
   }
 
   function handleSdkPageExit() {
+    state.sdkBoundCharacter = null;
+    state.sdkBoundCharacterSessionId = '';
+    state.sdkCharacterBindingPromise = null;
     var client = state.sdkClient;
     if (client && !client.disposed && client.capabilities.has('voice-input')) {
       try {
@@ -2878,6 +2802,8 @@
     setStatus('starting', 'Starting');
     updateControls();
     var startPromise = connectMiniGameSdk().then(function (client) {
+      return bindDrawingCharacter(client, state.lanlanName).then(function () { return client; });
+    }).then(function (client) {
       return configureSdkMemoryConsent(client).then(function () { return client; });
     }).then(function (client) {
       if (client.runtime.state !== 'degraded') {
@@ -3956,7 +3882,6 @@
 
   function disposeAvatarController() {
     state.avatarLoadToken += 1;
-    stopDrawingGuessLipSync();
     if (!state.avatarController) return;
     try { state.avatarController.dispose(); } catch (_) {}
     state.avatarController = null;
@@ -4003,9 +3928,6 @@
       setModelLoadState('ready');
       applyModelView();
       setModelMood(state.modelMood);
-      if (state.lipSyncActive) {
-        Promise.resolve(controller.setSpeaking(true)).catch(function () {});
-      }
       return true;
     });
     var trackedMount = mountPromise.finally(function () {
@@ -4015,10 +3937,40 @@
     return trackedMount;
   }
 
-  function avatarDescriptor(name) {
+  // One descriptor and one bounded request per page, retired on page exit.
+  // Preview discovery stays read-only; gameplay explicitly binds before requests.
+  function bindDrawingCharacter(client, name) {
+    var requestedName = String(name || '').trim();
+    if (client.disposed) return Promise.reject(new Error('character_binding_cancelled'));
+    if (state.sdkCharacterBindingPromise) return state.sdkCharacterBindingPromise;
+    var cached = state.sdkBoundCharacter;
+    if (cached && (!requestedName || cached.name === requestedName)
+        && client.runtime.session.characterName === cached.name
+        && client.runtime.session.id === state.sdkBoundCharacterSessionId) {
+      return Promise.resolve(cached);
+    }
+    state.sdkBoundCharacter = null;
+    state.sdkBoundCharacterSessionId = '';
+    var binding = client.runtime.bindCharacter(requestedName || undefined, { timeoutMs: 8000 })
+      .then(function (descriptor) {
+        if (client.disposed || state.sdkCharacterBindingPromise !== binding) {
+          throw new Error('character_binding_cancelled');
+        }
+        if (!descriptor || !descriptor.name) throw new Error('character_unavailable');
+        state.sdkBoundCharacter = descriptor;
+        state.sdkBoundCharacterSessionId = client.runtime.session.id;
+        return descriptor;
+      }).finally(function () {
+        if (state.sdkCharacterBindingPromise === binding) state.sdkCharacterBindingPromise = null;
+      });
+    state.sdkCharacterBindingPromise = binding;
+    return binding;
+  }
+
+  function avatarDescriptor(name, bindForRuntime) {
     return connectMiniGameSdk().then(function (client) {
       var requestedName = String(name || '').trim();
-      var request = requestedName
+      var request = bindForRuntime ? bindDrawingCharacter(client, requestedName) : requestedName
         ? client.avatar.getCharacter(requestedName)
         : client.avatar.getCurrentCharacter();
       return Promise.resolve(request).then(function (descriptor) {
@@ -4054,7 +4006,7 @@
   function loadCurrentCharacter() {
     setStatus('loadingCharacter', 'Loading character');
     var requestedName = state.lanlanName;
-    return avatarDescriptor(requestedName).then(function (resolved) {
+    return avatarDescriptor(requestedName, true).then(function (resolved) {
       var descriptor = resolved.descriptor;
       var name = String((descriptor && descriptor.name) || '').trim();
       state.lanlanName = name;

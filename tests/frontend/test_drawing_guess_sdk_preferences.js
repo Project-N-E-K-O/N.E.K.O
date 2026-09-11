@@ -275,6 +275,7 @@ function loadHarness() {
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
     startRoute: startRoute,
+    bindDrawingCharacter: bindDrawingCharacter,
     startRound: startRound,
     finishGame: finishGame,
     updateControls: updateControls,
@@ -1087,6 +1088,46 @@ async function testVoiceToggleUsesOfficialSdkControl() {
     'successful SDK toggle did not publish the connected notice');
 }
 
+async function testCharacterBindingIsSharedRetiredAndRebound() {
+  const { api } = loadHarness();
+  const pending = [];
+  const client = { disposed: false, runtime: {
+    session: { id: 'first', characterName: '' },
+    bindCharacter(name, options) {
+      assertEqual(options.timeoutMs, 8000, 'binding lost its timeout');
+      const request = deferred();
+      pending.push({ name, request });
+      return request.promise.then(descriptor => {
+        this.session.characterName = descriptor.name;
+        return descriptor;
+      });
+    },
+  } };
+  api.state.sdkClient = client;
+  const first = api.bindDrawingCharacter(client, '');
+  assertEqual(api.bindDrawingCharacter(client, ''), first, 'startup loaders did not share the binding');
+  assertEqual(pending.length, 1, 'duplicate character request');
+  assertEqual(pending[0].name, undefined, 'direct page entry did not resolve current character');
+  pending[0].request.resolve({ name: 'Mimi', model: { type: 'vrm', path: '/mimi.vrm' } });
+  await first;
+  assertEqual(api.state.sdkCharacterBindingPromise, null, 'settled request remained resident');
+  await api.bindDrawingCharacter(client, 'Mimi');
+  assertEqual(pending.length, 1, 'start rebound an already selected character');
+  client.runtime.session = { id: 'second', characterName: 'Mimi' };
+  const second = api.bindDrawingCharacter(client, 'Mimi');
+  assertEqual(pending.length, 2, 'new session reused stale binding');
+  pending[1].request.resolve({ name: 'Mimi' });
+  await second;
+  client.runtime.session = { id: 'third', characterName: '' };
+  const exiting = api.bindDrawingCharacter(client, 'Mimi');
+  client.disposed = true;
+  api.handleSdkPageExit();
+  pending[2].request.resolve({ name: 'Mimi' });
+  await exiting.then(() => { throw new Error('late binding succeeded after exit'); }, () => {});
+  assertEqual(api.state.sdkBoundCharacter, null, 'late response restored the released descriptor');
+  assertEqual(api.state.sdkCharacterBindingPromise, null, 'page exit retained the request');
+}
+
 async function testRouteStartQueriesVoiceWithoutTakingOverMicrophone() {
   const harness = loadHarness();
   const api = harness.api;
@@ -1096,6 +1137,10 @@ async function testRouteStartQueriesVoiceWithoutTakingOverMicrophone() {
     runtime: {
       state: 'idle',
       session: { id: 'drawing-query-session', routeInstanceId: 'drawing-query-route' },
+      bindCharacter(name) {
+        this.session.characterName = name;
+        return Promise.resolve({ name });
+      },
       start() {
         this.state = 'running';
         return Promise.resolve({ ok: true, data: { ok: true } });
@@ -2456,6 +2501,8 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
 }
 
 async function main() {
+  assertDeepEqual(loadHarness().api.state.modelView, { scale: 100, x: 0, y: 0 },
+    'the game default must not magnify or pan the SDK fitted model');
   await testEndWaitsForRoundSessionCreation();
   await testWordChoiceRecoversCommittedBackendTransition();
   await testLateRoundStartCannotRestoreEndAfterCleanup();
@@ -2474,6 +2521,7 @@ async function main() {
   await testBackgroundVoiceQueryCannotClearANewerToggle();
   await testVoiceToggleUsesOfficialSdkControl();
   await testRouteStartQueriesVoiceWithoutTakingOverMicrophone();
+  await testCharacterBindingIsSharedRetiredAndRebound();
   await testBucketFillTreatsCanvasDisplayEdgeAsBoundary();
   await testCanvasDrawingPlanIsBoundedRenderedAndSerializable();
   await testRawAiSvgFillsResponsiveStage();

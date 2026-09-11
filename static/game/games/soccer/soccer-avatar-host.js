@@ -8,56 +8,25 @@
 (() => {
   'use strict';
 
-  function syncVrmCameraTarget(manager, lookY, distance) {
+  function fitVrmManagerCamera(manager, containerId, label = 'VRM', viewport = null, fit = {}) {
     const THREE = window.THREE;
-    const camera = manager?.camera;
-    if (!THREE || !camera || !manager) return null;
-    const target = new THREE.Vector3(0, lookY, 0);
-    camera.position.set(0, lookY, distance);
-    camera.lookAt(target);
-    camera.updateProjectionMatrix();
-    manager._cameraTarget = target;
-    if (manager.controls) {
-      manager.controls.target.copy(target);
-      manager.controls.update();
-    }
-    return target;
-  }
-
-  function fitVrmManagerCamera(manager, containerId, label = 'VRM', viewport = null) {
-    const THREE = window.THREE;
-    const vrm = manager?.currentModel?.vrm;
-    if (!THREE || !manager?.camera || !vrm?.scene) return;
-
-    vrm.scene.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(vrm.scene);
-    const midpoint = new THREE.Vector3();
-    box.getCenter(midpoint);
-    vrm.scene.position.x -= midpoint.x;
-    vrm.scene.position.z -= midpoint.z;
-    vrm.scene.position.y -= box.min.y;
-    vrm.scene.updateMatrixWorld(true);
-
-    const fittedBox = new THREE.Box3().setFromObject(vrm.scene);
-    const modelHeight = fittedBox.max.y - fittedBox.min.y;
+    const model = manager?.currentModel?.vrm?.scene;
+    if (!THREE || !manager?.camera || !model) return;
     const container = document.getElementById(containerId);
-    const viewportWidth = Number(viewport?.width || container?.clientWidth || 200);
-    const viewportHeight = Number(viewport?.height || container?.clientHeight || 300);
-    const camera = manager.camera;
-    camera.aspect = viewportWidth > 0 && viewportHeight > 0
-      ? viewportWidth / viewportHeight
-      : 200 / 300;
-    manager.renderer?.setSize?.(viewportWidth, viewportHeight, false);
-    const fovRadians = camera.fov * Math.PI / 180;
-    const visibleHeight = modelHeight * 1.15;
-    const distance = visibleHeight / (2 * Math.tan(fovRadians / 2));
-    syncVrmCameraTarget(manager, visibleHeight / 2, distance);
-    console.log(`[soccer-avatar-host] fit ${label}:`, {
-      height: modelHeight.toFixed(2),
-      distance: distance.toFixed(2),
-      viewportWidth,
-      viewportHeight,
-    });
+    const size = {
+      width: Number(viewport?.width || container?.clientWidth || 200),
+      height: Number(viewport?.height || container?.clientHeight || 300),
+    };
+    manager.renderer?.setSize?.(size.width, size.height, false);
+    manager.effect?.setSize?.(size.width, size.height);
+    const layout = window.NekoMiniGameAvatarHost.fitPerspectiveModel(
+      THREE, model, manager.camera, size, fit,
+    );
+    // Mouse-follow uses this target. Preserve the SDK camera projection and
+    // model transform; updating orbit controls here would overwrite the fit.
+    manager._cameraTarget = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
+    manager.controls?.target?.copy?.(manager._cameraTarget);
+    return layout;
   }
 
   function isVrm0(gltf, vrm) {
@@ -158,8 +127,10 @@
       canvasId,
       containerId,
       label = 'VRM',
-      playIdle = true,
       viewport = null,
+      fit = {},
+      signal,
+      isCurrent,
       assertLive,
     } = options;
     assertLive();
@@ -191,14 +162,16 @@
 
     if (manager.currentModel?.vrm?.scene) {
       const oldScene = manager.currentModel.vrm.scene;
+      window.NekoMiniGameAvatarHost.releasePerspectiveReference(oldScene, manager.camera);
       manager.scene.remove(oldScene);
       try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
       catch (error) { console.warn(`[${label}] deepDispose failed:`, error); }
     }
     manager.scene.add(vrm.scene);
     manager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
-    vrm.scene.visible = true;
-    fitVrmManagerCamera(manager, containerId, label, viewport);
+    // Do not display or fit the loader's T-pose. The reference animation is
+    // prepared below within this controller's cancellable load lifecycle.
+    vrm.scene.visible = false;
 
     if (manager.renderer?.domElement) {
       manager.renderer.domElement.style.opacity = '1';
@@ -214,18 +187,14 @@
     try { await manager.expression?.loadMoodMap?.(modelName); }
     catch (error) { console.warn(`[${label}] mood map load failed:`, error); }
     assertLive();
-    if (playIdle) {
-      try {
-        await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
-          loop: true,
-          immediate: true,
-          isIdle: true,
-        });
-      } catch (error) {
-        console.warn(`[${label}] idle animation failed (will keep T-pose):`, error);
-      }
-      assertLive();
-    }
+    // Soccer already presents wait03 as its idle, so preparation also starts
+    // its presentation animation; there is no second animation load here.
+    await window.NekoMiniGameAvatarHost.preparePerspectiveReference(window.THREE, manager, {
+      type: 'vrm', signal, isCurrent,
+    });
+    assertLive();
+    fitVrmManagerCamera(manager, containerId, label, viewport, fit);
+    vrm.scene.visible = true;
     return manager.currentModel;
   }
 
@@ -242,6 +211,27 @@
     const onAvatarChanged = typeof options.onAvatarChanged === 'function'
       ? options.onAvatarChanged
       : () => {};
+    let metadataHost = null;
+    let hostDisposed = false;
+    function createExtendedHost() {
+      if (hostDisposed) throw new Error('soccer Avatar host is disposed');
+      if (!window.NekoMiniGameDrawingAvatarHost?.create) throw new Error('Character renderer is unavailable');
+      return window.NekoMiniGameDrawingAvatarHost.create({
+        windowImpl: window, documentImpl: document, fetchImpl: options.fetchImpl,
+        slot: 'ai', containerId: 'ai-l2d-container', extendedOnly: true,
+        mmdContainerId: 'soccer-mmd-container', mmdCanvasId: 'soccer-mmd-canvas',
+        pngContainerId: 'soccer-pngtuber-container',
+      });
+    }
+    async function getCharacter(name, requestOptions) {
+      const base = await options.characterSource.getCharacter(name, requestOptions);
+      if (!base || hostDisposed) return null;
+      if (base.model && ['live2d', 'vrm'].includes(base.model.type)) return base;
+      if (!metadataHost) metadataHost = createExtendedHost();
+      const configured = await metadataHost.getCharacter(base.name);
+      if (hostDisposed || requestOptions?.signal?.aborted) return null;
+      return configured ? { ...base, ...configured } : base;
+    }
 
     function markAiAvatar(type, path, ready = true) {
       window.__SoccerAiAvatar = { type, path: path || '', ready: !!ready };
@@ -323,9 +313,97 @@
         disposed: false,
         model: null,
         viewport,
+        fit: config.fit || {},
+        layout: null,
         managers: new Set(),
         pendingWaits: new Set(),
+        paused: false,
+        speaking: false,
+        speechTarget: null,
+        mouthCore: null,
+        mouthParameter: '',
+        mouthFrame: null,
       };
+      const speechAnalyser = window.NekoMiniGameAvatarHost.createSpeechAnalyser();
+      let extendedHost = null;
+      let extendedController = null;
+      function releaseExtended() {
+        const retiring = extendedHost;
+        extendedHost = null;
+        extendedController = null;
+        return retiring?.dispose();
+      }
+      const onExtendedAbort = () => observeAsyncDisposal(releaseExtended(), 'extended');
+      signal?.addEventListener?.('abort', onExtendedAbort, { once: true });
+
+      function stopSpeaking() {
+        if (extendedController) observeAsyncDisposal(extendedController.setSpeechPlayback({ active: false }), 'extended speech');
+        state.speaking = false;
+        speechAnalyser.clear();
+        if (state.mouthFrame !== null) {
+          window.cancelAnimationFrame?.(state.mouthFrame);
+          state.mouthFrame = null;
+        }
+        try { state.speechTarget?.stopLipSync?.(); } catch (_) { /* renderer retired */ }
+        try { state.mouthCore?.setParameterValueById?.(state.mouthParameter, 0); }
+        catch (_) { /* renderer retired */ }
+        state.speechTarget = null;
+        state.mouthCore = null;
+        state.mouthParameter = '';
+      }
+
+      function setSpeechPlayback(frame) {
+        if (extendedController) return extendedController.setSpeechPlayback(frame);
+        // The player slot represents the human, including when it is the only
+        // mounted renderer during AI loading/failure. Never animate it for TTS.
+        if (slot !== 'ai' || state.disposed || signal?.aborted || state.paused || !state.model
+            || !frame?.active || !speechAnalyser.update(frame.mouthFrame)) {
+          stopSpeaking();
+          return false;
+        }
+        if (state.speaking) return true;
+        try {
+          if (state.model.type === 'vrm') {
+            const manager = slot === 'player' ? window.vrmManager : window.aiVrmManager;
+            if (typeof manager?.animation?.startLipSync !== 'function') return false;
+            state.speechTarget = manager.animation;
+            state.speaking = true;
+            state.speechTarget.startLipSync(speechAnalyser);
+          } else {
+            const core = window.live2dManager?.currentModel?.internalModel?.coreModel;
+            if (typeof core?.setParameterValueById !== 'function'
+                || typeof window.requestAnimationFrame !== 'function') return false;
+            const parameter = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamO'].find(id => (
+              typeof core.getParameterIndex !== 'function' || core.getParameterIndex(id) >= 0
+            ));
+            if (!parameter) return false;
+            state.mouthCore = core;
+            state.mouthParameter = parameter;
+            state.speaking = true;
+            // One fixed buffer and one RAF per active controller. SDK owns
+            // playback identity and expiry; this provider only renders samples.
+            const samples = new Uint8Array(512);
+            let mouth = 0;
+            const animate = () => {
+              state.mouthFrame = null;
+              if (!state.speaking || state.disposed || state.paused) return;
+              try {
+                speechAnalyser.getByteTimeDomainData(samples);
+                let sum = 0;
+                for (const byte of samples) sum += ((byte - 128) / 128) ** 2;
+                mouth = mouth * 0.55 + Math.min(1, Math.sqrt(sum / samples.length) * 10) * 0.45;
+                core.setParameterValueById(parameter, mouth);
+                state.mouthFrame = window.requestAnimationFrame(animate);
+              } catch (_) { stopSpeaking(); }
+            };
+            animate();
+          }
+          return state.speaking;
+        } catch (_) {
+          stopSpeaking();
+          return false;
+        }
+      }
 
       function lifecycleError(code, message) {
         const error = new Error(message);
@@ -439,8 +517,10 @@
       }
 
       return {
+        setSpeechPlayback,
         async setModel(model) {
           assertLive();
+          stopSpeaking();
           if (slot === 'player') {
             if (model.type !== 'vrm') throw new Error('player avatar: only vrm supported');
             if (typeof window.VRMManager !== 'function') throw new Error('VRMManager class not found');
@@ -451,17 +531,33 @@
               canvasId: 'player-vrm-canvas',
               containerId: 'player-vrm-container',
               label: 'Player',
-              playIdle: true,
               viewport: state.viewport,
+              fit: state.fit,
+              signal,
+              isCurrent: () => !state.disposed && !signal?.aborted,
               assertLive,
             });
             assertLive();
             state.model = model;
+            if (state.paused) manager.pauseRendering?.();
             onAvatarChanged('player', model, true);
             return;
           }
 
           const previousType = state.model?.type || window.__SoccerAiAvatar?.type;
+          if (previousType === 'vrm' && model.type !== 'vrm') {
+            window.NekoMiniGameAvatarHost.releasePerspectiveReference(
+              window.aiVrmManager?.currentModel?.vrm?.scene, window.aiVrmManager?.camera,
+            );
+          }
+          await releaseExtended();
+          assertLive();
+          const legacyCanvas = document.getElementById('ai-l2d-canvas');
+          if (legacyCanvas?.style) legacyCanvas.style.display = ['mmd', 'pngtuber'].includes(model.type) ? 'none' : 'block';
+          for (const id of ['soccer-mmd-container', 'soccer-pngtuber-container']) {
+            const layer = document.getElementById(id);
+            if (layer) { layer.hidden = true; if (layer.style) layer.style.display = 'none'; }
+          }
           if (model.type === 'vrm') {
             if (typeof window.VRMManager !== 'function') throw new Error('VRMManager class not found');
             const manager = window.aiVrmManager || new window.VRMManager();
@@ -474,6 +570,9 @@
                 containerId: 'ai-l2d-container',
                 label: 'AI VRM',
                 viewport: state.viewport,
+                fit: state.fit,
+                signal,
+                isCurrent: () => !state.disposed && !signal?.aborted,
                 assertLive,
               });
             } catch (error) {
@@ -505,31 +604,56 @@
             }
             assertLive();
             resumeAiRenderer('live2d');
+          } else if (['mmd', 'pngtuber'].includes(model.type)) {
+            pauseAiRenderer('live2d');
+            pauseAiRenderer('vrm');
+            extendedHost = createExtendedHost();
+            try {
+              const controller = await extendedHost.mount({
+                ...config, slot: 'ai', model, viewport: { mode: 'fixed', ...state.viewport }, fit: state.fit,
+                characterName: config.characterName || window.__SoccerResolvedLanlanName,
+              });
+              assertLive(() => controller.dispose());
+              extendedController = controller;
+              if (state.paused) controller.pause();
+            } catch (error) {
+              await releaseExtended();
+              throw error;
+            }
           } else {
-            throw new Error('ai avatar: only live2d/vrm supported');
+            throw new Error('ai avatar: unsupported model type');
           }
           state.model = model;
+          if (state.paused) pauseAiRenderer(model.type);
           markAiAvatar(model.type, model.path, true);
           onAvatarChanged('ai', model, true);
         },
         focus(point) {
           if (state.disposed || slot !== 'ai') return false;
+          // Pitch coordinates must not translate a model inside its fixed viewport.
+          if (extendedController) return false;
           return state.model?.type === 'vrm' ? focusAiVrm(point) : focusAiLive2D(point);
         },
         setEmotion(name) {
           if (state.disposed) return false;
+          if (extendedController) return extendedController.setEmotion(name);
           if (slot === 'ai') return setAiEmotion(state.model?.type, name);
           window.vrmManager?.expression?.setMood?.(name);
           return true;
         },
         pause() {
           if (state.disposed) return false;
+          state.paused = true;
+          stopSpeaking();
+          extendedController?.pause();
           if (slot === 'ai') pauseAiRenderer(state.model?.type);
           else window.vrmManager?.pauseRendering?.();
           return true;
         },
         resume() {
           if (state.disposed) return false;
+          state.paused = false;
+          extendedController?.resume();
           if (slot === 'ai') resumeAiRenderer(state.model?.type);
           else window.vrmManager?.resumeRendering?.();
           return true;
@@ -538,12 +662,17 @@
           return {
             slot,
             ready: !state.disposed && !!state.model,
+            paused: state.paused,
+            speaking: extendedController?.getState?.().speaking || state.speaking,
             model: state.model ? { ...state.model } : null,
+            layout: extendedController?.getState?.().layout || state.layout,
           };
         },
-        resize(nextViewport, fit) {
+        resize(nextViewport, fit = state.fit) {
           if (state.disposed) return false;
           state.viewport = nextViewport;
+          state.fit = fit;
+          if (extendedController) return extendedController.resize(nextViewport, fit);
           if (state.model?.type === 'live2d') {
             const manager = window.live2dManager;
             const renderer = manager?.pixi_app?.renderer;
@@ -554,18 +683,19 @@
             }
             const model = manager?.currentModel;
             if (model?.width > 0 && model?.height > 0) {
-              fitLive2DModel(model, nextViewport, fit);
+              state.layout = fitLive2DModel(model, nextViewport, fit);
               model.alpha = 1;
               if (manager.pixi_app?.view) manager.pixi_app.view.style.opacity = '1';
             }
             return true;
           }
           if (state.model?.type === 'vrm') {
-            fitVrmManagerCamera(
+            state.layout = fitVrmManagerCamera(
               slot === 'player' ? window.vrmManager : window.aiVrmManager,
               slot === 'player' ? 'player-vrm-container' : 'ai-l2d-container',
               slot === 'player' ? 'Player' : 'AI VRM',
               nextViewport,
+              fit,
             );
             return true;
           }
@@ -573,7 +703,10 @@
         },
         dispose() {
           if (state.disposed) return;
+          stopSpeaking();
           state.disposed = true;
+          signal?.removeEventListener?.('abort', onExtendedAbort);
+          observeAsyncDisposal(releaseExtended(), 'extended');
           for (const waitState of Array.from(state.pendingWaits)) {
             waitState.cancel?.('disposed', `soccer avatar slot is disposed: ${slot}`);
           }
@@ -583,6 +716,9 @@
               try { manager.destroy?.(); }
               catch (error) { console.warn('[soccer-avatar-host] Live2D dispose failed:', error); }
             } else {
+              window.NekoMiniGameAvatarHost.releasePerspectiveReference(
+                manager.currentModel?.vrm?.scene, manager.camera,
+              );
               try { observeAsyncDisposal(manager.dispose?.(), slot); }
               catch (error) { console.warn(`[soccer-avatar-host] ${slot} VRM dispose failed:`, error); }
             }
@@ -595,7 +731,7 @@
       };
     }
 
-    return window.NekoMiniGameAvatarHost.create({
+    const rendererHost = window.NekoMiniGameAvatarHost.create({
       slots: {
         player: {
           containerId: 'player-vrm-container',
@@ -605,6 +741,23 @@
           containerId: 'ai-l2d-container',
           createController,
         },
+      },
+    });
+    return Object.freeze({
+      ...(options.characterSource ? {
+        getCharacter,
+        getCurrentCharacter: (requestOptions) => getCharacter('', requestOptions),
+        listCharacters: (requestOptions) => options.characterSource.listCharacters(requestOptions),
+      } : {}),
+      mount: (config) => rendererHost.mount(config),
+      get activeCount() { return rendererHost.activeCount; },
+      get pendingCount() { return rendererHost.pendingCount; },
+      dispose() {
+        if (hostDisposed) return;
+        hostDisposed = true;
+        observeAsyncDisposal(metadataHost?.dispose(), 'metadata');
+        metadataHost = null;
+        return rendererHost.dispose();
       },
     });
   };

@@ -16,6 +16,8 @@
 </div>
 <div id="ai-l2d-container">
   <canvas id="ai-l2d-canvas"></canvas>
+  <div id="soccer-mmd-container" class="soccer-extended-avatar" hidden><canvas id="soccer-mmd-canvas"></canvas></div>
+  <div id="soccer-pngtuber-container" class="soccer-extended-avatar" hidden></div>
 </div>
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" class="soccer-speech-bubble" role="status" aria-live="polite"></div>
@@ -206,7 +208,10 @@
         "three": "/static/libs/three.module.js",
         "three/addons/": "/static/libs/three/addons/",
         "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
-        "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+        "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+        "@moeru/three-mmd": "/static/libs/three-mmd.module.js?v={{ static_asset_version }}",
+        "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js?v={{ static_asset_version }}",
+        "ammojs-typed": "/static/libs/ammojs-typed.module.js?v={{ static_asset_version }}"
     }
 }
 </script>
@@ -214,9 +219,11 @@
 <script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-drawing-avatar-host.js?v={{ static_asset_version }}"></script>
+<script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/soccer/soccer-avatar-host.js?v={{ static_asset_version }}"></script>
 <script id="neko-minigame-host-launch" type="application/json">
-{"registrations":{"soccer":{"mode":"registered","gameId":"soccer","publisherId":"project-n-e-k-o","version":"1.0.0","allowedCapabilities":["runtime","logging","audio","speech-output","dialogue","quick-lines","voice-input","avatar-renderer","storage","memory","context-read"]}}}
+{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"soccer":{"mode":"registered","gameId":"soccer","publisherId":"project-n-e-k-o","version":"1.0.0","allowedCapabilities":["runtime","logging","audio","speech-output","dialogue","quick-lines","voice-input","avatar-renderer","storage","memory","context-read"]}}}
 </script>
 <script src="/static/game/games/soccer/soccer-neko-host-registration.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version }}"></script>
@@ -224,7 +231,8 @@
 <script src="/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}"></script>
 
 <!-- VRM init（监听 three-ready，再并行加载 vrm-*.js） -->
-<script src="/static/vrm/vrm-init.js"></script>
+<script src="/static/vrm/vrm-init.js?v={{ static_asset_version }}"></script>
+<script src="/static/mmd/mmd-init.js?v={{ static_asset_version }}"></script>
 
 </body>
 </html>

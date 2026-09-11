@@ -14,7 +14,7 @@
     // URL 形如 `/soccer_demo?lanlan_name=<active_character>&session_id=<invite_uuid>`。
     // 提前从 query 解出来，覆盖默认 'soccer_demo' 值，避免后端 game route 用错角色。
     // 直接手敲 /soccer_demo 进来时 query 缺失，先通过
-    // /api/game/soccer/character 解出当前角色，再启动台词与 game route 请求。
+    // SDK runtime.bindCharacter 解出并绑定当前角色，再启动台词与 game route 请求。
     (function () {
       var params = null;
       try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
@@ -50,27 +50,12 @@
       if (!window.NekoMiniGameAudioHost || typeof window.NekoMiniGameAudioHost.create !== 'function') {
         throw new Error('neko-minigame-audio-host.js must load before soccer-demo.js');
       }
-      if (typeof window.createSoccerAvatarHost !== 'function') {
-        throw new Error('soccer-avatar-host.js must load before soccer-demo.js');
-      }
       if (typeof window.createSoccerNekoAdapter !== 'function') {
         throw new Error('soccer-neko-adapter.js must load before soccer-demo.js');
       }
-      const soccerAvatarHostProxy = {
-        mount(config) {
-          if (!window.__SoccerAvatarHost || typeof window.__SoccerAvatarHost.mount !== 'function') {
-            throw new Error('soccer avatar host is not ready');
-          }
-          return window.__SoccerAvatarHost.mount(config);
-        },
-        dispose() {
-          window.__SoccerAvatarHost?.dispose?.();
-        },
-      };
       const soccerHost = await window.createSoccerNekoAdapter({
         gameType: 'soccer',
         source: 'soccer_demo',
-        avatarHost: soccerAvatarHostProxy,
         audioHost: window.NekoMiniGameAudioHost.create({
           storageKeys: {
             bgm: 'neko.soccerGameAudio.bgmVolume',
@@ -266,22 +251,28 @@
     let soccerCharacterExplicitLanguage = '';
     let soccerCharacterLanguagePreferenceResolved = false;
     let soccerCharacterLanguageRevision = 0;
+    let soccerCharacterInfoGeneration = 0;
+    function resetSoccerCharacterInfo() {
+      soccerCharacterInfoGeneration += 1;
+      soccerCharacterInfoPromise = null;
+    }
     const ensureSoccerCharacterInfo = () => {
       if (soccerCharacterInfoPromise) return soccerCharacterInfoPromise;
+      const generation = soccerCharacterInfoGeneration;
       soccerCharacterInfoPromise = (async () => {
         const languageRevision = soccerCharacterLanguageRevision;
         const configuredName = String(window.lanlan_config?.lanlan_name || '').trim();
-        const requestedName = String(window.__SoccerResolvedLanlanName || configuredName).trim();
-        const response = await soccerHost.getCharacter(requestedName);
-        if (!response.ok) {
-          soccerCharacterInfoPromise = null;
-          return {};
+        const requestedName = String(window.__SoccerResolvedLanlanName
+          || (configuredName !== 'soccer_demo' ? configuredName : '')).trim();
+        const characterInfo = await soccerGame.runtime.bindCharacter(requestedName || undefined);
+        if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed) {
+          throw new Error('character_binding_cancelled');
         }
-        const characterInfo = await response.json();
-        const resolvedName = String(characterInfo?.lanlan_name || '').trim();
+        const resolvedName = String(characterInfo?.name || '').trim();
+        if (!resolvedName) throw new Error('character_unavailable');
         if (soccerCharacterLanguageRevision === languageRevision
-            && characterInfo?.language_preference_resolved === true) {
-          soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo?.language);
+            && characterInfo?.languagePreference?.resolved === true) {
+          soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo.languagePreference.locale);
           soccerCharacterLanguagePreferenceResolved = true;
         }
         if (resolvedName) {
@@ -290,9 +281,9 @@
         }
         return characterInfo;
       })().catch((error) => {
-        soccerCharacterInfoPromise = null;
+        if (generation === soccerCharacterInfoGeneration) soccerCharacterInfoPromise = null;
         console.warn('[soccer_demo] 获取角色信息失败:', error);
-        return {};
+        throw error;
       });
       return soccerCharacterInfoPromise;
     };
@@ -308,12 +299,23 @@
       resize: Object.freeze({ mode: 'fixed' }),
     });
 
+    function soccerAvatarFit(model) {
+      return {
+        ...SOCCER_AVATAR_LAYOUT.fit,
+        // Use the standing reference height for 3D players; wide hair or
+        // gestures may extend beyond the fixed, clipped display rectangle.
+        mode: ['vrm', 'mmd'].includes(model.type) ? 'height' : 'contain',
+      };
+    }
+
     function soccerAvatarMountConfig(slot, model) {
       return {
         slot,
+        ...(slot === 'ai' && window.__SoccerResolvedLanlanName
+          ? { characterName: window.__SoccerResolvedLanlanName } : {}),
         model,
         viewport: SOCCER_AVATAR_LAYOUT.viewport,
-        fit: SOCCER_AVATAR_LAYOUT.fit,
+        fit: soccerAvatarFit(model),
         resize: SOCCER_AVATAR_LAYOUT.resize,
       };
     }
@@ -336,7 +338,6 @@
       const markAiAvatar = (type, path, ready = true) => {
         window.__SoccerAiAvatar = { type, path: path || '', ready: !!ready };
       };
-      let avatarEventEmitter = null;
 
       async function fetchSoccerCharacterInfo() {
         try {
@@ -348,19 +349,8 @@
       }
 
       function prefersAiVrm(charData) {
-        const modelType = String(charData?.model_type || '').toLowerCase();
-        const subType = String(charData?.live3d_sub_type || '').toLowerCase();
-        return !!charData?.vrm_path && (
-          modelType === 'vrm' || (modelType === 'live3d' && subType === 'vrm')
-        );
+        return charData?.model?.type === 'vrm' && !!charData.model.path;
       }
-
-      window.__SoccerAvatarHost = window.createSoccerAvatarHost({
-        onAvatarChanged(slot, model) {
-          if (slot === 'ai') markAiAvatar(model.type, model.path, true);
-          avatarEventEmitter?.(`${slot}-avatar-changed`, model);
-        },
-      });
 
       // 等 vrm 模块链加载完
       await new Promise(resolve => {
@@ -386,33 +376,40 @@
         );
         setStatus('VRM ready');
 
-        // --- 接当前猫娘头像作为 AI：当前支持 Live2D / VRM；MMD 继续回退到 Live2D ---
+        // Render the character's selected model through the public Avatar API.
         try {
           const charData = await fetchSoccerCharacterInfo();
           let loadedAiAvatar = false;
 
+          if (['mmd', 'pngtuber'].includes(charData.model?.type)) {
+            window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
+              soccerAvatarMountConfig('ai', charData.model),
+            );
+            loadedAiAvatar = true;
+          }
           if (prefersAiVrm(charData)) {
             try {
-              const aiVrmPath = charData.vrm_path;
+              const aiVrmPath = charData.model.path;
               setStatus('loading AI VRM…');
               window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
                 soccerAvatarMountConfig('ai', { type: 'vrm', path: aiVrmPath }),
               );
               loadedAiAvatar = true;
-              console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.lanlan_name, aiVrmPath);
+              console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.name, aiVrmPath);
             } catch (vrmErr) {
-              markAiAvatar('vrm', charData.vrm_path || '', false);
+              markAiAvatar('vrm', charData.model.path, false);
               console.warn('[soccer_demo] AI VRM 加载失败，回退 Live2D:', vrmErr);
             }
           }
 
           if (!loadedAiAvatar) {
             setStatus('loading AI Live2D…');
-            // 后端返回与主页面相同的规范 Live2D 路径；接口异常时才使用同一默认回退。
-            const aiL2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';
-            if (charData.live2d_path) {
-              console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
-            }
+            // Only use this character's canonical model or host-supplied fallback.
+            const aiL2dModel = charData.model?.type === 'live2d' ? charData.model
+              : charData.fallbackModels?.find(model => model.type === 'live2d');
+            if (!aiL2dModel) throw new Error('character_live2d_unavailable');
+            const aiL2dPath = aiL2dModel.path;
+            console.log('[soccer_demo] 使用当前角色 L2D:', charData.name, aiL2dPath);
             window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
               soccerAvatarMountConfig('ai', { type: 'live2d', path: aiL2dPath }),
             );
@@ -2347,7 +2344,6 @@
         const payload = { label, meta, time: performance.now() };
         for (const cb of eventListeners) { try { cb(payload); } catch(e) { console.warn('[SoccerDemo] event listener error', e); } }
       }
-      avatarEventEmitter = emitEvent;
 
       // 心情装饰：同一句在不同心情下风味不同
       const MOOD_STYLE = {
@@ -2965,27 +2961,33 @@
         if (window.__SoccerPlayerAvatarController
             && !window.__SoccerPlayerAvatarController.disposed) {
           await window.__SoccerPlayerAvatarController.setModel({ type, path });
+          await window.__SoccerPlayerAvatarController.resize(SOCCER_AVATAR_LAYOUT.viewport, soccerAvatarFit({ type }));
+          emitEvent('player-avatar-changed', { type, path });
           return;
         }
         window.__SoccerPlayerAvatarController = await soccerGame.avatar.mount(
           soccerAvatarMountConfig('player', { type, path }),
         );
+        emitEvent('player-avatar-changed', { type, path });
       }
 
       async function setAiAvatar({ type, path } = {}) {
         if (!path) throw new Error('ai avatar: path required');
-        if (!['live2d', 'vrm'].includes(type)) {
-          throw new Error('ai avatar: only live2d/vrm supported');
+        if (!['live2d', 'vrm', 'mmd', 'pngtuber'].includes(type)) {
+          throw new Error('ai avatar: unsupported model type');
         }
         soccerGame.capabilities.require('avatar-renderer');
         if (window.__SoccerAiAvatarController
             && !window.__SoccerAiAvatarController.disposed) {
           await window.__SoccerAiAvatarController.setModel({ type, path });
+          await window.__SoccerAiAvatarController.resize(SOCCER_AVATAR_LAYOUT.viewport, soccerAvatarFit({ type }));
+          emitEvent('ai-avatar-changed', { type, path });
           return;
         }
         window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
           soccerAvatarMountConfig('ai', { type, path }),
         );
+        emitEvent('ai-avatar-changed', { type, path });
       }
 
       function roundDebugNumber(value) {
@@ -4306,6 +4308,7 @@
 
       function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
         soccerGame.runtime.reset({ newSession });
+        resetSoccerCharacterInfo();
         _llm.preGameContext = null;
         _llm.preGameContextSource = '';
         _llm.preGameContextError = '';
@@ -5771,6 +5774,7 @@
           }
           if (released) {
             soccerGame.runtime.reset({ newSession: true });
+            resetSoccerCharacterInfo();
             if (gameMemoryToggle) gameMemoryToggle.disabled = false;
             window.__SoccerLoading?.showStart?.(_i18n('startScreen.startFailedRetry', '启动失败，请重试'));
           } else {

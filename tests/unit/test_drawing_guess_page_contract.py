@@ -390,6 +390,8 @@ def test_drawing_guess_static_route_contract():
     assert 'id="model-y-control"' not in html
     assert 'id="model-reset-control"' in html
     assert "/static/live2d/live2d-core.js" in html
+    assert html.index('/static/avatar/avatar-ui-buttons/core.js') < html.index('/static/vrm/vrm-init.js')
+    assert html.index('/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js') < html.index('/static/mmd/mmd-init.js')
     assert "/static/app/app-state.js" in html
     assert "/static/app/app-audio-playback.js" in html
     assert "/static/live2d/live2d-emotion.js" in html
@@ -419,9 +421,9 @@ def test_drawing_guess_static_route_contract():
     assert "state.avatarController.setView(view)" in script
     assert "state.avatarController.setView(normalizeModelView(state.modelView))" in script
     assert "clampNumber(view.scale, 0.5, 5000" in script
-    assert "scale: 325.63" in script
-    assert "x: -0.96" in script
-    assert "y: 66.41" in script
+    assert "scale: 325.63" not in script
+    assert "x: -0.96" not in script
+    assert "y: 66.41" not in script
     assert "function resetModelView" in script
     assert "function loadModelViewSettings" in script
     assert "function pulseModelMood" in script
@@ -443,8 +445,9 @@ def test_drawing_guess_static_route_contract():
     assert '"@moeru/three-mmd"' in html
     assert "window.__DRAWING_GUESS_AVATAR_SLOT__ = true;" in html
     assert "window._cardExportPage = true;" in html
-    assert "state.avatarController.setSpeaking(true)" in script
-    assert "state.avatarController.setSpeaking(false)" in script
+    # Basic SDK speech drives Avatar automatically; game code must not own a
+    # second mouth lifecycle or call renderer internals.
+    assert ".setSpeaking(" not in script
     for direct_avatar_marker in (
         "window.Live2DManager",
         "window.VRMManager",
@@ -455,11 +458,8 @@ def test_drawing_guess_static_route_contract():
         "window.lanlan_config",
     ):
         assert direct_avatar_marker not in script
-    assert "lipSyncStopTimer: null" in script
-    assert "function isSpeechPlaybackAudible" in script
-    assert "function armDrawingGuessLipSyncStop" in script
-    assert "if (isSpeechPlaybackAudible(detail))" in script
-    assert "scheduleDrawingGuessLipSyncStart();\n      return;\n    }\n    var response" not in script
+    assert "lipSyncStopTimer" not in script
+    assert "lipSyncRetryTimer" not in script
     assert "window.NekoMiniGame.connect" in script
     assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
     assert "client.runtime.end(sdkRouteEndPayload(options)" in script
@@ -971,6 +971,7 @@ def test_ai_and_user_canvases_fill_the_same_stage_bounds():
 @pytest.mark.unit
 def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
+
     match = re.search(r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", script)
     assert match, "locale requests must use an explicit cache version"
     drawing_version = "2026-09-10-drawing-guess-pngtuber-import-status"
