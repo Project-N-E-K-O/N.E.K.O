@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from weakref import WeakValueDictionary
 from utils.llm_client import THEATER_MEMORY_SOURCE
 
 from .numeric_v2_performance import content_blocks, mixed_performance_blocks
+from .numeric_v2_storage_transaction import run_storage_mutation
 
 
 # 调用线程进入 with 后会强持有锁；空闲回执锁无需常驻，避免历史 Session 数量决定进程内存。
@@ -46,7 +48,8 @@ class NumericV2ArchiveError(ValueError):
 class NumericV2ArchiveStore:
     """把归档回执与剧情 Session 分开持久化，避免改写已结束 Ledger。"""  # noqa: DOCSTRING_CJK
 
-    def __init__(self, theater_root: Path):
+    def __init__(self, theater_root: Path, *, write_transaction=nullcontext):
+        self.write_transaction = write_transaction
         self.root = Path(theater_root) / "numeric_v2" / "end_receipts"
         self.public_archive_root = Path(theater_root) / "numeric_v2" / "public_archives"
 
@@ -357,10 +360,13 @@ class NumericV2ArchiveStore:
                 })
         return updated
 
+    async def mutate(self, operation, *args, **kwargs):
+        return await run_storage_mutation(self.write_transaction, operation, *args, **kwargs)
+
     async def acreate_or_get(self, session: Any) -> dict[str, Any]:
         """在线请求通过线程执行持久化，避免阻塞 FastAPI 事件循环。"""  # noqa: DOCSTRING_CJK
 
-        return await asyncio.to_thread(self.create_or_get, session)
+        return await self.mutate(self.create_or_get, session)
 
     async def aload(self, receipt_id: str) -> dict[str, Any] | None:
         """异步读取结束回执。"""  # noqa: DOCSTRING_CJK
@@ -368,10 +374,10 @@ class NumericV2ArchiveStore:
         return await asyncio.to_thread(self.load, receipt_id)
 
     async def aload_for_session(self, session_id: str) -> dict[str, Any] | None:
-        return await asyncio.to_thread(self.load_for_session, session_id)
+        return await self.mutate(self.load_for_session, session_id)
 
     async def areconcile_written_receipt(self, receipt: Mapping[str, Any]) -> bool:
-        return await asyncio.to_thread(self.reconcile_written_receipt, receipt)
+        return await self.mutate(self.reconcile_written_receipt, receipt)
 
     async def aupdate(
         self,
@@ -382,7 +388,7 @@ class NumericV2ArchiveStore:
     ) -> dict[str, Any]:
         """异步原子更新归档状态。"""  # noqa: DOCSTRING_CJK
 
-        return await asyncio.to_thread(
+        return await self.mutate(
             self.update,
             receipt,
             status=status,
@@ -482,7 +488,7 @@ class NumericV2ArchiveStore:
         session: Any,
         ending: Mapping[str, Any] | None,
     ) -> int:
-        return await asyncio.to_thread(
+        return await self.mutate(
             self.write_public_archive,
             title=title,
             session=session,
@@ -490,13 +496,13 @@ class NumericV2ArchiveStore:
         )
 
     async def astage_public_archive(self, **kwargs) -> None:
-        await asyncio.to_thread(self.stage_public_archive, **kwargs)
+        await self.mutate(self.stage_public_archive, **kwargs)
 
     async def acommit_staged_public_archive(self, receipt: Mapping[str, Any]) -> int:
-        return await asyncio.to_thread(self.commit_staged_public_archive, receipt)
+        return await self.mutate(self.commit_staged_public_archive, receipt)
 
     async def adiscard_staged_public_archive(self, receipt_id: str) -> None:
-        await asyncio.to_thread(self.discard_staged_public_archive, receipt_id)
+        await self.mutate(self.discard_staged_public_archive, receipt_id)
 
     def list_public_archives(
         self,

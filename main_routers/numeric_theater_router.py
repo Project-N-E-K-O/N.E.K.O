@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, nullcontext
 import json
 import logging
 from pathlib import Path
@@ -60,6 +61,7 @@ from services.theater.numeric_v2_runtime import (
     TurnRequestV2,
 )
 from services.theater.paths import theater_root
+from services.theater.numeric_v2_storage_transaction import run_storage_mutation
 from services.theater.numeric_v2_store import (
     list_numeric_v2_sessions,
     numeric_v2_story_session_guard,
@@ -76,6 +78,7 @@ from services.theater.tts_bridge import speak_committed_line
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     assert_cloudsave_writable,
+    cloudsave_writable_transaction,
 )
 from utils.character_memory import character_config_mutation_lock
 
@@ -143,12 +146,26 @@ def _numeric_root(config_manager: Any) -> Path:
     return theater_root(config_manager)
 
 
+def _numeric_write_transaction(config_manager: Any, root: Path):
+    expected_root = Path(root).resolve()
+
+    @contextmanager
+    def transaction():
+        with cloudsave_writable_transaction(config_manager, operation="save", target="theater/numeric_v2"):
+            if _numeric_root(config_manager).resolve() != expected_root:
+                raise NumericV2StoreRevisionConflictError("numeric_storage_root_changed")
+            yield
+
+    return transaction
+
+
 def _archive_store(config_manager: Any) -> NumericV2ArchiveStore:
-    return NumericV2ArchiveStore(_numeric_root(config_manager))
+    root = _numeric_root(config_manager)
+    return NumericV2ArchiveStore(root, write_transaction=_numeric_write_transaction(config_manager, root))
 
 
 async def _assert_numeric_writable(config_manager: Any, target: str) -> None:
-    """所有剧场持久化动作复用云存档全局写栅栏。"""  # noqa: DOCSTRING_CJK
+    """Reject maintenance early; final disk operations also hold a write transaction."""
 
     await asyncio.to_thread(
         assert_cloudsave_writable,
@@ -165,11 +182,13 @@ async def _registry(config_manager: Any) -> NumericV2PackageRegistry:
         numeric_v2_character_ids,
         config_manager,
     )
-    await asyncio.to_thread(
+    await run_storage_mutation(
+        nullcontext,
         maintain_numeric_v2_storage_once,
         numeric_root,
         registry,
         character_ids_by_name=character_ids_by_name,
+        write_transaction=_numeric_write_transaction(config_manager, numeric_root),
         assert_writable=lambda: assert_cloudsave_writable(
             config_manager,
             operation="repair",
@@ -210,7 +229,8 @@ async def _create_receipt_for_existing_ended_session(
 async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Runtime:
     registry = await _registry(config_manager)
     engine = await asyncio.to_thread(registry.load_engine, story_id)
-    return NumericV2Runtime(engine, _numeric_root(config_manager))
+    root = registry.root.parent.parent
+    return NumericV2Runtime(engine, root, write_transaction=_numeric_write_transaction(config_manager, root))
 
 
 def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
@@ -455,7 +475,8 @@ async def import_numeric_story(request: Request):
             compiled.story_id,
         ):
             await _assert_numeric_writable(config_manager, "packages")
-            summary = await asyncio.to_thread(
+            summary = await run_storage_mutation(
+                _numeric_write_transaction(config_manager, registry.root.parent.parent),
                 registry.import_package,
                 compiled.story,
             )
@@ -524,6 +545,7 @@ async def delete_numeric_story(story_id: str, request: Request):
                 _numeric_root(config_manager),
                 registry,
                 normalized_story_id,
+                write_transaction=_numeric_write_transaction(config_manager, registry.root.parent.parent),
             )
     except (NumericV2PackageError, NumericV2PackageNotFoundError) as exc:
         return _package_error(exc)
@@ -676,7 +698,7 @@ async def _start_numeric_session(request: Request):
                 )
                 # 新 Session 已原子接管恢复槽位，旧 Session 回执不再有任何合法消费者。
                 try:
-                    await asyncio.to_thread(
+                    await archive_store.mutate(
                         archive_store.delete_session_receipts,
                         existing.session.session_id,
                     )
@@ -1492,8 +1514,9 @@ async def pin_numeric_memory_archive(request: Request):
         async with character_config_mutation_lock, runtime.story_session_guard():
             await _assert_numeric_writable(config_manager, "public_archives")
             binding = _current_catgirl_binding(config_manager)
-            result = await asyncio.to_thread(
-                _archive_store(config_manager).set_public_archive_pinned,
+            archive_store = _archive_store(config_manager)
+            result = await archive_store.mutate(
+                archive_store.set_public_archive_pinned,
                 story_id=story_id,
                 session_id=session_id,
                 character_id=binding["character_id"],
@@ -1555,7 +1578,7 @@ async def forget_numeric_story_memory(request: Request):
             stored = await runtime.restore_session_for_lifecycle(session_id) if session_id else None
             if stored is not None:
                 _ensure_current_catgirl(stored.session, config_manager)
-            pending = await asyncio.to_thread(
+            pending = await archive_store.mutate(
                 archive_store.prepare_forget, **archive_scope,
                 session=stored.session if stored is not None else None,
             )
@@ -1576,7 +1599,7 @@ async def forget_numeric_story_memory(request: Request):
             data = response.json() if response.content else {}
             if not response.is_success or data.get("ok") is not True:
                 return _error("numeric_theater_memory_forget_failed", 502)
-            await asyncio.to_thread(archive_store.delete_forget_files, pending)
+            await archive_store.mutate(archive_store.delete_forget_files, pending)
             removed_archives = len(pending["archive_files"])
             removed_receipts = len(pending["receipt_files"])
             if stored is not None and stored.session.status == "ended":
@@ -1584,7 +1607,7 @@ async def forget_numeric_story_memory(request: Request):
                 skipped = await archive_store.acreate_or_get(stored.session)
                 await archive_store.aupdate(skipped, status="skipped")
             # Removing the intent is the last step; every preceding operation is retryable.
-            await asyncio.to_thread(archive_store.complete_forget, story_id, binding["character_id"])
+            await archive_store.mutate(archive_store.complete_forget, story_id, binding["character_id"])
         return {
             "ok": True,
             "removed_recent": int(data.get("removed_recent") or 0),

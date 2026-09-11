@@ -13,6 +13,37 @@ from theater_workshop.sdk.numeric_v2_project_store import (
 from .numeric_v2_fixture import numeric_v2_setup, numeric_v2_story
 
 
+@pytest.mark.parametrize("change", ["title", "setup"])
+def test_combined_story_update_preserves_other_author_edits(tmp_path, change):
+    from copy import deepcopy
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    story = deepcopy(project["story"])
+    changes = {"story": story}
+    if change == "title":
+        changes["title"] = "Updated project title"
+    else:
+        setup = deepcopy(project["setup"])
+        setup["metrics"][0]["initial"] += 1
+        changes["setup"] = setup
+    updated = store.update(project["project_id"], base_revision=project["revision"], changes=changes)
+    if change == "title":
+        assert updated["story"]["meta"]["title"] == updated["title"] == changes["title"]
+    else:
+        metric = updated["setup"]["metrics"][0]
+        assert updated["story"]["initial_state"]["metrics"][metric["id"]] == metric["initial"]
+    assert story == project["story"]
+    assert store.get(project["project_id"])["story"] == updated["story"]
+
+
+def test_empty_metric_rejects_update_without_overwriting_project(tmp_path):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    with pytest.raises(ValueError, match="metric_id_required"):
+        store.update(project["project_id"], base_revision=project["revision"], changes={"setup": {"metrics": [{"name": " ", "id": " "}]}})
+    assert store.get(project["project_id"]) == project
+
+
 @pytest.mark.parametrize("known", [False, True])
 def test_metric_edit_preserves_initial_name_disclosure(tmp_path, known):
     compiler = NumericV2Compiler(InProcessPackageGateway())

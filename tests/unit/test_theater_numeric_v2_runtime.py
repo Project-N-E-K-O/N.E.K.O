@@ -899,6 +899,22 @@ async def test_numeric_v2_commit_rejects_session_ended_during_model_wait(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_turn_prepared_before_exit_cannot_commit_after_resume(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    current = await runtime.start_session(session_id="lifecycle_turn", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = runtime.prepare_turn(current, TurnRequestV2("stale", 0, "old input"), ())
+    await runtime.end_session(current.session.session_id, base_revision=0, base_lifecycle_revision=0, reason="user_exit")
+    resumed = await runtime.resume_session(current.session.session_id, base_revision=0, base_lifecycle_revision=1)
+    with pytest.raises(numeric_v2_store.NumericV2StoreRevisionConflictError, match="numeric_base_lifecycle_revision_mismatch"):
+        await runtime.commit_turn(outcome, _performance("stale response"))
+    assert await runtime.restore_session(current.session.session_id) == resumed
+    fresh = runtime.prepare_turn(resumed, TurnRequestV2("fresh", 0, "new input"), ())
+    committed = await runtime.commit_turn(fresh, _performance("fresh response"))
+    assert committed.session.lifecycle_revision == 2
+    assert await runtime.restore_session(current.session.session_id) == committed
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_lifecycle_revision_rejects_delayed_end_and_resume(tmp_path):
     """同一演绎回合内，旧的结束或继续请求不能覆盖更新的生命周期状态。"""  # noqa: DOCSTRING_CJK
 
@@ -1448,3 +1464,28 @@ async def test_numeric_v2_restore_rejects_truncated_performance_history(tmp_path
         match="numeric_performance_history_mismatch",
     ):
         await runtime.restore_session("runtime_truncated_performance")
+
+
+@pytest.mark.asyncio
+async def test_session_commit_rechecks_fence_after_waiting_for_file_lock(tmp_path):
+    import asyncio
+    from contextlib import contextmanager
+    writable = True
+
+    @contextmanager
+    def transaction():
+        if not writable:
+            raise PermissionError("maintenance")
+        yield
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path, write_transaction=transaction)
+    current = await runtime.start_session(session_id="fenced", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = runtime.prepare_turn(current, TurnRequestV2("late", 0, "input"), ())
+    async with numeric_v2_store._lock(runtime.store._path("fenced")):
+        task = asyncio.create_task(runtime.commit_turn(outcome, _performance("response")))
+        await asyncio.sleep(0)
+        assert not task.done()
+        writable = False
+    with pytest.raises(PermissionError, match="maintenance"):
+        await task
+    assert await runtime.restore_session("fenced") == current

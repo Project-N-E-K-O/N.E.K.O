@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -23,10 +23,13 @@ from .numeric_v2_store import (
     _read_numeric_v2_session_summary,
     _read_story_session_slots,
     _write_story_session_slots,
-    delete_numeric_v2_sessions,
+    _delete_numeric_v2_sessions_unlocked,
+    numeric_v2_session_files_guard,
     list_numeric_v2_public_archives,
     list_numeric_v2_sessions,
 )
+
+from .numeric_v2_storage_transaction import run_storage_mutation
 
 
 QUARANTINE_FILE_LIMIT = 6
@@ -202,49 +205,39 @@ async def delete_numeric_v2_story_transactionally(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
     story_id: str,
+    *,
+    write_transaction=nullcontext,
 ) -> int:
-    """删除剧本包、槽位和索引；任一步失败都恢复删除前快照。"""  # noqa: DOCSTRING_CJK
+    async with numeric_v2_session_files_guard(theater_root):
+        return await run_storage_mutation(
+            write_transaction, _delete_story_files, theater_root, registry, story_id,
+        )
 
+
+def _delete_story_files(theater_root: Path, registry: NumericV2PackageRegistry, story_id: str) -> int:
+    # Backup, deletion and rollback share one cloud fence and one worker thread.
     try:
-        transaction_dir, manifest_path, manifest = await asyncio.to_thread(
-            _prepare_delete_transaction,
-            theater_root,
-            registry,
-            story_id,
+        transaction_dir, manifest_path, manifest = _prepare_delete_transaction(
+            theater_root, registry, story_id,
         )
     except OSError as exc:
         raise NumericV2StoreError("numeric_story_delete_backup_failed") from exc
     try:
-        deleted = await delete_numeric_v2_sessions(theater_root, story_id=story_id)
-        await asyncio.to_thread(
-            NumericV2ArchiveStore(theater_root).delete_receipts,
-            story_id=story_id,
-        )
-        # 完整公开演绎已经纳入事务快照；删除剧本时必须同步移除，失败则由下方统一回滚。
-        await asyncio.to_thread(
-            NumericV2ArchiveStore(theater_root).delete_public_archives,
-            story_id=story_id,
-            character_id="",
-        )
-        # Registry 删除包含文件替换，必须离开事件循环执行。
-        await asyncio.to_thread(registry.delete_package, story_id)
+        deleted = _delete_numeric_v2_sessions_unlocked(theater_root, story_id=story_id)
+        NumericV2ArchiveStore(theater_root).delete_receipts(story_id=story_id)
+        NumericV2ArchiveStore(theater_root).delete_public_archives(story_id=story_id, character_id="")
+        registry.delete_package(story_id)
         manifest["state"] = "committed"
-        await asyncio.to_thread(_atomic_write_manifest, manifest_path, manifest)
+        _atomic_write_manifest(manifest_path, manifest)
     except BaseException:
         try:
-            await asyncio.to_thread(
-                _restore_delete_transaction,
-                transaction_dir,
-                manifest,
-            )
+            _restore_delete_transaction(transaction_dir, manifest)
         except OSError as rollback_exc:
-            raise NumericV2StoreError(
-                "numeric_story_delete_rollback_failed"
-            ) from rollback_exc
+            raise NumericV2StoreError("numeric_story_delete_rollback_failed") from rollback_exc
         finally:
-            await asyncio.to_thread(shutil.rmtree, transaction_dir, True)
+            shutil.rmtree(transaction_dir, ignore_errors=True)
         raise
-    await asyncio.to_thread(shutil.rmtree, transaction_dir, True)
+    shutil.rmtree(transaction_dir, ignore_errors=True)
     return len(deleted)
 
 
@@ -448,6 +441,7 @@ def maintain_numeric_v2_storage_once(
     *,
     character_ids_by_name: Mapping[str, str],
     assert_writable: Callable[[], None] | None = None,
+    write_transaction=nullcontext,
 ) -> dict[str, int] | None:
     """每个运行根仅在冷启动初始化时执行一次恢复和全盘核查。"""  # noqa: DOCSTRING_CJK
 
@@ -455,27 +449,28 @@ def maintain_numeric_v2_storage_once(
     with _MAINTENANCE_LOCK:
         if key in _MAINTAINED_ROOTS:
             return None
-        # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
-        if assert_writable is not None:
-            assert_writable()
-        recover_numeric_v2_delete_transactions(theater_root)
-        registry.ensure_default_packages()
-        result = audit_numeric_v2_storage(
-            theater_root,
-            registry,
-            character_ids_by_name=character_ids_by_name,
-        )
-        active_session_ids = {
-            item["session_id"]
-            for item in list_numeric_v2_sessions(theater_root)
-        }
-        result.update(
-            NumericV2ArchiveStore(theater_root).cleanup_receipts(
-                active_session_ids
+        with write_transaction():
+            # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
+            if assert_writable is not None:
+                assert_writable()
+            recover_numeric_v2_delete_transactions(theater_root)
+            registry.ensure_default_packages()
+            result = audit_numeric_v2_storage(
+                theater_root,
+                registry,
+                character_ids_by_name=character_ids_by_name,
             )
-        )
-        _MAINTAINED_ROOTS.add(key)
-        return result
+            active_session_ids = {
+                item["session_id"]
+                for item in list_numeric_v2_sessions(theater_root)
+            }
+            result.update(
+                NumericV2ArchiveStore(theater_root).cleanup_receipts(
+                    active_session_ids
+                )
+            )
+            _MAINTAINED_ROOTS.add(key)
+            return result
 
 
 __all__ = [

@@ -615,6 +615,8 @@
         // 新快照已获准接管，旧提交的失败提示不再属于当前展示。
         state.errorMessage = '';
         state.tokenUsage = message.token_usage || null;
+        // A validated replacement owns the selector handshake from this point.
+        state.pendingEnd = null;
         state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
         applySnapshot(snapshot);
         state.history = buildCommittedHistory(snapshot);

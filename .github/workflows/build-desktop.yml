@@ -727,15 +727,6 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
-      - name: Smoke test frozen theater workshop SDK
-        shell: bash
-        run: |
-          VENV_PYTHON=".venv/bin/python"
-          if [ -f ".venv/Scripts/python.exe" ]; then
-            VENV_PYTHON=".venv/Scripts/python.exe"
-          fi
-          "$VENV_PYTHON" scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
-
       - name: Smoke test frozen Owner voice identity runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -872,6 +863,15 @@ jobs:
           rm -rf -- "$NEKO_NUITKA_RUNTIME_DIR/playwright_browsers/.links"
           codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
           codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
+
+      - name: Smoke test frozen theater workshop SDK
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4

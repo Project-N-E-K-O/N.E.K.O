@@ -931,8 +931,9 @@ class NumericV2BranchService:
                 if condition_metric not in metric_schema:
                     return None
                 if condition_metric != metric_id:
-                    # 入口估算只追踪当前候选 metric；其他 metric 的存在不会改变代表值。
-                    continue
+                    # This solver tracks one metric; another metric is an unknown
+                    # constraint, never evidence that the entrance is reachable.
+                    return None
                 op = str(raw.get("op") or "")
                 try:
                     threshold = int(raw["value"])

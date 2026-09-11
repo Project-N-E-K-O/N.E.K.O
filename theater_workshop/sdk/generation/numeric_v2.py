@@ -1941,7 +1941,7 @@ class NumericV2Generator(ModelAgent):
 
         model_input = {
             "node_type": node_type,
-            "node_type_label": "幕节点" if node_type == "scene" else "结局节点",
+            "node_type_label": "幕节点" if node_type in {"start", "scene"} else "结局节点",
             "author_input": {"title": title, "summary": summary},
             # 完善不是从摘要重新生成；保留当前稿供模型核对开场、状态与反应时点。
             # 深复制避免候选构造或调用方误改传入故事，实际回填范围仍由原返回合同限定。

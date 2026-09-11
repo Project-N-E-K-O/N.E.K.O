@@ -75,13 +75,19 @@ async def test_source_reply_survives_commit_cold_restore_and_fork(tmp_path, with
     assembled = runtime.engine.finalize_transition_performance(outcome, candidate, target_opening='旧开场。')
     assert candidate == original
     assert [s['phase'] for s in assembled['segments']] == ['source_response', 'transition_bridge', 'target_opening']
-    assert assembled['segments'][0].get('scene_narration') == (NPC_REPLY if with_narration else None)
+    if with_narration:
+        assert assembled['segments'][0]['scene_narration'] == NPC_REPLY
+    else:
+        assert 'scene_narration' not in assembled['segments'][0]
     assert 'source_scene_narration' not in assembled
 
     reviewed = _build_transition_judge_messages(runtime.engine, current.session,
         actor_performance=assembled, player_input=message, transition_outcome=outcome)
     review_data = json.loads(reviewed[1].content.split('：', 1)[1])
-    assert review_data['candidate_segments'][0].get('scene_narration') == (NPC_REPLY if with_narration else None)
+    if with_narration:
+        assert review_data['candidate_segments'][0]['scene_narration'] == NPC_REPLY
+    else:
+        assert 'scene_narration' not in review_data['candidate_segments'][0]
     committed = await runtime.commit_turn(outcome, assembled)
     restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session('source_reply')
     assert restored == committed

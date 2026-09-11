@@ -140,9 +140,11 @@ def test_model_ready_never_grants_structural_permission(field):
     agent, story, authoring, context, report = fixture()
     issue = report["issues"][0]
     issue["repair_targets"][0]["field"] = field
-    issue["plan_review"] = ready_payload([issue])["checks"][0]
+    issue["plan_review"] = {**ready_payload([issue])["checks"][0], "conflicting_issue_ids": []}
     report["repair_plan_version"] = 3
-    assert classify_repair(context, issue, require_plan_review=True)["repairable"] is False
+    classified = classify_repair(context, issue, require_plan_review=True)
+    assert classified["repairable"] is False
+    assert classified["repair_reason"] == "方案涉及当前节点优化不支持的字段，请手动调整。"
     agent.call_llm = lambda *a, **kw: pytest.fail("模型ready不能覆盖程序权限")
     with pytest.raises(QualityAssessmentError, match="quality_node_not_repairable"):
         agent.optimize_node(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id="mainline_01")

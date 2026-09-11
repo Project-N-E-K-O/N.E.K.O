@@ -35,9 +35,16 @@ def main():
                if key not in {"PYTHONPATH", "PYTHONHOME", "NEKO_VOICE_IDENTITY_RELEASE_SMOKE"}
                and not key.startswith(("INKAI_", "NEKO_NUMERIC_DRAMA_"))}
         env["NEKO_THEATER_WORKSHOP_REQUIRE_FROZEN"] = "1"
-        result = subprocess.run([str(executable), "--theater-workshop-smoke", str(source)],
-                                cwd=root, env=env, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=120)
+        try:
+            result = subprocess.run([str(executable), "--theater-workshop-smoke", str(source)],
+                                    cwd=root, env=env, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            for output, stream in ((exc.stdout, sys.stdout), (exc.stderr, sys.stderr)):
+                if output:
+                    print(output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output,
+                          file=stream)
+            raise SystemExit("frozen workshop smoke timed out after 120 seconds") from exc
         print(result.stdout)
         if result.stderr:
             print(result.stderr, file=sys.stderr)

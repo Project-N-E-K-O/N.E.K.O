@@ -389,6 +389,9 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Smoke test frozen theater workshop SDK
+        run: .venv/bin/python scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
+
       # --- Verify bundled embedding + tiktoken assets ---
       # memory/embeddings.py treats every onnx_data sidecar plus both fp32
       # and int8 variants as required at session-load time; tiktoken
@@ -396,9 +399,6 @@ jobs:
       # back to the heuristic counter. Use -s (non-empty) so a zero-byte
       # file from an interrupted download fails the build, matching
       # prepare_embedding_model.py's own non-empty contract.
-      - name: Smoke test frozen theater workshop SDK
-        run: .venv/bin/python scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
-
       - name: Verify bundled offline assets
         shell: bash
         run: |

@@ -218,6 +218,11 @@ class _ConfigManager:
     def __init__(self, root: Path):
         self.app_docs_dir = root
         self.config_dir = root / "config"
+        self.local_state_dir = root.parent / (root.name + "-local-state")
+
+    def ensure_local_state_directory(self):
+        self.local_state_dir.mkdir(parents=True, exist_ok=True)
+        return True
 
     def load_characters(self) -> dict:
         return {
@@ -5405,3 +5410,58 @@ def test_numeric_v2_review_fallback_replay_and_next_turn_keep_same_history(tmp_p
         assert following.status_code == 200
         assert following.json()["session"]["revision"] == 2
         assert calls == {"actor": 3, "review": 4, "evaluator": 2}
+
+
+@pytest.mark.asyncio
+async def test_final_storage_mutation_rejects_changed_root(tmp_path):
+    from services.theater.numeric_v2_storage_transaction import run_storage_mutation
+    manager = _ConfigManager(tmp_path / "old")
+    transaction = numeric_theater_router._numeric_write_transaction(manager, manager.app_docs_dir / "theater")
+    manager.app_docs_dir = tmp_path / "new"
+    target = tmp_path / "old" / "theater" / "late.json"
+    with pytest.raises(numeric_theater_router.NumericV2StoreRevisionConflictError, match="numeric_storage_root_changed"):
+        await run_storage_mutation(transaction, target.write_text, "must not be saved")
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_final_storage_mutation_holds_cloud_lock_and_waits_on_cancel(tmp_path):
+    from contextlib import contextmanager
+    import threading
+    from services.theater.numeric_v2_storage_transaction import run_storage_mutation
+    from utils.cloudsave_runtime import fence
+
+    manager = _ConfigManager(tmp_path)
+    transaction = numeric_theater_router._numeric_write_transaction(manager, tmp_path / "theater")
+    entered, release = threading.Event(), threading.Event()
+    events = []
+
+    @contextmanager
+    def tracked_transaction():
+        with transaction():
+            assert fence._process_holds_cloud_apply_lock()
+            events.append("locked")
+            try:
+                yield
+            finally:
+                events.append("finished")
+
+    def save():
+        entered.set()
+        assert release.wait(5)
+        (tmp_path / "saved.txt").write_text("complete", encoding="utf-8")
+
+    task = asyncio.create_task(run_storage_mutation(tracked_transaction, save))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert events == ["locked"]
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["locked", "finished"]
+    assert (tmp_path / "saved.txt").read_text(encoding="utf-8") == "complete"
+    assert not fence._process_holds_cloud_apply_lock()

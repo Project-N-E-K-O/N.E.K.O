@@ -1482,57 +1482,59 @@ async def update_catgirl(name: str, request: Request):
     data = _filter_mutable_catgirl_fields(raw_data)
     requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
-    if name not in characters.get('猫娘', {}):
-        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
+    # Serialize profile persistence with the theater final binding check.
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+        previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
-    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
-    if voice_id_will_change:
-        session_manager = get_session_manager()
-        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
-            return _voice_session_starting_response()
+        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+        voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
+        if voice_id_will_change:
+            session_manager = get_session_manager()
+            if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+                return _voice_session_starting_response()
 
-    if voice_id_in_payload and requested_voice_id:
-        # 验证 voice_id 是否在 voice_storage 中
-        if not _config_manager.validate_voice_id(requested_voice_id):
-            voices = _config_manager.get_voices_for_current_api()
-            available_voices = list(voices.keys())
-            return JSONResponse({
-                'success': False,
-                'error': f'voice_id "{requested_voice_id}" 在当前API的音色库中不存在',
-                'available_voices': available_voices
-            }, status_code=400)
+        if voice_id_in_payload and requested_voice_id:
+            # 验证 voice_id 是否在 voice_storage 中
+            if not _config_manager.validate_voice_id(requested_voice_id):
+                voices = _config_manager.get_voices_for_current_api()
+                available_voices = list(voices.keys())
+                return JSONResponse({
+                    'success': False,
+                    'error': f'voice_id "{requested_voice_id}" 在当前API的音色库中不存在',
+                    'available_voices': available_voices
+                }, status_code=400)
 
-    # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
-    removed_fields = []
-    for k in characters['猫娘'][name]:
-        if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
-            removed_fields.append(k)
-    for k in removed_fields:
-        characters['猫娘'][name].pop(k)
+        # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
+        removed_fields = []
+        for k in characters['猫娘'][name]:
+            if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
+                removed_fields.append(k)
+        for k in removed_fields:
+            characters['猫娘'][name].pop(k)
 
-    # 更新普通字段
-    for k, v in data.items():
-        if k != '档案名' and v:
-            characters['猫娘'][name][k] = v
+        # 更新普通字段
+        for k, v in data.items():
+            if k != '档案名' and v:
+                characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
-    if voice_id_in_payload:
-        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
+        # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
+        if voice_id_in_payload:
+            set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
-    # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
-    if model_type_in_payload and requested_model_type:
-        set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+        # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
+        if model_type_in_payload and requested_model_type:
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
-    _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
+        _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
 
-    await _config_manager.asave_characters(characters)
+        await _config_manager.asave_characters(characters)
 
-    new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
-    voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
-    prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
+        new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+        voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
+        prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(

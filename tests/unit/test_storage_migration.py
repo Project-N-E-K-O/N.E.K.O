@@ -183,6 +183,22 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
 
 
 @pytest.mark.unit
+def test_migration_requires_confirmation_when_target_only_contains_theater(tmp_path):
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+    config = _make_config_manager(tmp_path)
+    config.app_docs_dir.mkdir(parents=True)
+    target = tmp_path / "target" / "N.E.K.O"
+    saved = target / "theater" / "numeric_v2" / "sessions" / "existing.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text('{"existing": true}', encoding="utf-8")
+    assert runtime_root_has_user_content(target, config_manager=config)
+    create_pending_storage_migration(config, source_root=config.app_docs_dir, target_root=target, selection_source="custom")
+    result = run_pending_storage_migration(config)
+    assert result["error_code"] == "target_confirmation_required"
+    assert saved.read_text(encoding="utf-8") == '{"existing": true}'
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_requires_confirmation_for_existing_target_content(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir

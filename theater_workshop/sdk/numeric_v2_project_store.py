@@ -420,6 +420,15 @@ class NumericV2ProjectStore:
             if "story" in changes:
                 story = changes["story"]
                 next_story = deepcopy(dict(story)) if isinstance(story, Mapping) else None
+                # Combined edits describe one author revision; apply them to the
+                # replacement instead of losing them with the previous story.
+                if next_story is not None:
+                    if "title" in changes:
+                        next_story.setdefault("meta", {})["title"] = project["title"]
+                    if "setup" in changes and isinstance(project.get("story"), dict):
+                        metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
+                        next_story["metric_schema"] = metric_schema
+                        next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
                 authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                 old_signatures = _route_signatures(project.get("story"))
                 new_signatures = _route_signatures(next_story)

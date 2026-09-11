@@ -1514,3 +1514,43 @@ def test_theater_capsule_skips_empty_deduplicated_transition_bridge(
     expect(history).to_contain_text("周末的客厅里，纸箱占据了大半空间。")
     expect(history).not_to_contain_text("时间向前流转")
     expect(history).not_to_contain_text("现场随之转换")
+
+
+@pytest.mark.frontend
+def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, running_server: str):
+    previous = _snapshot(revision=4, story_id="story-a", session_id="session-a")
+    previous["session"].update(status="ended", ended_reason="user_exit")
+    previous["end_receipt_id"] = "old-receipt"
+
+    def handler(route: Route):
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/session/session-a"):
+            payload = previous
+        elif path.endswith("/session/session-b"):
+            payload = _snapshot(revision=0, story_id="story-b", session_id="session-b")
+        elif path.endswith("/session/missing"):
+            payload = {"ok": False, "reason": "numeric_session_not_found"}
+        else:
+            route.continue_()
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.add_init_script("window.sessionStorage.setItem('neko.theater.numeric.v2.capsule-pointer.v1', JSON.stringify({story_id:'story-a',session_id:'session-a'}))")
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime?.getState().phase === 'ended'")
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd.end_receipt_id") == "old-receipt"
+    with mock_page.expect_response("**/session/missing?*"):
+        mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'missing-launch', story_id:'missing', session_id:'missing', revision:0}, location.origin)""")
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd.end_receipt_id") == "old-receipt"
+    mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+        launch_id:'new-launch', launch_action:'continue', story_id:'story-b', session_id:'session-b', revision:0}, location.origin)""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().sessionId === 'session-b' && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd") is None
+    mock_page.evaluate("""() => {
+        window.__staleReceipts = [];
+        window.addEventListener('message', event => { if(event.data?.action === 'theater:post-end') window.__staleReceipts.push(event.data); });
+        window.postMessage({schema:'neko.theater.interpage.v1',action:'theater:selector-ready'},location.origin);
+    }""")
+    assert mock_page.evaluate("window.__staleReceipts") == []

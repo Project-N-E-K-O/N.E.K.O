@@ -667,11 +667,12 @@ def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_t
     result = _path_result(plan)
     if opening_transfer:
         result["scenes"][0]["character_state"]["catgirl_state"] = "女主已在开场将证物盒放到双方之间的台面。"
-    result["scenes"][0]["key_prop_state_changes"] = [{
-        "id": "sealed_evidence_box",
-        "owner": "shared",
-        "state": "盒盖已经开启，带日期的旧照片由双方共同保管",
-    }]
+    else:
+        result["scenes"][0]["key_prop_state_changes"] = [{
+            "id": "sealed_evidence_box",
+            "owner": "shared",
+            "state": "盒盖已经开启，带日期的旧照片由双方共同保管",
+        }]
 
     draft = service.finish_path(plan, result)
     story, _, key_props = service.build_story(project, draft)
@@ -682,12 +683,15 @@ def test_branch_scene_persists_key_prop_state_change_on_stable_node_id(opening_t
     assert "当前归属为女主" not in branch_node["story_beat"]["catgirl_situation"]
     assert "保存带日期的旧照片" in branch_node["story_beat"]["catgirl_situation"]
     assert branch_node["story_beat"]["character_state"]["catgirl_state"] == result["scenes"][0]["character_state"]["catgirl_state"]
-    assert "当前归属为双方共同" in branch_node["route_gates"][0]["transition_contract"]["must_preserve"][-1]
-    assert key_props[0]["states"][-1] == {
-        "node_id": "node_branch_scene",
-        "owner": "shared",
-        "state": "盒盖已经开启，带日期的旧照片由双方共同保管",
-    }
+    if opening_transfer:
+        assert key_props == project["authoring"]["key_props"]
+    else:
+        assert "当前归属为双方共同" in branch_node["route_gates"][0]["transition_contract"]["must_preserve"][-1]
+        assert key_props[0]["states"][-1] == {
+            "node_id": "node_branch_scene",
+            "owner": "shared",
+            "state": "盒盖已经开启，带日期的旧照片由双方共同保管",
+        }
 
 
 def test_guided_path_rejects_intentionally_replaced_continuity():
@@ -937,3 +941,12 @@ def test_branch_boundary_relaxation_keeps_shape_and_upper_limit(boundaries):
         BranchCharacterStatePayload.model_validate(state)
     with pytest.raises(NumericV2BranchError):
         NumericV2BranchService._validate_character_state(state, path="state")
+
+
+@pytest.mark.parametrize("mode", ["all", "any"])
+def test_entrance_projection_does_not_ignore_untracked_metric(mode):
+    schema = {"trust": {"min": 0, "max": 100}, "courage": {"min": 0, "max": 10}}
+    conditions = {mode: [{"type": "metric_compare", "metric": "courage", "op": ">=", "value": 20}]}
+    assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) is None
+    conditions[mode][0].update(metric="trust", value=20)
+    assert NumericV2BranchService._condition_alternatives(conditions, schema, "trust", 0) == [20]

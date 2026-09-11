@@ -534,16 +534,19 @@
             if (targetCharacterEpoch !== characterEpoch || !selectedSessionMatches(targetStoryId, targetSessionId)) return;
             if (!result.ok || !result.session) throw new Error(result.reason || 'end_failed');
             state.session = result.session;
-            state.pendingEnd = {
+            state.pendingEnd = result.end_receipt_id ? {
                 story_id: targetStoryId,
                 session_id: result.session.session_id,
                 revision: result.session.revision,
                 end_receipt_id: result.end_receipt_id || '',
                 archive_request_id: result.archive_request_id || ''
-            };
+            } : null;
             postMessage({ action: 'theater:external-end', story_id: targetStoryId, session_id: result.session.session_id });
             renderDetail();
             setStatus('theater.paused', '已退出');
+            if (!result.end_receipt_id) {
+                setFeedback(t('theater.storyMemoryForgetFailed', '剧本记忆删除失败，请重试。'), true);
+            }
             await maybePromptMemory();
         } catch (_) {
             // HTTP 已返回时显示业务失败；只有 fetch 没有拿到响应才归为本地服务连接问题。

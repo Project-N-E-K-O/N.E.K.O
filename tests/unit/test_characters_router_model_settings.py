@@ -648,3 +648,42 @@ def test_delete_reserved_prunes_empty_parent_nodes():
 
     assert deleted is True
     assert '_reserved' not in catgirl
+
+
+@pytest.mark.asyncio
+async def test_profile_update_waits_for_theater_commit_lock_and_loads_latest(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    lock = asyncio.Lock()
+    manager = DummyConfigManager({'猫娘': {'小葵': {'性格': '开朗'}}, '当前猫娘': '小葵'})
+    reads = []
+
+    async def load():
+        assert lock.locked()
+        reads.append(True)
+        return copy.deepcopy(manager.characters)
+
+    async def save(characters):
+        assert lock.locked()
+        manager.save_characters(characters)
+
+    async def refresh(*args, **kwargs):
+        assert not lock.locked()
+        return {"session_restarted": False}
+
+    monkeypatch.setattr(manager, 'aload_characters', load)
+    monkeypatch.setattr(manager, 'asave_characters', save)
+    monkeypatch.setattr(characters_crud_module, 'character_config_mutation_lock', lock)
+    monkeypatch.setattr(characters_crud_module, 'get_config_manager', lambda: manager)
+    monkeypatch.setattr(characters_crud_module, '_refresh_catgirl_context_after_profile_change', refresh)
+    monkeypatch.setattr(characters_crud_module, 'get_init_one_catgirl', lambda: AsyncMock())
+    async with lock:
+        task = asyncio.create_task(characters_crud_module.update_catgirl('小葵', DummyRequest({'性格': '认真'})))
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert reads == []
+        manager.characters['猫娘']['另一位'] = {'性格': '安静'}
+    result = await task
+    assert result['success'] is True
+    assert manager.saved_characters['猫娘']['小葵']['性格'] == '认真'
+    assert manager.saved_characters['猫娘']['另一位'] == {'性格': '安静'}

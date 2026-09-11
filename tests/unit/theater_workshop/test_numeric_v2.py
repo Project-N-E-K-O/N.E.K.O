@@ -4,6 +4,7 @@ from theater_workshop.host import InProcessPackageGateway
 import pytest
 
 from theater_workshop.sdk.numeric_v2 import (
+    NekoV2BridgeError,
     NumericV2Compiler,
     allocate_metric_id,
     metrics_to_package,
@@ -107,7 +108,7 @@ def test_numeric_v2_generator_compiler_rejects_soft_budget_below_minimum():
     source = numeric_v2_story()
     source["nodes"][0]["recommended_turns"] = 1
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(NekoV2BridgeError) as caught:
         NumericV2Compiler(InProcessPackageGateway()).compile(source)
 
     issues = caught.value.details.get("issues", [])

@@ -364,8 +364,8 @@ def test_upgraded_save_offers_cleanup_without_continuation(mock_page: Page, runn
 @pytest.mark.parametrize("operation", ["start", "input"])
 def test_transport_keeps_slow_valid_requests_alive(mock_page: Page, running_server: str, operation):
     _install_selector_routes(mock_page)
-    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
     mock_page.clock.install()
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
     mock_page.evaluate("""operation => {
         window.__requestAborted = false;
         const originalFetch = window.fetch.bind(window);
@@ -816,3 +816,22 @@ def test_post_end_receipt_prompts_memory_on_selector_and_archives_once(
     )
     expect(mock_page.locator("#theater-modal")).to_be_hidden()
     assert len(archive_calls) == 1
+
+
+@pytest.mark.frontend
+def test_selector_end_without_receipt_allows_retrying_pending_forget(mock_page: Page, running_server: str):
+    session = {"session_id": "forget-pending", "story_package_id": STORY["story_id"],
+               "revision": 4, "lifecycle_revision": 0, "status": "active"}
+    _install_selector_routes(mock_page, session=session, end_result={
+        "ok": True, "session": {**session, "status": "ended", "ended_reason": "user_exit", "lifecycle_revision": 1},
+    })
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    mock_page.locator("#theater-end-btn").click()
+    mock_page.locator("#theater-modal-confirm").click()
+    expect(mock_page.locator("#theater-modal")).to_be_hidden()
+    expect(mock_page.locator("#theater-inline-feedback")).to_contain_text("剧本记忆删除失败，请重试")
+    expect(mock_page.locator("#theater-forget-memory-btn")).to_be_enabled()
+    mock_page.locator("#theater-forget-memory-btn").click()
+    expect(mock_page.locator("#theater-modal-title")).to_have_text("忘记该剧本？")
+    mock_page.locator("#theater-modal-cancel").click()
+    expect(mock_page.locator("#theater-modal")).to_be_hidden()

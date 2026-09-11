@@ -2209,6 +2209,7 @@ def test_start_node_enhancement_allows_empty_prior_continuity_and_preserves_stor
     assert len(calls) == 1
     model_input = json.loads(calls[0][1]["content"])
     assert model_input["node_type"] == "start"
+    assert model_input["node_type_label"] == "幕节点"
     assert model_input["upstream_nodes"] == []
     assert result["character_state"]["continuity_from_previous"] == []
     assert story == original

@@ -744,9 +744,11 @@ class NumericV2Engine:
 class NumericV2Runtime:
     """组合 v2 Engine 和独立持久化目录。"""  # noqa: DOCSTRING_CJK
 
-    def __init__(self, engine: NumericV2Engine, root: Path):
+    def __init__(self, engine: NumericV2Engine, root: Path, *, write_transaction=None):
         self.engine = engine
         self.store = NumericV2SessionStore(Path(root), engine)
+        if write_transaction is not None:
+            self.store.write_transaction = write_transaction
 
     async def start_session(
         self,

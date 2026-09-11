@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import json
@@ -337,7 +337,25 @@ def list_numeric_v2_public_archives(
     return result
 
 
-async def delete_numeric_v2_sessions(
+@asynccontextmanager
+async def numeric_v2_session_files_guard(theater_storage_root: Path):
+    """Acquire async file locks before dispatching a synchronous disk transaction."""
+    session_root = _numeric_v2_session_root(theater_storage_root)
+    async with _lock(session_root.parent / "story_sessions.json"), AsyncExitStack() as stack:
+        # The index lock excludes creation/replacement while we collect paths.
+        paths = sorted([*session_root.glob("*.json"),
+                        *(session_root.parent / "public_archives").glob("*.json")])
+        for path in paths:
+            await stack.enter_async_context(_lock(path))
+        yield
+
+
+async def delete_numeric_v2_sessions(theater_storage_root: Path, **scope) -> list[dict[str, str]]:
+    async with numeric_v2_session_files_guard(theater_storage_root):
+        return _delete_numeric_v2_sessions_unlocked(theater_storage_root, **scope)
+
+
+def _delete_numeric_v2_sessions_unlocked(
     theater_storage_root: Path,
     *,
     story_id: str = "",
@@ -357,104 +375,101 @@ async def delete_numeric_v2_sessions(
         raise NumericV2StoreError("numeric_session_delete_scope_required")
     session_root = _numeric_v2_session_root(theater_storage_root)
     index_path = session_root.parent / "story_sessions.json"
-    async with _lock(index_path):
-        # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
-        stories = _read_story_session_slots(index_path)
+    # 索引不可读时必须在删除任何 Session 或冷档案之前失败。
+    stories = _read_story_session_slots(index_path)
+    try:
+        candidates = list_numeric_v2_sessions(
+            theater_storage_root,
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+            raise_on_io_error=True,
+        )
+    except OSError as exc:
+        raise NumericV2StoreError("numeric_session_read_failed") from exc
+    try:
+        archive_candidates = list_numeric_v2_public_archives(
+            theater_storage_root,
+            story_id=normalized_story_id,
+            character_id=normalized_character_id,
+            legacy_catgirl_name=normalized_legacy_name,
+            raise_on_io_error=True,
+        )
+    except OSError as exc:
+        raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
+    deleted: list[dict[str, str]] = []
+    for candidate in candidates:
+        path = Path(candidate["path"])
         try:
-            candidates = list_numeric_v2_sessions(
-                theater_storage_root,
-                story_id=normalized_story_id,
-                character_id=normalized_character_id,
-                legacy_catgirl_name=normalized_legacy_name,
+            current = _read_numeric_v2_session_summary(
+                path,
                 raise_on_io_error=True,
             )
         except OSError as exc:
             raise NumericV2StoreError("numeric_session_read_failed") from exc
-        try:
-            archive_candidates = list_numeric_v2_public_archives(
-                theater_storage_root,
-                story_id=normalized_story_id,
-                character_id=normalized_character_id,
-                legacy_catgirl_name=normalized_legacy_name,
-                raise_on_io_error=True,
-            )
-        except OSError as exc:
-            raise NumericV2StoreError("numeric_public_archive_read_failed") from exc
-        deleted: list[dict[str, str]] = []
-        for candidate in candidates:
-            path = Path(candidate["path"])
-            async with _lock(path):
-                try:
-                    current = _read_numeric_v2_session_summary(
-                        path,
-                        raise_on_io_error=True,
-                    )
-                except OSError as exc:
-                    raise NumericV2StoreError("numeric_session_read_failed") from exc
-                if current is None:
-                    continue
-                if normalized_story_id and current["story_id"] != normalized_story_id:
-                    continue
-                if normalized_character_id:
-                    binding_matches = current["character_id"] == normalized_character_id or (
-                        not current["character_id"]
-                        and normalized_legacy_name
-                        and current["catgirl_name"] == normalized_legacy_name
-                    )
-                elif normalized_legacy_name:
-                    binding_matches = current["catgirl_name"] == normalized_legacy_name
-                else:
-                    binding_matches = True
-                if not binding_matches:
-                    continue
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    continue
-                deleted.append(candidate)
-
-        # 公开冷档案与对应剧本/角色同生命周期；删除恢复槽位时不能留下孤儿文件。
-        for archive in archive_candidates:
-            path = Path(archive["path"])
-            async with _lock(path):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-
-        if (
-            normalized_story_id
-            and not normalized_character_id
-            and not normalized_legacy_name
-        ):
-            stories.pop(normalized_story_id, None)
+        if current is None:
+            continue
+        if normalized_story_id and current["story_id"] != normalized_story_id:
+            continue
         if normalized_character_id:
-            story_ids = (
-                [normalized_story_id]
-                if normalized_story_id
-                else list(stories)
+            binding_matches = current["character_id"] == normalized_character_id or (
+                not current["character_id"]
+                and normalized_legacy_name
+                and current["catgirl_name"] == normalized_legacy_name
             )
-            for current_story_id in story_ids:
-                if current_story_id not in stories:
-                    continue
-                stories[current_story_id].pop(normalized_character_id, None)
-                if not stories[current_story_id]:
-                    stories.pop(current_story_id)
-        if normalized_legacy_name:
-            deleted_session_ids = {item["session_id"] for item in deleted}
-            for current_story_id in list(stories):
-                stories[current_story_id] = {
-                    current_character_id: current_session_id
-                    for current_character_id, current_session_id in stories[
-                        current_story_id
-                    ].items()
-                    if current_session_id not in deleted_session_ids
-                }
-                if not stories[current_story_id]:
-                    stories.pop(current_story_id)
-        if index_path.is_file() or stories:
-            _write_story_session_slots(index_path, stories)
-        return deleted
+        elif normalized_legacy_name:
+            binding_matches = current["catgirl_name"] == normalized_legacy_name
+        else:
+            binding_matches = True
+        if not binding_matches:
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        deleted.append(candidate)
+
+    # 公开冷档案与对应剧本/角色同生命周期；删除恢复槽位时不能留下孤儿文件。
+    for archive in archive_candidates:
+        path = Path(archive["path"])
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    if (
+        normalized_story_id
+        and not normalized_character_id
+        and not normalized_legacy_name
+    ):
+        stories.pop(normalized_story_id, None)
+    if normalized_character_id:
+        story_ids = (
+            [normalized_story_id]
+            if normalized_story_id
+            else list(stories)
+        )
+        for current_story_id in story_ids:
+            if current_story_id not in stories:
+                continue
+            stories[current_story_id].pop(normalized_character_id, None)
+            if not stories[current_story_id]:
+                stories.pop(current_story_id)
+    if normalized_legacy_name:
+        deleted_session_ids = {item["session_id"] for item in deleted}
+        for current_story_id in list(stories):
+            stories[current_story_id] = {
+                current_character_id: current_session_id
+                for current_character_id, current_session_id in stories[
+                    current_story_id
+                ].items()
+                if current_session_id not in deleted_session_ids
+            }
+            if not stories[current_story_id]:
+                stories.pop(current_story_id)
+    if index_path.is_file() or stories:
+        _write_story_session_slots(index_path, stories)
+    return deleted
 
 
 async def update_numeric_v2_character_bindings(
@@ -515,9 +530,10 @@ async def update_numeric_v2_character_bindings(
 class NumericV2SessionStore:
     """每个 Session 一个文件，所有提交都先复验 revision 再原子替换。"""  # noqa: DOCSTRING_CJK
 
-    def __init__(self, root: Path, engine: "NumericV2Engine"):
+    def __init__(self, root: Path, engine: "NumericV2Engine", *, write_transaction=nullcontext):
         self.root = Path(root) / "numeric_v2" / "sessions"
         self.engine = engine
+        self.write_transaction = write_transaction
 
     def _path(self, session_id: str) -> Path:
         if not isinstance(session_id, str) or not session_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for char in session_id):
@@ -603,12 +619,13 @@ class NumericV2SessionStore:
     async def create(self, session: "ScriptSessionV2") -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            if path.exists():
-                raise NumericV2SessionExistsError("numeric_session_exists")
-            self.engine.validate_session(session)
-            stored = NumericV2StoredSession(session, ())
-            self._write(path, stored, exclusive=True)
-            return stored
+            with self.write_transaction():
+                if path.exists():
+                    raise NumericV2SessionExistsError("numeric_session_exists")
+                self.engine.validate_session(session)
+                stored = NumericV2StoredSession(session, ())
+                self._write(path, stored, exclusive=True)
+                return stored
 
     async def create_isolated_snapshot(
         self,
@@ -618,12 +635,13 @@ class NumericV2SessionStore:
 
         path = self._path(stored.session.session_id)
         async with _lock(path):
-            if path.exists():
-                raise NumericV2SessionExistsError("numeric_session_exists")
-            # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
-            self._validate_chain(stored)
-            self._write(path, stored, exclusive=True)
-            return stored
+            with self.write_transaction():
+                if path.exists():
+                    raise NumericV2SessionExistsError("numeric_session_exists")
+                # 先在内存中验证完整账本，再一次落盘；失败时不会留下半条分叉链。
+                self._validate_chain(stored)
+                self._write(path, stored, exclusive=True)
+                return stored
 
     async def create_story_session(
         self,
@@ -638,29 +656,30 @@ class NumericV2SessionStore:
             raise NumericV2StoreError("numeric_story_session_index_invalid")
         async with _lock(index_path):
             async with _lock(path):
-                if path.exists():
-                    raise NumericV2SessionExistsError("numeric_session_exists")
-                self.engine.validate_session(session)
-                stored = NumericV2StoredSession(session, ())
-                stories = self._read_story_session_index()
-                stories.setdefault(session.story_package_id, {})[
-                    character_id
-                ] = session.session_id
-                self._write(path, stored, exclusive=True)
-                try:
-                    self._write_story_session_index(stories)
-                except Exception:
-                    # 索引发布失败时撤销刚创建的不可达 Session，保持文件与恢复槽位原子一致。
+                with self.write_transaction():
+                    if path.exists():
+                        raise NumericV2SessionExistsError("numeric_session_exists")
+                    self.engine.validate_session(session)
+                    stored = NumericV2StoredSession(session, ())
+                    stories = self._read_story_session_index()
+                    stories.setdefault(session.story_package_id, {})[
+                        character_id
+                    ] = session.session_id
+                    self._write(path, stored, exclusive=True)
                     try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError as rollback_exc:
-                        raise NumericV2StoreError(
-                            "numeric_session_create_rollback_failed"
-                        ) from rollback_exc
-                    raise
-                return stored
+                        self._write_story_session_index(stories)
+                    except Exception:
+                        # 索引发布失败时撤销刚创建的不可达 Session，保持文件与恢复槽位原子一致。
+                        try:
+                            path.unlink()
+                        except FileNotFoundError:
+                            pass
+                        except OSError as rollback_exc:
+                            raise NumericV2StoreError(
+                                "numeric_session_create_rollback_failed"
+                            ) from rollback_exc
+                        raise
+                    return stored
 
     async def replace_active(
         self,
@@ -676,36 +695,37 @@ class NumericV2SessionStore:
         index_path = self._story_session_index_path
         async with _lock(index_path):
             async with _lock(previous_path):
-                if not previous_path.is_file():
-                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
-                previous = self._read(previous_path)
-                if previous.session.story_package_id != session.story_package_id:
-                    raise NumericV2StoreError("numeric_replacement_story_mismatch")
                 async with _lock(next_path):
-                    if next_path.exists():
-                        raise NumericV2SessionExistsError("numeric_session_exists")
-                    self.engine.validate_session(session)
-                    stored = NumericV2StoredSession(session, ())
-                    stories = self._read_story_session_index()
-                    previous_stories = deepcopy(stories)
-                    stories.setdefault(session.story_package_id, {})[
-                        str(session.catgirl_binding.get("character_id") or "")
-                    ] = session.session_id
-                    self._write(next_path, stored, exclusive=True)
-                    try:
-                        self._write_story_session_index(stories)
-                        previous_path.unlink()
-                    except OSError as exc:
+                    with self.write_transaction():
+                        if not previous_path.is_file():
+                            raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                        previous = self._read(previous_path)
+                        if previous.session.story_package_id != session.story_package_id:
+                            raise NumericV2StoreError("numeric_replacement_story_mismatch")
+                        if next_path.exists():
+                            raise NumericV2SessionExistsError("numeric_session_exists")
+                        self.engine.validate_session(session)
+                        stored = NumericV2StoredSession(session, ())
+                        stories = self._read_story_session_index()
+                        previous_stories = deepcopy(stories)
+                        stories.setdefault(session.story_package_id, {})[
+                            str(session.catgirl_binding.get("character_id") or "")
+                        ] = session.session_id
+                        self._write(next_path, stored, exclusive=True)
                         try:
-                            self._write_story_session_index(previous_stories)
-                        except OSError:
-                            pass
-                        try:
-                            next_path.unlink()
-                        except OSError:
-                            pass
-                        raise NumericV2StoreError("numeric_session_replace_failed") from exc
-                    return stored
+                            self._write_story_session_index(stories)
+                            previous_path.unlink()
+                        except OSError as exc:
+                            try:
+                                self._write_story_session_index(previous_stories)
+                            except OSError:
+                                pass
+                            try:
+                                next_path.unlink()
+                            except OSError:
+                                pass
+                            raise NumericV2StoreError("numeric_session_replace_failed") from exc
+                        return stored
 
     async def load(self, session_id: str) -> NumericV2StoredSession | None:
         path = self._path(session_id)
@@ -748,24 +768,29 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session.session_id)
         async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            current = self._read(path)
-            if current.session.revision != int(ledger_event.get("base_revision", -1)):
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.status == "ended":
-                raise NumericV2StoreRevisionConflictError("session_already_ended")
-            if any(event.get("client_turn_id") == ledger_event.get("client_turn_id") for event in current.ledger_events):
-                raise NumericV2StoreRevisionConflictError("numeric_duplicate_client_turn_id")
-            if session.revision != current.session.revision + 1:
-                raise NumericV2StoreError("numeric_revision_not_monotonic")
-            stored = NumericV2StoredSession(
-                session,
-                (*current.ledger_events, deepcopy(dict(ledger_event))),
-            )
-            self._validate_chain(stored)
-            self._write(path, stored)
-            return stored
+            with self.write_transaction():
+                if not path.is_file():
+                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                current = self._read(path)
+                if current.session.revision != int(ledger_event.get("base_revision", -1)):
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.status == "ended":
+                    raise NumericV2StoreRevisionConflictError("session_already_ended")
+                # The candidate carries the lifecycle at preparation time. End and
+                # resume can change it without advancing the story revision.
+                if session.lifecycle_revision != current.session.lifecycle_revision:
+                    raise NumericV2StoreRevisionConflictError("numeric_base_lifecycle_revision_mismatch")
+                if any(event.get("client_turn_id") == ledger_event.get("client_turn_id") for event in current.ledger_events):
+                    raise NumericV2StoreRevisionConflictError("numeric_duplicate_client_turn_id")
+                if session.revision != current.session.revision + 1:
+                    raise NumericV2StoreError("numeric_revision_not_monotonic")
+                stored = NumericV2StoredSession(
+                    session,
+                    (*current.ledger_events, deepcopy(dict(ledger_event))),
+                )
+                self._validate_chain(stored)
+                self._write(path, stored)
+                return stored
 
     async def end_session(
         self,
@@ -777,33 +802,34 @@ class NumericV2SessionStore:
     ) -> NumericV2StoredSession:
         path = self._path(session_id)
         async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            current = self._read(path)
-            # 剧本包可能已升级，结束动作只改生命周期；仍需复验持久化账本自身连续，
-            # 但不能拿新剧本规则重放旧剧情，否则用户会永久卡在演绎状态。
-            self._validate_lifecycle_chain(current)
-            if current.session.revision != base_revision:
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.status == "ended":
-                # 仅接受紧邻本次请求的成功重放；更早生命周期的延迟请求必须冲突。
-                if (
-                    current.session.ended_reason == str(reason or "user_exit")
-                    and current.session.lifecycle_revision == base_lifecycle_revision + 1
-                ):
-                    return current
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.lifecycle_revision != base_lifecycle_revision:
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            ended = replace(
-                current.session,
-                status="ended",
-                ended_reason=str(reason or "user_exit"),
-                lifecycle_revision=current.session.lifecycle_revision + 1,
-            )
-            stored = NumericV2StoredSession(ended, current.ledger_events)
-            self._write(path, stored)
-            return stored
+            with self.write_transaction():
+                if not path.is_file():
+                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                current = self._read(path)
+                # 剧本包可能已升级，结束动作只改生命周期；仍需复验持久化账本自身连续，
+                # 但不能拿新剧本规则重放旧剧情，否则用户会永久卡在演绎状态。
+                self._validate_lifecycle_chain(current)
+                if current.session.revision != base_revision:
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.status == "ended":
+                    # 仅接受紧邻本次请求的成功重放；更早生命周期的延迟请求必须冲突。
+                    if (
+                        current.session.ended_reason == str(reason or "user_exit")
+                        and current.session.lifecycle_revision == base_lifecycle_revision + 1
+                    ):
+                        return current
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.lifecycle_revision != base_lifecycle_revision:
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                ended = replace(
+                    current.session,
+                    status="ended",
+                    ended_reason=str(reason or "user_exit"),
+                    lifecycle_revision=current.session.lifecycle_revision + 1,
+                )
+                stored = NumericV2StoredSession(ended, current.ledger_events)
+                self._write(path, stored)
+                return stored
 
     async def resume_session(
         self,
@@ -816,32 +842,33 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            current = self._read(path)
-            if current.session.revision != base_revision:
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.status == "active":
-                # 已成功继续后的同一请求可以安全重试，旧请求不能借当前 active 状态蒙混通过。
-                if current.session.lifecycle_revision == base_lifecycle_revision + 1:
-                    return current
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.lifecycle_revision != base_lifecycle_revision:
-                raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
-            if current.session.status != "ended" or current.session.ended_reason != "user_exit":
-                raise NumericV2StoreError("numeric_session_not_resumable")
-            resumed = NumericV2StoredSession(
-                replace(
-                    current.session,
-                    status="active",
-                    ended_reason=None,
-                    lifecycle_revision=current.session.lifecycle_revision + 1,
-                ),
-                current.ledger_events,
-            )
-            self._validate_chain(resumed)
-            self._write(path, resumed)
-            return resumed
+            with self.write_transaction():
+                if not path.is_file():
+                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                current = self._read(path)
+                if current.session.revision != base_revision:
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.status == "active":
+                    # 已成功继续后的同一请求可以安全重试，旧请求不能借当前 active 状态蒙混通过。
+                    if current.session.lifecycle_revision == base_lifecycle_revision + 1:
+                        return current
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.lifecycle_revision != base_lifecycle_revision:
+                    raise NumericV2StoreRevisionConflictError("numeric_base_revision_mismatch")
+                if current.session.status != "ended" or current.session.ended_reason != "user_exit":
+                    raise NumericV2StoreError("numeric_session_not_resumable")
+                resumed = NumericV2StoredSession(
+                    replace(
+                        current.session,
+                        status="active",
+                        ended_reason=None,
+                        lifecycle_revision=current.session.lifecycle_revision + 1,
+                    ),
+                    current.ledger_events,
+                )
+                self._validate_chain(resumed)
+                self._write(path, resumed)
+                return resumed
 
     async def forget_history_through_current_revision(
         self,
@@ -853,31 +880,32 @@ class NumericV2SessionStore:
 
         path = self._path(session_id)
         async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            current = self._read(path)
-            boundary = current.session.revision if through_revision is None else through_revision
-            if type(boundary) is not int or not 0 <= boundary <= current.session.revision:
-                raise NumericV2StoreError("numeric_forget_revision_invalid")
-            if current.session.forgotten_through_revision >= boundary:
-                return current
-            forgotten = NumericV2StoredSession(
-                replace(
-                    current.session,
-                    forgotten_through_revision=boundary,
-                ),
-                current.ledger_events,
-            )
-            from .numeric_v2_runtime import NumericV2RuntimeError
-            try:
-                self._validate_chain(forgotten)
-            except NumericV2RuntimeError as exc:
-                if str(exc) not in {"story_package_revision_mismatch", "story_package_hash_mismatch"}:
-                    raise
-                # Package changes permit lifecycle writes, not new story turns.
-                self._validate_lifecycle_chain(forgotten)
-            self._write(path, forgotten)
-            return forgotten
+            with self.write_transaction():
+                if not path.is_file():
+                    raise NumericV2SessionNotFoundError("numeric_session_not_found")
+                current = self._read(path)
+                boundary = current.session.revision if through_revision is None else through_revision
+                if type(boundary) is not int or not 0 <= boundary <= current.session.revision:
+                    raise NumericV2StoreError("numeric_forget_revision_invalid")
+                if current.session.forgotten_through_revision >= boundary:
+                    return current
+                forgotten = NumericV2StoredSession(
+                    replace(
+                        current.session,
+                        forgotten_through_revision=boundary,
+                    ),
+                    current.ledger_events,
+                )
+                from .numeric_v2_runtime import NumericV2RuntimeError
+                try:
+                    self._validate_chain(forgotten)
+                except NumericV2RuntimeError as exc:
+                    if str(exc) not in {"story_package_revision_mismatch", "story_package_hash_mismatch"}:
+                        raise
+                    # Package changes permit lifecycle writes, not new story turns.
+                    self._validate_lifecycle_chain(forgotten)
+                self._write(path, forgotten)
+                return forgotten
 
     def _read(self, path: Path) -> NumericV2StoredSession:
         from .numeric_v2_runtime import ScriptSessionV2, _player_address_disclosed

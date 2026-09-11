@@ -133,6 +133,8 @@ def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, 
         metric_id = str(metric.get("id") or "").strip()
         if not metric_id and name:
             metric_id = allocate_metric_id(name, existing_ids)
+        if not metric_id:
+            raise ValueError("metric_id_required")
         if metric_id in existing_ids:
             raise ValueError("duplicate_metric_id")
         metric["id"] = metric_id
@@ -173,6 +175,8 @@ def metrics_to_package(metrics: list[Mapping[str, Any]]) -> tuple[dict[str, Any]
     initial: dict[str, int] = {}
     for metric in metrics:
         metric_id = str(metric["id"])
+        if not metric_id.strip():
+            raise ValueError("metric_id_required")
         # Direct callers must not silently collapse author definitions either.
         if metric_id in schema:
             raise ValueError("duplicate_metric_id")
