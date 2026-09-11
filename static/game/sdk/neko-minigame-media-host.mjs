@@ -19,13 +19,20 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   let generation = 0, playingGeneration = -1;
   const audio = new Audio();
   let context = null, analyser = null;
+  let masterVolume = video.volume ?? 1, appliedVolume = masterVolume, speaking = false;
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
   const running = () => !disposed && !waiting && !video.paused && !video.seeking && video.readyState >= 3;
   const emit = (type, cue = '') => onEvent({ type, cue, position: video.currentTime });
+  const duckSoundtrack = value => {
+    speaking = value;
+    appliedVolume = masterVolume * (speaking ? 0.25 : 1);
+    if (video.volume !== appliedVolume) video.volume = appliedVolume;
+  };
   function stop(clear = false) {
     audio.pause();
+    duckSoundtrack(false);
     onMouth(0);
     if (clear) { active = null; audio.removeAttribute('src'); onCue(null); }
   }
@@ -45,13 +52,20 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     } else if (Math.abs(audio.currentTime - offset) > 0.15) audio.currentTime = offset;
   }
   function listen(target, type, fn) { target.addEventListener(type, fn); listeners.push(() => target.removeEventListener(type, fn)); }
-  const syncVolume = () => { audio.volume = video.volume; audio.muted = video.muted; };
+  const syncVolume = () => {
+    // Internal ducking must not also turn down the companion's voice.
+    if (video.volume !== appliedVolume) masterVolume = video.volume;
+    audio.volume = masterVolume; audio.muted = video.muted;
+    duckSoundtrack(speaking);
+  };
   syncVolume();
   listen(video, 'volumechange', syncVolume);
   listen(audio, 'playing', () => {
     if (!running() || playingGeneration !== generation) { stop(); return; }
+    duckSoundtrack(true);
     emit('audio-started', active?.id); onCue(active);
   });
+  listen(audio, 'waiting', () => duckSoundtrack(false));
   listen(audio, 'ended', () => { emit('audio-ended', active?.id); stop(true); });
   listen(video, 'waiting', () => { waiting = true; stop(); });
   listen(video, 'playing', () => { waiting = false; sync(); });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 class Media extends EventTarget {
-  constructor(){super();this.currentTime=0;this.duration=2;this.paused=true;this.playbackRate=1;this.readyState=4;this.seeking=false;this.ended=false;}
+  constructor(){super();this.volume=1;this.currentTime=0;this.duration=2;this.paused=true;this.playbackRate=1;this.readyState=4;this.seeking=false;this.ended=false;}
   async play(){this.paused=false;this.dispatchEvent(new Event('play'));this.dispatchEvent(new Event('playing'));}
   pause(){const was=this.paused;this.paused=true;if(!was)this.dispatchEvent(new Event('pause'));}
   removeAttribute(name){delete this[name];}load(){}
@@ -9,7 +9,8 @@ class Media extends EventTarget {
 const audios=[];
 globalThis.HTMLVideoElement=Media;
 globalThis.Audio=class extends Media{constructor(){super();audios.push(this);}};
-globalThis.AudioContext=class {createAnalyser(){return {connect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(){return {connect(){}};}createGain(){return {gain:{value:1},connect(){}};}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){}};}async resume(){}async close(){}};
+const gains=[];
+globalThis.AudioContext=class {createAnalyser(){return {connect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(){return {connect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){this.value=value;}},connect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){}};}async resume(){}async close(){}};
 globalThis.window={};globalThis.document=new EventTarget();
 globalThis.fetch=async()=>({ok:true,blob:async()=>new Blob(['audio'])});
 let nextFrame=null;
@@ -22,7 +23,11 @@ const controller=await mount({video,timeline:{id:'job',version:'version',status:
 await controller.play();
 video.currentTime=3.95;nextFrame();assert.equal(audios[0].paused,true,'future cue is not consumed');
 video.currentTime=4.05;nextFrame();assert.equal(audios[0].paused,false);assert.ok(Math.abs(audios[0].currentTime-.05)<.001);
+assert.equal(video.volume,.25,'reaction ducks soundtrack');
+video.dispatchEvent(new Event('volumechange'));
+assert.equal(audios[0].volume,1,'ducking preserves voice volume');
 video.pause();assert.equal(audios[0].paused,true,'pause stops reaction');
+assert.equal(video.volume,1,'pause restores soundtrack');
 await controller.play();assert.equal(audios[0].paused,false,'resume uses media offset');
 video.dispatchEvent(new Event('waiting'));assert.equal(audios[0].paused,true,'buffering stops reaction');
 video.dispatchEvent(new Event('playing'));assert.equal(audios[0].paused,false);
