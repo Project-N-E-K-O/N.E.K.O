@@ -1,9 +1,11 @@
 // Trusted page composition. The scene only receives the SDK client.
 import '../../sdk/neko-minigame-media-host.mjs';
 import { run } from './scene.mjs';
+import { initializeDisplay } from './display.mjs';
 import { create as createLive2D } from './live2d-host.mjs';
 import { create as createVRM } from './vrm-host.mjs';
 let renderer = null;
+initializeDisplay();
 const container = document.getElementById('avatar');
 const avatarHost = NekoMiniGameAvatarHost.create({slots:{companion:{container,createController:({config})=>{
   renderer = (config.model.type==='vrm'?createVRM:createLive2D)(container);return renderer;
