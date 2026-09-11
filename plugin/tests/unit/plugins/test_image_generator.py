@@ -253,10 +253,12 @@ def test_jpeg_requires_scan_data_and_end_marker():
 async def test_successful_reset_restores_configuration_availability():
     plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
     plugin._settings_available = False
+    assert (await plugin.reset_settings()).is_err()
+    assert (await plugin.clear_api_key()).is_ok()
     assert (await plugin.reset_settings()).is_ok()
     settings, key = await plugin._generation_config_snapshot()
     assert settings == DEFAULT_SETTINGS
-    assert key == SECRET
+    assert key == ""
 
 
 @pytest.mark.asyncio
@@ -3636,3 +3638,67 @@ def test_static_probe_never_reuses_existing_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "register_static_ui", register)
     assert plugin._frozen_static_ui_overrides_ignored()
     assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_prior_settings_require_new_key_on_save():
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    plugin._settings_available = False
+    assert (await plugin.save_settings(**await encrypted_save_payload(plugin))).is_err()
+    assert store.data["api_key"] == SECRET
+    assert (await plugin.save_settings(**await encrypted_save_payload(plugin, api_key="explicit-new-key"))).is_ok()
+
+
+@pytest.mark.asyncio
+async def test_secret_bearing_startup_never_prunes(monkeypatch):
+    settings = {**DEFAULT_SETTINGS, "model": SECRET}
+    plugin, _, _ = make_plugin(store=FakeStore(data={"settings": settings, "api_key": SECRET}))
+    calls = []
+    async def prune():
+        calls.append(True)
+    monkeypatch.setattr(plugin, "_prune_cache", prune)
+    await plugin.startup()
+    try:
+        assert not plugin._settings_available
+        assert calls == []
+    finally:
+        await plugin.shutdown()
+
+
+def test_png_rejects_duplicate_header_and_missing_palette():
+    duplicate = PNG_BYTES[:33] + PNG_BYTES[8:33] + PNG_BYTES[33:]
+    palette = bytearray(PNG_BYTES)
+    palette[25] = 3
+    palette[29:33] = zlib.crc32(palette[12:29]).to_bytes(4, "big")
+    for data in (duplicate, bytes(palette)):
+        with pytest.raises(image_generator_module._GenerationFailure):
+            image_generator_module._read_png_geometry(data)
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-image-1:variant", "openai:gpt-image-1", "gpt-image-1:variant"])
+def test_gpt_image_variant_omits_legacy_response_format(model):
+    plugin, _, _ = make_plugin()
+    body = plugin._build_request_body(settings={**DEFAULT_SETTINGS, "model": model}, prompt="cat", size="auto", quality="auto", style="")
+    assert "response_format" not in body
+
+
+@pytest.mark.asyncio
+async def test_dedup_executes_the_snapshot_it_hashed(monkeypatch):
+    plugin, _, _ = make_plugin()
+    started, release = asyncio.Event(), asyncio.Event()
+    snapshots = []
+    async def execute(**kwargs):
+        started.set()
+        await release.wait()
+        snapshots.append(kwargs["config_snapshot"][0]["model"])
+        return Ok({})
+    monkeypatch.setattr(plugin, "_execute_generation", execute)
+    first = asyncio.create_task(plugin.generate_image(prompt="cat"))
+    await started.wait()
+    async with plugin._config_lock:
+        plugin._settings["model"] = "new-model"
+    second = asyncio.create_task(plugin.generate_image(prompt="cat"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+    assert sorted(snapshots) == sorted([DEFAULT_SETTINGS["model"], "new-model"])

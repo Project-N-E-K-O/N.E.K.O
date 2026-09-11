@@ -791,6 +791,10 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     offset = 8
     animated = False
     has_image_data = False
+    seen_header = False
+    seen_palette = False
+    seen_idat = False
+    ended_idat = False
     while offset + 12 <= len(data):
         length = int.from_bytes(data[offset:offset + 4], "big")
         end = offset + 12 + length
@@ -802,12 +806,28 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         expected_crc = int.from_bytes(data[end - 4:end], "big")
         if binascii.crc32(data[offset + 4:end - 4]) & 0xffffffff != expected_crc:
             raise _GenerationFailure("图片数据校验失败", "InvalidImageData")
+        if kind == b"IHDR":
+            if seen_header or offset != 8:
+                break
+            seen_header = True
+        elif kind == b"PLTE":
+            if (seen_palette or seen_idat or data[25] in (0, 4)
+                    or not length or length % 3 or length > 768
+                    or (data[25] == 3 and length // 3 > 2 ** data[24])):
+                break
+            seen_palette = True
+        elif kind == b"IDAT":
+            if ended_idat or (data[25] == 3 and not seen_palette):
+                break
+            seen_idat = True
+        if seen_idat and kind != b"IDAT":
+            ended_idat = True
         if kind == b"acTL":
             animated = True
         if kind == b"IDAT" and length > 0:
             has_image_data = True
         if kind == b"IEND" and length == 0:
-            if not has_image_data:
+            if not has_image_data or end != len(data):
                 break
             return width, height, animated
         offset = end
@@ -1689,20 +1709,13 @@ class ImageGeneratorPlugin(NekoPluginBase):
             configuration_warning = "生成图片缓存不可用；管理面板可能可读，但生成已降级"
             with self._state_lock:
                 self._configuration_warning = configuration_warning
-        try:
-            if self._settings_available:
-                await self._prune_cache()
-        except Exception as exc:
-            self.logger.warning(
-                "ImageGenerator cache startup sweep failed: failure_class={}",
-                type(exc).__name__,
-            )
-
-        key = await self._load_api_key()
-        self._remember_secrets(key)
-        if key and _settings_contain_secret(
+        key_read_ok, raw_key, key = await self._load_api_key_checked()
+        if not key_read_ok:
+            self._settings_available = False
+        self._remember_secrets(raw_key, key)
+        if _settings_contain_secret(
             self._settings_snapshot(),
-            self._known_secrets_snapshot(key),
+            self._known_secrets_snapshot(raw_key, key),
         ):
             safe_settings = (
                 manifest_settings
@@ -1725,6 +1738,15 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "ImageGenerator secret-bearing settings ignored: "
                 "failure_class=SecretInSettings"
             )
+        try:
+            if self._settings_available:
+                await self._prune_cache()
+        except Exception as exc:
+            self.logger.warning(
+                "ImageGenerator cache startup sweep failed: failure_class={}",
+                type(exc).__name__,
+            )
+
         dependencies_available = (
             _CD_RSA is not None
             and _CD_PKCS1_OAEP is not None
@@ -2662,8 +2684,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # explicit b64_json request so URL-only output can be refused without
         # introducing a server-side download path.
         model_name = str(settings["model"]).lower().rsplit("/", 1)[-1]
-        model_name = model_name.rsplit(":", 1)[-1]
-        if not model_name.startswith(("gpt-image-", "chatgpt-image-")):
+        if not any(part.startswith(("gpt-image-", "chatgpt-image-")) for part in model_name.split(":")):
             body["response_format"] = "b64_json"
         return body
 
@@ -3422,8 +3443,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # is user-driven and must always run fresh.
         dedup_key: str | None = None
         if action == "generate_image":
-            settings = self._settings_snapshot()
             try:
+                settings, api_key = await self._generation_config_snapshot()
                 prompt, size, quality, style = self._resolve_generation_options(
                     settings=settings, prompt=prompt, size=size,
                     quality=quality, style=style,
@@ -3434,7 +3455,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 json.dumps(
                     [prompt, size, quality, style,
                      settings["auto_show_in_chat"] if auto_show_override is None
-                     else auto_show_override, settings],
+                     else auto_show_override, settings, api_key],
                     ensure_ascii=False, separators=(",", ":"), sort_keys=True,
                 ).encode("utf-8")
             ).hexdigest()
@@ -3472,6 +3493,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         style=style,
                         action=action,
                         auto_show_override=auto_show_override,
+                        config_snapshot=(settings, api_key),
                     )
                 )
                 self.logger.info(
@@ -3521,10 +3543,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
         style: Any = None,
         action: str,
         auto_show_override: bool | None,
+        config_snapshot: tuple[dict[str, Any], str] | None = None,
     ):
         """Run one real (deduplicated) generation end to end."""
         try:
-            settings, api_key = await self._generation_config_snapshot()
+            settings, api_key = config_snapshot or await self._generation_config_snapshot()
             cleaned_prompt, resolved_size, resolved_quality, resolved_style = (
                 self._resolve_generation_options(
                     settings=settings,
@@ -4022,8 +4045,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "" if clear_api_key else (new_api_key or validated_old_key)
             )
             if (validated_old_key and not new_api_key and not clear_api_key
-                    and _origin_tuple(validated["api_base_url"])
-                    != _origin_tuple(old_runtime_settings["api_base_url"])):
+                    and (not self._settings_available or _origin_tuple(validated["api_base_url"])
+                         != _origin_tuple(old_runtime_settings["api_base_url"]))):
                 return Err(SdkError("切换服务地址时请提供新 API 密钥或明确清除原密钥"))
             await self._acquire_lock(self._history_lock)
             try:
@@ -4251,8 +4274,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             }
             if self._cache_limits_decrease(target_settings):
                 return Err(SdkError("图片正在生成，请完成后再降低缓存或下载限额"))
-            if (api_key and _origin_tuple(target_settings["api_base_url"])
-                    != _origin_tuple(self._settings_snapshot()["api_base_url"])):
+            if (api_key and (not self._settings_available or _origin_tuple(target_settings["api_base_url"])
+                    != _origin_tuple(self._settings_snapshot()["api_base_url"]))):
                 return Err(SdkError("恢复默认设置会切换服务地址，请先清除 API 密钥"))
             if _settings_contain_secret(target_settings, secrets):
                 return Err(
