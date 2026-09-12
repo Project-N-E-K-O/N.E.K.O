@@ -275,8 +275,14 @@
         }
     });
     // 请她离开模式开启时，dismiss 正在显示或排队中的情境弹窗。
+    // tryAutoGoodbye() 先派发 live2d-goodbye-click 再确认 isGoodbyeActive()；
+    // 激活被拒时会恢复静默状态。延到微任务再检查，避免误杀。
     window.addEventListener('live2d-goodbye-click', function () {
-        _dismissActiveContextPromptForGoodbye();
+        queueMicrotask(function () {
+            if (_isGoodbyeActive()) {
+                _dismissActiveContextPromptForGoodbye();
+            }
+        });
     });
     window.addEventListener('neko:auto-goodbye:state-change', function (event) {
         if (_isGoodbyeActive()) {
