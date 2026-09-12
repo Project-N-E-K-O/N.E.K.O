@@ -7,7 +7,7 @@ const root = process.env.NEKO_AVATAR_REFERENCE_DIR || path.resolve(__dirname, '.
 const read = (name) => fs.readFileSync(path.join(root, 'static/game/sdk', name), 'utf8');
 const tick = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
+const response = (data) => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
 const descriptor = { name: 'Neko', model: { type: 'vrm', path: '/models/neko.vrm' }, rendererAvailable: true };
 
 async function environment(factory, fetchImpl) {
@@ -173,6 +173,60 @@ async function factories() {
 }
 
 async function queries() {
+  for (const method of ['getAvatarCharacter', 'listAvatarCharacters']) {
+    for (const mode of ['overflow', 'exact', 'header', 'abort', 'timeout', 'dispose', 'json-only']) {
+      const limit = 16 * 1024 * 1024;
+      const payload = JSON.stringify(method === 'listAvatarCharacters' ? { names: ['Neko'] } : {
+        lanlan_name: 'Neko', model_type: 'pngtuber', pngtuber_path: '/avatar.png',
+      });
+      let cancelled = 0; let emitted = 0;
+      let body; let readerStarted;
+      const started = new Promise(resolve => { readerStarted = resolve; });
+      const env = await environment(() => ({ mount() {}, dispose() {} }), async () => {
+        if (mode === 'json-only') return { ok: true, json: async () => { throw new Error('unbounded parse'); } };
+        body = new ReadableStream({
+          pull(controller) {
+            readerStarted();
+            if (['abort', 'timeout', 'dispose'].includes(mode)) return;
+            if (!emitted) {
+              controller.enqueue(new TextEncoder().encode(payload)); emitted += payload.length; return;
+            }
+            const total = limit + (mode === 'overflow' ? 1 : 0);
+            const size = Math.min(1024 * 1024, total - emitted);
+            if (!size) { controller.close(); return; }
+            controller.enqueue(new Uint8Array(size).fill(32)); emitted += size;
+          },
+          cancel() { cancelled++; },
+        }, { highWaterMark: 0 });
+        return new Response(body, mode === 'header' ? { headers: { 'content-length': String(limit + 1) } } : {});
+      });
+      const host = env.host();
+      const game = await env.game(host);
+      const abort = new AbortController();
+      try {
+        const options = { signal: abort.signal, timeoutMs: 30000 };
+        const pending = (method === 'getAvatarCharacter' ? host[method]('Neko', options) : host[method](options))
+          .catch(error => error);
+        if (['abort', 'timeout', 'dispose'].includes(mode)) {
+          await started;
+          assert.equal(env.timers.size, 1, 'HTTP fallback duplicated the query deadline');
+          if (mode === 'abort') abort.abort();
+          if (mode === 'timeout') for (const timer of [...env.timers.values()]) timer.fn();
+          if (mode === 'dispose') host.dispose();
+        }
+        const value = await pending;
+        if (mode === 'exact') assert.equal(method === 'getAvatarCharacter' ? value.name : value[0], 'Neko');
+        else assert.equal(value?.code, ['abort', 'timeout', 'dispose'].includes(mode)
+          ? { abort: 'cancelled', timeout: 'timeout', dispose: 'disposed' }[mode] : 'invalid_response', `${method}: ${mode}`);
+        await tick();
+        assert.equal(host._avatarQueries.size, 0, 'fallback response retained raw query capacity');
+        assert.equal(env.timers.size, 0);
+        if (body) assert.equal(body.locked, false);
+        if (!['exact', 'json-only'].includes(mode)) assert.equal(cancelled, 1);
+        if (mode === 'header') assert.equal(emitted, 0);
+      } finally { abort.abort(); game.dispose(); }
+    }
+  }
   const png = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
     lanlan_name: 'Example PNG', model_type: 'pngtuber', pngtuber_path: '/user_pngtuber/example/idle.png',
     mmd_path: '/static/mmd/example.pmx',
@@ -279,7 +333,20 @@ async function queries() {
     }
     let actual = e;
     if (action === 'body') actual = await environment(() => ({ mount() {}, dispose() {} }), async () => ({
-      ok: true, status: 200, json: () => { entered++; return gate.promise; },
+      ok: true, status: 200, headers: new Headers(),
+      arrayBuffer() { throw new Error('must use bounded reader'); },
+      body: { getReader() {
+        let emitted = false;
+        return {
+          async read() {
+            if (emitted) return { done: true };
+            emitted = true; entered++;
+            await gate.promise; // Deliberately non-cooperative source.
+            return { done: false, value: new TextEncoder().encode('{"lanlan_name":"Neko"}') };
+          },
+          cancel() {}, releaseLock() {},
+        };
+      } },
     }));
     const client = await actual.game(h || actual.host());
     if (['end', 'page-exit'].includes(action)) await client.runtime.start();

@@ -781,6 +781,34 @@ async function main() {
       if (action !== 'dispose') assert((await probe.listCharacters())[0] === 'Example', 'query slot retained');
     } finally { release?.(); await probe.dispose(); }
   }
+  for (const primaryType of ['pngtuber', 'live2d', 'vrm', 'mmd']) {
+    for (const failure of ['network', 'http', 'json']) {
+      const {probe, timers} = queryProbe(async (url) => {
+        if (url === '/api/characters') return jsonResponse({猫娘:{Example:{
+          model_type: ['vrm','mmd'].includes(primaryType) ? 'live3d' : primaryType,
+          live3d_sub_type: primaryType, vrm: 'example.vrm', mmd: 'example.pmx',
+          pngtuber: {idle_image:'/avatar.png'}, live2d: '/avatar.model3.json',
+        }}});
+        if (url.includes('current_live2d_model')) return jsonResponse({success:true,model_info:{path:'/avatar.model3.json'}});
+        if (failure === 'network') throw new Error('optional canonical unavailable');
+        if (failure === 'http') return jsonResponse({}, 503);
+        return new Response('{');
+      });
+      try {
+        if (['vrm','mmd'].includes(primaryType)) {
+          assert(await rejection(probe.getCharacter('Example')), 'required 3D lookup failure was swallowed');
+        } else {
+          const value = await probe.getCharacter('Example');
+          assert(value.model.type === primaryType, 'optional 3D failure disabled the primary model');
+          assert(!value.fallbackModels.some(model => ['vrm','mmd'].includes(model.type)),
+            'unresolved optional 3D model was advertised');
+          assert((await rejection(probe.mount(mountConfig('Example', {type:'vrm',path:'example.vrm'}))))?.code === 'model_not_allowed',
+            'failed optional canonical lookup authorized the raw alias');
+        }
+        assert(timers.size === 0, 'optional canonical failure retained a timer');
+      } finally { await probe.dispose(); }
+    }
+  }
   for (const primary of [true, false]) {
     for (const outcome of ['/static/vrm/example.vrm', '/user_vrm/example.vrm', '', 'wrong-owner']) {
       const {probe, timers} = queryProbe(async (url) => jsonResponse(url === '/api/characters'

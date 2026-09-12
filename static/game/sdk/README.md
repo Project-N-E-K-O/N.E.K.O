@@ -227,6 +227,8 @@ their custom `json()` implementation must bound its own input and honor abort;
 the host cannot impose a pre-parse byte limit on arbitrary JavaScript. New
 transports must use standard readable `Response` objects. ArrayBuffer-only
 responses without a readable body are not an alternative to bounded streaming.
+Only a genuine Fetch `Response` may use `body: null` to represent an empty
+response; custom response-shaped objects with a null body are rejected.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
@@ -1028,8 +1030,14 @@ UTF-8 input limit per response; they do not inherit the smaller image/command
 budget. Over-limit responses fail rather than being truncated. Its trusted
 `fetchImpl` must return a standard readable Fetch `Response`, not a JSON-only
 object; streaming reads are cancelled on timeout, abort, failure and disposal.
+The same 16 MiB bound and readable-response requirement apply to the same-origin
+host's HTTP discovery fallback when a mount-only provider omits discovery.
 The existing query/mount total deadline remains in force, and a fetch that has
 not returned still occupies its raw-work slot until it settles.
+If canonical resolution of optional relative VRM/MMD fallbacks fails, those
+fallbacks are omitted without disabling a usable primary PNG/Live2D model.
+Required primary-model resolution failures, cancellation and mismatched
+character identities still fail; unresolved aliases are never authorized.
 Descriptors expose only the
 character name, approved model (`live2d`, `vrm`, `mmd` or `pngtuber`) and
 renderer availability. Discovery and the optional `setView`/`setSpeaking`

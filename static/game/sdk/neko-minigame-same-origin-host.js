@@ -1074,7 +1074,20 @@
             cancelBody(response.body);
             throw overflow();
           }
-          if (response.body === null) bytes = new Uint8Array(0);
+          if (response.body === null) {
+            // A custom arrayBuffer-only object must not masquerade as an
+            // empty response. Native getter branding avoids relying on
+            // instanceof the host's constructor for cross-realm responses.
+            let nativeEmpty = false;
+            try {
+              nativeEmpty = Object.getOwnPropertyDescriptor(ResponseImpl.prototype, 'body')
+                ?.get?.call(response) === null;
+            } catch (_) { /* not a native Response */ }
+            if (!nativeEmpty) {
+              throw this._hostError('invalid_response', 'A host response requires a readable body');
+            }
+            bytes = new Uint8Array(0);
+          }
           else {
             if (typeof response.body?.getReader !== 'function') {
               cancelBody(response.body);
@@ -1395,7 +1408,10 @@
       }
       const url = new URL(this._gameEndpoint(endpoint), this._window.location.origin);
       if (name) url.searchParams.set('lanlan_name', name);
-      const response = await this._fetchImpl(url.toString(), { signal: options.signal, credentials: 'same-origin' });
+      const raw = await this._fetchImpl(url.toString(), { signal: options.signal, credentials: 'same-origin' });
+      // _queryAvatar already owns the deadline and raw-work slot. Consume the
+      // fallback HTTP body inside that scope, with the normal REST byte bound.
+      const response = await this._bufferResponse(raw, DEFAULT_RESPONSE_BYTE_LIMIT, options.signal);
       if (!response.ok) throw this._hostError('request_failed', 'Avatar lookup failed', { status: response.status });
       const data = await response.json();
       if (this._disposed || options.signal?.aborted) {

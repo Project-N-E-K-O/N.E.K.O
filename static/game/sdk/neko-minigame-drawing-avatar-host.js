@@ -455,10 +455,21 @@
         // The browser cannot decide which filesystem owns a relative model.
         // Use the existing game-independent character projection, not a
         // guessed static prefix, for both primary and fallback 3D models.
-        const resolved = await json(
-          `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
-        );
-        if (resolved?.lanlan_name !== requested) fail('invalid_response', 'Avatar character identity changed');
+        let resolved;
+        try {
+          resolved = await json(
+            `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
+          );
+        } catch (cause) {
+          if (requestOptions.signal.aborted || cause?.code === 'cancelled'
+              || relativeTypes.includes(configured.type)) throw cause;
+          // Optional 3D fallback failure must not disable a usable primary.
+          // Omit unresolved paths instead of authorizing filesystem aliases.
+          resolved = { lanlan_name: requested };
+        }
+        if (resolved?.lanlan_name !== requested) {
+          fail('invalid_response', 'Avatar character identity changed');
+        }
         const paths = { ...configured.paths };
         for (const type of relativeTypes) {
           paths[type] = cleanString(resolved?.[`${type}_path`]);
