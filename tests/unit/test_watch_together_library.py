@@ -27,6 +27,8 @@ def test_corrupt_playable_object_is_incomplete(tmp_path, monkeypatch):
     monkeypatch.setattr(module, '_probe_media', lambda *args: False)
     assert library.history()[0]['status'] == 'incomplete'
     assert (folder / 'video.mp4').read_bytes() == b'not a video'
+    monkeypatch.setattr(module, '_probe_media', lambda *args: None)
+    assert library.history()[0]['status'] == 'ready', 'missing tooling is not evidence of corrupt media'
 
 
 @pytest.mark.parametrize('constant', ['NaN', 'Infinity', '-Infinity'])

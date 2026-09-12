@@ -15,7 +15,7 @@ from main_logic.watch_together import engine, library
     ([], 'audio', False),
 ])
 def test_probe_checks_stream_role_and_caches(tmp_path, monkeypatch, streams, role, expected):
-    library._probe_media.cache_clear()
+    library._probe_media_cached.cache_clear()
     monkeypatch.setattr(engine, 'media_binary', lambda _: 'ffprobe')
     run = Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'streams': streams})))
     monkeypatch.setattr(subprocess, 'run', run)
@@ -27,7 +27,14 @@ def test_probe_checks_stream_role_and_caches(tmp_path, monkeypatch, streams, rol
 
 
 def test_probe_timeout_is_unavailable(tmp_path, monkeypatch):
-    library._probe_media.cache_clear()
+    library._probe_media_cached.cache_clear()
     monkeypatch.setattr(engine, 'media_binary', lambda _: 'ffprobe')
     monkeypatch.setattr(subprocess, 'run', Mock(side_effect=subprocess.TimeoutExpired('ffprobe', 10)))
     assert not library._probe_media(tmp_path / 'object', 4, 123, 'audio')
+
+
+def test_missing_probe_is_unknown_and_does_not_cache_failure(tmp_path, monkeypatch):
+    library._probe_media_cached.cache_clear()
+    monkeypatch.setattr(engine, 'media_binary', Mock(side_effect=FileNotFoundError()))
+    assert library._probe_media(tmp_path / 'object', 4, 123, 'audio') is None
+    assert library._probe_media_cached.cache_info().currsize == 0

@@ -28,12 +28,20 @@ JOB_ID = re.compile(r"[a-f0-9]{32}")
 _library_lock = Lock()
 
 
-@lru_cache(maxsize=4096)
 def _probe_media(path, size, modified, role):
-    """Probe immutable objects once; stat keys invalidate externally damaged files."""
     from main_logic.watch_together.engine import media_binary
     try:
-        result = subprocess.run([media_binary('ffprobe'), '-v', 'error', '-show_streams',
+        binary = media_binary('ffprobe')
+    except FileNotFoundError:
+        return None  # Existing history remains playable without preparation tools.
+    return _probe_media_cached(binary, path, size, modified, role)
+
+
+@lru_cache(maxsize=4096)
+def _probe_media_cached(binary, path, size, modified, role):
+    """Probe immutable objects once; stat keys invalidate externally damaged files."""
+    try:
+        result = subprocess.run([binary, '-v', 'error', '-show_streams',
             '-of', 'json', str(path)], capture_output=True, timeout=10,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         streams = json.loads(result.stdout).get('streams', []) if result.returncode == 0 else []
@@ -283,7 +291,7 @@ class Library:
                 path = self.objects / entry['sha256']
                 stat = path.stat()
                 role = 'video' if extensions == {'.mp4', '.webm'} else 'audio'
-                if not _probe_media(path, stat.st_size, stat.st_mtime_ns, role):
+                if _probe_media(path, stat.st_size, stat.st_mtime_ns, role) is False:
                     timeline['status'] = 'incomplete'
                     break
         return timeline
