@@ -478,13 +478,13 @@ const realTimeout=globalThis.setTimeout;
 globalThis.setTimeout=(fn,delay,...args)=>realTimeout(fn,Math.min(delay,10),...args);
 const recovery=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'replacement',url:'replacement',title:'Replacement'}}));
 const recoveryRequest=recovery.game.media.request;
-let attempts=0,replacementLoads=0;
+let attempts=0,replacementLoads=0;const replacementLoadedJobs=[];
 recovery.game.media.mount=async()=>({play:async()=>{attempts++;if(attempts===1)throw Error('unplayable current item');},dispose(){}});
 recovery.game.media.request=async(action,payload)=>{
   if(action==='prepare')return {id:'replacement-job'};
   if(action==='preparation')return {status:'ready'};
   if(action==='history')return {analyses:[{job:'replacement-job',version:'v',status:'ready'}]};
-  if(action==='load')replacementLoads++;
+  if(action==='load'){replacementLoads++;replacementLoadedJobs.push(payload.job);}
   return recoveryRequest(action,payload);
 };
 try {
@@ -492,6 +492,7 @@ try {
   for(let i=0;i<100 && attempts<2;i++)await new Promise(resolve=>realTimeout(resolve,10));
   assert.equal(attempts,2,'a failed Play must eventually play a newly discovered replacement');
   assert.equal(replacementLoads,1,'failure skips the broken selection rather than looping it');
+  assert.deepEqual(replacementLoadedJobs,['replacement-job']);
   assert.ok(recovery.calls.some(call=>call.action==='discover'),'retry starts discovery when no next item was prefetched');
 } finally {
   await recovery.elements.get('watch-stop').onclick();globalThis.setTimeout=realTimeout;
