@@ -10,6 +10,7 @@ export async function run(game, character) {
   let selectionGeneration = 0;
   let playbackGeneration = 0;
   let ending = null;
+  let watchStarting = null;
   let progressTimer = null;
   let nextRow=null, queuedFor=null, preparing=false;
   const seenVideos=new Set();
@@ -69,6 +70,8 @@ export async function run(game, character) {
   async function finishEnd() {
     playbackGeneration++;
     clearInterval(progressTimer); progressTimer = null;
+    // Keep the route alive until an in-flight start has supplied its watch ID.
+    try { await watchStarting; } catch (_) { /* A failed start has no watch to close. */ }
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
@@ -125,12 +128,10 @@ export async function run(game, character) {
         const response = await game.runtime.start({lanlan_name:character});
         if(stale())return;
         if (!response.ok || response.data?.ok === false) throw Error(response.data?.reason || 'Scene start failed');
-        const started = await game.media.request('watch',{action:'start',job:selected.id,version:selected.version});
-        if(stale()) {
-          await game.media.request('watch',{id:started.id,position:0,event:{type:'exit'}});
-          return;
-        }
-        watch = started.id;
+        watchStarting = game.media.request('watch',{action:'start',job:selected.id,version:selected.version})
+          .then(started=>{watch=started.id;});
+        try { await watchStarting; } finally { watchStarting=null; }
+        if(stale())return;
         await refreshWatches();
         if(stale())return;
         const mounted = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,onEvent:record,

@@ -333,4 +333,28 @@ releaseWrite();
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.deepEqual(positions,[1,12,200,250],'only consecutive progress writes coalesce, preserving seek order');
 slowProgress.handlers['runtime-inactive']();
-console.log('watch-together scene: all regressions passed, including late mount disposal');
+const lateStart=await fixture(false,false,{total_tokens:1});
+const lateStartRequest=lateStart.game.media.request;
+let resolveStart, routeEnded=false;
+const exitWrites=[];
+lateStart.game.runtime.end=async()=>{routeEnded=true;};
+lateStart.game.media.request=async(action,payload)=>{
+  if(action==='watch' && payload.action==='start')return new Promise(resolve=>{resolveStart=resolve;});
+  if(action==='watch') {
+    assert.equal(routeEnded,false,'exit must be persisted before closing the route');
+    exitWrites.push(payload);
+  }
+  return lateStartRequest(action,payload);
+};
+const startingPlay=lateStart.elements.get('play').onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+const switchingDuringStart=lateStart.elements.get('history').children[0].onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(routeEnded,false);
+resolveStart({id:'late-watch'});
+await Promise.all([startingPlay,switchingDuringStart]);
+assert.equal(routeEnded,true);
+assert.equal(exitWrites.length,1);
+assert.equal(exitWrites[0].id,'late-watch');
+assert.equal(exitWrites[0].event.type,'exit');
+console.log('watch-together scene: all regressions passed, including delayed watch start cleanup');
