@@ -1,4 +1,5 @@
 import {createNextVideoQueue} from './next-video.mjs';
+import {createAutomatic} from './automatic.mjs';
 
 export async function run(game, character) {
   const $ = id => document.getElementById(id);
@@ -11,29 +12,75 @@ export async function run(game, character) {
   let playbackGeneration = 0;
   let ending = null;
   let watchStarting = null;
+  let mountingController = null;
+  let runtimeStarting = null;
+  function startRuntime() {
+    if(game.runtime.state==='running')return Promise.resolve({ok:true});
+    if(['ended','inactive'].includes(game.runtime.state))game.runtime.reset({newSession:true});
+    if(!runtimeStarting)runtimeStarting=game.runtime.start({lanlan_name:character}).finally(()=>{runtimeStarting=null;});
+    return runtimeStarting;
+  }
   let progressTimer = null;
   let nextRow=null, queuedFor=null, preparing=false;
+  let automaticPending=false;
+  const automatic=createAutomatic({
+    report:error=>{status(error.message);if(error.name==='NotAllowedError')void stopAutomatic();},
+    async advance(current) {
+      if(!current())return true;
+      if(game.runtime.state!=='running') {
+        const response=await startRuntime();
+        if(!response.ok || response.data?.ok===false)throw Error(response.data?.reason || 'Scene start failed');
+      }
+      if(!current())return true;
+      if(media && !$('video').ended){prefetchNext();return true;}
+      if(selected && !automaticPending) {
+        automaticPending=true;
+        await play();return true;
+      }
+      if(!nextRow) {
+        if(!nextQueue.busy && !preparing) {
+          queuedFor=null;prefetchNext();
+        }
+        return false;
+      }
+      const row=nextRow;nextRow=null;
+      if(await load(row,true)) {
+        if(!current())return true;
+        automaticPending=true;
+        await play();return true;
+      }
+      return false;
+    },
+  });
+  async function stopAutomatic() {
+    automatic.stop();automaticPending=false;$('automatic-enabled').checked=false;
+    $('automatic-enabled').disabled=true;
+    selectionGeneration++;nextQueue.clear();queuedFor=null;
+    try {await end();$('video').src=selected?.video || '';$('play').disabled=!selected;}
+    finally {$('automatic-enabled').disabled=false;updatePrepareButtons();}
+  }
   const seenVideos=new Set();
   const updatePrepareButtons=()=>{
-    $('prepare-button').disabled=preparing || nextQueue.busy;
-    $('discover-button').disabled=preparing || nextQueue.busy;
+    $('prepare-button').disabled=automatic.enabled || preparing || nextQueue.busy;
+    $('discover-button').disabled=automatic.enabled || preparing || nextQueue.busy;
   };
   const nextQueue=createNextVideoQueue(game,state=>{
-    if(state.candidate)seenVideos.add(state.candidate);
+    if(state.candidate){seenVideos.add(state.candidate);if(seenVideos.size>512)seenVideos.delete(seenVideos.values().next().value);}
     if(state.history)void refreshHistory();
     if(state.status) {
       const key={idle:'nextIdle',searching:'nextSearching',preparing:'nextPreparing',ready:'nextReady',empty:'noCandidates',error:'nextFailed'}[state.status];
       $('next-status').textContent=[t(key),state.title,state.stage?t(state.stage):'',state.progress!=null?`${state.progress}%`:''].filter(Boolean).join(' · ');
       if(state.status==='idle')nextRow=null;
       if(state.row)nextRow=state.row;
+      if(state.row && automatic.enabled && (!media || $('video').ended))automatic.next();
       $('next-video').disabled=!nextRow;
     }
     updatePrepareButtons();
     if(state.released && media && !$('video').paused)prefetchNext();
   });
   function prefetchNext() {
-    if(!$('prefetch-enabled').checked || !selected || nextQueue.busy || preparing || queuedFor===selected.id)return;
-    queuedFor=selected.id;
+    if((!automatic.enabled && (!$('prefetch-enabled').checked || !selected)) || nextQueue.busy || preparing || (selected && queuedFor===selected.id))return;
+    queuedFor=selected?.id || null;
     void nextQueue.start({topic:discoveryTopic(),exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
   }
   const status = message => { $('status').textContent = message; };
@@ -48,6 +95,12 @@ export async function run(game, character) {
   game.runtime.configure({payload:()=>({lanlan_name:character}),pageExit:true});
   let pendingProgress=null;
   const record = event => {
+    if(event.type==='autoplay-blocked'){status(t('play'));void stopAutomatic();return;}
+    if(event.type==='error') {
+      if(automatic.enabled)void end(true).then(()=>automatic.next()).catch(error=>status(error.message));
+      else status(t('prepareFailed'));
+      return;
+    }
     if (!watch || game.runtime.state !== 'running') return;
     const payload = {id:watch, position:event.position ?? $('video').currentTime,event};
     let queued={payload};
@@ -61,31 +114,35 @@ export async function run(game, character) {
       void refreshWatches();
     })
       .catch(error => status(error.message));
+    if(event.type==='ended' && automatic.enabled)automatic.next();
   };
-  function end() {
-    if(ending)return ending;
-    ending=finishEnd().finally(()=>{ending=null;});
+  function end(keepRoute=false) {
+    if(ending)return keepRoute?ending:ending.then(()=>end());
+    ending=finishEnd(keepRoute).finally(()=>{ending=null;});
     return ending;
   }
-  async function finishEnd() {
+  async function finishEnd(keepRoute=false) {
     playbackGeneration++;
+    mountingController?.abort();mountingController=null;
     clearInterval(progressTimer); progressTimer = null;
+    try {await runtimeStarting;}catch(_){}
     // Keep the route alive until an in-flight start has supplied its watch ID.
     try { await watchStarting; } catch (_) { /* A failed start has no watch to close. */ }
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
-    if (!['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
+    if (!keepRoute && !['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
-  async function load(row) {
+  async function load(row,keepRoute=false) {
+    if(!keepRoute){automatic.stop();automaticPending=false;$('automatic-enabled').checked=false;}
     const selection = ++selectionGeneration;
     nextQueue.clear();queuedFor=null;
     $('play').disabled = true;
     const previous = selected;
     try {
-    await end();
+    await end(keepRoute);
     if(selection!==selectionGeneration)return false;
-    if (game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
+    if (!keepRoute && game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
     const loaded = await game.media.request('load', row);
     if(selection!==selectionGeneration)return false;
     if(loaded.status!=='ready')throw Error('Media is not ready');
@@ -118,14 +175,14 @@ export async function run(game, character) {
     }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   }
-  $('play').onclick = async () => {
+  async function play() {
     const selection = selectionGeneration;
     const playback = ++playbackGeneration;
     const stale = () => selection !== selectionGeneration || playback !== playbackGeneration || game.disposed;
     $('play').disabled = true;
     try {
       if (!media) {
-        const response = await game.runtime.start({lanlan_name:character});
+        const response = await startRuntime();
         if(stale())return;
         if (!response.ok || response.data?.ok === false) throw Error(response.data?.reason || 'Scene start failed');
         watchStarting = game.media.request('watch',{action:'start',job:selected.id,version:selected.version})
@@ -134,7 +191,8 @@ export async function run(game, character) {
         if(stale())return;
         await refreshWatches();
         if(stale())return;
-        const mounted = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,onEvent:record,
+        const controller=new AbortController();mountingController=controller;
+        const mounted = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,signal:controller.signal,onEvent:record,
           onCue:cue=>{ $('bubble').textContent = cue?.text || ''; avatar?.setEmotion(cue?'happy':'neutral'); }});
         if(stale()){mounted.dispose();return;}
         media = mounted;
@@ -147,17 +205,23 @@ export async function run(game, character) {
       prefetchNext();
     } catch(error) {
       if(stale())return;
-      try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
+      try { await end(automatic.enabled); } catch (_) { /* Preserve the original playback failure. */ }
       if(selection!==selectionGeneration || game.disposed)return;
       $('video').src = selected?.video || '';
       status(error.message);
+      if(automatic.enabled)throw error;
     }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   };
-  game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
-  game.voice.onTranscript(() => media?.interrupt());
-  game.voice.onState(state => {if(state.active || state.starting)media?.interrupt();});
-  game.events.on('runtime-inactive',()=>{playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  $('play').onclick=()=>play().catch(error=>status(error.message));
+  // The active scene owns speech. Ordinary/chat/plugin speech must not pause reactions.
+  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  $('automatic-enabled').onchange=()=>{
+    if($('automatic-enabled').checked){automaticPending=!!media;automatic.start();}
+    else void stopAutomatic().catch(error=>status(error.message));
+    updatePrepareButtons();
+  };
+  $('watch-stop').onclick=()=>stopAutomatic().catch(error=>status(error.message));
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
     if(nextQueue.busy)return;
@@ -232,9 +296,10 @@ export async function run(game, character) {
     if(!nextRow)return;
     const row=nextRow;
     // Playback needs a fresh trusted Play gesture after asynchronous selection.
-    try {await load(row);}catch(error){status(error.message);}
+    try {if(await load(row,automatic.enabled) && automatic.enabled)await play();}catch(error){status(error.message);if(automatic.enabled)automatic.next();}
   };
   $('exit').onclick = async () => {
+    automatic.stop();
     nextQueue.dispose();
     try { await end(); }
     catch(error) { status(error.message); }

@@ -2051,6 +2051,8 @@ async def game_route_start(game_type: str, request: Request):
                     )
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
+                if game_type == "watch-together":
+                    await mgr.interrupt_ordinary_speech_for_takeover()
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
@@ -3752,6 +3754,12 @@ async def _route_external_transcript_to_game(
             session_id,
             lanlan_name,
         )
+        return True
+
+    # This scene uses a prepared media-clock reaction track. External text/STT
+    # must not start generic game chat or interrupt the track. Host controls own
+    # pause/stop; ordinary plugin responses remain behind the takeover gate.
+    if game_type == "watch-together":
         return True
 
     if mgr and hasattr(mgr, "send_user_activity"):

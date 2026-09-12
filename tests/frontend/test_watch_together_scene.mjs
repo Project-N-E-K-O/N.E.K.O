@@ -413,3 +413,60 @@ assert.equal(nextSelection.elements.get('play').hidden,false);
 assert.equal(nextSelection.elements.get('play').disabled,false);
 assert.equal(nextSelection.elements.get('video').src,'/video');
 console.log('watch-together scene: all regressions passed, including next-video gesture boundary');
+
+const continuous=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
+const continuousRequest=continuous.game.media.request;
+let routeStarts=0,routeEnds=0,plays=0;
+continuous.game.runtime.start=async()=>{routeStarts++;continuous.game.runtime.state='running';return {ok:true};};
+continuous.game.runtime.end=async()=>{routeEnds++;continuous.game.runtime.state='ended';};
+continuous.game.media.mount=async options=>{
+  continuous.emit=options.onEvent;
+  return {play:async()=>{plays++;continuous.elements.get('video').ended=false;},dispose(){}};
+};
+continuous.game.media.request=async(action,payload)=>{
+  if(action==='prepare')return {id:'next-job'};
+  if(action==='preparation')return {status:'ready'};
+  if(action==='history')return {analyses:[{job:'next-job',version:'v',status:'ready'}]};
+  return continuousRequest(action,payload);
+};
+continuous.elements.get('automatic-enabled').checked=true;
+continuous.elements.get('automatic-enabled').onchange();
+await new Promise(resolve=>setTimeout(resolve,20));
+assert.equal(plays,1);
+continuous.elements.get('video').ended=true;continuous.emit({type:'ended'});
+await new Promise(resolve=>setTimeout(resolve,20));
+assert.equal(plays,2,'ended automatically loads and plays the prepared next item');
+assert.equal(routeStarts,1);assert.equal(routeEnds,0,'speech takeover stays active across videos');
+await continuous.elements.get('watch-stop').onclick();
+assert.equal(routeEnds,1);assert.equal(continuous.elements.get('automatic-enabled').checked,false);
+
+const delayedAutomatic=await fixture(false,false,{total_tokens:1});
+let releaseRoute,endedRoute=0;
+delayedAutomatic.game.runtime.start=()=>new Promise(resolve=>{releaseRoute=()=>{delayedAutomatic.game.runtime.state='running';resolve({ok:true});};});
+delayedAutomatic.game.runtime.end=async()=>{endedRoute++;delayedAutomatic.game.runtime.state='ended';};
+delayedAutomatic.elements.get('automatic-enabled').checked=true;
+delayedAutomatic.elements.get('automatic-enabled').onchange();
+await new Promise(resolve=>setTimeout(resolve,10));
+const stopped=delayedAutomatic.elements.get('watch-stop').onclick();releaseRoute();await stopped;
+assert.equal(endedRoute,1,'late runtime start is released after stop');
+assert.equal(delayedAutomatic.calls.some(c=>c.action==='watch'),false,'late start cannot begin playback');
+console.log('watch-together: automatic continuation keeps takeover, stop releases late startup');
+
+const emptyAutomatic=await fixture(false,false,null,()=>({video:{bvid:'first',url:'first',title:'First'}}));
+const emptyRequest=emptyAutomatic.game.media.request;
+let autoLoads=0,autoPlays=0;
+emptyAutomatic.game.media.mount=async options=>{emptyAutomatic.emit=options.onEvent;return {play:async()=>{autoPlays++;emptyAutomatic.elements.get('video').ended=false;},dispose(){}};};
+emptyAutomatic.game.media.request=async(action,payload)=>{
+  if(action==='prepare')return {id:'auto-job'};
+  if(action==='preparation')return {status:'ready'};
+  if(action==='history')return {analyses:[{job:'auto-job',version:'v',status:'ready'}]};
+  if(action==='load')autoLoads++;
+  return emptyRequest(action,payload);
+};
+emptyAutomatic.elements.get('automatic-enabled').checked=true;emptyAutomatic.elements.get('automatic-enabled').onchange();
+await new Promise(resolve=>setTimeout(resolve,20));
+assert.equal(autoLoads,1);assert.equal(autoPlays,1,'automatic mode discovers and plays without an existing selection');
+emptyAutomatic.elements.get('video').ended=true;emptyAutomatic.emit({type:'ended'});
+await new Promise(resolve=>setTimeout(resolve,20));
+assert.equal(autoLoads,2,'first completion must load another item instead of replaying the first');
+await emptyAutomatic.elements.get('watch-stop').onclick();

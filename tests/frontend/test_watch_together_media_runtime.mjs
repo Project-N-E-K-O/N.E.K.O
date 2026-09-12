@@ -101,3 +101,15 @@ assert.equal(blessedReaction.paused,true);
 const blessedMount=await mount({video:unlocked,timeline:{status:'ready',id:'j',version:'v',video:'/video',events:[]}});
 assert.equal(audios.at(-1),blessedReaction,'mount reuses the already authorized reaction element');
 blessedMount.dispose();
+
+const backgroundVideo=new Media(),backgroundEvents=[];
+globalThis.fetch=async()=>new Response('audio');
+const background=await mount({video:backgroundVideo,timeline:{status:'ready',id:'job',version:'version',video:'/video',events:[cue]},keepPlayingWhenHidden:()=>true,onEvent:event=>backgroundEvents.push(event)});
+await background.play();document.hidden=true;document.dispatchEvent(new Event('visibilitychange'));
+assert.equal(backgroundVideo.paused,false,'automatic viewing continues when the window is hidden');
+backgroundVideo.currentTime=4.1;backgroundVideo.dispatchEvent(new Event('timeupdate'));
+assert.equal(audios.at(-1).paused,false,'media clock drives hidden reactions without animation frames');
+backgroundVideo.dispatchEvent(new Event('error'));assert.equal(backgroundEvents.at(-1).type,'error');
+background.dispose();document.hidden=false;
+const cancelled=new AbortController();cancelled.abort();
+await assert.rejects(mount({video:new Media(),timeline:{status:'ready',events:[]},signal:cancelled.signal}),{name:'AbortError'});

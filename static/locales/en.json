@@ -5360,6 +5360,9 @@
         }
     },
   "watchTogether": {
+        "automatic": "Automatic watching",
+        "stopWatching": "Stop watching",
+        "resizeAvatar": "Resize companion",
     "previousPage": "Previous page",
     "nextPage": "Next page",
     "prefetchEnabled": "Prepare the next video while watching",

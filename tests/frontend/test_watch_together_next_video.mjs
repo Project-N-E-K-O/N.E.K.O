@@ -63,5 +63,5 @@ for(const failure of ['error','cancelled']) {
   }}};
   const retryQueue=createNextVideoQueue(failing,state=>states.push(state));
   await retryQueue.start({topic:'cats'});
-  assert.equal(states.some(state=>state.candidate),false,'failed preparation must remain eligible for discovery');
+  assert.equal(states.some(state=>state.candidate),true,'automatic discovery must skip a failing candidate instead of retrying it indefinitely');
 }

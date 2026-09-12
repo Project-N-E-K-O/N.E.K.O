@@ -5360,6 +5360,9 @@
         }
     },
   "watchTogether": {
+        "automatic": "Assistir automaticamente",
+        "stopWatching": "Parar de assistir",
+        "resizeAvatar": "Redimensionar personagem",
     "previousPage": "Página anterior",
     "nextPage": "Próxima página",
     "prefetchEnabled": "Preparar o próximo vídeo durante a reprodução",

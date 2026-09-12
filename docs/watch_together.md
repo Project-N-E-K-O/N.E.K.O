@@ -94,7 +94,7 @@ Playback starts one SDK-only next-video preparation in the background by default
 The opt-out checkbox clears its queue; already running server work can finish and
 remains in history. The current video/audio is never replaced by a preparation
 completion. A separate status and Watch next button expose the prepared result;
-the user chooses when to switch. Discovery excludes videos already selected in
+in manual mode the user chooses when to switch. Discovery excludes videos already selected in
 this page and enforces the same strict duration/danmaku policy. Only one next
 preparation is allowed, and manual prepare/search is disabled while it runs.
 
@@ -106,8 +106,8 @@ relax its thresholds on empty results. Metadata is checked again before starting
 preparation and inside the engine: duration must be strictly less than 180 seconds
 and danmaku count times 60 divided by duration must be strictly greater than 100.
 Automatic discovery excludes multipart videos to avoid dividing a whole video's
-danmaku count by a single part's duration. It prepares a selected video but keeps
-playback under the user's Play control.
+danmaku count by a single part's duration. Manual mode keeps playback under the
+user's Play control; the opt-in automatic mode continues through the queue.
 
 Manual URLs above 300 seconds return `confirmation_required` before any job,
 download, model request or TTS starts. The scene displays the title, duration and
@@ -131,3 +131,33 @@ motion selection and PNGTuber/MMD avatar mounting are not part of this SDK API.
 Electron host-shell window registration must be checked in its separate source
 repository; both `/` and `/chat` share the new React entry and use same-origin
 absolute URLs.
+
+## Automatic watching and speech ownership
+
+The stage toolbar has an opt-in Automatic watching checkbox. Its first real user
+interaction unlocks the same video/reaction elements reused across videos. It can
+start from the selected video or discover the first one. End-of-video advances to
+the single prepared next item; missing results and failures retry with exponential
+backoff capped at 60 seconds. Failed candidates are excluded from subsequent
+searches in this page. Browser autoplay denial stops automatic mode and requires
+a new user gesture. Stop watching cancels automatic transitions, pauses media and
+releases the game route, including when startup is still pending.
+
+The same game route stays active during preparation and automatic transitions,
+so ordinary proactive/plugin respond cues remain behind the SessionManager
+takeover gate. The bounded/coalescing proactive queue retains ordering and expiry
+until takeover ends. External text and STT do not invoke generic game speech or
+interrupt the reaction timeline. This deliberately suppresses ordinary speech for
+the entire viewing session; it does not add inter-video live chat replies.
+NEKO Live uses the existing plugin push_message respond channel; no plugin code
+change or automatic stream publishing is performed by this feature. Streaming
+software must already capture the companion player and its audio.
+
+Automatic mode allows background playback and uses timeupdate as a media-clock
+fallback when animation frames stop. Browser throttling, device sleep and audio
+autoplay restrictions still apply; live platform output needs an actual broadcast
+acceptance test. Ordinary mode still pauses when its document becomes hidden.
+
+Drag the character container to move either Live2D or VRM. Drag its bottom-right
+handle to resize, or focus that handle and use arrow keys. Bounds are clamped on
+window resize/fullscreen changes; the SDK ResizeObserver resizes either renderer.

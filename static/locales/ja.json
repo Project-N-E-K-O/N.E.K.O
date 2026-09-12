@@ -5360,6 +5360,9 @@
         }
     },
   "watchTogether": {
+        "automatic": "自動視聴",
+        "stopWatching": "視聴を停止",
+        "resizeAvatar": "キャラクターのサイズを変更",
     "previousPage": "前のページ",
     "nextPage": "次のページ",
     "prefetchEnabled": "視聴中に次の動画を準備",

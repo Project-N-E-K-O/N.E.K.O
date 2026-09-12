@@ -5360,6 +5360,9 @@
         }
     },
   "watchTogether": {
+        "automatic": "自动陪看",
+        "stopWatching": "停止陪看",
+        "resizeAvatar": "调整猫娘大小",
     "previousPage": "上一页",
     "nextPage": "下一页",
     "prefetchEnabled": "播放时提前解析下一条",

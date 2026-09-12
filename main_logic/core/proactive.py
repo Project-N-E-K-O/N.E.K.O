@@ -390,9 +390,13 @@ class ProactiveMixin:
         ``None``), drop if genuine UI engagement advanced while this call waited
         for the TTS lock. Returns whether the chunk was accepted.
         """
+        if getattr(self, "_takeover_active", False):
+            return False
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
+            if getattr(self, "_takeover_active", False):
+                return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
                     "feed_tts_chunk drop: expected_sid=%s current_sid=%s len=%d",
@@ -2971,6 +2975,10 @@ class ProactiveMixin:
         response.created→voice_play_start window the playback gate can't see,
         AND an active offline/text user response where try_start_proactive
         would deny the claim)."""
+        # Keep plugin respond cues under bounded/coalescing queue ownership for
+        # the whole game session, including automatic watch-together transitions.
+        if getattr(self, "_takeover_active", False):
+            return False
         if self.is_goodbye_silent():
             return False
         # Time-bounded read (NOT the raw _voice_playback_active flag): if the

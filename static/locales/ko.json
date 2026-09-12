@@ -5360,6 +5360,9 @@
         }
     },
   "watchTogether": {
+        "automatic": "자동 함께 보기",
+        "stopWatching": "시청 중지",
+        "resizeAvatar": "캐릭터 크기 조절",
     "previousPage": "이전 페이지",
     "nextPage": "다음 페이지",
     "prefetchEnabled": "시청 중 다음 영상 준비",

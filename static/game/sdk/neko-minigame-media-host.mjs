@@ -27,7 +27,7 @@ export function unlock(video) {
   void reactionStarted?.catch(()=>{});
 }
 
-export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {} }) {
+export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {}, keepPlayingWhenHidden = () => false }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
   const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
   const resources = new Map();
@@ -57,6 +57,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       finally {reader.releaseLock();}
       resources.set(url, URL.createObjectURL(new Blob(chunks,{type:response.headers.get('content-type') || ''})));
     }
+    if(signal?.aborted)throw new DOMException('Media mount cancelled','AbortError');
   } catch(error) {for(const url of resources.values())URL.revokeObjectURL(url);throw error;}
   const clock = new ReactionClock(timeline.events || []);
   let active = null, disposed = false, waiting = false, frame = 0, release = null;
@@ -94,9 +95,10 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       audio.currentTime = offset;
       playingGeneration = generation;
       const attemptGeneration = generation, attemptCue = active, attempt = ++playAttempt;
-      audio.play().catch(() => {
+      audio.play().catch(error => {
         if (disposed || attempt !== playAttempt || generation !== attemptGeneration || active !== attemptCue) return;
         video.pause(); stop(true);
+        emit(error.name==='NotAllowedError'?'autoplay-blocked':'error');
       });
     } else if (Math.abs(audio.currentTime - offset) > 0.15) audio.currentTime = offset;
   }
@@ -121,10 +123,13 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   listen(video, 'seeked', () => { clock.seek(video.currentTime); waiting = false; emit('seek'); });
   listen(video, 'ratechange', () => { stop(); sync(); emit('rate'); });
   listen(video, 'ended', () => { stop(true); emit('ended'); });
-  listen(document, 'visibilitychange', () => { if (document.hidden) video.pause(); });
+  listen(document, 'visibilitychange', () => { if (document.hidden && !keepPlayingWhenHidden()) video.pause(); });
+  // Background windows may stop animation frames; media-clock events still drive cues.
+  listen(video, 'timeupdate', () => {if(document.hidden && keepPlayingWhenHidden())update();});
+  listen(video, 'error', () => {stop(true);emit('error');});
   video.src = timeline.video;
   if (timeline.cover) video.poster = timeline.cover;
-  function tick() {
+  function update() {
     if (disposed) return;
     const cue = clock.tick(video.currentTime, running());
     if (cue) {
@@ -138,8 +143,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       analyser.getByteTimeDomainData(waveform);
       onMouth(Math.min(1,Math.sqrt(waveform.reduce((sum,n)=>sum+(n-128)**2,0)/128)/30));
     }
-    frame = requestAnimationFrame(tick);
   }
+  function tick(){if(disposed)return;update();frame=requestAnimationFrame(tick);}
   tick();
   return Object.freeze({
     async play() {
