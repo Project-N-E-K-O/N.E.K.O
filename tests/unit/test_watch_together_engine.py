@@ -122,3 +122,15 @@ def test_danmaku_sample_is_bounded_and_time_balanced():
     assert len(sampled) == 60 * 12
     assert {int(item['at'] // 3) for item in sampled} == set(range(60))
     assert all(len(item['text']) == 120 for item in sampled)
+
+@pytest.mark.asyncio
+async def test_subtitles_skip_invalid_times_and_normalize_numeric_strings():
+    import httpx
+    from main_logic.watch_together.engine import fetch_subtitles
+    rows = [{'from': value, 'to': 2} for value in [None, {}, True, 'bad', 10**1000, float('inf'), -1]]
+    rows += [{'from': '1', 'to': '2', 'content': 'valid'}, {'from': 3, 'to': 2}]
+    response = type('Response', (), {'raise_for_status': lambda self: None, 'json': lambda self: {'body': rows}})()
+    from unittest.mock import AsyncMock
+    client = type('Client', (), {'get': AsyncMock(return_value=response)})()
+    assert await fetch_subtitles(client, [{'subtitle_url': 'https://subs.test'}], 'en') == [
+        {'from': 1.0, 'to': 2.0, 'content': 'valid'}]

@@ -44,11 +44,20 @@ export async function run(game, character) {
     $('usage').textContent=`${t('usageNote')}\n\n${JSON.stringify(value,null,2)}`;
   }
   game.runtime.configure({payload:()=>({lanlan_name:character}),pageExit:true});
+  let pendingProgress=null;
   const record = event => {
     if (!watch || game.runtime.state !== 'running') return;
     const payload = {id:watch, position:event.position ?? $('video').currentTime,event};
-    writing = writing.then(() => game.media.request('watch', payload))
-      .then(refreshWatches)
+    let queued={payload};
+    if(event.type==='progress') {
+      if(pendingProgress){pendingProgress.payload=payload;return;}
+      pendingProgress=queued;
+    }
+    writing = writing.then(async () => {
+      if(pendingProgress===queued)pendingProgress=null;
+      await game.media.request('watch', queued.payload);
+      void refreshWatches();
+    })
       .catch(error => status(error.message));
   };
   function end() {

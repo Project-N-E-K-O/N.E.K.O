@@ -302,3 +302,18 @@ incomplete.game.media.request=async(action,payload)=>{
 await incomplete.elements.get('prepare').onsubmit({preventDefault(){}});
 assert.equal(incomplete.elements.get('play').disabled,true);
 assert.equal(incomplete.calls.filter(c=>c.action==='watch').length,0);
+const slowProgress=await fixture(false,false,{total_tokens:1});
+await slowProgress.elements.get('play').onclick();
+const slowRequest=slowProgress.game.media.request;
+const positions=[];let releaseWrite;
+slowProgress.game.media.request=async(action,payload)=>{
+ if(action==='watch'){positions.push(payload.position);if(positions.length===1)await new Promise(resolve=>{releaseWrite=resolve;});return {};}
+ return slowRequest(action,payload);
+};
+slowProgress.record({type:'progress',position:1});
+await new Promise(resolve=>setTimeout(resolve,0));
+for(let position=2;position<=12;position++)slowProgress.record({type:'progress',position});
+releaseWrite();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(positions,[1,12],'pending progress writes coalesce to latest position');
+slowProgress.handlers['runtime-inactive']();

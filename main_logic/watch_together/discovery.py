@@ -33,7 +33,10 @@ async def inspect_video(url):
     pages = info.get("pages", [])
     if page >= len(pages):
         raise ValueError("Video part unavailable")
-    seconds = float(pages[page]["duration"])
+    try:
+        seconds = float(pages[page]["duration"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Invalid video duration") from exc
     if not math.isfinite(seconds) or not 0 < seconds <= MAX_SECONDS:
         raise ValueError("Video must be no longer than 20 minutes")
     count = info.get("stat", {}).get("danmaku")

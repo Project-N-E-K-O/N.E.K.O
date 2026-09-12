@@ -111,3 +111,13 @@ async def test_prepare_does_not_start_before_confirmation(monkeypatch):
     data["confirmed_duration"] = 301
     assert (await routes.prepare_video(request))["id"] == "new-job"
     start.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_authoritative_duration_overflow_is_invalid_video(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(
+        Credential=lambda: None,
+        video=SimpleNamespace(Video=lambda **kwargs: SimpleNamespace(get_info=AsyncMock(
+            return_value={'pages': [{'duration': 10**1000}]})))))
+    monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
+    with pytest.raises(ValueError, match='Invalid video duration'):
+        await discovery.inspect_video('BV1GJ411x7h7')

@@ -27,3 +27,18 @@ async def test_watches_endpoint_does_not_read_analysis_history(monkeypatch):
         return {'watches': ['watch'], 'next_offset': 150}
     monkeypatch.setattr(router, 'application_library', lambda: SimpleNamespace(watch_page=page))
     assert await router.watches(50, 100) == {'watches': ['watch'], 'next_offset': 150}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('filename,media_type,attachment', [
+    ('payload.html', 'application/octet-stream', True),
+    ('image.svg', 'application/octet-stream', True),
+    ('video.mp4', 'video/mp4', False),
+])
+async def test_imported_resources_cannot_execute_inline(monkeypatch, tmp_path, filename, media_type, attachment):
+    monkeypatch.setattr(router, 'application_library', lambda: SimpleNamespace(resource=lambda *args: tmp_path / 'object'))
+    response = await router.media('job', 'version', filename)
+    assert response.media_type == media_type
+    assert ('attachment' in response.headers.get('content-disposition', '')) is attachment
+    assert response.headers['x-content-type-options'] == 'nosniff'
+    assert 'sandbox' in response.headers['content-security-policy']

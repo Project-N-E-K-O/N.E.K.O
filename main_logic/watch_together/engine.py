@@ -50,8 +50,18 @@ async def fetch_subtitles(client, tracks, language):
             response = await client.get(url)
             response.raise_for_status()
             body = response.json().get('body', [])
-            if isinstance(body, list) and body and all(isinstance(row, dict) for row in body):
-                return body
+            valid = []
+            for row in body if isinstance(body, list) else []:
+                if not isinstance(row, dict) or any(isinstance(row.get(key), bool) for key in ('from', 'to')):
+                    continue
+                try:
+                    start, end = float(row['from']), float(row['to'])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(start) and math.isfinite(end) and 0 <= start <= end:
+                    valid.append({**row, 'from': start, 'to': end})
+            if valid:
+                return valid
         except Exception:
             continue
     return []

@@ -43,8 +43,16 @@ async def media(job: str, version: str, filename: str):
     except KeyError:
         raise HTTPException(404)
     # Resource names come from the immutable manifest, never a filesystem join.
-    import mimetypes
-    return FileResponse(path, media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    from pathlib import PurePosixPath
+    media_types = {'.mp4': 'video/mp4', '.webm': 'video/webm', '.wav': 'audio/wav',
+                   '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
+                   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                   '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif'}
+    media_type = media_types.get(PurePosixPath(filename).suffix.lower())
+    return FileResponse(path, media_type=media_type or 'application/octet-stream',
+                        filename=None if media_type else PurePosixPath(filename).name,
+                        headers={'X-Content-Type-Options': 'nosniff',
+                                 'Content-Security-Policy': "sandbox; default-src 'none'"})
 
 
 @router.post("/watch")
