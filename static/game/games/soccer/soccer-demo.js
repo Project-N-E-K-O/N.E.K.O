@@ -40,6 +40,34 @@
     // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
     window._cardExportPage = true;
 
+  // Subscribe synchronously, before the following vrm-init script can finish
+  // and before SDK/settings initialization yields. One result per page; all
+  // listeners are released on success, failure, page exit or setup failure.
+  function observeSoccerVrmModules() {
+    let settled = false;
+    let resolveReady;
+    const ready = new Promise(resolve => { resolveReady = resolve; });
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('vrm-modules-ready', onReady);
+      window.removeEventListener('vrm-modules-failed', onFailed);
+      window.removeEventListener('pagehide', cancel);
+      resolveReady(result);
+    };
+    const onReady = () => finish({ ready: true });
+    const onFailed = () => finish({ ready: false });
+    const cancel = () => finish({ cancelled: true });
+    if (window.vrmModuleLoaded) onReady();
+    else {
+      window.addEventListener('vrm-modules-ready', onReady);
+      window.addEventListener('vrm-modules-failed', onFailed);
+      window.addEventListener('pagehide', cancel);
+    }
+    return { ready, cancel };
+  }
+  const soccerVrmModules = observeSoccerVrmModules();
+
   const initializeSoccerPage = async () => {
       if (!window.NekoMiniGame || typeof window.NekoMiniGame.connect !== 'function') {
         throw new Error('neko-minigame-sdk.js must load before soccer-demo.js');
@@ -397,18 +425,10 @@
         }
       }
 
-      // 等 vrm 模块链加载完
-      await new Promise(resolve => {
-        if (window.vrmModuleLoaded) return resolve();
-        window.addEventListener('vrm-modules-ready', resolve, { once: true });
-        window.addEventListener('vrm-modules-failed', e => {
-          console.error('[soccer_demo] VRM modules failed:', e.detail);
-          setStatus('VRM modules failed: ' + (e.detail?.failedModules || []).join(', '));
-          resolve();
-        }, { once: true });
-      });
-
       try {
+        const modules = await soccerVrmModules.ready;
+        if (modules.cancelled || soccerGame.disposed) return;
+        if (!modules.ready) throw new Error('VRM modules failed');
         console.log('[soccer_demo] modules ready, starting VRM init');
         setStatus('initializing VRM renderer…');
         soccerGame.capabilities.require('avatar-renderer');
@@ -6337,6 +6357,7 @@
 
   const runInitializeSoccerPage = () => {
     void initializeSoccerPage().catch((error) => {
+      soccerVrmModules.cancel();
       console.error('[soccer_demo] initialization failed:', error);
     });
   };

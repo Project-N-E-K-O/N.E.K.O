@@ -16,7 +16,60 @@ assert.notEqual(manifestEnd, -1, 'soccer-demo.js is missing the manifest end anc
 const manifest = vm.runInThisContext('(' + page.slice(manifestStart, manifestEnd + 1) + ')');
 const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
 
+async function verifyEarlyModuleResults() {
+  for (const outcome of ['failed', 'ready', 'pagehide', 'initialization-failed']) {
+    const listeners = new Map();
+    const window = {
+      vrmModuleLoaded: false,
+      addEventListener(type, handler) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(handler);
+      },
+      removeEventListener(type, handler) { listeners.get(type)?.delete(handler); },
+    };
+    let assetsDone = false;
+    let mounts = 0;
+    window.__SoccerLoading = { set() {}, done() { assetsDone = true; } };
+    const context = vm.createContext({ window, document: {
+      getElementById: () => ({ textContent: '', style: {} }),
+    }, console: { log() {}, warn() {}, error() {} }, setTimeout() {},
+    soccerGame: { disposed: false, capabilities: { require() {} } },
+    replaceSoccerAvatar: async () => { mounts++; },
+    ensureSoccerCharacterInfo: async () => ({ name: 'Neko' }),
+    mountSoccerCharacterAvatar: async () => { mounts++; },
+    });
+    const observerStart = page.indexOf('  function observeSoccerVrmModules()');
+    assert(observerStart >= 0, 'missing early module observer');
+    vm.runInContext(page.slice(observerStart,
+      page.indexOf('  const initializeSoccerPage', observerStart)), context);
+    const loaderStart = page.indexOf('    async function loadSoccerAvatars()');
+    vm.runInContext(page.slice(loaderStart, page.indexOf('    /* ═', loaderStart)), context);
+    // The result arrives while settings initialization is still pending.
+    if (outcome === 'initialization-failed') {
+      context.initializeSoccerPage = async () => { throw new Error('settings_failed'); };
+      const initializeStart = page.indexOf('  const runInitializeSoccerPage');
+      vm.runInContext(page.slice(initializeStart, page.indexOf("  if (document.readyState", initializeStart))
+        + '\nrunInitializeSoccerPage();', context);
+      await new Promise(resolve => setImmediate(resolve));
+    } else {
+      window.vrmModuleLoaded = outcome === 'ready';
+      const event = outcome === 'pagehide' ? outcome : `vrm-modules-${outcome}`;
+      for (const handler of [...(listeners.get(event) || [])]) handler({ detail: { failedModules: ['fixture.js'] } });
+    }
+    let settled = false;
+    const loading = vm.runInContext('loadSoccerAvatars()', context).then(() => { settled = true; });
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+    assert(settled, `${outcome}: early module result left the asset loader waiting forever`);
+    await loading;
+    assert.equal(assetsDone, outcome === 'failed' || outcome === 'ready');
+    assert.equal(mounts, outcome === 'ready' ? 2 : 0);
+    for (const handlers of listeners.values()) assert.equal(handlers.size, 0,
+      `${outcome}: module observation retained listeners`);
+  }
+}
+
 async function main() {
+  await verifyEarlyModuleResults();
   const calls = [];
   const storage = new Map();
   const renderers = [];
@@ -307,6 +360,7 @@ async function main() {
     window.__SoccerAiAvatarController = null;
     window.__SoccerPlayerAvatarController = null;
     window.vrmModuleLoaded = true;
+    install('  function observeSoccerVrmModules()', '  const initializeSoccerPage');
     const previousGetElement = document.getElementById;
     document.getElementById = (id) => id === 'status'
       ? { textContent: '', style: {} } : previousGetElement(id);

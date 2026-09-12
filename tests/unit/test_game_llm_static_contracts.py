@@ -491,7 +491,10 @@ def test_soccer_requests_use_adapter_and_runtime_lifecycle_is_owned_by_sdk():
     assert "pageExit: {" in script
     assert "soccerGame.events.on('page-exit'" in script
     assert "client.dispose({ preserveRuntimeEnd: true });" in sdk
-    assert "window.addEventListener('pagehide'" not in script
+    # Pre-SDK module observation uses pagehide only to release its pending
+    # readiness listeners. Game-route teardown remains exclusively SDK-owned.
+    runtime_source = script[script.index("  const initializeSoccerPage"):]
+    assert "window.addEventListener('pagehide'" not in runtime_source
 
     for path in (
         "character",
