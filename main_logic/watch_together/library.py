@@ -301,17 +301,19 @@ class Library:
                 timeline['status'] = 'incomplete'
                 return timeline
             audio_until = -1
+            def exceeds(end, boundary):
+                return end > boundary and not math.isclose(end, boundary, rel_tol=0, abs_tol=1e-9)
             video_duration = timeline.get('duration')
             if video_duration is not None and (not valid_time(video_duration) or video_duration == 0):
                 timeline['status'] = 'incomplete'
                 return timeline
             for cue in sorted(events, key=lambda cue: cue['at']):
-                if cue['at'] < audio_until or (video_duration is not None and cue['at'] >= video_duration):
+                if exceeds(audio_until, cue['at']) or (video_duration is not None and cue['at'] >= video_duration):
                     timeline['status'] = 'incomplete'
                     return timeline
                 if cue.get('audio'):
                     audio_until = cue['at'] + cue['duration']
-                    if not valid_time(audio_until) or (video_duration is not None and audio_until > video_duration):
+                    if not valid_time(audio_until) or (video_duration is not None and exceeds(audio_until, video_duration)):
                         timeline['status'] = 'incomplete'
                         return timeline
             manifest = self.manifest(job, version)
