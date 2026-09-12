@@ -13,6 +13,8 @@ import tempfile
 from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
+import portalocker
+
 from .numeric_v2_performance import (
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
@@ -1341,31 +1343,16 @@ class NumericV2SessionStore:
                 os.fsync(temporary.fileno())
             if exclusive:
                 try:
-                    os.link(temporary_path, path)
-                except FileExistsError as exc:
-                    raise NumericV2SessionExistsError("numeric_session_exists") from exc
-                except OSError:
-                    # Some user-selected filesystems do not support hard links.
-                    # Preserve exclusive creation semantics with a direct write.
-                    try:
-                        target_fd = os.open(
-                            path,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                            0o600,
-                        )
-                    except FileExistsError as exc:
-                        raise NumericV2SessionExistsError("numeric_session_exists") from exc
-                    try:
-                        with os.fdopen(target_fd, "wb") as target_file:
-                            target_file.write(encoded)
-                            target_file.flush()
-                            os.fsync(target_file.fileno())
-                    except Exception:
-                        try:
-                            path.unlink()
-                        except OSError:
-                            pass
-                        raise
+                    # Use the registry's publication pattern even without hard
+                    # links: readers only see complete JSON and creators cannot
+                    # overwrite each other. Keep the lock inode for all waiters.
+                    with portalocker.Lock(str(path.parent / ".creates.lock"), mode="a", timeout=10):
+                        if os.path.lexists(path):
+                            raise NumericV2SessionExistsError("numeric_session_exists")
+                        os.replace(temporary_path, path)
+                        temporary_path = None
+                except portalocker.exceptions.LockException as exc:
+                    raise NumericV2StoreError("numeric_session_create_failed") from exc
             else:
                 os.replace(temporary_path, path)
                 temporary_path = None

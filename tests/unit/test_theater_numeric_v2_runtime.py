@@ -1671,3 +1671,87 @@ async def test_replacement_normalizes_character_slot(tmp_path):
     replacement = runtime.engine.create_session(session_id='replacement', catgirl_binding=binding, opening_performance=_opening())
     await runtime.store.replace_active('previous', replacement)
     assert await runtime.store.get_story_session_id(runtime.engine.story_id, _binding()['character_id']) == 'replacement'
+
+
+@pytest.mark.parametrize('mode', ['terminate', 'race'])
+def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, mode):
+    """A killed writer exposes no final file; racing writers never overwrite a winner."""
+    from pathlib import Path
+    import subprocess
+    import sys
+    import time
+
+    worker = r'''
+import json, os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from services.theater.numeric_v2_store import NumericV2SessionStore, NumericV2StoredSession, NumericV2SessionExistsError
+root, mode, marker, writer_id = sys.argv[1:]
+store = NumericV2SessionStore(Path(root), None)
+path = store._path('publication')
+def pause():
+    Path(marker).write_text('ready')
+    sys.stdin.readline()
+def unsupported(*args, **kwargs):
+    raise OSError('hard links unsupported')
+os.link = unsupported
+if mode == 'terminate':
+    original_fdopen, original_replace = os.fdopen, os.replace
+    def before_fdopen(*args, **kwargs):
+        pause()
+        return original_fdopen(*args, **kwargs)
+    def before_replace(source, target):
+        if Path(target) == path:
+            pause()
+        return original_replace(source, target)
+    os.fdopen, os.replace = before_fdopen, before_replace
+else:
+    original_fsync = os.fsync
+    def after_fsync(fd):
+        original_fsync(fd)
+        pause()
+    os.fsync = after_fsync
+snapshot = NumericV2StoredSession(SimpleNamespace(to_dict=lambda: {'writer_id': writer_id}), ())
+try:
+    store._write(path, snapshot, exclusive=True)
+    print('created', flush=True)
+except NumericV2SessionExistsError:
+    print('exists', flush=True)
+'''
+    processes = []
+    final = tmp_path / 'numeric_v2/sessions/publication.json'
+    try:
+        for i in range(1 if mode == 'terminate' else 2):
+            marker = tmp_path / f'writer-{i}.ready'
+            process = subprocess.Popen([sys.executable, '-c', worker, str(tmp_path), mode, str(marker), str(i)],
+                cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            processes.append(process)
+            deadline = time.monotonic() + 10
+            while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert marker.exists(), f'writer failed to reach publication: {process.poll()}'
+        if mode == 'terminate':
+            processes[0].terminate()
+            processes[0].wait(timeout=5)
+            assert not final.exists(), 'a terminated writer must not leave partial final JSON'
+            # The OS must release the publication lock after termination.
+            store = numeric_v2_store.NumericV2SessionStore(tmp_path, None)
+            from types import SimpleNamespace
+            snapshot = numeric_v2_store.NumericV2StoredSession(SimpleNamespace(to_dict=lambda: {'writer_id': 'retry'}), ())
+            store._write(final, snapshot, exclusive=True)
+            assert json.loads(final.read_text())['session']['writer_id'] == 'retry'
+        else:
+            for process in processes:
+                process.stdin.write('publish\n')
+                process.stdin.flush()
+            outputs = [process.communicate(timeout=10) for process in processes]
+            assert all(process.returncode == 0 for process in processes), outputs
+            assert sorted(out.strip() for out, _ in outputs) == ['created', 'exists']
+            winner = next(str(i) for i, (out, _) in enumerate(outputs) if out.strip() == 'created')
+            assert json.loads(final.read_text())['session']['writer_id'] == winner
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)

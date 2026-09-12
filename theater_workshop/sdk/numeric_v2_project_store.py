@@ -267,6 +267,25 @@ def derive_project_status(project: Mapping[str, Any]) -> str:
     return "compiled"
 
 
+def _advance_branch_drafts(
+    project: dict[str, Any], *, base_revision: int, previous_fingerprint: str | None,
+) -> None:
+    """Carry valid drafts through a content-neutral revision; otherwise invalidate them."""
+
+    next_fingerprint = NumericV2BranchService._fingerprint(project) if previous_fingerprint else None
+    for draft in project["authoring"]["branch_drafts"].values():
+        if (
+            previous_fingerprint
+            and draft.get("status") in {"preview", "ending_review"}
+            and draft.get("base_revision") == base_revision
+            and draft.get("context_fingerprint") == previous_fingerprint
+        ):
+            draft["base_revision"] = project["revision"]
+            draft["context_fingerprint"] = next_fingerprint
+        elif draft.get("status") not in {"applied", "failed"}:
+            draft["status"] = "stale"
+
+
 class NumericV2ProjectStore:
     """Store one JSON file per project without overwriting newer revisions from concurrent edits."""
 
@@ -456,21 +475,8 @@ class NumericV2ProjectStore:
                 project["generation_error"] = {"code": "generation_revision_changed"}
             project["revision"] += 1
             project["updated_at"] = _now()
-            authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
-            for draft in authoring["branch_drafts"].values():
-                if (
-                    editor_only
-                    and draft.get("status") in {"preview", "ending_review"}
-                    and draft.get("base_revision") == base_revision
-                    and draft.get("context_fingerprint") == previous_fingerprint
-                ):
-                    # Canvas coordinates leave branch context intact; retain only
-                    # drafts that were valid before this content-neutral revision.
-                    draft["base_revision"] = project["revision"]
-                    draft["context_fingerprint"] = NumericV2BranchService._fingerprint(project)
-                elif draft.get("status") not in {"applied", "failed"}:
-                    draft["status"] = "stale"
-            project["authoring"] = authoring
+            project["authoring"] = _normalize_authoring(project.get("authoring"), project.get("story"))
+            _advance_branch_drafts(project, base_revision=base_revision, previous_fingerprint=previous_fingerprint)
             if package_changed:
                 project["compile_result"] = None
                 project["neko_validation"] = None
@@ -634,16 +640,16 @@ class NumericV2ProjectStore:
                 raise NumericV2ProjectError("mainline_order_invalid")
 
             authoring = _normalize_authoring(project.get("authoring"), story)
-            if authoring.get("mainline_node_ids") != ordered:
+            order_changed = authoring.get("mainline_node_ids") != ordered
+            previous_fingerprint = None if order_changed else NumericV2BranchService._fingerprint(project)
+            if order_changed:
                 if isinstance(authoring.get("quality_assessment"), dict):
                     authoring["quality_assessment"]["stale"] = True
                 authoring["pacing_diagnostics"] = None
             authoring["mainline_node_ids"] = ordered
-            for draft in authoring["branch_drafts"].values():
-                if draft.get("status") not in {"applied", "failed"}:
-                    draft["status"] = "stale"
             project["authoring"] = authoring
             project["revision"] += 1
+            _advance_branch_drafts(project, base_revision=base_revision, previous_fingerprint=previous_fingerprint)
             project["updated_at"] = _now()
             self._carry_publish_receipts(project)
             self._write(project)

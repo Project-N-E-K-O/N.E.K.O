@@ -4126,7 +4126,8 @@ async def test_numeric_audit_defers_when_character_source_is_unavailable(tmp_pat
                                     "bad_map": '{"猫娘": []}'}[failure], encoding="utf-8")
         with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
             await numeric_theater_router._registry(cm)
-    assert {path: path.read_bytes() for path in before} == before
+    after = {path: path.read_bytes() for path in (root / "numeric_v2").rglob("*.json")}
+    assert after == before
     assert not (root / "numeric_v2" / "quarantine").exists()
     assert str(root.resolve()) not in numeric_v2_maintenance._MAINTAINED_ROOTS
     config_path.write_bytes(original_config)

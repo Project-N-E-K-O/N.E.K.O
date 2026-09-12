@@ -1857,6 +1857,9 @@ def test_replacement_launch_clears_only_another_sessions_draft(mock_page: Page, 
         if launch_id != 'rejected-session':
             mock_page.wait_for_function('id => window.__draftLaunches.includes(id)', arg=launch_id)
         mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        if launch_id == 'rejected-session':
+            assert mock_page.evaluate('window.nekoTheaterRuntime.getState().sessionId') == 'session-a'
+            assert launch_id not in mock_page.evaluate('window.__draftLaunches')
         expect(composer).to_have_value('' if launch_id == 'new-session' else '旧剧本里还没有寄出的信')
     state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
     assert state['sessionId'] == 'session-b'
