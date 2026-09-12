@@ -652,3 +652,41 @@ def test_multiple_trailing_slashes_do_not_preserve_custom_key(config_manager, co
         "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
     })))
     assert result["success"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("change,success", [
+    ({}, True),
+    ({"imageModelId": "changed"}, False),
+    ({"imageModelUrl": "https://changed.example/v1"}, False),
+    ({"imageModelApiKey": "replacement"}, False),
+    ({"imageModelProvider": "another-future-provider"}, False),
+    ({"imageModelProvider": "disabled", "imageModelUrl": "", "imageModelId": "", "imageModelApiKey": ""}, True),
+])
+def test_unknown_image_provider_preserved_only_unchanged(config_manager, core_config_router, change, success):
+    image = {
+        "imageModelProvider": "future-provider", "imageModelUrl": "https://future.example/v1",
+        "imageModelId": "future-model", "imageModelApiKey": "private-image-key",
+    }
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access", **image,
+    })
+    payload = {**image, "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+               "disableTts": True, **change}
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(payload)))
+    assert result["success"] is success
+    saved = config_manager.load_json_config("core_config.json", {})
+    if success:
+        assert saved["disableTts"] is True
+    if not change or not success:
+        assert {field: saved[field] for field in image} == image
+    else:
+        assert saved["imageModelProvider"] == "disabled"
+        assert saved["imageModelApiKey"] == ""
+
+
+@pytest.mark.unit
+def test_new_unknown_image_provider_still_rejected(config_manager, core_config_router):
+    _write_core_config(config_manager, {"coreApi": "free", "assistApi": "free", "coreApiKey": "free-access"})
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({"imageModelProvider": "future-provider"})))
+    assert result["success"] is False

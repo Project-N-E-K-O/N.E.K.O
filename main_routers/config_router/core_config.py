@@ -566,30 +566,41 @@ async def update_core_config(request: Request):
         if any(field in data for field in (
             "imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"
         )):
-            from utils.image_generation.config import resolve_image_config
+            from utils.image_generation.config import PROVIDERS, resolve_image_config
             candidate = {**core_cfg, **{
                 field: data[field] for field in (
                     "imageModelProvider", "imageModelUrl", "imageModelId"
                 ) if field in data
             }}
             apply_core_config_secret_update(candidate, data, "imageModelApiKey")
-            if core_cfg.get("imageModelApiKey"):
-                old_url = core_cfg.get("imageModelUrl", "")
-                new_url = candidate.get("imageModelUrl", "")
-                from utils.http.url import same_endpoint
-                equivalent_url = (
-                    isinstance(old_url, str) and isinstance(new_url, str)
-                    and same_endpoint(old_url.strip(), new_url.strip())
-                )
-                if not equivalent_url and core_cfg.get("imageModelApiKey") and (
-                    "imageModelApiKey" not in data
-                    or is_core_config_secret_placeholder(data["imageModelApiKey"])
-                ):
-                    return {"success": False, "error": "Changing image endpoint requires replacing or clearing its API key"}
-            try:
-                resolve_image_config(candidate)
-            except ValueError as exc:
-                return {"success": False, "error": str(exc)}
+            stored_image_provider = core_cfg.get("imageModelProvider")
+            preserve_unknown_image = (
+                isinstance(stored_image_provider, str)
+                and stored_image_provider not in ("", "disabled")
+                and stored_image_provider not in PROVIDERS
+                and all(candidate.get(field, "") == core_cfg.get(field, "") for field in (
+                    "imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"
+                ))
+            )
+            # Older builds may retain a future provider, but must not create or edit it.
+            if not preserve_unknown_image:
+                if core_cfg.get("imageModelApiKey"):
+                    old_url = core_cfg.get("imageModelUrl", "")
+                    new_url = candidate.get("imageModelUrl", "")
+                    from utils.http.url import same_endpoint
+                    equivalent_url = (
+                        isinstance(old_url, str) and isinstance(new_url, str)
+                        and same_endpoint(old_url.strip(), new_url.strip())
+                    )
+                    if not equivalent_url and core_cfg.get("imageModelApiKey") and (
+                        "imageModelApiKey" not in data
+                        or is_core_config_secret_placeholder(data["imageModelApiKey"])
+                    ):
+                        return {"success": False, "error": "Changing image endpoint requires replacing or clearing its API key"}
+                try:
+                    resolve_image_config(candidate)
+                except ValueError as exc:
+                    return {"success": False, "error": str(exc)}
 
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         for mt in CORE_CONFIG_MODEL_TYPES:
