@@ -357,6 +357,14 @@
       const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
       let mounted = null;
       try {
+        if (slot === 'ai' && ['mmd', 'pngtuber'].includes(model.type)) {
+          const bound = await ensureSoccerCharacterInfo();
+          const character = await soccerGame.avatar.getCharacter(bound.name);
+          const allowed = [character?.model, ...(character?.fallbackModels || []).slice(0, 4)];
+          if (!allowed.some(candidate => candidate?.type === model.type && candidate.path === model.path)) {
+            throw Object.assign(new Error('model_not_allowed'), { code: 'model_not_allowed' });
+          }
+        }
         const previous = window[key];
         if (previous && !previous.disposed
             && previous.config.fit.mode === soccerAvatarFit(model).mode) {

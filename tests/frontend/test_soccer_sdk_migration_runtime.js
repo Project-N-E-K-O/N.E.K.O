@@ -213,6 +213,25 @@ async function main() {
     await sandbox.setPlayerAvatar({ type: 'vrm', path: '/second.vrm' });
     assert.equal(avatarEvents.length, 2, 'model replacement did not emit its completion event');
     assert.equal(renderers.length, 1, 'same-fit replacement should retain the controller');
+    const characterQueryBeforeReplacements = host.getAvatarCharacter;
+    host.getAvatarCharacter = async () => ({ ...descriptor,
+      model: { type: 'mmd', path: '/first.pmx' },
+      fallbackModels: [
+        { type: 'pngtuber', path: '/image.png' }, { type: 'pngtuber', path: '/next.png' },
+        { type: 'mmd', path: '/broken.pmx' }, { type: 'pngtuber', path: '/fallback.png' },
+      ],
+    });
+    await sandbox.setAiAvatar({ type: 'vrm', path: '/preserved.vrm' });
+    const preservedAi = window.__SoccerAiAvatarController;
+    preservedAi.pause();
+    for (const model of [{ type: 'mmd', path: '/untrusted.pmx' },
+      { type: 'pngtuber', path: '/untrusted.png' }]) {
+      await assert.rejects(sandbox.setAiAvatar(model), /model_not_allowed/);
+      assert.equal(window.__SoccerAiAvatarController, preservedAi, 'invalid path replaced the old controller');
+      assert.equal(preservedAi.disposed, false, 'invalid path disposed the old controller');
+      assert.equal(preservedAi.getState().paused, true, 'invalid path changed pause state');
+      assert.equal(preservedAi.getState().model.path, '/preserved.vrm');
+    }
     await sandbox.setAiAvatar({ type: 'mmd', path: '/first.pmx' });
     window.__SoccerAiAvatarController.pause();
     const oldAi = renderers.at(-1);
@@ -233,6 +252,7 @@ async function main() {
     await vm.runInThisContext(`mountSoccerCharacterAvatar({ model: {type:'mmd',path:'/broken.pmx'},
       fallbackModels:[{type:'pngtuber',path:'/fallback.png'},{type:'vrm',path:'/unused.vrm'}] })`);
     assert.equal(renderers.at(-1).model.path, '/fallback.png', 'fallback did not follow canonical order');
+    host.getAvatarCharacter = characterQueryBeforeReplacements;
     window.__SoccerPlayerAvatarController.dispose();
     window.__SoccerAiAvatarController.dispose();
     assert.equal(descriptor.name, 'test-character');
@@ -438,7 +458,9 @@ async function main() {
     let releaseMount;
     mountGate = new Promise(resolve => { releaseMount = resolve; });
     const eventCountBeforeExit = avatarEvents.length;
+    host.getAvatarCharacter = async () => ({ ...descriptor, model: { type: 'mmd', path: '/late.pmx' } });
     const exitingAvatar = sandbox.setAiAvatar({ type: 'mmd', path: '/late.pmx' });
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
     game.dispose();
     releaseMount();
     await assert.rejects(exitingAvatar, /disposed|cancelled/);
