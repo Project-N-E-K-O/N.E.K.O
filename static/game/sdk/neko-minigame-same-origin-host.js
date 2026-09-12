@@ -1285,11 +1285,20 @@
     }
 
     _postWithCsrf(path, payload, options = {}) {
-      return this.withCsrfRetry((headers) => this._post(path, jsonBody(payload, headers), {
-        ...options,
-        headers: { ...headers, ...(options.headers || {}) },
-        credentials: options.credentials || 'same-origin',
-      }));
+      return this.withCsrfRetry((headers) => {
+        const body = jsonBody(payload, headers);
+        // Include host identity and the actual token on every CSRF attempt.
+        if (options.maxRequestBytes !== undefined && utf8ByteLength(body) > options.maxRequestBytes) {
+          throw this._hostError('invalid_payload', 'The final command body exceeds its request budget', {
+            operation: options.operation,
+          });
+        }
+        return this._post(path, body, {
+          ...options,
+          headers: { ...headers, ...(options.headers || {}) },
+          credentials: options.credentials || 'same-origin',
+        });
+      });
     }
 
     async _readAvatarJson(endpoint, name, options = {}) {
@@ -1802,6 +1811,7 @@
         payload,
         {
           timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
+          maxRequestBytes: policy.maxRequestBytes,
           signal: options.signal,
           operation: 'game_command',
         },

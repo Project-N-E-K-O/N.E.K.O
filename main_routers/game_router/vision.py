@@ -70,18 +70,14 @@ def _current_route(game_type: str, data: dict, expected: dict | None = None) -> 
 
 
 def _validated_image(value: str) -> str:
-    """Decode only bounded JPEGs, then re-encode without uploaded metadata."""
+    """Check the legacy capture bounds; the shared service sanitizes it once."""
     try:
         raw = base64.b64decode(value.split(",", 1)[1], validate=True)
         with Image.open(BytesIO(raw)) as probe:
             if probe.format != "JPEG" or not (1 <= probe.width <= 1280 and 1 <= probe.height <= 720):
                 raise ValueError("invalid_image")
             probe.verify()
-        with Image.open(BytesIO(raw)) as image:
-            image.load()
-            with image.convert("RGB") as rgb, BytesIO() as output:
-                rgb.save(output, format="JPEG", quality=80)
-                return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+        return value
     except (ValueError, OSError, binascii.Error, Image.DecompressionBombError) as exc:
         raise ValueError("invalid_image") from exc
 

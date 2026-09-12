@@ -310,7 +310,9 @@
         if (signal.aborted) abort();
         else signal.addEventListener('abort', abort, { once: true });
       }
-      const timer = windowImpl.setTimeout(abort, 10000);
+      // Managed queries and mounts already own a total deadline. A second
+      // per-fetch timer would silently shorten that caller's 10–30s budget.
+      const timer = requestOptions.signal ? null : windowImpl.setTimeout(abort, 10000);
       try {
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         const response = await fetchImpl(url, {
@@ -327,7 +329,7 @@
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         throw cause;
       } finally {
-        windowImpl.clearTimeout(timer);
+        if (timer !== null) windowImpl.clearTimeout(timer);
         for (const signal of signals) signal.removeEventListener('abort', abort);
       }
     }

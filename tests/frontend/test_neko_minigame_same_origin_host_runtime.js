@@ -80,6 +80,8 @@ async function main() {
   let markDelayedDrainStarted;
   let slowLogEnableGate = null;
   let releaseSlowLogEnable = null;
+  let commandCsrfFailure = false;
+  let csrfToken = 'test-token';
   const protocolTwoGate = new Promise((resolve) => { releaseProtocolTwo = resolve; });
   const protocolTwoStarted = new Promise((resolve) => { markProtocolTwoStarted = resolve; });
   const delayedDrainGate = new Promise((resolve) => { releaseDelayedDrain = resolve; });
@@ -87,7 +89,7 @@ async function main() {
   const fetchImpl = async (url, init = {}) => {
     const pathName = String(url);
     if (pathName.startsWith('/api/config/page_config')) {
-      return jsonResponse({ autostart_csrf_token: 'test-token' });
+      return jsonResponse({ autostart_csrf_token: csrfToken });
     }
     if (pathName === '/api/game/logs/enable') {
       if (slowLogEnableGate) await slowLogEnableGate;
@@ -95,6 +97,11 @@ async function main() {
     }
     const body = init.body ? JSON.parse(init.body) : {};
     calls.push({ url: pathName, init, body });
+    if (pathName.endsWith('/round/input') && commandCsrfFailure) {
+      commandCsrfFailure = false;
+      csrfToken = 'test-token-longer';
+      return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+    }
     if (pathName.endsWith('/protocol') && body.sequence === 2) {
       markProtocolTwoStarted();
       await protocolTwoGate;
@@ -553,6 +560,24 @@ async function main() {
     && commandCall.body.lanlan_name === 'Server Neko'
     && commandCall.body.sdk_route_instance_id === 'route-generation-1',
   'the command endpoint or trusted runtime identity was not host-owned');
+  const exactTextLength = 400 * 1024 - Buffer.byteLength(JSON.stringify(commandCall.body), 'utf8') + 5;
+  await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength) }));
+  const beforeFinalOversize = calls.length;
+  let finalSizeError;
+  try {
+    await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength + 1) }));
+  } catch (error) { finalSizeError = error; }
+  assert(finalSizeError?.code === 'invalid_payload' && calls.length === beforeFinalOversize,
+    'runtime identity and CSRF bytes escaped the final command budget');
+  commandCsrfFailure = true;
+  const beforeCsrfRetry = calls.length;
+  let retrySizeError;
+  try {
+    await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength) }));
+  } catch (error) { retrySizeError = error; }
+  assert(retrySizeError?.code === 'invalid_payload' && calls.length === beforeCsrfRetry + 1,
+    'a longer refreshed CSRF token escaped the command budget on retry');
+  csrfToken = 'test-token';
   let oversizedCommandError = null;
   const commandCallsBeforeOversize = calls.filter(
     (call) => call.url.endsWith('/round/input'),

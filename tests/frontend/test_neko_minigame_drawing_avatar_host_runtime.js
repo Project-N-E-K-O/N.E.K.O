@@ -716,6 +716,23 @@ async function main() {
     return { probe, timers };
   }
   const queryCatalog = { 猫娘: { Example: { model_type: 'live2d', model_path: '/example.model3.json' } } };
+  {
+    let finishBody;
+    const { probe, timers } = queryProbe(async () => ({ ok: true, json: () => new Promise(resolve => {
+      finishBody = () => resolve(queryCatalog);
+    }) }));
+    const pending = probe.listCharacters({ timeoutMs: 30000 });
+    pending.catch(() => {});
+    try {
+      await new Promise(setImmediate);
+      assert(timers.size === 1 && [...timers.values()][0].delay === 30000,
+        'response body did not share the caller total deadline');
+      for (const timer of [...timers.values()]) if (timer.delay <= 10000) timer.callback();
+      finishBody();
+      assert((await pending)[0] === 'Example', 'valid late response body was cancelled at 10s');
+      assert(timers.size === 0, 'completed body retained deadline');
+    } finally { finishBody?.(); await probe.dispose(); }
+  }
   for (const stage of ['current', 'catalog', 'canonical']) {
     const owner = new AbortController();
     let entered;
@@ -804,6 +821,7 @@ async function main() {
     owner.signal.removeEventListener = (...args) => { removed += 1; remove(...args); };
     const cancelled = rejection(probe.listCharacters({ signal: owner.signal }));
     const independent = probe.listCharacters({ timeoutMs: 999999 });
+    independent.catch(() => {}); // Retrieve a rejection even if the earlier assertion fails.
     try {
       await new Promise(setImmediate);
       assert(fetches.length === 2, 'independent callers shared a cancellable catalog request');
@@ -811,6 +829,7 @@ async function main() {
         'metadata timeout was not capped at 30 seconds');
       owner.abort();
       assert((await withTimeout(cancelled, 'abort-aware fetch did not settle'))?.code === 'cancelled');
+      for (const timer of [...timers.values()]) if (timer.delay <= 10000) timer.callback();
       assert(!fetches[1].signal.aborted, 'cancelling one query aborted another consumer');
       fetches[1].finish();
       assert((await independent)[0] === 'Example');
@@ -858,14 +877,15 @@ async function main() {
 
   // Exercise both rejecting await boundaries, not only a fulfilled aborted fetch.
   for (const stage of ['fetch', 'body', 'network']) {
-    let abortRequest;
+    const owner = new AbortController();
+    const abortRequest = () => owner.abort();
     let cleared = false;
     const cause = new Error('request rejection');
     cause.name = stage === 'network' ? 'TypeError' : 'AbortError';
     const requestHost = windowMock.NekoMiniGameDrawingAvatarHost.create({
       windowImpl: {
         ...windowMock,
-        setTimeout(callback) { abortRequest = callback; return 1; },
+        setTimeout() { return 1; },
         clearTimeout() { cleared = true; },
       },
       fetchImpl: async () => {
@@ -877,7 +897,7 @@ async function main() {
       },
     });
     try {
-      const failure = await rejection(requestHost.listCharacters());
+      const failure = await rejection(requestHost.listCharacters({ signal: owner.signal }));
       assert(stage === 'network' ? failure === cause : failure?.code === 'cancelled',
         `${stage} rejection did not preserve the Avatar cancellation contract`);
       assert(cleared, `${stage} rejection leaked its request timer`);
@@ -991,6 +1011,9 @@ async function main() {
   const fallbackDescriptor = await host.getCharacter('Fallback Example');
   assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'mmd'),
     'canonical fallback was not exposed');
+  assert(fallbackDescriptor.fallbackModels?.some(model =>
+    model.type === 'pngtuber' && model.path === '/avatars/fallback.png'),
+  'PNGTuber fallback was not exposed through public discovery');
   for (const model of [
     { type: 'mmd', path: '/static/mmd/fallback.pmx' },
     { type: 'pngtuber', path: '/avatars/fallback.png' },

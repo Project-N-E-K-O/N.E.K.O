@@ -973,6 +973,12 @@ pause/model replacement preserve the intent and resume/reload reapplies it.
 `setSpeaking(false)` releases the override back to automatic SDK playback.
 Only one manual update may be pending per controller (`busy` otherwise); older
 automatic renderer updates settle before the manual update is applied.
+Manual calls have a 10-second deadline and are cancelled on route exit or
+controller disposal. Disposal of an already accepted call returns `false`.
+An uncooperative renderer keeps its single raw slot until it settles (`busy`
+for another manual call); timed-out waiters on automatic playback are removed.
+Reapplying manual motion after model replacement/resume is best-effort and
+cannot change the model/resume result or delay it indefinitely.
 
 When the trusted host provides character discovery, games can call
 `avatar.listCharacters()`, `avatar.getCurrentCharacter()` and

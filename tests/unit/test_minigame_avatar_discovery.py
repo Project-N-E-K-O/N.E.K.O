@@ -13,7 +13,7 @@ from tests.node_harness import run_node_script
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_character_exposes_png_path_without_private_config(monkeypatch):
+async def test_character_exposes_png_path_without_private_config(monkeypatch, tmp_path):
     from main_routers import characters_router
     from unittest.mock import AsyncMock
 
@@ -23,13 +23,22 @@ async def test_character_exposes_png_path_without_private_config(monkeypatch):
             "talking_image": "/user_pngtuber/example/talk.png",
         }}}, "prompt": "private",
     }}}
-    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(load_characters=lambda: data))
+    (tmp_path / "example").mkdir()
+    (tmp_path / "example" / "idle.png").touch()
+    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(
+        load_characters=lambda: data, pngtuber_dir=tmp_path))
     monkeypatch.setattr(runtime, "_load_game_character_prompt_locale", AsyncMock(return_value=("en", True)))
     monkeypatch.setattr(characters_router, "get_current_live2d_model", AsyncMock(return_value=None))
     result = await runtime.game_character("example-game")
     assert result["pngtuber_path"] == "/user_pngtuber/example/idle.png"
     assert "talking_image" not in json.dumps(result)
     assert "private" not in json.dumps(result)
+    for raw, expected in [("example/idle.png", "/user_pngtuber/example/idle.png"),
+                          ("example\\idle.png", "/user_pngtuber/example/idle.png"),
+                          ("missing.png", ""), ("../idle.png", ""),
+                          ("//example.invalid/idle.png", ""), ("idle.txt", "")]:
+        data["猫娘"]["Example"]["_reserved"]["avatar"]["pngtuber"]["idle_image"] = raw
+        assert (await runtime.game_character("example-game"))["pngtuber_path"] == expected
     data["猫娘"]["Example"]["_reserved"]["avatar"]["pngtuber"] = {"idle_image": {"bad": "shape"}}
     assert (await runtime.game_character("example-game"))["pngtuber_path"] == ""
 
