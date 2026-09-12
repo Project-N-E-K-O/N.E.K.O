@@ -22,6 +22,7 @@ from .numeric_v2 import (
     metrics_to_package,
     normalize_metric_drafts,
 )
+from .numeric_v2_branch import NumericV2BranchService
 
 
 class NumericV2ProjectError(ValueError):
@@ -389,6 +390,8 @@ class NumericV2ProjectStore:
             unknown = set(changes).difference(allowed)
             if unknown:
                 raise NumericV2ProjectError("unsupported_project_change")
+            editor_only = set(changes) == {"editor"}
+            previous_fingerprint = NumericV2BranchService._fingerprint(project) if editor_only else None
             package_changed = "story" in changes
             if "title" in changes:
                 project["title"] = str(changes["title"] or "").strip()
@@ -455,7 +458,17 @@ class NumericV2ProjectStore:
             project["updated_at"] = _now()
             authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
             for draft in authoring["branch_drafts"].values():
-                if draft.get("status") not in {"applied", "failed"}:
+                if (
+                    editor_only
+                    and draft.get("status") in {"preview", "ending_review"}
+                    and draft.get("base_revision") == base_revision
+                    and draft.get("context_fingerprint") == previous_fingerprint
+                ):
+                    # Canvas coordinates leave branch context intact; retain only
+                    # drafts that were valid before this content-neutral revision.
+                    draft["base_revision"] = project["revision"]
+                    draft["context_fingerprint"] = NumericV2BranchService._fingerprint(project)
+                elif draft.get("status") not in {"applied", "failed"}:
                     draft["status"] = "stale"
             project["authoring"] = authoring
             if package_changed:

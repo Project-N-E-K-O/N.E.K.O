@@ -187,7 +187,7 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("failure", ["mtime", "read", "missing"])
+@pytest.mark.parametrize("failure", ["mtime", "stat_missing", "read", "missing"])
 def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_path, failure):
     cm = _make_config_manager(tmp_path)
     cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
@@ -195,9 +195,12 @@ def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_pa
     with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
         first = cm.load_characters()
     assert cm._characters_dirty
-    if failure == "mtime":
-        with patch("utils.config_manager.characters.os.path.getmtime", side_effect=OSError("unreadable")):
+    if failure in {"mtime", "stat_missing"}:
+        error = FileNotFoundError("missing") if failure == "stat_missing" else OSError("unreadable")
+        with patch("utils.config_manager.characters.os.path.getmtime", side_effect=error), \
+             patch.object(cm, "save_characters") as save:
             loaded = cm.load_characters()
+            save.assert_not_called()
     else:
         error = FileNotFoundError("missing") if failure == "missing" else OSError("unreadable")
         with patch("utils.config_manager.characters.os.path.getmtime", return_value=-1), \
@@ -256,6 +259,35 @@ def test_character_audit_rejects_unpersisted_ids_and_reuses_them_after_retry(tmp
         assert cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"] == cached_id
     assert numeric_v2_character_ids(cm) == {"Legacy": cached_id}
     assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("authoritative", [False, True])
+def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_path, authoritative):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    assert not path.exists()
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+        assert cm._characters_dirty and cm._characters_cache_mtime is None
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm.load_characters() == first
+    # A stat permission failure does not establish that the source is absent.
+    with patch("utils.config_manager.characters.os.path.getmtime", side_effect=PermissionError("unreadable")), \
+         patch.object(cm, "save_characters") as save:
+        assert cm.load_characters() == first
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        save.assert_not_called()
+    assert cm.load_characters(require_authoritative=authoritative) == first
+    assert not cm._characters_dirty
+    assert json.loads(path.read_text(encoding="utf-8")) == first
+    assert numeric_v2_character_ids(cm) == {
+        name: profile["_reserved"]["character_id"] for name, profile in first["猫娘"].items()
+    }
 
 
 @pytest.mark.unit

@@ -627,6 +627,11 @@
         var chatHost = host();
         captureOrdinaryDraft(chatHost);
         captureChatSurfaceMode(chatHost);
+        if (state.storyId !== nextStoryId || state.sessionId !== nextSessionId) {
+            // Reuse the capsule's draft projection for an accepted session change.
+            // A failed launch or same-session replay must retain the current input.
+            state.draftRestore = { id: createId('theater_draft_restore_'), text: '' };
+        }
         if (state.active) {
             // 即使重新启动同一 Session，也必须先使旧正文和旧语音失效，避免两个播放协程交错写回。
             claimAudioPlayback();

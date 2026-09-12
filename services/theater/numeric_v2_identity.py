@@ -32,7 +32,7 @@ def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
             get_reserved(profile, "character_id", default="")
         )
         normalized_name = str(name or "").strip()
-        if normalized_name and character_id:
+        if normalized_name and character_id and normalized_name not in result:
             result[normalized_name] = character_id
         else:
             raise ValueError("numeric_character_config_unavailable")

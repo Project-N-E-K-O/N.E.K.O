@@ -498,7 +498,8 @@ def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
 
 
 @pytest.mark.parametrize("new_ending", [False, True])
-def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, new_ending):
+@pytest.mark.parametrize("editor_save", [False, True])
+def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, new_ending, editor_save):
     from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
     fixed = [_piece("report", REPORT, entry=True)]
     from .test_numeric_v2_branch import (
@@ -529,6 +530,10 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
         if new_ending:
             ending = host.sdk.draft_branch_ending(pid, base_revision=revision, source_node_id="main_1",
                 ending_direction="两人公开真相并共同承担代价。", condition_selection={"mode":"recommend"})["draft"]
+            if editor_save:
+                project = host.sdk.update_project(pid, base_revision=revision,
+                    changes={"editor": {"node_positions": {"main_1": {"x": 10, "y": 20}}}})
+                revision = project["revision"]
             confirmed = deepcopy(ending["ending"])
             confirmed["title"] = "作者确认后的结局"
             draft = host.sdk.draft_branch_path(pid, base_revision=revision,
@@ -544,6 +549,10 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
                 condition_selection={"mode":"fixed", "key":options["condition_candidates"][1]["key"]})["draft"]
             assert calls == ["numeric_v2_branch_path"]
         assert host.sdk.get_project(pid)["revision"] == revision
+        if editor_save:
+            project = host.sdk.update_project(pid, base_revision=revision,
+                changes={"editor": {"node_positions": {"main_1": {"x": 30, "y": 40}}}})
+            revision = project["revision"]
         applied = host.sdk.apply_branch(pid, draft["draft_id"], base_revision=revision)["project"]
         duplicate = host.sdk.apply_branch(pid, draft["draft_id"], base_revision=revision)["project"]
         assert applied == duplicate

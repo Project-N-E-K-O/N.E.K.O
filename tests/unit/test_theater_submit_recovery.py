@@ -247,7 +247,9 @@ SCENARIOS = (
         delete before.presentationSeq; delete after.presentationSeq;
         assert.deepEqual(after, before);
         assert.equal(after.sessionId, 'session_b'); assert.equal(after.revision, 7);
-        assert.equal(after.errorMessage, ''); assert.equal(after.draftRestore, null);
+        assert.equal(after.errorMessage, '');
+        assert.ok(after.draftRestore.id, '新 Session 必须投影一次草稿清空');
+        assert.equal(after.draftRestore.text, '');
       }
     """),
 )

@@ -367,3 +367,34 @@ def test_mainline_order_is_author_only_and_must_follow_existing_routes(tmp_path)
             base_revision=updated["revision"],
             node_ids=["ending_stay"],
         )
+
+
+@pytest.mark.parametrize('change', ['editor', 'story', 'setup', 'title'])
+def test_editor_save_rebases_only_current_branch_drafts(tmp_path, change):
+    from copy import deepcopy
+    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.import_story(numeric_v2_story())
+    revision = project['revision']
+    drafts = {}
+    for case in ['preview', 'ending_review', 'stale', 'failed', 'applied', 'old_revision', 'bad_fingerprint']:
+        draft = {'draft_id': 'branch_draft_' + case, 'kind': 'path',
+                 'status': case if case not in {'old_revision', 'bad_fingerprint'} else 'preview',
+                 'base_revision': revision - 1 if case == 'old_revision' else revision,
+                 'context_fingerprint': 'invalid' if case == 'bad_fingerprint' else NumericV2BranchService._fingerprint(project)}
+        drafts[case] = store.save_branch_draft(project['project_id'], base_revision=revision, draft=draft)
+    changes = {'editor': {'node_positions': {'start': {'x': 12, 'y': 34}}}}
+    if change != 'editor':
+        changes[change] = deepcopy(project[change])
+    updated = store.update(project['project_id'], base_revision=revision, changes=changes)
+    for case, original in drafts.items():
+        actual = updated['authoring']['branch_drafts'][original['draft_id']]
+        expected = deepcopy(original)
+        if change == 'editor' and case in {'preview', 'ending_review'}:
+            expected.update(base_revision=revision + 1,
+                            context_fingerprint=NumericV2BranchService._fingerprint(updated))
+        elif case not in {'applied', 'failed'}:
+            expected['status'] = 'stale'
+        assert actual == expected
+    assert store.get(project['project_id'])['authoring']['branch_drafts'] == updated['authoring']['branch_drafts']

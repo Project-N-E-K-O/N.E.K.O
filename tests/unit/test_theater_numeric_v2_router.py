@@ -4080,7 +4080,7 @@ def test_numeric_tts_fences_lifecycle_changes(tmp_path, monkeypatch, change, dur
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["malformed", "unreadable", "missing", "non_object", "bad_map"])
+@pytest.mark.parametrize("failure", ["malformed", "unreadable", "missing", "non_object", "bad_map", "duplicate_name"])
 async def test_numeric_audit_defers_when_character_source_is_unavailable(tmp_path, monkeypatch, failure):
     """Fallback profiles must never quarantine real saves or consume the audit-once marker."""
     import builtins
@@ -4117,6 +4117,10 @@ async def test_numeric_audit_defers_when_character_source_is_unavailable(tmp_pat
             broken.setattr(builtins, "open", unreadable)
         elif failure == "missing":
             config_path.unlink()
+        elif failure == "duplicate_name":
+            ambiguous = json.loads(original_config)
+            ambiguous["猫娘"][" C0 "] = ambiguous["猫娘"].pop("C1")
+            config_path.write_text(json.dumps(ambiguous), encoding="utf-8")
         else:
             config_path.write_text({"malformed": '{"猫娘":', "non_object": '[]',
                                     "bad_map": '{"猫娘": []}'}[failure], encoding="utf-8")

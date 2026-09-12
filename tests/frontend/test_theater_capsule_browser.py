@@ -1808,3 +1808,56 @@ def test_pointer_restore_obeys_lifecycle_notifications(mock_page: Page, running_
     assert state is (action == 'unrelated')
     if action != 'unrelated':
         assert mock_page.evaluate("sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1')") is None
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('restored', [False, True])
+@pytest.mark.parametrize('next_story', ['story-a', 'story-b'])
+def test_replacement_launch_clears_only_another_sessions_draft(mock_page: Page, running_server: str, restored, next_story):
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/session/input'):
+            route.fulfill(status=503, content_type='application/json', body=json.dumps(
+                {'ok': False, 'reason': 'numeric_input_request_failed'}))
+        elif '/session/session-' in path:
+            session_id = path.rsplit('/', 1)[-1]
+            story_id = 'story-a' if session_id == 'session-a' else next_story
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(
+                _snapshot(revision=0, story_id=story_id, session_id=session_id)))
+        else:
+            route.continue_()
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("sessionStorage.setItem('neko.theater.numeric.v2.capsule-pointer.v1', JSON.stringify({story_id:'story-a',session_id:'session-a'}))")
+    mock_page.goto(running_server + '/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function("() => window.reactChatWindowHost?.isMounted() && window.nekoTheaterRuntime?.getState().phase === 'awaiting_player'")
+    if mock_page.locator('.composer-input').count() == 0:
+        mock_page.locator('.compact-chat-capsule-button').click()
+    composer = mock_page.locator('.composer-input')
+    composer.fill('旧剧本里还没有寄出的信')
+    if restored:
+        composer.press('Enter')
+        mock_page.wait_for_function('() => !!window.nekoTheaterRuntime.getState().draftRestore')
+        expect(composer).to_have_value('旧剧本里还没有寄出的信')
+    mock_page.evaluate('''() => {
+        window.__draftLaunches = [];
+        window.__draftChannel = new BroadcastChannel('neko_page_channel');
+        window.__draftChannel.addEventListener('message', e => {
+            if (e.data?.action === 'theater:launch-ready') window.__draftLaunches.push(e.data.launch_id);
+        });
+    }''')
+    for launch_id, story_id, session_id, revision in [
+        ('same-session', 'story-a', 'session-a', 0),
+        ('rejected-session', next_story, 'session-b', 1),
+        ('new-session', next_story, 'session-b', 0),
+    ]:
+        with mock_page.expect_response(f'**/session/{session_id}?*'):
+            mock_page.evaluate('''m => window.postMessage({schema:'neko.theater.interpage.v1',
+                action:'theater:launch-request', launch_action:'continue', ...m}, location.origin)''',
+                {'launch_id': launch_id, 'story_id': story_id, 'session_id': session_id, 'revision': revision})
+        if launch_id != 'rejected-session':
+            mock_page.wait_for_function('id => window.__draftLaunches.includes(id)', arg=launch_id)
+        mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        expect(composer).to_have_value('' if launch_id == 'new-session' else '旧剧本里还没有寄出的信')
+    state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
+    assert state['sessionId'] == 'session-b'
+    assert state['draftRestore']['text'] == ''

@@ -80,12 +80,19 @@ class CharactersMixin:
                 cache_mtime = self._characters_cache_mtime
                 cache_dirty = self._characters_dirty
             if cache is not None and cache_path == character_json_path:
+                source_missing = False
                 try:
                     current_mtime = os.path.getmtime(character_json_path)
+                except FileNotFoundError:
+                    current_mtime = None
+                    source_missing = True
                 except OSError:
                     current_mtime = None
-                if cache_dirty and current_mtime is None:
+                if cache_dirty and current_mtime is None and not (
+                    source_missing and cache_mtime is None
+                ):
                     # An unreadable source cannot supersede an unpersisted identity.
+                    # Only a never-persisted default may retry creating a missing file.
                     if require_authoritative:
                         raise ValueError("character_config_not_authoritative")
                     return deepcopy(cache)
