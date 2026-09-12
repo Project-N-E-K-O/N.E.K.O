@@ -51,6 +51,16 @@
       && Object.prototype.hasOwnProperty.call(value, key);
   }
 
+  // Match the game character endpoint's canonical MMD asset projection.
+  // This is an alias of a configured path, never a caller-supplied allowlist.
+  function canonicalModelPath(type, value) {
+    const path = cleanString(value);
+    if (type !== 'mmd' || !path) return path;
+    const normalized = path.replace(/\\/g, '/');
+    if (/^(https?:\/\/|\/user_|\/static\/|\/workshop\/)/.test(normalized)) return normalized;
+    return cleanString(normalized.startsWith('mmd/') ? `/static/${normalized}` : `/static/mmd/${normalized}`);
+  }
+
   function firstOwnValue(candidates) {
     for (const [source, key] of candidates) {
       if (hasOwn(source, key)) return source[key];
@@ -178,7 +188,7 @@
     let pngPath = cleanString(pngtuber.idle_image)
       || cleanString(character?.pngtuber_idle_image)
       || (typeof character?.pngtuber === 'string' ? cleanString(character.pngtuber) : '')
-      || modelPath;
+      || (['pngtuber', 'png', 'png-tuber'].includes(modelType.toLowerCase()) ? modelPath : '');
     const type = modelType.toLowerCase();
     const subtype = live3dSubType.toLowerCase();
     if (!vrmPath && (type === 'vrm' || (type === 'live3d' && subtype === 'vrm'))) vrmPath = modelPath;
@@ -214,6 +224,7 @@
       name,
       type: effective,
       path: cleanString(paths[effective]),
+      paths: Object.freeze({ ...paths }),
       pngtuber,
       lighting: safeLighting(firstOwnValue([
         [vrm, 'lighting'],
@@ -365,6 +376,9 @@
         name: descriptor.name,
         model,
         rendererAvailable: Boolean(model),
+        fallbackModels: Object.freeze(TYPES.filter(type => type !== descriptor.type)
+          .map(type => ({ type, path: canonicalModelPath(type, descriptor.paths[type]) }))
+          .filter(model => model.path).map(Object.freeze)),
       });
     }
 
@@ -373,13 +387,14 @@
       const descriptor = name ? privateDescriptorsByName.get(name) : null;
       const type = cleanString(model?.type, 32).toLowerCase();
       const path = cleanString(model?.path);
-      if (!descriptor || !descriptor.path
-          || descriptor.type !== type || descriptor.path !== path) {
+      const configuredPath = descriptor?.paths[type];
+      if (!descriptor || !TYPES.includes(type) || !path || !configuredPath
+          || (configuredPath !== path && canonicalModelPath(type, configuredPath) !== path)) {
         fail('model_not_allowed', 'Avatar model is not the trusted character model', {
           characterName: name,
         });
       }
-      return descriptor;
+      return Object.freeze({ ...descriptor, type, path });
     }
 
     function getCharacter(name = '', requestOptions = {}) {
@@ -400,6 +415,7 @@
       const configured = rawAvatarConfig(requested, character);
       if (configured.type === 'live2d') {
         configured.path = await resolveLive2DPath(requested, configured.path, requestOptions);
+        configured.paths = Object.freeze({ ...configured.paths, live2d: configured.path });
       }
       const descriptor = Object.freeze({
         ...configured,

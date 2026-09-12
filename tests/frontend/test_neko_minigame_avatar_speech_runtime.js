@@ -67,7 +67,9 @@ async function main() {
   let serial = 0;
   let blocker = null;
   let speechMode = 'success';
+  let failManual = false;
   const calls = new Map();
+  const manual = new Map();
   const transport = {
     logger: { log() {}, info() {}, warn() {}, error() {}, reset() {}, flush() {}, enable() {}, enableAfterRouteStart() {} },
     connectGame({ manifest }) {
@@ -97,8 +99,17 @@ async function main() {
     mountAvatar(config) {
       const frames = [];
       calls.set(config.slot, frames);
-      return { dispose() {}, pause() {}, resume() {}, async setModel() {},
-        setSpeechPlayback(frame) { frames.push(frame); return blocker || Promise.resolve(); } };
+      return { dispose() { manual.set(config.slot, false); },
+        pause() { manual.set(config.slot, false); }, resume() {},
+        async setModel() { manual.set(config.slot, false); },
+        setSpeaking(active) {
+          if (failManual) throw new Error('manual rejected');
+          manual.set(config.slot, active); return true;
+        },
+        setSpeechPlayback(frame) {
+          frames.push(frame);
+          return (blocker || Promise.resolve()).then(() => { manual.set(config.slot, false); });
+        } };
     },
     dispose() {},
   };
@@ -173,6 +184,38 @@ async function main() {
     assert.equal(calls.get('opponent').at(-1).active, false, 'request cancellation must stop');
     emit(); await flush();
     assert.equal(calls.get('opponent').at(-1).active, false, 'cancelled owner must not reanimate');
+    await avatar.setSpeaking(true);
+    emit({ speechId: 'unrelated', correlationId: 'unrelated' }); await flush();
+    assert.equal(manual.get('opponent'), true, 'automatic silence cancelled manual speech');
+    other.dispose(); await flush();
+    assert.equal(manual.get('opponent'), true, 'renderer disposal cancelled manual speech');
+    avatar.pause(); avatar.resume(); await flush();
+    await avatar.setModel({ type: 'vrm', path: '/replacement.vrm' }); await flush();
+    assert.equal(manual.get('opponent'), true, 'model/pause transition lost manual intent');
+    await avatar.setSpeaking(false); await flush();
+    assert.equal(manual.get('opponent'), false);
+    failManual = true;
+    await assert.rejects(avatar.setSpeaking(true));
+    failManual = false;
+    speechMode = 'success';
+    await game.speech.speak({ text: 'Automatic after manual failure' }); emit(); await flush();
+    assert.equal(calls.get('opponent').at(-1).active, true, 'manual failure retained ownership');
+    let finishOldFrame;
+    blocker = new Promise(resolve => { finishOldFrame = resolve; });
+    emit({ active: false }); await flush();
+    const manualPending = avatar.setSpeaking(true);
+    await flush();
+    await assert.rejects(avatar.setSpeaking(false), { code: 'busy' });
+    for (let i = 0; i < 30; i++) emit({ speechId: 'unrelated', correlationId: 'unrelated' });
+    blocker = null; finishOldFrame();
+    await manualPending; await flush();
+    assert.equal(manual.get('opponent'), true, 'older asynchronous silence overwrote manual speaking');
+    await avatar.setSpeaking(false);
+    await game.speech.speak({ text: 'Automatic ownership restored' }); emit(); await flush();
+    assert.equal(calls.get('opponent').at(-1).active, true, 'manual release did not restore automatic playback');
+    await avatar.setSpeaking(true);
+    await game.runtime.end(); await flush();
+    assert.equal(manual.get('opponent'), false, 'route exit retained manual motion');
   } finally {
     avatar.dispose(); other.dispose(); game.dispose();
     await flush();

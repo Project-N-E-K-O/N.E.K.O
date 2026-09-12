@@ -4870,8 +4870,14 @@ async def game_character(game_type: str, request: Request = None):
         live2d_path = ''
         mmd_path = ''
         vrm_path = ''
+        pngtuber_path = ''
 
         if isinstance(avatar, dict):
+            pngtuber_info = avatar.get('pngtuber', {})
+            if isinstance(pngtuber_info, dict):
+                raw_png = pngtuber_info.get('idle_image', '')
+                if isinstance(raw_png, str) and len(raw_png) <= 2048:
+                    pngtuber_path = raw_png.strip().replace('\\', '/')
             live2d_info = avatar.get('live2d', {})
             if isinstance(live2d_info, dict):
                 # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。
@@ -4913,6 +4919,7 @@ async def game_character(game_type: str, request: Request = None):
             'live2d_path': live2d_path,
             'mmd_path': mmd_path,
             'vrm_path': vrm_path,
+            'pngtuber_path': pngtuber_path,
         }
     except Exception as e:
         logger.error("🎮 获取角色信息失败: %s", e)

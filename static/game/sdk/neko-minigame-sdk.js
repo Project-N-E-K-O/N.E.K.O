@@ -3161,7 +3161,7 @@
       state.nextSpeechFrame = frame;
       if (state.speechUpdating) return;
       state.speechUpdating = true;
-      void (async () => {
+      state.speechUpdatePromise = (async () => {
         try {
           while (!state.disposed && state.nextSpeechFrame) {
             const next = state.nextSpeechFrame;
@@ -3169,7 +3169,7 @@
             try { await state.raw.setSpeechPlayback(next); }
             catch (_) { /* Optional visual feedback must never break speech. */ }
           }
-        } finally { state.speechUpdating = false; }
+        } finally { state.speechUpdating = false; state.speechUpdatePromise = null; }
       })();
     }
 
@@ -3183,6 +3183,10 @@
         && !['ending', 'ended', 'inactive', 'disposed'].includes(runtimePhase)
         && Date.now() - playback.state.updatedAt <= 750;
       for (const state of avatarRenderers) {
+        if (['ending', 'ended', 'inactive', 'disposed'].includes(runtimePhase)) state.manualSpeaking = false;
+        // Manual custom audio owns this controller until explicitly released.
+        // pause/model operations stop their renderer and restore this intent.
+        if (state.manualSpeaking || state.manualSpeakingPending) continue;
         const matches = state.config.characterName
           ? state.config.characterName === session.characterName
           : avatarRenderers.size === 1;
@@ -5542,6 +5546,7 @@
     function disposeAvatarController(controllerState) {
       if (!controllerState || controllerState.disposed) return;
       controllerState.disposed = true;
+      controllerState.manualSpeaking = false;
       controllerState.nextSpeechFrame = null;
       avatarRenderers.delete(controllerState);
       syncAvatarSpeech();
@@ -5677,7 +5682,8 @@
           fail('disposed', 'The mini-game SDK client has been disposed', { operation: 'avatar.mount' });
         }
         const controllerState = { raw, config, disposed: false, paused: false,
-          modelChanging: 0, speechUpdating: false, nextSpeechFrame: null };
+          modelChanging: 0, speechUpdating: false, nextSpeechFrame: null,
+          manualSpeaking: false, manualSpeakingPending: false, speechUpdatePromise: null };
         avatarRenderers.add(controllerState);
         syncAvatarSpeech();
 
@@ -5713,7 +5719,13 @@
             controllerState.modelChanging += 1;
             syncAvatarSpeech();
             try { return await callController('setModel', () => raw.setModel(normalizeAvatarModel(modelInput))); }
-            finally { controllerState.modelChanging -= 1; syncAvatarSpeech(); }
+            finally {
+              controllerState.modelChanging -= 1;
+              if (controllerState.manualSpeaking && !controllerState.disposed && !controllerState.paused) {
+                await callController('setSpeaking', () => raw.setSpeaking(true));
+              }
+              syncAvatarSpeech();
+            }
           },
           async setView(viewInput) {
             return callController('setView', () => raw.setView(normalizeAvatarView(viewInput)));
@@ -5722,7 +5734,25 @@
             if (typeof active !== 'boolean') {
               fail('invalid_request', 'avatar speaking state must be boolean');
             }
-            return callController('setSpeaking', () => raw.setSpeaking(active));
+            requireController('setSpeaking');
+            if (controllerState.manualSpeakingPending) fail('busy', 'Manual speaking update in progress');
+            const previous = controllerState.manualSpeaking;
+            controllerState.manualSpeakingPending = true;
+            controllerState.manualSpeaking = active;
+            controllerState.nextSpeechFrame = null;
+            try {
+              // Settle any older automatic frame before applying the override.
+              if (controllerState.speechUpdating) await controllerState.speechUpdatePromise;
+              if (controllerState.disposed || disposed || disposing) return false;
+              const result = await callController('setSpeaking', () => raw.setSpeaking(controllerState.manualSpeaking));
+              return result;
+            } catch (error) {
+              controllerState.manualSpeaking = !controllerState.disposed && previous;
+              throw error;
+            } finally {
+              controllerState.manualSpeakingPending = false;
+              syncAvatarSpeech();
+            }
           },
           focus(pointInput) {
             return callController('focus', () => raw.focus(normalizeAvatarFocus(pointInput)));
@@ -5743,13 +5773,18 @@
           },
           resume() {
             const result = callController('resume', () => raw.resume());
-            const resumed = () => { controllerState.paused = false; syncAvatarSpeech(); };
+            const resumed = () => {
+              controllerState.paused = false;
+              if (controllerState.manualSpeaking && !controllerState.disposed) {
+                return callController('setSpeaking', () => raw.setSpeaking(true));
+              }
+              syncAvatarSpeech();
+            };
             if (result && typeof result.then === 'function') return Promise.resolve(result).then(value => {
-              resumed();
-              return value;
+              return Promise.resolve(resumed()).then(() => value);
             });
-            resumed();
-            return result;
+            const restored = resumed();
+            return restored && typeof restored.then === 'function' ? restored.then(() => result) : result;
           },
           getState() {
             const state = callController('getState', () => raw.getState());
