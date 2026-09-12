@@ -249,3 +249,18 @@ async def test_generation_budget_is_not_shortened_by_transport(provider):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle), timeout=1) as client:
         result = await generate_image(ImageRequest("test"), config_manager=manager(provider), client=client, timeout=600)
     assert result.image.url == "https://images.example/result.png"
+
+
+@pytest.mark.parametrize("url", ["https://\U0001f4a9.com/v1", "https://1.2.3.999/v1"])
+def test_transport_invalid_custom_hostname_rejected(url):
+    with pytest.raises(ValueError):
+        resolve_image_config(manager("custom", imageModelUrl=url, imageModelId="image").raw)
+
+
+@pytest.mark.asyncio
+async def test_transport_invalid_url_is_normalized():
+    def handle(request):
+        raise httpx.InvalidURL("private endpoint details")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ImageGenerationError, match="^invalid_configuration$"):
+            await generate_image(ImageRequest("test"), config_manager=manager(), client=client)

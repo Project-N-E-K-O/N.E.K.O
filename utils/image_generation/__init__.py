@@ -56,6 +56,8 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
         return ImageResult(config.provider, config.model, image)
     except (TimeoutError, httpx.TimeoutException):
         raise ImageGenerationError("provider_timeout") from None
+    except httpx.InvalidURL:
+        raise ImageGenerationError("invalid_configuration") from None
     except httpx.HTTPError:
         raise ImageGenerationError("provider_network_error") from None
     finally:

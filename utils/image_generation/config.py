@@ -6,6 +6,8 @@ or consumer state belongs here.
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import httpx
+
 from utils.http.url import same_endpoint
 
 PROVIDERS = {
@@ -50,6 +52,7 @@ def resolve_image_config(raw: dict, *, enabled: bool = True) -> ImageConfig | No
         raise ValueError("Image API key must be a string")
     key = key.strip()
     try:
+        httpx.URL(url)  # Match the transport parser, including IDNA and IPv4 validation.
         parsed = urlsplit(url)
         # Access .port separately to reject malformed ports, while allowing 443 implicit.
         parsed.port
@@ -57,7 +60,7 @@ def resolve_image_config(raw: dict, *, enabled: bool = True) -> ImageConfig | No
             parsed.username or parsed.password or parsed.query or parsed.fragment
             or parsed.path.endswith("//")
         )
-    except ValueError:
+    except (ValueError, httpx.InvalidURL):
         valid_url = False
     if not valid_url or any(c.isspace() or ord(c) < 32 for c in url):
         raise ValueError("Image endpoint must be an HTTPS base URL")
