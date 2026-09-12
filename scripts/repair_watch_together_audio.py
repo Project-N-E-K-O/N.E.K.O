@@ -63,10 +63,18 @@ def repair(root):
             name = (event.get('audio') or '').split(f"/media/{row['job']}/")[-1]
             if name in malformed:
                 event['duration'] = duration(folder / name)
-            if event['at'] < until or event['at'] + event.get('duration', 0) > total_duration:
+            value = event.get('duration', 0)
+            try:
+                event_duration = float(value) if type(value) in (int, float) else 0
+            except OverflowError:
+                event_duration = 0
+            if not math.isfinite(event_duration) or event_duration < 0:
+                event_duration = 0
+            event['duration'] = event_duration
+            if event['at'] < until or event['at'] + event_duration > total_duration:
                 continue
             events.append(event)
-            until = event['at'] + event.get('duration', 0) + 1.2
+            until = event['at'] + event_duration + 1.2
         timeline['events'] = events
         timeline['audio_repair_source_version'] = row['version']
         (folder / 'timeline.json').write_text(json.dumps(timeline, ensure_ascii=False), encoding='utf-8')

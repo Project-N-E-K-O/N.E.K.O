@@ -6,12 +6,13 @@ from scripts import repair_watch_together_audio as repair
 
 
 @pytest.mark.parametrize('invalid_duration', [None, 'bad', -1, True, 10**1000])
-def test_repair_pages_all_versions_and_preserves_silent_cues(tmp_path, monkeypatch, invalid_duration):
+@pytest.mark.parametrize('silent_duration', [None, 'bad', -1, True, 10**1000, float('inf'), float('nan')])
+def test_repair_pages_all_versions_and_preserves_silent_cues(tmp_path, monkeypatch, invalid_duration, silent_duration):
     rows = [{'job': 'job', 'version': str(i), 'status': 'incomplete'} for i in range(101)]
     rows[-1]['status'] = 'ready'
     rows[0]['status'] = 'ready'
     timeline = {'duration': 10, 'events': [{'at': 3, 'audio': '/media/job/bad.wav', 'duration': 1},
-                {'at': 0, 'audio': None}]}
+                {'at': 0, 'audio': None, 'duration': silent_duration}]}
     (tmp_path / 'timeline.json').write_text(json.dumps(timeline))
     header = bytearray(44)
     header[:4] = b'RIFF'
@@ -36,5 +37,6 @@ def test_repair_pages_all_versions_and_preserves_silent_cues(tmp_path, monkeypat
     assert len(imports) == 1
     repaired = json.loads((imports[0] / 'job' / 'timeline.json').read_text())
     assert repaired['events'][0]['audio'] is None
+    assert repaired['events'][0]['duration'] == 0
     assert [event['at'] for event in repaired['events']] == [0, 3]
     assert repaired['audio_repair_source_version'] == '100'
