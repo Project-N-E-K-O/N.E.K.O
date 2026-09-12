@@ -16,10 +16,10 @@ def _library_call(method, *args):
 
 
 @router.get("/history")
-async def history():
+async def history(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
     def read():
         library = application_library()
-        return {"analyses": library.history(), "watches": library.watches()}
+        return {**library.history_page(limit, offset), "watches": library.watches()}
     return await asyncio.to_thread(read)
 
 

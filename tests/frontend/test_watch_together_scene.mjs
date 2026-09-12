@@ -260,3 +260,14 @@ finishPage({watches:[{job:'Requested page',progress:125}],next_offset:null});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.match(pagingDuringPlayback.elements.get('watches').textContent,/125s/);
 pagingDuringPlayback.handlers['runtime-inactive']();
+const analysisPaging=await fixture(false);
+const analysisRequest=analysisPaging.game.media.request;
+analysisPaging.game.media.request=async(action,payload)=>action==='history'
+  ? {analyses:[{job:'older',version:'v',title:payload.offset?'Older analysis':'Recent analysis',status:'ready'}],next_offset:payload.offset?null:50}
+  : analysisRequest(action,payload);
+await analysisPaging.elements.get('history-previous').onclick();
+await analysisPaging.elements.get('history-next').onclick();
+assert.match(analysisPaging.elements.get('history').children[0].textContent,/Older analysis/);
+assert.equal(analysisPaging.elements.get('history-next').disabled,true);
+await analysisPaging.elements.get('history-previous').onclick();
+assert.match(analysisPaging.elements.get('history').children[0].textContent,/Recent analysis/);

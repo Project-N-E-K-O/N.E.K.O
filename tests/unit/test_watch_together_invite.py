@@ -14,6 +14,14 @@ def manager(vision=True, disabled=False, supported=True, key='tts-key', provider
     )
 
 
+def test_unavailable_worker_cannot_invite_even_when_completion_supported(monkeypatch):
+    from main_logic.tts_client._infra import configured_tts_unavailable_worker
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    current = manager(key='', provider='vllm_omni')
+    current._resolve_tts_worker_spec = lambda: (configured_tts_unavailable_worker, '', '', 'vllm_omni', False, {})
+    assert not invites._watch_together_available(current)
+
+
 @pytest.mark.parametrize('options', [{'vision':False}, {'disabled':True}, {'supported':False}, {'key':''}, {}])
 def test_invitation_checks_vision_and_speech_without_synthesis(monkeypatch, options):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)

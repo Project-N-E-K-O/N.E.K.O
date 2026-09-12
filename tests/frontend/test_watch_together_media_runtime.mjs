@@ -13,7 +13,7 @@ let gainUpdates=0;
 const gains=[], sources=new WeakSet();
 globalThis.AudioContext=class {createAnalyser(){return {connect(){},disconnect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(element){assert.equal(sources.has(element),false);sources.add(element);return {connect(){},disconnect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){gainUpdates++;this.value=value;}},connect(){},disconnect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){},disconnect(){}};}async resume(){}async suspend(){}async close(){}};
 globalThis.window={};globalThis.document=new EventTarget();
-globalThis.fetch=async()=>({ok:true,blob:async()=>new Blob(['audio'])});
+globalThis.fetch=async()=>new Response('audio');
 let nextFrame=null;
 globalThis.requestAnimationFrame=fn=>{nextFrame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{nextFrame=null;};
 Object.defineProperty(globalThis,'navigator',{value:{locks:{request:async(_name,_options,fn)=>fn({})}}});
@@ -77,3 +77,15 @@ assert.equal(gainUpdates,idleUpdates,'idle frames do not schedule repeated gain 
 assert.equal(gains.length,gainCount+1,'remount reuses video graph and creates only a voice gain');
 again.dispose();
 console.log('watch-together audio graph: remount reuses media element source');
+const largeChunk=new Uint8Array(33*1024*1024);
+let cancelledBudget=false;
+globalThis.fetch=async()=>new Response(new ReadableStream({
+  start(stream){stream.enqueue(largeChunk);stream.enqueue(largeChunk);},
+  cancel(){cancelledBudget=true;},
+}));
+await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'version',status:'ready',events:[cue]}}),/budget exceeded/);
+assert.equal(cancelledBudget,true);
+let budgetFetches=0;
+globalThis.fetch=async()=>{budgetFetches++;throw Error('must not fetch');};
+await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'version',status:'ready',events:Array.from({length:257},(_,i)=>({...cue,audio:cue.audio+i}))}}),/budget exceeded/);
+assert.equal(budgetFetches,0);

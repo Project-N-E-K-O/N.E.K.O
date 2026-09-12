@@ -359,6 +359,9 @@ def _watch_together_available(manager) -> bool:
         if manager is None or not manager._config_manager.get_model_api_config('vision').get('api_key'):
             return False
         worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
+        from main_logic.tts_client._infra import configured_tts_unavailable_worker
+        if worker is configured_tts_unavailable_worker:
+            return False
         if provider == 'gptsovits':
             from utils.gptsovits_config import is_valid_http_url, normalize_gsv_api_url
             local_config = manager._config_manager.get_model_api_config('tts_custom')

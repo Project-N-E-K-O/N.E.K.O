@@ -156,6 +156,24 @@ def test_watch_history_pages_keep_all_records(tmp_path):
         assert db.execute('SELECT COUNT(*) FROM watches').fetchone()[0] == 125
 
 
+def test_analysis_history_validates_only_requested_page(tmp_path, monkeypatch):
+    library = Library(tmp_path / 'data')
+    with library.connect() as db:
+        db.executemany('INSERT INTO versions(job,version,source,manifest) VALUES(?,?,?,?)',
+                       [(f'{index:032x}', 'v', 'archive', '{}') for index in range(100)])
+    visited = []
+    def timeline(job, version):
+        visited.append(job)
+        return {'status': 'ready'}
+    monkeypatch.setattr(library, 'timeline', timeline)
+    first = library.history_page()
+    assert len(visited) == 50
+    assert first['next_offset'] == 50
+    second = library.history_page(50, 50)
+    assert second['next_offset'] is None
+    assert len(set(visited)) == 100
+
+
 def test_viewing_is_separate_and_completion_survives_exit(tmp_path):
     library = Library(tmp_path / "data")
     library.import_sources([source(tmp_path, "archive")])

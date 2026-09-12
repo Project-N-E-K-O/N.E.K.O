@@ -17,7 +17,7 @@ export async function run(game, character) {
   };
   const nextQueue=createNextVideoQueue(game,state=>{
     if(state.candidate)seenVideos.add(state.candidate);
-    if(state.history)renderHistory(state.history.analyses);
+    if(state.history)void refreshHistory();
     if(state.status) {
       const key={idle:'nextIdle',searching:'nextSearching',preparing:'nextPreparing',ready:'nextReady',empty:'noCandidates',error:'nextFailed'}[state.status];
       $('next-status').textContent=[t(key),state.title,state.stage?t(state.stage):'',state.progress!=null?`${state.progress}%`:''].filter(Boolean).join(' · ');
@@ -161,7 +161,7 @@ export async function run(game, character) {
         if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
         if (state.status === 'ready') {
           const history = await game.media.request('history');
-          renderHistory(history.analyses);
+          await refreshHistory();
           const row = history.analyses.find(item=>item.job===result.id && item.status==='ready');
           if (row) { if(selection===selectionGeneration)await load(row); break; }
         }
@@ -242,6 +242,31 @@ export async function run(game, character) {
   function renderWatches(rows) {
     $('watches').textContent = rows.length ? rows.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
   }
+  let historyOffset=0, historyNext=null, historyGeneration=0, historyLoading=false, historyRefreshPending=false;
+  $('history-previous').onclick=()=>refreshHistory(Math.max(0,historyOffset-50));
+  $('history-next').onclick=()=>{if(historyNext!==null)return refreshHistory(historyNext);};
+  async function refreshHistory(offset) {
+    if(!Number.isInteger(offset)) {
+      if(historyLoading){historyRefreshPending=true;return;}
+      offset=historyOffset;
+    }
+    const generation=++historyGeneration;
+    historyLoading=true;
+    $('history-previous').disabled=true;$('history-next').disabled=true;
+    try {
+      const page=await game.media.request('history',{offset});
+      if(generation!==historyGeneration)return;
+      historyOffset=offset;historyNext=page.next_offset ?? null;
+      renderHistory(page.analyses);
+    } catch(error) {if(generation===historyGeneration)status(error.message);}
+    finally {
+      if(generation===historyGeneration) {
+        historyLoading=false;
+        $('history-previous').disabled=historyOffset===0;$('history-next').disabled=historyNext===null;
+        if(historyRefreshPending){historyRefreshPending=false;void refreshHistory();}
+      }
+    }
+  }
   function renderHistory(rows) {
     $('history').replaceChildren();
     for (const row of rows) {
@@ -263,11 +288,13 @@ export async function run(game, character) {
     }
     const data = await game.media.request('history');
     renderHistory(data.analyses);
+    historyNext=data.next_offset ?? null;$('history-next').disabled=historyNext===null;
     await refreshWatches();
     status(t('choose'));
     const job = new URLSearchParams(location.search).get('job');
     const version = new URLSearchParams(location.search).get('version');
     const match = data.analyses.find(row=>row.job===job && (!version || row.version===version) && row.status==='ready');
     if(match) await load(match);
+    else if(job && version)await load({job,version});
   } catch(error) { status(error.message); }
 }

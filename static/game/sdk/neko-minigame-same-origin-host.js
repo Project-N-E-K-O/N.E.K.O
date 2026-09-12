@@ -911,7 +911,7 @@
     async requestMedia(action, payload = {}, options = {}) {
       this._requireGrantedCapability('media-timeline', 'media.request');
       let response;
-      if (action === 'history') response = await this._request('/api/watch-together/history');
+      if (action === 'history') response = await this._request('/api/watch-together/history?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}));
       else if (action === 'watches') response = await this._request('/api/watch-together/watches?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}));
       else if (action === 'character') response = await this._readCharacter(payload.name || '');
       else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});

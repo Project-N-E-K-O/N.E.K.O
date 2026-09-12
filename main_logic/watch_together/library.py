@@ -229,10 +229,16 @@ class Library:
         return timeline
 
     def history(self) -> list[dict]:
+        return self.history_page()['analyses']
+
+    def history_page(self, limit=50, offset=0) -> dict:
+        limit = max(1, min(100, int(limit)))
+        offset = max(0, int(offset))
         with self.connect() as db:
-            rows = db.execute("SELECT job, version FROM versions ORDER BY job, version").fetchall()
+            rows = db.execute("SELECT job, version FROM versions ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                              (limit + 1, offset)).fetchall()
         result = []
-        for row in rows:
+        for row in rows[:limit]:
             try:
                 timeline = self.timeline(row["job"], row["version"])
             except (KeyError, ValueError, OSError):
@@ -241,7 +247,7 @@ class Library:
                            "title": timeline.get("title", row["job"]),
                            "status": timeline.get("status"), "usage": timeline.get("usage"),
                            "progress": None, "last_watched": None, "completed": None})
-        return result
+        return {'analyses': result, 'next_offset': offset + limit if len(rows) > limit else None}
 
     def start_watch(self, job: str, version: str, character: str) -> str:
         self.manifest(job, version)

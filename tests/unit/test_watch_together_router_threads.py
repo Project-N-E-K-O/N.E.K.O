@@ -14,9 +14,9 @@ async def test_library_construction_and_history_query_run_off_event_loop(monkeyp
         return value
     def library():
         checked(None)
-        return SimpleNamespace(history=lambda: checked(["analysis"]), watches=lambda: checked(["watch"]))
+        return SimpleNamespace(history_page=lambda limit, offset: checked({"analyses": ["analysis"], "next_offset": None}), watches=lambda: checked(["watch"]))
     monkeypatch.setattr(router, "application_library", library)
-    assert await router.history() == {"analyses": ["analysis"], "watches": ["watch"]}
+    assert await router.history(50, 0) == {"analyses": ["analysis"], "watches": ["watch"], "next_offset": None}
 
 @pytest.mark.asyncio
 async def test_watches_endpoint_does_not_read_analysis_history(monkeypatch):

@@ -7,13 +7,31 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
   const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
   const resources = new Map();
+  const cues=timeline.events || [];
+  if(cues.length>1000)throw Error('Reaction preload budget exceeded');
+  const urls=new Set(cues.map(cue=>cue.audio).filter(url=>url!=null && url!==''));
+  if(urls.size>256)throw Error('Reaction preload budget exceeded');
+  let remaining=64*1024*1024;
   try {
-    for (const url of new Set((timeline.events || []).map(cue=>cue.audio))) {
+    for (const url of urls) {
       if (url == null || url === '') continue;
       if (typeof url !== 'string' || !url.startsWith(`${prefix}/`)) throw Error('Unregistered timeline resource');
       const response = await fetch(url, {signal});
       if (!response.ok) throw Error('Reaction preload failed');
-      resources.set(url, URL.createObjectURL(await response.blob()));
+      const reader=response.body?.getReader();
+      if(!reader)throw Error('Reaction preload failed');
+      const chunks=[];
+      try {
+        while(true) {
+          const {done,value}=await reader.read();
+          if(done)break;
+          remaining-=value.byteLength;
+          if(remaining<0)throw Error('Reaction preload budget exceeded');
+          chunks.push(value);
+        }
+      } catch(error) {await reader.cancel().catch(()=>{});throw error;}
+      finally {reader.releaseLock();}
+      resources.set(url, URL.createObjectURL(new Blob(chunks,{type:response.headers.get('content-type') || ''})));
     }
   } catch(error) {for(const url of resources.values())URL.revokeObjectURL(url);throw error;}
   const clock = new ReactionClock(timeline.events || []);
