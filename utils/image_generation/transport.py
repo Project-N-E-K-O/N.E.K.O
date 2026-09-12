@@ -6,6 +6,8 @@ import ipaddress
 import json
 from urllib.parse import urlsplit
 
+import httpx
+
 from .types import GeneratedImage, ImageGenerationError
 
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
@@ -51,6 +53,7 @@ def parse_image(item):
         p = urlsplit(url) if isinstance(url, str) and len(url) <= 8192 else None
         if not p or p.scheme != "https" or not p.hostname or p.username or p.password or p.fragment:
             raise ValueError()
+        httpx.URL(url)
         p.port
         host = p.hostname.lower().rstrip(".")
         if host == "localhost" or host.endswith((".localhost", ".local")):
@@ -63,6 +66,6 @@ def parse_image(item):
             raise ValueError()
         if any(c.isspace() or ord(c) < 32 for c in url):
             raise ValueError()
-    except ValueError:
+    except (ValueError, httpx.InvalidURL):
         raise ImageGenerationError("invalid_image_url") from None
     return GeneratedImage(url=url)

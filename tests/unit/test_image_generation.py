@@ -150,7 +150,7 @@ async def test_response_limit(monkeypatch):
             await generate_image(ImageRequest("cat"), config_manager=manager(), client=client)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [ValueError("private proxy"), FileNotFoundError("private cert")])
+@pytest.mark.parametrize("error", [ValueError("private proxy"), FileNotFoundError("private cert"), httpx.InvalidURL("private proxy URL")])
 async def test_owned_client_creation_error_is_sanitized(monkeypatch, error):
     def fail(**kwargs):
         raise error
@@ -264,3 +264,20 @@ async def test_transport_invalid_url_is_normalized():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         with pytest.raises(ImageGenerationError, match="^invalid_configuration$"):
             await generate_image(ImageRequest("test"), config_manager=manager(), client=client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["https://\U0001f4a9.com/v1", "https://1.2.3.999/v1"])
+async def test_invalid_returned_hostname_is_normalized(url):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": [{"url": url}]})
+    )) as client:
+        with pytest.raises(ImageGenerationError, match="^invalid_image_url$"):
+            await generate_image(ImageRequest("test"), config_manager=manager(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_invalid_environment_proxy_is_normalized(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://example.com:bad")
+    with pytest.raises(ImageGenerationError, match="^client_initialization_failed$"):
+        await generate_image(ImageRequest("test"), config_manager=manager())

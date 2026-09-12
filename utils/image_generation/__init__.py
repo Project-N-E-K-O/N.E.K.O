@@ -48,7 +48,7 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
     if owned:
         try:
             client = await asyncio.to_thread(httpx.AsyncClient, trust_env=True, follow_redirects=False)
-        except (ValueError, OSError):
+        except (ValueError, OSError, httpx.InvalidURL):
             raise ImageGenerationError("client_initialization_failed") from None
     try:
         async with asyncio.timeout(timeout):
