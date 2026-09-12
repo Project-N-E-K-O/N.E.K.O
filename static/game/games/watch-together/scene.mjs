@@ -98,7 +98,15 @@ export async function run(game, character) {
     if(event.type==='autoplay-blocked'){status(t('play'));void stopAutomatic();return;}
     if(event.type==='error') {
       if(automatic.enabled)void end(true).then(()=>automatic.next()).catch(error=>status(error.message));
-      else status(t('prepareFailed'));
+      else {
+        const selection=selectionGeneration;
+        status(t('prepareFailed'));$('play').disabled=true;
+        void end().catch(error=>status(error.message)).finally(()=>{
+          if(selection!==selectionGeneration || game.disposed)return;
+          $('video').src=selected?.video || '';
+          $('play').disabled=!selected;
+        });
+      }
       return;
     }
     if (!watch || game.runtime.state !== 'running') return;
