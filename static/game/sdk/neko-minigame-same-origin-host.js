@@ -1313,14 +1313,15 @@
       if (data?.error) throw this._hostError('request_failed', 'Avatar lookup failed');
       if (!data?.lanlan_name || (name && data.lanlan_name !== name)) return null;
       const type = data.model_type === 'live3d' ? data.live3d_sub_type : data.model_type;
-      const path = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path }[type];
-      const fallbackModels = Object.entries({ live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path })
+      const paths = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path, pngtuber: data.pngtuber_path };
+      const path = paths[type];
+      const fallbackModels = Object.entries(paths)
         .filter(([candidate, candidatePath]) => candidatePath && !(candidate === type && candidatePath === path))
         .map(([candidate, candidatePath]) => ({ type: candidate, path: candidatePath }));
       return {
         name: data.lanlan_name,
         model: path ? { type, path } : null,
-        rendererAvailable: Boolean(path && ['live2d', 'vrm', 'mmd'].includes(type)),
+        rendererAvailable: Boolean(path && ['live2d', 'vrm', 'mmd', 'pngtuber'].includes(type)),
         languagePreference: { locale: data.language || '', resolved: data.language_preference_resolved === true },
         fallbackModels,
       };

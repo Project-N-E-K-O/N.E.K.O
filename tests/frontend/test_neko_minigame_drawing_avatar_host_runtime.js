@@ -982,6 +982,30 @@ async function main() {
     };
   }
 
+  characters['Fallback Example'] = { _reserved: { avatar: {
+    model_type: 'live2d', live2d: { model_path: '/resolved/live.model3.json' },
+    mmd: { model_path: 'fallback.pmx', idle_animation: ['/animations/fallback.vmd'] },
+    pngtuber: { idle_image: '/avatars/fallback.png', talking_image: '/avatars/talk.png', mirror: true },
+  } } };
+  const fallbackCallsStart = calls.length;
+  const fallbackDescriptor = await host.getCharacter('Fallback Example');
+  assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'mmd'),
+    'canonical fallback was not exposed');
+  for (const model of [
+    { type: 'mmd', path: '/static/mmd/fallback.pmx' },
+    { type: 'pngtuber', path: '/avatars/fallback.png' },
+  ]) {
+    const fallback = await host.mount(mountConfig('Fallback Example', model));
+    await fallback.dispose();
+    const crossRole = await rejection(host.mount(mountConfig('Live Neko', model)));
+    assert(crossRole?.code === 'model_not_allowed', 'fallback crossed character boundary');
+  }
+  assert(calls.some(entry => entry[0] === 'pngtuber-model' && entry[1] === '/avatars/fallback.png' && entry[2] === true),
+    'fallback lost private PNG configuration');
+  assert(calls.slice(fallbackCallsStart).some(entry => entry[0] === 'mmd-idle-load'
+    && entry[1] === '/animations/fallback.vmd'), 'fallback lost private MMD motion');
+  calls.splice(fallbackCallsStart);
+
   const rendererCallsBeforeAttacks = calls.length;
   const forgedNameError = await rejection(host.mount(mountConfig('Forged Neko', current.model)));
   const forgedPathError = await rejection(host.mount(mountConfig(

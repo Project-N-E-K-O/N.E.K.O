@@ -966,7 +966,13 @@ replaceable latest frame, rather than accumulating a playback queue. Unsupported
 legacy providers remain usable but do not acquire mouth support automatically;
 their renderer adapter must implement this callback once, not the game author
 on every utterance. Advanced manual `setSpeaking()` remains available for
-compatibility, but is unnecessary for normal SDK speech.
+compatibility, but is unnecessary for normal SDK speech. A successful manual
+`setSpeaking(true)` owns that controller until `setSpeaking(false)`, route exit
+or disposal. Unrelated playback and the automatic watchdog do not cancel it;
+pause/model replacement preserve the intent and resume/reload reapplies it.
+`setSpeaking(false)` releases the override back to automatic SDK playback.
+Only one manual update may be pending per controller (`busy` otherwise); older
+automatic renderer updates settle before the manual update is applied.
 
 When the trusted host provides character discovery, games can call
 `avatar.listCharacters()`, `avatar.getCurrentCharacter()` and

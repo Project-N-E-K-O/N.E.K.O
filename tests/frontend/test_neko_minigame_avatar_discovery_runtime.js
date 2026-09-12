@@ -173,6 +173,18 @@ async function factories() {
 }
 
 async function queries() {
+  const png = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
+    lanlan_name: 'Example PNG', model_type: 'pngtuber', pngtuber_path: '/user_pngtuber/example/idle.png',
+    mmd_path: '/static/mmd/example.pmx',
+  }));
+  const pngGame = await png.game(png.host());
+  try {
+    const character = await pngGame.avatar.getCurrentCharacter();
+    assert.deepEqual(character.model, { type: 'pngtuber', path: '/user_pngtuber/example/idle.png' });
+    assert.equal(character.rendererAvailable, true);
+    assert.deepEqual(character.fallbackModels, [{ type: 'mmd', path: '/static/mmd/example.pmx' }]);
+  } finally { pngGame.dispose(); }
+  assert.equal(png.timers.size, 0);
   const mmd = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
     lanlan_name: 'Example MMD', model_type: 'live3d', live3d_sub_type: 'mmd', mmd_path: '/models/example.pmx',
   }));
