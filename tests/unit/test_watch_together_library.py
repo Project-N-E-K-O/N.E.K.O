@@ -9,6 +9,26 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.fixture(autouse=True)
+def valid_media_probe(monkeypatch):
+    # These archive fixtures use placeholder bytes; probe behavior has dedicated tests.
+    from main_logic.watch_together import library as module
+    monkeypatch.setattr(module, '_probe_media', lambda *args: True)
+
+
+def test_corrupt_playable_object_is_incomplete(tmp_path, monkeypatch):
+    from main_logic.watch_together import library as module
+    archive = source(tmp_path, 'corrupt-media')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'not a video')
+    (folder / 'timeline.json').write_text(json.dumps({'status': 'ready', 'video': f'/media/{JOB}/video.mp4', 'events': []}))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    monkeypatch.setattr(module, '_probe_media', lambda *args: False)
+    assert library.history()[0]['status'] == 'incomplete'
+    assert (folder / 'video.mp4').read_bytes() == b'not a video'
+
+
 @pytest.mark.parametrize('constant', ['NaN', 'Infinity', '-Infinity'])
 def test_non_json_constants_do_not_break_history(tmp_path, constant):
     archive = source(tmp_path, 'constant')

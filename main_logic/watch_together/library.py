@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -25,6 +26,20 @@ JOB_ID = re.compile(r"[a-f0-9]{32}")
 
 
 _library_lock = Lock()
+
+
+@lru_cache(maxsize=4096)
+def _probe_media(path, size, modified, role):
+    """Probe immutable objects once; stat keys invalidate externally damaged files."""
+    from main_logic.watch_together.engine import media_binary
+    try:
+        result = subprocess.run([media_binary('ffprobe'), '-v', 'error', '-show_streams',
+            '-of', 'json', str(path)], capture_output=True, timeout=10,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        streams = json.loads(result.stdout).get('streams', []) if result.returncode == 0 else []
+        return any(stream.get('codec_type') == role and stream.get('codec_name') not in (None, 'unknown') for stream in streams)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
 
 
 @lru_cache(maxsize=8)
@@ -263,6 +278,12 @@ class Library:
                 name = unquote(url[len(prefix):]) if isinstance(url, str) and url.startswith(prefix) else None
                 entry = manifest.get(name)
                 if entry is None or Path(name).suffix.lower() not in extensions or not (self.objects / entry['sha256']).is_file():
+                    timeline['status'] = 'incomplete'
+                    break
+                path = self.objects / entry['sha256']
+                stat = path.stat()
+                role = 'video' if extensions == {'.mp4', '.webm'} else 'audio'
+                if not _probe_media(path, stat.st_size, stat.st_mtime_ns, role):
                     timeline['status'] = 'incomplete'
                     break
         return timeline
