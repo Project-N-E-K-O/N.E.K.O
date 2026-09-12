@@ -13,6 +13,7 @@ from main_logic.watch_together import discovery
     (179, 299, True), (0, 1000, False), (-1, 1000, False),
     (float("nan"), 1000, False), (60, float("inf"), False),
     (60, None, False), (None, 1000, False),
+    (10**1000, 1000, False), (60, 10**1000, False),
 ])
 def test_strict_thresholds(seconds, count, expected):
     assert discovery.eligible(seconds, count) is expected

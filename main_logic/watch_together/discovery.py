@@ -13,7 +13,7 @@ def eligible(duration, danmaku):
         seconds, count = float(duration), float(danmaku)
         return (math.isfinite(seconds) and math.isfinite(count)
                 and 0 < seconds < 180 and count * 60 > seconds * 100)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
 
 

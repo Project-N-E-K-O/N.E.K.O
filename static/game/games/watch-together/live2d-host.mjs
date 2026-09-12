@@ -8,7 +8,12 @@ export function create(container) {
       const next = await PIXI.live2d.Live2DModel.from(config.path,{autoInteract:false});
       if (disposed) {next.destroy();return;}
       model?.destroy();model=next;app.stage.addChild(model);
-      model.internalModel.on('beforeModelUpdate',()=>model?.internalModel?.coreModel?.setParameterValueById('ParamMouthOpenY',mouthLevel));
+      const core = next.internalModel.coreModel;
+      const mouth = ['ParamMouthOpenY','ParamMouthOpen','ParamA','ParamO'].find(id=>{
+        try {return typeof core.getParameterIndex === 'function' && core.getParameterIndex(id)>=0;}
+        catch (_) {return false;}
+      });
+      next.internalModel.on('beforeModelUpdate',()=>{if(mouth)core.setParameterValueById(mouth,mouthLevel);});
     },
     resize({width,height}) {
       app.renderer.resize(width,height);

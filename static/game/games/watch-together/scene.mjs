@@ -97,6 +97,7 @@ export async function run(game, character) {
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   }
   $('play').onclick = async () => {
+    const selection = selectionGeneration;
     $('play').disabled = true;
     try {
       if (!media) {
@@ -117,7 +118,7 @@ export async function run(game, character) {
       try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
       status(error.message);
     }
-    finally { $('play').disabled = false; }
+    finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   };
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
   game.voice.onTranscript(() => media?.interrupt());
