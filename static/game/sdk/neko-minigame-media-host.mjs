@@ -1,5 +1,16 @@
 /** Trusted host: the only owner of pre-recorded reaction audio. */
 import { ReactionClock } from './media-clock.mjs';
+// A real 100 ms mono PCM WAV also plays in a video element. It lets the first
+// automatic-search gesture authorize that element before a video is available.
+const silence = (() => {
+  const bytes=new Uint8Array(44+3200), view=new DataView(bytes.buffer);
+  const tag=(at,text)=>{for(let i=0;i<text.length;i++)bytes[at+i]=text.charCodeAt(i);};
+  tag(0,'RIFF');view.setUint32(4,bytes.length-8,true);tag(8,'WAVE');tag(12,'fmt ');
+  view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);
+  view.setUint32(24,16000,true);view.setUint32(28,32000,true);
+  view.setUint16(32,2,true);view.setUint16(34,16,true);tag(36,'data');view.setUint32(40,3200,true);
+  return 'data:audio/wav;base64,'+btoa(String.fromCharCode(...bytes));
+})();
 // A media element can be attached to Web Audio only once, including across mounts.
 const videoGraphs = new WeakMap();
 function videoGraph(video) {
@@ -17,11 +28,14 @@ function videoGraph(video) {
 export function unlock(video) {
   const graph=videoGraph(video);
   void graph.context.resume().catch(()=>{});
+  // Enabling automatic mode during playback must not pause video or reaction.
+  if(!video.paused)return;
+  if(!video.src)video.src=silence;
   const started=video.play();
   video.pause();
   void started?.catch(()=>{});
   // Reuse this exact reaction element across mounts; Safari gates each element.
-  if(!graph.audio.src)graph.audio.src='data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA==';
+  if(!graph.audio.src)graph.audio.src=silence;
   const reactionStarted=graph.audio.play();
   graph.audio.pause();
   void reactionStarted?.catch(()=>{});

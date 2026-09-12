@@ -91,7 +91,13 @@ await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'versio
 assert.equal(budgetFetches,0);
 const {unlock}=await import('../../static/game/sdk/neko-minigame-media-host.mjs');
 const unlocked=new Media();let gesturePlay=false;
-unlocked.play=()=>{gesturePlay=true;unlocked.paused=false;return Promise.resolve();};
+unlocked.play=()=>{
+  assert.match(unlocked.src,/^data:audio\/wav;base64,/,'first automatic gesture has a playable source');
+  const wav=Buffer.from(unlocked.src.split(',')[1],'base64');
+  assert.equal(wav.toString('ascii',0,4),'RIFF');assert.equal(wav.readUInt32LE(40),3200);
+  assert.equal(wav.length,3244);
+  gesturePlay=true;unlocked.paused=false;return Promise.resolve();
+};
 unlock(unlocked);
 assert.equal(gesturePlay,true,'unlock calls media play synchronously');
 assert.equal(unlocked.paused,true,'unlock does not leave video playing during startup');
@@ -109,6 +115,12 @@ await background.play();document.hidden=true;document.dispatchEvent(new Event('v
 assert.equal(backgroundVideo.paused,false,'automatic viewing continues when the window is hidden');
 backgroundVideo.currentTime=4.1;backgroundVideo.dispatchEvent(new Event('timeupdate'));
 assert.equal(audios.at(-1).paused,false,'media clock drives hidden reactions without animation frames');
+const playingCalls=backgroundVideo.playCalls,position=backgroundVideo.currentTime;
+unlock(backgroundVideo);
+assert.equal(backgroundVideo.paused,false,'enabling automatic mode does not pause active video');
+assert.equal(backgroundVideo.playCalls,playingCalls,'active video needs no probe play');
+assert.equal(backgroundVideo.currentTime,position);
+assert.equal(audios.at(-1).paused,false,'active reaction is also preserved');
 backgroundVideo.dispatchEvent(new Event('error'));assert.equal(backgroundEvents.at(-1).type,'error');
 background.dispose();document.hidden=false;
 const cancelled=new AbortController();cancelled.abort();
