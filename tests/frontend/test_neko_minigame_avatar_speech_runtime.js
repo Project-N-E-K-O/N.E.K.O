@@ -68,6 +68,9 @@ async function main() {
   let blocker = null;
   let speechMode = 'success';
   let failManual = false;
+  let pauseFailure = '';
+  let modelFailure = false;
+  let manualBlocker = null;
   const calls = new Map();
   const manual = new Map();
   const transport = {
@@ -100,10 +103,18 @@ async function main() {
       const frames = [];
       calls.set(config.slot, frames);
       return { dispose() { manual.set(config.slot, false); },
-        pause() { manual.set(config.slot, false); }, resume() {},
-        async setModel() { manual.set(config.slot, false); },
+        pause() {
+          if (pauseFailure === 'sync') throw new Error('pause rejected');
+          if (pauseFailure === 'async') return Promise.reject(new Error('pause rejected'));
+          manual.set(config.slot, false);
+        }, resume() {},
+        async setModel() {
+          if (modelFailure) throw new Error('model rejected');
+          manual.set(config.slot, false); return 'model loaded';
+        },
         setSpeaking(active) {
           if (failManual) throw new Error('manual rejected');
+          if (manualBlocker) return manualBlocker;
           manual.set(config.slot, active); return true;
         },
         setSpeechPlayback(frame) {
@@ -138,6 +149,14 @@ async function main() {
     assert.equal(calls.get('opponent').at(-1).active, false, 'oversized samples must not reach renderers');
     emit(); await flush();
     assert(!calls.get('other').some(frame => frame.active), 'another character must not speak');
+    for (const failure of ['sync', 'async']) {
+      pauseFailure = failure;
+      if (failure === 'sync') assert.throws(() => avatar.pause());
+      else await assert.rejects(avatar.pause());
+      pauseFailure = '';
+      emit(); await flush();
+      assert.equal(calls.get('opponent').at(-1).active, true, 'failed pause suppressed playback');
+    }
     emit({ audioContextState: 'suspended' }); await flush();
     assert.equal(calls.get('opponent').at(-1).active, false);
     emit(); await flush();
@@ -192,6 +211,16 @@ async function main() {
     avatar.pause(); avatar.resume(); await flush();
     await avatar.setModel({ type: 'vrm', path: '/replacement.vrm' }); await flush();
     assert.equal(manual.get('opponent'), true, 'model/pause transition lost manual intent');
+    failManual = true;
+    assert.equal(await avatar.setModel({ type: 'vrm', path: '/successful.vrm' }), 'model loaded',
+      'optional speaking restoration replaced a successful model result');
+    await flush();
+    modelFailure = true;
+    await assert.rejects(avatar.setModel({ type: 'vrm', path: '/failed.vrm' }),
+      error => error.cause?.message === 'model rejected' || error.message.includes('model rejected'));
+    modelFailure = false;
+    failManual = false;
+    await flush();
     await avatar.setSpeaking(false); await flush();
     assert.equal(manual.get('opponent'), false);
     failManual = true;
@@ -216,6 +245,45 @@ async function main() {
     await avatar.setSpeaking(true);
     await game.runtime.end(); await flush();
     assert.equal(manual.get('opponent'), false, 'route exit retained manual motion');
+    // An uncooperative automatic renderer cannot retain public manual callers.
+    game.runtime.reset(); await game.runtime.start(); await flush();
+    blocker = new Promise(() => {});
+    const stuck = await mount('stuck', 'Neko'); await flush();
+    const bounded = stuck.setSpeaking(true).catch(error => error);
+    await flush();
+    for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+    await flush();
+    assert.equal((await Promise.race([bounded, Promise.resolve('unsettled')])).code, 'timeout');
+    // Repeated timed-out callers use a removable single waiter, not .then()
+    // handlers permanently accumulated on the never-settling automatic promise.
+    for (let i = 0; i < 5; i++) {
+      const retry = stuck.setSpeaking(false).catch(error => error);
+      await flush();
+      for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+      await flush(); assert.equal((await retry).code, 'timeout');
+    }
+    const disposedWait = stuck.setSpeaking(true);
+    await flush(); stuck.dispose(); await flush();
+    assert.equal(await Promise.race([disposedWait, Promise.resolve('unsettled')]), false);
+    blocker = null;
+    const restoring = await mount('restoring', 'Neko'); await flush();
+    await restoring.setSpeaking(true);
+    let releaseManual;
+    manualBlocker = new Promise(resolve => { releaseManual = resolve; });
+    const changed = restoring.setModel({ type: 'vrm', path: '/new.vrm' }); await flush();
+    assert.equal(await Promise.race([changed, Promise.resolve('unsettled')]), 'model loaded');
+    for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+    await flush();
+    await assert.rejects(restoring.setSpeaking(false), { code: 'busy' });
+    manualBlocker = null; releaseManual(); await flush();
+    await restoring.setSpeaking(false);
+    blocker = new Promise(() => {});
+    emit({ active: false }); await flush();
+    const endedWait = restoring.setSpeaking(true).catch(error => error); await flush();
+    await game.runtime.end(); await flush();
+    assert.equal((await Promise.race([endedWait, Promise.resolve('unsettled')])).code, 'cancelled',
+      'route exit retained the manual waiter');
+    restoring.dispose(); blocker = null;
   } finally {
     avatar.dispose(); other.dispose(); game.dispose();
     await flush();

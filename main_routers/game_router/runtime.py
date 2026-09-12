@@ -4877,7 +4877,11 @@ async def game_character(game_type: str, request: Request = None):
             if isinstance(pngtuber_info, dict):
                 raw_png = pngtuber_info.get('idle_image', '')
                 if isinstance(raw_png, str) and len(raw_png) <= 2048:
-                    pngtuber_path = raw_png.strip().replace('\\', '/')
+                    from ..config_router.page_config import _resolve_pngtuber_image_path
+
+                    pngtuber_path = await asyncio.to_thread(
+                        _resolve_pngtuber_image_path, raw_png, config_manager, current_name,
+                    )
             live2d_info = avatar.get('live2d', {})
             if isinstance(live2d_info, dict):
                 # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。

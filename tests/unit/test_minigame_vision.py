@@ -95,9 +95,18 @@ async def test_analyze_uses_vision_configuration_and_returns_only_text(monkeypat
 
     monkeypatch.setattr(service, "get_config_manager", lambda: SimpleNamespace(aget_model_api_config=config))
     monkeypatch.setattr(service, "create_chat_llm_async", create)
+    original_save = Image.Image.save
+    encodes = []
+
+    def save(image, *args, **kwargs):
+        encodes.append(True)
+        return original_save(image, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "save", save)
     result = await vision.game_sdk_vision_analyze("example-game", Request(payload))
     await asyncio.sleep(0)
     assert result == {"ok": True, "text": "A blue board."}
+    assert len(encodes) == 1, "legacy capture must use only the shared sanitizer's encoding"
     assert observed["slot"] == "vision"
     assert observed["kwargs"]["max_retries"] == 0
     assert observed["kwargs"]["max_completion_tokens"] == 1024
