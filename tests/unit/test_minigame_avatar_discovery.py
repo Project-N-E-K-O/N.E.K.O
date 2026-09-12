@@ -111,6 +111,18 @@ async def test_names_use_existing_registry_without_private_fields(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", [" Example", "Example ", "\tExample\n", "\u3000Example\u00a0"])
+async def test_names_reject_noncanonical_keys_without_renaming(monkeypatch, name):
+    data = {"当前猫娘": name, "猫娘": {name: {}, "Example": {}}}
+    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(load_characters=lambda: data))
+    with pytest.raises(HTTPException) as error:
+        await runtime.game_character_names("example-game")
+    assert error.value.status_code == 422
+    assert list(data["猫娘"]) == [name, "Example"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_character_legacy_vrm_and_live2d_paths(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock
     from starlette.responses import JSONResponse

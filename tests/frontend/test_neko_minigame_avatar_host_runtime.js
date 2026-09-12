@@ -365,6 +365,44 @@ async function main() {
   assert(stalledResizeRawDisposed === 1, 'late initial resize completion disposed the raw controller twice');
 
   let releaseBlockedModel;
+  for (const method of ['focus', 'setEmotion', 'pause', 'resume']) {
+    for (const disposeEarly of [false, true]) {
+      let release; const gate = new Promise(resolve => { release = resolve; });
+      const calls = []; let rawDisposed = 0;
+      const host = windowMock.NekoMiniGameAvatarHost.create({
+        pendingOperationLimit: 2, windowImpl:windowMock, documentImpl:{},
+        slots:{queue:{container:{clientWidth:200,clientHeight:300}, createController: async () => ({
+          setModel() { calls.push('model'); }, resize() { calls.push('resize'); },
+          focus() {}, setEmotion() {}, pause() {}, resume() {}, getState() { return {}; },
+          [method]() { calls.push(method); return gate; },
+          dispose() { rawDisposed++; },
+        })}},
+      });
+      const controller = await host.mount({...base,slot:'queue',
+        viewport:{mode:'fixed',width:200,height:300},resize:{mode:'fixed'}});
+      calls.length = 0;
+      const first = Promise.resolve(controller[method]({x:0,y:0})).then(() => null, error => error);
+      await new Promise(setImmediate);
+      const next = controller.setModel({type:'live2d',path:'/next.json'}).then(() => null, error => error);
+      try {
+        const excess = await settleWithin(Promise.resolve(controller[method]({x:1,y:1}))
+          .then(() => null, error => error), 200, `${method}: excess raw operation did not reject`);
+        assert(excess?.code === 'busy', `${method}: bypassed operation capacity`);
+        assert(calls.join(',') === method, `${method}: raced a queued model operation`);
+        if (disposeEarly) {
+          controller.dispose();
+          const errors = await settleWithin(Promise.all([first,next]), 1000, 'control disposal hung');
+          assert(errors.every(error => error?.code === 'disposed'), `${method}: disposal did not cancel callers`);
+        }
+        release(); await new Promise(setImmediate);
+        await Promise.all([first,next]);
+        assert(calls.join(',') === (disposeEarly ? method : `${method},model,resize`),
+          `${method}: queued work ran out of order or after disposal`);
+        if (!disposeEarly) await controller[method]({x:0,y:0});
+      } finally { release(); host.dispose(); }
+      assert(rawDisposed === 1, `${method}: renderer disposal count changed`);
+    }
+  }
   const blockedModelGate = new Promise((resolve) => { releaseBlockedModel = resolve; });
   let modelCalls = 0;
   let queuedRawDisposed = 0;

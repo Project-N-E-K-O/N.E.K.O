@@ -662,20 +662,16 @@
           });
         },
         focus(point) {
-          ensureState(state, 'focus');
-          return state.raw.focus(point);
+          return enqueueStateOperation(state, 'focus', () => state.raw.focus(point));
         },
         setEmotion(name) {
-          ensureState(state, 'setEmotion');
-          return state.raw.setEmotion(name);
+          return enqueueStateOperation(state, 'setEmotion', () => state.raw.setEmotion(name));
         },
         pause() {
-          ensureState(state, 'pause');
-          return state.raw.pause();
+          return enqueueStateOperation(state, 'pause', () => state.raw.pause());
         },
         resume() {
-          ensureState(state, 'resume');
-          return state.raw.resume();
+          return enqueueStateOperation(state, 'resume', () => state.raw.resume());
         },
         getState() {
           ensureState(state, 'getState');
