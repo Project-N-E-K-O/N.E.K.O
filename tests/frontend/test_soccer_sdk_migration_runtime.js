@@ -366,11 +366,26 @@ async function main() {
       ? { textContent: '', style: {} } : previousGetElement(id);
     let releaseSettings;
     const settingsGate = new Promise(resolve => { releaseSettings = resolve; });
-    let releaseInitialCharacter;
+    const initialCharacterQueries = [];
     let assetsDone = false;
     host.getAvatarCharacter = () => new Promise(resolve => {
-      releaseInitialCharacter = () => resolve(descriptor);
+      initialCharacterQueries.push(() => resolve(descriptor));
     });
+    let releaseQuickLines;
+    const previousFetch = window.fetch;
+    window.fetch = async (url, options) => {
+      if (!url.endsWith('/quick-lines')) return previousFetch(url, options);
+      calls.push({ url, payload: JSON.parse(options.body) });
+      return new Promise(resolve => {
+        releaseQuickLines = () => resolve(response({ ok: true, character: descriptor.name,
+          lines: { 'goal-scored': ['Generated goal line'] }, missing: [] }));
+      });
+    };
+    sandbox.LINES = { 'goal-scored': ['Built-in goal line'] };
+    sandbox._conversationLanguagePayload = () => ({
+      i18n_language: vm.runInThisContext('soccerCharacterExplicitLanguage'),
+    });
+    install('      const QUICK_LINE_KEYS = [', '      function triggerScene(');
     window.__SoccerLoading = {
       set() {}, done(part) { if (part === 'assets') assetsDone = true; },
     };
@@ -390,9 +405,9 @@ async function main() {
     for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
     releaseSettings();
     await startup;
-    for (let i = 0; i < 10 && !releaseInitialCharacter; i++) await new Promise(resolve => setImmediate(resolve));
-    assert(releaseInitialCharacter, 'startup never queried the character');
-    releaseInitialCharacter();
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+    assert(initialCharacterQueries.length, 'startup never queried the character');
+    for (const releaseCharacter of initialCharacterQueries) releaseCharacter();
     for (let i = 0; i < 10 && !assetsDone; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(assetsDone, true, 'startup did not settle the asset loader');
     assert(window.__SoccerAiAvatarController && !window.__SoccerAiAvatarController.disposed,
@@ -400,6 +415,22 @@ async function main() {
     assert.equal(window.__SoccerAiAvatarController.getState().model.path, descriptor.model.path);
     assert.equal(game.runtime.session.characterName, descriptor.name);
     assert.equal(game.runtime.state, 'idle', 'loading assets started a game route');
+    for (let i = 0; i < 10 && !releaseQuickLines; i++) await new Promise(resolve => setImmediate(resolve));
+    assert(releaseQuickLines, 'initial runtime reset cancelled quick-line generation without a retry');
+    assert.equal(initialCharacterQueries.length, 1, 'startup loaders did not share the post-reset binding');
+    const quickLineRequests = calls.filter(c => c.url.endsWith('/quick-lines'));
+    assert.equal(quickLineRequests.length, 1);
+    assert.equal(quickLineRequests[0].payload.lanlan_name, descriptor.name);
+    assert.equal(quickLineRequests[0].payload.i18n_language, 'ja');
+    assert.deepEqual(sandbox.LINES['goal-scored'], ['Built-in goal line'],
+      'assets must become ready while generated lines are still pending');
+    releaseQuickLines();
+    for (let i = 0; i < 10 && sandbox.LINES['goal-scored'][0] !== 'Generated goal line'; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.deepEqual(sandbox.LINES['goal-scored'], ['Generated goal line']);
+    assert.equal(game.runtime.state, 'idle', 'quick-line generation started a game route');
+    window.fetch = previousFetch;
     window.__SoccerAiAvatarController.dispose();
     window.__SoccerPlayerAvatarController.dispose();
     host.getAvatarCharacter = originalCharacterQuery;

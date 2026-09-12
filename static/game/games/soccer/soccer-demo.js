@@ -2826,7 +2826,6 @@
           soccerRecoverableLog('[SoccerQuickLines] 生成请求失败 | 继续使用内建快路径', e);
         }
       }
-      loadGeneratedQuickLines();
 
       function triggerScene(kind, opts = {}) {
         const pool = LINES[kind];
@@ -5930,6 +5929,7 @@
       // Finish the initial runtime reset before binding or mounting avatars;
       // reset cancels queries from the previous runtime generation.
       await _prepareGameForStartScreen();
+      void loadGeneratedQuickLines();
       void loadSoccerAvatars();
 
       // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
