@@ -7,12 +7,9 @@ function assert(condition, message) {
 }
 
 function response(status, payload) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return payload; },
-    clone() { return response(status, payload); },
-  };
+  return new Response(JSON.stringify(payload), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 async function main() {

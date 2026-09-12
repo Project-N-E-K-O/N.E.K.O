@@ -57,7 +57,7 @@ async function main() {
     async playVRMAAnimation() {}
     dispose() { this.analyser = null; this.currentModel = null; }
   }
-  const response = data => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
+  const response = data => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
   const window = { THREE, document, console, AbortController, navigator: {},
     location: { origin: 'http://localhost', search: '' },
     lanlan_config: { lanlan_name: 'Neko' },
@@ -88,7 +88,7 @@ async function main() {
     },
   };
   const context = vm.createContext({ window, document, console, URL, URLSearchParams, AbortController,
-    performance, setTimeout, clearTimeout, Uint8Array });
+    performance, setTimeout, clearTimeout, Uint8Array, Response });
   const run = name => vm.runInContext(read(name), context, { filename: name });
   document.head = { appendChild(script) {
     document.currentScript = script; run('static/game/sdk/neko-minigame-same-origin-host.js');

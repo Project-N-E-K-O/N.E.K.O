@@ -14,7 +14,7 @@ const manifestStart = connectIndex + connectAnchor.length;
 const manifestEnd = page.indexOf('}, {', manifestStart);
 assert.notEqual(manifestEnd, -1, 'soccer-demo.js is missing the manifest end anchor');
 const manifest = vm.runInThisContext('(' + page.slice(manifestStart, manifestEnd + 1) + ')');
-const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
+const response = (data) => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
 
 async function verifyEarlyModuleResults() {
   for (const outcome of ['failed', 'ready', 'pagehide', 'initialization-failed']) {
