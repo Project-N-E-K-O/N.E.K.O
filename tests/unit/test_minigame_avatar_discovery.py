@@ -111,6 +111,32 @@ async def test_names_use_existing_registry_without_private_fields(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_character_legacy_vrm_and_live2d_paths(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from starlette.responses import JSONResponse
+    from main_routers import characters_router
+
+    character = {"model_type": "live3d", "live3d_sub_type": "vrm", "vrm": "example.vrm"}
+    (tmp_path / "example.vrm").touch()
+    data = {"当前猫娘": "Example", "猫娘": {"Example": character}}
+    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(
+        load_characters=lambda: data, project_root=tmp_path, vrm_dir=tmp_path))
+    monkeypatch.setattr(runtime, "_load_game_character_prompt_locale", AsyncMock(return_value=("en", True)))
+    canonical = AsyncMock(return_value=JSONResponse({"model_info": {"path": "/user_live2d/example.model3.json"}}))
+    monkeypatch.setattr(characters_router, "get_current_live2d_model", canonical)
+    assert (await runtime.game_character("sdk-avatar"))["vrm_path"] == "/user_vrm/example.vrm"
+    for malformed in [None, [], "legacy"]:
+        character["_reserved"] = {"avatar": malformed}
+        assert (await runtime.game_character("sdk-avatar"))["vrm_path"] == "/user_vrm/example.vrm"
+    character["_reserved"] = {"avatar": {"vrm": {"model_path": ""}, "live2d": None}}
+    assert (await runtime.game_character("sdk-avatar"))["vrm_path"] == "", "explicit empty must win over legacy"
+    character.update(model_type="live2d", live2d="example.model3.json")
+    assert (await runtime.game_character("sdk-avatar"))["live2d_path"] == "/user_live2d/example.model3.json"
+    canonical.assert_awaited_with("Example")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("nekos, status", [
     ({str(i): {} for i in range(257)}, 413), ({"x" * 129: {}}, 422), ({"🐈" * 129: {}}, 422),
 ])

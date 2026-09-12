@@ -125,7 +125,7 @@ async function main() {
           });
           manual.set(config.slot, active); return true;
         },
-        setSpeechPlayback(frame) {
+        setSpeechPlayback: config.slot.startsWith('late-start-') ? undefined : function(frame) {
           frames.push(frame);
           return (blocker || Promise.resolve()).then(() => { manual.set(config.slot, false); });
         } };
@@ -295,6 +295,23 @@ async function main() {
     assert.equal(await Promise.race([disposedWait, Promise.resolve('unsettled')]), false);
     blocker = null;
     const restoring = await mount('restoring', 'Neko'); await flush();
+    for (const action of ['timeout', 'pause', 'end']) {
+      const slot = `late-start-${action}`;
+      const lateStart = await mount(slot, 'Neko'); await flush();
+      let finishStart;
+      manualBlocker = new Promise(resolve => { finishStart = resolve; });
+      const starting = lateStart.setSpeaking(true).catch(error => error); await flush();
+      for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+      await flush(); assert.equal((await starting).code, 'timeout');
+      await assert.rejects(lateStart.setSpeaking(false), {code:'busy'});
+      if (action === 'pause') { await lateStart.pause(); await flush(); }
+      if (action === 'end') { await game.runtime.end(); await flush(); }
+      manualBlocker = null; finishStart(); await flush();
+      assert.equal(manual.get(slot), false, 'late activation survived its timeout');
+      assert.deepEqual(manualCalls.filter(([name]) => name === slot).map(([,active]) => active), [true,false]);
+      lateStart.dispose(); await flush();
+      if (action === 'end') { game.runtime.reset(); await game.runtime.start(); await flush(); }
+    }
     await restoring.setSpeaking(true);
     for (const action of ['restore', 'pause', 'end', 'dispose']) {
       const lateStop = await mount(`late-stop-${action}`, 'Neko'); await flush();

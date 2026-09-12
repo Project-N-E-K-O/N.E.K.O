@@ -920,7 +920,12 @@ route, capture voice, or switch the main page's character. Omitted name resolves
 the current character; an unknown explicit name returns `null` without mutation.
 Bind only in `idle`, before character-scoped requests and Avatar mounting; after
 such requests or an active route, end/reset first. Dispose existing Avatars and
-wait for pending mounts before rebinding. While a binding is pending, another
+wait for pending mounts before rebinding. `reset()` cannot terminate a custom
+host's unresolved `mountAvatar()` promise. Such raw mounts retain the existing
+eight-renderer/pending-mount capacity until actual settlement; fix/cancel the
+underlying host operation (or dispose the client and host) before recovering.
+Do not repeatedly recreate clients around a provider that ignores disposal.
+While a binding is pending, another
 bind/start/mount is `busy`. Cancellation, reset, end, page exit, disposal or a changed lifecycle discard
 late selection results. Binding uses the same bounded discovery request slots and
 deadlines. Custom transports may optionally implement synchronous
@@ -997,7 +1002,15 @@ confirms renderer resumption, not completion of an optional manual mouth update.
 
 When the trusted host provides character discovery, games can call
 `avatar.listCharacters()`, `avatar.getCurrentCharacter()` and
-`avatar.getCharacter(name)` before mounting. Descriptors expose only the
+`avatar.getCharacter(name)` before mounting. The built-in drawing Avatar provider's
+catalog, canonical-path and model/settings JSON reads share a separate 16 MiB
+UTF-8 input limit per response; they do not inherit the smaller image/command
+budget. Over-limit responses fail rather than being truncated. Its trusted
+`fetchImpl` must return a standard readable Fetch `Response`, not a JSON-only
+object; streaming reads are cancelled on timeout, abort, failure and disposal.
+The existing query/mount total deadline remains in force, and a fetch that has
+not returned still occupies its raw-work slot until it settles.
+Descriptors expose only the
 character name, approved model (`live2d`, `vrm`, `mmd` or `pngtuber`) and
 renderer availability. Discovery and the optional `setView`/`setSpeaking`
 controller operations are feature-detected; older hosts continue to work for

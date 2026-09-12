@@ -5741,6 +5741,7 @@
           let rawSettled = false;
           let callerSettled = false;
           let released = false;
+          let invoked = false;
           const release = () => {
             if (!rawSettled || !callerSettled || released) return;
             released = true;
@@ -5750,6 +5751,13 @@
             // manual ownership. Reapply that intent once, using the existing
             // bounded operation and its current lifecycle guards.
             if (reason === 'timeout' && !active) restoreManualSpeaking();
+            // A late activation must also relinquish motion when its caller
+            // already lost ownership. The correction is one bounded stop,
+            // not a retry loop, and does not require optional playback frames.
+            if (reason && invoked && active && !controllerState.manualSpeaking
+              && !controllerState.disposed && !disposed && !disposing) {
+              void updateManualSpeaking(false).catch(() => {});
+            }
             syncAvatarSpeech();
           };
           let cancel;
@@ -5776,6 +5784,7 @@
                 controllerState.speechIdleResolve = null;
               }
               if (reason || controllerState.disposed || disposed || disposing) return false;
+              invoked = true;
               return await callController('setSpeaking', () => raw.setSpeaking(controllerState.manualSpeaking));
             } finally {
               // Ignored cancellation retains the raw operation's slot until
