@@ -150,6 +150,8 @@ def test_watch_history_pages_keep_all_records(tmp_path):
     assert [len(first), len(second), len(third)] == [50, 50, 25]
     assert len({row['id'] for row in first + second + third}) == 125
     assert len(library.watches(10000)) == 100
+    assert library.watch_page(50, 75)['next_offset'] is None
+    assert library.watch_page(50, 50)['next_offset'] == 100
     with library.connect() as db:
         assert db.execute('SELECT COUNT(*) FROM watches').fetchone()[0] == 125
 

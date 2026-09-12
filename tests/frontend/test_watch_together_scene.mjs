@@ -237,3 +237,22 @@ assert.equal(paged.elements.get('watches-previous').disabled,false);
 assert.equal(paged.elements.get('watches-next').disabled,true);
 await paged.elements.get('watches-previous').onclick();
 assert.match(paged.elements.get('watches').textContent,/Recent/);
+const pagingDuringPlayback=await fixture(false,false,{total_tokens:1});
+await pagingDuringPlayback.elements.get('play').onclick();
+const playbackRequest=pagingDuringPlayback.game.media.request;
+let finishPage, pageRequests=0;
+pagingDuringPlayback.game.media.request=(action,payload)=>{
+  if(action==='watches') {
+    pageRequests++;
+    return new Promise(resolve=>{finishPage=resolve;});
+  }
+  return playbackRequest(action,payload);
+};
+const navigating=pagingDuringPlayback.elements.get('watches-previous').onclick();
+pagingDuringPlayback.record({type:'progress',position:5});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(pageRequests,1,'background refresh must not supersede pending navigation');
+finishPage({watches:[{job:'Requested page'}],next_offset:null});
+await navigating;
+assert.match(pagingDuringPlayback.elements.get('watches').textContent,/Requested page/);
+pagingDuringPlayback.handlers['runtime-inactive']();

@@ -25,8 +25,7 @@ async def history():
 
 @router.get("/watches")
 async def watches(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
-    rows = await asyncio.to_thread(_library_call, "watches", limit, offset)
-    return {"watches": rows, "next_offset": offset + len(rows) if len(rows) == limit else None}
+    return await asyncio.to_thread(_library_call, "watch_page", limit, offset)
 
 
 @router.get("/jobs/{job}/{version}")

@@ -208,13 +208,17 @@ export async function run(game, character) {
       setTimeout(()=>{if(!window.closed)location.href='/';},100);
     }
   };
-  let watchOffset=0, watchNext=null, watchGeneration=0;
+  let watchOffset=0, watchNext=null, watchGeneration=0, watchLoading=false;
   $('watches-previous').onclick=()=>refreshWatches(Math.max(0,watchOffset-50));
   $('watches-next').onclick=()=>{if(watchNext!==null)return refreshWatches(watchNext);};
-  async function refreshWatches(offset=watchOffset) {
+  async function refreshWatches(offset) {
     // Promise.then(record) passes its result; only explicit numeric offsets paginate.
-    if(!Number.isInteger(offset))offset=watchOffset;
+    if(!Number.isInteger(offset)) {
+      if(watchLoading)return;
+      offset=watchOffset;
+    }
     const generation=++watchGeneration;
+    watchLoading=true;
     $('watches-previous').disabled=true;$('watches-next').disabled=true;
     try {
       const page=await game.media.request('watches',{offset});
@@ -225,6 +229,7 @@ export async function run(game, character) {
     catch(error) { if(generation===watchGeneration)status(error.message); }
     finally {
       if(generation===watchGeneration) {
+        watchLoading=false;
         $('watches-previous').disabled=watchOffset===0;
         $('watches-next').disabled=watchNext===null;
       }

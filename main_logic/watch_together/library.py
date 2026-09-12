@@ -266,12 +266,16 @@ class Library:
                        (progress, watched, now, any(item.get('type') == 'ended' for item in events), json.dumps(events), identifier))
 
     def watches(self, limit=50, offset=0) -> list[dict]:
+        return self.watch_page(limit, offset)['watches']
+
+    def watch_page(self, limit=50, offset=0) -> dict:
         limit = max(1, min(100, int(limit)))
         offset = max(0, int(offset))
         with self.connect() as db:
-            return [dict(row) for row in db.execute(
+            rows = [dict(row) for row in db.execute(
                 "SELECT id,job,version,character,progress,last_watched,completed FROM watches "
-                "ORDER BY last_watched DESC, id DESC LIMIT ? OFFSET ?", (limit, offset))]
+                "ORDER BY last_watched DESC, id DESC LIMIT ? OFFSET ?", (limit + 1, offset))]
+        return {'watches': rows[:limit], 'next_offset': offset + limit if len(rows) > limit else None}
 
     def verify(self) -> dict:
         failures, checked = [], {}
