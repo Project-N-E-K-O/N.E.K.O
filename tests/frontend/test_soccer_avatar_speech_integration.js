@@ -127,14 +127,14 @@ async function main() {
   try {
     assert.equal((await game.runtime.bindCharacter()).name, 'Neko');
     assert.equal(game.runtime.session.characterName, 'Neko');
-    const player = await game.avatar.mount(mountConfig('player', 'vrm', '/player.vrm'));
+    let player = await game.avatar.mount(mountConfig('player', 'vrm', '/player.vrm'));
     const playerManager = window.vrmManager;
     game.runtime.configure({ pageExit: true, heartbeat: false, outputs: false });
     await game.runtime.start();
     await game.speech.speak({ text: 'Before AI loaded' }); playback(); await flush();
     assert(!playerManager.analyser, 'the sole player renderer accepted assistant speech');
     playback({ active: false, remainingSeconds: 0 }); await flush();
-    const ai = await game.avatar.mount(mountConfig('ai', 'vrm', '/neko.vrm'));
+    let ai = await game.avatar.mount(mountConfig('ai', 'vrm', '/neko.vrm'));
     const aiManager = window.aiVrmManager;
     await game.speech.speak({ text: 'Neutral test' }); await flush();
     assert(!aiManager.analyser, 'HTTP acceptance started lip sync');
@@ -153,7 +153,11 @@ async function main() {
     playback(); await flush();
     await game.runtime.end(); await flush(); assert.equal(mouth, 0); assert.equal(frames.size, 0);
     playback(); await flush(); assert.equal(mouth, 0, 'ended route accepted late playback');
-    game.runtime.reset(); await game.runtime.bindCharacter('Neko'); await game.runtime.start();
+    player.dispose(); ai.dispose();
+    game.runtime.reset(); await game.runtime.bindCharacter('Neko');
+    player = await game.avatar.mount(mountConfig('player', 'vrm', '/player.vrm'));
+    ai = await game.avatar.mount(mountConfig('ai', 'live2d', '/neko.model3.json'));
+    await game.runtime.start();
     playback(); await flush(); assert.equal(mouth, 0, 'new route accepted old speech');
     await game.speech.speak({ text: 'New generation' }); playback(); await flush(); assert(mouth > 0);
     emit('pagehide', {}); await flush();

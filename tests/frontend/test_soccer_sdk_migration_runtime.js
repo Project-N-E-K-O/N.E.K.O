@@ -451,8 +451,33 @@ async function main() {
     assert.deepEqual(sandbox.LINES['goal-scored'], ['Generated goal line']);
     assert.equal(game.runtime.state, 'idle', 'quick-line generation started a game route');
     window.fetch = previousFetch;
+    host.getAvatarCharacter = originalCharacterQuery;
+    await sandbox.setPlayerAvatar({ type: 'vrm', path: '/retry-player.vrm' });
+    await sandbox.setAiAvatar({ type: 'vrm', path: '/retry-ai.vrm' });
+    window.__SoccerAiAvatarController.pause();
+    const retryPlayer = window.__SoccerPlayerAvatarController;
+    const retryAi = window.__SoccerAiAvatarController;
+    game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
+    assert.equal(retryPlayer.disposed, true, 'restart must release the player before rebinding');
+    assert.equal(retryAi.disposed, true, 'restart must release the AI before rebinding');
+    await sandbox._startGameRoute();
+    assert.equal(game.runtime.session.characterName, descriptor.name);
+    assert.equal(window.__SoccerPlayerAvatarController.getState().model.path, '/retry-player.vrm',
+      'restart must preserve the chosen player model');
+    assert.equal(window.__SoccerAiAvatarController.getState().model.path, '/retry-ai.vrm',
+      'restart must preserve the chosen AI model');
+    assert.equal(window.__SoccerAiAvatarController.getState().paused, true,
+      'restart must preserve the chosen pause state');
+    assert.notEqual(window.__SoccerAiAvatarController, retryAi, 'restart reused a disposed controller');
+    assert.equal(vm.runInThisContext('soccerAvatarRestore.player'), null);
+    assert.equal(vm.runInThisContext('soccerAvatarRestore.ai'), null);
+    await game.runtime.end({});
     window.__SoccerAiAvatarController.dispose();
     window.__SoccerPlayerAvatarController.dispose();
+    game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
+    await vm.runInThisContext('ensureSoccerCharacterInfo()');
     host.getAvatarCharacter = originalCharacterQuery;
     document.getElementById = previousGetElement;
     let releaseMount;
