@@ -38,8 +38,8 @@ def test_image_settings_real_page_round_trip(mock_page, running_server):
         document.getElementById('custom-api-container').style.display = 'grid';
     }""")
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
-    # Existing pairs retain their columns; the image card owns a separate row.
-    for left, right in [("conversation", "vision"), ("summary", "correction"), ("emotion", "omni"), ("agent", "tts")]:
+    # Existing pairs retain their columns; image generation sits beside mini-games.
+    for left, right in [("conversation", "vision"), ("summary", "correction"), ("emotion", "omni"), ("agent", "tts"), ("game", "image")]:
         bounds = mock_page.evaluate("""([left, right]) => {
             const box = type => document.getElementById(type + '-model-content').parentElement.getBoundingClientRect();
             const a = box(left), b = box(right);
