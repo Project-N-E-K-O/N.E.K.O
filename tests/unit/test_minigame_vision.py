@@ -150,6 +150,36 @@ async def test_body_limit_and_bad_json(scenario):
     assert (await vision.game_sdk_vision_analyze("example-game", request))["reason"] == "invalid_payload"
 
 
+@pytest.mark.parametrize("character", ["\x00", "\U0001f600"])
+@pytest.mark.asyncio
+async def test_maximum_images_and_escaped_text_fit_body_budget(monkeypatch, scenario, character):
+    payload, state, _ = scenario
+    raw = base64.b64decode(payload.pop("image_data_url").split(",", 1)[1])
+    raw += b"\0" * (service.MAX_IMAGE_BYTES - len(raw))
+    image = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    payload.pop("prompt")
+    payload.update(text=character * 16384, attachments=[
+        {"type": "image", "image_data_url": image, "label": character * 128} for _ in range(3)
+    ])
+    payload.update(lanlan_name=character * 128, session_id=character * 128,
+                   sdk_route_instance_id=character * 128)
+    state.update(session_id=payload["session_id"], _sdk_route_instance_id=payload["sdk_route_instance_id"])
+    received = []
+
+    async def analyze(**kwargs):
+        # Real decoder/sanitizer checks that the full 6 MiB input is valid;
+        # only the remote model is replaced for this request-envelope test.
+        received.extend(service.validate_vision_attachments(kwargs["attachments"]))
+        return "Observation"
+
+    monkeypatch.setattr(vision, "analyze_game_vision", analyze)
+    request = Request(payload)
+    assert await vision.game_sdk_vision_analyze("example-game", request) == {"ok": True, "text": "Observation"}
+    assert len(received) == 3
+    await asyncio.sleep(0)
+    assert not vision._active_operations
+
+
 @pytest.mark.asyncio
 async def test_origin_csrf_validation_precedes_reading_body(monkeypatch):
     denied = object()
