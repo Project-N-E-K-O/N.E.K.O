@@ -1058,6 +1058,10 @@
         "connectionError": "接続エラー"
     },
     "api": {
+    "imageModelConfig": "画像生成",
+    "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
+    "imageDisabled": "未設定",
         "settings": "APIキー設定",
         "settingsTitle": "APIキー設定 - Project Lanlan",
         "quickStart": "クイックスタート",

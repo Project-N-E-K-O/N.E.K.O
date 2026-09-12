@@ -621,10 +621,12 @@ async def test_shared_facts_selector_rejects_mismatched_runtime_character(
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     from main_routers import community_oauth
 
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    # Keep the suite off the developer's real credential file.
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
 
     async def current_desktop_status():
         snapshot = await asyncio.to_thread(C._desktop_session_snapshot)
@@ -650,7 +652,10 @@ def client(monkeypatch):
 
 
 def _issue_sync_ticket(client: TestClient) -> str:
-    response = client.get("/api/card-drop/sync-ticket")
+    response = client.get(
+        "/api/card-drop/sync-ticket",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     ticket = response.json()["sync_ticket"]
@@ -762,10 +767,12 @@ def test_native_delegate_handoff_is_local_ui_only_and_validates_return_url(
     )
 
 
-def test_native_delegate_backfills_a_verified_legacy_desktop_session(
+@pytest.mark.parametrize("endpoint", ["native-delegate", "sync-ticket"])
+def test_native_proof_backfills_a_verified_legacy_desktop_session(
     client,
     tmp_path,
     monkeypatch,
+    endpoint,
 ):
     auth = tmp_path / "community_auth.json"
     social = tmp_path / "social_session.json"
@@ -797,7 +804,7 @@ def test_native_delegate_backfills_a_verified_legacy_desktop_session(
     )
 
     response = client.get(
-        "/api/card-drop/native-delegate",
+        f"/api/card-drop/{endpoint}",
         headers={"Sec-Fetch-Site": "same-origin"},
     )
 
@@ -806,7 +813,16 @@ def test_native_delegate_backfills_a_verified_legacy_desktop_session(
     saved = json.loads(social.read_text(encoding="utf-8"))
     assert saved["local_user_id"] == USER_A_ID
     assert saved["auth_source"] == "oauth"
-    assert C._native_delegate_entry(response.json()["native_delegate"]) is not None
+    if endpoint == "native-delegate":
+        assert C._native_delegate_entry(response.json()["native_delegate"]) is not None
+    else:
+        redeemed = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": response.json()["sync_ticket"]},
+        )
+        assert redeemed.status_code == 200
+        assert redeemed.json()["access_token"] == "legacy-desktop-token"
 
 
 def test_native_delegate_is_bound_to_the_refreshed_oauth_session(
@@ -922,7 +938,8 @@ def test_expired_native_delegate_does_not_fall_back_to_cloud_auth(
     token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
     entry = C._native_delegate_entry(token)
     assert entry is not None
-    entry["expires_at"] = 0
+    # _native_delegate_entry 返回副本（防止调用方改写共享注册表），直接过期注册表条目。
+    C._native_delegates[C._sync_ticket_digest(token)]["expires_at"] = 0
 
     async def unexpected_cloud_auth(_base, _token):
         pytest.fail("expired native delegates must not be retried as cloud tokens")
@@ -1326,6 +1343,9 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
         "/api/card-drop/sync-ticket",
         headers={"Sec-Fetch-Site": "cross-site"},
     )
+    # A headerless caller models a native local process: it must not be able
+    # to mint the ticket that transitively redeems the Desktop OAuth bearer.
+    headerless_native = client.get("/api/card-drop/sync-ticket")
     same_origin = client.get(
         "/api/card-drop/sync-ticket",
         headers={
@@ -1336,6 +1356,7 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
 
     assert evil_origin.status_code == 403
     assert blind_browser_get.status_code == 403
+    assert headerless_native.status_code == 403
     assert same_origin.status_code == 200
     assert len(C._native_sync_tickets) == len(before) + 1
 
@@ -1445,6 +1466,822 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     assert thread_ids["credentials"] != thread_ids["event_loop"]
     assert replay.status_code == 403
     assert replay.json() == {"detail": "invalid_sync_ticket"}
+
+
+def test_social_session_init_hands_desktop_oauth_to_community_origin(client, monkeypatch):
+    snapshot = {
+        **_delegate_session(),
+        "refresh_token": "desktop-refresh-a",
+        "auth_public_url": "https://auth.example",
+        "client_id": "neko-servers-desktop-dev",
+    }
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    ticket = _issue_sync_ticket(client)
+
+    denied = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://evil.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://community.example"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "access_token": "desktop-token-a",
+        "local_user_id": USER_A_ID,
+        "auth_public_url": "https://auth.example",
+        "client_id": "neko-servers-desktop-dev",
+        "bind": {"bound": True, "error": None},
+    }
+    # Desktop stays the sole owner of the refresh-token family.
+    assert "desktop-refresh-a" not in response.text
+
+    replay = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert replay.status_code == 403
+    assert replay.json() == {"detail": "invalid_sync_ticket"}
+
+
+def test_social_session_init_rejects_a_request_without_origin(client, monkeypatch):
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "refresh_token": "desktop-refresh-a"},
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "origin_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_rejects_a_plaintext_non_loopback_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://community.example")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {
+            **_delegate_session(),
+            "base_url": "http://community.example",
+            "refresh_token": "desktop-refresh-a",
+        },
+    )
+    ticket = _issue_sync_ticket(client)
+
+    preflight = client.options(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://community.example"},
+    )
+    assert preflight.status_code == 403
+    assert preflight.json() == {"detail": "insecure_transport"}
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "insecure_transport"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_allows_a_loopback_http_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:3000")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://127.0.0.1:3000"},
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://localhost:3000"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "desktop-token-a"
+
+
+def test_social_session_init_keeps_the_ticket_when_identity_is_unavailable(
+    client,
+    monkeypatch,
+):
+    outcome = {"value": (None, "unavailable")}
+
+    async def resolved_snapshot():
+        return outcome["value"]
+
+    monkeypatch.setattr(C, "_native_delegate_session_snapshot", resolved_snapshot)
+    # The consume fence re-reads the session file directly; keep it consistent
+    # with the resolved identity so the retry can succeed.
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session())
+    ticket = _issue_sync_ticket(client)
+
+    unavailable = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "identity_verification_unavailable"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    outcome["value"] = (_delegate_session(), "")
+    retry = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert retry.status_code == 200
+    assert retry.json()["access_token"] == "desktop-token-a"
+
+
+def test_social_session_init_rejects_a_snapshot_from_another_environment(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {
+            **_delegate_session(),
+            "base_url": "https://production.example",
+            "refresh_token": "prod-refresh",
+            "auth_public_url": "https://auth.production.example",
+            "client_id": "neko-servers-desktop-prod",
+        },
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "prod-refresh" not in response.text
+    assert "desktop-token-a" not in response.text
+
+
+def test_social_session_init_repairs_a_failed_desktop_bind(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    bound = []
+
+    async def record_guest_bind(social_base, access_token):
+        bound.append((social_base, access_token))
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", record_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert bound == [("https://community.example", "desktop-token-a")]
+    assert response.json()["bind"] == {"bound": True, "error": None}
+
+
+def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A logout/account switch during the bind round trip must not ship the bearer."""
+    from main_routers import community_oauth
+
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    async def switch_account_mid_bind(_social_base, _access_token):
+        # Desktop logs out while the cloud bind is in flight.
+        snapshots.append({**_delegate_session(), "access_token": ""})
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", switch_account_mid_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    # The handoff never happened, so the ticket must survive for a retry.
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
+    client,
+    monkeypatch,
+):
+    """A desktop logout landing between verification and consumption must not ship the bearer."""
+    from contextlib import contextmanager
+
+    state = {"token": "desktop-token-a"}
+
+    def mutable_snapshot():
+        return {**_delegate_session(), "access_token": state["token"]}
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", mutable_snapshot)
+
+    real_lock = C._social_session_lock
+
+    @contextmanager
+    def logout_under_lock(path):
+        with real_lock(path):
+            # Desktop logs out while the endpoint holds the consume fence.
+            state["token"] = ""
+            yield
+
+    ticket = _issue_sync_ticket(client)
+    monkeypatch.setattr(C, "_social_session_lock", logout_under_lock)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_sync_ticket_registry_survives_cross_thread_churn():
+    """Issue on the loop thread while a worker consumes: no iteration races."""
+    import threading as _threading
+
+    errors: list[Exception] = []
+
+    def churn_issue():
+        try:
+            for _ in range(200):
+                C._issue_sync_ticket()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def churn_consume():
+        try:
+            for _ in range(200):
+                C._consume_sync_ticket(C._issue_sync_ticket())
+                C._sync_ticket_is_valid("not-a-real-ticket-value-ignored")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        _threading.Thread(target=churn_issue),
+        _threading.Thread(target=churn_consume),
+        _threading.Thread(target=churn_consume),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(C._native_sync_tickets) <= C._SYNC_TICKET_MAX_ACTIVE
+
+
+def test_persist_repaired_bind_accepts_a_stale_auth_mirror(tmp_path, monkeypatch):
+    """A refresh that updated social_session.json but failed its mirror write
+    must not strand the repaired bind behind the mirror's older token."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "mirror-stale-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "baseUrl": "https://community.example",
+                "token": "authoritative-token",
+                "access_token": "authoritative-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    C._persist_repaired_bind(
+        "authoritative-token", {"bound": True, "error": None}
+    )
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": True, "error": None}
+
+    # An account switch (the authoritative file also moved on) still wins.
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "mirror-stale-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "baseUrl": "https://community.example",
+                "token": "switched-account-token",
+                "access_token": "switched-account-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    C._persist_repaired_bind(
+        "authoritative-token", {"bound": True, "error": None}
+    )
+    preserved = json.loads(auth.read_text(encoding="utf-8"))
+    assert preserved["bind"] == {"bound": False, "error": "cloud_unreachable"}
+
+
+def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
+    """Deleting the auth mirror must fence repaired-bind writers on the lock."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    social.write_text(
+        json.dumps({"token": "token-a", "access_token": "token-a"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    # 一个 repaired-bind 写者在持有 social-session 锁：clear 必须在锁上等到
+    # 超时并报告失败，而不是绕过锁把镜像删掉（约 2 秒锁超时）。
+    with C._social_session_lock(social):
+        assert C._clear_auth() is False
+    assert auth.exists()
+    assert social.exists()
+
+    # 锁释放后重试即可正常清理。
+    assert C._clear_auth() is True
+    assert not auth.exists()
+    assert not social.exists()
+
+
+def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
+    """A paused legacy writer must finish before logout deletes either path."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    auth = tmp_path / "legacy" / "community_auth.json"
+    legacy = auth.with_name("social_session.json")
+    primary = tmp_path / "desktop" / "social_session.json"
+    auth.parent.mkdir()
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    legacy.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(primary.parent))
+    assert C._social_session_paths() == [primary, legacy]
+
+    writing = threading.Event()
+    release = threading.Event()
+    clearing = threading.Event()
+    real_write = C._write_private_json
+    real_lock = C._social_session_lock
+
+    def pause_write(path, data):
+        if path == legacy:
+            writing.set()
+            assert release.wait(5)
+        real_write(path, data)
+
+    def observed_lock(path):
+        if writing.is_set():
+            clearing.set()
+        return real_lock(path)
+
+    monkeypatch.setattr(C, "_write_private_json", pause_write)
+    monkeypatch.setattr(C, "_social_session_lock", observed_lock)
+    snapshot = {"access_token": "token-a"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(C._persist_session_identity_metadata, snapshot, USER_A_ID, "oauth")
+        try:
+            assert writing.wait(5)
+            logout = pool.submit(C._clear_auth)
+            assert clearing.wait(5)
+            assert not logout.done()
+        finally:
+            release.set()
+        assert writer.result(timeout=5)
+        assert logout.result(timeout=5)
+
+    assert C._load_social_session() is None
+    assert C._load_auth() is None
+    assert not primary.exists()
+    assert not legacy.exists()
+    # A lookup that finishes after logout must not recreate the companion file.
+    assert not C._persist_session_identity_metadata(snapshot, USER_A_ID, "oauth")
+    assert C._desktop_session_snapshot() is None
+
+
+def test_clear_auth_preserves_tickets_issued_after_unlock(client, tmp_path, monkeypatch):
+    """Logout invalidates old tickets before a guest can mint a fresh proof."""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    old_ticket = C._issue_sync_ticket_for_session()
+    unlocked = threading.Event()
+    issued = threading.Event()
+    cleanup_thread = {}
+    real_locks = C._social_session_locks
+
+    @contextmanager
+    def pause_after_logout_unlock(paths):
+        with real_locks(paths):
+            yield
+        if threading.get_ident() == cleanup_thread.get("id"):
+            unlocked.set()
+            assert issued.wait(5)
+
+    def logout():
+        cleanup_thread["id"] = threading.get_ident()
+        return C._clear_auth()
+
+    monkeypatch.setattr(C, "_social_session_locks", pause_after_logout_unlock)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        cleanup = pool.submit(logout)
+        try:
+            assert unlocked.wait(5)
+            new_ticket = C._issue_sync_ticket_for_session()
+        finally:
+            issued.set()
+        assert cleanup.result(timeout=5)
+
+    assert C._desktop_session_snapshot() is None
+    assert not C._sync_ticket_is_valid(old_ticket)
+    assert C._sync_ticket_is_valid(new_ticket)
+    assert C._consume_sync_ticket(new_ticket)
+
+
+def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A cloud-side revocation during the bind must not burn the ticket."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    state = {"revoked": False}
+
+    async def revoking_resolve():
+        logged_in = not state["revoked"]
+        return {
+            "logged_in": logged_in,
+            "snapshot": _delegate_session() if logged_in else None,
+            "auth": {},
+        }
+
+    monkeypatch.setattr(
+        community_oauth, "resolve_saved_oauth_status", revoking_resolve
+    )
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def binding_guest_bind(_social_base, _access_token):
+        state["revoked"] = True
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", binding_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_skips_the_bind_retry_when_the_session_was_replaced(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A superseded account must not reach the cloud bind even in the repair path."""
+    from main_routers import community_oauth
+
+    reads = {"count": 0}
+
+    def aging_snapshot():
+        # The first resolution (outer snapshot) sees account A; every later
+        # read — including the revalidation — sees the replaced session B.
+        reads["count"] += 1
+        token = "desktop-token-a" if reads["count"] <= 2 else "desktop-token-b"
+        return {**_delegate_session(), "access_token": token}
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def unexpected_guest_bind(_social_base, _access_token):
+        raise AssertionError("a superseded session must not reach the cloud bind")
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
+    ticket = _issue_sync_ticket(client)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", aging_snapshot)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": False, "error": "cloud_unreachable"}
+
+
+def test_social_session_init_persists_a_terminal_bind_conflict(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A retry that settles on an ownership conflict must not stay a transient failure."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def conflicting_guest_bind(_social_base, _access_token):
+        return {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", conflicting_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["bind"] == {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
+    # /auth-status must report the settled conflict instead of the stale
+    # transient error, or every later handoff repeats the bind round trip.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
+
+
+def test_social_session_init_does_not_rebind_a_settled_desktop_client(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def unexpected_guest_bind(social_base, access_token):
+        raise AssertionError("a settled bind must not cost another cloud round trip")
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
+
+    for bind in (
+        {"bound": True, "error": None},
+        {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+    ):
+        auth.write_text(json.dumps({**_delegate_session(), "bind": bind}), encoding="utf-8")
+        ticket = _issue_sync_ticket(client)
+
+        response = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": ticket},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["access_token"] == "desktop-token-a"
+        assert response.json()["bind"] == bind
+
+
+def test_social_session_init_keeps_a_concurrent_refresh_when_persisting_bind(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A refresh landing during the bind call owns the tokens; do not roll it back."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "refresh_token": "desktop-refresh-old",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def rotate_then_bind(social_base, access_token):
+        # Desktop refreshes while the bind cloud call is still in flight.
+        auth.write_text(
+            json.dumps(
+                {
+                    "access_token": "desktop-token-rotated",
+                    "refresh_token": "desktop-refresh-new",
+                    "bind": {"bound": False, "error": "cloud_unreachable"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", rotate_then_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    # The rotated credentials must survive; a whole-record rewrite would have
+    # restored the pre-bind snapshot and broken the next refresh.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["access_token"] == "desktop-token-rotated"
+    assert persisted["refresh_token"] == "desktop-refresh-new"
+
+
+def test_social_session_init_prefers_the_saved_issuer_over_process_defaults(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A social_session.json predating the issuer fields still has the auth mirror."""
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "auth_public_url": "https://auth.custom.example",
+                "client_id": "neko-servers-desktop-custom",
+                "bind": {"bound": True, "error": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    # The process defaults describe a different issuer than the handed-over token.
+    assert payload["auth_public_url"] == "https://auth.custom.example"
+    assert payload["client_id"] == "neko-servers-desktop-custom"
+
+
+def test_social_session_init_requires_oauth_desktop_identity(client, monkeypatch):
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
+    ticket = _issue_sync_ticket(client)
+    missing = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert missing.status_code == 409
+    assert missing.json() == {"detail": "desktop_login_required"}
+
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "auth_source": "legacy"},
+    )
+    legacy_ticket = _issue_sync_ticket(client)
+    legacy = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": legacy_ticket},
+    )
+    assert legacy.status_code == 409
+    assert legacy.json() == {"detail": "legacy_session_not_supported"}
 
 
 def test_bind_client_approval_rejects_origin_before_consuming_ticket(client, monkeypatch):
@@ -2567,3 +3404,208 @@ async def test_archive_pick_excludes_trust_arbitration_losers(
     assert payload["facts"] == []
     assert payload["archiveRawCount"] == 1
     assert payload["archiveFilteredCount"] == 0
+
+
+def test_repaired_bind_cannot_change_a_newer_account_mirror(tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    mirror = {"access_token": "account-b", "local_user_id": USER_B_ID,
+              "auth_source": "oauth", "bind": {"bound": False, "error": "B-error"}}
+    auth.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session())
+    C._persist_repaired_bind(_delegate_session()["access_token"], {"bound": True})
+    assert json.loads(auth.read_text()) == mirror
+
+
+@pytest.mark.parametrize("initial_session", [None, "account-a"])
+def test_old_sync_ticket_cannot_disclose_a_later_account(client, monkeypatch, initial_session):
+    snapshot = _delegate_session() if initial_session else None
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    ticket = _issue_sync_ticket(client)
+    snapshot = {**_delegate_session(), "local_user_id": USER_B_ID, "access_token": "account-b"}
+    response = client.post("/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "invalid_sync_ticket"}
+    # The low-level final consumer also checks the minting session, closing a
+    # switch after preflight and preserving guest-bind-only tickets' purpose.
+    assert C._consume_sync_ticket_for_verified_session(ticket, "account-b") == "invalid"
+
+
+def test_sync_ticket_is_redeemable_after_refreshing_an_expired_desktop_session(
+    client, monkeypatch,
+):
+    from main_routers import community_oauth
+
+    current = {"snapshot": _delegate_session(access_token="expired-desktop-token")}
+    refreshed = _delegate_session(access_token="refreshed-desktop-token")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: current["snapshot"])
+
+    async def refresh_saved_session():
+        current["snapshot"] = refreshed
+        return {"logged_in": True, "snapshot": refreshed, "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", refresh_saved_session)
+    ticket = _issue_sync_ticket(client)
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "refreshed-desktop-token"
+    assert not C._sync_ticket_is_valid(ticket)
+
+
+@pytest.mark.parametrize("foreign_bind", [
+    {"bound": True, "error": None},
+    {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+])
+def test_social_session_init_ignores_a_newer_accounts_bind(
+    client, monkeypatch, tmp_path, foreign_bind,
+):
+    from main_routers import community_oauth
+
+    auth_path = tmp_path / "community_auth.json"
+    mirror = {**_delegate_session(local_user_id=USER_B_ID, access_token="account-b"),
+              "auth_public_url": "https://foreign-issuer.example", "client_id": "foreign-client",
+              "bind": foreign_bind}
+    auth_path.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth_path)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    bound = []
+
+    async def bind_current_account(_base, token):
+        bound.append(token)
+        return {"bound": False, "error": "cloud_unreachable"}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", bind_current_account)
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": _issue_sync_ticket(client)},
+    )
+    assert response.status_code == 200
+    assert bound == ["desktop-token-a"]
+    assert response.json()["bind"] == {"bound": False, "error": "cloud_unreachable"}
+    assert response.json()["auth_public_url"] != "https://foreign-issuer.example"
+    assert response.json()["client_id"] != "foreign-client"
+    assert json.loads(auth_path.read_text()) == mirror
+
+
+@pytest.mark.parametrize("settled_bind", [
+    {"bound": True, "error": None},
+    {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+])
+def test_social_session_init_reuses_a_repaired_bind_with_a_stale_mirror(
+    client, monkeypatch, tmp_path, settled_bind,
+):
+    from main_routers import community_oauth
+
+    auth = tmp_path / "community_auth.json"
+    mirror = {**_delegate_session(access_token="mirror-token"),
+              "refresh_token": "mirror-refresh",
+              "bind": {"bound": False, "error": "cloud_unreachable"}}
+    auth.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    binds = []
+
+    async def bind_account(_base, access):
+        binds.append(access)
+        return settled_bind
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", bind_account)
+    for _ in range(2):
+        response = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": _issue_sync_ticket(client)},
+        )
+        assert response.status_code == 200
+        assert response.json()["bind"] == settled_bind
+    assert binds == ["desktop-token-a"]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session(
+        access_token="rotated-authoritative",
+    ))
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": _issue_sync_ticket(client)},
+    )
+    assert response.status_code == 200
+    assert binds == ["desktop-token-a", "rotated-authoritative"]
+    # Repairing a bind must not roll back a mirror whose credentials may have
+    # advanced first during a same-account two-file publication.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["access_token"] == mirror["access_token"]
+    assert persisted["refresh_token"] == mirror["refresh_token"]
+
+
+def test_social_session_init_validates_a_settled_session_once(client, monkeypatch):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    validations = []
+
+    async def validate_session():
+        validations.append(True)
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validate_session)
+    ticket = _issue_sync_ticket(client)
+    validations.clear()
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert len(validations) == 1
+
+
+@pytest.mark.parametrize("replacement", [
+    {"access_token": "replacement-token"},
+    {"refresh_token": "replacement-refresh"},
+    {"base_url": "https://another-community.example"},
+    {"local_user_id": USER_B_ID},
+    {"auth_source": "legacy"},
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validation(
+    monkeypatch, replacement,
+):
+    from main_routers import community_oauth
+
+    async def validated_previous_session():
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: {**_delegate_session(), **replacement})
+    snapshot, _failure = await C._native_delegate_session_snapshot()
+    assert snapshot is None
+
+
+@pytest.mark.parametrize("missing_metadata", [
+    {"local_user_id": "", "auth_source": ""},
+    {"local_user_id": ""},
+    {"auth_source": ""},
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_accepts_concurrent_identity_backfill(
+    monkeypatch, missing_metadata,
+):
+    from main_routers import community_oauth
+
+    async def validated_session_before_backfill():
+        return {
+            "logged_in": True,
+            "snapshot": {**_delegate_session(), **missing_metadata},
+            "auth": {},
+        }
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_session_before_backfill)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    snapshot, failure = await C._native_delegate_session_snapshot()
+    assert snapshot == _delegate_session()
+    assert failure == ""

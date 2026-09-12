@@ -1058,6 +1058,10 @@
         "connectionError": "Erro de conexão"
     },
     "api": {
+    "imageModelConfig": "Geração de imagens",
+    "imageModelExamplePlaceholder": "Ex.: gpt-image-2, wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "Chave do endpoint personalizado; provedores usam o cadastro de chaves API",
+    "imageDisabled": "Não configurado",
         "settings": "Configurações de chave de API",
         "settingsTitle": "Configurações de chave de API - Projeto Lanlan",
         "quickStart": "Início rápido",

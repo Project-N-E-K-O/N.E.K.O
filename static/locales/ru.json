@@ -1058,6 +1058,10 @@
         "connectionError": "Ошибка подключения"
     },
     "api": {
+    "imageModelConfig": "Генерация изображений",
+    "imageModelExamplePlaceholder": "Например, gpt-image-2, wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "Ключ своего сервера; провайдеры используют книгу ключей API",
+    "imageDisabled": "Не настроено",
         "settings": "Настройки API Key",
         "settingsTitle": "Настройки API Key — Project Lanlan",
         "quickStart": "Быстрый старт",
