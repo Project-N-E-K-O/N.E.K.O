@@ -123,6 +123,31 @@ async def test_selected_community_candidate_keeps_summary_and_metadata():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_selected_community_candidate_localizes_phase2_context():
+    candidate = {
+        "mode": "community",
+        "title": "A community title",
+        "author": "A community author",
+        "tags": ["daily", "ideas"],
+        "description_hint": "A community summary.",
+    }
+
+    _, topic = await proactive_candidate.prepare_selected_web_candidate(
+        candidate,
+        fallback_topic="unused",
+        language="en-US",
+    )
+
+    assert "Title：A community title" in topic
+    assert "Author：A community author" in topic
+    assert "Tags：daily, ideas" in topic
+    assert "Summary：A community summary." in topic
+    assert "untrusted public community material" in topic
+    assert "标题：" not in topic
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_selected_community_candidate_escapes_data_boundary_markers():
     candidate = {
         "mode": "community",
