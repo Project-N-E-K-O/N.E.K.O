@@ -110,7 +110,7 @@ capabilities use stable public error codes rather than transport-specific data.
 Games can inspect the immutable `game.host` result but never receive registry
 records, launch tickets, endpoints or credentials.
 
-## Declared event, state, control, command and result contracts
+## Declared event, state, control and result contracts
 
 Game-specific protocol names and payloads stay in the game manifest. The SDK
 provides only the validated envelope and delivery mechanism:
@@ -139,20 +139,6 @@ const game = await NekoMiniGame.connect({
       },
     },
     controls: { stance: ['ready', 'paused'] },
-    commands: {
-      'round:review': {
-        request: {
-          type: 'object',
-          properties: { image_data_url: { type: 'string', maxLength: 1800000 } },
-          required: ['image_data_url'],
-        },
-        response: {
-          type: 'object',
-          properties: { ok: { type: 'boolean' } },
-          required: ['ok'],
-        },
-      },
-    },
     results: {
       match: {
         type: 'object',
@@ -168,7 +154,6 @@ const game = await NekoMiniGame.connect({
 await game.events.emit('round-started', { round: 1 });
 await game.state.update('score', { player: 2, opponent: 1 });
 await game.results.submit('match', { winner: 'player' });
-const review = await game.commands.execute('round:review', { image_data_url: screenshot });
 
 const unsubscribeStance = game.controls.on('stance', ({ payload }) => {
   applyGameStance(payload);
@@ -182,22 +167,9 @@ rejects undeclared names, invalid payloads, another session, incompatible
 protocols and replayed/out-of-order sequence numbers. `result` submits a typed
 game outcome and does not itself end the runtime.
 
-`command` is a typed request/response operation bound to the active runtime
-session and route generation. A trusted launch registration maps each declared
-command name to a relative host route and independently caps its request bytes
-and timeout; the mapping is not exposed to game code. The SDK and host retain
-global ceilings of 2 MiB and six minutes, while the SDK admits at most eight
-concurrent command requests. Games without `contracts.commands` do not require
-a command transport. A command request schema must have `type: 'object'` because
-the trusted host merges route identity into that request body. It must not
-declare host-owned route identity or memory-policy fields; those values are
-stripped or replaced at the trust boundary. Response schemas may use any
-supported JSON type.
-
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
-supports scalar types/enums and bounded object/array composition (including
-inside command request objects and at the root of command responses). Undeclared
+supports scalar types/enums and bounded object/array composition. Undeclared
 object fields are rejected unless that schema explicitly sets
 `additionalProperties: true`. Contract declarations, payload size, payload
 complexity, listener count and pending requests all have hard limits. The
@@ -242,9 +214,6 @@ rejected or failed start enters `degraded` state and keeps output polling
 available without sending heartbeats. `runtime.end()` and `game.dispose()` stop
 timers, remove the listener, and abort in-flight lifecycle requests. Games can
 inspect `game.runtime.state` and the immutable `game.runtime.session` snapshot.
-The session snapshot includes `routeInstanceId` while a route generation is
-active, so integrations can correlate work without inventing their own route
-identity.
 
 After the host has resolved the session character, `context.read()`,
 `dialogue.quickLines()`, `speech.preload()`, `speech.speak()`, and
@@ -611,13 +580,70 @@ character voice, language and exact text automatically reuses the host cache.
 
 ## Avatar renderer
 
+The trusted launch node can register `nekoCapabilityProviders[gameId].avatarHostFactory`
+before the same-origin bootstrap consumes it. The factory runs only after host
+identity and constructor validation. It returns a fresh synchronous provider with
+`mount(config)` and `dispose()`; each host owns exactly one provider. Optional
+Avatar initialization failure leaves runtime/logging usable; a game requiring
+`avatar-renderer` fails its capability handshake instead.
+
+**New game integrations must use this trusted factory registration and the public
+`game.avatar` discovery methods below.** Legacy injection and internal host
+character reads are transitional compatibility for existing integrations, not
+alternative recommended APIs. The existing soccer integration can continue
+unchanged during this transition and will migrate separately; no removal date
+is set.
+
+Existing trusted same-origin `createNekoMiniGameSameOriginHost({ avatarHost })`
+injection remains supported and takes precedence over a registered factory. No
+factory is called in that case. Successful host construction transfers disposal
+ownership of the injected provider, as before. The legacy host `getCharacter()`
+still returns the original Response and updates its character identity; existing
+adapters do not need to migrate immediately. These mechanisms are not isolation
+from hostile code sharing the same origin.
+
+The factory receives `windowImpl`, `documentImpl`, `fetchImpl`, a lifetime
+`signal`, `onCleanup(fn)` and `characterSource`. Register partial allocations with
+`onCleanup` immediately (at most 16 callbacks). They run on failure or disposal,
+after signal cancellation. Use these callbacks for resources not already owned
+by the returned provider, whose `dispose()` runs once. Factories must not share
+provider instances between hosts. Async factories are unsupported; an accidentally
+returned promise is observed and its eventual provider is disposed.
+
+Public display-only role discovery uses the same `avatar-renderer` capability:
+
+```js
+const current = await game.avatar.getCurrentCharacter({ timeoutMs: 10000 });
+const selected = await game.avatar.getCharacter('Neko', { signal });
+const names = await game.avatar.listCharacters({ signal });
+```
+
+Descriptors contain only `{ name, model: { type, path } | null, rendererAvailable }`.
+Names are limited to 128 Unicode code points, paths to 2048, and lists to 256 names. Unknown
+explicit names return `null`, not the current character. The standard host reads
+the existing role registry and canonical model-path endpoints; it keeps no role
+data copy and exposes no persona, memory, credentials or raw response fields.
+MMD metadata may be returned with `rendererAvailable: false`; discovery does not
+add an MMD/PNGtuber renderer to the current Live2D/VRM mount implementation.
+
+A trusted provider may optionally implement `getCurrentCharacter(options)`,
+`getCharacter(name, options)` and `listCharacters(options)`. Missing methods use
+the built-in source; factory `characterSource` exposes that same source to
+adapters. Forward supplied query options when using it. Each SDK client and host
+limits underlying queries to four, with a 10-second default deadline and 30-second
+maximum covering the full provider/body read. Cancellation, reset, route exit,
+page exit and disposal settle waiting SDK promises and discard late results.
+Timers and signal listeners are released; a provider ignoring abort retains its
+bounded slot until it settles, preventing retries from accumulating abandoned
+work. `pendingQueryCount` includes those still-settling transport calls. Discovery
+is available before start, and after exit requires a new/reset lifecycle.
+
 The public game mounts an Avatar through `game.avatar`:
 
 ```js
 const avatar = await game.avatar.mount({
   slot: 'opponent',
-  characterName: 'Opponent Neko',
-  model: { type: 'mmd', path: '/models/opponent.pmx' },
+  model: { type: 'live2d', path: '/models/opponent.model3.json' },
   viewport: { mode: 'fixed', width: 200, height: 300 },
   fit: {
     mode: 'contain',
@@ -630,19 +656,9 @@ const avatar = await game.avatar.mount({
 
 avatar.focus({ x: 320, y: 180 });
 avatar.setEmotion('happy');
-avatar.setView({ scale: 190, x: 0, y: 28 });
-avatar.setSpeaking(true);
 await avatar.setModel({ type: 'vrm', path: '/models/opponent.vrm' });
 avatar.dispose();
 ```
-
-When the trusted host provides character discovery, games can call
-`avatar.listCharacters()`, `avatar.getCurrentCharacter()` and
-`avatar.getCharacter(name)` before mounting. Descriptors expose only the
-character name, approved model (`live2d`, `vrm`, `mmd` or `pngtuber`) and
-renderer availability. Discovery and the optional `setView`/`setSpeaking`
-controller operations are feature-detected; older hosts continue to work for
-games that do not call them.
 
 Viewport and resize modes have matching values:
 
@@ -666,6 +682,16 @@ engine controllers, and model resources.
 
 ## Ownership and disposal
 
+Managed context, memory, storage, leaderboard, dialogue, speech and protocol
+requests include response JSON consumption in their deadlines and cancellation
+scope. Pending waiters do not retire when only response headers arrive. The
+same-origin REST host buffers complete responses under its fetch signal/deadline
+and returns readable Response objects, preserving legacy HTTP status and clone
+behavior. A timed-out/cancelled waiter settles immediately; an underlying transport
+that ignores abort still occupies a bounded raw-work slot until settlement.
+This also prevents repeated retries from accumulating abandoned body readers.
+The host's streaming speech bridge is separate and is not buffered by this path.
+
 Games should dispose individual controllers when a slot is permanently removed
 and call `game.dispose()` when leaving the page. `game.dispose()` stops managed
 runtime monitoring; aborts in-flight lifecycle, protocol, context, dialogue,
@@ -676,7 +702,7 @@ including page-exit and partially completed mount paths.
 
 `NekoMiniGameAvatarHost` is a trusted host helper, not a public game API. It
 owns viewport measurement and resize lifecycle while N.E.K.O-owned engine
-adapters provide Live2D/VRM/MMD/PNG-tuber loading, focus, emotion, pause/resume, refit, and
+adapters provide Live2D/VRM loading, focus, emotion, pause/resume, refit, and
 resource disposal for registered slots.
 
 ## Public artifacts

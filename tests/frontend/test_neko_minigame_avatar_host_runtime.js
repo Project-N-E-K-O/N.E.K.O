@@ -57,8 +57,6 @@ async function main() {
           slot: config.slot,
           viewport,
           models: [],
-          views: [],
-          speaking: [],
           resizes: [],
           resizeAttempts: [],
           failNextResize: false,
@@ -67,8 +65,6 @@ async function main() {
         controllerStates.push(state);
         return {
           async setModel(model) { state.models.push(model); },
-          setView(view) { state.views.push(view); },
-          setSpeaking(active) { state.speaking.push(active); },
           focus(point) { state.focus = point; },
           setEmotion(name) { state.emotion = name; },
           pause() { state.paused = true; },
@@ -186,12 +182,7 @@ async function main() {
     'host-window resize was not delivered to the second controller');
 
   await fixed.setModel({ type: 'vrm', path: '/replacement.vrm' });
-  await fixed.setView({ scale: 190, x: 2, y: 28 });
-  await fixed.setSpeaking(true);
   assert(controllerStates[0].models.length === 2, 'model replacement was not forwarded');
-  assert(controllerStates[0].views.at(-1).scale === 190
-    && controllerStates[0].speaking.at(-1) === true,
-  'view or speaking state was not forwarded through the bounded operation queue');
   assert(controllerStates[0].resizes.at(-1).metadata.reason === 'model-changed',
     'model replacement did not trigger an idempotent refit');
 

@@ -10877,11 +10877,15 @@ async def test_direct_multimodal_failure_reports_status_without_text_fallback() 
     runtime.session.submit_external_voice_turn = AsyncMock()
     epoch = runtime._asr_session_epoch
     await _start_and_seal_turn(runtime, "openai")
+    record = runtime._active_multimodal_turn_record()
+    assert record is not None
+    # The frame was captured during speech and validated after the endpoint.
+    # Stamping it with the current clock can exclude it from this sealed turn.
     assert runtime._stage_independent_visual_frame(
         "raw-frame",
         source="screen",
         request_id="screen-1",
-        captured_at=time.monotonic(),
+        captured_at=record.started_at,
     )
 
     await runtime._handle_independent_asr_final(
