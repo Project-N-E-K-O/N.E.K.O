@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -557,6 +558,53 @@ async def test_late_failure_from_a_retired_generation_cannot_recover_the_success
     assert manager.session_closed_by_server is False
     manager.send_status.assert_not_awaited()
     manager.disconnected_by_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_activation_defers_classified_idle_disconnect_cleanup():
+    session = type("Session", (), {"_connection_generation": 7})()
+    manager = _make_manager(session)
+    manager.lanlan_name = "Test"
+    manager._voice_session_activation_factory = object()
+    manager._voice_session_activation_runtime = SimpleNamespace(
+        generation="activation-1"
+    )
+    manager._asr_route_mode = "native"
+    manager._voice_lease_owner = "core"
+    manager._voice_input_accepts_pcm = lambda: True
+    manager._capture_voice_session_activation_generation = lambda: "activation-1"
+
+    await manager.handle_connection_error(
+        _failure_status("API_IDLE_TIMEOUT", generation=7),
+        expected_session=session,
+    )
+
+    assert manager.session_closed_by_server is True
+    assert manager._native_activation_idle_reconnect_identity == (
+        "activation-1",
+        7,
+    )
+    manager.send_status.assert_not_awaited()
+    manager.disconnected_by_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_configured_activation_without_live_runtime_does_not_defer_idle_cleanup():
+    session = type("Session", (), {"_connection_generation": 7})()
+    manager = _make_manager(session)
+    manager._voice_session_activation_factory = object()
+    manager._voice_session_activation_runtime = None
+    manager._asr_route_mode = "native"
+    manager._voice_lease_owner = "core"
+    manager._voice_input_accepts_pcm = lambda: True
+    manager._capture_voice_session_activation_generation = lambda: "activation-1"
+
+    await manager.handle_connection_error(
+        _failure_status("API_IDLE_TIMEOUT", generation=7),
+        expected_session=session,
+    )
+
+    manager.disconnected_by_server.assert_awaited_once()
 
 
 @pytest.mark.asyncio

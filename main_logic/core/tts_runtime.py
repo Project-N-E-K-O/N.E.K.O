@@ -1377,6 +1377,14 @@ class TtsRuntimeMixin:
                     self._tts_handler_response_queue = None
 
         if thread_ref and thread_ref.is_alive():
+            logger.info(
+                "TTS teardown worker=%s current_worker=%s successor_handler=%s ready=%s",
+                id(thread_ref),
+                thread_ref is self.tts_thread,
+                self.tts_handler_task is not None
+                and self.tts_handler_task is not handler_task_ref,
+                getattr(self, "tts_ready", False),
+            )
             try:
                 # 使用独立的 shutdown sentinel；(None, None) 在 worker 里是
                 # "本轮 utterance 结束、flush 缓冲区"，并不会让 worker 退出。

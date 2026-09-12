@@ -246,19 +246,31 @@ class _GeminiMixin:
 
     async def _stream_audio_gemini(self, audio_chunk: bytes) -> None:
         """Send audio data to Gemini Live API."""
-        if not self._gemini_session:
-            return
+        session = self._gemini_session
+        if session is None:
+            raise ConnectionError("Gemini audio session is not connected")
+        connection_generation = self._connection_generation
+
+        def send_is_current() -> bool:
+            return (
+                self._gemini_session is session
+                and self._connection_generation == connection_generation
+            )
 
         try:
             # 发送实时音频输入
-            await self._gemini_session.send_realtime_input(
+            await session.send_realtime_input(
                 audio={"data": audio_chunk, "mime_type": "audio/pcm"}
             )
-            self._last_speech_time = time.time()
+            if send_is_current():
+                self._last_speech_time = time.time()
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
-            if "closed" in str(e).lower():
+            if send_is_current() and "closed" in str(e).lower():
                 self._fatal_error_occurred = True
+            # Returning normally is the native boundary's write receipt.
+            # Preserve the original error so Core can retire uncertain output.
+            raise
 
     async def signal_user_activity_end(self) -> None:
         """Explicitly signal end-of-turn in MANUAL VAD mode.
@@ -284,6 +296,11 @@ class _GeminiMixin:
         if self._fatal_error_occurred:
             return
         self.note_user_turn_started()
+        voice_handoff_input_sequence = getattr(
+            self,
+            "_voice_handoff_input_sequence",
+            0,
+        )
         # This commit is the turn boundary for both providers below. Read the
         # owner NOW so frames streamed while the commit is in flight cannot move
         # it, but only pin it once the boundary actually reached the provider:
@@ -306,6 +323,9 @@ class _GeminiMixin:
                     self._fatal_error_occurred = True
                 return
             self._apply_input_route_identity_commit(pending_route_identity)
+            self._note_voice_handoff_input_boundary(
+                expected_sequence=voice_handoff_input_sequence
+            )
             return
         # The committed buffer excludes the ~21ms tail soxr still holds in the
         # uplink resampler; drop it so it isn't prepended to the next turn.
@@ -327,6 +347,9 @@ class _GeminiMixin:
         )
         await ticket.sent
         self._apply_input_route_identity_commit(pending_route_identity)
+        self._note_voice_handoff_input_boundary(
+            expected_sequence=voice_handoff_input_sequence
+        )
 
     async def _gemini_send_user_turn(
         self,
@@ -748,6 +771,10 @@ class _GeminiMixin:
             connection_generation = self._connection_generation
         if not self._still_owns_connection(connection_generation):
             return
+        handoff_turn_epoch = self._current_turn_epoch
+        handoff_input_sequence = getattr(
+            self, "_voice_handoff_response_input_sequence", 0,
+        )
         external_outcome_token = getattr(
             self,
             "_gemini_external_outcome_token",
@@ -902,6 +929,14 @@ class _GeminiMixin:
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
                     if _is_new_turn and _can_clear_interrupted:
+                        # Only a recognized new response may claim this input.
+                        # Canceled/late content still advances the legacy epoch,
+                        # but must not borrow a successor's handoff marker.
+                        handoff_turn_epoch = self._current_turn_epoch
+                        handoff_input_sequence = getattr(
+                            self, "_voice_handoff_input_sequence", 0,
+                        )
+                        self._voice_handoff_response_input_sequence = handoff_input_sequence
                         # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
                         # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
                         # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
@@ -1053,6 +1088,19 @@ class _GeminiMixin:
                         )
                     if not was_interrupted:
                         settle_event_outcome()
+                    if (
+                        not was_interrupted
+                        and not _owed_to_cancelled
+                        and not self._interrupted
+                        and handoff_turn_epoch == self._turn_epoch == self._current_turn_epoch
+                        and event_owner_is_current()
+                    ):
+                        # Gemini has no per-event turn ID. Use the existing
+                        # turn/cancellation classification and this event's
+                        # snapshot, never a marker replaced across callbacks.
+                        self._note_voice_handoff_input_boundary(
+                            expected_sequence=handoff_input_sequence,
+                        )
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")

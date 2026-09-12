@@ -1,0 +1,53 @@
+name: Wake word runtime
+
+on:
+  push:
+    branches: [main, 'codex/voice-wake-word']
+    paths:
+      - '.github/workflows/wake-word-runtime.yml'
+      - 'scripts/build_wake_word_runtime.ps1'
+      - 'scripts/patches/sherpa-onnx-kws-*.patch'
+      - 'main_logic/voice_input/wake_word/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/wake-word-runtime.yml'
+      - 'scripts/build_wake_word_runtime.ps1'
+      - 'scripts/patches/sherpa-onnx-kws-*.patch'
+      - 'main_logic/voice_input/wake_word/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wake-word-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-wheel:
+    name: Windows KWS native tests and wheel
+    # Match the pinned CMake 3.x / Visual Studio 2022 generator.
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v4
+      - name: Build and test the pinned runtime
+        shell: pwsh
+        run: |
+          ./scripts/build_wake_word_runtime.ps1 -Python (Get-Command python).Source -OutputDirectory C:\kw
+      - name: Preserve runtime and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: wake-word-runtime-windows-py311-${{ github.sha }}
+          path: |
+            C:\kw\sherpa-onnx\dist\*.whl
+            C:\kw\build-manifest.json
+            C:\kw\native\*
+          if-no-files-found: error
+          retention-days: 14

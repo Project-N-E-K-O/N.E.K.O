@@ -29,6 +29,7 @@ from typing import Any, TypeAlias
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection
 
@@ -458,6 +459,7 @@ async def _step_sender(
     state: _StepConnectionState,
 ) -> tuple[str, _AsrWorkerRequest | None]:
     await state.configured.wait()
+    delivery_evidence(request_queue)
     try:
         while True:
             request = await request_queue.get()
@@ -466,6 +468,7 @@ async def _step_sender(
                     state.last_utterance_id = request.utterance_id
                     # The configured container and codec are raw PCM16LE. The
                     # official field is Base64 text; no WAV header is added.
+                    delivery = begin_transport_write(request_queue)
                     await ws.send(
                         json.dumps(
                             {
@@ -476,6 +479,10 @@ async def _step_sender(
                                 ),
                             }
                         )
+                    )
+                    complete_transport_write(
+                        delivery, len(request.audio), generation=request.generation,
+                        buffer_epoch=request.buffer_epoch, provider="step",
                     )
                     continue
 

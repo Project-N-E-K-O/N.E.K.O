@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,6 +14,18 @@ from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
+from main_logic.voice_identity_service.preference_store import (
+    VoiceIdentityPreferenceStore,
+)
+from main_logic.voice_identity_service.profile_store import (
+    SecureStorageUnavailableError,
+    VoiceIdentityProfileCorruptError,
+    VoiceIdentityProfileIncompatibleError,
+    VoiceIdentityProfileStore,
+)
+from main_logic.voice_identity_service.service import VoiceIdentityService
+from main_logic.voice_input.suppression import VoiceInputSuppressionController
+from main_logic.voice_turn.contracts import AsrSubmitResult, AsrSubmitStatus
 
 
 @dataclass
@@ -30,11 +43,13 @@ class _Factory:
         *,
         activation_generation: str,
         enforce: bool,
+        noise_reduction_enabled: bool | None = None,
     ) -> None:
         self.runtime = runtime
         self.profile = profile
         self.activation_generation = activation_generation
         self.enforce = enforce
+        self.noise_reduction_enabled = noise_reduction_enabled
         self.closed = False
 
     def close(self) -> None:
@@ -53,6 +68,24 @@ class _Manager:
         self.cancel_restore = False
         self.cancel_suppress = False
         self.suppress_failure = False
+        self.activation_required = False
+        self.activation_degraded = False
+        self.require_calls: list[str] = []
+        self.activation_policy_revision = 0
+
+    def require_voice_session_activation(
+        self,
+        *,
+        activation_generation: str,
+    ) -> int:
+        self.activation_policy_revision += 1
+        self.activation_required = True
+        self.activation_degraded = True
+        self.require_calls.append(activation_generation)
+        return self.activation_policy_revision
+
+    def voice_session_activation_policy_token(self) -> int:
+        return self.activation_policy_revision
 
     async def set_speaker_verifier_factory(
         self,
@@ -69,6 +102,28 @@ class _Manager:
         if not outcome and factory is not None:
             factory.close()
         return outcome
+
+    async def set_voice_session_activation_factory(
+        self,
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+        activation_required: bool = False,
+        expected_policy_revision: int | None = None,
+    ) -> bool | VoiceIdentityActivationResult:
+        if (
+            expected_policy_revision is not None
+            and expected_policy_revision != self.activation_policy_revision
+        ):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        self.activation_required = activation_required
+        result = await self.set_speaker_verifier_factory(
+            factory,
+            activation_generation=activation_generation,
+        )
+        if result:
+            self.activation_degraded = False
+        return result
 
     async def set_voice_input_suppressed(
         self,
@@ -112,7 +167,7 @@ async def _wait_until(predicate, *, timeout_seconds: float = 2.0) -> None:
 def _fake_composition_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         runtime_module,
-        "OwnerVoiceAsrCompositionFactory",
+        "OwnerVoiceSessionActivationFactory",
         _Factory,
     )
     monkeypatch.setattr(runtime_module, "_runtime_registry", None)
@@ -164,6 +219,84 @@ async def test_activation_preserves_unsupported_route_result() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_registry_prefers_session_activation_over_legacy_utterance_filter() -> None:
+    class SessionActivationManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.session_activation_calls: list[tuple[object | None, str]] = []
+
+        async def set_voice_session_activation_factory(
+            self,
+            factory,
+            *,
+            activation_generation: str,
+            activation_required: bool = False,
+            expected_policy_revision: int | None = None,
+        ) -> VoiceIdentityActivationResult:
+            del expected_policy_revision
+            self.activation_required = activation_required
+            self.session_activation_calls.append((factory, activation_generation))
+            return VoiceIdentityActivationResult.READY
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = SessionActivationManager()
+    await registry.register_manager(manager)
+    profile = _profile("profile-session")
+    try:
+        assert (
+            await registry.activate(profile, "generation-session")
+            is VoiceIdentityActivationResult.READY
+        )
+    finally:
+        profile.close()
+
+    assert len(manager.session_activation_calls) == 1
+    assert manager.session_activation_calls[0][1] == "generation-session"
+    assert manager.verifier_calls == []
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_legacy_manager_does_not_receive_incompatible_session_factory() -> None:
+    class LegacyManager:
+        def __init__(self) -> None:
+            self._asr_runtime = object()
+            self._asr_route_mode = "independent"
+            self.legacy_setter = AsyncMock(return_value=True)
+
+        async def set_speaker_verifier_factory(self, *args, **kwargs):
+            return await self.legacy_setter(*args, **kwargs)
+
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            del reason, suppressed
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = LegacyManager()
+    assert (
+        await registry.register_manager(manager)
+        is VoiceIdentityActivationResult.READY
+    )
+    profile = _profile("legacy-profile")
+    try:
+        assert (
+            await registry.activate(profile, "legacy-generation")
+            is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        )
+    finally:
+        profile.close()
+
+    manager.legacy_setter.assert_not_awaited()
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_late_registration_preserves_unsupported_route_result() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     profile = _profile("profile")
@@ -206,7 +339,7 @@ async def test_activation_status_tracks_live_route_and_runtime_degradation() -> 
     manager._asr_route_mode = "native"  # type: ignore[attr-defined]
     assert (
         registry.activation_status()
-        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+        is VoiceIdentityActivationResult.READY
     )
     manager._asr_route_mode = "independent"  # type: ignore[attr-defined]
     manager._asr_runtime._speaker_verifier_degraded = True
@@ -555,6 +688,558 @@ async def test_detach_clears_current_and_future_factory() -> None:
     future = _Manager()
     assert await registry.register_manager(future)
     assert future.verifier_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_required_unavailable_authority_reaches_current_and_future_managers() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    current = _Manager()
+    await registry.register_manager(current)
+
+    assert (
+        await registry.activate(
+            None,
+            "required-unavailable",
+            activation_required=True,
+        )
+        is VoiceIdentityActivationResult.READY
+    )
+    assert current.verifier_calls[-1] == (None, "required-unavailable")
+    assert current.activation_required is True
+
+    future = _Manager()
+    assert await registry.register_manager(future)
+    assert future.verifier_calls[-1][0] is None
+    assert future.activation_required is True
+
+    assert await registry.activate(
+        None,
+        "explicitly-disabled",
+        activation_required=False,
+    )
+    assert current.activation_required is False
+    assert future.activation_required is False
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_type",
+    [
+        SecureStorageUnavailableError,
+        VoiceIdentityProfileIncompatibleError,
+        VoiceIdentityProfileCorruptError,
+    ],
+)
+@pytest.mark.parametrize("route_mode", ["native", "independent"])
+async def test_startup_profile_failure_blocks_actual_core_downstream_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_type,
+    route_mode: str,
+) -> None:
+    from tests.unit.test_core_independent_asr import _Runtime
+    from tests.unit.voice_identity_service.test_profile_store import (
+        _TestKeyProtector,
+    )
+
+    profile_store = VoiceIdentityProfileStore(
+        tmp_path / "profile.bin",
+        key_protector=_TestKeyProtector(),
+    )
+
+    async def fail_load():
+        raise failure_type("profile unavailable")
+
+    monkeypatch.setattr(profile_store, "aload", fail_load)
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    preference_store = VoiceIdentityPreferenceStore(tmp_path / "preference.json")
+    await preference_store.asave(True)
+    suppression = VoiceInputSuppressionController(
+        registry.suppress,
+        registry.restore,
+        default_ttl_seconds=30.0,
+        hard_ttl_seconds=60.0,
+    )
+    service = VoiceIdentityService(
+        profile_store,
+        preference_store,
+        suppression,
+        lambda: object(),  # Enrollment is outside this startup regression.
+        registry.activate,
+        runtime_mode="enforce",
+    )
+    runtime = _Runtime()
+    runtime.session.stream_audio = AsyncMock()
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+    )
+    try:
+        status = await service.initialize()
+        assert status.state.requested_enabled is True
+        assert status.state.effective_enabled is False
+        assert await registry.register_manager(runtime)
+        runtime._set_microphone_route(route_mode)
+
+        assert await runtime._route_microphone_audio(
+            b"\x01\x00" * 160,
+            sample_rate_hz=16_000,
+        )
+
+        runtime.session.stream_audio.assert_not_awaited()
+        runtime._asr_runtime.submit.assert_not_awaited()
+        assert runtime._voice_session_activation_required is True
+        assert runtime._voice_session_activation_factory is None
+
+        await service.set_filter(False)
+        assert runtime._voice_session_activation_required is False
+        assert await runtime._route_microphone_audio(
+            b"\x02\x00" * 160,
+            sample_rate_hz=16_000,
+        )
+        if route_mode == "native":
+            runtime.session.stream_audio.assert_awaited_once()
+            runtime._asr_runtime.submit.assert_not_awaited()
+        else:
+            runtime.session.stream_audio.assert_not_awaited()
+            runtime._asr_runtime.submit.assert_awaited_once()
+    finally:
+        await service.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_mode", ["native", "independent"])
+@pytest.mark.parametrize("initial_nr", [True, False])
+async def test_failed_dsp_construction_blocks_pcm_until_successful_retry(
+    monkeypatch, route_mode: str, initial_nr: bool,
+) -> None:
+    import main_logic.core.asr_runtime as core_runtime
+    import main_routers.config_router.preferences as preferences
+    from main_logic.voice_input.activation import ActivationState
+    from tests.unit.test_core_independent_asr import _CoreActivationFactory, _Runtime
+
+    # Use real Core, Registry and settings sequencing. Only model inference and
+    # the pipeline constructor failure are injected.
+    def factory_for(_manager, _profile, *, activation_generation, enforce,
+                    noise_reduction_enabled=None):
+        factory = _CoreActivationFactory()
+        factory.activation_generation = activation_generation
+        factory.noise_reduction_enabled = noise_reduction_enabled
+        return factory
+
+    monkeypatch.setattr(runtime_module, "OwnerVoiceSessionActivationFactory", factory_for)
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route(route_mode)
+    runtime.session.stream_audio = AsyncMock()
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED),
+    )
+    await runtime.apply_voice_input_noise_reduction(initial_nr)
+    original = runtime._voice_input_audio_pipeline
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    await registry.register_manager(runtime)
+    profile = _profile("profile")
+    reconciled: list[VoiceIdentityActivationResult] = []
+    requested_nr = not initial_nr
+
+    async def prepare(enabled: bool) -> bool:
+        assert enabled is requested_nr
+        return bool(await registry.activate(
+            None, "dsp-transition", activation_required=True,
+        ))
+
+    async def reconcile(enabled: bool, *, runtime_ready: bool) -> None:
+        assert runtime_ready is True
+        reconciled.append(await registry.activate(
+            profile, "new-authority", activation_required=True,
+            noise_reduction_enabled=enabled, allow_partial=True,
+        ))
+
+    monkeypatch.setattr(preferences, "get_session_manager", lambda: {"test": runtime})
+    monkeypatch.setattr(
+        preferences, "aload_global_conversation_settings_snapshot",
+        AsyncMock(return_value=SimpleNamespace(
+            settings={"noiseReductionEnabled": requested_nr},
+        )),
+    )
+    preferences.configure_voice_identity_audio_contract_callbacks(
+        prepare=prepare, reconcile=reconcile,
+    )
+    try:
+        assert await registry.activate(
+            profile, "old-authority", activation_required=True,
+            noise_reduction_enabled=initial_nr,
+        )
+        with monkeypatch.context() as failing:
+            from unittest.mock import Mock
+
+            failing.setattr(
+                core_runtime, "VoiceInputAudioPipeline",
+                Mock(side_effect=RuntimeError("pipeline construction failed")),
+            )
+            await preferences._apply_noise_reduction_if_current(requested_nr)
+
+        assert reconciled == [VoiceIdentityActivationResult.RUNTIME_DEGRADED]
+        assert runtime._voice_input_audio_pipeline is original
+        assert runtime._voice_input_noise_reduction_enabled is initial_nr
+        assert runtime._voice_session_activation_required is True
+        assert runtime._voice_session_activation_factory is None
+        assert runtime in registry._attach_pending
+        # More than a full activation checkpoint must still produce no output.
+        for _ in range(20):
+            await runtime._route_microphone_audio(
+                b"\xd0\x07" * 1_600, sample_rate_hz=16_000,
+            )
+        runtime.session.stream_audio.assert_not_awaited()
+        runtime._asr_runtime.submit.assert_not_awaited()
+        assert runtime._voice_session_activation_runtime is None
+
+        # The same persisted preference can be retried; reopening starts with
+        # empty evidence rather than forwarding any PCM seen during failure.
+        await preferences._apply_noise_reduction_if_current(requested_nr)
+        assert reconciled[-1] is VoiceIdentityActivationResult.READY
+        assert runtime._voice_input_audio_pipeline.nr_enabled is requested_nr
+        assert runtime._voice_input_noise_reduction_enabled is requested_nr
+        assert runtime not in registry._attach_pending
+        with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_CLOSED"):
+            await original.process(b"\x01\x00" * 160, sample_rate_hz=16_000)
+        # This direct post-DSP input models a successful retry, including the
+        # actual native capability evidence when the new contract requires it.
+        await runtime._route_microphone_audio(
+            bytes(320), sample_rate_hz=16_000,
+            rnnoise_available=requested_nr,
+        )
+        await _wait_until(lambda: (
+            runtime._voice_session_activation_runtime is not None
+            and runtime._voice_session_activation_runtime.state is ActivationState.WAITING
+        ))
+        factory = runtime._voice_session_activation_factory
+        assert factory.scorers[0].calls == 0
+        runtime.session.stream_audio.assert_not_awaited()
+        runtime._asr_runtime.submit.assert_not_awaited()
+    finally:
+        preferences.configure_voice_identity_audio_contract_callbacks()
+        await registry.close()
+        profile.close()
+        await runtime._voice_input_audio_pipeline.close()
+        await asyncio.gather(*runtime._core_asr_cleanup_tasks, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dsp_reconcile_restores_ready_manager_and_keeps_mismatch_blocked() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    ready = _Manager()
+    failed = _Manager()
+    ready._voice_input_noise_reduction_enabled = True
+    failed._voice_input_noise_reduction_enabled = True
+    await registry.register_manager(ready)
+    await registry.register_manager(failed)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(
+            profile,
+            "old-authority",
+            activation_required=True,
+            noise_reduction_enabled=True,
+        )
+        assert await registry.activate(
+            None,
+            "dsp-transition",
+            activation_required=True,
+        )
+
+        ready._voice_input_noise_reduction_enabled = False
+        result = await registry.activate(
+            profile,
+            "new-authority",
+            activation_required=True,
+            noise_reduction_enabled=False,
+            allow_partial=True,
+        )
+
+        assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        assert ready.verifier_calls[-1][1] == "new-authority"
+        assert ready.verifier_calls[-1][0] is not None
+        assert ready.activation_required is True
+        assert failed.verifier_calls[-1] == (None, "dsp-transition")
+        assert failed.activation_required is True
+        assert ready not in registry._attach_pending  # type: ignore[attr-defined]
+        assert failed in registry._attach_pending  # type: ignore[attr-defined]
+
+        failed._voice_input_noise_reduction_enabled = False
+        await _wait_until(
+            lambda: failed not in registry._attach_pending  # type: ignore[attr-defined]
+        )
+        assert failed.verifier_calls[-1][1] == "new-authority"
+        assert failed.verifier_calls[-1][0] is not None
+    finally:
+        profile.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_initial_contract_mismatch_is_synchronously_fail_closed() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager._voice_input_noise_reduction_enabled = True
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        result = await registry.activate(
+            profile,
+            "mismatched-authority",
+            activation_required=True,
+            noise_reduction_enabled=False,
+        )
+
+        assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        assert manager.require_calls == ["mismatched-authority"]
+        assert manager.activation_required is True
+        assert manager.activation_degraded is True
+        assert all(factory is None for factory, _generation in manager.verifier_calls)
+    finally:
+        profile.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_required_registration_keeps_new_manager_fail_closed() -> None:
+    class BlockingManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_once = True
+
+        async def set_voice_session_activation_factory(
+            self,
+            factory,
+            *,
+            activation_generation: str,
+            activation_required: bool = False,
+            expected_policy_revision: int | None = None,
+        ):
+            if self.block_once:
+                self.block_once = False
+                await asyncio.Event().wait()
+            return await super().set_voice_session_activation_factory(
+                factory,
+                activation_generation=activation_generation,
+                activation_required=activation_required,
+                expected_policy_revision=expected_policy_revision,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    assert await registry.activate(
+        None,
+        "required-empty",
+        activation_required=True,
+    )
+    manager = BlockingManager()
+    registration = asyncio.create_task(registry.register_manager(manager))
+    await asyncio.sleep(0)
+    registration.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await registration
+
+    assert manager.activation_required is True
+    assert manager.activation_degraded is True
+    assert manager in registry._detach_pending  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_new_required_intent_fences_older_factory_commit() -> None:
+    class BlockingManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_attach_entered = asyncio.Event()
+            self.release_first_attach = asyncio.Event()
+            self.block_once = True
+
+        async def set_voice_session_activation_factory(
+            self,
+            factory,
+            *,
+            activation_generation: str,
+            activation_required: bool = False,
+            expected_policy_revision: int | None = None,
+        ):
+            if factory is not None and self.block_once:
+                self.block_once = False
+                self.first_attach_entered.set()
+                await self.release_first_attach.wait()
+            return await super().set_voice_session_activation_factory(
+                factory,
+                activation_generation=activation_generation,
+                activation_required=activation_required,
+                expected_policy_revision=expected_policy_revision,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = BlockingManager()
+    await registry.register_manager(manager)
+    old_profile = _profile("old-profile")
+    new_profile = _profile("new-profile")
+    try:
+        old_activation = asyncio.create_task(
+            registry.activate(
+                old_profile,
+                "old-authority",
+                activation_required=True,
+            )
+        )
+        await manager.first_attach_entered.wait()
+        new_activation = asyncio.create_task(
+            registry.activate(
+                new_profile,
+                "new-authority",
+                activation_required=True,
+            )
+        )
+        await asyncio.sleep(0)
+        manager.release_first_attach.set()
+
+        assert (
+            await old_activation
+            is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        )
+        assert await new_activation is VoiceIdentityActivationResult.READY
+        assert all(
+            generation != "old-authority"
+            for _factory, generation in manager.verifier_calls
+        )
+        assert manager.verifier_calls[-1][1] == "new-authority"
+        assert manager.activation_degraded is False
+    finally:
+        old_profile.close()
+        new_profile.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_attach_watchdog_cannot_restore_old_factory_over_new_intent() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    manager = _Manager()
+    await registry.register_manager(manager)
+    old_profile = _profile("old-profile")
+    new_profile = _profile("new-profile")
+    try:
+        assert await registry.activate(
+            old_profile,
+            "old-authority",
+            activation_required=True,
+        )
+        manager.verifier_calls.clear()
+        await registry._lock.acquire()  # type: ignore[attr-defined]
+        registry._attach_pending.add(manager)  # type: ignore[attr-defined]
+        registry._ensure_attach_watchdog()  # type: ignore[attr-defined]
+        await asyncio.sleep(0.02)
+        replacement = asyncio.create_task(
+            registry.activate(
+                new_profile,
+                "new-authority",
+                activation_required=True,
+            )
+        )
+        await asyncio.sleep(0)
+        registry._lock.release()  # type: ignore[attr-defined]
+
+        assert await replacement is VoiceIdentityActivationResult.READY
+        assert all(
+            generation != "old-authority"
+            for _factory, generation in manager.verifier_calls
+        )
+        assert manager.verifier_calls[-1][1] == "new-authority"
+    finally:
+        if registry._lock.locked():  # type: ignore[attr-defined]
+            registry._lock.release()  # type: ignore[attr-defined]
+        old_profile.close()
+        new_profile.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_partial_reconcile_commits_authority_and_retries_pending() -> None:
+    class BlockingManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attach_started = asyncio.Event()
+            self.block_once = True
+
+        async def set_voice_session_activation_factory(
+            self,
+            factory,
+            *,
+            activation_generation: str,
+            activation_required: bool = False,
+            expected_policy_revision: int | None = None,
+        ):
+            if factory is not None and self.block_once:
+                self.block_once = False
+                self.attach_started.set()
+                await asyncio.Event().wait()
+            return await super().set_voice_session_activation_factory(
+                factory,
+                activation_generation=activation_generation,
+                activation_required=activation_required,
+                expected_policy_revision=expected_policy_revision,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    manager = BlockingManager()
+    manager._voice_input_noise_reduction_enabled = False
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        reconciliation = asyncio.create_task(
+            registry.activate(
+                profile,
+                "new-authority",
+                activation_required=True,
+                noise_reduction_enabled=False,
+                allow_partial=True,
+            )
+        )
+        await manager.attach_started.wait()
+        reconciliation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reconciliation
+
+        activation = registry._activation  # type: ignore[attr-defined]
+        assert activation is not None
+        assert activation.generation == "new-authority"
+        assert manager in registry._attach_pending  # type: ignore[attr-defined]
+        await _wait_until(
+            lambda: manager not in registry._attach_pending  # type: ignore[attr-defined]
+        )
+        assert manager.verifier_calls[-1][1] == "new-authority"
+        assert manager.verifier_calls[-1][0] is not None
+    finally:
+        profile.close()
+        await registry.close()
 
 
 @pytest.mark.unit
@@ -1748,6 +2433,7 @@ async def test_runtime_install_and_wrapper_lifecycle(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     installed: list[object] = []
+    callback_configurations: list[tuple[object | None, object | None]] = []
 
     class FakeProfileStore:
         def __init__(self, _path: Path) -> None:
@@ -1771,10 +2457,14 @@ async def test_runtime_install_and_wrapper_lifecycle(
             *args,
             runtime_mode: str,
             runtime_status_callback,
+            enrollment_noise_reduction_enabled: bool,
         ) -> None:
             self.args = args
             self.runtime_mode = runtime_mode
             self.runtime_status_callback = runtime_status_callback
+            self.enrollment_noise_reduction_enabled = (
+                enrollment_noise_reduction_enabled
+            )
             self.initialized = 0
             self.closed = 0
 
@@ -1801,6 +2491,13 @@ async def test_runtime_install_and_wrapper_lifecycle(
         "install_voice_identity_service_for_app",
         installed.append,
     )
+    monkeypatch.setattr(
+        runtime_module,
+        "configure_voice_identity_audio_contract_callbacks",
+        lambda *, prepare=None, reconcile=None: callback_configurations.append(
+            (prepare, reconcile)
+        ),
+    )
     monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
     config = SimpleNamespace(local_state_dir=tmp_path)
 
@@ -1813,8 +2510,15 @@ async def test_runtime_install_and_wrapper_lifecycle(
 
     await runtime_module.initialize_voice_identity_runtime(config)
     assert service.initialized == 1
+    assert callback_configurations == [
+        (
+            runtime_module.prepare_voice_identity_audio_contract_change,
+            runtime_module.reconcile_voice_identity_audio_contract_change,
+        )
+    ]
     await runtime_module.close_voice_identity_runtime()
     assert service.closed == 1
+    assert callback_configurations[-1] == (None, None)
 
     manager = _Manager()
     assert not await runtime_module.register_voice_identity_manager(manager)

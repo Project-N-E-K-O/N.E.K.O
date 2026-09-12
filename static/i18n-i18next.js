@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 保留上游你画我猜、PNGTuber 文案并新增足球 SDK 启动失败提示；递增版本让
-    // Electron、Docker 等长期缓存重新拉取完整语言包，避免显示未本地化 key。
-    const LOCALE_VERSION = '2026-09-11-soccer-sdk-migration';
+    // 合并上游足球 SDK 提示与声纹会话激活 key；递增版本让
+    // Electron、Docker 等长期缓存重新拉取完整语言包，避免界面直接显示 key。
+    const LOCALE_VERSION = '2026-09-12-voice-wake-word-kws2-main';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

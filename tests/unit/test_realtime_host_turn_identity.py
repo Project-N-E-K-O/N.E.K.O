@@ -227,8 +227,10 @@ async def test_server_vad_binds_route_captured_at_speech_onset_before_audio_proc
         await processing_release.wait()
         return chunk
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -270,8 +272,10 @@ async def test_server_vad_does_not_capture_route_from_idle_silence():
     async def passthrough_audio(chunk):
         return chunk
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -319,8 +323,10 @@ async def test_server_vad_without_local_onset_binds_the_route_that_owned_the_fra
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -364,8 +370,10 @@ async def test_soft_speech_under_a_stable_route_still_reaches_that_route():
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -405,8 +413,10 @@ async def test_a_finished_utterance_does_not_poison_the_next_one():
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -455,8 +465,10 @@ async def test_a_silence_buffer_clear_does_not_let_a_late_onset_grab_the_new_rou
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -501,8 +513,10 @@ async def test_idle_frames_before_a_route_switch_do_not_strand_the_next_utteranc
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -540,8 +554,10 @@ async def test_rnnoise_rejects_a_loud_noise_frame_before_route_ownership_freezes
     async def passthrough_audio(chunk):
         return chunk
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -979,8 +995,10 @@ async def test_manual_commit_freezes_ownership_before_a_later_route_streams(monk
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,
@@ -1032,8 +1050,10 @@ async def test_a_failed_manual_commit_leaves_ownership_unfrozen(monkeypatch):
     async def on_transcript_with_route(text, *, source_game_route_identity):
         delivered.append((text, source_game_route_identity))
 
-    async def discard_event(_event):
-        return None
+    async def discard_event(_event, *, pre_send=None):
+        if pre_send is not None:
+            pre_send(_event)
+        return True
 
     client = _free_client(
         None,

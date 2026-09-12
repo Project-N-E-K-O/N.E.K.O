@@ -102,6 +102,12 @@ dependencies = [
   "python-osc>=1.9.0",
 ]
 
+[project.optional-dependencies]
+# Optional local wake-word inference; model weights are provisioned separately.
+# Base dependency; use the locally built 1.13.8+neko.kws2 wheel at runtime.
+# Upstream 1.13.8 loses keyword timestamp offsets after silence; use scripts/build_wake_word_runtime.ps1.
+wake-word = ["sherpa-onnx==1.13.8"]
+
 [tool.hatch.version]
 path = "config/application.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''

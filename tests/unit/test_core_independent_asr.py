@@ -32,6 +32,7 @@ from main_logic.asr_client.runtime import (
 )
 from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
+from main_logic.voice_input.activation import ActivationState
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     AudioDisposition,
@@ -45,6 +46,13 @@ from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
+from main_logic.voice_identity_service.activation_runtime import (
+    VoiceSessionActivationRuntime,
+)
+from main_logic.voice_identity_service.activation_scoring import (
+    ActivationScoreResult,
+    ActivationScoreStatus,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -1232,6 +1240,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        received_at=ANY,
         captured_at=1234.5,
     )
 
@@ -1323,6 +1332,7 @@ async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        received_at=ANY,
         captured_at=2345.6,
     )
 
@@ -1513,6 +1523,884 @@ async def test_native_route_is_sufficient_to_authorize_omni_audio() -> None:
     assert runtime._asr_route_mode == "native"
     runtime.session.stream_audio.assert_awaited_once()
     assert not hasattr(runtime._asr_runtime, "_asr_required")
+
+
+class _CoreActivationScorer:
+    profile_generation = "profile"
+    scorer_generation = 1
+
+    def __init__(self, *, similarity: float = 0.8) -> None:
+        self.similarity = similarity
+        self.calls = 0
+        self.closed = False
+
+    async def prepare(self) -> ActivationScoreStatus:
+        return ActivationScoreStatus.READY
+
+    async def score(self, identity, pcm16: bytes, *, sample_rate_hz: int):
+        assert pcm16
+        assert sample_rate_hz == 16_000
+        self.calls += 1
+        return ActivationScoreResult(
+            identity,
+            ActivationScoreStatus.READY,
+            self.similarity,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _CoreActivationFactory:
+    activation_generation = "profile"
+
+    def __init__(self, *, similarity: float = 0.8) -> None:
+        self.similarity = similarity
+        self.runtimes: list[VoiceSessionActivationRuntime] = []
+        self.scorers: list[_CoreActivationScorer] = []
+        self.closed = False
+
+    def create(self, generation, output, *, status_callback=None):
+        scorer = _CoreActivationScorer(similarity=self.similarity)
+        scorer.profile_generation = self.activation_generation
+        runtime = VoiceSessionActivationRuntime(
+            generation,
+            scorer,  # type: ignore[arg-type]
+            output,
+            status_callback=status_callback,
+        )
+        self.scorers.append(scorer)
+        self.runtimes.append(runtime)
+        return runtime
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def test_required_activation_revoke_retires_runtime_before_async_replace() -> None:
+    runtime = _Runtime()
+    factory = _CoreActivationFactory()
+    old_runtime = SimpleNamespace(close=AsyncMock())
+    runtime._voice_session_activation_factory = factory
+    runtime._voice_session_activation_runtime = old_runtime
+    before_permission = runtime._voice_session_activation_permission_revision
+
+    token = runtime.require_voice_session_activation(
+        activation_generation="required-empty",
+    )
+
+    assert token == runtime._voice_session_activation_policy_revision
+    assert runtime._voice_session_activation_required is True
+    assert runtime._voice_session_activation_degraded is True
+    assert runtime._voice_session_activation_factory is None
+    assert runtime._voice_session_activation_runtime is None
+    assert factory.closed is True
+    assert runtime._voice_session_activation_permission_revision > before_permission
+    await asyncio.sleep(0)
+    old_runtime.close.assert_awaited_once()
+
+
+async def test_required_activation_token_rejects_waiting_older_factory() -> None:
+    runtime = _Runtime()
+    old_factory = _CoreActivationFactory()
+    old_token = runtime.voice_session_activation_policy_token()
+    await runtime._core_voice_session_swap_lock.acquire()
+    replacement = asyncio.create_task(
+        runtime.set_voice_session_activation_factory(
+            old_factory,
+            activation_generation=old_factory.activation_generation,
+            activation_required=True,
+            expected_policy_revision=old_token,
+        )
+    )
+    await asyncio.sleep(0)
+
+    runtime.require_voice_session_activation(
+        activation_generation="new-required-intent",
+    )
+    runtime._core_voice_session_swap_lock.release()
+
+    assert (
+        await replacement
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    assert runtime._voice_session_activation_factory is None
+    assert runtime._voice_session_activation_required is True
+
+
+async def _wait_for_activation_output(
+    call_count,
+    *,
+    expected_count: int,
+) -> None:
+    try:
+        async with asyncio.timeout(1.0):
+            while call_count() < expected_count:
+                await asyncio.sleep(0)
+    except TimeoutError as exc:
+        raise AssertionError(
+            "activation replay did not drain: "
+            f"expected {expected_count}, received {call_count()}"
+        ) from exc
+
+
+async def test_voice_session_activation_gates_native_then_replays_and_forwards() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    factory = _CoreActivationFactory()
+    assert (
+        await runtime.set_voice_session_activation_factory(
+            factory,
+            activation_generation="profile",
+        )
+        is VoiceIdentityActivationResult.READY
+    )
+
+    pcm16 = b"\xd0\x07" * 1_600
+    await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    for _ in range(14):
+        await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    assert runtime.session.stream_audio.await_count == 0
+
+    await _wait_for_activation_output(
+        lambda: runtime.session.stream_audio.await_count,
+        expected_count=15,
+    )
+    assert runtime.session.stream_audio.await_count == 15
+    assert factory.scorers[0].calls == 1
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    await asyncio.sleep(0)
+    assert runtime.session.stream_audio.await_count == 16
+    assert factory.scorers[0].calls == 1
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_native_idle_disconnect_reconnects_before_activation_replay() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.is_active = True
+    runtime.session.instructions = "stay in character"
+    runtime.session._connection_generation = 4
+    delivered: list[bytes] = []
+    old_listener_started = asyncio.Event()
+    release_old_listener = asyncio.Event()
+
+    async def old_listener() -> None:
+        old_listener_started.set()
+        await release_old_listener.wait()
+
+    old_listener_task = asyncio.create_task(old_listener())
+    await old_listener_started.wait()
+
+    async def stream_audio(pcm16: bytes) -> None:
+        delivered.append(pcm16)
+
+    async def reconnect(_instructions: str, *, native_audio: bool) -> None:
+        assert native_audio is True
+        assert old_listener_task.done()
+        runtime.session._connection_generation += 1
+
+    runtime.session.stream_audio = AsyncMock(side_effect=stream_audio)
+    runtime.session.connect = AsyncMock(side_effect=reconnect)
+    runtime.session.close = AsyncMock()
+    runtime.message_handler_task = old_listener_task
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+    factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+
+    frames = [
+        int(2_000 + sequence).to_bytes(2, "little", signed=True) * 1_600
+        for sequence in range(15)
+    ]
+    await runtime._route_microphone_audio(frames[0], sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    generation = factory.runtimes[0].generation
+    runtime.session_closed_by_server = True
+    runtime._native_activation_idle_reconnect_identity = (generation, 4)
+
+    for frame in frames[1:]:
+        await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+    runtime.session.connect.assert_not_awaited()
+    assert delivered == []
+    release_old_listener.set()
+
+    await _wait_for_activation_output(
+        lambda: len(delivered),
+        expected_count=len(frames),
+    )
+
+    runtime.session.connect.assert_awaited_once_with(
+        "stay in character",
+        native_audio=True,
+    )
+    runtime._restart_message_handler_after_session_reconnect.assert_awaited_once_with(
+        runtime.session
+    )
+    assert runtime.session_closed_by_server is False
+    assert runtime._native_activation_idle_reconnect_identity is None
+    assert delivered == frames
+    assert factory.scorers[0].calls == 1
+
+    live_frame = b"\x01\x00" * 160
+    await runtime._route_microphone_audio(live_frame, sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    assert delivered == [*frames, live_frame]
+    assert runtime.session.connect.await_count == 1
+    assert factory.scorers[0].calls == 1
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_native_idle_reconnect_failure_keeps_replay_for_one_safe_retry() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.is_active = True
+    runtime.session.instructions = "stay in character"
+    runtime.session._connection_generation = 9
+    delivered: list[bytes] = []
+    reconnect_attempts = 0
+
+    async def stream_audio(pcm16: bytes) -> None:
+        if len(delivered) == len(frames):
+            # Keep the final live frame pending for one scheduling turn. A wait
+            # for only the 15 replay frames would return before delivery ends.
+            await asyncio.sleep(0)
+        delivered.append(pcm16)
+
+    async def reconnect(_instructions: str, *, native_audio: bool) -> None:
+        nonlocal reconnect_attempts
+        assert native_audio is True
+        reconnect_attempts += 1
+        if reconnect_attempts == 1:
+            raise RuntimeError("still offline")
+        runtime.session._connection_generation += 1
+
+    runtime.session.stream_audio = AsyncMock(side_effect=stream_audio)
+    runtime.session.connect = AsyncMock(side_effect=reconnect)
+    runtime.session.close = AsyncMock()
+    runtime.message_handler_task = None
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+    factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+
+    frames = [b"\xd0\x07" * 1_600 for _ in range(15)]
+    await runtime._route_microphone_audio(frames[0], sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    generation = factory.runtimes[0].generation
+    runtime.session_closed_by_server = True
+    runtime._native_activation_idle_reconnect_identity = (generation, 9)
+    for frame in frames[1:]:
+        await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+
+    for _ in range(100):
+        if (
+            runtime.session.close.await_count
+            and factory.runtimes[0]._output_task is None
+        ):
+            break
+        await asyncio.sleep(0)
+    assert reconnect_attempts == 1
+    assert delivered == []
+    assert factory.runtimes[0].state is ActivationState.REPLAYING
+    runtime.session.close.assert_awaited_once_with()
+
+    retry_frame = b"\xd1\x07" * 1_600
+    await runtime._route_microphone_audio(retry_frame, sample_rate_hz=16_000)
+    await _wait_for_activation_output(
+        lambda: len(delivered),
+        expected_count=len(frames) + 1,
+    )
+
+    assert reconnect_attempts == 2
+    assert delivered == [*frames, retry_frame]
+    assert factory.runtimes[0].state is ActivationState.ACTIVE
+    assert factory.scorers[0].calls == 1
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_native_idle_reconnect_survives_activation_authority_replacement() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.is_active = True
+    runtime.session.instructions = "stay in character"
+    runtime.session._connection_generation = 12
+    delivered: list[bytes] = []
+
+    async def stream_audio(pcm16: bytes) -> None:
+        delivered.append(pcm16)
+
+    async def reconnect(_instructions: str, *, native_audio: bool) -> None:
+        assert native_audio is True
+        runtime.session._connection_generation += 1
+
+    runtime.session.stream_audio = AsyncMock(side_effect=stream_audio)
+    runtime.session.connect = AsyncMock(side_effect=reconnect)
+    runtime.session.close = AsyncMock()
+    runtime.message_handler_task = None
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+
+    retired_factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        retired_factory,
+        activation_generation="profile",
+    )
+    await runtime._route_microphone_audio(
+        b"\xd0\x07" * 1_600,
+        sample_rate_hz=16_000,
+    )
+    await asyncio.sleep(0)
+    retired_generation = retired_factory.runtimes[0].generation
+    runtime.session_closed_by_server = True
+    runtime._native_activation_idle_reconnect_identity = (retired_generation, 12)
+
+    replacement_factory = _CoreActivationFactory()
+    replacement_factory.activation_generation = "replacement-profile"
+    await runtime.set_voice_session_activation_factory(
+        replacement_factory,
+        activation_generation="replacement-profile",
+    )
+    replacement_generation = runtime._capture_voice_session_activation_generation()
+    assert runtime._native_activation_idle_reconnect_identity == (
+        replacement_generation,
+        12,
+    )
+
+    frames = [b"\xd1\x07" * 1_600 for _ in range(15)]
+    await runtime._route_microphone_audio(frames[0], sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    for frame in frames[1:]:
+        await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+    for _ in range(100):
+        if replacement_factory.scorers[0].calls:
+            break
+        await asyncio.sleep(0)
+    assert replacement_factory.scorers[0].calls == 1
+    await _wait_for_activation_output(
+        lambda: len(delivered),
+        expected_count=len(frames),
+    )
+
+    runtime.session.connect.assert_awaited_once_with(
+        "stay in character",
+        native_audio=True,
+    )
+    assert replacement_factory.scorers[0].calls == 1
+    assert delivered == frames
+    assert runtime.session_closed_by_server is False
+    assert runtime._native_activation_idle_reconnect_identity is None
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_disabling_activation_reconnects_idle_native_session_on_next_frame() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.is_active = True
+    runtime.session.instructions = "stay in character"
+    runtime.session._connection_generation = 18
+    delivered: list[bytes] = []
+
+    async def reconnect(_instructions: str, *, native_audio: bool) -> None:
+        assert native_audio is True
+        runtime.session._connection_generation += 1
+
+    runtime.session.connect = AsyncMock(side_effect=reconnect)
+    runtime.session.stream_audio = AsyncMock(
+        side_effect=lambda pcm16: delivered.append(pcm16)
+    )
+    runtime.session.close = AsyncMock()
+    runtime.message_handler_task = None
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+    factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+    await runtime._route_microphone_audio(
+        b"\xd0\x07" * 1_600,
+        sample_rate_hz=16_000,
+    )
+    await asyncio.sleep(0)
+    runtime.session_closed_by_server = True
+    runtime._native_activation_idle_reconnect_identity = (
+        factory.runtimes[0].generation,
+        18,
+    )
+
+    assert (
+        await runtime.set_voice_session_activation_factory(
+            None,
+            activation_generation="disabled",
+        )
+        is VoiceIdentityActivationResult.READY
+    )
+    disabled_generation = runtime._capture_voice_session_activation_generation()
+    assert runtime._native_activation_idle_reconnect_identity == (
+        disabled_generation,
+        18,
+    )
+
+    live_frame = b"\x01\x00" * 160
+    await runtime._route_microphone_audio(live_frame, sample_rate_hz=16_000)
+
+    runtime.session.connect.assert_awaited_once_with(
+        "stay in character",
+        native_audio=True,
+    )
+    assert delivered == [live_frame]
+    assert runtime.session_closed_by_server is False
+    assert runtime._native_activation_idle_reconnect_identity is None
+
+
+async def test_activation_authority_replacement_waits_for_native_reconnect() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.is_active = True
+    runtime.session.instructions = "stay in character"
+    runtime.session._connection_generation = 24
+    connect_entered = asyncio.Event()
+    release_connect = asyncio.Event()
+    delivered: list[bytes] = []
+
+    async def reconnect(_instructions: str, *, native_audio: bool) -> None:
+        assert native_audio is True
+        connect_entered.set()
+        await release_connect.wait()
+        runtime.session._connection_generation += 1
+
+    runtime.session.connect = AsyncMock(side_effect=reconnect)
+    runtime.session.stream_audio = AsyncMock(
+        side_effect=lambda pcm16: delivered.append(pcm16)
+    )
+    runtime.session.close = AsyncMock()
+    runtime.message_handler_task = None
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+    retired_factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        retired_factory,
+        activation_generation="profile",
+    )
+    await runtime._route_microphone_audio(
+        b"\xd0\x07" * 1_600,
+        sample_rate_hz=16_000,
+    )
+    await asyncio.sleep(0)
+    retired_generation = retired_factory.runtimes[0].generation
+    runtime.session_closed_by_server = True
+    runtime._native_activation_idle_reconnect_identity = (retired_generation, 24)
+
+    reconnect_task = asyncio.create_task(
+        runtime._reconnect_native_voice_session_for_activation(
+            retired_generation,
+            runtime._capture_native_ingress_token(),
+        )
+    )
+    await connect_entered.wait()
+
+    replacement_factory = _CoreActivationFactory()
+    replacement_factory.activation_generation = "replacement-profile"
+    replacement_task = asyncio.create_task(
+        runtime.set_voice_session_activation_factory(
+            replacement_factory,
+            activation_generation="replacement-profile",
+        )
+    )
+    await asyncio.sleep(0)
+    assert replacement_task.done() is False
+
+    release_connect.set()
+    assert await reconnect_task is True
+    assert await replacement_task is VoiceIdentityActivationResult.READY
+    assert runtime.session_closed_by_server is False
+    assert runtime._native_activation_idle_reconnect_identity is None
+
+    frames = [b"\xd1\x07" * 1_600 for _ in range(15)]
+    await runtime._route_microphone_audio(frames[0], sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    for frame in frames[1:]:
+        await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+    await _wait_for_activation_output(
+        lambda: len(delivered),
+        expected_count=len(frames),
+    )
+
+    assert runtime.session.connect.await_count == 1
+    assert delivered == frames
+    assert replacement_factory.scorers[0].calls == 1
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_voice_session_activation_keeps_original_monotonic_capture_time() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    captured_frames = []
+
+    class _CapturingRuntime:
+        state = ActivationState.WAITING
+
+        def __init__(self, generation) -> None:
+            self.generation = generation
+
+        async def prepare(self):
+            return None
+
+        async def feed(self, frame, *, voice_activity: bool):
+            assert voice_activity is True
+            captured_frames.append(frame)
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _CapturingFactory:
+        activation_generation = "profile"
+
+        def create(self, generation, output, *, status_callback=None):
+            return _CapturingRuntime(generation)
+
+        def close(self) -> None:
+            return None
+
+    await runtime.set_voice_session_activation_factory(
+        _CapturingFactory(),
+        activation_generation="profile",
+    )
+
+    await runtime._route_microphone_audio(
+        b"\xd0\x07" * 1_600,
+        sample_rate_hz=16_000,
+        received_at=29.9,
+        captured_at=1_725_000_000.0,
+    )
+
+    assert len(captured_frames) == 1
+    assert captured_frames[0].captured_at == 29.9
+    assert captured_frames[0].context.captured_at == 1_725_000_000.0
+
+
+async def test_voice_session_activation_gates_independent_asr_before_submit() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+    )
+    factory = _CoreActivationFactory(similarity=0.1)
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+
+    pcm16 = b"\xd0\x07" * 1_600
+    await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    for _ in range(14):
+        await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    runtime._asr_runtime.submit.assert_not_awaited()
+    assert factory.scorers[0].calls == 1
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+@pytest.mark.parametrize("route_mode", ["native", "independent"])
+async def test_required_activation_without_factory_blocks_both_audio_routes(
+    route_mode: str,
+) -> None:
+    runtime = _Runtime()
+    runtime.session.stream_audio = AsyncMock()
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+    )
+    runtime._set_microphone_route(route_mode)
+
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="required-unavailable",
+        activation_required=True,
+    )
+    frame = b"\x01\x00" * 160
+    assert await runtime._route_microphone_audio(
+        frame,
+        sample_rate_hz=16_000,
+    )
+
+    runtime.session.stream_audio.assert_not_awaited()
+    runtime._asr_runtime.submit.assert_not_awaited()
+
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="explicitly-disabled",
+        activation_required=False,
+    )
+    assert await runtime._route_microphone_audio(
+        frame,
+        sample_rate_hz=16_000,
+    )
+    if route_mode == "native":
+        runtime.session.stream_audio.assert_awaited_once_with(frame)
+        runtime._asr_runtime.submit.assert_not_awaited()
+    else:
+        runtime.session.stream_audio.assert_not_awaited()
+        runtime._asr_runtime.submit.assert_awaited_once()
+
+
+async def test_factory_audio_contract_blocks_until_session_pipeline_matches() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    factory = _CoreActivationFactory()
+    factory.noise_reduction_enabled = False
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+        activation_required=True,
+    )
+    frame = b"\x01\x00" * 160
+
+    assert await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+    runtime.session.stream_audio.assert_not_awaited()
+    assert factory.runtimes == []
+
+    runtime._voice_input_noise_reduction_enabled = False
+    assert await runtime._route_microphone_audio(frame, sample_rate_hz=16_000)
+    assert len(factory.runtimes) == 1
+
+
+async def test_voice_session_activation_route_change_retires_old_authority() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+
+    pcm16 = b"\xd0\x07" * 1_600
+    await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+    runtime._set_microphone_route("independent")
+    runtime._asr_runtime.submit = AsyncMock(
+        return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
+    )
+    await runtime._route_microphone_audio(pcm16, sample_rate_hz=16_000)
+    await asyncio.sleep(0)
+
+    assert len(factory.runtimes) == 2
+    assert factory.runtimes[0].generation != factory.runtimes[1].generation
+    assert factory.scorers[0].closed is True
+    runtime.session.stream_audio.assert_not_awaited()
+    runtime._asr_runtime.submit.assert_not_awaited()
+    await runtime.set_voice_session_activation_factory(
+        None,
+        activation_generation="disabled",
+    )
+
+
+async def test_voice_pcm_invalidation_retires_activation_without_another_frame() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    factory = _CoreActivationFactory()
+    await runtime.set_voice_session_activation_factory(
+        factory,
+        activation_generation="profile",
+    )
+    await runtime._route_microphone_audio(
+        b"\xd0\x07" * 1_600,
+        sample_rate_hz=16_000,
+    )
+    await asyncio.sleep(0)
+    assert runtime._voice_session_activation_runtime is factory.runtimes[0]
+
+    runtime._invalidate_voice_pcm_sync("microphone_stopped")
+    cleanup = tuple(runtime._core_asr_cleanup_tasks)
+    if cleanup:
+        await asyncio.gather(*cleanup)
+
+    assert runtime._voice_session_activation_runtime is None
+    assert factory.scorers[0].closed is True
+    assert factory.closed is False
+
+
+async def test_session_activation_detaches_preexisting_utterance_verifier() -> None:
+    runtime = _Runtime()
+    legacy_factory = MagicMock()
+    runtime._speaker_shadow_factory = legacy_factory
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=True)
+    factory = _CoreActivationFactory()
+
+    assert (
+        await runtime.set_voice_session_activation_factory(
+            factory,
+            activation_generation="profile",
+        )
+        is VoiceIdentityActivationResult.READY
+    )
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_awaited_once_with(
+        None,
+        activation_generation="profile",
+    )
+    assert runtime._speaker_shadow_factory is None
+    assert runtime._voice_session_activation_factory is factory
+
+
+async def test_session_activation_swap_timeout_preserves_legacy_verifier() -> None:
+    runtime = _Runtime()
+    legacy_factory = MagicMock()
+    runtime._speaker_shadow_factory = legacy_factory
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=True)
+    runtime._core_voice_session_swap_barrier_timeout_s = 0.01
+    await runtime._core_voice_session_swap_lock.acquire()
+    try:
+        result = await runtime.set_voice_session_activation_factory(
+            _CoreActivationFactory(),
+            activation_generation="profile",
+        )
+    finally:
+        runtime._core_voice_session_swap_lock.release()
+
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    assert runtime._speaker_shadow_factory is legacy_factory
+    assert runtime._voice_session_activation_factory is None
+    runtime._asr_runtime.set_speaker_verifier_factory.assert_not_awaited()
+
+
+async def test_session_activation_detach_failure_blocks_microphone_pcm() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    runtime._speaker_shadow_factory = MagicMock()
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=False)
+
+    result = await runtime.set_voice_session_activation_factory(
+        _CoreActivationFactory(),
+        activation_generation="profile",
+    )
+    consumed = await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    assert consumed is True
+    assert runtime._speaker_shadow_factory is not None
+    assert runtime._voice_session_activation_factory is None
+    assert runtime._voice_session_activation_degraded is True
+    runtime.session.stream_audio.assert_not_awaited()
+
+
+async def test_cancelled_session_activation_detach_blocks_microphone_pcm() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    runtime._speaker_shadow_factory = MagicMock()
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(
+        side_effect=asyncio.CancelledError
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.set_voice_session_activation_factory(
+            _CoreActivationFactory(),
+            activation_generation="profile",
+        )
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert runtime._speaker_shadow_factory is not None
+    assert runtime._voice_session_activation_factory is None
+    assert runtime._voice_session_activation_degraded is True
+    runtime.session.stream_audio.assert_not_awaited()
+
+
+async def test_inflight_session_activation_detach_blocks_microphone_pcm() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime.session.stream_audio = AsyncMock()
+    runtime._speaker_shadow_factory = MagicMock()
+    detach_entered = asyncio.Event()
+    release_detach = asyncio.Event()
+
+    async def delayed_detach(*_args, **_kwargs) -> bool:
+        detach_entered.set()
+        await release_detach.wait()
+        return False
+
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(
+        side_effect=delayed_detach
+    )
+    transition = asyncio.create_task(
+        runtime.set_voice_session_activation_factory(
+            _CoreActivationFactory(),
+            activation_generation="profile",
+        )
+    )
+    await detach_entered.wait()
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert runtime._voice_session_activation_degraded is True
+    runtime.session.stream_audio.assert_not_awaited()
+    release_detach.set()
+    assert await transition is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+
+
+async def test_session_activation_rejects_mismatched_factory_generation() -> None:
+    runtime = _Runtime()
+    factory = _CoreActivationFactory()
+
+    with pytest.raises(ValueError, match="generation does not match"):
+        await runtime.set_voice_session_activation_factory(
+            factory,
+            activation_generation="stale-profile",
+        )
+    assert runtime._voice_session_activation_factory is None
 
 
 async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
@@ -1994,9 +2882,11 @@ async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() 
     )
 
     barrier = source.index("async with core_voice_session_lock")
-    close = source.index("await old_main_session.close()")
-    promote = source.index("self.session = new_session")
-    assert barrier < close < promote
+    close = source.index("old_main_session.close()", barrier)
+    promote = source.index("self.session = new_session", close)
+    barrier_exit = source.index("if not _promote_allowed", promote)
+    assert barrier < close < promote < barrier_exit
+    assert "asyncio.timeout_at" in source[barrier:promote]
 
 
 async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
@@ -4392,6 +5282,49 @@ async def test_cancelled_successor_close_owns_runtime_cleanup_after_old_close() 
     runtime._asr_runtime.close.assert_awaited_once_with()
 
 
+@pytest.mark.parametrize("initial_nr", [True, False])
+async def test_start_pipeline_construction_failure_preserves_audio_contract(
+    monkeypatch, initial_nr: bool,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime._close_independent_asr = AsyncMock()
+    await runtime.apply_voice_input_noise_reduction(initial_nr)
+    original = runtime._voice_input_audio_pipeline
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={
+            "independentAsrEnabled": False,
+            "noiseReductionEnabled": not initial_nr,
+        }),
+    )
+    try:
+        with monkeypatch.context() as failing:
+            failing.setattr(
+                core_asr_runtime_module,
+                "VoiceInputAudioPipeline",
+                MagicMock(side_effect=RuntimeError("pipeline construction failed")),
+            )
+            with pytest.raises(RuntimeError, match="pipeline construction failed"):
+                await runtime._start_independent_asr_if_enabled("audio")
+
+        assert runtime._voice_input_audio_pipeline is original
+        assert runtime._voice_input_noise_reduction_enabled is initial_nr
+        assert runtime._asr_route_mode == "blocked"
+        frame = await original.process(b"\x01\x00" * 160, sample_rate_hz=16_000)
+        assert frame.pcm16 == b"\x01\x00" * 160
+
+        await runtime._start_independent_asr_if_enabled("audio")
+        assert runtime._voice_input_audio_pipeline.nr_enabled is not initial_nr
+        assert runtime._voice_input_noise_reduction_enabled is not initial_nr
+        with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_CLOSED"):
+            await original.process(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    finally:
+        await runtime._voice_input_audio_pipeline.close()
+        await asyncio.gather(*runtime._core_asr_cleanup_tasks, return_exceptions=True)
+
+
 async def test_stale_start_waiting_for_pipeline_lock_cannot_replace_successor(
     monkeypatch,
 ) -> None:
@@ -5379,7 +6312,9 @@ async def test_adopted_restart_cancellation_fails_closed_and_propagates(
     await asyncio.wait_for(prepare_started.wait(), 1)
     assert component._asr_session is sessions[1]
 
-    restarting.cancel()
+    # Authoritative cancellation targets the shared owner, not one waiter.
+    assert component._asr_transport_task is not None
+    component._asr_transport_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await restarting
     while component._asr_close_tasks:
@@ -7392,8 +8327,7 @@ async def test_stale_connect_failure_cannot_fail_new_generation() -> None:
     candidate.connect = AsyncMock(side_effect=connect)
     runtime._asr_session_factory = MagicMock(return_value=candidate)
     runtime._asr_transport_selection = _selection("qwen")
-    old_restart = asyncio.create_task(runtime._restart_transport())
-    runtime._asr_transport_task = old_restart
+    old_restart = runtime._asr_runtime._ensure_transport_restart_task()
     await asyncio.wait_for(started.wait(), 1)
 
     new_session, new_lifecycle, new_detector = _install_replacement_runtime_generation(
@@ -9230,10 +10164,10 @@ async def test_transport_restart_task_failure_is_logged(caplog) -> None:
     runtime = _Runtime()
     component = runtime._asr_runtime
 
-    async def failing_restart() -> None:
+    async def failing_restart(_operation) -> None:
         raise RuntimeError("restart boom")
 
-    component._restart_transport = failing_restart
+    component._run_transport_connect_operation = failing_restart
     with caplog.at_level(logging.ERROR, logger="main_logic.asr_client._infra"):
         component._ensure_transport_restart_task()
         task = component._asr_transport_task

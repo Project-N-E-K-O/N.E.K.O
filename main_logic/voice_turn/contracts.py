@@ -61,6 +61,21 @@ class VoiceTurnToken:
 
 
 @dataclass(frozen=True, slots=True)
+class PreserveUnsentPrefix:
+    """Require lossless local ownership of one authorized input batch."""
+
+    ingress: VoiceIngressToken
+    batch_id: str
+    start_sequence: int
+
+
+class AsrDeliveryStage(Enum):
+    """Local admission never claims that a socket or Provider accepted PCM."""
+
+    LOCAL_ACCEPTED = "local_accepted"
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceTranscriptEvent:
     """One route-authorized logical transcript for a Core-side consumer."""
 
@@ -117,6 +132,13 @@ class AsrSubmitResult:
     """Explicit submit disposition so Core never inspects runtime state."""
 
     status: AsrSubmitStatus
+    delivery_stage: AsrDeliveryStage | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "delivery_stage",
+            AsrDeliveryStage.LOCAL_ACCEPTED if self.status is AsrSubmitStatus.ACCEPTED else None,
+        )
 
 
 VoiceTranscriptCallback: TypeAlias = Callable[

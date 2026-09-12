@@ -1,0 +1,44 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 03ed01e..27851fc 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,7 +28,7 @@ project(sherpa-onnx)
+ # Remember to update
+ # ./CHANGELOG.md
+ # ./new-release.sh
+-set(SHERPA_ONNX_VERSION "1.13.8")
++set(SHERPA_ONNX_VERSION "1.13.8+neko.kws2")
+ 
+ # Disable warning about
+ #
+diff --git a/sherpa-onnx/csrc/keyword-spotter-transducer-impl.h b/sherpa-onnx/csrc/keyword-spotter-transducer-impl.h
+index c8cb18d..171dca3 100644
+--- a/sherpa-onnx/csrc/keyword-spotter-transducer-impl.h
++++ b/sherpa-onnx/csrc/keyword-spotter-transducer-impl.h
+@@ -191,7 +191,13 @@ class KeywordSpotterTransducerImpl : public KeywordSpotterImpl {
+     return s->GetNumProcessedFrames() + model_->ChunkSize() <
+            s->NumFramesReady();
+   }
+-  void Reset(OnlineStream *s) const override { InitOnlineStream(s); }
++  void Reset(OnlineStream *s) const override {
++    // Reset decoder hypotheses and encoder state, but preserve the output-frame
++    // clock: the feature stream and processed input frames continue unchanged.
++    int32_t frame_offset = s->GetKeywordResult().frame_offset;
++    InitOnlineStream(s);
++    s->GetKeywordResult().frame_offset = frame_offset;
++  }
+ 
+   void DecodeStreams(OnlineStream **ss, int32_t n) const override {
+     for (int32_t i = 0; i < n; ++i) {
+diff --git a/sherpa-onnx/csrc/version.cc b/sherpa-onnx/csrc/version.cc
+--- a/sherpa-onnx/csrc/version.cc
++++ b/sherpa-onnx/csrc/version.cc
+@@ -20,7 +20,7 @@ const char *GetGitSha1() {
+ }
+ 
+ const char *GetVersionStr() {
+-  static const char *version = "1.13.8";
++  static const char *version = "1.13.8+neko.kws2";
+   return version;
+ }
+ 
