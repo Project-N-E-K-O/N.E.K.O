@@ -987,6 +987,10 @@ compatibility, but is unnecessary for normal SDK speech. A successful manual
 or disposal. Unrelated playback and the automatic watchdog do not cancel it;
 pause/model replacement preserve the intent and resume/reload reapplies it.
 `setSpeaking(false)` releases the override back to automatic SDK playback.
+The built-in renderers return `false` after successfully stopping: this is the
+resulting speaking state, not a rejected operation. Custom renderer adapters
+must throw/reject if stopping fails; returning `false` must not mean a failed
+stop. An unpaused activation returning `false` restores the previous ownership.
 Only one manual update may be pending per controller (`busy` otherwise); older
 automatic renderer updates settle before the manual update is applied.
 Manual calls have a 10-second deadline and are cancelled on route exit or

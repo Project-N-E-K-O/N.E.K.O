@@ -270,6 +270,20 @@ async function sdkTests() {
     assert.ok(cancelled && chunks < 6, 'oversized vision body was fully buffered');
   }
   assert.deepEqual(posts[1].attachments.map(item=>item.label),['before','after']);
+  const originalAnalyze = host.analyzeGameVision;
+  let sparseTransportCalls = 0;
+  host.analyzeGameVision = function (...args) {
+    sparseTransportCalls += 1;
+    return originalAnalyze.apply(this, args);
+  };
+  const image = {type:'image', source:new Uint8Array([1,2,3]), mimeType:'image/png'};
+  try {
+    for (const attachments of [new Array(1), [, image], [image, ,], [image, , image]]) {
+      await assert.rejects(game.vision.analyze({text:'Observe', attachments}), {code:'invalid_request'});
+      assert.equal(sparseTransportCalls, 0, 'sparse attachments reached the transport');
+      assert.equal(game.vision.pendingCount, 0, 'invalid attachments retained a request slot');
+    }
+  } finally { host.analyzeGameVision = originalAnalyze; }
   for(const bad of [{text:'Example',attachments:[]},
     {text:'Example',attachments:[{type:'audio',source:'anything'}]},
     {text:'Example',attachments:[{type:'image',source:bytes}]},
