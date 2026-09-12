@@ -185,6 +185,8 @@ async def download_stream(client, representation, target, *, budget=None):
                     await write_download_chunk(target, chunk, 'ab')
             return
         except httpx.HTTPError as exc:
+            # This is a cumulative transfer budget, including failed attempts;
+            # deleting partial output does not refund bytes already downloaded.
             last_error = exc
     raise ValueError('All video CDN addresses failed') from last_error
 

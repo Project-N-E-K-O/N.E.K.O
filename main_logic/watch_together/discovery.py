@@ -89,8 +89,10 @@ async def discover(topic, exclude=()):
             result = await asyncio.wait_for(hot.get_hot_videos(pn=page, ps=20), 40)
             rows = result.get("list", [])
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             bvid = row.get("bvid")
-            if not bvid or bvid in seen:
+            if not isinstance(bvid, str) or not bvid or bvid in seen:
                 continue
             seen.add(bvid)
             seconds = row.get("duration")
@@ -99,7 +101,9 @@ async def discover(topic, exclude=()):
                     seconds = sum(float(value) * 60 ** index for index, value in enumerate(reversed(seconds.split(":"))))
                 except ValueError:
                     continue
-            count = row.get("video_review", row.get("stat", {}).get("danmaku"))
+            stat = row.get('stat')
+            stat = stat if isinstance(stat, dict) else {}
+            count = row.get("video_review", stat.get("danmaku"))
             if not eligible(seconds, count):
                 continue
             try:

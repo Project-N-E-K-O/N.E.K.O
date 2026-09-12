@@ -57,6 +57,21 @@ def test_downloaded_limits_cannot_be_bypassed_by_consent(seconds, count, automat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stat', [None, [], 7, 'invalid'])
+async def test_discovery_skips_malformed_rows_and_accepts_primary_counter(monkeypatch, stat):
+    rows = [None, [], {'bvid': {}}, {'bvid': 'bad', 'duration': 60, 'stat': stat},
+            {'bvid': 'valid', 'duration': 60, 'video_review': 101, 'stat': stat}]
+    search = SimpleNamespace(search_by_type=AsyncMock(return_value={'result': rows}),
+        SearchObjectType=SimpleNamespace(VIDEO='video'), OrderVideo=SimpleNamespace(CLICK='click'))
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(search=search, hot=None))
+    info = {'duration': 60, 'danmaku': 101, 'parts': 1}
+    inspect = AsyncMock(return_value=info)
+    monkeypatch.setattr(discovery, 'inspect_video', inspect)
+    assert (await discovery.discover('cats'))['video'] == info
+    inspect.assert_awaited_once_with('valid')
+
+
+@pytest.mark.asyncio
 async def test_discovery_rechecks_metadata_and_never_relaxes(monkeypatch):
     rows = [{"bvid": "first", "duration": "1:00", "video_review": 101},
             {"bvid": "second", "duration": "2:59", "video_review": 300}]
