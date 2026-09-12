@@ -33,7 +33,7 @@ def _probe_media(path, size, modified, role):
     try:
         binary = media_binary('ffprobe')
     except FileNotFoundError:
-        return None  # Existing history remains playable without preparation tools.
+        return None  # Keep the archive, but unknown media is not playback-ready.
     return _probe_media_cached(binary, path, size, modified, role)
 
 
@@ -307,7 +307,7 @@ class Library:
                 path = self.objects / entry['sha256']
                 stat = path.stat()
                 role = 'video' if extensions == {'.mp4', '.webm'} else 'audio'
-                if _probe_media(path, stat.st_size, stat.st_mtime_ns, role) is False:
+                if _probe_media(path, stat.st_size, stat.st_mtime_ns, role) is not True:
                     timeline['status'] = 'incomplete'
                     break
         return timeline

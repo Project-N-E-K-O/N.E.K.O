@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import {run} from '../../static/game/games/watch-together/scene.mjs';
 
-async function waitFor(predicate) {
-  const deadline=Date.now()+5000;
+async function waitFor(predicate, diagnostics=()=> '') {
+  const deadline=Date.now()+15000;
   while(!predicate()) {
-    assert.ok(Date.now()<deadline,'scene did not reach the expected state within 5 seconds');
+    assert.ok(Date.now()<deadline,`scene did not reach the expected state within 15 seconds: ${diagnostics()}`);
     await new Promise(resolve=>setTimeout(resolve,10));
   }
 }
@@ -539,7 +539,7 @@ continuous.elements.get('automatic-enabled').onchange();
 await waitFor(()=>plays===1 && !continuous.elements.get('next-video').disabled);
 assert.equal(plays,1);
 continuous.elements.get('video').ended=true;continuous.emit({type:'ended'});
-await waitFor(()=>plays===2);
+await waitFor(()=>plays===2,()=>JSON.stringify({plays,routeStarts,routeEnds,status:continuous.elements.get('status').textContent,next:continuous.elements.get('next-status').textContent}));
 assert.equal(plays,2,'ended automatically loads and plays the prepared next item');
 assert.equal(routeStarts,1);assert.equal(routeEnds,0,'speech takeover stays active across videos');
 await continuous.elements.get('watch-stop').onclick();

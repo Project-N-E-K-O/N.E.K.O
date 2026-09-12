@@ -64,8 +64,9 @@ output, and uses `video.currentTime` for scheduling. Pause/buffering stops audio
 resume uses the current offset, seek discards stale reactions and rearms future
 reactions, and playback rate follows video. Generation changes invalidate
 pending mounts. A Web Lock prevents concurrent timeline output from two scene
-windows. Ordinary host speech and active voice input interrupt the video;
-resumption is manual. Exit releases media, renderers and the SDK route.
+windows. The watch-together route suppresses ordinary host/plugin speech for the
+whole viewing session. External text and active voice input do not interrupt the
+reaction timeline. Exit releases media, renderers and the SDK route.
 
 Live2D and VRM have symmetric trusted avatar providers mounted through
 `game.avatar`. Mouth opening uses the actual reaction waveform. Available happy
