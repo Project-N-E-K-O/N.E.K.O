@@ -157,21 +157,80 @@
     // The loader has no AbortSignal contract. Release a late scene before any
     // attachment or animation touches a disposed manager.
     assertLive(() => vrmModule.VRMUtils.deepDispose(vrm?.scene || gltf.scene));
-    if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
-    applyVrm0FixedCameraFacingFix(gltf, vrm, manager);
-
-    if (manager.currentModel?.vrm?.scene) {
-      const oldScene = manager.currentModel.vrm.scene;
-      window.NekoMiniGameAvatarHost.releasePerspectiveReference(oldScene, manager.camera);
+    if (!vrm) {
+      vrmModule.VRMUtils.deepDispose(gltf.scene);
+      throw new Error(`${label}: loaded file is not a valid VRM`);
+    }
+    const previous = manager.currentModel;
+    const candidate = { vrm, gltf, scene: vrm.scene, url: path };
+    // Preparing the idle can replace a mixer's root. Give the candidate its
+    // own animation owner so a failed/cancelled load cannot stop the old one.
+    const staged = {
+      currentModel: candidate, scene: new window.THREE.Scene(),
+      camera: manager.camera.clone(), animationMixer: null, interaction: null,
+    };
+    staged.animation = typeof window.VRMAnimation === 'function'
+      ? new window.VRMAnimation(staged) : null;
+    staged.playVRMAAnimation = (...args) => staged.animation
+      ? staged.animation.playVRMAAnimation(...args)
+      : (!manager.animation ? manager.playVRMAAnimation?.apply(staged, args) : false);
+    staged.scene.add(vrm.scene);
+    vrm.scene.visible = false;
+    const referenceHost = window.NekoMiniGameAvatarHost;
+    let candidateReleased = false;
+    const releaseCandidate = () => {
+      if (candidateReleased) return;
+      candidateReleased = true;
+      staged.animation?.dispose?.();
+      referenceHost.releasePerspectiveReference(vrm.scene, staged.camera);
+      staged.scene.remove(vrm.scene);
+      vrmModule.VRMUtils.deepDispose(vrm.scene);
+    };
+    signal?.addEventListener('abort', releaseCandidate, { once: true });
+    try {
+      applyVrm0FixedCameraFacingFix(gltf, vrm, staged);
+      await referenceHost.preparePerspectiveReference(window.THREE, staged, {
+        type: 'vrm', signal, isCurrent,
+      });
+      assertLive();
+      fitVrmManagerCamera(staged, containerId, label, viewport, fit);
+      // Validate renderer resizing and fit before retiring the old animation.
+      const cameraBefore = manager.camera.clone();
+      try {
+        staged.camera = manager.camera;
+        staged.renderer = manager.renderer;
+        staged.effect = manager.effect;
+        fitVrmManagerCamera(staged, containerId, label, viewport, fit);
+      } catch (error) {
+        manager.camera.copy(cameraBefore);
+        throw error;
+      }
+    } catch (error) {
+      releaseCandidate();
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', releaseCandidate);
+    }
+    // No awaits between successful preparation and installation. Disposal
+    // during preparation still owns the old model through the real manager.
+    if (staged.animation) {
+      manager.animation?.dispose?.();
+      manager.animation = staged.animation;
+      manager.animation.manager = manager;
+    }
+    manager.currentModel = candidate;
+    manager.__soccerFixedCameraNormalizeYaw = staged.__soccerFixedCameraNormalizeYaw;
+    manager.scene.add(vrm.scene);
+    manager._cameraTarget = staged._cameraTarget;
+    manager.controls?.target?.copy?.(manager._cameraTarget);
+    if (previous?.vrm?.scene) {
+      const oldScene = previous.vrm.scene;
+      referenceHost.releasePerspectiveReference(oldScene);
       manager.scene.remove(oldScene);
       try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
       catch (error) { console.warn(`[${label}] deepDispose failed:`, error); }
     }
-    manager.scene.add(vrm.scene);
-    manager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
-    // Do not display or fit the loader's T-pose. The reference animation is
-    // prepared below within this controller's cancellable load lifecycle.
-    vrm.scene.visible = false;
+    vrm.scene.visible = true;
 
     if (manager.renderer?.domElement) {
       manager.renderer.domElement.style.opacity = '1';
@@ -187,14 +246,6 @@
     try { await manager.expression?.loadMoodMap?.(modelName); }
     catch (error) { console.warn(`[${label}] mood map load failed:`, error); }
     assertLive();
-    // Soccer already presents wait03 as its idle, so preparation also starts
-    // its presentation animation; there is no second animation load here.
-    await window.NekoMiniGameAvatarHost.preparePerspectiveReference(window.THREE, manager, {
-      type: 'vrm', signal, isCurrent,
-    });
-    assertLive();
-    fitVrmManagerCamera(manager, containerId, label, viewport, fit);
-    vrm.scene.visible = true;
     return manager.currentModel;
   }
 

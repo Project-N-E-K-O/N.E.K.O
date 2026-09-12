@@ -42,8 +42,9 @@ def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
         "async function loadVrmIntoManager",
         1,
     )[1].split("return manager.currentModel;", 1)[0]
-    assert "applyVrm0FixedCameraFacingFix(gltf, vrm, manager);" in helper_section
-    assert "fitVrmManagerCamera(manager, containerId, label, viewport, fit);" in helper_section
+    assert "applyVrm0FixedCameraFacingFix(gltf, vrm, staged);" in helper_section
+    assert "fitVrmManagerCamera(staged, containerId, label, viewport, fit);" in helper_section
+    assert "manager.__soccerFixedCameraNormalizeYaw = staged.__soccerFixedCameraNormalizeYaw;" in helper_section
 
     controller_section = source.split("function createController", 1)[1]
     assert "canvasId: 'player-vrm-canvas'" in controller_section

@@ -231,6 +231,16 @@ async function main() {
       const calls = { added: 0, animated: 0, idle: 0, changed: 0, disposed: 0, released: 0 };
       const vrm = { scene: new THREE.Mesh(new THREE.BoxGeometry(1, 4, 0.5)), meta: { metaVersion: '1' } };
       let manager;
+      windowMock.VRMAnimation = class {
+        constructor(owner) { this.manager = owner; }
+        startLipSync(analyser) { calls.lipStarts = (calls.lipStarts || 0) + 1; calls.analyser = analyser; }
+        stopLipSync() { calls.lipStops = (calls.lipStops || 0) + 1; calls.analyser = null; }
+        async playVRMAAnimation() {
+          calls.idle += 1;
+          if (stage === 'idle') await wait();
+        }
+        dispose() { this.stopLipSync(); }
+      };
       class Manager {
         constructor() {
           manager = this;
@@ -241,10 +251,7 @@ async function main() {
             this.camera.position.z = 70;
             this.renderer = { domElement: { style: {} } };
           } };
-          this.animation = {
-            startLipSync(analyser) { calls.lipStarts = (calls.lipStarts || 0) + 1; calls.analyser = analyser; },
-            stopLipSync() { calls.lipStops = (calls.lipStops || 0) + 1; calls.analyser = null; },
-          };
+          this.animation = new windowMock.VRMAnimation(this);
           this.expression = { loadMoodMap: async () => {
             if (stage === 'mood') await wait();
           } };
@@ -332,7 +339,7 @@ async function main() {
         assert(calls.added === 0 && calls.animated === 0 && calls.idle === 0,
           `${slot}/${stage}: disposed manager restarted model rendering`);
       }
-      if (stage === 'mood') assert(calls.idle === 0, `${slot}: idle started after disposal`);
+      if (stage === 'mood') assert(calls.idle === 1, `${slot}: idle restarted after disposal`);
       if (stage === 'init') assert(calls.disposed === 2, `${slot}: late init resources survived`);
       else assert(calls.released === 1, `${slot}/${stage}: VRM scene was not released exactly once`);
       assert(!manager.currentModel, `${slot}/${stage}: disposed manager retained a model`);
@@ -340,6 +347,7 @@ async function main() {
         `${slot}/${stage}: disposed manager was restored globally`);
     }
   }
+  delete windowMock.VRMAnimation;
   const mouthFrames = new Map();
   let mouthValue = 0;
   const core = {
@@ -433,6 +441,70 @@ async function main() {
     assert(disposed === 1, `${slot}: fitted renderer retained after exit`);
     mesh.geometry.dispose(); mesh.material.dispose();
   }
+  // Failed candidate preparation must preserve the live scene and camera.
+  for (const slot of ['player', 'ai']) for (const paused of [false, true]) {
+    const oldScene = new THREE.Mesh(new THREE.BoxGeometry(1, 2, .5));
+    const empty = new THREE.Group();
+    const singular = oldScene.clone(); singular.scale.y = 0;
+    const nonfinite = oldScene.clone(); nonfinite.position.x = Infinity;
+    const disposedScenes = [];
+    const animations = [];
+    windowMock.VRMAnimation = class {
+      constructor(owner) { this.manager = owner; animations.push(this); }
+      async playVRMAAnimation() { return false; }
+      dispose() { this.disposed = true; }
+    };
+    let manager;
+    windowMock.VRMManager = class {
+      constructor() {
+        manager = this;
+        this.core = { init: async () => {
+          this.scene = new THREE.Scene();
+          this.camera = new THREE.PerspectiveCamera(30, 1, .01, 100);
+          this.camera.position.z = 5;
+          this.renderer = { setSize() {}, domElement: { style: {} } };
+        } };
+      }
+      startAnimateLoop() { this.paused = false; }
+      pauseRendering() { this.paused = true; }
+      resumeRendering() { this.paused = false; }
+      async playVRMAAnimation() { return false; }
+      dispose() { this.currentModel = null; }
+    };
+    const scenes = { '/old.vrm': oldScene, '/empty.vrm': empty,
+      '/singular.vrm': singular, '/nonfinite.vrm': nonfinite };
+    windowMock.loadTestVrmModule = async name => name === 'loader' ? { GLTFLoader: class {
+      register() {}
+      load(path, resolve) { resolve({ userData: { vrm: { scene: scenes[path], meta: { metaVersion: '1' } } } }); }
+    } } : { VRMLoaderPlugin: class {}, VRMUtils: { deepDispose(scene) { disposedScenes.push(scene); } } };
+    const replacementHost = windowMock.createSoccerAvatarHost();
+    const controller = await replacementHost.mount({ slot, model: { type: 'vrm', path: '/old.vrm' },
+      viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+    if (paused) { controller.pause(); await flush(); }
+    const oldModel = manager.currentModel;
+    const oldAnimation = manager.animation;
+    const oldCamera = manager.camera.clone();
+    for (const path of ['/empty.vrm', '/singular.vrm', '/nonfinite.vrm']) {
+      let failure;
+      try { await controller.setModel({ type: 'vrm', path }); } catch (error) { failure = error; }
+      assert(/bounds|singular|finite/.test(failure?.message), 'invalid geometry was accepted');
+      assert(manager.currentModel === oldModel && manager.scene.children.includes(oldScene),
+        `${slot}: failed candidate replaced the live model`);
+      assert(!disposedScenes.includes(oldScene) && oldScene.visible,
+        `${slot}: failed candidate destroyed the old scene`);
+      assert(disposedScenes.filter(scene => scene === scenes[path]).length === 1,
+        `${slot}: failed candidate was not released exactly once`);
+      assert(manager.camera.position.equals(oldCamera.position)
+        && manager.camera.quaternion.equals(oldCamera.quaternion), 'failed candidate changed camera');
+      assert(manager.paused === paused && controller.getState().ready,
+        'failed candidate changed pause/readiness');
+      assert(manager.animation === oldAnimation && !oldAnimation.disposed
+        && animations.at(-1).disposed, 'failed candidate damaged animation ownership');
+    }
+    replacementHost.dispose();
+    oldScene.geometry.dispose(); oldScene.material.dispose();
+  }
+  delete windowMock.VRMAnimation;
   // Exercise the real soccer load order with skinned T-pose bounds cached by
   // the engine before its standing animation lowers both arms.
   for (const { slot, paused } of [{ slot: 'player', paused: false },
