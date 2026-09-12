@@ -191,13 +191,17 @@ global ceilings of 2 MiB and six minutes, while the SDK admits at most eight
 concurrent command requests. Games without `contracts.commands` do not require
 a command transport. A command request schema must have `type: 'object'` because
 the trusted host merges route identity into that request body. It must not
-declare host-owned route identity or memory-policy fields; those values are
+declare host-owned route identity, `_csrf_token`, or memory-policy fields; those values are
 stripped or replaced at the trust boundary. Response schemas may use any
 supported JSON type.
 
-Command responses (including non-2xx bodies) are limited to 2 MiB while reading
+Command and vision responses (including non-2xx bodies) are limited to 2 MiB while reading
 the network stream, before JSON parsing. Oversized responses are cancelled and
 reject with `invalid_response`; normal response JSON/clone behavior is preserved.
+Custom `fetchImpl` implementations must return a standard readable `Response`
+for these size-limited requests; JSON-only response subsets are rejected before
+calling `json()`. Successful command responses must contain valid JSON, including
+when the response schema permits an empty object.
 
 The command deadline covers both transport dispatch and response-body reading.
 Cancellation, route end/reset and client disposal settle waiting callers and

@@ -158,7 +158,12 @@
 
   window.nekoMiniGameSameOriginHostReady = (async () => {
       if (Object.values(registrations).some(record => record.allowedCapabilities.includes('vision'))) {
-        await loadAdapterScript('/static/game/sdk/neko-minigame-vision-host.js', documentImpl, Object.freeze({}));
+        try {
+          await loadAdapterScript('/static/game/sdk/neko-minigame-vision-host.js', documentImpl, Object.freeze({}));
+        } catch (_) {
+          // Vision is optional locally. The adapter negotiates availability;
+          // a required vision capability still fails the normal handshake.
+        }
       }
       await loadAdapterScript(adapterUrl, documentImpl, registrations);
       if (typeof window.createNekoMiniGameSameOriginHost !== 'function') {

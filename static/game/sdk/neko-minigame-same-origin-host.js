@@ -51,7 +51,7 @@
   const HOST_COMMAND_ROUTE_LIMIT = 64;
   const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
   const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
-  const MAX_COMMAND_RESPONSE_BYTES = 2 * 1024 * 1024;
+  const MAX_BOUNDED_RESPONSE_BYTES = 2 * 1024 * 1024;
   const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
   const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
@@ -72,6 +72,7 @@
   // Keep this set symmetric with the SDK's command-contract rejection. These
   // fields are removed before trusted route identity is attached.
   const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    '_csrf_token',
     'session_id', 'sessionId', 'game_type', 'gameType',
     'lanlan_name', 'lanlanName', 'character_name', 'characterName',
     'window_lanlan_name', 'windowLanlanName',
@@ -1085,14 +1086,15 @@
         return replay;
       }
       // Lightweight trusted transports/tests may provide the JSON Response
-      // subset only. Preserve parse failures for the caller's existing policy.
+      // subset only for legacy unbudgeted calls. Never parse an unbounded body
+      // when the operation promises a pre-parse byte limit.
+      if (maxBytes !== undefined) {
+        throw this._hostError('invalid_response', 'A size-limited host response requires a readable body');
+      }
       if (typeof response?.json !== 'function') return response;
       let data;
       let failure;
       try { data = await response.json(); } catch (error) { failure = error; }
-      if (!failure && maxBytes !== undefined && utf8ByteLength(JSON.stringify(data) || '') > maxBytes) {
-        throw this._hostError('invalid_response', 'Host response exceeds its byte limit');
-      }
       const replay = () => ({
         ...response,
         json: async () => { if (failure) throw failure; return data; },
@@ -1730,7 +1732,8 @@
           session_id: identity.sessionId, lanlan_name: identity.lanlanName,
           sdk_route_instance_id: identity.routeInstanceId,
           ...(attached ? {text:text.trim(), attachments} : {prompt:text.trim(), image_data_url:capture.imageDataUrl}),
-        }, { signal: controller.signal, timeoutMs: 60000, operation: 'vision.analyze' });
+        }, { signal: controller.signal, timeoutMs: 60000, operation: 'vision.analyze',
+          maxResponseBytes: MAX_BOUNDED_RESPONSE_BYTES });
         // Body consumption remains under the capture/request lifetime and raw slot.
         const data = await response.json();
         if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
@@ -1853,7 +1856,7 @@
         {
           timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
           maxRequestBytes: policy.maxRequestBytes,
-          maxResponseBytes: MAX_COMMAND_RESPONSE_BYTES,
+          maxResponseBytes: MAX_BOUNDED_RESPONSE_BYTES,
           signal: options.signal,
           operation: 'game_command',
         },

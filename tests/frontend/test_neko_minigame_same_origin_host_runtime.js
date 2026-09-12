@@ -7,12 +7,7 @@ function assert(condition, message) {
 }
 
 function jsonResponse(data, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return data; },
-    clone() { return jsonResponse(data, status); },
-  };
+  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 }
 
 function storage() {
@@ -576,6 +571,12 @@ async function main() {
       `command response ${status} was buffered past its limit or not cancelled`);
   }
   const exactResponse = JSON.stringify({text:'x'.repeat(2 * 1024 * 1024 - 11)});
+  let parsedUnbounded = false;
+  nextCommandResponse = { ok: true, status: 200, json: async () => { parsedUnbounded = true; return {}; } };
+  const unboundedError = await host.executeGameCommand('round:input', commandEnvelope({text:'response'}))
+    .then(() => null, error => error);
+  assert(unboundedError?.code === 'invalid_response' && !parsedUnbounded,
+    'a size-limited command parsed a JSON-only response before rejecting it');
   assert(Buffer.byteLength(exactResponse) === 2 * 1024 * 1024);
   nextCommandResponse = new Response(exactResponse, {headers:{'content-type':'application/json'}});
   const boundedResponse = await host.executeGameCommand('round:input', commandEnvelope({text:'response'}));

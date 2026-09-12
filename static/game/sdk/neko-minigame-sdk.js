@@ -83,6 +83,7 @@
   // contract must describe only caller-owned data: identity and memory policy
   // are stripped or replaced by the trusted host before the backend request.
   const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    '_csrf_token',
     'session_id', 'sessionId', 'game_type', 'gameType',
     'lanlan_name', 'lanlanName', 'character_name', 'characterName',
     'window_lanlan_name', 'windowLanlanName',
@@ -2108,7 +2109,11 @@
     const allowScalarData = options.allowScalarData === true;
     if (value && typeof value.json === 'function') {
       let data = {};
-      try { data = await value.json(); } catch (_) { /* invalid/empty response body */ }
+      try { data = await value.json(); } catch (_) {
+        if (options.strictSuccessJson && value.ok === true) {
+          fail('invalid_response', 'The successful command response must contain valid JSON');
+        }
+      }
       const scalarData = data === null
         || typeof data === 'string'
         || typeof data === 'number'
@@ -3574,7 +3579,7 @@
         maximumTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
         requestOptions,
         invoke: (options) => transport.executeGameCommand(name, envelope, options),
-        consume: value => normalizeTransportResponse(value, { allowScalarData: true }),
+        consume: value => normalizeTransportResponse(value, { allowScalarData: true, strictSuccessJson: true }),
       });
       const requireCurrentCommandRoute = () => {
         const currentSession = runtimeSession();
