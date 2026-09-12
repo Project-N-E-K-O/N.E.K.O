@@ -925,9 +925,10 @@ Binding requires `runtime` and `avatar-renderer`, returns the validated descript
 and only changes this host's local session selection. It does not start a backend
 route, capture voice, or switch the main page's character. Omitted name resolves
 the current character; an unknown explicit name returns `null` without mutation.
-Bind only in `idle`, before character-scoped requests; after such requests or an
-active route, end/reset first. While a binding is pending, another bind/start is
-`busy`. Cancellation, reset, end, page exit, disposal or a changed lifecycle discard
+Bind only in `idle`, before character-scoped requests and Avatar mounting; after
+such requests or an active route, end/reset first. Dispose existing Avatars and
+wait for pending mounts before rebinding. While a binding is pending, another
+bind/start/mount is `busy`. Cancellation, reset, end, page exit, disposal or a changed lifecycle discard
 late selection results. Binding uses the same bounded discovery request slots and
 deadlines. Custom transports may optionally implement synchronous
 `bindRuntimeCharacter(name)` and update `getRuntimeState()` atomically; absent

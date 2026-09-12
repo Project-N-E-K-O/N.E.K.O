@@ -3938,8 +3938,9 @@
         const requested = name === undefined ? '' : avatarCharacterName(name);
         if (characterBindingPending) fail('busy', 'Character binding is pending');
         const canBind = () => runtimePhase === 'idle' && !runtimeRouteEstablished
-          && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked;
-        if (!canBind()) fail('invalid_state', 'Bind before pregame requests; end/reset before changing character');
+          && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked
+          && avatarRenderers.size === 0 && avatarMountsPending === 0;
+        if (!canBind()) fail('invalid_state', 'Bind before pregame requests or avatar mounting; dispose avatars and end/reset before changing character');
         if (typeof transport.bindRuntimeCharacter !== 'function') fail('transport_unavailable', 'Character binding unavailable');
         const generation = avatarQueryGeneration;
         characterBindingPending = true;
@@ -5673,6 +5674,7 @@
       },
       async mount(configInput) {
         requireCapability('avatar-renderer', 'avatar.mount');
+        if (characterBindingPending) fail('busy', 'Character binding is pending');
         if (avatarRenderers.size + avatarMountsPending >= MAX_AVATAR_RENDERERS) {
           fail('busy', 'Avatar renderer limit reached', { limit: MAX_AVATAR_RENDERERS });
         }
@@ -5803,7 +5805,7 @@
 
         function restoreManualSpeaking() {
           if (controllerState.manualSpeaking && !controllerState.disposed && !controllerState.paused
-            && !controllerState.manualSpeakingPending) {
+            && !controllerState.manualSpeakingPending && controllerState.modelChanging === 0) {
             // Optional motion must not replace a model/resume result or error.
             void updateManualSpeaking(true).catch(() => {});
           }

@@ -72,6 +72,7 @@ async function main() {
   let pauseFailure = '';
   let modelFailure = false;
   let manualBlocker = null;
+  let modelBlocker = null;
   const calls = new Map();
   const manual = new Map();
   const manualCalls = [];
@@ -112,6 +113,7 @@ async function main() {
         }, resume() {},
         async setModel() {
           if (modelFailure) throw new Error('model rejected');
+          if (modelBlocker) await modelBlocker;
           manual.set(config.slot, false); return 'model loaded';
         },
         setSpeaking(active) {
@@ -320,6 +322,23 @@ async function main() {
       if (action === 'end') { game.runtime.reset(); await game.runtime.start(); await flush(); }
     }
     await restoring.setSpeaking(true);
+    const replacing = await mount('late-stop-replacing', 'Neko'); await flush();
+    await replacing.setSpeaking(true);
+    let finishOldStop, finishReplacement;
+    manualBlocker = new Promise(resolve => { finishOldStop = resolve; });
+    const oldStop = replacing.setSpeaking(false).catch(error => error); await flush();
+    modelBlocker = new Promise(resolve => { finishReplacement = resolve; });
+    const replacement = replacing.setModel({type:'vrm',path:'/replacement.vrm'}); await flush();
+    for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+    await flush(); assert.equal((await oldStop).code, 'timeout');
+    manualBlocker = null; finishOldStop(); await flush();
+    assert.deepEqual(manualCalls.filter(([slot]) => slot === 'late-stop-replacing').map(([,active]) => active),
+      [true, false], 'manual motion restored before model replacement completed');
+    modelBlocker = null; finishReplacement(); await replacement; await flush();
+    assert.equal(manual.get('late-stop-replacing'), true);
+    assert.deepEqual(manualCalls.filter(([slot]) => slot === 'late-stop-replacing').map(([,active]) => active),
+      [true, false, true], 'new model did not restore manual motion exactly once');
+    replacing.dispose(); await flush();
     let releaseManual;
     manualBlocker = new Promise(resolve => { releaseManual = resolve; });
     const changed = restoring.setModel({ type: 'vrm', path: '/new.vrm' }); await flush();

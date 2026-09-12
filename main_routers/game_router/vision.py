@@ -12,12 +12,17 @@ from fastapi import Request
 from PIL import Image
 
 from main_routers.system_router._shared import _validate_local_mutation_request
-from utils.game_vision import MAX_DATA_URL_CHARS, analyze_game_vision, run_vision_preprocessing
+from utils.game_vision import MAX_DATA_URL_CHARS, MAX_IMAGES, MAX_TOTAL_BYTES, analyze_game_vision, run_vision_preprocessing
 from utils.game_route_state import _get_active_game_route_state
 
 from ._shared import router
 
-MAX_BODY_BYTES = 8 * 1024 * 1024 + 96 * 1024
+# Admission budget for normally serialized JSON: independently padded base64,
+# data-URL prefixes, and up to 12 ASCII escape bytes per Unicode code point in
+# text/labels/route identities. Envelope/CSRF framing retains 4 KiB headroom.
+# Field and decoded-image limits still apply after this bounded streaming read.
+MAX_BODY_BYTES = (4 * ((MAX_TOTAL_BYTES + 2 * MAX_IMAGES) // 3) + 64 * MAX_IMAGES
+                  + 12 * (16384 + 128 * MAX_IMAGES + 3 * 128) + 4096)
 MAX_ACTIVE_OPERATIONS = 4
 REQUEST_TIMEOUT = 55.0
 # Raw operations retain their slot until settlement even if a provider ignores

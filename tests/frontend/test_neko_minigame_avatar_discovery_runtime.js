@@ -375,6 +375,45 @@ async function characterBinding() {
   assert.equal((await outputGame.runtime.bindCharacter()).name, 'Neko');
   outputGame.dispose(); assert.equal(outputEnv.timers.size, 0);
 
+  for (const order of ['mounted', 'mount-pending', 'bind-pending', 'mount-failed']) {
+    const mountGate = deferred(); const bindGate = deferred();
+    const other = {...descriptor, name:'Other'};
+    let mounted = 0;
+    const e = await environment(() => ({
+      async mount() {
+        mounted++;
+        if (order === 'mount-pending') await mountGate.promise;
+        if (order === 'mount-failed') throw new Error('mount failed');
+        return {dispose() {}};
+      },
+      getCharacter: () => order === 'bind-pending' ? bindGate.promise : other,
+      dispose() {},
+    }));
+    const h = e.host(); const client = await e.game(h);
+    const config = {slot:'opponent', characterName:'Neko', model:descriptor.model,
+      viewport:{mode:'fixed',width:200,height:300}, resize:{mode:'fixed'}};
+    try {
+      if (order === 'bind-pending') {
+        const binding = client.runtime.bindCharacter('Other'); await tick();
+        await assert.rejects(client.avatar.mount(config), {code:'busy'});
+        assert.equal(mounted, 0, 'mount reached provider during character binding');
+        bindGate.resolve(other); await binding;
+      } else if (order === 'mount-failed') {
+        await assert.rejects(client.avatar.mount(config));
+        assert.equal((await client.runtime.bindCharacter('Other')).name, 'Other');
+      } else {
+        const mounting = client.avatar.mount(config); await tick();
+        if (order === 'mounted') await mounting;
+        await assert.rejects(client.runtime.bindCharacter('Other'), {code:'invalid_state'});
+        assert.equal(h.routeLanlanName, '', 'mount race rebound the host');
+        mountGate.resolve(); const controller = await mounting;
+        controller.dispose();
+        assert.equal((await client.runtime.bindCharacter('Other')).name, 'Other');
+      }
+    } finally { mountGate.resolve(); bindGate.resolve(other); client.dispose(); }
+    assert.equal(e.timers.size, 0);
+  }
+
   for (const action of ['reset', 'abort', 'timeout', 'dispose']) {
     const gate = deferred();
     const e = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: () => gate.promise }));

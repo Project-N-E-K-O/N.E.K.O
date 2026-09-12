@@ -419,7 +419,10 @@
         if (configured.type === 'mmd') configured.path = path;
       }
       if (configured.type === 'live2d' || configured.paths.live2d) {
-        const path = await resolveLive2DPath(requested, configured.paths.live2d, requestOptions);
+        // An optional fallback is only advertised when canonical resolution
+        // succeeds. Preserve the existing primary Live2D compatibility path.
+        const path = await resolveLive2DPath(requested,
+          configured.type === 'live2d' ? configured.paths.live2d : '', requestOptions);
         configured.paths = Object.freeze({ ...configured.paths, live2d: path });
         if (configured.type === 'live2d') configured.path = path;
       }

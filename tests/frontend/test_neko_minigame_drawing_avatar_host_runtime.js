@@ -615,12 +615,16 @@ async function main() {
   };
   let liveModelFetchGate = null;
   let onLiveModelFetch = null;
+  let canonicalFailure = '';
 
   const fetchImpl = async (url) => {
     const target = String(url);
     if (target === '/api/characters') return jsonResponse({ 猫娘: characters, 当前猫娘: 'Live Neko' });
     if (target === '/api/characters/current_catgirl') return jsonResponse({ current_catgirl: 'Live Neko' });
     if (target.includes('/api/characters/current_live2d_model?')) {
+      if (canonicalFailure === 'network') throw new Error('canonical unavailable');
+      if (canonicalFailure === 'json') return {ok:true, json:async () => { throw new SyntaxError('bad JSON'); }};
+      if (canonicalFailure === 'not-found') return jsonResponse({success:false});
       return jsonResponse({ success: true, model_info: { path: '/resolved/live.model3.json' } });
     }
     if (target.startsWith('/api/game/sdk-avatar/character?')) {
@@ -1060,6 +1064,20 @@ async function main() {
     type:'live2d',path:'example/example.model3.json',
   }))))?.code === 'model_not_allowed', 'raw Live2D fallback alias remained authorized');
   calls.splice(liveFallbackCallsStart);
+
+  for (const failure of ['not-found', 'network', 'json']) {
+    canonicalFailure = failure;
+    const unavailable = await host.getCharacter('Live2D Fallback Example');
+    assert(unavailable.model.type === 'pngtuber', `${failure}: optional failure removed the primary`);
+    assert(!unavailable.fallbackModels.some(model => model.type === 'live2d'),
+      `${failure}: unresolved Live2D fallback was exposed`);
+    assert((await rejection(host.mount(mountConfig('Live2D Fallback Example', {
+      type:'live2d',path:'example/example.model3.json',
+    }))))?.code === 'model_not_allowed', `${failure}: unresolved fallback was authorized`);
+  }
+  canonicalFailure = '';
+  assert((await host.getCharacter('Live2D Fallback Example')).fallbackModels.some(model =>
+    model.type === 'live2d' && model.path === '/resolved/live.model3.json'), 'canonical lookup did not recover');
 
   const rendererCallsBeforeAttacks = calls.length;
   const forgedNameError = await rejection(host.mount(mountConfig('Forged Neko', current.model)));
