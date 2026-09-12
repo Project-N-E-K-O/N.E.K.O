@@ -322,6 +322,89 @@ def _has_playwright_browser() -> bool:
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("activity_context", ("play", "work"))
+def test_context_prompt_is_skipped_while_internal_game_route_is_active(
+    mock_page: Page,
+    activity_context: str,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: true,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+            window.__contextPromptCalls = 0;
+            window.showDecisionPrompt = async function() {
+                window.__contextPromptCalls += 1;
+                return 'decline';
+            };
+        """,
+        script_names=("app/app-context-prompt.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async (context) => {
+            await window.appContextPrompt.handle(context);
+            window.appState.gameRouteActive = false;
+            await window.appContextPrompt.handle(context);
+            return { calls: window.__contextPromptCalls };
+        }
+        """,
+        activity_context,
+    )
+
+    assert result["calls"] == 0
+
+
+@pytest.mark.frontend
+def test_open_context_prompt_is_dismissed_when_internal_game_opens(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: false,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+        """,
+        script_names=("common_dialogs.js", "app/app-context-prompt.js"),
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__contextPromptSettled = false;
+            window.appContextPrompt.handle('play').then(function () {
+                window.__contextPromptSettled = true;
+            });
+        }
+        """
+    )
+    mock_page.wait_for_selector(".modal-overlay")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.appState.gameRouteActive = true;
+            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                detail: { action: 'opened', gameType: 'drawing_guess' },
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__contextPromptSettled && !document.querySelector('.modal-overlay')",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
 def test_yui_intro_activation_targets_compact_chat_input_shell_without_click_whitelist(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -5862,6 +5945,130 @@ def test_interrupted_icebreaker_ignores_another_characters_snapshot(mock_page: P
 
 
 @pytest.mark.frontend
+def test_icebreaker_free_text_release_dispatches_galgame_handoff_for_release_message(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__icebreakerBridgeEvents = [];
+            window.__routeEndCount = 0;
+            window.nekoElectronIcebreakerBridge = {
+                send: (message) => window.__icebreakerBridgeEvents.push(message),
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test-token' }),
+            };
+            localStorage.setItem('i18nextLng', 'en');
+        """,
+        fetch_js="""
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({
+                    days: {
+                        '1': {
+                            root: 'root',
+                            fallback: {
+                                releaseKey: 'fallback.release',
+                                releaseVoiceKey: 'fallback.release.voice',
+                            },
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [{ id: 'A', labelKey: 'root.A', next: 'root' }],
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Question',
+                    'root.A': 'Answer',
+                    'fallback.release': 'Let us continue normally.',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/free-text/interpret' && method === 'POST') {
+                return jsonResponse({
+                    ok: true,
+                    action: 'release',
+                    choice: '',
+                    reply: 'Let us continue normally.',
+                    topic_state: 'soft_derail',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                window.__routeEndCount += 1;
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=(
+            "tutorial/icebreaker/free-text-runtime.js",
+            "tutorial/icebreaker/new-user-icebreaker.js",
+        ),
+    )
+
+    mock_page.evaluate("() => window.newUserIcebreaker.start(1)")
+    mock_page.wait_for_function(
+        """() => window.__icebreakerBridgeEvents.some(
+            (event) => event.action === 'icebreaker_set_choice_prompt'
+        )"""
+    )
+    session_id = mock_page.evaluate("() => window.newUserIcebreaker.getActiveSession().sessionId")
+    mock_page.evaluate(
+        """(sessionId) => window.dispatchEvent(new CustomEvent(
+            'neko:icebreaker-free-text-submitted',
+            { detail: { sessionId, text: '聊点别的', requestId: 'free-release-1' } }
+        ))""",
+        session_id,
+    )
+    mock_page.wait_for_function(
+        """() => window.__icebreakerBridgeEvents.some(
+            (event) => event.action === 'icebreaker_galgame_handoff'
+        )"""
+    )
+
+    result = mock_page.evaluate(
+        """() => {
+            const messages = window.__icebreakerBridgeEvents
+                .filter((event) => event.action === 'icebreaker_append_chat_message')
+                .map((event) => event.message);
+            const handoff = window.__icebreakerBridgeEvents.find(
+                (event) => event.action === 'icebreaker_galgame_handoff'
+            );
+            return {
+                activeSession: window.newUserIcebreaker.getActiveSession(),
+                routeEndCount: window.__routeEndCount,
+                roles: messages.map((message) => message.role),
+                finalText: messages.at(-1).blocks[0].text,
+                handoffMatchesFinalMessage: handoff.detail.messageId === messages.at(-1).id,
+                handoffSessionId: handoff.detail.sessionId,
+            };
+        }"""
+    )
+
+    assert result == {
+        "activeSession": None,
+        "routeEndCount": 1,
+        "roles": ["assistant", "user", "assistant"],
+        "finalText": "Let us continue normally.",
+        "handoffMatchesFinalMessage": True,
+        "handoffSessionId": session_id,
+    }
+
+
+@pytest.mark.frontend
 def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succeed(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -5979,19 +6186,34 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             localStorage.getItem('neko.new_user_icebreaker.v1')
         ).days['1'].completed === true"""
     )
+    mock_page.wait_for_function(
+        """() => window.__icebreakerBridgeEvents.some(
+            (event) => event.action === 'icebreaker_galgame_handoff'
+        )"""
+    )
     completed = mock_page.evaluate(
-        """() => ({
-            routeEndCount: window.__routeEndCount,
-            routeStateCount: window.__routeStateCount,
-            messages: window.__icebreakerBridgeEvents
+        """() => {
+            const messageEvents = window.__icebreakerBridgeEvents
                 .filter((event) => event.action === 'icebreaker_append_chat_message')
-                .map((event) => event.message.role),
-        })"""
+            const handoff = window.__icebreakerBridgeEvents.find(
+                (event) => event.action === 'icebreaker_galgame_handoff'
+            );
+            return {
+                routeEndCount: window.__routeEndCount,
+                routeStateCount: window.__routeStateCount,
+                messages: messageEvents.map((event) => event.message.role),
+                handoffMatchesFinalMessage: handoff.detail.messageId
+                    === messageEvents[messageEvents.length - 1].message.id,
+                handoffSessionId: handoff.detail.sessionId,
+            };
+        }"""
     )
     assert completed == {
         "routeEndCount": 2,
         "routeStateCount": 2,
         "messages": ["assistant", "user", "assistant"],
+        "handoffMatchesFinalMessage": True,
+        "handoffSessionId": session_id,
     }
 
 

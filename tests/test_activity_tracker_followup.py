@@ -1570,6 +1570,34 @@ def test_context_prompt_pending_cleared_on_leaving_target_state():
     assert tracker._context_prompt_pending is None
 
 
+@pytest.mark.unit
+def test_context_prompt_is_consumed_without_push_during_internal_game(monkeypatch):
+    """Do not prompt for screen sharing while an internal game route is active."""
+    tracker = _make_tracker_for_break_tests()
+    tracker._context_prompt_pending = {'context': 'play', 'set_at': 1000.0}
+    pushed = []
+    route_active = {'value': True}
+
+    async def _push(context):
+        pushed.append(context)
+
+    tracker.set_context_prompt_callback(_push)
+    monkeypatch.setattr(
+        'main_logic.activity.tracker.is_game_route_active',
+        lambda lanlan_name: lanlan_name == 'test_lanlan' and route_active['value'],
+    )
+
+    asyncio.run(tracker._drain_context_prompt())
+
+    assert tracker._context_prompt_pending is None
+    assert pushed == []
+
+    route_active['value'] = False
+    tracker._context_prompt_pending = {'context': 'work', 'set_at': 1020.0}
+    asyncio.run(tracker._drain_context_prompt())
+    assert pushed == ['work']
+
+
 def test_break_acc_advances_during_focused_work():
     """Accumulator credits real time spent in focused_work."""
     tracker = _make_tracker_for_break_tests()

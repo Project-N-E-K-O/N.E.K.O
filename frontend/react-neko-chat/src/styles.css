@@ -831,7 +831,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   padding: 10px 14px 8px;
   position: relative;
   border-bottom: 1px solid rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, calc(0.75 * var(--neko-chat-opacity-factor, 1)));
   backdrop-filter: blur(48px) saturate(180%);
   -webkit-backdrop-filter: blur(48px) saturate(180%);
   box-shadow:
@@ -968,7 +968,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 .chat-body {
   min-height: 0;
   padding: 0;
-  background: rgba(255, 255, 255, 0.91);
+  background: rgba(255, 255, 255, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
   position: relative;
 }
 
@@ -1601,7 +1601,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   padding: 6px;
   position: relative;
   z-index: 15;
-  background: rgba(255, 255, 255, 0.91);
+  background: rgba(255, 255, 255, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
   min-width: 0;
 }
 
@@ -1750,7 +1750,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   min-width: 0;
   padding: 0 16px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.91);
+  background: rgba(255, 255, 255, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
   border: 1.5px solid rgba(127, 144, 170, 0.25);
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
   box-shadow:
@@ -1760,7 +1760,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .composer-input-shell:focus-within {
   border-color: rgba(64, 197, 241, 0.55);
-  background: rgba(255, 255, 255, 0.91);
+  background: rgba(255, 255, 255, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
     0 0 0 3px rgba(64, 197, 241, 0.14),
@@ -2645,26 +2645,32 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     + var(--compact-chat-minimize-ball-gap)
   );
   --compact-chat-surface-bg:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(242, 249, 255, 0.42) 46%, rgba(219, 238, 253, 0.48));
+    linear-gradient(180deg,
+      rgba(255, 255, 255, calc(0.58 * var(--neko-chat-opacity-factor, 1))),
+      rgba(242, 249, 255, calc(0.42 * var(--neko-chat-opacity-factor, 1))) 46%,
+      rgba(219, 238, 253, calc(0.48 * var(--neko-chat-opacity-factor, 1))));
   --compact-chat-capsule-surface-bg:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 249, 255, 0.68) 46%, rgba(219, 238, 253, 0.72));
-  --compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);
-  --compact-chat-surface-edge-right: rgba(255, 255, 255, 0.15);
-  --compact-chat-surface-edge-bottom: rgba(255, 255, 255, 0.06);
-  --compact-chat-surface-edge-left: rgba(255, 255, 255, 0.35);
-  --compact-chat-surface-glow: rgba(255, 255, 255, 0.2);
+    linear-gradient(180deg,
+      rgba(255, 255, 255, calc(0.78 * var(--neko-chat-opacity-factor, 1))),
+      rgba(242, 249, 255, calc(0.68 * var(--neko-chat-opacity-factor, 1))) 46%,
+      rgba(219, 238, 253, calc(0.72 * var(--neko-chat-opacity-factor, 1))));
+  --compact-chat-surface-edge-top: rgba(255, 255, 255, calc(0.7 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-right: rgba(255, 255, 255, calc(0.15 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-bottom: rgba(255, 255, 255, calc(0.06 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-left: rgba(255, 255, 255, calc(0.35 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-glow: rgba(255, 255, 255, calc(0.2 * var(--neko-chat-opacity-factor, 1)));
   --compact-chat-surface-shadow:
     0 8px 20px rgba(12, 20, 34, 0.16),
     0 2px 7px rgba(49, 104, 154, 0.08),
     inset 0 2px 4px rgba(255, 255, 255, 0.34),
     inset 0 -1px 2px rgba(68, 126, 176, 0.08);
-  --compact-chat-highlight-top: rgba(255, 255, 255, 0.46);
-  --compact-chat-highlight-bottom: rgba(255, 255, 255, 0.08);
-  --compact-chat-highlight-left: rgba(255, 255, 255, 0.14);
-  --compact-chat-highlight-right: rgba(255, 255, 255, 0.06);
-  --compact-chat-refraction-blue: rgba(100, 180, 255, 0.18);
-  --compact-chat-refraction-violet: rgba(180, 140, 255, 0.12);
-  --compact-chat-refraction-rose: rgba(240, 150, 200, 0.09);
+  --compact-chat-highlight-top: rgba(255, 255, 255, calc(0.46 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-bottom: rgba(255, 255, 255, calc(0.08 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-left: rgba(255, 255, 255, calc(0.14 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-right: rgba(255, 255, 255, calc(0.06 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-blue: rgba(100, 180, 255, calc(0.18 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-violet: rgba(180, 140, 255, calc(0.12 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-rose: rgba(240, 150, 200, calc(0.09 * var(--neko-chat-opacity-factor, 1)));
   position: relative;
   overflow: hidden;
   isolation: isolate;
@@ -2688,7 +2694,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     var(--compact-chat-surface-edge-bottom)
     var(--compact-chat-surface-edge-left);
   border-radius: 999px;
-  background-color: rgba(255, 255, 255, 0.035);
+  background-color: rgba(255, 255, 255, calc(0.035 * var(--neko-chat-opacity-factor, 1)));
   box-shadow: var(--compact-chat-surface-shadow);
   backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);
   -webkit-backdrop-filter: blur(36px) saturate(0.9) contrast(0.78) brightness(1.08);
@@ -2796,7 +2802,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   z-index: 1;
   border-radius: inherit;
   background-image:
-    linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, 0.05) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, 0.05) 100%),
+    linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 100%),
     radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%),
     radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%),
     radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
@@ -6507,8 +6513,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .window-topbar {
   background:
     linear-gradient(180deg,
-      rgba(50, 50, 72, 0.6) 0%,
-      rgba(38, 38, 58, 0.5) 100%);
+      rgba(50, 50, 72, calc(0.6 * var(--neko-chat-opacity-factor, 1))) 0%,
+      rgba(38, 38, 58, calc(0.5 * var(--neko-chat-opacity-factor, 1))) 100%);
   border-bottom-color: rgba(255, 255, 255, 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
@@ -6520,9 +6526,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(105deg,
       rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.06) 35%,
+      rgba(255, 255, 255, calc(0.06 * var(--neko-chat-opacity-factor, 1))) 35%,
       rgba(255, 255, 255, 0) 50%,
-      rgba(140, 180, 255, 0.04) 70%,
+      rgba(140, 180, 255, calc(0.04 * var(--neko-chat-opacity-factor, 1))) 70%,
       rgba(255, 255, 255, 0) 100%);
 }
 
@@ -6558,7 +6564,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .chat-body {
-  background: rgba(28, 28, 46, 0.91);
+  background: rgba(28, 28, 46, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
 }
 
 /* --- 消息列表滚动条 --- */
@@ -6755,7 +6761,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 /* --- 输入区域 --- */
 [data-theme="dark"] .composer-panel {
-  background: rgba(28, 28, 46, 0.91);
+  background: rgba(28, 28, 46, calc(0.91 * var(--neko-chat-opacity-factor, 1)));
 }
 
 [data-theme="dark"] .composer-attachment-viewport {
@@ -6949,7 +6955,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .composer-input-shell {
-  background: rgba(42, 42, 60, 0.85);
+  background: rgba(42, 42, 60, calc(0.85 * var(--neko-chat-opacity-factor, 1)));
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -6958,7 +6964,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .composer-input-shell:focus-within {
   border-color: rgba(64, 197, 241, 0.4);
-  background: rgba(48, 48, 74, 0.85);
+  background: rgba(48, 48, 74, calc(0.85 * var(--neko-chat-opacity-factor, 1)));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 0 0 3px rgba(64, 197, 241, 0.1),
@@ -6979,27 +6985,33 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .compact-chat-surface-frame {
   --compact-chat-surface-bg:
-    linear-gradient(180deg, rgba(31, 48, 66, 0.80), rgba(15, 29, 46, 0.76) 58%, rgba(8, 17, 30, 0.72));
+    linear-gradient(180deg,
+      rgba(31, 48, 66, calc(0.80 * var(--neko-chat-opacity-factor, 1))),
+      rgba(15, 29, 46, calc(0.76 * var(--neko-chat-opacity-factor, 1))) 58%,
+      rgba(8, 17, 30, calc(0.72 * var(--neko-chat-opacity-factor, 1))));
   --compact-chat-capsule-surface-bg:
-    linear-gradient(180deg, rgba(31, 48, 66, 0.86), rgba(15, 29, 46, 0.82) 58%, rgba(8, 17, 30, 0.78));
-  --compact-chat-surface-edge-top: rgba(196, 228, 255, 0.44);
-  --compact-chat-surface-edge-right: rgba(156, 207, 249, 0.13);
-  --compact-chat-surface-edge-bottom: rgba(132, 189, 232, 0.07);
-  --compact-chat-surface-edge-left: rgba(177, 216, 255, 0.24);
-  --compact-chat-surface-glow: rgba(176, 219, 255, 0.1);
+    linear-gradient(180deg,
+      rgba(31, 48, 66, calc(0.86 * var(--neko-chat-opacity-factor, 1))),
+      rgba(15, 29, 46, calc(0.82 * var(--neko-chat-opacity-factor, 1))) 58%,
+      rgba(8, 17, 30, calc(0.78 * var(--neko-chat-opacity-factor, 1))));
+  --compact-chat-surface-edge-top: rgba(196, 228, 255, calc(0.44 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-right: rgba(156, 207, 249, calc(0.13 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-bottom: rgba(132, 189, 232, calc(0.07 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-edge-left: rgba(177, 216, 255, calc(0.24 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-surface-glow: rgba(176, 219, 255, calc(0.1 * var(--neko-chat-opacity-factor, 1)));
   --compact-chat-surface-shadow:
     0 8px 20px rgba(0, 0, 0, 0.28),
     0 2px 7px rgba(0, 0, 0, 0.16),
     inset 0 2px 4px rgba(225, 242, 255, 0.12),
     inset 0 -1px 2px rgba(0, 0, 0, 0.18);
-  --compact-chat-highlight-top: rgba(225, 242, 255, 0.18);
-  --compact-chat-highlight-bottom: rgba(177, 216, 255, 0.05);
-  --compact-chat-highlight-left: rgba(177, 216, 255, 0.09);
-  --compact-chat-highlight-right: rgba(177, 216, 255, 0.04);
-  --compact-chat-refraction-blue: rgba(90, 174, 255, 0.16);
-  --compact-chat-refraction-violet: rgba(170, 125, 255, 0.11);
-  --compact-chat-refraction-rose: rgba(235, 120, 190, 0.07);
-  background: rgba(12, 22, 35, 0.1);
+  --compact-chat-highlight-top: rgba(225, 242, 255, calc(0.18 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-bottom: rgba(177, 216, 255, calc(0.05 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-left: rgba(177, 216, 255, calc(0.09 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-highlight-right: rgba(177, 216, 255, calc(0.04 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-blue: rgba(90, 174, 255, calc(0.16 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-violet: rgba(170, 125, 255, calc(0.11 * var(--neko-chat-opacity-factor, 1)));
+  --compact-chat-refraction-rose: rgba(235, 120, 190, calc(0.07 * var(--neko-chat-opacity-factor, 1)));
+  background: rgba(12, 22, 35, calc(0.1 * var(--neko-chat-opacity-factor, 1)));
 }
 
 [data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],

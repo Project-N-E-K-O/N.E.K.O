@@ -1058,6 +1058,10 @@
         "connectionError": "連接錯誤"
     },
     "api": {
+    "imageModelConfig": "圖片生成",
+    "imageModelExamplePlaceholder": "例如 gpt-image-2、wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "自訂端點金鑰；預設服務商使用 API 管理簿金鑰",
+    "imageDisabled": "未設定",
         "settings": "API Key 設置",
         "settingsTitle": "API Key 設置 - Project Lanlan",
         "quickStart": "快速開始",
@@ -5226,7 +5230,14 @@
          }
     },
     "airBasketball": {"title":"空氣投籃","timeLeft":"剩餘","seconds":"秒","you":"你","anglePower":"角度 × 力度","autoChallenge":"自動挑戰","score":"得分","stage":"階段","combo":"連中","time":"時間","stageTarget":"下一階段","power":"力度","angle":"角度","fever":"爆發","gestureHint":"按住籃球，拖動蓄力後放開投籃","playerControl":"由你控制","aiControl":"自動控制","nekoReady":"貓娘準備中","nekoAiming":"貓娘瞄準中","nekoFever":"貓娘爆發中","nekoHit":"呀！","intro":"雙方共享同一套專注與計分規則；投籃和搗亂都要掌握節奏。","ruleAim":"角度力度","ruleStage":"四段籃框","ruleFever":"連續爆發","start":"開始比賽","again":"再來一局","swish":"空心！","basket":"命中！","miss":"差一點","stageUp":"階段","feverOn":"爆發！×2","win":"你贏了！","lose":"貓娘勝出","draw":"平局！","chat":"邊玩邊聊","interference":"專注","interfereHint":"拖動籃球、籃框，或拍打貓娘干擾她","disrupted":"被搗亂了！","soundOff":"關閉音效","soundOn":"開啟音效","crossScore":"越界入框！","ballClash":"撞球！","stolenBall":"球權變了！","chaosBall":"{name} 丟來一顆球！","nekoCountering":"{name} 準備反擊","chooseMode":"選擇比賽模式","timedMode":"限時對決","timedModeHint":"60 秒衝分，時間到自動結算","endlessMode":"自由胡鬧","endlessModeHint":"不限時間，想停時隨時結算","endlessIntro":"不限時間地投籃、撞球和互相搗亂；想停時隨時結算比分。","stopMatch":"結束本局","elapsed":"已玩","opponentReady":"{name} 準備中","opponentAiming":"{name} 瞄準中","opponentFever":"{name} 爆發中","opponentWin":"{name} 勝出","mouseStealCaught":"{name} 搶走了滑鼠！","mouseStealEscape":"快速甩動滑鼠掙脫","mouseStealEscaped":"掙脫成功！","mouseStealReleased":"{name} 玩夠了","mouseStealStatus":"{name} 正在搶滑鼠","voiceOpening":["來吧，看看誰先投順手。"],"voiceChaos":["接住這個！"],"voiceScore":["這球很輕鬆。"],"voiceHit":["喂，不許打人！"],"voiceMouseSteal":["滑鼠借我玩一下！"],"voiceWin":["這局是我贏啦。"],"voiceLose":["好吧，這局算你厲害。"],"arenaLabel":"雙人投籃賽場","playerArcadeLabel":"玩家投籃機","opponentArcadeLabel":"對手投籃機","avatarLabel":"可以拖動或拍打干擾的目前角色","avatarUnavailable":"角色資源暫不可用","closeChat":"關閉聊天"},
-    "soccer": {
+   "soccer": {
+        "settings": {
+            "button": "設定",
+            "title": "遊戲設定",
+            "game": "遊戲",
+            "audio": "音量",
+            "debug": "偵錯"
+        },
         "exitGame": {
             "button": "退出遊戲",
             "ending": "正在退出本局…",
@@ -5236,6 +5247,7 @@
         },
         "startScreen": {
             "readyToStart": "準備完成，點擊開始",
+            "startFailedRetry": "啟動失敗，請重試",
             "ready": "準備完成",
             "startButton": "開始"
         },
@@ -5257,7 +5269,21 @@
             "voiceButton": "除錯語音",
             "voicePlaceholder": "除錯：輸入最終轉寫後按 Enter",
             "send": "送出",
-            "voiceStatusHidden": "除錯 STT：隱藏"
+            "voiceStatusHidden": "除錯 STT：隱藏",
+            "voiceVolumeHint": "點擊可靜音或恢復。無法調整正在播放的語音音量。"
+        },
+        "voiceChat": {
+            "label": "語音對話",
+            "connecting": "正在連接主語音入口…",
+            "unavailable": "主語音入口暫不可用",
+            "idle": "點擊開啟語音對話",
+            "starting": "正在開啟語音對話…",
+            "stopping": "正在關閉語音對話…",
+            "active": "語音對話已開啟",
+            "muted": "語音對話已開啟 · 麥克風靜音",
+            "failed": "語音對話控制失敗，請在主頁面重試",
+            "start": "開啟語音對話",
+            "stop": "關閉語音對話"
         },
         "surrenderReminder": {
             "label": "認輸提醒"
@@ -5336,6 +5362,178 @@
         "memoryOption": {
             "label": "本局對話進入記憶（預設不啟用）",
             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        }
+    },
+    "drawingGuess": {
+        "title": "你畫我猜",
+        "eyebrow": "陪伴活動",
+        "subtitle": "和貓娘一起畫畫、猜圖和聊天。",
+        "status": {
+            "loadingCharacter": "正在讀取目前角色",
+            "missingCharacter": "等待角色資訊",
+            "ready": "準備好了",
+            "starting": "正在啟動遊戲路由",
+            "active": "路由已接管",
+            "ending": "正在結束",
+            "ended": "已結束",
+            "failed": "路由啟動失敗",
+            "heartbeatLost": "路由已失效"
+        },
+        "layout": {
+            "character": "角色",
+            "session": "會話",
+            "canvasTitle": "畫布",
+            "tools": "繪畫工具",
+            "canvasWaitingTitle": "畫布準備中",
+            "canvasWaiting": "開始後會先由貓娘畫，你來猜；接著你有 5 分鐘畫圖給她猜。",
+            "actions": "遊戲操作",
+            "sideResize": "調整模型和聊天區域比例",
+            "modelTitle": "貓娘在場",
+            "modelFallbackTitle": "模型槽位已預留",
+            "modelFallback": "後續會在這裡載入目前角色 Live2D 或 VRM；載入失敗時也會保留同位置 fallback。",
+            "chatTitle": "遊戲聊天"
+        },
+        "tools": {
+            "brush": "畫筆",
+            "eraser": "橡皮擦",
+            "bucket": "油漆桶",
+            "undo": "復原",
+            "redo": "重做",
+            "color": "顏色",
+            "size": "粗細",
+            "eyedropper": "取色器",
+            "basicColors": "基礎顏色",
+            "historyColors": "歷史顏色"
+        },
+        "tutorial": {
+            "title": "開始前",
+            "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 5 分鐘會自動交給她猜。",
+            "memoryTitle": "記憶選項",
+            "memoryNone": "不記錄，僅本次玩。",
+            "memorySummary": "可以記錄一句遊戲概要。",
+            "quickTitle": "簡易玩法",
+            "quickDraw": "輪到你畫時，抽一張題目牌，在畫布上畫完後點「畫好了」。",
+            "quickGuess": "輪到你猜時，在聊天框裡輸入猜測，也可以一邊聊天一邊要提示。",
+            "quickSummary": "每輪結算會保留縮圖，最終結算裡可以儲存畫作。",
+            "voiceHint": "想用語音時，直接點擊聊天輸入框左側的麥克風按鈕。"
+        },
+        "actions": {
+            "start": "開始",
+            "end": "結束",
+            "retryCharacter": "重新讀取角色",
+            "send": "送出",
+            "done": "畫好了",
+            "nextRound": "下一輪",
+            "clearCanvas": "清空畫布",
+            "saveNekoSvg": "儲存為 SVG",
+            "saveNekoPng": "儲存為 PNG",
+            "saveUserPng": "儲存我的畫"
+        },
+        "voice": {
+            "connected": "本局語音已開啟，點擊可關閉。",
+            "connectHint": "點擊為這一局開啟語音。",
+            "connectedNotice": "本局語音已開啟。",
+            "connectHintNotice": "本局語音已關閉。",
+            "starting": "正在切換語音輸入…",
+            "unavailable": "目前環境不支援局內語音。",
+            "controlFailed": "語音操作失敗：{{reason}}",
+            "routeNotReady": "先等遊戲路由準備好，再使用語音。",
+            "buttonLabel": "語音輸入"
+        },
+        "exitConfirm": {
+            "title": "要離開嗎？",
+            "message": "最終結算已經整理好了。要離開這個小遊戲頁面嗎？",
+            "stay": "待會",
+            "leave": "離開頁面",
+            "reopen": "離開？"
+        },
+        "memory": {
+            "noneShort": "不記錄",
+            "summaryShort": "概要"
+        },
+        "phases": {
+            "tutorial": "教學",
+            "loading_round": "載入中",
+            "ended": "已結束",
+            "ai_drawing": "貓娘作畫中",
+            "user_guessing": "你來猜",
+            "drawing_pick": "抽題中",
+            "user_drawing": "你來畫",
+            "ai_guessing": "貓娘猜圖中",
+            "ai_guess_feedback": "給她提示",
+            "summary": "結算",
+            "final_summary": "最終結算"
+        },
+        "modelStates": {
+            "loading": "模型載入中",
+            "idle": "待機中",
+            "drawing": "畫畫中",
+            "thinking": "思考中",
+            "guessing": "猜圖中",
+            "talking": "聊天中",
+            "happy": "開心中"
+        },
+        "modelControls": {
+            "group": "模型視圖調整",
+            "scale": "模型大小",
+            "x": "水平位置",
+            "y": "垂直位置",
+            "reset": "重置模型視圖"
+        },
+        "messages": {
+            "welcome": "準備好後，我們會先確認目前角色並接管小遊戲路由。",
+            "missingCharacter": "請帶角色開啟這個頁面，或先讀取目前角色。",
+            "startFailed": "路由啟動失敗：{{reason}}",
+            "routeActive": "{{name}} 的遊戲路由已接管。",
+            "roundStart": "新一輪開始。",
+            "aiDrawingReady": "她畫好了，輪到你猜。",
+            "roundFailed": "這一輪啟動失敗：{{reason}}",
+            "requestTimeout": "請求逾時了，再試一次吧。",
+            "guessTimeout": "時間到，答案是 {{answer}}。",
+            "inputFailed": "這句話沒送到，再試一次。",
+            "answerReveal": "答案：{{answer}}",
+            "drawingPickTitle": "抽取題目中",
+            "drawingPickSubtitle": "先別動筆，她正在從牌庫裡抽幾張題目牌。",
+            "drawingPickReady": "選一張題目牌來畫。",
+            "drawingPickReveal": "已選：{{answer}}",
+            "userDrawPrompt": "你的題目是：{{answer}}。畫給她猜吧。",
+            "blankCanvas": "先給她畫幾筆吧。",
+            "aiDrawingWaiting": "貓娘正在繪畫中",
+            "aiGuessing": "她正在看你的畫...",
+            "aiGuessLine": "她猜：{{guess}}",
+            "aiGuessCorrect": "她猜對了。",
+            "aiGuessWrong": "沒猜中。",
+            "aiGuessMissAnswer": "她沒猜中。答案：{{answer}}",
+            "aiNeedsHint": "可以先繼續聊天；想讓她再猜時再給提示。",
+            "summaryReady": "結算頁準備好了。",
+            "canvasCleared": "畫布已清空。",
+            "userSupplemented": "你補畫好了，她會立刻再猜一次。"
+        },
+        "input": {
+            "placeholder": "先等路由準備好",
+            "guessPlaceholder": "輸入你的猜測，或者要一個提示",
+            "drawingPlaceholder": "畫畫時也可以聊天",
+            "hintPlaceholder": "先繼續聊天；想讓她再猜時再給提示",
+            "summaryPlaceholder": "可以聊聊這一局，或者開始下一輪",
+            "ariaLabel": "聊天輸入框"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "本輪結算",
+            "outcome": {
+                "userWin": "你贏啦，但這局重點是一起玩。",
+                "nekoWin": "她贏啦，可以允許她小小得意一下。",
+                "tie": "平手，剛好很適合再來一輪。"
+            },
+            "score": "你 {{user}} - {{neko}} 貓娘",
+            "userDrawAnswer": "你的畫題：{{answer}}",
+            "nekoArt": "貓娘畫作",
+            "userArt": "你的畫作",
+            "finalTitle": "最終結算",
+            "roundLabel": "第 {{round}} 輪",
+            "noRounds": "還沒有完成的輪次。"
         }
     }
 }

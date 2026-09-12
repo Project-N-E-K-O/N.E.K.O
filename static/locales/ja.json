@@ -1058,6 +1058,10 @@
         "connectionError": "接続エラー"
     },
     "api": {
+    "imageModelConfig": "画像生成",
+    "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
+    "imageDisabled": "未設定",
         "settings": "APIキー設定",
         "settingsTitle": "APIキー設定 - Project Lanlan",
         "quickStart": "クイックスタート",
@@ -5226,7 +5230,14 @@
          }
     },
     "airBasketball": {"title":"エアバスケット","timeLeft":"残り","seconds":"秒","you":"あなた","anglePower":"角度 × パワー","autoChallenge":"オート対戦","score":"得点","stage":"ステージ","combo":"連続","time":"時間","stageTarget":"次のステージ","power":"パワー","angle":"角度","fever":"フィーバー","gestureHint":"ボールを押し、角度と強さを決めて離す","playerControl":"プレイヤー操作","aiControl":"自動操作","nekoReady":"猫娘 準備中","nekoAiming":"猫娘 照準中","nekoFever":"猫娘 フィーバー","nekoHit":"いたっ！","intro":"両者は同じ集中力と得点ルール。シュートもいたずらもペース配分が大切！","ruleAim":"角度と強さ","ruleStage":"4段階ゴール","ruleFever":"連続フィーバー","start":"試合開始","again":"もう一度","swish":"スウィッシュ！","basket":"ゴール！","miss":"おしい","stageUp":"ステージ","feverOn":"フィーバー！×2","win":"あなたの勝ち！","lose":"猫娘の勝ち","draw":"引き分け！","chat":"遊びながら話す","interference":"集中力","interfereHint":"ボールやゴールをドラッグ、または猫娘をタップ","disrupted":"邪魔された！","soundOff":"音を消す","soundOn":"音を出す","crossScore":"越境ゴール！","ballClash":"ボール衝突！","stolenBall":"ボールを奪った！","chaosBall":"{name}がボールを投げてきた！","nekoCountering":"{name}が反撃準備中","chooseMode":"モード選択","timedMode":"タイム対決","timedModeHint":"60秒で得点を競う","endlessMode":"フリープレイ","endlessModeHint":"時間無制限、いつでも終了可能","endlessIntro":"時間を気にせず、シュートも妨害も自由。好きな時に終了できます。","stopMatch":"終了","elapsed":"プレイ時間","opponentReady":"{name} 準備中","opponentAiming":"{name} 照準中","opponentFever":"{name} フィーバー","opponentWin":"{name}の勝ち","mouseStealCaught":"{name}にカーソルを取られた！","mouseStealEscape":"マウスを素早く振って逃げよう","mouseStealEscaped":"振りほどいた！","mouseStealReleased":"{name}が離した","mouseStealStatus":"{name}がカーソルを横取り中","voiceOpening":["準備はいい？手加減しないよ。"],"voiceChaos":["これも受けて！"],"voiceScore":["入ったよ。"],"voiceHit":["こら、人を叩かないの！"],"voiceMouseSteal":["そのカーソル、ちょっと借りるね！"],"voiceWin":["この勝負は私の勝ち。"],"voiceLose":["今回はあなたの勝ちね。"],"arenaLabel":"2人用バスケットコート","playerArcadeLabel":"プレイヤー側バスケットマシン","opponentArcadeLabel":"対戦相手側バスケットマシン","avatarLabel":"ドラッグやタップで妨害できる現在のキャラクター","avatarUnavailable":"キャラクター素材を利用できません","closeChat":"チャットを閉じる"},
-    "soccer": {
+   "soccer": {
+        "settings": {
+            "button": "設定",
+            "title": "ゲーム設定",
+            "game": "ゲーム",
+            "audio": "音量",
+            "debug": "デバッグ"
+        },
         "exitGame": {
             "button": "ゲームを終了",
             "ending": "ラウンドを終了中…",
@@ -5236,6 +5247,7 @@
         },
         "startScreen": {
             "readyToStart": "準備完了 — クリックで開始",
+            "startFailedRetry": "開始できませんでした。もう一度お試しください。",
             "ready": "準備完了",
             "startButton": "開始"
         },
@@ -5257,7 +5269,21 @@
             "voiceButton": "デバッグ音声",
             "voicePlaceholder": "デバッグ：最終書き起こしを入力して Enter",
             "send": "送信",
-            "voiceStatusHidden": "デバッグ STT：非表示"
+            "voiceStatusHidden": "デバッグ STT：非表示",
+            "voiceVolumeHint": "クリックでミュートまたは元の音量に戻します。再生中の音声の音量は調整できません。"
+        },
+        "voiceChat": {
+            "label": "音声会話",
+            "connecting": "メイン音声入力に接続中…",
+            "unavailable": "メイン音声入力は一時的に利用できません",
+            "idle": "クリックして音声会話を開始",
+            "starting": "音声会話を開始中…",
+            "stopping": "音声会話を終了中…",
+            "active": "音声会話はオンです",
+            "muted": "音声会話はオン · マイクはミュート中",
+            "failed": "音声操作に失敗しました。メイン画面で再試行してください。",
+            "start": "音声会話を開始",
+            "stop": "音声会話を終了"
         },
         "surrenderReminder": {
             "label": "降参リマインド"
@@ -5336,6 +5362,178 @@
         "memoryOption": {
             "label": "今回の試合内容を記憶に保存（デフォルトはオフ）",
             "hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
+        }
+    },
+    "drawingGuess": {
+        "title": "お絵かき当てっこ",
+        "eyebrow": "一緒に遊ぶ時間",
+        "subtitle": "猫娘と一緒に描いて、当てて、話します。",
+        "status": {
+            "loadingCharacter": "現在のキャラクターを読み込み中",
+            "missingCharacter": "キャラクター情報待ち",
+            "ready": "準備完了",
+            "starting": "ゲームルートを開始中",
+            "active": "ルート接続中",
+            "ending": "終了中",
+            "ended": "終了しました",
+            "failed": "ルート開始失敗",
+            "heartbeatLost": "ルートが無効です"
+        },
+        "layout": {
+            "character": "キャラクター",
+            "session": "セッション",
+            "canvasTitle": "キャンバス",
+            "tools": "お絵かきツール",
+            "canvasWaitingTitle": "キャンバス準備中",
+            "canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 5 分で彼女に見せる絵を描きます。",
+            "actions": "ゲーム操作",
+            "sideResize": "モデルとチャットの比率を調整",
+            "modelTitle": "猫娘がそばにいる",
+            "modelFallbackTitle": "モデル枠を確保済み",
+            "modelFallback": "あとで現在のキャラクターの Live2D または VRM をここに読み込みます。失敗しても同じ場所に fallback を表示します。",
+            "chatTitle": "ゲームチャット"
+        },
+        "tools": {
+            "brush": "ブラシ",
+            "eraser": "消しゴム",
+            "bucket": "塗りつぶし",
+            "undo": "元に戻す",
+            "redo": "やり直す",
+            "color": "色",
+            "size": "太さ",
+            "eyedropper": "スポイト",
+            "basicColors": "基本色",
+            "historyColors": "履歴の色"
+        },
+        "tutorial": {
+            "title": "始める前に",
+            "intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
+            "memoryTitle": "記憶オプション",
+            "memoryNone": "記録せず、今回だけ遊ぶ。",
+            "memorySummary": "短いゲーム概要を一つ記録する。",
+            "quickTitle": "かんたんガイド",
+            "quickDraw": "あなたが描く番では、カードを1枚選んでキャンバスに描き、終わったら「できた」を押します。",
+            "quickGuess": "あなたが当てる番では、チャットに答えを書きます。会話しながらヒントを頼むこともできます。",
+            "quickSummary": "各ラウンドのサムネイルが残り、最終まとめで絵を保存できます。",
+            "voiceHint": "音声を使うときは、チャット入力欄の左にあるマイクボタンを押してください。"
+        },
+        "actions": {
+            "start": "開始",
+            "end": "終了",
+            "retryCharacter": "キャラクター再読み込み",
+            "send": "送信",
+            "done": "描けた",
+            "nextRound": "次のラウンド",
+            "clearCanvas": "キャンバスを消す",
+            "saveNekoSvg": "SVGで保存",
+            "saveNekoPng": "PNGで保存",
+            "saveUserPng": "自分の絵を保存"
+        },
+        "voice": {
+            "connected": "このラウンドの音声はオンです。クリックすると停止します。",
+            "connectHint": "クリックしてこのラウンドの音声をオンにします。",
+            "connectedNotice": "このラウンドの音声をオンにしました。",
+            "connectHintNotice": "このラウンドの音声をオフにしました。",
+            "starting": "音声入力を切り替えています…",
+            "unavailable": "この環境ではゲーム内音声を利用できません。",
+            "controlFailed": "音声操作に失敗しました：{{reason}}",
+            "routeNotReady": "音声を使う前にゲームルートの準備を待ってください。",
+            "buttonLabel": "音声入力"
+        },
+        "exitConfirm": {
+            "title": "このページを離れる？",
+            "message": "最終結果をまとめたよ。このミニゲームページを離れる？",
+            "stay": "あとで",
+            "leave": "ページを離れる",
+            "reopen": "離れる？"
+        },
+        "memory": {
+            "noneShort": "記録なし",
+            "summaryShort": "概要"
+        },
+        "phases": {
+            "tutorial": "チュートリアル",
+            "loading_round": "読み込み中",
+            "ended": "終了",
+            "ai_drawing": "猫娘がお絵かき中",
+            "user_guessing": "あなたが当てる番",
+            "drawing_pick": "お題を抽選中",
+            "user_drawing": "あなたが描く番",
+            "ai_guessing": "猫娘が当てる番",
+            "ai_guess_feedback": "ヒントを渡す",
+            "summary": "結果",
+            "final_summary": "最終結果"
+        },
+        "modelStates": {
+            "loading": "モデル読み込み中",
+            "idle": "待機中",
+            "drawing": "描画中",
+            "thinking": "考え中",
+            "guessing": "推理中",
+            "talking": "おしゃべり中",
+            "happy": "ごきげん"
+        },
+        "modelControls": {
+            "group": "モデル表示コントロール",
+            "scale": "モデルの大きさ",
+            "x": "左右位置",
+            "y": "上下位置",
+            "reset": "モデル表示をリセット"
+        },
+        "messages": {
+            "welcome": "準備できたら、現在のキャラクターを確認してミニゲームルートを接続します。",
+            "missingCharacter": "キャラクター付きでこのページを開くか、先に現在のキャラクターを読み込んでください。",
+            "startFailed": "ルート開始に失敗しました: {{reason}}",
+            "routeActive": "{{name}} のゲームルートが有効です。",
+            "roundStart": "新しいラウンドを始めます。",
+            "aiDrawingReady": "彼女が描き終わりました。当ててみてください。",
+            "roundFailed": "ラウンド開始に失敗しました: {{reason}}",
+            "requestTimeout": "リクエストがタイムアウトしました。もう一度試してください。",
+            "guessTimeout": "時間です。答えは {{answer}} でした。",
+            "inputFailed": "送れませんでした。もう一度試してください。",
+            "answerReveal": "答え: {{answer}}",
+            "drawingPickTitle": "お題を選んでいます",
+            "drawingPickSubtitle": "少し待って。彼女が山札からお題カードを何枚か引いています。",
+            "drawingPickReady": "描くカードを1枚選んでください。",
+            "drawingPickReveal": "選択: {{answer}}",
+            "userDrawPrompt": "あなたのお題は {{answer}} です。彼女に見せる絵を描きましょう。",
+            "blankCanvas": "まず少し描いてあげましょう。",
+            "aiDrawingWaiting": "猫娘が描いています",
+            "aiGuessing": "彼女があなたの絵を見ています...",
+            "aiGuessLine": "彼女の答え: {{guess}}",
+            "aiGuessCorrect": "彼女の答えは正解でした。",
+            "aiGuessWrong": "まだ当たっていません。",
+            "aiGuessMissAnswer": "彼女は外しました。答え: {{answer}}",
+            "aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
+            "summaryReady": "結果ページを表示しました。",
+            "canvasCleared": "キャンバスを消しました。",
+            "userSupplemented": "描き足しました。彼女がすぐにもう一度当てます。"
+        },
+        "input": {
+            "placeholder": "ルートの準備を待っています",
+            "guessPlaceholder": "答えを書くか、ヒントを頼む",
+            "drawingPlaceholder": "描きながら話せます",
+            "hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
+            "summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ",
+            "ariaLabel": "チャット入力"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "ラウンド結果",
+            "outcome": {
+                "userWin": "あなたの勝ちです。でも一緒に遊ぶのが本番です。",
+                "nekoWin": "彼女の勝ちです。少しだけ得意げでも許してあげましょう。",
+                "tie": "引き分けです。もう一回にちょうどいいですね。"
+            },
+            "score": "あなた {{user}} - {{neko}} 猫娘",
+            "userDrawAnswer": "あなたのお題: {{answer}}",
+            "nekoArt": "猫娘の絵",
+            "userArt": "あなたの絵",
+            "finalTitle": "最終結果",
+            "roundLabel": "第 {{round}} ラウンド",
+            "noRounds": "完了したラウンドはまだありません。"
         }
     }
 }

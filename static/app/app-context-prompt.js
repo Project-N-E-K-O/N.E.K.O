@@ -32,6 +32,11 @@
     let _shownWork = false;
     // 同一时刻只允许一个情境弹窗，避免两类信号叠出两个 modal。
     let _promptOpen = false;
+    // 情境弹窗可能已经进入 common_dialogs 的全局队列，甚至已经显示；小游戏
+    // opened 事件到达时需要能取消这一条，而不影响队列里的其它类型弹窗。
+    let _activeContext = '';
+    let _activePromptOverlay = null;
+    let _cancelActivePrompt = false;
     // settings 还没决议就绪时收到的事件先按类别暂存，等 branch 决议后逐类重放。
     // 后端这条信号是「进入态」一次性推送、不会自动重发；GET 慢时若直接丢，
     // 本会话就再也看不到这次弹窗了。按类别存（而非单槽）避免决议前先后收到
@@ -120,8 +125,33 @@
         _persistAndReschedule();
     }
 
+    function _markShown(context) {
+        if (context === 'play') _shownPlay = true; else _shownWork = true;
+    }
+
+    function _dismissActiveContextPromptForGameRoute() {
+        // 内置小游戏不属于活动情境提示场景。丢掉尚未重放的信号，并把 play
+        // 记作已处理，避免游戏结束后把“检测到外部游戏”的过期提示补弹。
+        _pendingContexts.clear();
+        _shownPlay = true;
+        if (!_activeContext) return;
+        _markShown(_activeContext);
+
+        // 若 prompt 还排在 common_dialogs 队列中，onShown 会在真正显示的第一帧
+        // 立即 dismiss；若已经显示，则现在直接点击其遮罩，走配置里的 decline。
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
     async function handle(context) {
         if (context !== 'play' && context !== 'work') return;
+        if (S.gameRouteActive) {
+            _markShown(context);
+            _pendingContexts.delete(context);
+            return;
+        }
         // settings 还没合并就绪（branch 未决议，nekoTelemetryBranch 为 undefined）：暂存
         // 这次事件，等 neko:telemetry-branch-resolved 再重放。不能直接丢——后端一次性推送
         // 不会重发。GET 失败时 branch 永远 undefined、该事件也永不重放，等于 fail-closed
@@ -142,13 +172,16 @@
         if (context === 'work' && _shownWork) return;
         if (!_isActionable(context)) {
             // 没可改的也算这类「处理过」，本会话不再就同类打扰。
-            if (context === 'play') _shownPlay = true; else _shownWork = true;
+            _markShown(context);
             return;
         }
 
         // 先置去重 + 开窗标志：即便用户直接关掉弹窗，本会话也不再弹同类。
-        if (context === 'play') _shownPlay = true; else _shownWork = true;
+        _markShown(context);
         _promptOpen = true;
+        _activeContext = context;
+        _activePromptOverlay = null;
+        _cancelActivePrompt = false;
 
         const cfg = _buildConfig(context);
         try {
@@ -162,6 +195,20 @@
                     { value: 'decline', text: cfg.decline, variant: 'secondary' },
                     { value: 'accept', text: cfg.accept, variant: 'primary' },
                 ],
+                onShown: function (modal) {
+                    _activePromptOverlay = modal && modal.overlay ? modal.overlay : null;
+                    if (_cancelActivePrompt || S.gameRouteActive) {
+                        _cancelActivePrompt = true;
+                        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+                            _activePromptOverlay.click();
+                        }
+                    }
+                },
+                onResolve: function (_value, modal) {
+                    if (modal && _activePromptOverlay === modal.overlay) {
+                        _activePromptOverlay = null;
+                    }
+                },
             });
             if (decision === 'accept') {
                 _apply(context);
@@ -170,6 +217,9 @@
             console.warn('[context-prompt] 弹窗失败:', e);
         } finally {
             _promptOpen = false;
+            _activeContext = '';
+            _activePromptOverlay = null;
+            _cancelActivePrompt = false;
             // 弹窗开着期间攒下的另一类 context，关窗后接着重放。
             _drainPending();
         }
@@ -200,6 +250,12 @@
     // settings 合并就绪后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。
     // 此时 window.nekoTelemetryBranch 已就绪、proactiveVisionChatEnabled 也已是合并后的值。
     window.addEventListener('neko:telemetry-branch-resolved', _drainPending);
+    window.addEventListener('neko-game-window-state-change', function (event) {
+        const detail = event && event.detail ? event.detail : {};
+        if (detail.action === 'opened') {
+            _dismissActiveContextPromptForGameRoute();
+        }
+    });
 
     window.appContextPrompt = { handle };
 })();

@@ -59,7 +59,7 @@ def _load_logger() -> Any:
     return get_logger("neko_plugin_cli.metadata_probe")
 
 
-def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
+def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> dict[str, object]:
     """Import ``plugin_dir``'s entry class and return its packaged metadata.
 
     One tree, imported and fingerprinted. Deriving from one tree and
@@ -121,6 +121,9 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
             conf=ctx.conf,
             pdata=ctx.pdata,
             python_requirement_paths=ctx.python_requirement_paths,
+            # Probe the staged Python source, without creating bytecode that
+            # would bypass the builder's earlier cache-file exclusion pass.
+            source_only=source_only,
         )
     except PluginMetadataScanError as exc:
         raise MetadataProbeError(
@@ -184,6 +187,7 @@ def write_packaged_metadata(
     *,
     source_dir: Path,
     target_dir: Path,
+    source_only: bool = False,
 ) -> Path | None:
     """Derive metadata from the staged tree and write it into ``target_dir``.
 
@@ -211,7 +215,7 @@ def write_packaged_metadata(
     build fails.
     """
     try:
-        payload = derive_plugin_metadata(Path(target_dir))
+        payload = derive_plugin_metadata(Path(target_dir), **({"source_only": True} if source_only else {}))
     except MetadataProbeError as exc:
         stale = Path(target_dir) / PACKAGED_METADATA_FILENAME
         if stale.exists():

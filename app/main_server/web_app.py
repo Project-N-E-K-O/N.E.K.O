@@ -380,6 +380,7 @@ from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
+from main_routers.game_router.drawing_guess import router as drawing_guess_router  # noqa
 from main_routers.card_drop_router import (  # noqa
     _facts_cors_headers as _card_drop_cors_headers,
     _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
@@ -737,6 +738,7 @@ app.include_router(galgame_router)
 app.include_router(widget_mode_router)
 app.include_router(icebreaker_router)
 app.include_router(game_router)
+app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.

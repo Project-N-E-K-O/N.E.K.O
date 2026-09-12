@@ -139,6 +139,39 @@ def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("master_entry", (None, "invalid", []))
+def test_character_info_normalizes_non_mapping_master_data(monkeypatch, master_entry):
+    class FakeConfigManager:
+        def load_characters(self):
+            return {"当前猫娘": "Lan", "主人": master_entry}
+
+        def get_character_data(self):
+            return (
+                "",
+                "Lan",
+                {},
+                {"Lan": {}},
+                {},
+                {"Lan": "You are {LANLAN_NAME}; player is {MASTER_NAME}."},
+                {},
+                {},
+                [],
+            )
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "game_main"
+            return {}
+
+    monkeypatch.setattr(gr_char_info, "get_config_manager", FakeConfigManager)
+    monkeypatch.setattr(gr_char_info, "_resolve_game_prompt_locale", lambda _name: "en")
+
+    info = gr_char_info._get_character_info("Lan")
+
+    assert info["master_name"] == "玩家"
+    assert info["lanlan_prompt"] == "You are Lan; player is 玩家."
+
+
+@pytest.mark.unit
 def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
     manager = SimpleNamespace(
         user_language="en",
@@ -2936,6 +2969,44 @@ async def test_game_character_uses_canonical_live2d_fallback_when_saved_path_is_
 
 
 @pytest.mark.unit
+def test_soccer_live2d_emergency_fallback_matches_main_page_default():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2].joinpath(
+        "static/game/games/soccer/soccer-demo.js"
+    ).read_text(encoding="utf-8")
+
+    assert "charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json'" in source
+    assert "charData.live2d_path || '/static/mao_pro/mao_pro.model3.json'" not in source
+
+
+@pytest.mark.unit
+def test_soccer_ui_hover_disables_player_pointer_controls():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2].joinpath(
+        "static/game/games/soccer/soccer-demo.js"
+    ).read_text(encoding="utf-8")
+    pointer_block = source.split("let playerPointerActive", 1)[1].split(
+        "window.addEventListener('keydown'",
+        1,
+    )[0]
+    loop_block = source.split("function loop(t)", 1)[1].split("if (singlePlayerMode)", 1)[0]
+
+    assert "function deactivatePlayerPointerControl()" in pointer_block
+    assert "playerPointerActive = false" in pointer_block
+    assert "playerCharging = false" in pointer_block
+    assert "playerCharge = 0" in pointer_block
+    assert "if (isGameUiTarget(e.target))" in pointer_block
+    assert "deactivatePlayerPointerControl();" in pointer_block
+    assert "playerPointerActive = true" in pointer_block
+    assert "document.addEventListener('mouseleave', deactivatePlayerPointerControl)" in pointer_block
+    assert "window.addEventListener('blur', deactivatePlayerPointerControl)" in pointer_block
+    assert "playerPointerActive ? state.mouse.x : state.player.x + CFG.charSize/2" in loop_block
+    assert "playerPointerActive ? state.mouse.y : state.player.y + CFG.charSize/2" in loop_block
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_character_keeps_public_metadata_when_live2d_resolution_fails(
     monkeypatch,
@@ -3429,8 +3500,14 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 来踢球", ""
 
-    async def fake_ai(**_kwargs):
-        raise ValueError("bad json")
+    attempts = []
+
+    async def fake_ai(**kwargs):
+        attempts.append((
+            kwargs["structured_output_attempt"],
+            kwargs["structured_output_isolation_id"],
+        ))
+        raise gr_pregame.StructuredOutputContentError("invalid_json")
 
     _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
     _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
@@ -3447,6 +3524,132 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     assert error == "invalid_json"
     assert context["gameStance"] == "neutral_play"
     assert context["initialDifficulty"] == "lv2"
+    assert [attempt for attempt, _ in attempts] == [1, 2]
+    assert attempts[0][1] != attempts[1][1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_provider_value_error_is_not_retried(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan", "master_name": "Player", "lanlan_prompt": "",
+        "model": "fake", "base_url": "http://fake", "api_type": "local", "api_key": "key",
+    })
+
+    async def fake_fetch(_lanlan_name, **_kwargs):
+        return "", ""
+
+    attempts = []
+
+    async def fake_ai(**kwargs):
+        attempts.append(kwargs["structured_output_attempt"])
+        raise ValueError("invalid provider configuration")
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+    context, source, error = await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer", session_id="provider_failure", lanlan_name="Lan",
+        neko_initiated=False, neko_invite_text="",
+    )
+    assert attempts == [1]
+    assert (source, error) == ("fallback", "ai_failed")
+    assert context["gameStance"] == "neutral_play"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_retries_with_fresh_llm_clients(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢踢球。",
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_type": "local",
+        "api_key": "key",
+        "provider_type": "custom",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+    _gr_patch_all(monkeypatch, "_get_character_info", lambda _name: {
+        "model": "fake",
+        "base_url": "http://fake",
+        "api_key": "key",
+        "provider_type": "custom",
+    })
+
+    async def fake_fetch(_lanlan_name, **_kwargs):
+        return "玩家 | 来踢球", ""
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+
+    responses = [
+        json.dumps({
+            "gameStance": "competitive",
+            "initialMood": "happy",
+            "initialDifficulty": "lv2",
+            "emotionIntensity": 2,
+        }, ensure_ascii=False),
+        json.dumps({
+            "gameStance": "competitive",
+            "initialMood": "happy",
+            "initialDifficulty": "lv2",
+            "emotionIntensity": 0.6,
+        }, ensure_ascii=False),
+    ]
+    clients = []
+
+    class FakeResult:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeLlm:
+        def __init__(self, content):
+            self.content = content
+            self.messages = None
+            self.entered = False
+            self.exited = False
+
+        async def __aenter__(self):
+            self.entered = True
+            return self
+
+        async def __aexit__(self, *_exc):
+            self.exited = True
+            return False
+
+        async def ainvoke(self, messages):
+            self.messages = list(messages)
+            return FakeResult(self.content)
+
+    async def fake_create(*_args, **_kwargs):
+        client = FakeLlm(responses[len(clients)])
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", fake_create)
+
+    context, source, error = await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_fresh_retry",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+    )
+
+    assert source == "ai"
+    assert error == ""
+    assert context["emotionIntensity"] == 0.6
+    assert len(clients) == 2
+    assert clients[0] is not clients[1]
+    assert all(client.entered and client.exited for client in clients)
+    assert all(len(client.messages) == 2 for client in clients)
+    first_payload = clients[0].messages[1].content
+    second_payload = clients[1].messages[1].content
+    assert '"structuredOutputAttempt": 1' in first_payload
+    assert '"structuredOutputAttempt": 2' in second_payload
+    assert first_payload != second_payload
+    assert responses[0] not in second_payload
 
 
 @pytest.mark.unit
@@ -3465,7 +3668,10 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
     async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 你这个笨蛋！", ""
 
-    async def fake_ai(**_kwargs):
+    attempts = []
+
+    async def fake_ai(**kwargs):
+        attempts.append(kwargs["structured_output_attempt"])
         return {
             "gameStance": "punishing",
             "initialDifficulty": "max",
@@ -3476,6 +3682,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
 
     _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
     _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+    game_log.enable_game_session_debug_log("soccer", "match_1", lanlan_name="Lan")
 
     context, source, error = await gr_pregame._build_soccer_pregame_context(
         game_type="soccer",
@@ -3491,6 +3698,35 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
     assert context["initialDifficulty"] == "max"
     assert context["emotionIntensity"] == 0.0
     assert context["openingLine"] == "那我认真了"
+    assert attempts == [1, 2]
+
+    debug_log = game_log.find_game_session_debug_log("match_1", "soccer")
+    retry_entries = [
+        entry for entry in debug_log["entries"]
+        if entry["event"].startswith("structured_output_retry")
+    ]
+    assert [entry["event"] for entry in retry_entries] == [
+        "structured_output_retry",
+        "structured_output_retry_exhausted",
+    ]
+    assert retry_entries[0]["details"]["issues"] == [{
+        "field": "emotionIntensity",
+        "reason": "out_of_range",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }]
+    assert retry_entries[0]["details"]["will_retry"] is True
+    assert retry_entries[1]["details"]["will_retry"] is False
+
+    issues = []
+    gr_pregame._normalize_soccer_pregame_context(
+        {"emotionIntensity": 2, "openingLine": "这次要认真看着我踢球哦玩家不许走神"},
+        validation_issues=issues,
+    )
+    assert issues == [
+        {"field": "emotionIntensity", "reason": "out_of_range", "minimum": 0.0, "maximum": 1.0},
+        {"field": "openingLine", "reason": "too_long", "actual_length": 17, "maximum": 15},
+    ]
 
 
 @pytest.mark.unit
@@ -4034,6 +4270,42 @@ def test_build_game_llm_visible_event_filters_soccer_internal_fields():
         assert "ballGhost" not in state
     assert event["currentState"]["aiFreezeSec"] == 0.2
     assert event["pendingItems"][0]["snapshot"]["ballGhost"] is False
+
+
+@pytest.mark.unit
+def test_drawing_guess_visible_event_recursively_hides_user_draw_answer():
+    event = {
+        "kind": "user-text",
+        "user_draw_answer": {"id": "top-level-secret"},
+        "currentState": {
+            "phase": "user_drawing",
+            "scores": {"player": 1, "ai": 0},
+            "user_draw_answer": {"id": "state-secret"},
+        },
+        "pendingItems": [{
+            "kind": "user-text",
+            "snapshot": {
+                "phase": "user_drawing",
+                "userDrawAnswer": {"id": "snapshot-secret"},
+            },
+        }],
+    }
+
+    visible = gr_visible_events._build_game_llm_visible_event(
+        "drawing_guess",
+        event,
+    )
+
+    encoded = json.dumps(visible, ensure_ascii=False)
+    assert "top-level-secret" not in encoded
+    assert "state-secret" not in encoded
+    assert "snapshot-secret" not in encoded
+    assert visible["currentState"]["scores"] == {"player": 1, "ai": 0}
+    assert visible["pendingItems"][0]["snapshot"]["phase"] == "user_drawing"
+    assert event["currentState"]["user_draw_answer"]["id"] == "state-secret"
+    assert event["pendingItems"][0]["snapshot"]["userDrawAnswer"]["id"] == (
+        "snapshot-secret"
+    )
 
 
 @pytest.mark.unit
@@ -6067,6 +6339,133 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_drawing_voice_final_is_mirrored_once_for_sdk_command_owner(
+    monkeypatch,
+):
+    mgr = _FakeGameRouteManager()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    state = gr_runtime._activate_game_route(
+        "drawing_guess", "drawing-session", "Lan"
+    )
+    state["_sdk_route_instance_id"] = "drawing-route-A"
+    state["last_state"] = {
+        "phase": "user_drawing",
+        "user_draw_answer": {"id": "private-answer"},
+    }
+
+    generic_chat = AsyncMock(
+        side_effect=AssertionError("drawing voice must not enter generic chat")
+    )
+    _gr_patch_all(monkeypatch, "_run_game_chat", generic_chat)
+    from main_routers.game_router import drawing_guess as drawing_guess_router
+
+    drawing_handler = AsyncMock(
+        side_effect=AssertionError("the SDK page owns drawing voice input")
+    )
+    monkeypatch.setattr(
+        drawing_guess_router,
+        "handle_external_drawing_guess_transcript",
+        drawing_handler,
+    )
+    log_records = []
+
+    def capture_info(message, *args, **_kwargs):
+        log_records.append(message % args if args else str(message))
+
+    monkeypatch.setattr(gr_runtime.logger, "info", capture_info)
+    private_transcript = "private voice transcript 7931"
+
+    first = await gr_runtime.route_external_voice_transcript(
+        "Lan",
+        private_transcript,
+        request_id="drawing-voice-1",
+        game_type="drawing_guess",
+        session_id="drawing-session",
+        sdk_route_instance_id="drawing-route-A",
+    )
+    duplicate = await gr_runtime.route_external_voice_transcript(
+        "Lan",
+        private_transcript,
+        request_id="drawing-voice-1",
+        game_type="drawing_guess",
+        session_id="drawing-session",
+        sdk_route_instance_id="drawing-route-A",
+    )
+
+    assert first is True and duplicate is True
+    assert len(mgr.mirrored) == 1
+    assert mgr.mirrored[0][0] == private_transcript
+    assert mgr.mirrored[0][1]["send_to_frontend"] is True
+    assert mgr.mirrored[0][1]["metadata"]["sdk_route_instance_id"] == (
+        "drawing-route-A"
+    )
+    assert mgr.user_activity_count == 1
+    assert state["game_dialog_log"] == []
+    assert state["pending_outputs"] == []
+    generic_chat.assert_not_awaited()
+    drawing_handler.assert_not_awaited()
+    rendered_logs = "\n".join(log_records)
+    assert private_transcript not in rendered_logs
+    assert "request_id_present=True" in rendered_logs
+    assert f"text_length={len(private_transcript)}" in rendered_logs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_drawing_external_text_uses_feature_handler_not_generic_llm(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    state = gr_runtime._activate_game_route(
+        "drawing_guess", "drawing-session", "Lan"
+    )
+    state["_sdk_route_instance_id"] = "drawing-route-A"
+    state["last_state"] = {
+        "phase": "user_drawing",
+        "user_draw_answer": {"id": "private-answer"},
+    }
+    generic_chat = AsyncMock(
+        side_effect=AssertionError("drawing text must not enter generic chat")
+    )
+    _gr_patch_all(monkeypatch, "_run_game_chat", generic_chat)
+    from main_routers.game_router import drawing_guess as drawing_guess_router
+
+    drawing_handler = AsyncMock(return_value={"ok": True, "handled": True})
+    monkeypatch.setattr(
+        drawing_guess_router,
+        "handle_external_drawing_guess_transcript",
+        drawing_handler,
+    )
+
+    handled = await gr_runtime.route_external_stream_message(
+        "Lan",
+        {
+            "input_type": "text",
+            "data": "keep drawing",
+            "request_id": "drawing-text-1",
+        },
+        expected_state=state,
+    )
+
+    assert handled is True
+    assert len(mgr.mirrored) == 1
+    assert mgr.mirrored[0][1]["send_to_frontend"] is False
+    assert mgr.user_activity_count == 1
+    drawing_handler.assert_awaited_once_with(
+        "Lan",
+        "drawing-session",
+        "keep drawing",
+        route_state=state,
+        request_id="drawing-text-1",
+        source="external_text_route",
+        kind="user-text",
+    )
+    generic_chat.assert_not_awaited()
+    assert state["game_dialog_log"] == []
+    assert state["pending_outputs"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_external_route_drops_a_superseded_chat_result_without_post_side_effects(monkeypatch):
     mgr = _FakeGameRouteManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
@@ -6853,6 +7252,59 @@ async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
     assert result["archive_memory"]["reason"] == "game_memory_archive_disabled"
     assert result["archive"]["game_memory_enabled"] is False
     assert result["archive"]["memory_skipped"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feature_owned_memory_skips_generic_archive_after_policy_refresh(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = gr_runtime._activate_game_route("drawing_guess", "drawing-1", "Lan")
+    _mark_game_started(state)
+    state["game_memory_archive_owner"] = "feature"
+
+    # Trusted SDK heartbeats and route/end payloads refresh consent fields. The
+    # persistence owner is server-owned and must remain independent from those
+    # repeatedly supplied booleans.
+    gr_runtime._update_game_memory_enabled_from_payload(
+        state,
+        {
+            "game_memory_enabled": True,
+            "game_memory_archive_enabled": True,
+        },
+        "drawing_guess",
+    )
+    assert state["game_memory_archive_enabled"] is True
+    assert state["game_memory_archive_owner"] == "feature"
+
+    async def fail_submit(_archive):
+        raise AssertionError("feature-owned memory must not also write a generic archive")
+
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fail_submit)
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="manual",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_owned_by_feature"
+    assert result["archive"]["game_memory_archive_owner"] == "feature"
+    assert result["archive"]["game_memory_archive_enabled"] is True
+    assert result["archive"]["memory_skipped"] is True
+    assert state["game_context_organizer"]["error"] == "archive_disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feature_archive_owner_is_a_sink_level_guard():
+    result = await gr_archive._submit_game_archive_to_memory({
+        "game_memory_enabled": True,
+        "game_memory_archive_enabled": True,
+        "game_memory_archive_owner": "feature",
+    })
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "game_memory_archive_owned_by_feature"
 
 
 @pytest.mark.unit
@@ -9326,3 +9778,72 @@ async def test_game_end_skips_postgame_on_manual_return_to_start(monkeypatch):
     assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
     assert mgr.prepare_calls == []
     assert state["exit_reason"] == "manual_return_to_start"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_soccer_sdk_end_preserves_memory_consent_and_match_payload(monkeypatch, enabled):
+    """An SDK generation must retain the legacy game's real archive channel."""
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = gr_runtime._activate_game_route("soccer", "sdk_match", "Lan")
+    state["_sdk_route_instance_id"] = "sdk-generation"
+    _set_soccer_game_memory_policy(state, enabled=enabled)
+    _mark_game_started(state)
+    submitted = []
+
+    async def fake_submit(archive):
+        submitted.append(archive)
+        return {"ok": True, "status": "cached", "count": 1}
+
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fake_submit)
+    result = await gr_runtime.game_end("soccer", _FakeRequest({
+        "session_id": "sdk_match",
+        "lanlan_name": "Lan",
+        "sdk_route_instance_id": "sdk-generation",
+        "sdk_route_instance_ids": ["sdk-generation"],
+        "game_memory_enabled": enabled,
+        "game_memory_archive_enabled": enabled,
+        "game_memory_player_interaction_enabled": enabled,
+        "game_memory_event_reply_enabled": enabled,
+        "game_memory_postgame_context_enabled": enabled,
+        "game_started": True,
+        "game_started_elapsed_ms": 20_000,
+        "currentState": {"score": {"player": 2, "ai": 1}, "round": 3},
+        "reason": "manual_user_exit",
+        "postgameProactive": False,
+    }))
+    assert result["ok"] is True
+    assert state["game_route_active"] is False
+    assert len(submitted) == int(enabled)
+    if enabled:
+        assert submitted[0]["finalScore"] == {"player": 2, "ai": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("example-game", "metadata-session", "Lan")
+        state["_sdk_route_instance_id"] = "metadata-generation"
+        state["preGameContext"] = {"openingLine": "Ready"}
+        state["pre_game_context_source"] = "fallback"
+        state["pre_game_context_error"] = "x" * 2000
+        body = {
+            "session_id": "metadata-session", "lanlan_name": "Lan",
+            "sdk_route_instance_id": "metadata-generation",
+            "scopes": ["pregame-context"],
+        }
+        result = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert result["scopes"]["pregame-context"] == {"openingLine": "Ready"}
+        metadata = result["scope_metadata"]["pregame-context"]
+        assert metadata["source"] == "fallback"
+        assert len(metadata["error"]) <= 500
+        body["scopes"] = ["current-state"]
+        other = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert other["scope_metadata"] == {}
+        body["sdk_route_instance_id"] = "stale-generation"
+        stale = await gr_runtime.game_sdk_context_read("example-game", _FakeRequest(body))
+        assert stale["ok"] is False
+        assert "scope_metadata" not in stale
