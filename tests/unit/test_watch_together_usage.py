@@ -26,3 +26,13 @@ def test_total_fallback_and_deepseek_cache():
         "prompt_cache_hit_tokens": 5}), "vision", "window")
     assert job["usage"]["total_tokens"] == 15
     assert job["usage"]["calls"][0]["cached_tokens"] == 5
+
+
+def test_malformed_nested_usage_does_not_abort_accounting():
+    for details in ['invalid', [1], True, 42]:
+        job = {}
+        record_usage(job, SimpleNamespace(usage={'prompt_tokens': 12, 'completion_tokens': 3,
+            'prompt_tokens_details': details, 'completion_tokens_details': details}), 'vision', 'window')
+        assert job['usage']['total_tokens'] == 15
+        assert job['usage']['calls'][0]['cached_tokens'] is None
+        assert job['usage']['calls'][0]['reasoning_tokens'] is None

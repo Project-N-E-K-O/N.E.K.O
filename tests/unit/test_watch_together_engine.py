@@ -134,3 +134,14 @@ async def test_subtitles_skip_invalid_times_and_normalize_numeric_strings():
     client = type('Client', (), {'get': AsyncMock(return_value=response)})()
     assert await fetch_subtitles(client, [{'subtitle_url': 'https://subs.test'}], 'en') == [
         {'from': 1.0, 'to': 2.0, 'content': 'valid'}]
+
+@pytest.mark.asyncio
+async def test_subtitle_payload_drops_extra_fields_and_bounds_text():
+    from main_logic.watch_together.engine import fetch_subtitles
+    from unittest.mock import AsyncMock
+    rows = [{'from': 0, 'to': 1000, 'content': 'x' * 10000, 'extra': 'y' * 10000}] * 3000
+    response = type('Response', (), {'raise_for_status': lambda self: None, 'json': lambda self: {'body': rows}})()
+    client = type('Client', (), {'get': AsyncMock(return_value=response)})()
+    result = await fetch_subtitles(client, [{'subtitle_url': 'https://subs.test'}], 'en')
+    assert sum(len(row['content']) for row in result) <= 24000
+    assert all(len(row['content']) <= 240 and set(row) == {'from', 'to', 'content'} for row in result)

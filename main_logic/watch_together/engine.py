@@ -51,6 +51,7 @@ async def fetch_subtitles(client, tracks, language):
             response.raise_for_status()
             body = response.json().get('body', [])
             valid = []
+            remaining = 24000
             for row in body if isinstance(body, list) else []:
                 if not isinstance(row, dict) or any(isinstance(row.get(key), bool) for key in ('from', 'to')):
                     continue
@@ -59,7 +60,16 @@ async def fetch_subtitles(client, tracks, language):
                 except (KeyError, TypeError, ValueError, OverflowError):
                     continue
                 if math.isfinite(start) and math.isfinite(end) and 0 <= start <= end:
-                    valid.append({**row, 'from': start, 'to': end})
+                    content = row.get('content')
+                    if not isinstance(content, str):
+                        continue
+                    content = content[:min(240, remaining)]
+                    if not content.strip():
+                        continue
+                    valid.append({'from': start, 'to': end, 'content': content})
+                    remaining -= len(content)
+                    if remaining <= 0 or len(valid) >= 2000:
+                        break
             if valid:
                 return valid
         except Exception:

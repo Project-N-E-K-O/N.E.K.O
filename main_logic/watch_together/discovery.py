@@ -40,9 +40,15 @@ async def inspect_video(url):
     if not math.isfinite(seconds) or not 0 < seconds <= MAX_SECONDS:
         raise ValueError("Video must be no longer than 20 minutes")
     count = info.get("stat", {}).get("danmaku")
+    try:
+        count = float(count) if not isinstance(count, bool) else None
+        if count is not None and (not math.isfinite(count) or count < 0 or not math.isfinite(count / seconds * 60)):
+            count = None
+    except (TypeError, ValueError, OverflowError):
+        count = None
     return {"url": f"https://www.bilibili.com/video/{bvid}?p={page + 1}",
             "title": info["title"], "duration": seconds, "danmaku": count,
-            "parts": len(pages), "danmaku_per_minute": count * 60 / seconds if isinstance(count, (int, float)) else None}
+            "parts": len(pages), "danmaku_per_minute": count / seconds * 60 if count is not None else None}
 
 
 def enforce_policy(info, *, automatic=False, confirmed_duration=None):

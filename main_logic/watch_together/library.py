@@ -186,9 +186,14 @@ class Library:
         return self.objects / entry["sha256"]
 
     def timeline(self, job: str, version: str) -> dict:
-        data = json.loads(self.resource(job, version, "timeline.json").read_text(encoding="utf-8-sig"))
+        path = self.resource(job, version, "timeline.json")
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("Timeline exceeds load budget")
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             raise ValueError("Timeline must be an object")
+        if isinstance(data.get('events'), list) and len(data['events']) > 1000:
+            data = {**data, 'status': 'incomplete', 'events': []}
         prefix = f"/api/watch-together/media/{job}/{version}/"
         def remap(value):
             if isinstance(value, str) and value.startswith(f"/media/{job}/"):

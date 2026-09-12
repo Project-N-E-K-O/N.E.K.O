@@ -13,10 +13,12 @@ def record_usage(job, response, model, stage):
     total = count(usage.get("total_tokens"))
     if total is None and prompt is not None and completion is not None:
         total = prompt + completion
-    cached = count((usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
+    prompt_details = usage.get("prompt_tokens_details")
+    completion_details = usage.get("completion_tokens_details")
+    cached = count(prompt_details.get("cached_tokens")) if isinstance(prompt_details, dict) else None
     if cached is None:
         cached = count(usage.get("prompt_cache_hit_tokens"))
-    reasoning = count((usage.get("completion_tokens_details") or {}).get("reasoning_tokens"))
+    reasoning = count(completion_details.get("reasoning_tokens")) if isinstance(completion_details, dict) else None
     stats = job.setdefault("usage", {"calls": [], "input_tokens": 0, "output_tokens": 0,
                                    "total_tokens": 0, "missing_usage_calls": 0})
     stats["calls"].append({"model": model, "stage": stage, "input_tokens": prompt,

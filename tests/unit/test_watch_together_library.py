@@ -190,3 +190,18 @@ def test_viewing_is_separate_and_completion_survives_exit(tmp_path):
         assert len(json.loads(db.execute('SELECT events FROM watches WHERE id=?', (watch,)).fetchone()['events'])) == 3
     assert saved['completed'] == 1 and saved['last_watched']
     assert library.history()[0]['last_watched'] is None
+
+
+def test_oversized_cue_list_is_incomplete_without_returning_events(tmp_path):
+    archive = source(tmp_path, 'many-cues')
+    path = next(archive.rglob('timeline.json'))
+    data = json.loads(path.read_text())
+    data['events'] = [{'at': i} for i in range(1001)]
+    path.write_text(json.dumps(data))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    loaded = library.timeline(row['job'], row['version'])
+    assert loaded['status'] == 'incomplete'
+    assert loaded['events'] == []
+    assert len(json.loads(path.read_text())['events']) == 1001

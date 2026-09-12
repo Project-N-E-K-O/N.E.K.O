@@ -121,3 +121,14 @@ async def test_authoritative_duration_overflow_is_invalid_video(monkeypatch):
     monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
     with pytest.raises(ValueError, match='Invalid video duration'):
         await discovery.inspect_video('BV1GJ411x7h7')
+
+@pytest.mark.asyncio
+async def test_authoritative_numeric_string_danmaku_has_density(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(
+        Credential=lambda: None,
+        video=SimpleNamespace(Video=lambda **kwargs: SimpleNamespace(get_info=AsyncMock(
+            return_value={'pages': [{'duration': 60}], 'title': 'Video', 'stat': {'danmaku': '101'}})))))
+    monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
+    info = await discovery.inspect_video('BV1GJ411x7h7')
+    assert info['danmaku_per_minute'] == 101
+    assert discovery.enforce_policy(info, automatic=True)
