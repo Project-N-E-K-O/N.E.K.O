@@ -176,10 +176,10 @@ class NumericV2ArchiveStore:
                 suffix=".tmp",
                 delete=False,
             ) as temporary:
+                temporary_path = Path(temporary.name)
                 temporary.write(json.dumps(dict(value), ensure_ascii=False, sort_keys=True).encode("utf-8"))
                 temporary.flush()
                 os.fsync(temporary.fileno())
-                temporary_path = Path(temporary.name)
             os.replace(temporary_path, path)
         except OSError as exc:
             raise NumericV2ArchiveError("numeric_end_receipt_write_failed") from exc

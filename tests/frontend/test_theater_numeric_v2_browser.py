@@ -914,3 +914,53 @@ def test_deleted_story_retains_summary_and_forget_retry(mock_page: Page, running
     mock_page.locator('#theater-modal-confirm').click()
     expect(mock_page.locator('#theater-empty-state')).to_be_visible()
     assert requests == [{'story_id': STORY['story_id'], 'character_id': CHARACTER_ID}]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('scenario', ['url', 'delete', 'manual_selection'])
+def test_memory_target_survives_async_loading_unless_player_selects(mock_page: Page, running_server: str, scenario):
+    deleted = {'value': scenario != 'delete'}
+    memory = {**STORY, 'memory_only': True, 'memory_summaries': ['保留下来的公开摘要。']}
+    other = {**STORY, 'story_id': 'other_story', 'title': '另一份剧本'}
+    third = {**STORY, 'story_id': 'third_story', 'title': '第三份剧本'}
+    pending = {}
+
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/theater-numeric/stories'):
+            _fulfill(route, {'ok': True, 'character_id': CHARACTER_ID,
+                'stories': [other, third] if deleted['value'] else [STORY, other, third]})
+        elif path.endswith('/memory/stories'):
+            if deleted['value']:
+                pending['memory'] = route
+            else:
+                _fulfill(route, {'ok': True, 'character_id': CHARACTER_ID, 'stories': []})
+        else:
+            route.fallback()
+
+    _install_selector_routes(mock_page, deleted=deleted)
+    mock_page.route('**/api/theater-numeric/**', handler)
+    with mock_page.expect_request('**/memory/stories'):
+        mock_page.goto(f'{running_server}/theater?story_id={STORY["story_id"]}', wait_until='domcontentloaded')
+    if scenario == 'delete':
+        mock_page.locator('#theater-delete-btn').click()
+        with mock_page.expect_request('**/memory/stories'):
+            mock_page.locator('#theater-modal-confirm').click()
+    expect(mock_page.locator('#theater-detail-title')).to_have_text(other['title'])
+    if scenario == 'manual_selection':
+        # A -> B -> A still means the player has made an explicit selection.
+        mock_page.locator('[data-story-id="third_story"]').click()
+        expect(mock_page.locator('#theater-detail-title')).to_have_text(third['title'])
+        mock_page.locator('[data-story-id="other_story"]').click()
+        expect(mock_page.locator('#theater-detail-title')).to_have_text(other['title'])
+    _fulfill(pending['memory'], {'ok': True, 'character_id': CHARACTER_ID,
+        'memory_available': True, 'stories': [memory]})
+    expect(mock_page.locator('.theater-story-card')).to_have_count(3)
+    if scenario == 'manual_selection':
+        expect(mock_page.locator('#theater-detail-title')).to_have_text(other['title'])
+        expect(mock_page.locator('#theater-start-btn')).to_be_enabled()
+    else:
+        expect(mock_page.locator('#theater-session-badge')).to_have_text('已删除 · 记忆管理')
+        expect(mock_page.locator('#theater-memory-list')).to_contain_text(memory['memory_summaries'][0])
+        expect(mock_page.locator('#theater-start-btn')).to_be_disabled()
+        expect(mock_page).to_have_url(f'{running_server}/theater?story_id={STORY["story_id"]}')

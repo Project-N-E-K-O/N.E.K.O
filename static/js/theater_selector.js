@@ -326,8 +326,10 @@
         state.archives = result.archives;
         renderMemoryArchives();
     }
+    var storySelectionEpoch = 0;
     async function selectStory(storyId, forceWhileBusy) {
         if ((state.busy && forceWhileBusy !== true) || !storyId) return;
+        storySelectionEpoch += 1;
         var selectionCharacterEpoch = characterEpoch;
         state.storyId = storyId;
         state.session = null;
@@ -339,6 +341,9 @@
         if ((selectedStory() || {}).memory_only) {
             setStatus('theater.ready', '就绪');
             if (selectedStory().forget_pending) setFeedback(t('theater.storyMemoryForgetFailed', '剧本记忆删除失败，请重试。'), true);
+            var memoryUrl = new URL(window.location.href);
+            memoryUrl.searchParams.set('story_id', storyId);
+            window.history.replaceState(null, '', memoryUrl.toString());
             return true;
         }
         var result;
@@ -761,7 +766,7 @@
         }
     }
     var memoryListEpoch = 0;
-    async function loadMemoryStories(expectedCharacterEpoch, expectedListEpoch) {
+    async function loadMemoryStories(expectedCharacterEpoch, expectedListEpoch, preferredStoryId, expectedSelectionEpoch) {
         var result;
         try { result = await requestJson(api.memoryStories); } catch (_) { result = {ok: false}; }
         if (characterEpoch !== expectedCharacterEpoch || memoryListEpoch !== expectedListEpoch) return;
@@ -773,7 +778,13 @@
             if (!state.stories.some(function (existing) { return existing.story_id === story.story_id; })) state.stories.push(story);
         });
         renderStories();
-        if (!state.storyId && state.stories.length) await selectStory(String(state.stories[0].story_id), true);
+        // An installed fallback must not discard a requested memory-only story.
+        // Any later selection, including A -> B -> A, takes precedence.
+        if (storySelectionEpoch === expectedSelectionEpoch) {
+            var preferred = state.stories.find(function (story) { return String(story.story_id) === preferredStoryId; });
+            if (preferred && state.storyId !== preferredStoryId) await selectStory(preferredStoryId, true);
+            else if (!state.storyId && state.stories.length) await selectStory(String(state.stories[0].story_id), true);
+        }
         if (result.memory_available === false) setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
     }
     async function loadStories(preferredStoryId, expectedCharacterEpoch) {
@@ -788,7 +799,8 @@
         state.stories = result.stories;
         state.characterId = String(result.character_id || '');
         var queryStoryId = new URLSearchParams(window.location.search).get('story_id') || '';
-        state.storyId = preferredStoryId || queryStoryId || String((state.stories[0] || {}).story_id || '');
+        var requestedStoryId = preferredStoryId || queryStoryId;
+        state.storyId = requestedStoryId || String((state.stories[0] || {}).story_id || '');
         if (!state.stories.some(function (story) { return String(story.story_id) === state.storyId; })) state.storyId = String((state.stories[0] || {}).story_id || '');
         renderStories(); renderDetail();
         // 导入/删除期间 loadStories 也会在 busy 状态内运行，允许这一次内部详情刷新。
@@ -796,7 +808,7 @@
             if (!(await selectStory(state.storyId, true))) return false;
         } else setStatus('theater.ready', '就绪');
         // Memory-server reads do not delay starting an installed story.
-        loadMemoryStories(storiesCharacterEpoch, listEpoch).catch(function () {
+        loadMemoryStories(storiesCharacterEpoch, listEpoch, requestedStoryId, storySelectionEpoch).catch(function () {
             if (memoryListEpoch === listEpoch) setFeedback(t('theater.memoryStoryListFailed', '保留的剧本记忆暂时无法读取，请重新加载。'), true);
         });
         return true;

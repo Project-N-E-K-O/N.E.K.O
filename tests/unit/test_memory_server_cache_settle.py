@@ -558,28 +558,26 @@ async def test_cache_idempotency_key_skips_duplicate_memory_batch():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failure():
+@pytest.mark.parametrize("read_failure_on_retry", [False, True])
+async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failure(tmp_path, monkeypatch, read_failure_on_retry):
     """recent 已写成但 time-indexed 失败时，重试只能补索引。"""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
+    from tests.unit.test_recent_file_lock import _make_manager, _read_disk
+    from utils import recent_file
+
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *args, **kwargs: None)
 
     payload = _build_history_request_payload([
         {"role": "human", "content": "这是一次需要恢复的演绎。"},
         {"role": "ai", "content": "我已经先记进最近历史了。"},
     ])
-    committed_batch = []
     fake_time_manager = MagicMock()
-    fake_time_manager.ahas_conversation_event = AsyncMock(
-        side_effect=[False, False, False, False]
-    )
+    fake_time_manager.ahas_conversation_event = AsyncMock(return_value=False)
     fake_time_manager.astore_conversation = AsyncMock(
         side_effect=[RuntimeError("time-indexed unavailable"), None]
     )
-    fake_recent_history_manager = MagicMock()
-    fake_recent_history_manager.aget_recent_history = AsyncMock(return_value=committed_batch)
-    fake_recent_history_manager.update_history = AsyncMock(
-        side_effect=lambda messages, *args, **kwargs: committed_batch.extend(messages)
-    )
+    recent_manager, _, path = _make_manager(tmp_path, "测试角色")
     fake_spawn_outbox = AsyncMock(return_value=None)
     request = memory_server.HistoryRequest(
         input_history=payload,
@@ -587,17 +585,71 @@ async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failur
     )
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
-         patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
+         patch.object(memory_server.runtime, "recent_history_manager", recent_manager), \
          patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
          patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         first = await memory_server.cache_conversation(request, "测试角色")
+        if read_failure_on_retry:
+            with patch.object(recent_file, "read_recent_text_unlocked", side_effect=OSError("unreadable")):
+                interrupted = await memory_server.cache_conversation(request, "测试角色")
+                assert interrupted["status"] == "error"
         replay = await memory_server.cache_conversation(request, "测试角色")
 
     assert first["status"] == "error"
     assert replay["status"] == "cached"
-    fake_recent_history_manager.update_history.assert_awaited_once()
+    assert [message.content for message in _read_disk(path)] == [
+        "这是一次需要恢复的演绎。", "我已经先记进最近历史了。",
+    ]
     assert fake_time_manager.astore_conversation.await_count == 2
     fake_spawn_outbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+@pytest.mark.parametrize("restart", [False, True])
+async def test_cache_does_not_commit_event_until_recent_is_durable(tmp_path, monkeypatch, failure, restart):
+    from app import memory_server
+    from tests.unit.test_recent_file_lock import _make_manager, _read_disk, _write_disk
+    from utils import recent_file
+    from utils.llm_client import HumanMessage
+
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *args, **kwargs: None)
+    recent_manager, name, path = _make_manager(tmp_path, "测试角色")
+    _write_disk(path, [HumanMessage(content="older message")])
+    time_manager = MagicMock()
+    time_manager.ahas_conversation_event = AsyncMock(return_value=False)
+    time_manager.astore_conversation = AsyncMock()
+    signals = AsyncMock()
+    request = memory_server.HistoryRequest(
+        input_history=_build_history_request_payload([
+            {"role": "human", "content": "new question"},
+            {"role": "ai", "content": "new answer"},
+        ]), idempotency_key="durable-batch",
+    )
+    with patch.object(memory_server.runtime, "recent_history_manager", recent_manager), \
+         patch.object(memory_server.runtime, "time_manager", time_manager), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", signals), \
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock()):
+        operation = "read_recent_text_unlocked" if failure == "read" else "write_recent_payload_unlocked"
+        with patch.object(recent_file, operation, side_effect=OSError("disk unavailable")):
+            for _ in range(2):
+                failed = await memory_server.cache_conversation(request, name)
+                assert failed["status"] == "error"
+            time_manager.astore_conversation.assert_not_awaited()
+            signals.assert_not_awaited()
+        assert [message.content for message in _read_disk(path)] == ["older message"]
+        if restart:
+            # Simulate loss of both per-manager cache and process-local pending.
+            with recent_file.recent_file_lock(path):
+                recent_file.set_recent_pending_unlocked(path, [])
+            recent_manager, _, _ = _make_manager(tmp_path, name)
+            monkeypatch.setattr(memory_server.runtime, "recent_history_manager", recent_manager)
+        replay = await memory_server.cache_conversation(request, name)
+        assert replay["status"] == "cached"
+        assert [message.content for message in _read_disk(path)] == ["older message", "new question", "new answer"]
+        assert recent_file.get_recent_pending(path) == []
+        time_manager.astore_conversation.assert_awaited_once()
+        signals.assert_awaited_once()
 
 
 @pytest.mark.asyncio

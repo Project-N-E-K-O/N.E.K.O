@@ -807,6 +807,12 @@ class NumericV2SessionStore:
                     raise NumericV2StoreRevisionConflictError("numeric_duplicate_client_turn_id")
                 if session.revision != current.session.revision + 1:
                     raise NumericV2StoreError("numeric_revision_not_monotonic")
+                # Forget can advance while this turn is being generated without
+                # changing the story revision. Keep its durable boundary.
+                session = replace(
+                    session,
+                    forgotten_through_revision=current.session.forgotten_through_revision,
+                )
                 stored = NumericV2StoredSession(
                     session,
                     (*current.ledger_events, deepcopy(dict(ledger_event))),

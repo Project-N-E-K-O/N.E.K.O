@@ -1515,7 +1515,7 @@ async def test_session_commit_rechecks_fence_after_waiting_for_file_lock(tmp_pat
     assert await runtime.restore_session("fenced") == current
 
 
-@pytest.mark.parametrize('writer', ['index', 'payload', 'session', 'exclusive'])
+@pytest.mark.parametrize('writer', ['index', 'payload', 'session', 'exclusive', 'archive'])
 @pytest.mark.parametrize('failure', ['write', 'flush', 'fsync'])
 def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writer, failure):
     from contextlib import contextmanager
@@ -1543,11 +1543,14 @@ def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writ
         def fail_fsync(*args):
             raise OSError('disk failure')
         monkeypatch.setattr(numeric_v2_store.os, 'fsync', fail_fsync)
-    with pytest.raises(OSError, match='disk failure'):
+    error = numeric_v2_archive.NumericV2ArchiveError if writer == 'archive' else OSError
+    with pytest.raises(error, match='numeric_end_receipt_write_failed' if writer == 'archive' else 'disk failure'):
         if writer == 'index':
             numeric_v2_store._write_story_session_slots(path, {'story': {'character': 'session'}})
         elif writer == 'payload':
             numeric_v2_store._atomic_write_json_payload(path, {'next': True})
+        elif writer == 'archive':
+            numeric_v2_archive.NumericV2ArchiveStore._write(path, {'next': True})
         else:
             engine = NumericV2Engine.from_mapping(_branch_story())
             session = engine.create_session(session_id='write', catgirl_binding=_binding(), opening_performance=_opening())
@@ -1556,6 +1559,29 @@ def test_failed_atomic_writes_remove_temporary_files(tmp_path, monkeypatch, writ
             )
     assert path.read_bytes() == b'original'
     assert list(tmp_path.glob('.*.tmp')) == []
+
+
+@pytest.mark.asyncio
+async def test_inflight_turn_preserves_committed_forget_boundary(tmp_path):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    current = await runtime.start_session(session_id='forget-inflight', catgirl_binding=_binding(), opening_performance=_opening())
+    current = await runtime.commit_turn(
+        runtime.prepare_turn(current, TurnRequestV2('first', 0, 'old input'), (), scene_complete=False),
+        _performance('old response'),
+    )
+    candidate = runtime.prepare_turn(current, TurnRequestV2('inflight', 1, 'new input'), (), scene_complete=False)
+    await runtime.store.forget_history_through_current_revision('forget-inflight')
+    committed = await runtime.commit_turn(candidate, _performance('new response'))
+    assert committed.session.revision == 2
+    assert committed.session.forgotten_through_revision == 1
+    archive = numeric_v2_archive.build_numeric_v2_public_archive(title='test', session=committed.session, ending=None)
+    assert archive['opening']['performance'] == ''
+    assert [turn['player_input'] for turn in archive['turns']] == ['new input']
+    cold = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    assert await cold.restore_session('forget-inflight') == committed
+    with pytest.raises(numeric_v2_store.NumericV2StoreRevisionConflictError):
+        await runtime.commit_turn(candidate, _performance('new response'))
+    assert len((await cold.restore_session('forget-inflight')).ledger_events) == 2
 
 
 @pytest.mark.asyncio

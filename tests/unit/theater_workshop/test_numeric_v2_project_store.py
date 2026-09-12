@@ -62,6 +62,52 @@ def test_metric_edit_preserves_initial_name_disclosure(tmp_path, known):
     compiler.compile(updated["story"])
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_metric_only_edit_invalidates_assessment_and_pacing(tmp_path, changed):
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.create()
+    project = store.update(project["project_id"], base_revision=project["revision"], changes={"setup": numeric_v2_setup()})
+    diagnostics = {"status": "warning", "scenes": []}
+    project = store.finish_generation(project["project_id"], base_revision=project["revision"],
+                                      story=numeric_v2_story(), pacing_diagnostics=diagnostics)
+    project = store.record_quality_assessment(project["project_id"], {"scope": "full_story_simple", "overall_score": 80, "stale": False},
+                                             base_revision=project["revision"])
+    setup = project["setup"]
+    if changed:
+        setup["metrics"][0]["initial"] += 1
+    updated = store.update(project["project_id"], base_revision=project["revision"], changes={"setup": setup})
+    assert updated["authoring"]["quality_assessment"]["stale"] is changed
+    assert updated["authoring"]["pacing_diagnostics"] == (None if changed else diagnostics)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("assessed", [False, True])
+def test_mainline_edit_invalidates_pacing_without_requiring_assessment(tmp_path, changed, assessed):
+    from copy import deepcopy
+
+    store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
+    project = store.create()
+    story = numeric_v2_story()
+    middle = deepcopy(story["nodes"][0])
+    middle.update(id="middle", type="normal")
+    story["nodes"].append(middle)
+    route = deepcopy(story["nodes"][0]["route_gates"][0])
+    route.update(id="to_middle", target_node_id="middle")
+    story["nodes"][0]["route_gates"].append(route)
+    diagnostics = {"status": "warning", "scenes": []}
+    project = store.finish_generation(project["project_id"], base_revision=project["revision"],
+                                      story=story, mainline_node_ids=["start"],
+                                      pacing_diagnostics=diagnostics)
+    if assessed:
+        project = store.record_quality_assessment(project["project_id"], {"scope": "full_story_simple", "overall_score": 80, "stale": False},
+                                                 base_revision=project["revision"])
+    updated = store.set_mainline_order(project["project_id"], base_revision=project["revision"],
+                                      node_ids=["start", "middle"] if changed else ["start"])
+    assert updated["authoring"]["pacing_diagnostics"] == (None if changed else diagnostics)
+    if assessed:
+        assert updated["authoring"]["quality_assessment"]["stale"] is changed
+
+
 def test_numeric_v2_project_persists_and_derives_status(tmp_path):
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
     project = store.create()

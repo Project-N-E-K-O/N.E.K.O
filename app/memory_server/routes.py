@@ -135,12 +135,6 @@ def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[s
     }
 
 
-def _contains_cache_event(history: list, event_id: str) -> bool:
-    """Recover an append by event identity, allowing identical text in distinct turns."""
-
-    return any(message_metadata(message).get("cache_event_id") == event_id for message in history)
-
-
 def _theater_memory_render_state(history: list):
     """选出每个 Session 最新状态，以及每个 Story 最新周目。"""  # noqa: DOCSTRING_CJK
 
@@ -1103,16 +1097,14 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                     elif stable_event_id:
                         for message in input_history:
                             message.metadata["cache_event_id"] = stable_event_id
-                        current_history = await runtime.recent_history_manager.aget_recent_history(
-                            lanlan_name
+                        # The file lock owns deduplication and retry of pending
+                        # batches; only a durable write permits the index receipt.
+                        await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            compress=False,
+                            cache_event_id=stable_event_id,
                         )
-                        # 如果上次在 recent 写成后中断，只补 time-indexed，不再追加正文。
-                        if not _contains_cache_event(current_history, stable_event_id):
-                            await runtime.recent_history_manager.update_history(
-                                input_history,
-                                lanlan_name,
-                                compress=False,
-                            )
                     else:
                         await runtime.recent_history_manager.update_history(
                             input_history,

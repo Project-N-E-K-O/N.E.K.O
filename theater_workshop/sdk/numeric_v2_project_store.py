@@ -405,11 +405,8 @@ class NumericV2ProjectStore:
                 old_metrics = (project.get("setup") or {}).get("metrics") or []
                 project["setup"] = setup
                 project["_generation_checkpoint"] = None
-                if {
-                    key: value for key, value in old_setup.items() if key != "metrics"
-                } != {
-                    key: value for key, value in setup.items() if key != "metrics"
-                }:
+                # Metric definitions also affect quality advice and pacing.
+                if old_setup != setup:
                     authoring = _normalize_authoring(project.get("authoring"), project.get("story"))
                     if isinstance(authoring.get("quality_assessment"), dict):
                         authoring["quality_assessment"]["stale"] = True
@@ -624,10 +621,10 @@ class NumericV2ProjectStore:
                 raise NumericV2ProjectError("mainline_order_invalid")
 
             authoring = _normalize_authoring(project.get("authoring"), story)
-            if authoring.get("mainline_node_ids") != ordered and isinstance(
-                authoring.get("quality_assessment"), dict
-            ):
-                authoring["quality_assessment"]["stale"] = True
+            if authoring.get("mainline_node_ids") != ordered:
+                if isinstance(authoring.get("quality_assessment"), dict):
+                    authoring["quality_assessment"]["stale"] = True
+                authoring["pacing_diagnostics"] = None
             authoring["mainline_node_ids"] = ordered
             for draft in authoring["branch_drafts"].values():
                 if draft.get("status") not in {"applied", "failed"}:

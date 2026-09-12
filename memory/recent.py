@@ -875,7 +875,7 @@ class CompressedRecentHistoryManager:
         )
 
     def _append_and_persist_locked(
-        self, file_path, lanlan_name, new_messages, expected_generation=None,
+        self, file_path, lanlan_name, new_messages, expected_generation=None, cache_event_id=None,
     ) -> tuple[list, bool]:
         """Read → merge unpersisted batches → append → persist, as one critical section.
 
@@ -889,6 +889,17 @@ class CompressedRecentHistoryManager:
         ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
+            if cache_event_id and status == RECENT_READ_UNREADABLE:
+                # The event may already be on disk after an index-only failure.
+                # Do not enqueue an unchecked duplicate; the caller must retry.
+                raise RuntimeError("recent_history_persist_failed")
+            # Deduplicate under the file lock, including batches whose previous
+            # write failed. A pending match still has to be flushed to disk.
+            if cache_event_id and any(
+                message_metadata(message).get("cache_event_id") == cache_event_id
+                for message in [*history, *pending]
+            ):
+                new_messages = []
             if status == RECENT_READ_UNREADABLE:
                 # 读不到盘上内容 ≠ 盘上是空的。这里一写就是拿这批新消息覆盖掉
                 # 整段读不出来的历史（重构前的 `except Exception: return []`
@@ -1129,7 +1140,7 @@ class CompressedRecentHistoryManager:
             )
             return 'merged'
 
-    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
+    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None, *, cache_event_id=None):
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
@@ -1157,12 +1168,15 @@ class CompressedRecentHistoryManager:
                 lanlan_name,
                 list(new_messages),
                 admission_generation,
+                cache_event_id,
             )
             logger.debug(
                 f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，"
                 f"当前共 {len(history)} 条（已落盘={persisted}）"
             )
             if not persisted:
+                if cache_event_id:
+                    raise RuntimeError("recent_history_persist_failed")
                 # 与重构前一致：第一次落盘失败就不再往下走压缩（原实现靠异常跳过
                 # 整段）。这批消息已记进 _pending，下一次 update_history 会连同
                 # 磁盘内容一起补写。
@@ -1238,6 +1252,9 @@ class CompressedRecentHistoryManager:
             raise
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
+            # An idempotent /cache receipt certifies durability, not a cached view.
+            if cache_event_id:
+                raise
 
 
     # ── Past block 更新 meta（防止"几天前的事还在 summary 里被反复带出来"
