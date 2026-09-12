@@ -1062,7 +1062,7 @@
       }
       if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
         let bytes;
-        if (maxBytes !== undefined) {
+        if (maxBytes !== undefined || typeof response.body?.getReader === 'function') {
           const overflow = () => this._hostError('invalid_response', 'Host response exceeds its byte limit');
           if (Number(response.headers?.get?.('content-length')) > maxBytes) {
             cancelBody(response.body);
@@ -1072,7 +1072,10 @@
           else {
             if (typeof response.body.getReader !== 'function') throw overflow();
             const reader = response.body.getReader();
-            const buffer = new Uint8Array(maxBytes);
+            const buffer = maxBytes === undefined ? null : new Uint8Array(maxBytes);
+            // Legacy REST calls retain their complete-response contract. Their
+            // chunks live only within this deadline/cancellation-owned read.
+            const chunks = [];
             let size = 0;
             let readerCancelled = false;
             const cancelReader = () => {
@@ -1087,19 +1090,29 @@
                 const { done, value } = await reader.read();
                 if (signal?.aborted) throw cancelled();
                 if (done) break;
-                if (value.byteLength > maxBytes - size) {
+                if (maxBytes !== undefined && value.byteLength > maxBytes - size) {
                   throw overflow();
                 }
-                buffer.set(value, size);
+                if (buffer) buffer.set(value, size);
+                else chunks.push(new Uint8Array(value));
                 size += value.byteLength;
               }
-              bytes = buffer.subarray(0, size);
+              if (buffer) bytes = buffer.subarray(0, size);
+              else {
+                bytes = new Uint8Array(size);
+                let offset = 0;
+                for (const chunk of chunks) {
+                  bytes.set(chunk, offset);
+                  offset += chunk.byteLength;
+                }
+              }
             } catch (error) {
               cancelReader();
               throw error;
             } finally {
               signal?.removeEventListener('abort', cancelReader);
               reader.releaseLock();
+              chunks.length = 0;
             }
           }
         } else bytes = await response.arrayBuffer();

@@ -209,6 +209,11 @@ discard late results. A transport that ignores abort keeps its bounded raw slot
 until the body settles: `pendingCount` may be zero after cancellation while new
 commands still receive `busy`. This prevents repeated retries from accumulating
 abandoned body reads; capacity is released when those reads actually finish.
+Standard readable responses, including legacy calls without a byte budget,
+are actively cancelled on timeout, cancellation or disposal. Reader locks and
+abort listeners are released without awaiting an unresponsive source cancel
+hook. A fetch that has not returned yet, or a legacy JSON-only transport that
+ignores cancellation, still retains its raw slot until it settles.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It

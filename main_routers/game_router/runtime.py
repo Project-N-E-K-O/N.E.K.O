@@ -4853,6 +4853,8 @@ async def game_character(game_type: str, request: Request = None):
 
         model_type = avatar.get('model_type', '') if isinstance(avatar, dict) else ''
         live3d_sub_type = avatar.get('live3d_sub_type', '') if isinstance(avatar, dict) else ''
+        model_type = neko_data.get('model_type') or model_type
+        live3d_sub_type = neko_data.get('live3d_sub_type') or live3d_sub_type
 
         # 提取各类型模型路径
         live2d_path = ''
@@ -4894,10 +4896,8 @@ async def game_character(game_type: str, request: Request = None):
             raw_mmd = neko_data.get('mmd')
             if not isinstance(raw_mmd, str) or not raw_mmd.strip():
                 raw_mmd = mmd_info.get('model_path', '')
-            effective_type = neko_data.get('model_type') or model_type
-            effective_subtype = neko_data.get('live3d_sub_type') or live3d_sub_type
-            if not raw_mmd and (effective_type == 'mmd' or (
-                effective_type == 'live3d' and effective_subtype == 'mmd'
+            if not raw_mmd and (model_type == 'mmd' or (
+                model_type == 'live3d' and live3d_sub_type == 'mmd'
             )):
                 raw_mmd = neko_data.get('model_path', '')
             if isinstance(raw_mmd, str) and raw_mmd.strip() and len(raw_mmd) <= 2048:

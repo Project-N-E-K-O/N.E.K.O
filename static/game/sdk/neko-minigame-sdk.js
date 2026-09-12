@@ -5776,7 +5776,13 @@
               release();
             }
           })();
-          try { return await Promise.race([operation, cancelled]); }
+          try {
+            const result = await Promise.race([operation, cancelled]);
+            if (active && result === false && !reason && !controllerState.paused) {
+              controllerState.manualSpeaking = !controllerState.disposed && previous;
+            }
+            return result;
+          }
           catch (error) {
             if (!reason) controllerState.manualSpeaking = !controllerState.disposed && previous;
             throw error;
