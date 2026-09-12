@@ -380,14 +380,16 @@
 
                                 <!-- 图片生成 -->
                                 <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('image')">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('image')"
+                                        aria-controls="image-model-content" aria-expanded="false"
+                                        style="width: 100%; border: 0; text-align: left; font: inherit;">
                                         <span class="model-title">
                                             <img src="/static/icons/vision_model_icon.png"
                                                 data-i18n-alt="api.imageModelConfig" class="model-title-icon">
                                             <span data-i18n="api.imageModelConfig">图片生成</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
-                                    </div>
+                                    </button>
                                     <div id="image-model-content" class="model-content">
                                         <div class="field-row">
                                             <label for="imageModelProvider" data-i18n="api.providerLabel">服务商</label>

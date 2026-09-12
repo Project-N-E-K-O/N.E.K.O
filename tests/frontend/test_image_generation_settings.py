@@ -31,3 +31,21 @@ def test_image_settings_real_page_round_trip(mock_page, running_server):
     assert state["imageModelApiKey"] == ""
     assert mock_page.locator("#imageModelApiKey").is_disabled()
     assert mock_page.evaluate("CONNECTIVITY_TESTABLE_TYPES.includes('image')") is False
+
+    # Keyboard activation uses the native button and keeps aria state in sync.
+    mock_page.evaluate("""() => {
+        document.getElementById('custom-api-options').style.display = 'block';
+        document.getElementById('custom-api-container').style.display = 'block';
+    }""")
+    header = mock_page.locator('button[aria-controls="image-model-content"]')
+    header.focus()
+    header.press("Enter")
+    expect(header).to_have_attribute("aria-expanded", "true")
+    header.press("Space")
+    expect(header).to_have_attribute("aria-expanded", "false")
+    mock_page.evaluate("confirmClearCustomApi()")
+    state = mock_page.evaluate("imageSettingsPayload()")
+    assert state == {
+        "imageModelProvider": "disabled", "imageModelUrl": "",
+        "imageModelId": "", "imageModelApiKey": "",
+    }

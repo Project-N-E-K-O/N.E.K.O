@@ -2566,6 +2566,12 @@ function confirmClearCustomApi() {
         }
     });
 
+    const imageProvider = document.getElementById('imageModelProvider');
+    if (imageProvider) {
+        imageProvider.value = 'disabled';
+        onImageProviderChange();
+    }
+
     // 清空 TTS Voice ID
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';

@@ -7,8 +7,9 @@ from .types import ImageGenerationError
 
 async def generate(client, config, request):
     body = {"model": config.model, "prompt": request.prompt, "n": 1, "size": request.size}
-    # GPT Image always returns base64 and rejects the legacy response_format flag.
-    if not config.model.rsplit("/", 1)[-1].startswith(("gpt-image", "chatgpt-image")):
+    # Only known legacy models opt in. Unknown aliases may route to GPT Image,
+    # which rejects this flag; the response parser also accepts default URL output.
+    if config.model in ("dall-e-2", "dall-e-3"):
         body["response_format"] = "b64_json"
     result = await request_json(client, "POST", config.base_url + "/images/generations", key=config.api_key, json=body)
     items = result.get("data")

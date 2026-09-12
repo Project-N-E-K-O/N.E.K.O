@@ -51,7 +51,7 @@ def test_named_key_cannot_be_sent_to_custom_endpoint():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model,legacy", [("gpt-image-2", False), ("vendor/gpt-image-2:version", False), ("dall-e-3", True)])
+@pytest.mark.parametrize("model,legacy", [("gpt-image-2", False), ("vendor/gpt-image-2:version", False), ("dall-e-3", True), ("prod-image", False)])
 async def test_openai_wire_contract(model, legacy):
     calls = []
     def handle(request):
@@ -124,6 +124,7 @@ async def test_timeout_and_cancellation_do_not_resubmit():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         with pytest.raises(ImageGenerationError, match="provider_timeout"):
             await generate_image(ImageRequest("cat"), config_manager=manager(), client=client, timeout=0.01)
+        entered.clear()
         task = asyncio.create_task(generate_image(ImageRequest("cat"), config_manager=manager(), client=client))
         await entered.wait()
         task.cancel()
