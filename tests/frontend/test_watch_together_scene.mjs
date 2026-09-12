@@ -224,3 +224,16 @@ assert.equal(switching.elements.get('play').disabled,true,'old Play must not ena
 finishSelection({id:'new',version:'v',title:'New',events:[]});
 await pendingSelection;
 assert.equal(switching.elements.get('play').disabled,false);
+const paged=await fixture(false);
+const pageRequest=paged.game.media.request;
+paged.game.media.request=async(action,payload)=>action==='watches'
+  ? {watches:[{job:payload.offset?'Older':'Recent',progress:1}],next_offset:payload.offset?null:50}
+  : pageRequest(action,payload);
+await paged.elements.get('watches-previous').onclick();
+assert.equal(paged.elements.get('watches-next').disabled,false);
+await paged.elements.get('watches-next').onclick();
+assert.match(paged.elements.get('watches').textContent,/Older/);
+assert.equal(paged.elements.get('watches-previous').disabled,false);
+assert.equal(paged.elements.get('watches-next').disabled,true);
+await paged.elements.get('watches-previous').onclick();
+assert.match(paged.elements.get('watches').textContent,/Recent/);

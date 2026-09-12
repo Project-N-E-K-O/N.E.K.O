@@ -5360,6 +5360,8 @@
         }
     },
   "watchTogether": {
+    "previousPage": "前のページ",
+    "nextPage": "次のページ",
     "prefetchEnabled": "視聴中に次の動画を準備",
     "nextVideo": "次を再生",
     "nextIdle": "次の動画は未準備です。",

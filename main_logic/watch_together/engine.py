@@ -433,10 +433,14 @@ class Engine:
             else:
                 raise ValueError("未获取到可播放视频，请检查 B 站登录和视频权限")
         length = await duration_async(target)
-        if not enforce_download_policy({"duration": length, "parts": len(pages),
+        accepted_duration = enforce_download_policy({"duration": length, "parts": len(pages),
                                "danmaku": info.get("stat", {}).get("danmaku")},
                               metadata_duration=float(part["duration"]),
-                              automatic=automatic, confirmed_duration=confirmed_duration):
+                              automatic=automatic, confirmed_duration=confirmed_duration)
+        if deadline is not None:
+            # Cover confirmation and frame extraction as well as both vision attempts.
+            deadline.reschedule(asyncio.get_running_loop().time() + 1800 + math.ceil(length / 30) * 240)
+        if not accepted_duration:
             if confirm_download is None:
                 raise ValueError("Downloaded duration requires renewed confirmation")
             if not await confirm_download(info["title"], length):
@@ -466,9 +470,6 @@ class Engine:
                     "hotspots": hotspots, "frame_timestamps": [at for at, _ in samples]}
         (folder / "evidence.json").write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
         candidates = []
-        if deadline is not None:
-            # Two 120-second vision attempts per window, plus non-model work.
-            deadline.reschedule(asyncio.get_running_loop().time() + 1800 + math.ceil(length / 30) * 240)
         for start in range(0, math.ceil(length), 30):
             end = min(length, start + 30)
             progress("analyzing", 40 + int(32 * start / max(1, length)))

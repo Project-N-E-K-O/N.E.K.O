@@ -208,9 +208,27 @@ export async function run(game, character) {
       setTimeout(()=>{if(!window.closed)location.href='/';},100);
     }
   };
-  async function refreshWatches() {
-    try { renderWatches((await game.media.request('watches')).watches); }
-    catch(error) { status(error.message); }
+  let watchOffset=0, watchNext=null, watchGeneration=0;
+  $('watches-previous').onclick=()=>refreshWatches(Math.max(0,watchOffset-50));
+  $('watches-next').onclick=()=>{if(watchNext!==null)return refreshWatches(watchNext);};
+  async function refreshWatches(offset=watchOffset) {
+    // Promise.then(record) passes its result; only explicit numeric offsets paginate.
+    if(!Number.isInteger(offset))offset=watchOffset;
+    const generation=++watchGeneration;
+    $('watches-previous').disabled=true;$('watches-next').disabled=true;
+    try {
+      const page=await game.media.request('watches',{offset});
+      if(generation!==watchGeneration)return;
+      watchOffset=offset;watchNext=page.next_offset ?? null;
+      renderWatches(page.watches);
+    }
+    catch(error) { if(generation===watchGeneration)status(error.message); }
+    finally {
+      if(generation===watchGeneration) {
+        $('watches-previous').disabled=watchOffset===0;
+        $('watches-next').disabled=watchNext===null;
+      }
+    }
   }
   function renderWatches(rows) {
     $('watches').textContent = rows.length ? rows.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
@@ -236,7 +254,7 @@ export async function run(game, character) {
     }
     const data = await game.media.request('history');
     renderHistory(data.analyses);
-    renderWatches(data.watches);
+    await refreshWatches();
     status(t('choose'));
     const job = new URLSearchParams(location.search).get('job');
     const version = new URLSearchParams(location.search).get('version');

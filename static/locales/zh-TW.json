@@ -5360,6 +5360,8 @@
         }
     },
   "watchTogether": {
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
     "prefetchEnabled": "播放時提前解析下一則",
     "nextVideo": "播放下一則",
     "nextIdle": "下一則尚未準備。",

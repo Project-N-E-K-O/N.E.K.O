@@ -5360,6 +5360,8 @@
         }
     },
   "watchTogether": {
+    "previousPage": "이전 페이지",
+    "nextPage": "다음 페이지",
     "prefetchEnabled": "시청 중 다음 영상 준비",
     "nextVideo": "다음 영상 재생",
     "nextIdle": "다음 영상이 아직 준비되지 않았습니다.",

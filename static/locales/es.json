@@ -5360,6 +5360,8 @@
         }
     },
   "watchTogether": {
+    "previousPage": "Página anterior",
+    "nextPage": "Página siguiente",
     "prefetchEnabled": "Preparar el siguiente vídeo mientras miras",
     "nextVideo": "Ver siguiente",
     "nextIdle": "El siguiente vídeo aún no está preparado.",

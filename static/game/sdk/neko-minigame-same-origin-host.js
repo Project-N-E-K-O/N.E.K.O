@@ -912,7 +912,7 @@
       this._requireGrantedCapability('media-timeline', 'media.request');
       let response;
       if (action === 'history') response = await this._request('/api/watch-together/history');
-      else if (action === 'watches') response = await this._request('/api/watch-together/watches');
+      else if (action === 'watches') response = await this._request('/api/watch-together/watches?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}));
       else if (action === 'character') response = await this._readCharacter(payload.name || '');
       else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});
       else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || '', exclude: payload.exclude || []}, {timeoutMs: 190000});
