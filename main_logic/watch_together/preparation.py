@@ -71,7 +71,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         staging = library.root / "preparations"
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
-            async with asyncio.timeout(1800):
+            async with asyncio.timeout(1800) as deadline:
                 media_binary('ffmpeg')
                 media_binary('ffprobe')
                 await engine.vision_config()
@@ -81,7 +81,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 if not speech.get("ok"):
                     raise ValueError("Character speech unavailable")
                 await engine.prepare(job, url, character, automatic=automatic,
-                                     confirmed_duration=confirmed_duration, confirm_download=confirm_download)
+                                     confirmed_duration=confirmed_duration, confirm_download=confirm_download,
+                                     deadline=deadline)
         except asyncio.CancelledError:
             job.update(status="cancelled", stage="Cancelled", stage_key="cancelled")
             raise

@@ -139,6 +139,21 @@ def test_missing_manifest_file_rejected(tmp_path):
         Library(tmp_path / "data").import_sources([archive])
 
 
+def test_watch_history_pages_keep_all_records(tmp_path):
+    library = Library(tmp_path / "data")
+    with library.connect() as db:
+        db.executemany("INSERT INTO watches(id,job,version,character) VALUES(?,?,?,?)",
+                       [(f'{index:03}', JOB, 'v', 'cat') for index in range(125)])
+    first = library.watches()
+    second = library.watches(50, 50)
+    third = library.watches(50, 100)
+    assert [len(first), len(second), len(third)] == [50, 50, 25]
+    assert len({row['id'] for row in first + second + third}) == 125
+    assert len(library.watches(10000)) == 100
+    with library.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM watches').fetchone()[0] == 125
+
+
 def test_viewing_is_separate_and_completion_survives_exit(tmp_path):
     library = Library(tmp_path / "data")
     library.import_sources([source(tmp_path, "archive")])

@@ -51,6 +51,7 @@ class Library:
                 CREATE TABLE IF NOT EXISTS audio_assets (
                     name TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL,
                     PRIMARY KEY(name, sha256));
+                CREATE INDEX IF NOT EXISTS watches_recent ON watches(last_watched DESC, id DESC);
             """)
 
     @contextmanager
@@ -264,10 +265,13 @@ class Library:
                        completed=CASE WHEN ? THEN 1 ELSE completed END, events=? WHERE id=?""",
                        (progress, watched, now, any(item.get('type') == 'ended' for item in events), json.dumps(events), identifier))
 
-    def watches(self) -> list[dict]:
+    def watches(self, limit=50, offset=0) -> list[dict]:
+        limit = max(1, min(100, int(limit)))
+        offset = max(0, int(offset))
         with self.connect() as db:
             return [dict(row) for row in db.execute(
-                "SELECT id,job,version,character,progress,last_watched,completed FROM watches ORDER BY last_watched DESC")]
+                "SELECT id,job,version,character,progress,last_watched,completed FROM watches "
+                "ORDER BY last_watched DESC, id DESC LIMIT ? OFFSET ?", (limit, offset))]
 
     def verify(self) -> dict:
         failures, checked = [], {}

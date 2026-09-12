@@ -3,7 +3,7 @@ import asyncio
 import math
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from main_logic.watch_together.library import application_library
@@ -24,8 +24,9 @@ async def history():
 
 
 @router.get("/watches")
-async def watches():
-    return {"watches": await asyncio.to_thread(_library_call, "watches")}
+async def watches(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
+    rows = await asyncio.to_thread(_library_call, "watches", limit, offset)
+    return {"watches": rows, "next_offset": offset + len(rows) if len(rows) == limit else None}
 
 
 @router.get("/jobs/{job}/{version}")
