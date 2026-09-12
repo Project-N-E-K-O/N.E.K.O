@@ -9,15 +9,16 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
-@pytest.mark.parametrize('depth', [40, 1500])
+@pytest.mark.parametrize('depth', [2, 40, 1500])
 def test_deep_timeline_does_not_break_history(tmp_path, depth):
     archive = source(tmp_path, 'nested')
     path = archive / JOB / 'timeline.json'
-    raw = '{"status":"ready","unused":' + '[' * depth + '0' + ']' * depth + '}'
+    (archive / JOB / 'video.mp4').write_bytes(b'video')
+    raw = f'{{"status":"ready","video":"/media/{JOB}/video.mp4","unused":' + '[' * depth + '0' + ']' * depth + '}'
     path.write_text(raw)
     library = Library(tmp_path / 'data')
     library.import_sources([archive])
-    assert library.history()[0]['status'] == 'incomplete'
+    assert library.history()[0]['status'] == ('ready' if depth == 2 else 'incomplete')
     assert path.read_text() == raw
 
 
