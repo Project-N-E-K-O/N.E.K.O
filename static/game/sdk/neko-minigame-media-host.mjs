@@ -75,6 +75,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   } catch(error) {for(const url of resources.values())URL.revokeObjectURL(url);throw error;}
   const clock = new ReactionClock(timeline.events || []);
   let active = null, disposed = false, waiting = false, frame = 0, release = null;
+  let lockPending = null;
   let generation = 0, playingGeneration = -1, playAttempt = 0;
   const graph = videoGraph(video), audio = graph.audio;
   let context = null, analyser = null, soundtrack = null;
@@ -182,12 +183,13 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       await context.resume();
       if (!release) {
         if (!navigator.locks) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
-        await new Promise((resolve, reject) => {
+        if(!lockPending)lockPending = new Promise((resolve, reject) => {
           navigator.locks.request('neko:media-timeline:audio', { ifAvailable: true }, async lock => {
             if (!lock) { reject(Object.assign(Error('Another watch scene owns the audio'),{name:'AudioOwnershipError'})); return; }
             await new Promise(done => { release = done; resolve(); });
           }).catch(reject);
-        });
+        }).finally(()=>{lockPending=null;});
+        await lockPending;
       }
       if (disposed) { release?.(); release = null; return; }
       await video.play();

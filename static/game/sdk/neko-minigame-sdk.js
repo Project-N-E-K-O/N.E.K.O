@@ -5256,7 +5256,10 @@
           if(mountAbort.signal.aborted)fail('cancelled','Media mount cancelled');
           controller = await transport.mountMedia({ ...config, signal:mountAbort.signal });
         }
-        catch(error) { throw normalizeTransportError(error, 'media.mount'); }
+        catch(error) {
+          if(mountAbort.signal.aborted)fail('cancelled','Media mount cancelled');
+          throw normalizeTransportError(error, 'media.mount');
+        }
         finally { callerSignal?.removeEventListener('abort',abortFromCaller);mediaMountPending = false; mediaMountAbort = null; }
         if (mountAbort.signal.aborted || disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
           controller.dispose(); fail('cancelled', 'Media route changed while loading');

@@ -26,6 +26,32 @@ for(const locks of [null,{request:async(_name,_options,fn)=>fn(null)}]) {
   owned.dispose();
 }
 navigator.locks=savedLocks;
+for(const granted of [true,false]) {
+  let lockRequests=0,grantLock,lockReleased=false;
+  navigator.locks={request:async(_name,_options,callback)=>{
+    lockRequests++;lockReleased=false;
+    const lock=await new Promise(resolve=>{grantLock=resolve;});
+    await callback(lock);lockReleased=true;
+  }};
+  const shared=await mount({video:new Media(),timeline:{id:'shared',version:'v',status:'ready',video:'/video',events:[]}});
+  const concurrent=[shared.play(),shared.play()];
+  const outcomes=Promise.allSettled(concurrent);
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(lockRequests,1,'concurrent playback must share a pending ownership request');
+  grantLock(granted?{}:null);
+  const results=await outcomes;
+  assert.ok(results.every(result=>granted?result.status==='fulfilled':result.reason?.name==='AudioOwnershipError'));
+  if(!granted) {
+    const retry=shared.play();
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(lockRequests,2,'failed ownership attempt permits a fresh request');
+    grantLock({});await retry;
+  }
+  shared.dispose();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(lockReleased,true);
+}
+navigator.locks=savedLocks;
 audios.length=0;gains.length=0;
 const events=[];const video=new Media();
 const cue={id:'cue-1',at:4,duration:2,audio:'/api/watch-together/media/job/version/comment.mp3'};
