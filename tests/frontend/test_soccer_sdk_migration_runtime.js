@@ -153,7 +153,8 @@ async function main() {
     const descriptor = await firstBinding;
     const avatarEvents = [];
     sandbox.emitEvent = (name, data) => avatarEvents.push({ name, data });
-    install('const SOCCER_AVATAR_LAYOUT', '    (async () => {');
+    const avatarLoaderAnchor = '    async function loadSoccerAvatars()';
+    install('const SOCCER_AVATAR_LAYOUT', avatarLoaderAnchor);
     install('async function setPlayerAvatar(', 'function roundDebugNumber(');
     await sandbox.setPlayerAvatar({ type: 'vrm', path: '/first.vrm' });
     await sandbox.setPlayerAvatar({ type: 'vrm', path: '/second.vrm' });
@@ -299,6 +300,56 @@ async function main() {
     assert.equal(vm.runInThisContext('soccerCharacterLanguagePreferenceResolved'), true);
     assert.deepEqual(cleared.fallbackModels, [], 'missing fallback invented a default model');
     host.getAvatarCharacter = originalCharacterQuery;
+    // Run the actual asset loader and startup sequence with storage held open.
+    // The real SDK must not have its first character bind cancelled by reset.
+    game.runtime.reset({ newSession: true });
+    sandbox.resetSoccerCharacterInfo();
+    window.__SoccerAiAvatarController = null;
+    window.__SoccerPlayerAvatarController = null;
+    window.vrmModuleLoaded = true;
+    const previousGetElement = document.getElementById;
+    document.getElementById = (id) => id === 'status'
+      ? { textContent: '', style: {} } : previousGetElement(id);
+    let releaseSettings;
+    const settingsGate = new Promise(resolve => { releaseSettings = resolve; });
+    let releaseInitialCharacter;
+    let assetsDone = false;
+    host.getAvatarCharacter = () => new Promise(resolve => {
+      releaseInitialCharacter = () => resolve(descriptor);
+    });
+    window.__SoccerLoading = {
+      set() {}, done(part) { if (part === 'assets') assetsDone = true; },
+    };
+    Object.assign(sandbox, {
+      _loadSurrenderReminderEnabled: () => settingsGate,
+      _readSurrenderReminderEnabled: () => true,
+      _setSurrenderReminderEnabled() {},
+      _prepareGameForStartScreen: async () => {
+        game.runtime.reset({ newSession: true });
+        sandbox.resetSoccerCharacterInfo();
+      },
+    });
+    install(avatarLoaderAnchor, '    /* ═');
+    const startupFrom = page.indexOf('      await _loadSurrenderReminderEnabled();');
+    const startupTo = page.indexOf('      // 注册 onSpeak', startupFrom);
+    const startup = vm.runInThisContext(`(async () => {${page.slice(startupFrom, startupTo)}})()`);
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+    releaseSettings();
+    await startup;
+    for (let i = 0; i < 10 && !releaseInitialCharacter; i++) await new Promise(resolve => setImmediate(resolve));
+    assert(releaseInitialCharacter, 'startup never queried the character');
+    releaseInitialCharacter();
+    for (let i = 0; i < 10 && !assetsDone; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(assetsDone, true, 'startup did not settle the asset loader');
+    assert(window.__SoccerAiAvatarController && !window.__SoccerAiAvatarController.disposed,
+      'initial runtime reset cancelled the only AI avatar mount');
+    assert.equal(window.__SoccerAiAvatarController.getState().model.path, descriptor.model.path);
+    assert.equal(game.runtime.session.characterName, descriptor.name);
+    assert.equal(game.runtime.state, 'idle', 'loading assets started a game route');
+    window.__SoccerAiAvatarController.dispose();
+    window.__SoccerPlayerAvatarController.dispose();
+    host.getAvatarCharacter = originalCharacterQuery;
+    document.getElementById = previousGetElement;
     let releaseMount;
     mountGate = new Promise(resolve => { releaseMount = resolve; });
     const eventCountBeforeExit = avatarEvents.length;

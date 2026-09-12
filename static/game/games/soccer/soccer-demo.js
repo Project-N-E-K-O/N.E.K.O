@@ -369,7 +369,7 @@
       throw lastError;
     }
 
-    (async () => {
+    async function loadSoccerAvatars() {
       const statusEl = document.getElementById('status');
       const soccerLoadingText = (key, fallback) => {
         const fullKey = `soccer.${key}`;
@@ -444,7 +444,7 @@
           soccerLoadingText('loading.assetsFailed', '模型初始化失败，继续进入游戏'),
         );
       }
-    })();
+    }
 
     /* ═══════════════════════════════════════════════════════════════════════════
      *  SoccerDemo 对外 API（挂在 window.SoccerDemo）
@@ -5907,7 +5907,10 @@
         persist: false,
         source: 'init',
       });
-      void _prepareGameForStartScreen();
+      // Finish the initial runtime reset before binding or mounting avatars;
+      // reset cancels queries from the previous runtime generation.
+      await _prepareGameForStartScreen();
+      void loadSoccerAvatars();
 
       // 注册 onSpeak 回调：拦截高优先级事件，调用 LLM 生成台词
       SoccerDemo.onSpeak(async (p) => {

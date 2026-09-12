@@ -107,7 +107,7 @@ async function main() {
   const page = read('static/game/games/soccer/soccer-demo.js');
   assert(!page.includes('avatarHost:') && !page.includes('__SoccerAvatarHost'), 'page still constructs a legacy Avatar provider');
   const start = page.indexOf('const SOCCER_AVATAR_LAYOUT');
-  const end = page.indexOf('\n    (async () =>', start);
+  const end = page.indexOf('\n    async function loadSoccerAvatars()', start);
   assert(start >= 0 && end > start);
   vm.runInContext(page.slice(start, end), context);
   window.__SoccerResolvedLanlanName = 'Neko';

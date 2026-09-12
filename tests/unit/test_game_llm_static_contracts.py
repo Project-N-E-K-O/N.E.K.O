@@ -232,7 +232,7 @@ def test_soccer_direct_open_language_change_wins_inflight_character_response():
 
     script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
     state_start = script.index("const normalizeSoccerExplicitLanguage")
-    state_end = script.index("    (async () => {", state_start)
+    state_end = script.index("    async function loadSoccerAvatars()", state_start)
     listener_start = script.index(
         "window.SoccerExplicitConversationLang = function (characterName)"
     )
