@@ -7,6 +7,23 @@ from main_routers import watch_together_router as router
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('cancelled', [False, True])
+async def test_discovery_transport_failure_and_cancellation(monkeypatch, cancelled):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+    from main_logic.watch_together import discovery
+    failure = asyncio.CancelledError() if cancelled else ConnectionError('upstream offline')
+    monkeypatch.setattr(discovery, 'discover', AsyncMock(side_effect=failure))
+    request = SimpleNamespace(headers={}, json=AsyncMock(return_value={'topic': 'cats'}))
+    with pytest.raises(asyncio.CancelledError if cancelled else HTTPException) as caught:
+        await router.discover_video(request)
+    if not cancelled:
+        assert caught.value.status_code == 502
+        assert caught.value.detail == 'Video search unavailable'
+
+
+@pytest.mark.asyncio
 async def test_prepare_metadata_outage_is_controlled(monkeypatch):
     from unittest.mock import AsyncMock
     from fastapi import HTTPException

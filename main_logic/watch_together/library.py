@@ -280,6 +280,14 @@ class Library:
                 timeline['status'] = 'incomplete'
                 return timeline
             manifest = self.manifest(job, version)
+            audio_urls = {cue['audio'] for cue in events if cue.get('audio')}
+            audio_bytes = 0
+            for url in audio_urls:
+                name = unquote(url[len(prefix):]) if url.startswith(prefix) else None
+                audio_bytes += manifest.get(name, {}).get('bytes', 0)
+            if len(audio_urls) > 256 or audio_bytes > 64 * 1024 * 1024:
+                timeline['status'] = 'incomplete'
+                return timeline
             references = [(timeline.get('video'), {'.mp4', '.webm'})]
             references.extend((cue.get('audio'), {'.wav', '.mp3', '.ogg', '.m4a'}) for cue in events if cue.get('audio'))
             for url, extensions in references:

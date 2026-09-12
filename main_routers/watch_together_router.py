@@ -174,5 +174,5 @@ async def discover_video(request: Request):
     try:
         async with asyncio.timeout(180):
             return await discover(topic, exclude)
-    except (ValueError, TimeoutError):
+    except Exception:
         raise HTTPException(502, "Video search unavailable")

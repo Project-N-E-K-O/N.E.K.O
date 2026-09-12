@@ -16,6 +16,35 @@ def valid_media_probe(monkeypatch):
     monkeypatch.setattr(module, '_probe_media', lambda *args: True)
 
 
+@pytest.mark.parametrize('count,size,ready', [(256, 1, True), (257, 1, False),
+                                            (2, 32 * 1024 * 1024, True),
+                                            (2, 32 * 1024 * 1024 + 1, False)])
+def test_history_matches_unique_audio_preload_budgets(tmp_path, monkeypatch, count, size, ready):
+    archive = source(tmp_path, 'preload-budget')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    events = []
+    for index in range(count):
+        name = f'{index}.wav'
+        (folder / name).write_bytes(b'audio')
+        events.append({'at': index, 'duration': 1, 'audio': f'/media/{JOB}/{name}'})
+    # Repeated URLs must not consume the budget twice.
+    events += events
+    (folder / 'timeline.json').write_text(json.dumps({'status': 'ready',
+        'video': f'/media/{JOB}/video.mp4', 'events': events}))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    original_manifest = library.manifest
+    def sized_manifest(*args):
+        manifest = original_manifest(*args)
+        for name, entry in manifest.items():
+            if name.endswith('.wav'):
+                entry['bytes'] = size
+        return manifest
+    monkeypatch.setattr(library, 'manifest', sized_manifest)
+    assert library.history()[0]['status'] == ('ready' if ready else 'incomplete')
+
+
 def test_corrupt_playable_object_is_incomplete(tmp_path, monkeypatch):
     from main_logic.watch_together import library as module
     archive = source(tmp_path, 'corrupt-media')

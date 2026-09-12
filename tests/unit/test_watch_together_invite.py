@@ -35,7 +35,7 @@ def test_invitation_checks_vision_and_speech_without_synthesis(monkeypatch, opti
     assert invites._watch_together_available(manager(**options)) is (not options)
 
 
-@pytest.mark.parametrize('provider', ['vllm_omni', 'local_cosyvoice', 'gptsovits'])
+@pytest.mark.parametrize('provider', ['custom', 'vllm_omni', 'local_cosyvoice', 'gptsovits'])
 @pytest.mark.parametrize('supported', [True, False])
 def test_keyless_local_speech_still_requires_completion(monkeypatch, provider, supported):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
