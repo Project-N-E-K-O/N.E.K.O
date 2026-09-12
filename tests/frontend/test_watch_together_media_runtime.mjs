@@ -91,7 +91,7 @@ await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'versio
 assert.equal(budgetFetches,0);
 const {unlock}=await import('../../static/game/sdk/neko-minigame-media-host.mjs');
 const unlocked=new Media();let gesturePlay=false;
-unlocked.play=()=>{gesturePlay=true;return Promise.resolve();};
+unlocked.play=()=>{gesturePlay=true;unlocked.paused=false;return Promise.resolve();};
 unlock(unlocked);
 assert.equal(gesturePlay,true,'unlock calls media play synchronously');
 assert.equal(unlocked.paused,true,'unlock does not leave video playing during startup');
