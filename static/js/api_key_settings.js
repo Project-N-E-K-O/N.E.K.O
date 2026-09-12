@@ -5553,7 +5553,14 @@ function populateImageProviders(providers) {
         option.disabled = !!isProviderRestricted(key);
         select.appendChild(option);
     });
-    select.value = Object.hasOwn(providers, previous) ? previous : 'disabled';
+    if (previous && previous !== 'disabled' && !Object.hasOwn(providers, previous)) {
+        const option = document.createElement('option');
+        option.value = previous;
+        option.textContent = previous;
+        option.disabled = !!isProviderRestricted(previous);
+        select.appendChild(option);
+    }
+    select.value = previous || 'disabled';
 }
 
 function onImageProviderChange({ loading = false } = {}) {

@@ -12,10 +12,14 @@ MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 async def request_json(client, method, url, *, key, **kwargs):
-    headers = {"Authorization": f"Bearer {key}", **kwargs.pop("headers", {})}
-    async with client.stream(method, url, headers=headers, follow_redirects=False, timeout=120, **kwargs) as response:
+    headers = {"Authorization": f"Bearer {key}", **kwargs.pop("headers", {}), "Accept-Encoding": "identity"}
+    # generate_image owns the total deadline, including every polling request.
+    async with client.stream(method, url, headers=headers, follow_redirects=False, timeout=None, **kwargs) as response:
         if response.status_code < 200 or response.status_code >= 300:
             raise ImageGenerationError("provider_http_error")
+        # Reject before aiter_bytes can allocate decompressed transport chunks.
+        if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+            raise ImageGenerationError("unsupported_content_encoding")
         body = bytearray()
         async for chunk in response.aiter_bytes():
             if len(body) + len(chunk) > MAX_RESPONSE_BYTES:

@@ -43,7 +43,10 @@ Newer DashScope multimodal-generation protocols are a separate adapter extension
 not inferred from a model name.
 
 Requests generate one image, with a bounded prompt, dimensions, response body and
-total timeout. No automatic retries are performed because submission may already
+total timeout (180 seconds by default, configurable up to 600 seconds). The total
+deadline also governs transport requests and polling; no shorter read timeout is
+imposed. Requests advertise Accept-Encoding: identity and reject compressed
+responses before reading them to prevent unbounded decompression. No automatic retries are performed because submission may already
 be billed. Cancellation propagates; it does not cancel an already submitted remote
 job. Failures expose stable ImageGenerationError.code values without provider
 bodies, prompts or credentials. No prompt/result logging or disk writes occur.

@@ -215,3 +215,37 @@ async def test_owned_client_close_failure_preserves_primary_outcome(monkeypatch,
         expected = "client_close_failed" if outcome == "success" else "provider_http_error"
         with pytest.raises(ImageGenerationError, match="^" + expected + "$"):
             await generate_image(ImageRequest("cat"), config_manager=manager())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "br", "gzip, br"])
+async def test_compressed_response_rejected_before_reading(encoding):
+    class UnreadableStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            pytest.fail("compressed response must be rejected before reading or decoding")
+            yield b""
+
+    def handle(request):
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(200, headers={"Content-Encoding": encoding}, stream=UnreadableStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ImageGenerationError, match="^unsupported_content_encoding$"):
+            await generate_image(ImageRequest("test"), config_manager=manager(), client=client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "qwen"])
+async def test_generation_budget_is_not_shortened_by_transport(provider):
+    def handle(request):
+        # Both synchronous generation and async submission/polling use the outer deadline.
+        assert all(value is None for value in request.extensions["timeout"].values())
+        if provider == "openai":
+            return httpx.Response(200, json={"data": [{"url": "https://images.example/result.png"}]})
+        if request.method == "POST":
+            return httpx.Response(200, json={"output": {"task_id": "task-1"}})
+        return httpx.Response(200, json={"output": {"task_status": "SUCCEEDED", "results": [{"url": "https://images.example/result.png"}]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), timeout=1) as client:
+        result = await generate_image(ImageRequest("test"), config_manager=manager(provider), client=client, timeout=600)
+    assert result.image.url == "https://images.example/result.png"

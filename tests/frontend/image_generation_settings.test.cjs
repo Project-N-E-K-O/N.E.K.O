@@ -45,6 +45,9 @@ test('missing provider metadata preserves saved values', () => {
     context.loadImageSettings({imageModelProvider: 'qwen', imageModelUrl: 'https://dashscope.aliyuncs.com', imageModelId: 'saved-model', imageModelApiKey: ''});
     assert.equal(context.imageSettingsPayload().imageModelProvider, 'qwen');
     assert.equal(context.imageSettingsPayload().imageModelId, 'saved-model');
+    context.populateImageProviders({custom: {name: 'Custom'}});
+    assert.equal(context.imageSettingsPayload().imageModelProvider, 'qwen');
+    assert.equal(context.imageSettingsPayload().imageModelId, 'saved-model');
 });
 
 test('restricted providers preserve saved selection without becoming selectable', () => {
