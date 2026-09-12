@@ -6,6 +6,8 @@ or consumer state belongs here.
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from utils.http.url import same_endpoint
+
 PROVIDERS = {
     "openai": {"name": "OpenAI", "protocol": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-image-2", "key_field": "assistApiKeyOpenai"},
     "qwen": {"name": "Qwen (Beijing)", "protocol": "dashscope", "base_url": "https://dashscope.aliyuncs.com", "model": "wanx2.1-t2i-turbo", "key_field": "assistApiKeyQwen"},
@@ -40,7 +42,7 @@ def resolve_image_config(raw: dict, *, enabled: bool = True) -> ImageConfig | No
     # Named providers own their endpoint and use only their own Key Book entry.
     # An arbitrary endpoint always requires the explicitly separate custom key.
     url = values["Url"] if provider == "custom" else profile["base_url"]
-    if provider != "custom" and values["Url"] and values["Url"].rstrip("/") != url:
+    if provider != "custom" and values["Url"] and not same_endpoint(values["Url"], url):
         raise ValueError("Use custom image provider for a custom endpoint")
     model = values["Id"] or profile["model"]
     key = values["ApiKey"] if provider == "custom" else raw.get(profile["key_field"], "")

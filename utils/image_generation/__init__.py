@@ -2,6 +2,7 @@
 import asyncio
 import math
 import re
+import sys
 
 import httpx
 
@@ -59,4 +60,10 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
         raise ImageGenerationError("provider_network_error") from None
     finally:
         if owned:
-            await client.aclose()
+            active_error = sys.exception()
+            try:
+                await client.aclose()
+            except Exception:
+                # Cleanup must not replace a provider error or cancellation.
+                if active_error is None:
+                    raise ImageGenerationError("client_close_failed") from None

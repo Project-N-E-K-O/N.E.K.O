@@ -172,3 +172,46 @@ async def test_deeply_nested_provider_json_is_normalized():
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=payload))) as client:
         with pytest.raises(ImageGenerationError, match="^invalid_response$"):
             await generate_image(ImageRequest("test"), config_manager=manager(), client=client)
+
+
+@pytest.mark.parametrize("provider,url,canonical", [
+    ("openai", "https://API.OPENAI.COM:443/v1/", "https://api.openai.com/v1"),
+    ("qwen", "https://DASHSCOPE.ALIYUNCS.COM:443/", "https://dashscope.aliyuncs.com"),
+    ("qwen_intl", "https://DASHSCOPE-INTL.ALIYUNCS.COM:443/", "https://dashscope-intl.aliyuncs.com"),
+])
+def test_named_equivalent_endpoint_uses_canonical_destination(provider, url, canonical):
+    assert resolve_image_config(manager(provider, imageModelUrl=url).raw).base_url == canonical
+
+
+@pytest.mark.parametrize("url", ["https://api.openai.com:444/v1", "https://api.openai.com/V1", "https://api.openai.com/v1//"])
+def test_named_different_endpoint_still_rejected(url):
+    with pytest.raises(ValueError):
+        resolve_image_config(manager(imageModelUrl=url).raw)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "provider_error", "cancelled"])
+async def test_owned_client_close_failure_preserves_primary_outcome(monkeypatch, outcome):
+    from utils.image_generation import openai
+    from utils.image_generation.types import GeneratedImage
+
+    class Client:
+        async def aclose(self):
+            raise RuntimeError("private transport details")
+
+    async def generate(*args):
+        if outcome == "provider_error":
+            raise ImageGenerationError("provider_http_error")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError()
+        return GeneratedImage(data=b"image")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(openai, "generate", generate)
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await generate_image(ImageRequest("cat"), config_manager=manager())
+    else:
+        expected = "client_close_failed" if outcome == "success" else "provider_http_error"
+        with pytest.raises(ImageGenerationError, match="^" + expected + "$"):
+            await generate_image(ImageRequest("cat"), config_manager=manager())
