@@ -1562,6 +1562,7 @@
   }
 
   function cleanupRouteResources() {
+    disposeAvatarController();
     beginRoundFlow();
     state.activeRoundToken = state.roundFlowToken;
     state.roundSessionReady = false;

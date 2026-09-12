@@ -275,6 +275,7 @@ function loadHarness() {
     stopSdkVoiceBestEffort: stopSdkVoiceBestEffort,
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
+    mountAvatarDescriptor: mountAvatarDescriptor,
     startRoute: startRoute,
     bindDrawingCharacter: bindDrawingCharacter,
     startRound: startRound,
@@ -2586,7 +2587,70 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
     'page exit must synchronously post the voice stop before local route cleanup');
 }
 
+async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
+  const { api } = loadHarness();
+  api.installRoundLifecycleHarness([], () => Promise.resolve());
+  api.installRouteUiSpies();
+  const descriptor = {
+    name: 'route-character', rendererAvailable: true,
+    model: { type: 'live2d', path: '/model.json' },
+  };
+  let bindings = 0;
+  let mounts = 0;
+  let nextMount;
+  const client = {
+    disposed: false,
+    runtime: {
+      session: { id: 'same-session', characterName: descriptor.name },
+      bindCharacter() { bindings += 1; return Promise.resolve(descriptor); },
+    },
+    avatar: { mount() { mounts += 1; return Promise.resolve(nextMount); } },
+  };
+  function controller() {
+    return {
+      disposed: false, releases: 0,
+      setView() {}, setEmotion() {},
+      dispose() { this.disposed = true; this.releases += 1; },
+    };
+  }
+  api.state.lanlanName = descriptor.name;
+  await api.bindDrawingCharacter(client, descriptor.name);
+  const current = controller();
+  nextMount = current;
+  assert(await api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken),
+    'the initial avatar must mount');
+  api.cleanupRouteResources();
+  assertEqual(current.releases, 1, 'route cleanup must dispose the mounted SDK controller');
+  assertEqual(api.state.avatarController, null, 'route cleanup must drop the controller reference');
+  assertEqual(await api.bindDrawingCharacter(client, descriptor.name), descriptor,
+    'route cleanup must preserve the same-session bound descriptor');
+  assertEqual(bindings, 1, 'restarting the same session must not rebind its character');
+
+  const delayed = deferred();
+  nextMount = delayed.promise;
+  const pending = api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken);
+  await waitFor(() => mounts === 2, 'the delayed mount must reach the SDK');
+  api.cleanupRouteResources();
+  const late = controller();
+  delayed.resolve(late);
+  assertEqual(await pending, false, 'a mount completed after cleanup must stay retired');
+  assertEqual(late.releases, 1, 'the late SDK controller must also be disposed');
+  assertEqual(api.state.avatarController, null, 'late completion must not restore the avatar');
+  assertEqual(api.state.avatarMountPromise, null, 'the settled mount must release its promise');
+
+  const restarted = controller();
+  nextMount = restarted;
+  assert(await api.mountAvatarDescriptor(client,
+    await api.bindDrawingCharacter(client, descriptor.name), api.state.avatarLoadToken),
+  'the cached character must mount again after route cleanup');
+  assertEqual(bindings, 1, 'remounting must not perform a prohibited runtime rebind');
+  api.cleanupRouteResources();
+  api.cleanupRouteResources();
+  assertEqual(restarted.releases, 1, 'repeated cleanup must dispose each controller once');
+}
+
 async function main() {
+  await testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding();
   assertDeepEqual(loadHarness().api.state.modelView, { scale: 100, x: 0, y: 0 },
     'the game default must not magnify or pan the SDK fitted model');
   await testEndWaitsForRoundSessionCreation();
