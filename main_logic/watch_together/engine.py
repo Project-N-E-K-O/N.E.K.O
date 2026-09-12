@@ -348,13 +348,23 @@ class Engine:
             run_isolated_structured_output, StructuredOutputContentError,
         )
         async def attempt(_number, isolation_id):
+            from utils.tokenize import count_tokens, truncate_to_tokens
+            remaining = 16000
+            bounded = []
+            for block in content:
+                if block.get('type') == 'text':
+                    value = truncate_to_tokens(block.get('text', ''), remaining)
+                    remaining = max(0, remaining - count_tokens(value))
+                    bounded.append({**block, 'text': value})
+                else:
+                    bounded.append(block)
             client = await create_chat_llm_async(model=cfg['model'], api_key=cfg.get('api_key'),
                 base_url=cfg.get('base_url'), provider_type=cfg.get('provider_type'),
                 temperature=0.65, timeout=120, max_retries=0, max_completion_tokens=8192)
             try:
                 response = await client.ainvoke(
                     [{"role":"system", "content":self.director_prompt},
-                        {"role":"user", "content":content}],
+                        {"role":"user", "content":bounded}],
                     **options)
                 record_usage(job, response, cfg["model"], job.get("stage", "Visual analysis"))
                 try:

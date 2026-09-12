@@ -16,7 +16,13 @@ async def test_vision_uses_provider_factory_and_accepts_keyless_custom(tmp_path,
     instance._cm = SimpleNamespace(get_model_api_config=lambda _: {'api_key': '', 'is_custom': True,
         'model': 'local', 'base_url': 'http://localhost:8000', 'provider_type': provider})
     job = {}
-    assert await instance.llm([], job) == {'events': []}
+    blocks = [{'type': 'text', 'text': 'evidence ' * 30000}, {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,abc'}}]
+    assert await instance.llm(blocks, job) == {'events': []}
+    from utils.tokenize import count_tokens
+    sent = client.ainvoke.call_args.args[0]
+    assert count_tokens(sent[1]['content'][0]['text']) <= 16000
+    assert sent[1]['content'][1] == blocks[1]
+    assert sent[0]['content'] == instance.director_prompt
     assert factory.call_args.kwargs['provider_type'] == provider
     assert factory.call_args.kwargs['api_key'] == ''
     assert ('response_format' in client.ainvoke.call_args.kwargs) is (provider == 'openai')
