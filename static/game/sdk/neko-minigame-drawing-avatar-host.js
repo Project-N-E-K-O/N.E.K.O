@@ -282,7 +282,7 @@
       // until actual settlement so repeated timeouts cannot accumulate work.
       const raw = Promise.resolve().then(() => {
         if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
-        return invoke({ signal: controller.signal });
+        return invoke({ signal: controller.signal, managedDeadline: true });
       }).finally(() => queries.delete(controller));
       try {
         const result = await Promise.race([raw, cancelled]);
@@ -296,6 +296,7 @@
     }
 
     async function json(url, requestOptions = {}) {
+      const { managedDeadline = false, ...fetchOptions } = requestOptions;
       const controller = new (windowImpl.AbortController || AbortController)();
       const signals = [lifetime.signal, requestOptions.signal].filter(Boolean);
       const abort = () => controller.abort();
@@ -303,13 +304,13 @@
         if (signal.aborted) abort();
         else signal.addEventListener('abort', abort, { once: true });
       }
-      // Managed queries and mounts already own a total deadline. A second
-      // per-fetch timer would silently shorten that caller's 10–30s budget.
-      const timer = requestOptions.signal ? null : windowImpl.setTimeout(abort, 10000);
+      // Only query() owns a total deadline. Mount signals represent disposal,
+      // so their model/settings reads still need a local network deadline.
+      const timer = managedDeadline ? null : windowImpl.setTimeout(abort, 10000);
       try {
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         const response = await fetchImpl(url, {
-          cache: 'no-store', credentials: 'same-origin', ...requestOptions, signal: controller.signal,
+          cache: 'no-store', credentials: 'same-origin', ...fetchOptions, signal: controller.signal,
         });
         const cancelBody = () => {
           try { response?.body?.cancel?.()?.catch?.(() => {}); } catch (_) { /* already closed */ }
@@ -446,18 +447,24 @@
         : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
-      const configuredMmd = cleanString(configured.paths.mmd).replace(/\\/g, '/');
-      if (configuredMmd && !/^(https?:\/\/|\/)/.test(configuredMmd)) {
+      const relativeTypes = ['vrm', 'mmd'].filter((type) => {
+        const path = cleanString(configured.paths[type]).replace(/\\/g, '/');
+        return path && !/^(https?:\/\/|\/)/.test(path);
+      });
+      if (relativeTypes.length) {
         // The browser cannot decide which filesystem owns a relative model.
         // Use the existing game-independent character projection, not a
-        // guessed static prefix, for both primary and fallback MMD models.
+        // guessed static prefix, for both primary and fallback 3D models.
         const resolved = await json(
           `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
         );
         if (resolved?.lanlan_name !== requested) fail('invalid_response', 'Avatar character identity changed');
-        const path = cleanString(resolved?.mmd_path);
-        configured.paths = Object.freeze({ ...configured.paths, mmd: path });
-        if (configured.type === 'mmd') configured.path = path;
+        const paths = { ...configured.paths };
+        for (const type of relativeTypes) {
+          paths[type] = cleanString(resolved?.[`${type}_path`]);
+          if (configured.type === type) configured.path = paths[type];
+        }
+        configured.paths = Object.freeze(paths);
       }
       if (configured.type === 'live2d' || configured.paths.live2d) {
         // An optional fallback is only advertised when canonical resolution
@@ -487,13 +494,17 @@
       });
     }
 
-    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal, timeoutMs = 10000) {
+    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal,
+      timeoutMs = 10000, hasFailed = () => false) {
       if (signal?.aborted) {
         return Promise.reject(new DrawingAvatarHostError(
           'disposed', `${label} renderer load was cancelled`, { type: label },
         ));
       }
       if (predicate()) return Promise.resolve();
+      if (hasFailed()) return Promise.reject(new DrawingAvatarHostError(
+        'renderer_unavailable', `${label} failed to initialize`, { type: label },
+      ));
       return new Promise((resolve, reject) => {
         let settled = false;
         let timer = null;
@@ -525,6 +536,11 @@
             'renderer_unavailable', `${label} timed out`, { type: label },
           ));
         }, timeoutMs);
+        // An earlier loader failure may predate this mount's subscription.
+        // Readiness wins if a later successful attempt left an old marker.
+        if (signal?.aborted) onAbort();
+        else if (predicate()) finish();
+        else if (hasFailed()) onFailed();
       });
     }
 
@@ -1010,6 +1026,7 @@
         await waitForRuntime(
           () => Boolean(windowImpl.mmdModuleLoaded) && typeof windowImpl.MMDManager === 'function',
           'mmd-modules-ready', 'mmd-modules-failed', 'mmd', signal,
+          10000, () => Boolean(windowImpl._mmdModulesFailed),
         );
         ensureLoadActive(generation);
         const manager = new windowImpl.MMDManager();
