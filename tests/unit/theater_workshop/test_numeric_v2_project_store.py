@@ -369,7 +369,7 @@ def test_mainline_order_is_author_only_and_must_follow_existing_routes(tmp_path)
         )
 
 
-@pytest.mark.parametrize('change', ['editor', 'same_mainline', 'changed_mainline', 'story', 'setup', 'title'])
+@pytest.mark.parametrize('change', ['editor', 'stage', 'editor_stage', 'empty', 'same_mainline', 'changed_mainline', 'story', 'setup', 'title'])
 def test_author_save_rebases_only_current_branch_drafts(tmp_path, change):
     from copy import deepcopy
     from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
@@ -394,7 +394,13 @@ def test_author_save_rebases_only_current_branch_drafts(tmp_path, change):
                  'context_fingerprint': 'invalid' if case == 'bad_fingerprint' else NumericV2BranchService._fingerprint(project)}
         drafts[case] = store.save_branch_draft(project['project_id'], base_revision=revision, draft=draft)
     changes = {'editor': {'node_positions': {'start': {'x': 12, 'y': 34}}}}
-    if change not in {'editor', 'same_mainline', 'changed_mainline'}:
+    if change == 'stage':
+        changes = {'stage': 'publish'}
+    elif change == 'editor_stage':
+        changes['stage'] = 'publish'
+    elif change == 'empty':
+        changes = {}
+    elif change not in {'editor', 'same_mainline', 'changed_mainline'}:
         changes[change] = deepcopy(project[change])
     if change in {'same_mainline', 'changed_mainline'}:
         updated = store.set_mainline_order(project['project_id'], base_revision=revision,
@@ -404,7 +410,7 @@ def test_author_save_rebases_only_current_branch_drafts(tmp_path, change):
     for case, original in drafts.items():
         actual = updated['authoring']['branch_drafts'][original['draft_id']]
         expected = deepcopy(original)
-        if change in {'editor', 'same_mainline'} and case in {'preview', 'ending_review'}:
+        if change in {'editor', 'stage', 'editor_stage', 'empty', 'same_mainline'} and case in {'preview', 'ending_review'}:
             expected.update(base_revision=revision + 1,
                             context_fingerprint=NumericV2BranchService._fingerprint(updated))
         elif case not in {'applied', 'failed'}:

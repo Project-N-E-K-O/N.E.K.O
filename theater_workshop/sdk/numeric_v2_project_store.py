@@ -409,8 +409,8 @@ class NumericV2ProjectStore:
             unknown = set(changes).difference(allowed)
             if unknown:
                 raise NumericV2ProjectError("unsupported_project_change")
-            editor_only = set(changes) == {"editor"}
-            previous_fingerprint = NumericV2BranchService._fingerprint(project) if editor_only else None
+            content_neutral = set(changes) <= {"editor", "stage"}
+            previous_fingerprint = NumericV2BranchService._fingerprint(project) if content_neutral else None
             package_changed = "story" in changes
             if "title" in changes:
                 project["title"] = str(changes["title"] or "").strip()

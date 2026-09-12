@@ -1050,6 +1050,15 @@ def _performance_memory_projection(
     return all_parts, "\n\n".join(visible_chunks)
 
 
+def _session_reached_ending(session: Any) -> bool:
+    # Natural completion has no lifecycle exit reason. This durable state still
+    # identifies a completed run when an upgraded package cannot project its ending.
+    return (
+        getattr(session, "status", None) == "ended"
+        and getattr(session, "ended_reason", None) in (None, "natural_ending")
+    )
+
+
 def _episode_metadata(
     *,
     title: str,
@@ -1066,7 +1075,7 @@ def _episode_metadata(
         "story_id": str(session.story_package_id),
         "session_id": str(session.session_id),
         "story_title": str(title),
-        "episode_status": "completed" if ending_title else "paused",
+        "episode_status": "completed" if ending_title or _session_reached_ending(session) else "paused",
         "ending_title": ending_title,
         "ending_summary": ending_summary,
         "archive_from_revision": int(archive_from_revision),
@@ -1159,7 +1168,7 @@ def build_numeric_v2_public_archive(
         "catgirl_name": str(session.catgirl_binding.get("catgirl_name") or ""),
         "player_name": str(session.catgirl_binding.get("player_address") or "你"),
         "revision": int(session.revision),
-        "episode_status": "completed" if ending else "paused",
+        "episode_status": "completed" if ending or _session_reached_ending(session) else "paused",
         "ending": {
             "title": str((ending or {}).get("title") or "").strip(),
             "summary": str((ending or {}).get("summary") or "").strip(),

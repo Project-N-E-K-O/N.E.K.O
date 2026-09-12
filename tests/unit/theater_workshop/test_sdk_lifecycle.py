@@ -498,7 +498,7 @@ def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
 
 
 @pytest.mark.parametrize("new_ending", [False, True])
-@pytest.mark.parametrize("author_save", ["none", "editor", "same_mainline"])
+@pytest.mark.parametrize("author_save", ["none", "editor", "stage", "same_mainline"])
 def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, new_ending, author_save):
     from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
     fixed = [_piece("report", REPORT, entry=True)]
@@ -534,6 +534,9 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
                 project = host.sdk.update_project(pid, base_revision=revision,
                     changes={"editor": {"node_positions": {"main_1": {"x": 10, "y": 20}}}})
                 revision = project["revision"]
+            elif author_save == "stage":
+                project = host.sdk.update_project(pid, base_revision=revision, changes={"stage": "publish"})
+                revision = project["revision"]
             elif author_save == "same_mainline":
                 project = host.sdk.set_mainline_order(pid, base_revision=revision,
                     node_ids=data["authoring"]["mainline_node_ids"])
@@ -556,6 +559,9 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
         if author_save == "editor":
             project = host.sdk.update_project(pid, base_revision=revision,
                 changes={"editor": {"node_positions": {"main_1": {"x": 30, "y": 40}}}})
+            revision = project["revision"]
+        elif author_save == "stage":
+            project = host.sdk.update_project(pid, base_revision=revision, changes={"stage": "story"})
             revision = project["revision"]
         elif author_save == "same_mainline":
             project = host.sdk.set_mainline_order(pid, base_revision=revision,

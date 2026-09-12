@@ -471,6 +471,8 @@ Story ID × 猫娘角色卡不可变 character_id
 
 memory server 写入时再确定性补充 `run_index`、`story_run_count` 和 `ending_titles_seen`。同一 `story_id + session_id` 的暂停、继续和完成归档必须替换原胶囊，沿用原 `run_index`；状态、摘要和 revision 范围以最新成功写入为准。重新开始使用新 Session ID，因此形成同一 Story 的新周目。每个 Story 在 `recent.json` 中只保留最近三个周目胶囊，但最新胶囊继续携带累计周目数和去重后的已见结局集合。
 
+归档时若剧本 revision/hash 已变，不能借用新包的结局。公开冷档案和记忆胶囊仍依据持久化 Session 保留通关状态：`status=ended` 且无退出原因（现行自然结局），或原因明确为 `natural_ending`，记为 `completed`；中途 `user_exit` 仍为 `paused`。旧 Session 未独立保存的结局标题和摘要留空，单集摘要使用已提交正文，不从新包补写。
+
 胶囊不是猫娘对白，也不是玩家现实经历。Prompt 渲染只能自然说明猫娘与玩家共同演绎过该虚构剧本、这是第几周目、本次暂停或达到哪个结局，以及公开摘要；不能给 `system` 胶囊套用玩家或猫娘署名。剧本标题已有成对书名号或当地语言标题符号时原样保留，缺失时才由八语言模板补齐。
 
 #### 6.1.3 写入、失败与重试顺序

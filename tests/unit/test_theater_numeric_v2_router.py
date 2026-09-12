@@ -5666,3 +5666,91 @@ def test_forget_then_exit_without_new_turn_cannot_archive_old_content(tmp_path, 
         assert response.status_code == 409
         assert response.json()['reason'] == 'numeric_archive_already_skipped'
     assert len(memory_calls) == 1 and memory_calls[0].endswith('/theater/forget')
+
+
+@pytest.mark.parametrize(('status', 'reason', 'expected'), [
+    ('active', None, 'paused'),
+    ('ended', None, 'completed'),
+    ('ended', 'natural_ending', 'completed'),
+    ('ended', 'user_exit', 'paused'),
+    ('ended', 'other_reason', 'paused'),
+])
+def test_archive_status_uses_session_when_ending_unavailable(status, reason, expected):
+    session = SimpleNamespace(
+        story_package_id='numeric_v2_contract', session_id='archive_status', revision=1,
+        status=status, ended_reason=reason, catgirl_binding={}, opening_performance={},
+        performance_history=({'revision': 1, 'performance': '这段旅程仍被记得。'},),
+    )
+    archive = build_numeric_v2_public_archive(title='Story', session=session, ending=None)
+    messages = build_numeric_v2_memory_messages(title='Story', session=session, ending=None)
+    assert archive['episode_status'] == expected
+    assert messages[0]['metadata']['episode_status'] == expected
+    assert archive['ending'] == {'title': '', 'summary': ''}
+    assert messages[0]['metadata']['ending_summary'] == ''
+
+
+@pytest.mark.parametrize('completed', [False, True])
+@pytest.mark.parametrize('package_change', ['none', 'revision', 'hash'])
+def test_archiving_after_package_upgrade_preserves_completion(tmp_path, monkeypatch, completed, package_change):
+    from tests.unit.test_theater_numeric_v2_runtime import _transition_performance
+    captured = []
+    async def cache(*args, **kwargs):
+        captured.append(json.loads(kwargs['json']['input_history']))
+        return SimpleNamespace(content=b'{}', is_success=True, json=lambda: {'status': 'cached'})
+    monkeypatch.setattr('utils.internal_http_client.get_internal_http_client', lambda: SimpleNamespace(post=cache))
+    client = _client(tmp_path, monkeypatch)
+    scope = {'story_id': 'numeric_v2_contract', 'session_id': 'ending_before_upgrade'}
+    async def reach_ending():
+        runtime = await numeric_theater_router._runtime_for_story(_ConfigManager(tmp_path), scope['story_id'])
+        current = await runtime.restore_session(scope['session_id'])
+        outcome = runtime.prepare_turn(current, numeric_theater_router.TurnRequestV2('finish', 0, '谢谢你。'), (),
+                                       scene_complete=True, natural_ending_ready=True)
+        assert outcome.session.status == 'ended'
+        # Runtime marks natural completion without a lifecycle exit reason.
+        assert outcome.session.ended_reason is None
+        return await runtime.commit_turn(outcome, _transition_performance(outcome.session.current_node_id))
+    with client:
+        assert client.post('/api/theater-numeric/session/start', json=scope).status_code == 200
+        if completed:
+            client.portal.call(reach_ending)
+        else:
+            assert client.post('/api/theater-numeric/session/end', json={**scope,
+                'base_revision': 0, 'base_lifecycle_revision': 0}).status_code == 200
+        before = client.get('/api/theater-numeric/session/' + scope['session_id'], params={'story_id': scope['story_id']}).json()
+        original_ending = (before['scene'] or {}).get('ending')
+        if package_change != 'none':
+            package_path = tmp_path / 'theater/numeric_v2/packages/numeric_v2_contract.json'
+            story = json.loads(package_path.read_text(encoding='utf-8'))
+            if package_change == 'revision':
+                story['meta']['revision'] = 'upgraded'
+            for ending in story['endings']:
+                ending.update(title='新版结局标题', summary='新版结局摘要，不能替代旧演绎。')
+            package_path.write_text(json.dumps(story), encoding='utf-8')
+        response = client.get('/api/theater-numeric/session/active', params={'story_id': scope['story_id']})
+        assert response.status_code == 200, response.text
+        restored = response.json()
+        if package_change != 'none':
+            assert restored['scene'] is None
+            assert restored['session']['continuation_allowed'] is False
+        payload = {**scope, 'revision': before['session']['revision'],
+                   'end_receipt_id': before['end_receipt_id'], 'archive_request_id': before['archive_request_id']}
+        archived = client.post('/api/theater-numeric/session/archive', json=payload)
+        assert archived.status_code == 200, archived.text
+        assert archived.json()['status'] == 'written'
+        detail = client.get('/api/theater-numeric/memory/archive', params=scope)
+        assert detail.status_code == 200, detail.text
+        public = detail.json()['archive']
+        expected_status = 'completed' if completed else 'paused'
+        assert public['episode_status'] == expected_status
+        assert captured[0][0]['metadata']['episode_status'] == expected_status
+        if completed and package_change == 'none':
+            assert public['ending']['title'] == original_ending['title']
+            assert captured[0][0]['metadata']['ending_summary'] == original_ending['summary']
+        else:
+            assert public['ending'] == {'title': '', 'summary': ''}
+            assert captured[0][0]['metadata']['ending_title'] == ''
+        assert '新版结局' not in json.dumps([public, captured], ensure_ascii=False)
+        assert captured[0][0]['metadata']['episode_summary']
+        retry = client.post('/api/theater-numeric/session/archive', json=payload)
+        assert retry.json()['status'] == 'already_written'
+        assert len(captured) == 1
