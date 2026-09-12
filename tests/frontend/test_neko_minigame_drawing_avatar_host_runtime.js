@@ -627,7 +627,10 @@ async function main() {
     if (target.startsWith('/api/game/sdk-avatar/character?')) {
       const name = new URL(target, 'http://localhost').searchParams.get('lanlan_name');
       const model = characters[name]?._reserved?.avatar?.mmd?.model_path;
-      return jsonResponse({ lanlan_name: name, mmd_path: model ? `/user_mmd/${model}` : '' });
+      const vrm = characters[name]?._reserved?.avatar?.vrm?.model_path;
+      calls.push(['canonical-model-paths', name]);
+      return jsonResponse({ lanlan_name: name, mmd_path: model ? `/user_mmd/${model}` : '',
+        vrm_path: vrm ? `/static/vrm/${vrm}` : '' });
     }
     if (target === '/resolved/live.model3.json') {
       onLiveModelFetch?.();
@@ -778,7 +781,27 @@ async function main() {
       if (action !== 'dispose') assert((await probe.listCharacters())[0] === 'Example', 'query slot retained');
     } finally { release?.(); await probe.dispose(); }
   }
-  for (const stage of ['current', 'catalog', 'canonical', 'mmd', 'fallback']) {
+  for (const primary of [true, false]) {
+    for (const outcome of ['/static/vrm/example.vrm', '/user_vrm/example.vrm', '', 'wrong-owner']) {
+      const {probe, timers} = queryProbe(async (url) => jsonResponse(url === '/api/characters'
+        ? {猫娘:{Example:{model_type:primary ? 'live3d' : 'pngtuber',live3d_sub_type:'vrm',
+          vrm:'example.vrm',pngtuber:{idle_image:'/avatar.png'}}}}
+        : {lanlan_name:outcome === 'wrong-owner' ? 'Other' : 'Example',vrm_path:outcome}));
+      try {
+        if (outcome === 'wrong-owner') {
+          assert((await rejection(probe.getCharacter('Example')))?.code === 'invalid_response',
+            'canonical VRM response accepted another character');
+        } else {
+          const value = await probe.getCharacter('Example');
+          const model = primary ? value.model : value.fallbackModels.find(item => item.type === 'vrm');
+          assert(outcome ? model?.path === outcome : !model,
+            'canonical VRM primary/fallback did not honor resolved or missing path');
+        }
+        assert(timers.size === 0, 'canonical VRM lookup retained deadline');
+      } finally { await probe.dispose(); }
+    }
+  }
+  for (const stage of ['current', 'catalog', 'canonical', 'mmd', 'vrm', 'fallback']) {
     const owner = new AbortController();
     let entered;
     let release;
@@ -787,13 +810,15 @@ async function main() {
     const started = new Promise((resolve) => { entered = resolve; });
     const { probe, timers } = queryProbe(async (url, options) => {
       calls += 1;
-      const target = url.includes('/sdk-avatar/character') ? 'mmd'
+      const target = url.includes('/sdk-avatar/character') ? (stage === 'vrm' ? 'vrm' : 'mmd')
         : url.includes('current_catgirl') ? 'current'
         : url.includes('current_live2d_model') ? 'canonical' : 'catalog';
-      const payload = target === 'mmd' ? {lanlan_name:'Example',mmd_path:'/user_mmd/example.pmx'}
+      const payload = ['mmd','vrm'].includes(target)
+        ? {lanlan_name:'Example',mmd_path:'/user_mmd/example.pmx',vrm_path:'/static/vrm/example.vrm'}
         : target === 'current' ? { current_catgirl: 'Example' }
         : target === 'canonical' ? { success: true, model_info: { path: '/resolved.model3.json' } }
           : stage === 'mmd' ? {猫娘:{Example:{model_type:'live2d',mmd:'example.pmx'}}}
+            : stage === 'vrm' ? {猫娘:{Example:{model_type:'live2d',vrm:'example.vrm'}}}
             : stage === 'fallback' ? {猫娘:{Example:{model_type:'pngtuber',
               pngtuber:{idle_image:'/avatar.png'},live2d:'example/example.model3.json'}}} : queryCatalog;
       if (blocked && target === (stage === 'fallback' ? 'canonical' : stage)) {
@@ -953,6 +978,94 @@ async function main() {
     } finally { await requestHost.dispose(); }
   }
 
+  // A mount lifetime signal is not a query deadline. Both mandatory model
+  // JSON and optional MMD settings must cancel a stalled response body.
+  for (const name of ['Live Neko', 'MMD Neko']) {
+    const timers = new Map();
+    let nextTimer = 0;
+    let response;
+    let cancelled = 0;
+    const localWindow = { ...windowMock,
+      setTimeout(callback, delay) { timers.set(++nextTimer, {callback, delay}); return nextTimer; },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const probe = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl: localWindow,
+      fetchImpl: async (url, options) => {
+        assert(!Object.hasOwn(options, 'managedDeadline'), 'private deadline option leaked to fetch');
+        if (url === '/resolved/live.model3.json' || url.endsWith('/mmd_settings')) {
+          response = new Response(new ReadableStream({
+            start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
+            cancel() { cancelled += 1; },
+          }));
+          return response;
+        }
+        return fetchImpl(url, options);
+      },
+      avatarRuntime: windowMock.NekoMiniGameAvatarHost,
+    });
+    let mounted;
+    let result;
+    try {
+      const descriptor = await probe.getCharacter(name);
+      result = probe.mount(mountConfig(name, descriptor.model)).then(
+        value => { mounted = value; return null; }, error => error,
+      );
+      for (let i = 0; i < 30 && !response?.body.locked; i++) await new Promise(setImmediate);
+      assert(response?.body.locked, `${name}: mount did not reach JSON stream`);
+      assert(timers.size === 1 && [...timers.values()][0].delay === 10000,
+        `${name}: mount JSON lost its local deadline`);
+      [...timers.values()][0].callback();
+      const error = await withTimeout(result, `${name}: mount JSON timeout did not settle`);
+      assert(name === 'Live Neko' ? error && !mounted : !error && mounted,
+        `${name}: mandatory/optional JSON failure handling changed`);
+      assert(cancelled === 1 && !response.body.locked && timers.size === 0,
+        `${name}: timed-out JSON retained body or timer`);
+    } finally {
+      await mounted?.dispose();
+      await probe.dispose();
+      await result;
+    }
+  }
+  calls.length = 0;
+
+  for (const stage of ['already-failed', 'event', 'ready-after-failure', 'dispose']) {
+    const timers = new Map();
+    let nextTimer = 0;
+    const localWindow = {...windowMock,
+      mmdModuleLoaded: stage === 'ready-after-failure',
+      _mmdModulesFailed: stage.includes('failure') || stage === 'already-failed' ? ['mmd-core.js'] : null,
+      setTimeout(callback, delay) { timers.set(++nextTimer, {callback, delay}); return nextTimer; },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const probe = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl:localWindow, fetchImpl, avatarRuntime:windowMock.NekoMiniGameAvatarHost,
+    });
+    let mounted;
+    let settled = false;
+    let result;
+    try {
+      const descriptor = await probe.getCharacter('MMD Neko');
+      result = probe.mount(mountConfig('MMD Neko', descriptor.model)).then(
+        value => { settled = true; mounted = value; return null; },
+        error => { settled = true; return error; },
+      );
+      for (let i = 0; i < 30 && !settled && !timers.size; i++) await new Promise(setImmediate);
+      if (stage === 'event') {
+        localWindow._mmdModulesFailed = ['mmd-core.js'];
+        for (const handler of [...(listeners.get('mmd-modules-failed') || [])]) handler();
+      } else if (stage === 'dispose') await probe.dispose();
+      if (stage === 'already-failed') assert(settled && timers.size === 0,
+        'mount missed the persistent MMD failure and waited for another event');
+      const error = await withTimeout(result, `MMD ${stage} did not settle`);
+      assert(stage === 'ready-after-failure' ? mounted && !error : error && !mounted,
+        `MMD ${stage} lost failure/readiness/cancellation priority`);
+      assert(timers.size === 0 && !listeners.get('mmd-modules-ready')?.size
+        && !listeners.get('mmd-modules-failed')?.size, `MMD ${stage} retained runtime wait resources`);
+    } finally { await mounted?.dispose(); await probe.dispose(); await result; }
+  }
+  calls.length = 0;
+
   const host = windowMock.NekoMiniGameDrawingAvatarHost.create({
     windowImpl: windowMock,
     documentImpl: windowMock.document,
@@ -1053,11 +1166,16 @@ async function main() {
 
   characters['Fallback Example'] = { _reserved: { avatar: {
     model_type: 'live2d', live2d: { model_path: '/resolved/live.model3.json' },
+    vrm: { model_path: 'fallback.vrm' },
     mmd: { model_path: 'fallback.pmx', idle_animation: ['/animations/fallback.vmd'] },
     pngtuber: { idle_image: '/avatars/fallback.png', talking_image: '/avatars/talk.png', mirror: true },
   } } };
   const fallbackCallsStart = calls.length;
   const fallbackDescriptor = await host.getCharacter('Fallback Example');
+  assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'vrm'
+    && model.path === '/static/vrm/fallback.vrm'), 'relative VRM fallback was not canonicalized');
+  assert(calls.slice(fallbackCallsStart).filter(entry => entry[0] === 'canonical-model-paths').length === 1,
+    'relative VRM and MMD must share a single canonical lookup');
   assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'mmd'
     && model.path === '/user_mmd/fallback.pmx'),
     'canonical fallback was not exposed');
@@ -1065,6 +1183,7 @@ async function main() {
     model.type === 'pngtuber' && model.path === '/avatars/fallback.png'),
   'PNGTuber fallback was not exposed through public discovery');
   for (const model of [
+    fallbackDescriptor.fallbackModels.find(model => model.type === 'vrm'),
     fallbackDescriptor.fallbackModels.find(model => model.type === 'mmd'),
     { type: 'pngtuber', path: '/avatars/fallback.png' },
   ]) {
@@ -1081,6 +1200,12 @@ async function main() {
     const rejected = await rejection(host.mount(mountConfig('Fallback Example', {type:'mmd',path})));
     assert(rejected?.code === 'model_not_allowed', 'unresolved MMD alias escaped canonical authorization');
   }
+  for (const path of ['fallback.vrm', '/user_vrm/fallback.vrm']) {
+    const rejected = await rejection(host.mount(mountConfig('Fallback Example', {type:'vrm',path})));
+    assert(rejected?.code === 'model_not_allowed', 'unresolved VRM alias escaped canonical authorization');
+  }
+  assert(calls.slice(fallbackCallsStart).some(entry => entry[0] === 'vrm-model'
+    && entry[1] === '/vrm-resolved//static/vrm/fallback.vrm'), 'VRM did not load canonical fallback');
   calls.splice(fallbackCallsStart);
 
   const liveFallbackCallsStart = calls.length;
@@ -1290,7 +1415,7 @@ async function main() {
   const vrmInit = calls.find((entry) => entry[0] === 'vrm-init');
   const vrmModel = calls.find((entry) => entry[0] === 'vrm-model');
   assert(vrmInit?.[1] === 0.7
-    && vrmModel?.[1] === '/vrm-resolved/avatar.vrm'
+    && vrmModel?.[1] === '/vrm-resolved//static/vrm/avatar.vrm'
     && vrmModel?.[2] === '/animations/vrm-idle.vrma'
     && Array.isArray(vrmModel?.[3])
     && vrmModel[3][1] === '/animations/vrm-idle-2.vrma'
@@ -1299,11 +1424,11 @@ async function main() {
       || entry.includes('/animations/vrm-legacy-list.vrma')),
   'VRM did not prefer canonical lighting and idle animation settings');
   const legacyVrmModel = calls.find((entry) => entry[0] === 'vrm-model'
-    && entry[1] === '/vrm-resolved/legacy-avatar.vrm');
+    && entry[1] === '/vrm-resolved//static/vrm/legacy-avatar.vrm');
   const snakeLegacyVrmModel = calls.find((entry) => entry[0] === 'vrm-model'
-    && entry[1] === '/vrm-resolved/snake-legacy-avatar.vrm');
+    && entry[1] === '/vrm-resolved//static/vrm/snake-legacy-avatar.vrm');
   const clearedVrmModel = calls.find((entry) => entry[0] === 'vrm-model'
-    && entry[1] === '/vrm-resolved/clear-avatar.vrm');
+    && entry[1] === '/vrm-resolved//static/vrm/clear-avatar.vrm');
   assert(legacyVrmModel?.[2] === '/animations/vrm-legacy-only.vrma'
     && legacyVrmModel?.[4] === 0.4
     && !calls.some((entry) => entry.includes('/animations/vrm-stale-singular.vrma')),
