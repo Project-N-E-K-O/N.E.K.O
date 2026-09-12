@@ -74,6 +74,7 @@ export async function run(game, character) {
     if (game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
     const loaded = await game.media.request('load', row);
     if(selection!==selectionGeneration)return false;
+    if(loaded.status!=='ready')throw Error('Media is not ready');
     selected = loaded;
     if(selected.bvid)seenVideos.add(selected.bvid);
     const address = new URL(location.href);
@@ -95,7 +96,12 @@ export async function run(game, character) {
     }
     status(t('ready')); $('play').disabled = false;
     return true;
-    } catch(error) { if(selection!==selectionGeneration)return false; selected = previous; throw error; }
+    } catch(error) {
+      if(selection!==selectionGeneration)return false;
+      selected = previous;
+      $('video').src = previous?.video || '';
+      throw error;
+    }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   }
   $('play').onclick = async () => {

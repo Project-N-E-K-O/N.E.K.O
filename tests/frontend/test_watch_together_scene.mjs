@@ -24,7 +24,7 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
       if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
       if(action==='watches')return {watches};
       if(action==='watch'){watches=[{job:'selected',progress:payload.position || 0,last_watched:'now'}];return {id:'watch-1'};}
-      if(action==='load')return {id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
+      if(action==='load')return {status:'ready',video:'/video',id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
       if(action==='discover')return discover ? discover() : {video:null};
       if(action==='prepare') {
         if(afterDownload) {
@@ -139,9 +139,9 @@ for (const failOld of [false,true]) {
   const button=racing.elements.get('history').children[0];
   const older=button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
   const newer=button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
-  pendingLoads[1].resolve({id:'new',version:'v',title:'New selection',events:[]});await newer;
+  pendingLoads[1].resolve({status:'ready',id:'new',version:'v',title:'New selection',events:[]});await newer;
   if(failOld)pendingLoads[0].reject(Error('old load failed'));
-  else pendingLoads[0].resolve({id:'old',version:'v',title:'Old selection',events:[]});
+  else pendingLoads[0].resolve({status:'ready',id:'old',version:'v',title:'Old selection',events:[]});
   await older;
   assert.equal(racing.elements.get('title').textContent,'New selection');
   assert.match(racing.elements.get('status').textContent,/ready/);
@@ -221,7 +221,7 @@ await new Promise(resolve=>setTimeout(resolve,0));
 rejectMount(Error('cancelled'));
 await pendingPlay;
 assert.equal(switching.elements.get('play').disabled,true,'old Play must not enable pending selection');
-finishSelection({id:'new',version:'v',title:'New',events:[]});
+finishSelection({status:'ready',id:'new',version:'v',title:'New',events:[]});
 await pendingSelection;
 assert.equal(switching.elements.get('play').disabled,false);
 const paged=await fixture(false);
@@ -281,3 +281,24 @@ longTitle.game.media.request=async(action,payload)=>{
 await longTitle.elements.get('history').children[0].onclick();
 await longTitle.elements.get('discover').onsubmit({preventDefault(){}});
 assert.equal(longTitle.calls.filter(c=>c.action==='discover').at(-1).payload.topic.length,200);
+const failedSelection=await fixture(false,false,{total_tokens:1});
+failedSelection.game.media.mount=async()=>({play:async()=>{},dispose(){failedSelection.elements.get('video').src='';}});
+await failedSelection.elements.get('play').onclick();
+failedSelection.game.media.request=async(action)=>{if(action==='load')throw Error('load failed');return {watches:[]};};
+await failedSelection.elements.get('history').children[0].onclick();
+assert.equal(failedSelection.elements.get('video').src,'/video','failed load restores previous source for gesture unlock');
+assert.equal(failedSelection.elements.get('play').disabled,false);
+failedSelection.handlers['runtime-inactive']();
+const incomplete=await fixture(false);
+const incompleteRequest=incomplete.game.media.request;
+// Route a successful preparation to an incomplete returned timeline.
+incomplete.game.media.request=async(action,payload)=>{
+ if(action==='load')return {status:'incomplete',id:'broken',events:[]};
+ if(action==='prepare')return {id:'broken'};
+ if(action==='preparation')return {status:'ready'};
+ if(action==='history')return {analyses:[{job:'broken',version:'v',status:'ready'}]};
+ return incompleteRequest(action,payload);
+};
+await incomplete.elements.get('prepare').onsubmit({preventDefault(){}});
+assert.equal(incomplete.elements.get('play').disabled,true);
+assert.equal(incomplete.calls.filter(c=>c.action==='watch').length,0);
