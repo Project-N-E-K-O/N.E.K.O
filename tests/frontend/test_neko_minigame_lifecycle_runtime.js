@@ -348,6 +348,7 @@ async function main() {
   // that never left the browser) and wedge start() on `busy` after four tries.
   const rejectedPayloadEnvironment = createEnvironment();
   const rejectedPayloadStarts = [];
+  const rejectedPayloadPolls = [];
   const rejectedPayloadTransport = {
     ...transport,
     logger: logger(),
@@ -358,8 +359,8 @@ async function main() {
       rejectedPayloadStarts.push(payload);
       return { ok: true, state: { game_route_active: true, lanlan_name: 'Yui' }, payload };
     },
-    async heartbeat() { return { ok: true, active: true }; },
-    async drain() { return { ok: true, outputs: [] }; },
+    async heartbeat(payload) { rejectedPayloadPolls.push(payload); return { ok: true, active: true }; },
+    async drain(payload) { rejectedPayloadPolls.push(payload); return { ok: true, outputs: [] }; },
     async end() { return { ok: true }; },
     dispose() {},
   };
@@ -373,6 +374,14 @@ async function main() {
     documentImpl: rejectedPayloadEnvironment.documentImpl,
   });
   rejectedPayloadGame.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
+  for (const payload of ['{"game_started":true}', [], null, 42, true, new Date()]) {
+    let error;
+    try { await rejectedPayloadGame.runtime.start(payload); } catch (caught) { error = caught; }
+    assert(error?.code === 'invalid_request' && rejectedPayloadStarts.length === 0,
+      'non-object lifecycle payload was silently dropped or reached transport');
+    assert(rejectedPayloadGame.runtime.state === 'idle',
+      'invalid payload changed lifecycle state before dispatch');
+  }
   for (let attempt = 0; attempt < 6; attempt += 1) {
     let rejectedError = null;
     try { await rejectedPayloadGame.runtime.start({ replay: 'x'.repeat(300 * 1024) }); }
@@ -387,8 +396,113 @@ async function main() {
   const acceptedStart = await rejectedPayloadGame.runtime.start({ replay: 'x'.repeat(200 * 1024) });
   assert(acceptedStart.ok && rejectedPayloadStarts.length === 1,
     'a runtime payload within the 256 KiB budget was rejected');
+  rejectedPayloadGame.runtime.configure({ payload: () => '{"started":true}', pageExit: false });
+  await rejectedPayloadGame.runtime.pulse(true);
+  await rejectedPayloadGame.runtime.pollOutputs();
+  assert(rejectedPayloadPolls.length === 0,
+    'invalid configured lifecycle payload reached heartbeat or drain');
+  let invalidEndError;
+  try { await rejectedPayloadGame.runtime.end('{"reason":"explicit-exit"}'); }
+  catch (error) { invalidEndError = error; }
+  assert(invalidEndError?.code === 'invalid_request' && rejectedPayloadGame.runtime.state === 'running',
+    'invalid end payload stopped an active route instead of rejecting before side effects');
   await rejectedPayloadGame.runtime.end({ reason: 'bounded-payload' });
   rejectedPayloadGame.dispose();
+
+  // Non-plain values can satisfy TypeScript's structural object constraint, but
+  // must be rejected at runtime on every lifecycle path.
+  class StartPayloadInstance { game_started = true; }
+  const nonPlainPayloads = [[], new Date(), new Map(), () => ({}), new StartPayloadInstance()];
+  // Measure and dispatch the same materialized object, not two observations
+  // of caller-owned getters or a misleading non-enumerable toJSON projection.
+  for (const operation of ['start', 'end', 'heartbeat', 'drain', 'page-exit']) {
+    for (const scenario of ['oversized', 'snapshot', ...nonPlainPayloads]) {
+      const oversized = scenario === 'oversized';
+      const invalid = scenario !== 'snapshot';
+      const env = createEnvironment();
+      const sent = [];
+      const payloadErrors = [];
+      const probe = await window.NekoMiniGame.connect({
+        id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime', 'logging'],
+      }, {
+        windowImpl: env.windowImpl, documentImpl: env.documentImpl,
+        transport: {
+          ...rejectedPayloadTransport,
+          async start(payload) { sent.push(payload); return { ok: true, active: true }; },
+          async end(payload) { sent.push(payload); return { ok: true }; },
+          async heartbeat(payload) { sent.push(payload); return { ok: true, active: true }; },
+          async drain(payload) { sent.push(payload); return { ok: true, outputs: [] }; },
+        },
+      });
+      try {
+        probe.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
+        if (operation !== 'start') await probe.runtime.start();
+        sent.length = 0;
+        let reads = 0;
+        const caller = typeof scenario === 'string' ? Object.defineProperties({}, {
+          toJSON: { value: () => ({}) },
+          replay: { enumerable: true, get() {
+            reads += 1;
+            return { text: oversized || reads > 1 ? 'x'.repeat(300 * 1024) : 'bounded' };
+          } },
+        }) : scenario;
+        probe.events.on('runtime-error', (event) => payloadErrors.push(event));
+        let provideCaller = false;
+        probe.runtime.configure({
+          payload: () => provideCaller ? caller : {},
+          heartbeat: operation === 'heartbeat' ? {} : false,
+          outputs: operation === 'drain' ? {} : false,
+          pageExit: operation === 'page-exit' ? { payload: () => caller } : false,
+        });
+        // configure() primes enabled monitors once; isolate the explicit call.
+        for (let tick = 0; tick < 30; tick += 1) await Promise.resolve();
+        sent.length = 0;
+        payloadErrors.length = 0;
+        provideCaller = true;
+        let error;
+        try {
+          if (operation === 'start') await probe.runtime.start(caller);
+          else if (operation === 'end') await probe.runtime.end(caller);
+          else if (operation === 'heartbeat') await probe.runtime.pulse(true);
+          else if (operation === 'drain') await probe.runtime.pollOutputs();
+          else env.windowImpl.dispatch('pagehide');
+        } catch (caught) { error = caught; }
+        if (invalid) {
+          if (operation === 'page-exit') {
+            assert(sent.length === 1 && sent[0].replay === undefined && sent[0].sdk_route_instance_id,
+              'invalid page-exit payload must still clean up only the owned route');
+          } else {
+            assert(sent.length === 0, `${operation}: invalid payload reached transport`);
+          }
+          if (operation === 'start' || operation === 'end') {
+            assert(error?.code === 'invalid_request', `${operation}: invalid payload was not rejected`);
+            assert(probe.runtime.state === (operation === 'start' ? 'idle' : 'running'),
+              `${operation}: invalid payload changed route state`);
+          } else assert(payloadErrors.length === 1, `${operation}: payload rejection was not reported`);
+        } else {
+          assert(!error && sent.length === 1 && sent[0].replay.text === 'bounded',
+            `${operation}: transport did not receive the validated snapshot`);
+          assert(reads === 1 && Object.isFrozen(sent[0].replay),
+            `${operation}: original getter was read again or nested payload remained mutable`);
+        }
+      } finally { probe.dispose(); }
+      assert(env.timeouts.size === 0 && env.intervals.size === 0,
+        `${operation}: lifecycle cleanup leaked timers`);
+    }
+  }
+
+  const jsonCompatible = await window.NekoMiniGame.connect({
+    id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime', 'logging'],
+  }, { transport: rejectedPayloadTransport, windowImpl: createEnvironment().windowImpl });
+  const original = { omitted: undefined, values: Array(300).fill(1), nested: { score: 2 },
+    ...Object.fromEntries(Array.from({ length: 130 }, (_, index) => [`key${index}`, index])) };
+  const compatibleStart = await jsonCompatible.runtime.start(original);
+  original.nested.score = 9;
+  assert(compatibleStart.data.payload.nested.score === 2 && !('omitted' in compatibleStart.data.payload)
+    && compatibleStart.data.payload.values.length === 300 && compatibleStart.data.payload.key129 === 129,
+  'lifecycle normalization changed JSON-compatible shapes or retained caller data');
+  await jsonCompatible.runtime.end();
+  jsonCompatible.dispose();
 
   let reentrantDisposeError = null;
   game.events.on('runtime-state', (event) => {

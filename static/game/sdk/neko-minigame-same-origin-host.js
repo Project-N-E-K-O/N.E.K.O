@@ -48,11 +48,6 @@
   const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
   const DEFAULT_PENDING_REQUEST_LIMIT = 64;
   const DEFAULT_PROTOCOL_QUEUE_LIMIT = 64;
-  const HOST_COMMAND_ROUTE_LIMIT = 64;
-  const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
-  const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
-  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
-  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
   const DEFAULT_SPEECH_SLOT_LIMIT = 4;
   // Leave headroom above the host's 12s microphone start/stop confirmation so
@@ -67,20 +62,7 @@
   const GAME_STORAGE_TOTAL_BYTES = 1024 * 1024;
   const HOST_LAUNCH_REGISTRY_LIMIT = 64;
   const HOST_REGISTRATION_CAPABILITY_LIMIT = 32;
-  const AVATAR_CHARACTER_LIMIT = 256;
-  const AVATAR_CHARACTER_NAME_CHARS = 128;
-  const AVATAR_MODEL_PATH_CHARS = 2048;
-  const AVATAR_MODEL_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
   const GLOBAL_CONSOLE_CAPTURE_REGISTRIES = new WeakMap();
-  // Keep this set symmetric with the SDK's command-contract rejection. These
-  // fields are removed before trusted route identity is attached.
-  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
-    'session_id', 'sessionId', 'game_type', 'gameType',
-    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
-    'window_lanlan_name', 'windowLanlanName',
-    'sdk_route_instance_id', 'sdkRouteInstanceId',
-    'sdk_route_instance_ids', 'routeInstanceId',
-  ]);
   const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
     'gamememoryenabled',
     'gameplayerinteractionmemoryenabled',
@@ -141,8 +123,7 @@
   // bare read off a freshly constructed host.
   const HOST_CAPABILITY_PROVIDERS = new WeakMap();
   const HOST_AVATAR_PROVIDERS = new WeakMap();
-  const HOST_COMMAND_ROUTES = new WeakMap();
-  const HOST_DECLARED_COMMANDS = new WeakMap();
+  const AVATAR_QUERY_LIMIT = 4;
 
   const TRUSTED_PAYLOAD_MAX_DEPTH = 24;
   const TRUSTED_PAYLOAD_MAX_NODES = 4096;
@@ -172,23 +153,14 @@
     }
   }
 
-  function cloneTrustedJsonData(
-    value,
-    state = {
-      nodes: 0,
-      bytes: 0,
-      seen: new Set(),
-      maxBytes: TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
-    },
-    depth = 0,
-  ) {
+  function cloneTrustedJsonData(value, state = { nodes: 0, bytes: 0, seen: new Set() }, depth = 0) {
     if (depth > TRUSTED_PAYLOAD_MAX_DEPTH || state.nodes >= TRUSTED_PAYLOAD_MAX_NODES) {
       throw new TypeError('invalid_payload');
     }
     state.nodes += 1;
     if (typeof value === 'string') {
       state.bytes = (state.bytes || 0) + utf8ByteLength(value);
-      if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
+      if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
       return value;
     }
     if (value == null || typeof value === 'boolean') return value;
@@ -210,7 +182,7 @@
         if (key === 'toJSON') continue;
         // Keys carry bytes too, and a payload can be all keys and no values.
         state.bytes = (state.bytes || 0) + utf8ByteLength(key);
-        if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
+        if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
         const cloned = cloneTrustedJsonData(descriptor.value, state, depth + 1);
         if (cloned !== TRUSTED_PAYLOAD_OMIT) result[key] = cloned;
       }
@@ -256,106 +228,18 @@
       : unescape(encodeURIComponent(text)).length;
   }
 
-  function normalizeCommandRoutes(value) {
-    if (value === undefined) return Object.freeze({});
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const entries = Object.entries(value);
-    if (entries.length > HOST_COMMAND_ROUTE_LIMIT) return null;
-    const routes = Object.create(null);
-    for (const [name, rawPolicy] of entries) {
-      if (!/^[a-z][a-z0-9:-]{0,63}$/.test(name)) return null;
-      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) return null;
-      if (Object.keys(rawPolicy).some((key) => !['path', 'maxRequestBytes', 'maxTimeoutMs'].includes(key))) {
-        return null;
-      }
-      const path = rawPolicy.path;
-      if (
-        typeof path !== 'string'
-        || !/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*$/.test(path)
-      ) return null;
-      const maxRequestBytes = rawPolicy.maxRequestBytes === undefined
-        ? DEFAULT_COMMAND_REQUEST_BYTES
-        : rawPolicy.maxRequestBytes;
-      const maxTimeoutMs = rawPolicy.maxTimeoutMs === undefined
-        ? DEFAULT_COMMAND_TIMEOUT_MS
-        : rawPolicy.maxTimeoutMs;
-      if (
-        !Number.isInteger(maxRequestBytes)
-        || maxRequestBytes < 1
-        || maxRequestBytes > MAX_COMMAND_REQUEST_BYTES
-        || !Number.isInteger(maxTimeoutMs)
-        || maxTimeoutMs < 250
-        || maxTimeoutMs > MAX_COMMAND_TIMEOUT_MS
-      ) return null;
-      routes[name] = Object.freeze({ path, maxRequestBytes, maxTimeoutMs });
-    }
-    return Object.freeze(routes);
-  }
-
-  function normalizeAvatarCharacterDescriptor(value) {
-    if (value == null) return null;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new TypeError('invalid_avatar_descriptor');
-    }
-    if (typeof value.name !== 'string') throw new TypeError('invalid_avatar_descriptor');
-    const name = value.name.trim();
-    if (!name || name.length > AVATAR_CHARACTER_NAME_CHARS) {
-      throw new TypeError('invalid_avatar_descriptor');
-    }
-    let model = null;
-    if (value.model != null) {
-      if (!value.model || typeof value.model !== 'object' || Array.isArray(value.model)) {
-        throw new TypeError('invalid_avatar_descriptor');
-      }
-      if (typeof value.model.type !== 'string' || typeof value.model.path !== 'string') {
-        throw new TypeError('invalid_avatar_descriptor');
-      }
-      const type = value.model.type.trim().toLowerCase();
-      const path = value.model.path.trim();
-      if (!AVATAR_MODEL_TYPES.includes(type) || !path || path.length > AVATAR_MODEL_PATH_CHARS) {
-        throw new TypeError('invalid_avatar_descriptor');
-      }
-      model = Object.freeze({ type, path });
-    }
-    return Object.freeze({
-      name,
-      model,
-      rendererAvailable: Boolean(model && value.rendererAvailable !== false),
-    });
-  }
-
-  function normalizeAvatarCharacterNames(value) {
-    if (!Array.isArray(value) || value.length > AVATAR_CHARACTER_LIMIT) {
-      throw new TypeError('invalid_avatar_character_list');
-    }
-    const names = [];
-    const seen = new Set();
-    for (const rawName of value) {
-      if (typeof rawName !== 'string') throw new TypeError('invalid_avatar_character_list');
-      const name = rawName.trim();
-      if (!name || name.length > AVATAR_CHARACTER_NAME_CHARS || seen.has(name)) continue;
-      seen.add(name);
-      names.push(name);
-    }
-    return Object.freeze(names);
-  }
-
   function normalizeLaunchRegistration(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const gameId = String(value.gameId || '').trim();
-    const routeGameType = String(value.routeGameType || gameId).trim();
     const version = String(value.version || '').trim();
     const mode = String(value.mode || '').trim();
     if (
       !gameId
       || gameId.length > 128
-      || !/^[a-z][a-z0-9_-]{0,127}$/.test(routeGameType)
       || !version
       || version.length > 64
       || !['registered', 'development'].includes(mode)
     ) return null;
-    const commandRoutes = normalizeCommandRoutes(value.commandRoutes);
-    if (!commandRoutes) return null;
     const allowedCapabilities = Object.freeze([
       ...new Set(
         (Array.isArray(value.allowedCapabilities) ? value.allowedCapabilities : [])
@@ -366,14 +250,12 @@
     return Object.freeze({
       mode,
       gameId,
-      routeGameType,
       publisherId: (
         String(value.publisherId || '').trim().slice(0, 128)
         || (mode === 'development' ? 'local-development' : 'unknown-publisher')
       ),
       version,
       allowedCapabilities,
-      commandRoutes,
     });
   }
 
@@ -424,26 +306,14 @@
       // may request an identity/capability, but cannot mint a registered result
       // from its own values. A future marketplace can replace the bootstrap's
       // resolver without changing the public game handshake.
-      const normalizedLaunchRegistration = normalizeLaunchRegistration(options.launchRegistration);
-      if (!normalizedLaunchRegistration) {
+      this._launchRegistration = normalizeLaunchRegistration(options.launchRegistration);
+      if (!this._launchRegistration) {
         throw new NekoMiniGameHostError(
           'game_unregistered',
           'A host-issued launchRegistration is required',
           { operation: 'construct' },
         );
       }
-      HOST_COMMAND_ROUTES.set(this, normalizedLaunchRegistration.commandRoutes);
-      HOST_DECLARED_COMMANDS.set(this, new Set());
-      // Endpoint policies stay in the bootstrap-owned WeakMap rather than on
-      // the transport object exposed to same-origin game code.
-      this._launchRegistration = Object.freeze({
-        mode: normalizedLaunchRegistration.mode,
-        gameId: normalizedLaunchRegistration.gameId,
-        routeGameType: normalizedLaunchRegistration.routeGameType,
-        publisherId: normalizedLaunchRegistration.publisherId,
-        version: normalizedLaunchRegistration.version,
-        allowedCapabilities: normalizedLaunchRegistration.allowedCapabilities,
-      });
       const requestedGameType = String(options.gameType || '').trim();
       const requestedGameVersion = String(options.gameVersion || '').trim();
       if (
@@ -457,12 +327,6 @@
         );
       }
       this.gameType = this._launchRegistration.gameId;
-      Object.defineProperty(this, 'routeGameType', {
-        value: this._launchRegistration.routeGameType,
-        enumerable: true,
-        configurable: false,
-        writable: false,
-      });
       this.gameVersion = this._launchRegistration.version || DEFAULT_GAME_VERSION;
       this.source = String(options.source || '').trim() || `${this.gameType}_demo`;
       this.displayName = String(options.displayName || '').trim() || this.gameType || 'Mini-game';
@@ -485,10 +349,10 @@
       this._window = options.windowImpl || window;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      // Renderer providers are selected only from the bootstrap-owned registry.
-      // A same-origin game can call the factory, so its options cannot mint or
-      // replace the privileged Avatar capability.
-      HOST_AVATAR_PROVIDERS.set(this, options.trustedAvatarHost || null);
+      this._avatarHost = options.avatarHost || null;
+      this._avatarCleanup = [];
+      this._avatarFactoryController = null;
+      this._avatarQueries = new Set();
       this._audioHost = options.audioHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
@@ -499,7 +363,6 @@
           : null,
       }));
       this._disposed = false;
-      this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
         active: false,
@@ -514,6 +377,7 @@
         1024,
       );
       this._pendingRequests = new Map();
+      this._rawRequests = new Set();
       this._pendingStorageLockLimit = boundedPositiveInteger(
         options.storageLockPendingLimit,
         DEFAULT_STORAGE_LOCK_PENDING_LIMIT,
@@ -625,6 +489,79 @@
       });
     }
 
+    _initializeAvatar(factory) {
+      if (this._avatarInitialized || this._disposed) return;
+      this._avatarInitialized = true;
+      // Transitional compatibility only; new integrations must register a factory.
+      // Explicit legacy injection wins: existing trusted same-origin adapters
+      // transfer disposal ownership to this host. Never create a second provider.
+      let provider = this._avatarHost;
+      const legacy = Boolean(provider);
+      this._avatarHost = null;
+      try {
+        if (!provider && typeof factory === 'function') {
+          this._avatarFactoryController = new (this._window.AbortController || AbortController)();
+          provider = factory(Object.freeze({
+            windowImpl: this._window,
+            documentImpl: this._window.document,
+            fetchImpl: this._fetchImpl,
+            signal: this._avatarFactoryController.signal,
+            onCleanup: (cleanup) => {
+              if (typeof cleanup !== 'function') {
+                throw this._hostError('invalid_request', 'Avatar cleanup must be a function');
+              }
+              if (this._avatarCleanup.length >= 16) {
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release overflow allocation */ }
+                throw this._hostError('invalid_request', 'Avatar factory cleanup limit reached');
+              }
+              if (this._disposed || this._avatarFactoryController.signal.aborted) {
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release late allocation */ }
+                return;
+              }
+              this._avatarCleanup.push(cleanup);
+            },
+            // Built-in display-only source; adapters need not reproduce role data.
+            characterSource: Object.freeze({
+              getCurrentCharacter: (options) => this._readAvatarCharacter('', options),
+              getCharacter: (name, options) => this._readAvatarCharacter(name, options),
+              listCharacters: (options) => this._readAvatarNames(options),
+            }),
+          }));
+        }
+        if (provider?.then) {
+          // Factories are synchronous. Still release an accidentally async result.
+          Promise.resolve(provider).then(value => this._disposeAvatarResource(value), () => {});
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar factory must return synchronously');
+        }
+        if (provider && (typeof provider.mount !== 'function' || (!legacy && typeof provider.dispose !== 'function'))) {
+          this._disposeAvatarResource(provider);
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar provider must support mount and dispose');
+        }
+        if (provider) HOST_AVATAR_PROVIDERS.set(this, provider);
+      } catch (_) {
+        // Optional Avatar failure must not prevent runtime/logging handshakes.
+        this._disposeAvatarResource(provider);
+        this._releaseAvatar();
+      }
+    }
+
+    _disposeAvatarResource(resource) {
+      try { Promise.resolve(resource?.dispose?.()).catch(() => {}); }
+      catch (_) { /* cleanup must not block release of remaining resources */ }
+    }
+
+    _releaseAvatar() {
+      try { this._avatarFactoryController?.abort(); } catch (_) { /* still release owned resources */ }
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      HOST_AVATAR_PROVIDERS.delete(this);
+      this._disposeAvatarResource(provider);
+      for (const cleanup of this._avatarCleanup.splice(0).reverse()) {
+        try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* continue releasing */ }
+      }
+    }
+
     connectGame(request = {}) {
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
@@ -652,28 +589,10 @@
           message: `The requested ${this.displayName} game identity is not registered by this host`,
         };
       }
-      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
-      const declaredCommands = manifest.contracts?.commands;
-      const commandNames = declaredCommands && typeof declaredCommands === 'object'
-        && !Array.isArray(declaredCommands)
-        ? Object.keys(declaredCommands)
-        : [];
-      const missingCommandRoutes = commandNames.filter(
-        (name) => !Object.prototype.hasOwnProperty.call(commandRoutes, name),
-      );
-      if (missingCommandRoutes.length) {
-        return {
-          accepted: false,
-          code: 'capability_unavailable',
-          message: `The ${this.displayName} host does not provide every declared game command`,
-        };
-      }
-      HOST_DECLARED_COMMANDS.set(this, new Set(commandNames));
       const requested = [
         ...(Array.isArray(manifest.requiredCapabilities) ? manifest.requiredCapabilities : []),
         ...(Array.isArray(manifest.optionalCapabilities) ? manifest.optionalCapabilities : []),
       ];
-      const avatarProvider = HOST_AVATAR_PROVIDERS.get(this);
       const locallyAvailable = new Set([
         'runtime',
         'dialogue',
@@ -685,7 +604,7 @@
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
-        ...(avatarProvider?.mount ? ['avatar-renderer'] : []),
+        ...(HOST_AVATAR_PROVIDERS.has(this) ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
@@ -987,75 +906,6 @@
       return provider.mount(config);
     }
 
-    async getAvatarCharacter(name = '') {
-      this._requireGrantedCapability('avatar-renderer', 'avatar.getCharacter');
-      if (this._disposed) {
-        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
-          operation: 'avatar.getCharacter',
-        });
-      }
-      if (typeof name !== 'string') {
-        throw this._hostError('invalid_request', 'Avatar character name must be a string', {
-          operation: 'avatar.getCharacter',
-        });
-      }
-      const requestedName = name.trim();
-      if (requestedName.length > AVATAR_CHARACTER_NAME_CHARS) {
-        throw this._hostError('invalid_request', 'Avatar character name is too long', {
-          operation: 'avatar.getCharacter',
-        });
-      }
-      const provider = HOST_AVATAR_PROVIDERS.get(this);
-      if (!provider || (
-        requestedName
-          ? typeof provider.getCharacter !== 'function'
-          : typeof provider.getCharacter !== 'function'
-            && typeof provider.getCurrentCharacter !== 'function'
-      )) {
-        throw this._hostError('capability_unavailable', 'Avatar character provider is unavailable', {
-          operation: 'avatar.getCharacter',
-        });
-      }
-      try {
-        const value = requestedName
-          ? await provider.getCharacter?.(requestedName)
-          : await (provider.getCurrentCharacter?.() ?? provider.getCharacter?.(''));
-        return normalizeAvatarCharacterDescriptor(value);
-      } catch (error) {
-        if (error instanceof NekoMiniGameHostError) throw error;
-        throw this._hostError(
-          error?.code || 'request_failed',
-          'Avatar character lookup failed',
-          { operation: 'avatar.getCharacter', cause: error },
-        );
-      }
-    }
-
-    async listAvatarCharacters() {
-      this._requireGrantedCapability('avatar-renderer', 'avatar.listCharacters');
-      if (this._disposed) {
-        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
-          operation: 'avatar.listCharacters',
-        });
-      }
-      const provider = HOST_AVATAR_PROVIDERS.get(this);
-      if (!provider || typeof provider.listCharacters !== 'function') {
-        throw this._hostError('capability_unavailable', 'Avatar character provider is unavailable', {
-          operation: 'avatar.listCharacters',
-        });
-      }
-      try {
-        return normalizeAvatarCharacterNames(await provider.listCharacters());
-      } catch (error) {
-        if (error instanceof NekoMiniGameHostError) throw error;
-        throw this._hostError(
-          error?.code || 'request_failed',
-          'Avatar character listing failed',
-          { operation: 'avatar.listCharacters', cause: error },
-        );
-      }
-    }
-
     mountAudio(config) {
       this._requireGrantedCapability('audio', 'audio.mount');
       if (this._disposed) {
@@ -1072,7 +922,7 @@
     }
 
     _gameEndpoint(path) {
-      return `/api/game/${encodeURIComponent(this.routeGameType)}/${path}`;
+      return `/api/game/${encodeURIComponent(this.gameType)}/${path}`;
     }
 
     _hostError(code, message, details = {}) {
@@ -1084,12 +934,42 @@
       return `${operation}-${Date.now().toString(36)}-${this._nextRequestId.toString(36)}`;
     }
 
+    async _bufferResponse(response) {
+      // All _request callers consume finite REST responses, not streaming audio.
+      // Buffer before releasing the fetch signal/deadline, then hand back a fresh
+      // Response so legacy json()/clone(), headers and bodyUsed semantics survive.
+      const ResponseImpl = this._window.Response || globalThis.Response;
+      if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
+        const bytes = await response.arrayBuffer();
+        const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        });
+        for (const key of ['url', 'redirected', 'type']) {
+          Object.defineProperty(replay, key, { value: response[key] });
+        }
+        return replay;
+      }
+      // Lightweight trusted transports/tests may provide the JSON Response
+      // subset only. Preserve parse failures for the caller's existing policy.
+      if (typeof response?.json !== 'function') return response;
+      let data;
+      let failure;
+      try { data = await response.json(); } catch (error) { failure = error; }
+      const replay = () => ({
+        ...response,
+        json: async () => { if (failure) throw failure; return data; },
+        clone: replay,
+      });
+      return replay();
+    }
+
     async _request(url, init = {}, options = {}) {
       const operation = String(options.operation || 'request');
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, { operation });
       }
-      if (this._pendingRequests.size >= this._pendingRequestLimit) {
+      if (this._pendingRequests.size >= this._pendingRequestLimit
+        || this._rawRequests.size >= this._pendingRequestLimit) {
         throw this._hostError('busy', `${this.displayName} host pending request limit reached`, { operation });
       }
 
@@ -1108,6 +988,13 @@
         externalSignal,
         externalAbortHandler: null,
         cancelReason: '',
+        rejectCancellation: null,
+      };
+      const cancellation = new Promise((_, reject) => { entry.rejectCancellation = reject; });
+      const cancel = (reason) => {
+        if (!entry.cancelReason) entry.cancelReason = reason;
+        try { controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(entry.cancelReason, 'Host request cancelled', { operation, requestId }));
       };
 
       if (externalSignal?.aborted) {
@@ -1115,19 +1002,24 @@
       }
       if (externalSignal && typeof externalSignal.addEventListener === 'function') {
         entry.externalAbortHandler = () => {
-          if (!entry.cancelReason) entry.cancelReason = 'cancelled';
-          try { controller.abort(); } catch (_) { /* already aborted */ }
+          cancel('cancelled');
         };
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       entry.timeoutId = this._window.setTimeout(() => {
-        if (!entry.cancelReason) entry.cancelReason = 'timeout';
-        try { controller.abort(); } catch (_) { /* already aborted */ }
+        cancel('timeout');
       }, timeoutMs);
       this._pendingRequests.set(requestId, entry);
+      this._rawRequests.add(entry);
 
       try {
-        return await this._fetchImpl(url, { ...init, signal: controller.signal });
+        const work = Promise.resolve().then(() => {
+          if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+          return this._fetchImpl(url, { ...init, signal: controller.signal });
+        }).then(response => this._bufferResponse(response)).finally(() => this._rawRequests.delete(entry));
+        const response = await Promise.race([work, cancellation]);
+        if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+        return response;
       } catch (error) {
         const code = entry.cancelReason || (error?.name === 'AbortError' ? 'cancelled' : 'network_error');
         const message = code === 'timeout'
@@ -1144,6 +1036,7 @@
           entry.externalSignal.removeEventListener?.('abort', entry.externalAbortHandler);
         }
         this._pendingRequests.delete(requestId);
+        entry.rejectCancellation = null;
       }
     }
 
@@ -1156,6 +1049,7 @@
         if (preserveOperations.has(entry.operation)) continue;
         entry.cancelReason = normalizedReason;
         try { entry.controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(normalizedReason, 'Host request cancelled', { operation: entry.operation }));
       }
     }
 
@@ -1191,7 +1085,6 @@
     }
 
     resetSession({ newSession = false } = {}) {
-      this._activeCommandRouteIdentity = null;
       if (newSession || !this._session.id) {
         this._cancelVoiceControlRequests('cancelled');
         // Same entropy as the constructor's generator: a reset that mints a
@@ -1208,36 +1101,18 @@
     applyRouteState(state = {}) {
       const sessionId = String(state?.session_id || state?.sessionId || '').trim();
       const lanlanName = String(state?.lanlan_name || '').trim();
-      if (
-        this._activeCommandRouteIdentity
-        && (
-          (sessionId && sessionId !== this._activeCommandRouteIdentity.sessionId)
-          || (lanlanName && lanlanName !== this._activeCommandRouteIdentity.lanlanName)
-        )
-      ) {
-        this._activeCommandRouteIdentity = null;
-      }
       if (sessionId) this._session.id = sessionId;
       if (lanlanName) this._session.lanlanName = lanlanName;
       return { sessionId: this.sessionId, lanlanName: this.routeLanlanName };
     }
 
-    _trustedRuntimePayload(payload = {}, options = {}) {
+    _trustedRuntimePayload(payload = {}) {
       const source = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload
         : {};
       let trusted;
       try {
-        trusted = cloneTrustedJsonData(source, {
-          nodes: 0,
-          bytes: 0,
-          seen: new Set(),
-          maxBytes: boundedPositiveInteger(
-            options.maxContentBytes,
-            TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
-            MAX_COMMAND_REQUEST_BYTES,
-          ),
-        });
+        trusted = cloneTrustedJsonData(source);
       } catch (cause) {
         throw this._hostError('invalid_payload', `${this.displayName} host payload is invalid`, {
           operation: 'trusted_runtime_payload',
@@ -1255,9 +1130,6 @@
       return {
         ...trusted,
         session_id: this.sessionId,
-        // Public manifest ids may differ from legacy backend route slugs. The
-        // bootstrap-owned alias controls both the URL and payload identity.
-        game_type: this.routeGameType,
         ...(this.routeLanlanName ? { lanlan_name: this.routeLanlanName } : {}),
         game_memory_enabled: memoryEnabled,
         game_memory_player_interaction_enabled: memoryEnabled,
@@ -1289,6 +1161,124 @@
       }));
     }
 
+    async _readAvatarJson(endpoint, name, options = {}) {
+      this._requireGrantedCapability('avatar-renderer', 'avatar.character');
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      const url = new URL(this._gameEndpoint(endpoint), this._window.location.origin);
+      if (name) url.searchParams.set('lanlan_name', name);
+      const response = await this._fetchImpl(url.toString(), { signal: options.signal, credentials: 'same-origin' });
+      if (!response.ok) throw this._hostError('request_failed', 'Avatar lookup failed', { status: response.status });
+      const data = await response.json();
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      return data;
+    }
+
+    async _readAvatarCharacter(name = '', options = {}) {
+      const data = await this._readAvatarJson('character', name, options);
+      if (data?.error) throw this._hostError('request_failed', 'Avatar lookup failed');
+      if (!data?.lanlan_name || (name && data.lanlan_name !== name)) return null;
+      const type = data.model_type === 'live3d' ? data.live3d_sub_type : data.model_type;
+      const path = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path }[type];
+      return {
+        name: data.lanlan_name,
+        model: path ? { type, path } : null,
+        rendererAvailable: Boolean(path && ['live2d', 'vrm'].includes(type)),
+      };
+    }
+
+    async _readAvatarNames(options = {}) {
+      return (await this._readAvatarJson('characters', '', options))?.names;
+    }
+
+    async _queryAvatar(operation, options, invoke) {
+      this._requireGrantedCapability('avatar-renderer', operation);
+      if (this._disposed) throw this._hostError('disposed', 'Avatar host disposed');
+      if (options.signal?.aborted) throw this._hostError('cancelled', 'Avatar query cancelled');
+      if (this._avatarQueries.size >= AVATAR_QUERY_LIMIT) throw this._hostError('busy', 'Avatar query limit reached');
+      const controller = new (this._window.AbortController || AbortController)();
+      const timeoutMs = boundedPositiveInteger(options.timeoutMs, 10000, 30000);
+      const entry = { controller, cancel: null };
+      let timer;
+      let code = '';
+      const cancelled = new Promise((_, reject) => {
+        entry.cancel = (reason) => {
+          if (code) return;
+          code = reason;
+          controller.abort();
+          reject(this._hostError(reason, 'Avatar query cancelled', { operation }));
+        };
+      });
+      const onAbort = () => entry.cancel('cancelled');
+      this._avatarQueries.add(entry);
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      timer = this._window.setTimeout(() => entry.cancel('timeout'), timeoutMs);
+      // Keep the raw slot until settlement even when a provider ignores abort.
+      // Repeated timeouts cannot launch unbounded abandoned provider work.
+      const raw = Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw this._hostError(code || 'cancelled', 'Avatar query cancelled');
+        return invoke({ signal: controller.signal, timeoutMs });
+      }).finally(() => this._avatarQueries.delete(entry));
+      try {
+        const value = await Promise.race([raw, cancelled]);
+        if (this._disposed || controller.signal.aborted) {
+          throw this._hostError(this._disposed ? 'disposed' : code || 'cancelled', 'Avatar query cancelled');
+        }
+        return value;
+      } finally {
+        this._window.clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+      }
+    }
+
+    getAvatarCharacter(name = '', options = {}) {
+      if (typeof name !== 'string' || name.length > 256 || Array.from(name).length > 128) {
+        return Promise.reject(this._hostError('invalid_request', 'Invalid character name'));
+      }
+      const requested = name.trim();
+      return this._queryAvatar('avatar.getCharacter', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const value = requested
+          ? await (typeof provider?.getCharacter === 'function'
+            ? provider.getCharacter(requested, managed) : this._readAvatarCharacter(requested, managed))
+          : await (typeof provider?.getCurrentCharacter === 'function'
+            ? provider.getCurrentCharacter(managed)
+            : typeof provider?.getCharacter === 'function'
+              ? provider.getCharacter('', managed) : this._readAvatarCharacter('', managed));
+        if (value == null) return null;
+        const characterName = value.name;
+        const model = value.model;
+        if (typeof characterName !== 'string' || !characterName.trim()
+          || characterName.length > 256 || Array.from(characterName).length > 128
+          || (model != null && (!['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
+            || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048))) {
+          throw this._hostError('invalid_response', 'Invalid character descriptor');
+        }
+        if (requested && characterName.trim() !== requested) return null;
+        return Object.freeze({
+          name: characterName.trim(),
+          model: model == null ? null : Object.freeze({ type: model.type, path: model.path.trim() }),
+          rendererAvailable: Boolean(model && value.rendererAvailable === true),
+        });
+      });
+    }
+
+    listAvatarCharacters(options = {}) {
+      return this._queryAvatar('avatar.listCharacters', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const names = await (typeof provider?.listCharacters === 'function'
+          ? provider.listCharacters(managed) : this._readAvatarNames(managed));
+        if (!Array.isArray(names) || names.length > 256 || names.some(name => (
+          typeof name !== 'string' || !name.trim() || name.length > 256 || Array.from(name).length > 128
+        ))) throw this._hostError('invalid_response', 'Invalid character list');
+        return Object.freeze([...new Set(names.map(name => name.trim()))]);
+      });
+    }
+
+    /** @deprecated Existing adapters only. New games must use game.avatar discovery. */
     async getCharacter(lanlanName = '') {
       this._requireGrantedCapability('avatar-renderer', 'character');
       const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
@@ -1353,59 +1343,24 @@
       });
     }
 
-    async start(payload, options = {}) {
+    start(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_start');
-      const trustedPayload = this._trustedRuntimePayload(payload);
-      const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
-      const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
+      return this._post(this._gameEndpoint('route/start'), {
+        ...this._trustedRuntimePayload(payload),
+      }, {
         timeoutMs: 60000,
         operation: 'route_start',
         ...options,
       });
-      let data = null;
-      try { data = await response.clone().json(); }
-      catch (_) { /* the public SDK still owns response validation */ }
-      const routeState = data?.state && typeof data.state === 'object' ? data.state : null;
-      const routeActive = routeState?.game_route_active === true || data?.active === true;
-      if (response.ok && data?.ok !== false && routeActive) {
-        this._activeCommandRouteIdentity = Object.freeze({
-          gameType: this.routeGameType,
-          sessionId: String(routeState?.session_id || trustedPayload.session_id || '').trim(),
-          lanlanName: String(routeState?.lanlan_name || trustedPayload.lanlan_name || '').trim(),
-          routeInstanceId: requestedRouteInstanceId,
-        });
-      } else if (response.ok && data?.ok !== false) {
-        this._activeCommandRouteIdentity = null;
-      }
-      return response;
     }
 
-    _retireCommandRouteIfRuntimeInactive(data, routeInstanceId) {
-      const state = data?.state && typeof data.state === 'object' ? data.state : null;
-      const explicitlyInactive = data?.active === false || state?.game_route_active === false;
-      if (!explicitlyInactive || !this._activeCommandRouteIdentity) return false;
-      const requestedGeneration = String(routeInstanceId || '').trim();
-      if (
-        requestedGeneration
-        && requestedGeneration !== this._activeCommandRouteIdentity.routeInstanceId
-      ) return false;
-      this._activeCommandRouteIdentity = null;
-      return true;
-    }
-
-    async heartbeat(payload, options = {}) {
+    heartbeat(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_heartbeat');
-      const trustedPayload = this._trustedRuntimePayload(payload);
-      const response = await this._post(this._gameEndpoint('route/heartbeat'), trustedPayload, {
+      return this._post(this._gameEndpoint('route/heartbeat'), this._trustedRuntimePayload(payload), {
         timeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
         operation: 'route_heartbeat',
         ...options,
       });
-      try {
-        const data = await response.clone().json();
-        this._retireCommandRouteIfRuntimeInactive(data, trustedPayload.sdk_route_instance_id);
-      } catch (_) { /* the public SDK still owns response validation */ }
-      return response;
     }
 
     async drain(payload, options = {}) {
@@ -1427,7 +1382,6 @@
       try {
         const data = await response.clone().json();
         this._dispatchGameControls(data?.outputs, sourceRoute);
-        this._retireCommandRouteIfRuntimeInactive(data, sourceRoute.routeInstanceId);
       } catch (_) { /* the SDK still owns response validation */ }
       return response;
     }
@@ -1472,118 +1426,6 @@
       return result.finally(() => {
         this._protocolQueueDepth = Math.max(0, this._protocolQueueDepth - 1);
       });
-    }
-
-    async executeGameCommand(nameInput, envelope = {}, options = {}) {
-      this._requireGrantedCapability('runtime', 'game_command');
-      const name = String(nameInput || '').trim();
-      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
-      const policy = Object.prototype.hasOwnProperty.call(commandRoutes, name)
-        ? commandRoutes[name]
-        : null;
-      if (!policy || !HOST_DECLARED_COMMANDS.get(this)?.has(name)) {
-        throw this._hostError(
-          'capability_denied',
-          `The ${this.displayName} command is not declared for this launch`,
-          { operation: 'game_command' },
-        );
-      }
-      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
-        throw this._hostError(
-          'invalid_payload',
-          `${this.displayName} command envelope must be an object`,
-          { operation: 'game_command' },
-        );
-      }
-      const protocolVersion = String(envelope.protocolVersion || envelope.protocol_version || '');
-      const envelopeType = String(envelope.type || '').trim();
-      const sequence = Number(envelope.sequence);
-      const requestedSessionId = String(envelope.sessionId || envelope.session_id || '').trim();
-      const routeInstanceId = String(
-        envelope.routeInstanceId || envelope.sdk_route_instance_id || '',
-      ).trim();
-      if (
-        protocolVersion !== SDK_PROTOCOL_VERSION
-        || envelopeType !== name
-        || !Number.isSafeInteger(sequence)
-        || sequence <= 0
-      ) {
-        throw this._hostError(
-          'invalid_payload',
-          `${this.displayName} command envelope is invalid`,
-          { operation: 'game_command' },
-        );
-      }
-      const activeRouteIdentity = this._activeCommandRouteIdentity;
-      const routeIdentityIsCurrent = () => (
-        !!activeRouteIdentity
-        && this._activeCommandRouteIdentity === activeRouteIdentity
-        && activeRouteIdentity.gameType === this.routeGameType
-        && activeRouteIdentity.sessionId === this.sessionId
-        && activeRouteIdentity.lanlanName === this.routeLanlanName
-        && activeRouteIdentity.routeInstanceId === routeInstanceId
-        && requestedSessionId === activeRouteIdentity.sessionId
-      );
-      if (!requestedSessionId || !routeInstanceId || !routeIdentityIsCurrent()) {
-        throw this._hostError(
-          'session_invalid',
-          `${this.displayName} command does not match the active runtime identity`,
-          { operation: 'game_command' },
-        );
-      }
-      if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) {
-        throw this._hostError(
-          'invalid_payload',
-          `${this.displayName} same-origin command payload must be an object`,
-          { operation: 'game_command' },
-        );
-      }
-      let payload;
-      try {
-        const commandPayload = cloneTrustedJsonData(envelope.payload, {
-          nodes: 0,
-          bytes: 0,
-          seen: new Set(),
-          maxBytes: policy.maxRequestBytes,
-        });
-        for (const key of COMMAND_PAYLOAD_HOST_IDENTITY_KEYS) delete commandPayload[key];
-        if (utf8ByteLength(JSON.stringify(commandPayload)) > policy.maxRequestBytes) {
-          throw new TypeError('invalid_payload');
-        }
-        payload = this._trustedRuntimePayload({
-          ...commandPayload,
-          sdk_route_instance_id: routeInstanceId,
-        }, { maxContentBytes: policy.maxRequestBytes });
-      } catch (cause) {
-        if (cause instanceof NekoMiniGameHostError) throw cause;
-        throw this._hostError(
-          'invalid_payload',
-          `${this.displayName} command payload is invalid`,
-          { operation: 'game_command', cause },
-        );
-      }
-      const requestedTimeoutMs = boundedPositiveInteger(
-        options.timeoutMs,
-        DEFAULT_COMMAND_TIMEOUT_MS,
-        MAX_COMMAND_TIMEOUT_MS,
-      );
-      const response = await this._postWithCsrf(
-        this._gameEndpoint(policy.path),
-        payload,
-        {
-          timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
-          signal: options.signal,
-          operation: 'game_command',
-        },
-      );
-      if (!routeIdentityIsCurrent()) {
-        throw this._hostError(
-          'session_invalid',
-          `${this.displayName} command response belongs to a retired runtime identity`,
-          { operation: 'game_command' },
-        );
-      }
-      return response;
     }
 
     startGameControlBridge(options = {}) {
@@ -1910,7 +1752,7 @@
             bridge.seenMessageIds.delete(bridge.seenMessageOrder.shift());
           }
         }
-        if (String(data.game_type || '') !== this.routeGameType) return;
+        if (String(data.game_type || '') !== this.gameType) return;
         if (data.session_id && String(data.session_id) !== this.sessionId) return;
         if (data.type === 'game_voice_transcript') {
           const text = String(data.text || '').trim();
@@ -2095,7 +1937,7 @@
           request_id: requestId,
           timestamp: Date.now(),
           action: normalizedAction,
-          game_type: this.routeGameType,
+          game_type: this.gameType,
           session_id: this.sessionId,
           ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         });
@@ -2454,7 +2296,7 @@
       if (!transport.overflowContext && payload && typeof payload === 'object') {
         transport.overflowContext = {
           session_id: String(payload.session_id || this.sessionId || ''),
-          game_type: String(payload.game_type || this.routeGameType),
+          game_type: String(payload.game_type || this.gameType),
           lanlan_name: String(payload.lanlan_name || this.routeLanlanName || ''),
           source: String(payload.source || this.source),
         };
@@ -2486,7 +2328,7 @@
       transport.overflowNotified = false;
       const payload = {
         session_id: context.session_id || this.sessionId,
-        game_type: context.game_type || this.routeGameType,
+        game_type: context.game_type || this.gameType,
         lanlan_name: context.lanlan_name || this.routeLanlanName,
         source: context.source || this.source,
         level: 'warning',
@@ -2641,7 +2483,7 @@
       const context = this._loggerContext();
       const payload = {
         session_id: context.sessionId,
-        game_type: this.routeGameType,
+        game_type: this.gameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         level,
@@ -2742,7 +2584,7 @@
       const original = entry.payload || {};
       return {
         session_id: original.session_id || this.sessionId,
-        game_type: original.game_type || this.routeGameType,
+        game_type: original.game_type || this.gameType,
         lanlan_name: original.lanlan_name || this.routeLanlanName,
         source: original.source || this.source,
         level: event === 'repeated_log_recovered' ? 'info' : 'warning',
@@ -2888,7 +2730,7 @@
       const debugLogMutationHeaders = { ...mutationHeaders };
       const payload = {
         session_id: context.sessionId,
-        game_type: this.routeGameType,
+        game_type: this.gameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         reason,
@@ -3200,8 +3042,6 @@
 
     async end(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_end');
-      const endingCommandRoute = this._activeCommandRouteIdentity;
-      if (options.useBeacon) this._activeCommandRouteIdentity = null;
       let parsedPayload = payload;
       if (typeof payload === 'string') {
         try {
@@ -3307,16 +3147,7 @@
       });
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
       const projected = this._projectRouteEndResponse(data);
-      if (response.ok) {
-        if (
-          projected?.ok !== false
-          && endingCommandRoute
-          && this._activeCommandRouteIdentity === endingCommandRoute
-        ) {
-          this._activeCommandRouteIdentity = null;
-        }
-        return projected;
-      }
+      if (response.ok) return projected;
       // A non-2xx body is usually FastAPI's `{"detail": ...}`: it parses fine,
       // carries no `ok`, and no field the projection keeps -- so it arrived as
       // `{}`, and the SDK reads a plain object without `ok` as SUCCESS. The
@@ -3340,17 +3171,18 @@
       this._pendingStorageLockControllers.clear();
       const preserveOperations = new Set(options.preservePendingOperations || []);
       this.cancelPendingRequests('disposed', { preserveOperations });
+      // Preserved route-end requests remain bounded by their original deadline.
+      for (const entry of this._rawRequests) {
+        if (!preserveOperations.has(entry.operation)) this._rawRequests.delete(entry);
+      }
       this.stopAllSpeechRecognition();
-      this._activeCommandRouteIdentity = null;
       this.stopSpeechPlaybackBridge();
       this.stopVoiceControlBridge('disposed');
       this._grantedCapabilities.clear();
-      HOST_DECLARED_COMMANDS.set(this, new Set());
       this.stopGameControlBridge();
-      const avatarProvider = HOST_AVATAR_PROVIDERS.get(this);
-      HOST_AVATAR_PROVIDERS.delete(this);
-      try { avatarProvider?.dispose?.(); }
-      catch (error) { this._console.warn(`[${this.displayName}Host] avatar host dispose failed:`, error); }
+      for (const entry of this._avatarQueries) entry.cancel('disposed');
+      this._avatarQueries.clear();
+      this._releaseAvatar();
       try { this._audioHost?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] audio host dispose failed:`, error); }
       this._disposeLogger();
@@ -3360,24 +3192,14 @@
 
   const createNekoMiniGameSameOriginHost = function createNekoMiniGameSameOriginHost(options = {}) {
     const gameType = String(options.gameType || '').trim();
-    const capabilityProviders = HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null;
-    let trustedAvatarHost = null;
-    if (typeof capabilityProviders?.avatarHostFactory === 'function') {
-      const windowImpl = options.windowImpl || window;
-      trustedAvatarHost = capabilityProviders.avatarHostFactory(Object.freeze({
-        windowImpl,
-        documentImpl: windowImpl.document,
-        fetchImpl: options.fetchImpl || windowImpl.fetch?.bind(windowImpl),
-      }));
-    }
-    return new NekoMiniGameSameOriginHost({
+    const host = new NekoMiniGameSameOriginHost({
       ...options,
-      // Deliberately overwrite any caller-provided renderer after the spread.
-      avatarHost: undefined,
-      trustedAvatarHost,
       launchRegistration: HOST_BOOTSTRAP.registrations.get(gameType) || null,
-      capabilityProviders,
+      capabilityProviders: HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null,
     });
+    // Construction/identity validation completes before any factory allocates.
+    host._initializeAvatar(HOST_BOOTSTRAP.capabilityProviders.get(gameType)?.avatarHostFactory);
+    return host;
   };
   Object.defineProperty(window, FACTORY_PROPERTY, {
     value: createNekoMiniGameSameOriginHost,

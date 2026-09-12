@@ -30,6 +30,11 @@ from .badminton_scores import _normalize_badminton_mode
 from .balance import _SOCCER_EMOTION_INERTIA
 from .char_info import _get_character_info
 from .game_context import _normalize_text_items
+from main_logic.mini_game_sdk import (
+    StructuredOutputAttemptsExhausted,
+    StructuredOutputContentError,
+    run_isolated_structured_output,
+)
 
 import json
 from typing import Any
@@ -42,6 +47,7 @@ from config.prompts.prompts_badminton import (
     get_badminton_pregame_context_formatter_labels,
     get_badminton_pregame_context_prompt,
 )
+from utils.game_log import append_game_session_debug_log
 
 
 _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
@@ -94,14 +100,26 @@ def _default_soccer_pregame_context(*, initial_difficulty: str | None = None) ->
     }
 
 
-def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "") -> tuple[dict, bool]:
+def _normalize_soccer_pregame_context(
+    value: Any,
+    *,
+    neko_invite_text: str = "",
+    validation_issues: list[dict[str, Any]] | None = None,
+) -> tuple[dict, bool]:
     """Normalize model output. Returns (context, had_invalid_fields)."""
     base = _default_soccer_pregame_context()
+    issues = validation_issues if validation_issues is not None else []
+
+    def mark_invalid(field: str, reason: str, **details: Any) -> None:
+        issue = {"field": field, "reason": reason}
+        issue.update(details)
+        issues.append(issue)
+
     if not isinstance(value, dict):
+        mark_invalid("$", "expected_object", actual_type=type(value).__name__)
         return base, True
 
     context = dict(base)
-    invalid = False
 
     string_fields = (
         "launchIntent",
@@ -119,7 +137,7 @@ def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "")
             if text:
                 context[field] = text
             elif value.get(field) not in (None, ""):
-                invalid = True
+                mark_invalid(field, "invalid_text", actual_type=type(value.get(field)).__name__)
 
     if "confidence" in value:
         try:
@@ -127,9 +145,9 @@ def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "")
             if 0.0 <= confidence <= 1.0:
                 context["confidence"] = confidence
             else:
-                invalid = True
+                mark_invalid("confidence", "out_of_range", minimum=0.0, maximum=1.0)
         except (TypeError, ValueError):
-            invalid = True
+            mark_invalid("confidence", "not_number", actual_type=type(value.get("confidence")).__name__)
 
     if "emotionIntensity" in value:
         try:
@@ -137,43 +155,47 @@ def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "")
             if 0.0 <= intensity <= 1.0:
                 context["emotionIntensity"] = intensity
             else:
-                invalid = True
+                mark_invalid("emotionIntensity", "out_of_range", minimum=0.0, maximum=1.0)
         except (TypeError, ValueError):
-            invalid = True
+            mark_invalid(
+                "emotionIntensity",
+                "not_number",
+                actual_type=type(value.get("emotionIntensity")).__name__,
+            )
 
     if "emotionInertia" in value:
         inertia = str(value.get("emotionInertia") or "").strip()
         if inertia in _SOCCER_EMOTION_INERTIA:
             context["emotionInertia"] = inertia
         else:
-            invalid = True
+            mark_invalid("emotionInertia", "unsupported_value")
 
     if "gameStance" in value:
         stance = str(value.get("gameStance") or "").strip()
         if stance in _SOCCER_GAME_STANCES:
             context["gameStance"] = stance
         else:
-            invalid = True
+            mark_invalid("gameStance", "unsupported_value")
 
     if "initialMood" in value:
         mood = str(value.get("initialMood") or "").strip()
         if mood in _SOCCER_MOODS:
             context["initialMood"] = mood
         else:
-            invalid = True
+            mark_invalid("initialMood", "unsupported_value")
 
     if "initialDifficulty" in value:
         difficulty = str(value.get("initialDifficulty") or "").strip()
         if difficulty in _SOCCER_DIFFICULTIES:
             context["initialDifficulty"] = difficulty
         else:
-            invalid = True
+            mark_invalid("initialDifficulty", "unsupported_value")
 
     if "openingLine" in value:
         opening_line = _normalize_short_text(value.get("openingLine"), max_chars=0)
         if len(opening_line) > 15:
+            mark_invalid("openingLine", "too_long", actual_length=len(opening_line), maximum=15)
             opening_line = ""
-            invalid = True
         if opening_line and _is_repeated_neko_invite(opening_line, neko_invite_text):
             opening_line = ""
         context["openingLine"] = opening_line
@@ -184,17 +206,17 @@ def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "")
             if items or value.get(field) in (None, "", []):
                 context[field] = items
             else:
-                invalid = True
+                mark_invalid(field, "invalid_list", actual_type=type(value.get(field)).__name__)
 
     # 普通陪玩和任何被兜底出来的开局都不能默认 max。
     if context["gameStance"] == "neutral_play":
         if context["initialDifficulty"] not in _SOCCER_DEFAULT_DIFFICULTIES:
-            invalid = True
+            mark_invalid("initialDifficulty", "not_allowed_for_neutral_play")
         context["initialDifficulty"] = _soccer_random_default_difficulty()
         if not context.get("difficultyPolicy"):
             context["difficultyPolicy"] = base["difficultyPolicy"]
 
-    return context, invalid
+    return context, bool(issues)
 
 
 def _format_soccer_pregame_context_for_prompt(pre_game_context: Any, language: str | None = None) -> str:
@@ -461,14 +483,17 @@ async def _run_pregame_context_ai(
                     content=f"{json.dumps(user_payload, ensure_ascii=False)}\n{PREGAME_CONTEXT_INPUT_WATERMARK}"
                 ),
             ])
-        raw = _strip_json_fence(str(result.content or ""))
-        parsed = robust_json_loads(raw)
     except Exception as exc:
         logger.warning("🎮 开局上下文分析失败: lanlan=%s err=%s", lanlan_name, exc)
         raise
 
+    raw = _strip_json_fence(str(result.content or ""))
+    try:
+        parsed = robust_json_loads(raw)
+    except Exception as exc:
+        raise StructuredOutputContentError("invalid_json") from exc
     if not isinstance(parsed, dict):
-        raise ValueError("pregame_context_json_not_object")
+        raise StructuredOutputContentError("json_not_object")
     return parsed
 
 
@@ -481,6 +506,8 @@ async def _run_soccer_pregame_context_ai(
     neko_initiated: bool,
     neko_invite_text: str,
     prompt_locale: str | None = None,
+    structured_output_attempt: int = 1,
+    structured_output_isolation_id: str = "",
 ) -> dict:
     char_info = _get_character_info(lanlan_name)
     return await _run_pregame_context_ai(
@@ -497,8 +524,64 @@ async def _run_soccer_pregame_context_ai(
             or char_info.get("user_language_full")
             or char_info.get("user_language")
         ),
-        extra_payload={"gameType": "soccer"},
+        extra_payload={
+            "gameType": "soccer",
+            # This per-attempt nonce keeps provider/proxy response caches from
+            # treating the retry as the same request.  It carries no previous
+            # output or conversation state.
+            "structuredOutputAttempt": structured_output_attempt,
+            "structuredOutputIsolationId": structured_output_isolation_id,
+        },
     )
+
+
+def _record_soccer_pregame_retry_failures(
+    *,
+    game_type: str,
+    session_id: str,
+    lanlan_name: str,
+    failures: Any,
+    recovered: bool,
+) -> None:
+    for failure in tuple(failures or ())[:2]:
+        attempt = int(getattr(failure, "attempt", 0) or 0)
+        will_retry = attempt == 1
+        issues = [
+            {
+                "field": str(issue.get("field") or ""),
+                "reason": str(issue.get("reason") or "invalid"),
+                **{
+                    key: value
+                    for key, value in issue.items()
+                    if key not in {"field", "reason"}
+                },
+            }
+            for issue in tuple(getattr(failure, "issues", ()) or ())[:32]
+            if isinstance(issue, dict)
+        ]
+        append_game_session_debug_log(
+            game_type,
+            session_id,
+            lanlan_name=lanlan_name,
+            level="warning",
+            category="pregame",
+            event="structured_output_retry" if will_retry else "structured_output_retry_exhausted",
+            source="sdk_backend",
+            message=(
+                "小游戏结构化 LLM 输出不合规，使用独立通道重试"
+                if will_retry
+                else "小游戏结构化 LLM 输出独立通道重试后仍不合规"
+            ),
+            details={
+                "attempt": attempt,
+                "kind": str(getattr(failure, "kind", "") or ""),
+                "reason": str(getattr(failure, "reason", "") or ""),
+                "issues": issues,
+                "recovered": bool(recovered),
+                "will_retry": will_retry,
+            },
+            sensitive_possible=False,
+        )
 
 
 async def _build_soccer_pregame_context(
@@ -529,8 +612,8 @@ async def _build_soccer_pregame_context(
         source="memory_server_recent_history" if not history_error else "fallback_empty_history",
     )
 
-    try:
-        raw_context = await _run_soccer_pregame_context_ai(
+    async def attempt_factory(attempt: int, isolation_id: str) -> dict:
+        return await _run_soccer_pregame_context_ai(
             lanlan_name=lanlan_name,
             master_name=str(char_info.get("master_name") or "玩家"),
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
@@ -538,19 +621,49 @@ async def _build_soccer_pregame_context(
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
             prompt_locale=effective_prompt_locale,
+            structured_output_attempt=attempt,
+            structured_output_isolation_id=isolation_id,
         )
-    except ValueError as exc:
-        logger.warning("🎮 开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
+
+    def validator(raw_context: Any) -> tuple[dict, list[dict[str, Any]]]:
+        validation_issues: list[dict[str, Any]] = []
+        context, _ = _normalize_soccer_pregame_context(
+            raw_context,
+            neko_invite_text=neko_invite_text,
+            validation_issues=validation_issues,
+        )
+        return context, validation_issues
+
+    try:
+        structured_result = await run_isolated_structured_output(
+            attempt_factory,
+            validator,
+            content_retries=1,
+        )
+    except StructuredOutputAttemptsExhausted as exc:
+        _record_soccer_pregame_retry_failures(
+            game_type=game_type,
+            session_id=session_id,
+            lanlan_name=lanlan_name,
+            failures=exc.failures,
+            recovered=False,
+        )
+        logger.warning("🎮 开局上下文 JSON 非法，独立通道重试仍失败，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
         context = _default_soccer_pregame_context()
         return context, "fallback", "invalid_json"
     except Exception:
         context = _default_soccer_pregame_context()
         return context, "fallback", "ai_failed"
 
-    context, invalid_fields = _normalize_soccer_pregame_context(
-        raw_context,
-        neko_invite_text=neko_invite_text,
+    _record_soccer_pregame_retry_failures(
+        game_type=game_type,
+        session_id=session_id,
+        lanlan_name=lanlan_name,
+        failures=structured_result.failures,
+        recovered=structured_result.recovered,
     )
+    context = structured_result.value
+    invalid_fields = not structured_result.valid
     source = "ai"
     error = "invalid_fields" if invalid_fields else history_error
     _log_game_debug_material(
@@ -558,6 +671,9 @@ async def _build_soccer_pregame_context(
         {
             "source": source,
             "error": error,
+            "attempts": structured_result.attempts,
+            "recovered": structured_result.recovered,
+            "invalidFields": list(structured_result.issues),
             "context": context,
         },
         game_type=game_type,

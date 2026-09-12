@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Set
 from fastapi import WebSocket
 
 from plugin.core.state import state
-from plugin.server.management import stop_plugin
+from plugin.server.application.plugins.development_service import stop_ordinary_plugin as stop_plugin
 from plugin.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
 
 

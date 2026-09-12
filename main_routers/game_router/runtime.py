@@ -2420,6 +2420,7 @@ async def game_sdk_context_read(game_type: str, request: Request):
             scopes.append(scope)
 
     available: dict[str, Any] = {}
+    scope_metadata: dict[str, Any] = {}
     unavailable: list[str] = []
     for scope in scopes:
         if scope not in _SDK_GAME_CONTEXT_SCOPES:
@@ -2446,9 +2447,13 @@ async def game_sdk_context_read(game_type: str, request: Request):
             available[scope] = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
         elif scope == "pregame-context":
             available[scope] = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {}
+            scope_metadata[scope] = {
+                "source": _normalize_short_text(state.get("pre_game_context_source"), max_chars=80),
+                "error": _normalize_short_text(state.get("pre_game_context_error"), max_chars=500),
+            }
     try:
         bounded = _sdk_bounded_json_copy(
-            available,
+            {"scopes": available, "scope_metadata": scope_metadata},
             field="context_response",
             maximum_bytes=_SDK_GAME_PROTOCOL_MAX_BYTES,
         )
@@ -2457,7 +2462,8 @@ async def game_sdk_context_read(game_type: str, request: Request):
     return {
         "ok": True,
         "session_id": session_id,
-        "scopes": bounded,
+        "scopes": bounded["scopes"],
+        "scope_metadata": bounded["scope_metadata"],
         "unavailable_scopes": unavailable,
     }
 
@@ -4798,6 +4804,23 @@ async def _load_game_character_prompt_locale(lanlan_name: str) -> tuple[str, boo
             type(exc).__name__,
         )
         return "", False
+
+
+@router.get("/{game_type}/characters")
+async def game_character_names(game_type: str):
+    """Expose only bounded display names from the existing character registry."""
+    characters = await asyncio.to_thread(get_config_manager().load_characters)
+    nekos = characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    if not isinstance(nekos, dict):
+        return {"names": []}
+    if len(nekos) > 256:
+        raise HTTPException(status_code=413, detail="character_list_too_large")
+    names = []
+    for name in nekos:
+        if not isinstance(name, str) or not name.strip() or len(name) > 128:
+            raise HTTPException(status_code=422, detail="invalid_character_name")
+        names.append(name)
+    return {"names": names}
 
 
 @router.get("/{game_type}/character")

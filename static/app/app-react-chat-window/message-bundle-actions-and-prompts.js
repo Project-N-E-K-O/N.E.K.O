@@ -336,6 +336,22 @@
         I.dispatchHostEvent('action', detail);
     }
 
+    function requestAutoCollapseAfterAcceptedEnter(detail) {
+        if (
+            !detail
+            || detail.submitMethod !== 'enter'
+            || !window.nekoChatWindow
+            || typeof window.nekoChatWindow.requestAutoCollapseAfterEnter !== 'function'
+        ) return false;
+        try {
+            window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: detail.requestId });
+            return true;
+        } catch (error) {
+            console.warn('[ReactChatWindow] request auto-collapse after Enter failed:', error);
+            return false;
+        }
+    }
+
     I.handleComposerSubmit = function handleComposerSubmit(payload) {
         if (
             I.state.homeTutorialInteractionLocked
@@ -350,13 +366,18 @@
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         var detail = {
             text: payload && typeof payload.text === 'string' ? payload.text : '',
-            requestId: requestId
+            requestId: requestId,
+            submitMethod: payload && (payload.submitMethod === 'enter' || payload.submitMethod === 'button')
+                ? payload.submitMethod
+                : 'button'
         };
 
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
             if (!detail.text.trim()) return;
             if (typeof I.submitCatLocalChatText === 'function') {
-                I.submitCatLocalChatText(detail);
+                if (I.submitCatLocalChatText(detail)) {
+                    requestAutoCollapseAfterAcceptedEnter(detail);
+                }
             }
             return;
         }
@@ -411,6 +432,7 @@
             } catch (error) {
                 console.warn('[NewUserIcebreaker] free text broadcast failed:', error);
             }
+            requestAutoCollapseAfterAcceptedEnter(detail);
             return;
         }
 
@@ -421,7 +443,11 @@
                 console.error('[ReactChatWindow] onComposerSubmit failed:', error);
             }
         } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
-            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window', requestId: detail.requestId });
+            window.appButtons.sendTextPayload(detail.text, {
+                source: 'react-chat-window',
+                requestId: detail.requestId,
+                submitMethod: detail.submitMethod
+            });
         } else {
             var input = I.$('textInputBox');
             var sendButton = I.$('textSendButton');
@@ -989,7 +1015,7 @@
             if (next && !requestOptions.suppressRefetch) {
                 var overlay = I.getOverlay();
                 if (overlay && !overlay.hidden) {
-                    I.fetchGalgameOptionsForLatestTurn();
+                    I.fetchPendingIcebreakerGalgameHandoffOrLatest();
                 }
             }
         }
@@ -1036,6 +1062,8 @@
     }
 
     function getRecentGalgameMessageHistory() {
+        var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
+        var icebreakerHandoffMessageId = String(requestOptions.icebreakerHandoffMessageId || '');
         var msgs = Array.isArray(I.state.messages) ? I.state.messages : [];
         var collected = [];
         for (var i = msgs.length - 1; i >= 0 && collected.length < I.GALGAME_HISTORY_LIMIT; i--) {
@@ -1043,12 +1071,28 @@
             if (!m) continue;
             if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
+            var isApprovedCompletedHandoff = false;
             if (isNewUserIcebreakerChatMessage(m)) {
+                isApprovedCompletedHandoff = !!(
+                    icebreakerHandoffMessageId
+                    && String(m.id || '') === icebreakerHandoffMessageId
+                    && m.role === 'assistant'
+                );
                 // While the latest conversation turn belongs to the scripted
                 // icebreaker, do not fall back to an older ordinary assistant
-                // turn and generate unrelated GalGame choices for it.
-                if (!collected.length) return [];
-                continue;
+                // turn and generate unrelated GalGame choices for it. The sole
+                // exception is the final handoff line explicitly released by the
+                // completed icebreaker session; that one line seeds GalGame once.
+                if (!isApprovedCompletedHandoff) {
+                    if (!collected.length) return [];
+                    continue;
+                }
+            }
+            // A delayed handoff is valid only while its final bubble is still
+            // the latest conversation turn. Never let its one-shot approval
+            // reach past newer ordinary user/assistant activity.
+            if (icebreakerHandoffMessageId && !collected.length && !isApprovedCompletedHandoff) {
+                return [];
             }
             var text = '';
             if (Array.isArray(m.blocks)) {
@@ -1062,6 +1106,10 @@
             text = text.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
             if (!text) continue;
             collected.push({ role: m.role, text: text });
+            // The completed icebreaker handoff intentionally seeds GalGame
+            // from its final assistant line alone. Older scripted or ordinary
+            // history belongs to the conversation before this boundary.
+            if (isApprovedCompletedHandoff) break;
         }
         return collected.reverse();
     }
@@ -1092,6 +1140,7 @@
     }
 
     I.fetchGalgameOptionsForLatestTurn = function fetchGalgameOptionsForLatestTurn() {
+        var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!I.state.galgameModeEnabled) return;
         // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
@@ -1100,7 +1149,7 @@
         // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
         // 此时并不覆盖它，故须单独按 choicePrompt 拦。
         if (I.state.choicePrompt && I.state.choicePrompt.source === 'new_user_icebreaker') return;
-        var history = getRecentGalgameMessageHistory();
+        var history = getRecentGalgameMessageHistory(requestOptions);
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
 
@@ -1195,6 +1244,28 @@
             I.renderWindow();
         });
     }
+
+    I.rememberIcebreakerGalgameHandoff = function rememberIcebreakerGalgameHandoff(messageId) {
+        var normalizedMessageId = String(messageId || '');
+        if (!normalizedMessageId) return false;
+        I.state.pendingIcebreakerGalgameHandoffMessageId = normalizedMessageId;
+        return true;
+    };
+
+    I.fetchPendingIcebreakerGalgameHandoffOrLatest = function fetchPendingIcebreakerGalgameHandoffOrLatest() {
+        var messageId = String(I.state.pendingIcebreakerGalgameHandoffMessageId || '');
+        var handoffOptions = messageId ? {
+            icebreakerHandoffMessageId: messageId
+        } : null;
+        // A hidden window may remain closed while the conversation advances.
+        // In that case discard the stale scoped approval, then use the normal
+        // latest-turn path instead of suppressing valid newer GalGame options.
+        if (handoffOptions && !getRecentGalgameMessageHistory(handoffOptions).length) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+            handoffOptions = null;
+        }
+        I.fetchGalgameOptionsForLatestTurn(handoffOptions || undefined);
+    };
 
     I.handleGalgameModeToggle = function handleGalgameModeToggle() {
         if (I.isHomeTutorialInteractionLocked()) {
@@ -1633,11 +1704,19 @@
         var normalizedSource = String(source || '');
         if (!normalizedSource) return false;
         if (normalizedSource !== 'new_user_icebreaker') return false;
-        if (!I.state.choicePrompt || I.state.choicePrompt.source !== normalizedSource) return false;
+        var hasMatchingPrompt = !!(
+            I.state.choicePrompt
+            && I.state.choicePrompt.source === normalizedSource
+        );
+        var hasPendingHandoff = !!I.state.pendingIcebreakerGalgameHandoffMessageId;
+        if (!hasMatchingPrompt && !hasPendingHandoff) return false;
         if (window.console && typeof window.console.debug === 'function') {
             window.console.debug('[NewUserIcebreaker] clearChoicePromptBySource:', normalizedSource, reason || '');
         }
-        I.state.choicePrompt = null;
+        if (hasMatchingPrompt) {
+            I.state.choicePrompt = null;
+        }
+        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         if (choicePromptRevealTimer) {
             window.clearTimeout(choicePromptRevealTimer);
             choicePromptRevealTimer = null;
@@ -1812,6 +1891,12 @@
             }).filter(Boolean)
             : [];
         I.state.messages = I.sortMessages(normalized);
+        if (I.state.pendingIcebreakerGalgameHandoffMessageId
+                && !I.state.messages.some(function (message) {
+                    return String(message.id || '') === I.state.pendingIcebreakerGalgameHandoffMessageId;
+                })) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+        }
         I._sortKeySeq = nextSortKey;
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
@@ -2034,11 +2119,20 @@
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
         }
+        var clearedIcebreakerHandoff = false;
+        if ((normalized.role === 'assistant' || normalized.role === 'user')
+                && !isYuiGuideChatMessage(normalized)
+                && I.state.pendingIcebreakerGalgameHandoffMessageId
+                && String(normalized.id || '') !== I.state.pendingIcebreakerGalgameHandoffMessageId) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+            clearedIcebreakerHandoff = true;
+        }
         // A new user-role message means the conversation has advanced — even
         // when the message came in via voice / proactive / sendTextPayload
         // rather than the React composer. Invalidate any pending GalGame fetch
         // so its response can't render against the old turn context.
-        if (normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)) {
+        if (normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)
+                || clearedIcebreakerHandoff) {
             I.invalidatePendingGalgameRequest();
         }
         I.renderWindow();
@@ -2092,6 +2186,7 @@
 
     I.clearMessages = function clearMessages() {
         I.state.messages = [];
+        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         I._sortKeySeq = 0;
         I.invalidatePendingGalgameRequest();
         // 角色切换 / cloud reload 等触发 clearMessages 的路径也必须清掉 mini-game

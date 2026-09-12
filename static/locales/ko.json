@@ -5317,6 +5317,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "설정",
+            "title": "게임 설정",
+            "game": "게임",
+            "audio": "볼륨",
+            "debug": "디버그"
+        },
         "exitGame": {
             "button": "게임 종료",
             "ending": "라운드를 종료하는 중…",
@@ -5326,6 +5333,7 @@
         },
         "startScreen": {
             "readyToStart": "준비 완료 — 클릭하여 시작",
+            "startFailedRetry": "시작하지 못했습니다. 다시 시도해 주세요.",
             "ready": "준비 완료",
             "startButton": "시작"
         },
@@ -5347,7 +5355,21 @@
             "voiceButton": "디버그 음성",
             "voicePlaceholder": "디버그: 최종 전사 입력 후 Enter",
             "send": "전송",
-            "voiceStatusHidden": "디버그 STT: 숨김"
+            "voiceStatusHidden": "디버그 STT: 숨김",
+            "voiceVolumeHint": "클릭하여 음소거하거나 이전 음량으로 복원합니다. 재생 중인 음성의 음량은 조절할 수 없습니다."
+        },
+        "voiceChat": {
+            "label": "음성 대화",
+            "connecting": "기본 음성 입력에 연결 중…",
+            "unavailable": "기본 음성 입력을 일시적으로 사용할 수 없습니다",
+            "idle": "클릭하여 음성 대화 시작",
+            "starting": "음성 대화 시작 중…",
+            "stopping": "음성 대화 종료 중…",
+            "active": "음성 대화가 켜졌습니다",
+            "muted": "음성 대화 켜짐 · 마이크 음소거",
+            "failed": "음성 제어에 실패했습니다. 메인 화면에서 다시 시도하세요.",
+            "start": "음성 대화 시작",
+            "stop": "음성 대화 종료"
         },
         "surrenderReminder": {
             "label": "항복 알림"

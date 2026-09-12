@@ -866,6 +866,15 @@ test('app interpage recognizes explicit Yui guide dedup bypass messages', () => 
     assert.match(source, /shouldBypassYuiGuideMessageDedup\(event\.data\.action,\s*event\.data\)/);
 });
 
+test('app interpage acknowledges Electron icebreaker hydration after draining startup messages', () => {
+    const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
+
+    assert.match(
+        source,
+        /window\.__nekoIcebreakerBridgeReady = true;[\s\S]*?pendingIcebreakerBridgeMessages\.forEach\([\s\S]*?nekoElectronIcebreakerBridge[\s\S]*?send\(\{ action: 'icebreaker_page_ready' \}\)/
+    );
+});
+
 test('app interpage sends external chat pet reports through the command bus', () => {
     const source = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));
     const bridgeDataBlock = source.split('    function handleYuiGuideChatBridgeData(data) {')[1].split(

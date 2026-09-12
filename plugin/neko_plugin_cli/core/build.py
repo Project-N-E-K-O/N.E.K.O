@@ -112,6 +112,13 @@ class BuildPaths:
 class PluginBuilder:
     """Service object that owns plugin and bundle packaging pipelines."""
 
+    def __init__(self, *, source_only: bool = False, source_only_roots: tuple[Path, ...] = ()) -> None:
+        self.source_only = source_only
+        self.source_only_roots = frozenset(path.resolve() for path in source_only_roots)
+
+    def _source_import_options(self, source: PluginSource) -> dict[str, bool]:
+        return {"source_only": True} if self.source_only or source.plugin_dir.resolve() in self.source_only_roots else {}
+
     def build_plugin(
         self,
         plugin_dir: str | Path,
@@ -256,6 +263,7 @@ class PluginBuilder:
         staged_metadata = write_packaged_metadata(
             source_dir=source.plugin_dir,
             target_dir=plugin_payload_dir,
+            **self._source_import_options(source),
         )
         # 仓库里的插件目录已经带着 plugin.meta.json，copy_plugin_runtime_files 会
         # 把它复制过去并记进 staged_files；这里覆盖的是同一个路径，再 append 一次就
@@ -299,6 +307,7 @@ class PluginBuilder:
             staged_metadata = write_packaged_metadata(
                 source_dir=source.plugin_dir,
                 target_dir=plugin_payload_dir,
+                **self._source_import_options(source),
             )
             _settle_staged_metadata(staged_files, plugin_payload_dir, staged_metadata)
 

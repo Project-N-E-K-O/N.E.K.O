@@ -15,6 +15,7 @@
   const MIN_CONNECT_TIMEOUT_MS = 250;
   const MAX_CONNECT_TIMEOUT_MS = 30000;
   const MAX_REQUEST_TIMEOUT_MS = 120000;
+  const DEFAULT_VOICE_STATE_TIMEOUT_MS = 15000;
   const MAX_CAPABILITIES = 32;
   const MAX_LISTENERS_PER_EVENT = 32;
   const MAX_CONTRACTS_PER_KIND = 64;
@@ -23,11 +24,6 @@
   const MAX_CONTRACT_PAYLOAD_NODES = 2048;
   const MAX_CONTRACT_PAYLOAD_BYTES = 256 * 1024;
   const MAX_CONTRACT_PENDING_REQUESTS = 8;
-  const MAX_COMMAND_PENDING_REQUESTS = 8;
-  const MAX_COMMAND_PAYLOAD_BYTES = 2 * 1024 * 1024;
-  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
-  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
-  const MAX_COMMAND_CONTRACT_STRING_CHARS = 1800000;
   const MAX_CONTEXT_SCOPES = 16;
   const MAX_CONTEXT_PENDING_REQUESTS = 2;
   const MAX_DIALOGUE_PENDING_REQUESTS = 4;
@@ -46,6 +42,7 @@
   const MAX_BUBBLE_PRESENTATIONS = 8;
   const MAX_CONSENT_PRESENTATIONS = 4;
   const MAX_AVATAR_RENDERERS = 8;
+  const MAX_AVATAR_QUERIES = 4;
   const MAX_AUDIO_CONTROLLERS = 4;
   const MAX_AUDIO_RESOURCE_NODES = 2048;
   const MAX_AUDIO_RESOURCE_CHARS = 512 * 1024;
@@ -77,27 +74,6 @@
   const DEFAULT_HEARTBEAT_TIMEOUT_MS = 4500;
   const DEFAULT_OUTPUT_INTERVAL_MS = 700;
   const DEFAULT_OUTPUT_TIMEOUT_MS = 8000;
-  // These names mirror the same-origin host command boundary. A game command
-  // contract must describe only caller-owned data: identity and memory policy
-  // are stripped or replaced by the trusted host before the backend request.
-  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
-    'session_id', 'sessionId', 'game_type', 'gameType',
-    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
-    'window_lanlan_name', 'windowLanlanName',
-    'sdk_route_instance_id', 'sdkRouteInstanceId',
-    'sdk_route_instance_ids', 'routeInstanceId',
-  ]);
-  const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
-    'gamememoryenabled',
-    'gameplayerinteractionmemoryenabled',
-    'gamememoryplayerinteractionenabled',
-    'gameeventreplymemoryenabled',
-    'gamememoryeventreplyenabled',
-    'gamearchivememoryenabled',
-    'gamememoryarchiveenabled',
-    'gamepostgamecontextmemoryenabled',
-    'gamememorypostgamecontextenabled',
-  ]);
   const MANIFEST_TOP_LEVEL_FIELDS = Object.freeze(new Set([
     'id',
     'version',
@@ -116,7 +92,7 @@
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
     'memory', 'context-read', 'leaderboard-server', 'voice-input',
   ]);
-  const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results', 'commands']);
+  const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
     'null', 'boolean', 'number', 'integer', 'string', 'array', 'object',
   ]);
@@ -131,9 +107,7 @@
   const CAPABILITY_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
   const AVATAR_SLOT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
   const AUDIO_SLOT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-  const AVATAR_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
-  const MAX_AVATAR_CHARACTERS = 256;
-  const MAX_AVATAR_CHARACTER_NAME_CHARS = 128;
+  const AVATAR_TYPES = Object.freeze(['live2d', 'vrm']);
   const AVATAR_VIEWPORT_MODES = Object.freeze(['fixed', 'container', 'host-window']);
   const AVATAR_FIT_MODES = Object.freeze(['contain', 'cover', 'native']);
   const AVATAR_ALIGNMENTS = Object.freeze([
@@ -161,6 +135,7 @@
     'invalid_manifest',
     'invalid_handshake',
     'invalid_contract',
+    'invalid_response',
     'incompatible_version',
     'game_unregistered',
     'game_disabled',
@@ -287,38 +262,6 @@
     return prototype === Object.prototype || prototype === null;
   }
 
-  function isMemoryPolicyPayloadField(key) {
-    const normalized = String(key || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
-    if (normalized === 'memoryenabled' || normalized === 'enablegamememory') return true;
-    return MEMORY_POLICY_NORMALIZED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
-  }
-
-  function hostReservedCommandRequestField(schema) {
-    const rootFields = new Set([
-      ...Object.keys(schema.properties || {}),
-      ...(schema.required || []),
-    ]);
-    for (const field of rootFields) {
-      if (COMMAND_PAYLOAD_HOST_IDENTITY_KEYS.includes(field) || isMemoryPolicyPayloadField(field)) {
-        return field;
-      }
-    }
-    // _trustedRuntimePayload also strips memory-policy aliases from a top-level
-    // event object, so declarations at that exact nested boundary are equally
-    // misleading and must be rejected.
-    const eventSchema = schema.properties?.event;
-    if (eventSchema?.type === 'object') {
-      const eventFields = new Set([
-        ...Object.keys(eventSchema.properties || {}),
-        ...(eventSchema.required || []),
-      ]);
-      for (const field of eventFields) {
-        if (isMemoryPolicyPayloadField(field)) return `event.${field}`;
-      }
-    }
-    return '';
-  }
-
   function contractInteger(value, fieldName, minimum, maximum, fallback) {
     if (value === undefined) return fallback;
     // No coercion. The published schema declares every one of these
@@ -333,8 +276,7 @@
     return value;
   }
 
-  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0, options = {}) {
-    const maxStringChars = options.maxStringChars || 4096;
+  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0) {
     state.nodes += 1;
     if (state.nodes > MAX_CONTRACT_SCHEMA_NODES || depth > 12) {
       fail('invalid_manifest', `${fieldName} exceeds the contract schema complexity limit`, {
@@ -347,9 +289,9 @@
       // `enum` form carries no such bound, so converting first dropped it and a
       // longer string connected against a schema that rejects it.
       for (const item of input) {
-        if (typeof item === 'string' && [...item].length > maxStringChars) {
+        if (typeof item === 'string' && [...item].length > 4096) {
           fail('invalid_manifest', `${fieldName} enum shorthand value exceeds its length limit`, {
-            limit: maxStringChars,
+            limit: 4096,
           });
         }
       }
@@ -428,14 +370,8 @@
       }
     }
     if (type === 'string') {
-      schema.minLength = contractInteger(input.minLength, `${fieldName}.minLength`, 0, maxStringChars, 0);
-      schema.maxLength = contractInteger(
-        input.maxLength,
-        `${fieldName}.maxLength`,
-        0,
-        maxStringChars,
-        maxStringChars,
-      );
+      schema.minLength = contractInteger(input.minLength, `${fieldName}.minLength`, 0, 4096, 0);
+      schema.maxLength = contractInteger(input.maxLength, `${fieldName}.maxLength`, 0, 4096, 4096);
       if (schema.minLength > schema.maxLength) {
         fail('invalid_manifest', `${fieldName}.minLength must not exceed maxLength`);
       }
@@ -447,7 +383,7 @@
         fail('invalid_manifest', `${fieldName}.minItems must not exceed maxItems`);
       }
       if (!input.items) fail('invalid_manifest', `${fieldName}.items is required for arrays`);
-      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1, options);
+      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1);
     }
     if (type === 'object') {
       // Same rule as manifest.contracts: only ABSENT defaults. The schema
@@ -477,7 +413,6 @@
           `${fieldName}.properties.${name}`,
           state,
           depth + 1,
-          options,
         );
       }
       const requiredInput = input.required === undefined ? [] : input.required;
@@ -543,69 +478,15 @@
         });
       }
       const normalized = {};
-      for (const [name, declaration] of entries) {
+      for (const [name, schema] of entries) {
         if (!RUNTIME_EVENT_PATTERN.test(name)) {
           fail('invalid_manifest', `Invalid ${kind} contract name`, { name });
         }
-        if (kind === 'commands') {
-          if (!plainObject(declaration)) {
-            fail('invalid_manifest', `manifest.contracts.commands.${name} must be an object`);
-          }
-          for (const key of Object.keys(declaration)) {
-            if (!['request', 'response'].includes(key)) {
-              fail('invalid_manifest', `manifest.contracts.commands.${name} contains an unsupported field`, {
-                key,
-              });
-            }
-          }
-          if (declaration.request === undefined || declaration.response === undefined) {
-            fail('invalid_manifest', `manifest.contracts.commands.${name} requires request and response schemas`);
-          }
-          if (!plainObject(declaration.request) || declaration.request.type !== 'object') {
-            fail('invalid_manifest', `manifest.contracts.commands.${name}.request must declare an object schema`);
-          }
-          for (const key of Object.keys(declaration.request)) {
-            if (!['type', 'properties', 'required', 'additionalProperties'].includes(key)) {
-              fail(
-                'invalid_manifest',
-                `manifest.contracts.commands.${name}.request contains an unsupported object-schema keyword`,
-                { key },
-              );
-            }
-          }
-          const commandSchemaOptions = { maxStringChars: MAX_COMMAND_CONTRACT_STRING_CHARS };
-          const requestSchema = normalizeContractSchema(
-            declaration.request,
-            `manifest.contracts.commands.${name}.request`,
-            state,
-            0,
-            commandSchemaOptions,
-          );
-          const hostReservedField = hostReservedCommandRequestField(requestSchema);
-          if (hostReservedField) {
-            fail(
-              'invalid_manifest',
-              `manifest.contracts.commands.${name}.request declares a host-reserved field`,
-              { field: hostReservedField },
-            );
-          }
-          normalized[name] = Object.freeze({
-            request: requestSchema,
-            response: normalizeContractSchema(
-              declaration.response,
-              `manifest.contracts.commands.${name}.response`,
-              state,
-              0,
-              commandSchemaOptions,
-            ),
-          });
-        } else {
-          normalized[name] = normalizeContractSchema(
-            declaration,
-            `manifest.contracts.${kind}.${name}`,
-            state,
-          );
-        }
+        normalized[name] = normalizeContractSchema(
+          schema,
+          `manifest.contracts.${kind}.${name}`,
+          state,
+        );
       }
       contracts[kind] = Object.freeze(normalized);
     }
@@ -945,12 +826,7 @@
     return Object.freeze(result);
   }
 
-  function normalizeContractPayload(
-    value,
-    schema,
-    fieldName,
-    maximumBytes = MAX_CONTRACT_PAYLOAD_BYTES,
-  ) {
+  function normalizeContractPayload(value, schema, fieldName) {
     let serialized;
     try { serialized = JSON.stringify(value); }
     catch (_) { fail('invalid_contract', `${fieldName} must be JSON-compatible`); }
@@ -959,20 +835,20 @@
     const byteLength = typeof TextEncoderImpl === 'function'
       ? new TextEncoderImpl().encode(serialized).byteLength
       : unescape(encodeURIComponent(serialized)).length;
-    if (byteLength > maximumBytes) {
+    if (byteLength > MAX_CONTRACT_PAYLOAD_BYTES) {
       fail('invalid_contract', `${fieldName} exceeds the contract payload size limit`, {
         bytes: byteLength,
-        limit: maximumBytes,
+        limit: MAX_CONTRACT_PAYLOAD_BYTES,
       });
     }
     // Same reason as normalizeBoundedJson: the pre-check measured a projection
     // of the input, so re-measure what validation actually produced.
     const validated = validateContractValue(value, schema, fieldName, { nodes: 0 });
     const validatedBytes = jsonByteLength(validated);
-    if (validatedBytes > maximumBytes) {
+    if (validatedBytes > MAX_CONTRACT_PAYLOAD_BYTES) {
       fail('invalid_contract', `${fieldName} exceeds the contract payload size limit`, {
         bytes: validatedBytes,
-        limit: maximumBytes,
+        limit: MAX_CONTRACT_PAYLOAD_BYTES,
       });
     }
     return validated;
@@ -1524,7 +1400,7 @@
     const type = String(value.type || '').trim().toLowerCase();
     const path = String(value.path || '').trim();
     if (!AVATAR_TYPES.includes(type)) {
-      fail('invalid_request', 'avatar model.type must be live2d, vrm, mmd, or pngtuber', { type });
+      fail('invalid_request', 'avatar model.type must be live2d or vrm', { type });
     }
     if (!path || path.length > 2048) {
       fail('invalid_request', 'avatar model.path is required and must not exceed 2048 characters');
@@ -1540,9 +1416,6 @@
     if (!AVATAR_SLOT_PATTERN.test(slot)) {
       fail('invalid_request', 'avatar slot must be a lowercase identifier');
     }
-    const characterName = value.characterName === undefined
-      ? ''
-      : normalizeAvatarCharacterName(value.characterName);
 
     const viewportInput = value.viewport || {};
     const viewportMode = String(viewportInput.mode || '').trim();
@@ -1598,7 +1471,6 @@
 
     return Object.freeze({
       slot,
-      ...(characterName ? { characterName } : {}),
       model: normalizeAvatarModel(value.model),
       viewport: Object.freeze(viewport),
       fit,
@@ -1614,58 +1486,6 @@
       x: finiteNumber(value.x, 'avatar focus.x', { minimum: -100000, maximum: 100000 }),
       y: finiteNumber(value.y, 'avatar focus.y', { minimum: -100000, maximum: 100000 }),
     });
-  }
-
-  function normalizeAvatarView(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      fail('invalid_request', 'avatar view must be an object');
-    }
-    return Object.freeze({
-      scale: finiteNumber(value.scale, 'avatar view.scale', { minimum: 0.5, maximum: 5000 }),
-      x: finiteNumber(value.x, 'avatar view.x', { minimum: -5000, maximum: 5000 }),
-      y: finiteNumber(value.y, 'avatar view.y', { minimum: -5000, maximum: 5000 }),
-    });
-  }
-
-  function normalizeAvatarCharacterName(value, options = {}) {
-    if (typeof value !== 'string') {
-      fail('invalid_request', 'avatar character name is invalid');
-    }
-    const name = value.trim();
-    if ((!name && options.required !== false) || name.length > MAX_AVATAR_CHARACTER_NAME_CHARS) {
-      fail('invalid_request', 'avatar character name is invalid');
-    }
-    return name;
-  }
-
-  function normalizeAvatarCharacterDescriptor(value) {
-    if (value == null) return null;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      fail('transport_unavailable', 'The host returned an invalid avatar character descriptor');
-    }
-    const name = normalizeAvatarCharacterName(value.name);
-    const model = value.model == null ? null : normalizeAvatarModel(value.model);
-    return Object.freeze({
-      name,
-      model,
-      rendererAvailable: Boolean(model && value.rendererAvailable !== false),
-    });
-  }
-
-  function normalizeAvatarCharacterList(value) {
-    if (!Array.isArray(value) || value.length > MAX_AVATAR_CHARACTERS) {
-      fail('transport_unavailable', 'The host returned an invalid avatar character list');
-    }
-    const seen = new Set();
-    const names = [];
-    for (const rawName of value) {
-      const name = normalizeAvatarCharacterName(rawName);
-      if (!seen.has(name)) {
-        seen.add(name);
-        names.push(name);
-      }
-    }
-    return Object.freeze(names);
   }
 
   function cloneAudioContractValue(value, fieldName, state, depth = 0) {
@@ -2106,30 +1926,20 @@
     });
   }
 
-  async function normalizeTransportResponse(value, options = {}) {
-    const allowScalarData = options.allowScalarData === true;
+  async function normalizeTransportResponse(value) {
     if (value && typeof value.json === 'function') {
       let data = {};
       try { data = await value.json(); } catch (_) { /* invalid/empty response body */ }
-      const scalarData = data === null
-        || typeof data === 'string'
-        || typeof data === 'number'
-        || typeof data === 'boolean';
       return Object.freeze({
         ok: value.ok === true,
         status: Number(value.status || 0),
-        data: (data && typeof data === 'object') || (allowScalarData && scalarData) ? data : {},
+        data: data && typeof data === 'object' ? data : {},
       });
     }
-    const objectData = !!value && typeof value === 'object';
-    const scalarData = value === null
-      || typeof value === 'string'
-      || typeof value === 'number'
-      || typeof value === 'boolean';
-    const data = objectData || (allowScalarData && scalarData) ? value : {};
+    const data = value && typeof value === 'object' ? value : {};
     return Object.freeze({
-      ok: objectData ? value.ok !== false : true,
-      status: objectData ? Number(value.status || 0) : 0,
+      ok: data.ok !== false,
+      status: Number(data.status || 0),
       data,
     });
   }
@@ -2191,12 +2001,21 @@
     const grantedSet = new Set(usableGranted);
     const listeners = new Map();
     const avatarRenderers = new Set();
+    const avatarQueryRequests = new Set();
+    const avatarQueriesInFlight = new Set();
+    let avatarQueryGeneration = {};
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
     let disposed = false;
     let disposing = false;
     let voiceBridgeStarted = false;
+    // One verified snapshot and one bounded query per client, retired with the route.
+    let voiceStateSnapshot = null;
+    let voiceStateRevision = 0;
+    let voiceStateSync = null;
+    let voiceStateGeneration = {};
+    const voiceStatePendingRequests = new Set();
     let speechBridgeStarted = false;
     let speechPlaybackRawState = null;
     let speechPlaybackTransportSource = '';
@@ -2206,7 +2025,10 @@
     const speechPendingRequests = new Set();
     const speechPreloadPendingRequests = new Set();
     const protocolPendingRequests = new Set();
-    const commandPendingRequests = new Set();
+    // Fixed SDK request groups only; each raw group shares its public limit.
+    // Ignoring abort cannot free capacity for unlimited abandoned body reads.
+    const managedHostInFlight = new Map();
+    const protocolInFlight = new Set();
     const contextPendingRequests = new Set();
     const dialoguePendingRequests = new Set();
     const memoryPendingRequests = new Set();
@@ -2219,7 +2041,6 @@
     const bubblePresentations = new Set();
     const consentPresentations = new Set();
     let gameProtocolSequence = 0;
-    let gameCommandSequence = 0;
     let controlBridgeStarted = false;
     let lastControlSequence = 0;
     let memoryConsentEnabled = false;
@@ -2247,10 +2068,74 @@
     }
 
     function voicePayloadMatchesActiveRoute(payload) {
+      if (disposed || disposing) return false;
       if (!runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)) return false;
       const expected = String(runtimeRouteInstanceId || '').trim();
       const actual = String(payload?.sdk_route_instance_id || '').trim();
       return !expected || actual === expected;
+    }
+
+    function publishVoiceState(state) {
+      if (!voicePayloadMatchesActiveRoute(state)) return;
+      voiceStateSnapshot = Object.freeze({ ...(state || {}) });
+      voiceStateRevision += 1;
+      emit('voice-state', voiceStateSnapshot);
+    }
+
+    function clearVoiceState() {
+      voiceStateSnapshot = null;
+      voiceStateGeneration = {};
+      voiceStateSync = null;
+      abortManagedRequests(voiceStatePendingRequests, disposing ? 'disposed' : 'cancelled');
+    }
+
+    function synchronizeVoiceState() {
+      if (disposed || disposing || !voiceBridgeStarted || !grantedSet.has('voice-input')
+          || !runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)
+          || voiceStateSync || voiceStatePendingRequests.size
+          || managedHostInFlight.get(voiceStatePendingRequests)?.size) return;
+      const sync = {
+        routeInstanceId: runtimeRouteInstanceId,
+        revision: voiceStateRevision,
+        generation: voiceStateGeneration,
+      };
+      voiceStateSync = sync;
+      const isCurrent = () => voiceStateSync === sync && !disposed && !disposing
+        && runtimeRouteEstablished && runtimeRouteInstanceId === sync.routeInstanceId;
+      // Do not await this from runtime.start(): an absent voice host must not hold
+      // up the game. Managed cancellation also bounds transports that ignore abort.
+      void performManagedHostRequest({
+        operation: 'voice.query',
+        pendingSet: voiceStatePendingRequests,
+        limit: 1,
+        timeoutMs: DEFAULT_VOICE_STATE_TIMEOUT_MS,
+        invoke: (requestOptions) => transport.requestVoiceControl('query', {
+          ...requestOptions,
+          sdkRouteInstanceId: sync.routeInstanceId,
+        }),
+        onRawSettled: () => {
+          // A cancelled waiter can finish long before an uncooperative transport.
+          // Recover a replaced route only when its predecessor releases capacity;
+          // an ordinary timeout or failure never retries itself.
+          if (sync.generation !== voiceStateGeneration) synchronizeVoiceState();
+        },
+      }).then((state) => {
+        // Same-origin transports deliver the reply through the bridge as well.
+        // Do not duplicate it or overwrite a newer unsolicited state with a reply.
+        if (isCurrent() && voiceStateRevision === sync.revision) publishVoiceState(state);
+      }).catch((error) => {
+        if (isCurrent() && voiceStateRevision === sync.revision) {
+          emit('voice-error', Object.freeze({ error, source: 'state-sync' }));
+        }
+      }).finally(() => {
+        if (voiceStateSync === sync) {
+          voiceStateSync = null;
+        } else if (!voiceStateSync) {
+          // Raw settlement may precede public cancellation cleanup, including a
+          // synchronous end failure. Both slots must be free before recovery.
+          synchronizeVoiceState();
+        }
+      });
     }
     const heartbeatLifecycle = {
       timer: null,
@@ -2336,7 +2221,6 @@
         characterName: String(
           state.characterName || state.lanlanName || state.lanlan_name || '',
         ),
-        routeInstanceId: String(runtimeRouteInstanceId || ''),
       });
     }
 
@@ -2499,11 +2383,22 @@
       if (runtimePhase === normalized) return;
       const previous = runtimePhase;
       runtimePhase = normalized;
+      if (['ending', 'ended', 'inactive', 'disposed'].includes(normalized)) {
+        cancelAvatarQueries(normalized === 'disposed' ? 'disposed' : 'cancelled');
+        const reason = normalized === 'disposed' ? 'disposed' : 'cancelled';
+        for (const pending of [contextPendingRequests, memoryPendingRequests, dialoguePendingRequests, protocolPendingRequests]) {
+          abortManagedRequests(pending, reason);
+        }
+      }
+      if (!runtimeRouteEstablished || !['running', 'degraded'].includes(normalized)) {
+        clearVoiceState();
+      }
       void publishRuntimeEvent('runtime-state', Object.freeze({
         previous,
         current: normalized,
         reason: String(reason || ''),
       }));
+      synchronizeVoiceState();
     }
 
     function boundedRuntimeNumber(value, fallback, maximum = MAX_RUNTIME_INTERVAL_MS) {
@@ -2525,24 +2420,49 @@
     }
 
     function requireBoundedRuntimeLifecyclePayload(payload, operation) {
-      // Every other SDK egress path is bounded; the runtime lifecycle payload
-      // was not, in the one dimension that costs anything. Same 256 KiB the
-      // trusted host now enforces, so the two cannot disagree about an honest
-      // payload.
-      const bytes = jsonByteLength(payload ?? {});
+      if (!plainObject(payload)) {
+        fail('invalid_request', 'The runtime lifecycle payload must be an object', { operation });
+      }
+      // Dispatch the measured snapshot: toJSON/getters must not make validation
+      // observe different data from the later lifecycle transport call.
+      // Materialize the same own fields as the route envelope before JSON
+      // serialization, so a non-enumerable toJSON cannot hide an outgoing getter.
+      let serialized;
+      try { serialized = JSON.stringify({ ...payload }); }
+      catch (_) { fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation }); }
+      if (serialized === undefined) {
+        fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation });
+      }
+      const TextEncoderImpl = globalThis.TextEncoder;
+      const bytes = typeof TextEncoderImpl === 'function'
+        ? new TextEncoderImpl().encode(serialized).byteLength
+        : unescape(encodeURIComponent(serialized)).length;
       if (bytes > MAX_RUNTIME_EVENT_BYTES) {
         fail('invalid_request', 'The runtime lifecycle payload exceeds its size limit', {
-          operation,
-          bytes,
-          limit: MAX_RUNTIME_EVENT_BYTES,
+          operation, bytes, limit: MAX_RUNTIME_EVENT_BYTES,
         });
       }
+      const normalized = JSON.parse(serialized);
+      if (!plainObject(normalized)) {
+        fail('invalid_request', 'The runtime lifecycle payload must serialize to an object', { operation });
+      }
+      // The temporary work list is bounded by the parsed 256 KiB snapshot and
+      // drained here; nested caller objects are neither retained nor forwarded.
+      const remaining = [normalized];
+      while (remaining.length) {
+        const value = remaining.pop();
+        Object.freeze(value);
+        for (const child of Object.values(value)) {
+          if (child && typeof child === 'object') remaining.push(child);
+        }
+      }
+      return normalized;
     }
 
     function runtimePayload() {
       if (!runtimeConfig || typeof runtimeConfig.payload !== 'function') return {};
       const payload = runtimeConfig.payload();
-      return payload == null ? {} : payload;
+      return requireBoundedRuntimeLifecyclePayload(payload, 'runtime.payload');
     }
 
     function runtimeRouteInstanceEntropy() {
@@ -2599,11 +2519,12 @@
     }
 
     function runtimeRoutePayload(payload, routeInstanceId = runtimeRouteInstanceId) {
+      const normalized = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.route');
       const candidateIds = runtimeRouteInstanceIds.length
         ? Array.from(runtimeRouteInstanceIds)
         : (routeInstanceId ? [routeInstanceId] : []);
       return Object.freeze({
-        ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
+        ...normalized,
         ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         ...(candidateIds.length ? { sdk_route_instance_ids: Object.freeze(candidateIds) } : {}),
       });
@@ -2802,7 +2723,6 @@
           && String(data.reason || '') === 'route_instance_id_mismatch';
         if (data.active === false && (routeGenerationRetired || (response.ok && data.ok !== false))) {
           heartbeatLifecycle.failures = 0;
-          abortManagedRequests(commandPendingRequests, 'cancelled');
           runtimeRouteEstablished = false;
           // Retire the generation with the route. Capabilities that are allowed
           // before a route exists (speech.speak/mirror/preload, context.read)
@@ -2919,6 +2839,7 @@
       pageExitHandler = (event = {}) => {
         if (disposed || pageExitDispatched) return;
         pageExitDispatched = true;
+        cancelAvatarQueries('cancelled');
         const type = String(event.type || 'page-exit');
         const exitContext = Object.freeze({
           type,
@@ -2933,7 +2854,11 @@
           payload = runtimeConfig.pageExit.payload
             ? runtimeConfig.pageExit.payload(exitContext)
             : runtimePayload();
+          payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.page-exit');
         } catch (error) {
+          // Still release the owned generation on unload, without forwarding
+          // malformed application data or claiming that it was accepted.
+          payload = {};
           void publishRuntimeEvent('runtime-error', {
             operation: 'page-exit',
             reason: 'payload_failed',
@@ -3080,9 +3005,13 @@
       maximumTimeoutMs = MAX_REQUEST_TIMEOUT_MS,
       requestOptions = {},
       invoke,
+      consume = null,
+      onRawSettled = null,
     }) {
       ensureActive(operation);
       if (pendingSet.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
+      const inFlight = managedHostInFlight.get(pendingSet) || new Set();
+      if (inFlight.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
       const externalSignal = requestOptions.signal || null;
       if (externalSignal?.aborted) fail('cancelled', 'The host request was cancelled', { operation });
       const normalizedTimeoutMs = normalizedRequestTimeout(
@@ -3116,6 +3045,8 @@
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       pendingSet.add(entry);
+      inFlight.add(entry);
+      managedHostInFlight.set(pendingSet, inFlight);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3139,6 +3070,10 @@
               signal: controller.signal,
               timeoutMs: normalizedTimeoutMs,
             });
+          }).then(value => consume ? consume(value) : value).finally(() => {
+            inFlight.delete(entry);
+            if (!inFlight.size) managedHostInFlight.delete(pendingSet);
+            onRawSettled?.();
           }),
           timeoutPromise,
           cancellationPromise,
@@ -3205,7 +3140,8 @@
       if (typeof transport.publishGameProtocol !== 'function') {
         fail('transport_unavailable', 'The host game protocol transport is unavailable', { operation });
       }
-      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS) {
+      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS
+        || protocolInFlight.size >= MAX_CONTRACT_PENDING_REQUESTS) {
         fail('busy', 'Game protocol request limit reached', {
           operation,
           limit: MAX_CONTRACT_PENDING_REQUESTS,
@@ -3257,6 +3193,7 @@
         payload,
       });
       protocolPendingRequests.add(entry);
+      protocolInFlight.add(entry);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3271,7 +3208,7 @@
           kind,
           envelope,
           { signal: controller.signal, timeoutMs },
-        ));
+        )).then(normalizeTransportResponse).finally(() => protocolInFlight.delete(entry));
         const response = await Promise.race([transportPromise, timeoutPromise, cancellationPromise]);
         if (controller.signal.aborted) {
           fail(entry.reason === 'disposed' ? 'disposed' : (entry.reason || 'cancelled'),
@@ -3280,7 +3217,7 @@
               : 'The game protocol request was cancelled',
             { operation });
         }
-        return normalizeTransportResponse(response);
+        return response;
       } catch (error) {
         if (entry.reason === 'timeout') {
           fail('timeout', 'The game protocol request timed out', { operation });
@@ -3299,99 +3236,6 @@
         if (entry.timeoutId != null) clearTimer(entry.timeoutId);
         externalSignal?.removeEventListener?.('abort', entry.externalAbortHandler);
       }
-    }
-
-    function declaredCommandContract(nameInput, operation = 'commands.execute') {
-      ensureActive(operation);
-      const name = String(nameInput || '').trim();
-      const commandContracts = manifest.contracts.commands;
-      const contract = Object.prototype.hasOwnProperty.call(commandContracts, name)
-        ? commandContracts[name]
-        : null;
-      if (!contract) {
-        fail('invalid_contract', 'The command contract is not declared by this game', {
-          kind: 'commands',
-          type: name,
-          operation,
-        });
-      }
-      return { name, contract };
-    }
-
-    async function executeGameCommand(nameInput, payloadInput, requestOptions = {}) {
-      const operation = 'commands.execute';
-      requireCapability('runtime', operation);
-      requireActiveRuntimeRoute(operation);
-      if (typeof transport.executeGameCommand !== 'function') {
-        fail('transport_unavailable', 'The host game command transport is unavailable', { operation });
-      }
-      const { name, contract } = declaredCommandContract(nameInput, operation);
-      const session = runtimeSession();
-      const routeInstanceId = String(runtimeRouteInstanceId || '').trim();
-      if (!session.id || !routeInstanceId) {
-        fail('session_invalid', 'The game command requires an active route generation', { operation });
-      }
-      const payload = normalizeContractPayload(
-        payloadInput,
-        contract.request,
-        `${operation} request`,
-        MAX_COMMAND_PAYLOAD_BYTES,
-      );
-      gameCommandSequence = (gameCommandSequence % Number.MAX_SAFE_INTEGER) + 1;
-      const envelope = runtimeCapabilityPayload({
-        protocolVersion: SDK_PROTOCOL_VERSION,
-        sequence: gameCommandSequence,
-        type: name,
-        timestamp: Date.now(),
-        sessionId: session.id,
-        routeInstanceId,
-        payload,
-      });
-      const rawResponse = await performManagedHostRequest({
-        operation,
-        pendingSet: commandPendingRequests,
-        limit: MAX_COMMAND_PENDING_REQUESTS,
-        timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
-        maximumTimeoutMs: MAX_COMMAND_TIMEOUT_MS,
-        requestOptions,
-        invoke: (options) => transport.executeGameCommand(name, envelope, options),
-      });
-      const requireCurrentCommandRoute = () => {
-        const currentSession = runtimeSession();
-        if (
-          !runtimeRouteEstablished
-          || !['running', 'degraded'].includes(runtimePhase)
-          || currentSession.id !== session.id
-          || String(runtimeRouteInstanceId || '').trim() !== routeInstanceId
-        ) {
-          fail('session_invalid', 'The game command response belongs to an inactive route generation', {
-            operation,
-          });
-        }
-      };
-      requireCurrentCommandRoute();
-      const response = await normalizeTransportResponse(rawResponse, { allowScalarData: true });
-      requireCurrentCommandRoute();
-      // A failed HTTP or application response does not promise the command's
-      // success schema. Preserve its bounded diagnostic body and status rather
-      // than replacing the real failure with an unrelated invalid_contract.
-      const data = (response.ok && response.data?.ok !== false)
-        ? normalizeContractPayload(
-          response.data,
-          contract.response,
-          `${operation} response`,
-          MAX_COMMAND_PAYLOAD_BYTES,
-        )
-        : normalizeBoundedJson(
-          response.data,
-          `${operation} error response`,
-          MAX_COMMAND_PAYLOAD_BYTES,
-        );
-      return Object.freeze({
-        ok: response.ok,
-        status: response.status,
-        data,
-      });
     }
 
     function publishControlEnvelope(rawEnvelope) {
@@ -3470,14 +3314,9 @@
       (kind) => Object.keys(manifest.contracts[kind]).length > 0,
     );
     const controlsDeclared = Object.keys(manifest.contracts.controls).length > 0;
-    const commandsDeclared = Object.keys(manifest.contracts.commands).length > 0;
     if (outboundContractsDeclared && typeof transport.publishGameProtocol !== 'function') {
       try { transport.dispose?.(); } catch (_) { /* connection cleanup */ }
       fail('transport_unavailable', 'The host does not support declared game protocol messages');
-    }
-    if (commandsDeclared && typeof transport.executeGameCommand !== 'function') {
-      try { transport.dispose?.(); } catch (_) { /* connection cleanup */ }
-      fail('transport_unavailable', 'The host does not support declared game commands');
     }
     if (controlsDeclared) {
       if (
@@ -3511,11 +3350,7 @@
     if (grantedSet.has('voice-input')) {
       try {
         voiceBridgeStarted = transport.startVoiceControlBridge({
-          onState: (state) => {
-            if (voicePayloadMatchesActiveRoute(state)) {
-              emit('voice-state', Object.freeze({ ...(state || {}) }));
-            }
-          },
+          onState: publishVoiceState,
           onTranscript: (payload) => {
             if (!voicePayloadMatchesActiveRoute(payload)) return;
             const transcript = normalizeTranscript(payload);
@@ -3671,8 +3506,8 @@
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
-        abortManagedRequests(commandPendingRequests, 'cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
+        cancelAvatarQueries('cancelled');
         abortManagedRequests(dialoguePendingRequests, 'cancelled');
         abortManagedRequests(memoryPendingRequests, 'cancelled');
         abortManagedRequests(serverLeaderboardPendingRequests, 'cancelled');
@@ -3705,7 +3540,6 @@
           characterName: String(
             normalized?.characterName || normalized?.lanlanName || normalized?.lanlan_name || '',
           ),
-          routeInstanceId: String(runtimeRouteInstanceId || ''),
         });
       },
       async start(payload = {}, requestOptions = {}) {
@@ -3731,7 +3565,7 @@
         // the browser, so letting it take that path would burn one of the four
         // candidate slots per attempt and wedge start() on `busy` after four
         // tries with the same mistake.
-        requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
         memoryConsentLocked = true;
         runtimeRouteEstablished = false;
         const routeInstanceId = nextRuntimeRouteInstanceId();
@@ -3800,6 +3634,7 @@
       },
       async end(payload = {}, requestOptions = {}) {
         requireCapability('runtime', 'runtime.end');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.end');
         let endRequestOptions = requestOptions;
         if (runtimePhase === 'starting' && runtimeStartSettlement) {
           if (runtimeEndWaitingForStart) {
@@ -3829,7 +3664,6 @@
         if (runtimePhase === 'ending') {
           fail('busy', 'The runtime lifecycle is already ending');
         }
-        abortManagedRequests(commandPendingRequests, 'cancelled');
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         const operation = beginRuntimeOperation('end', endRequestOptions);
@@ -3934,21 +3768,14 @@
       },
     });
 
-    const commands = Object.freeze({
-      declared: Object.freeze(Object.keys(manifest.contracts.commands)),
-      get pendingCount() { return commandPendingRequests.size; },
-      execute(name, payload, requestOptions = {}) {
-        return executeGameCommand(name, payload, requestOptions);
-      },
-    });
-
     const context = Object.freeze({
       get pendingCount() { return contextPendingRequests.size; },
       async read(scopesInput, requestOptions = {}) {
         requireCapability('context-read', 'context.read');
         const scopes = normalizeContextScopes(scopesInput);
         const session = runtimeSession();
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'context.read',
           pendingSet: contextPendingRequests,
           limit: MAX_CONTEXT_PENDING_REQUESTS,
@@ -3959,7 +3786,6 @@
             session_id: session.id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'context response'),
@@ -3986,7 +3812,8 @@
         if (typeof enabledInput !== 'boolean') {
           fail('invalid_request', 'Memory consent must be a boolean');
         }
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.configureConsent',
           pendingSet: memoryPendingRequests,
           limit: 1,
@@ -3997,7 +3824,6 @@
             session_id: runtimeSession().id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         if (response.ok && response.data?.ok !== false) {
           memoryConsentEnabled = enabledInput;
           memoryConsentConfigured = true;
@@ -4023,7 +3849,8 @@
           });
         }
         const submission = normalizeMemorySubmission(value);
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.submit',
           pendingSet: memoryPendingRequests,
           limit: MAX_MEMORY_PENDING_REQUESTS,
@@ -4034,13 +3861,14 @@
             submission,
           }), options),
         });
-        return normalizeTransportResponse(rawResponse);
+        return response;
       },
     });
 
     async function requestStorage(operation, payload, requestOptions = {}) {
       requireCapability('storage', `storage.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `storage.${operation}`,
         pendingSet: storagePendingRequests,
         limit: MAX_STORAGE_PENDING_REQUESTS,
@@ -4051,7 +3879,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'storage response', MAX_STORAGE_VALUE_BYTES),
@@ -4093,7 +3920,8 @@
 
     async function requestLocalLeaderboardStorage(operation, boardId, payload, requestOptions = {}) {
       requireCapability('leaderboard-local', `leaderboard.local.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.local.${operation}`,
         pendingSet: localLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -4105,7 +3933,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'local leaderboard response', MAX_LEADERBOARD_STATE_BYTES),
@@ -4325,7 +4152,8 @@
       const method = operation === 'submit'
         ? 'submitServerLeaderboard'
         : (operation === 'list' ? 'listServerLeaderboard' : 'getServerLeaderboardBest');
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.server.${operation}`,
         pendingSet: serverLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -4338,7 +4166,6 @@
           ...payload,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedJson(response.data, 'server leaderboard response'),
@@ -4716,7 +4543,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.quickLines',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4724,7 +4552,6 @@
           requestOptions,
           invoke: (options) => transport.getQuickLines(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'quick lines response'),
@@ -4749,7 +4576,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.request',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4757,7 +4585,6 @@
           requestOptions,
           invoke: (options) => transport.requestDialogue(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         let responseData = normalizeBoundedJson(response.data, 'dialogue response');
         if (plainObject(responseData) && responseData.control !== undefined) {
           if (!plainObject(responseData.control)) {
@@ -4858,7 +4685,12 @@
       toggle(requestOptions) { return requestVoice('toggle', requestOptions); },
       onState(handler) {
         requireCapability('voice-input', 'voice.onState');
-        return subscribe('voice-state', handler);
+        const unsubscribe = subscribe('voice-state', handler);
+        if (voiceStateSnapshot && voicePayloadMatchesActiveRoute(voiceStateSnapshot)) {
+          try { handler(voiceStateSnapshot); }
+          catch (error) { global.console?.error?.('[NekoMiniGame] voice-state listener failed', error); }
+        } else synchronizeVoiceState();
+        return unsubscribe;
       },
       onTranscript(handler) {
         requireCapability('voice-input', 'voice.onTranscript');
@@ -4890,6 +4722,7 @@
         ...(request.renderLanguage ? { render_language: request.renderLanguage } : {}),
       });
       const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.preload',
         pendingSet: speechPreloadPendingRequests,
         limit: MAX_SPEECH_PRELOAD_PENDING_REQUESTS,
@@ -4898,7 +4731,7 @@
         requestOptions: options,
         invoke: (requestOptions) => transport.preloadSpeechOutput(payload, requestOptions),
       });
-      return normalizeTransportResponse(response);
+      return response;
     }
 
     async function requestSpeechOutput(requestInput, requestOptions = {}) {
@@ -4940,7 +4773,8 @@
       });
       let response;
       try {
-        response = await normalizeTransportResponse(await performManagedHostRequest({
+        response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'speech.speak',
           pendingSet: speechPendingRequests,
           limit: MAX_SPEECH_PENDING_REQUESTS,
@@ -4953,7 +4787,7 @@
               sdk_speech_correlation_id: correlationId,
             }), options);
           },
-        }));
+        });
       } catch (error) {
         speechCorrelationMetadata.delete(correlationId);
         throw error;
@@ -4999,14 +4833,15 @@
         ...(request.finalizeTurn !== undefined ? { finalize_turn: request.finalizeTurn } : {}),
         event: request.event,
       });
-      return normalizeTransportResponse(await performManagedHostRequest({
+      return performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.mirror',
         pendingSet: speechPendingRequests,
         limit: MAX_SPEECH_PENDING_REQUESTS,
         timeoutMs: DEFAULT_SPEECH_REQUEST_TIMEOUT_MS,
         requestOptions,
         invoke: (options) => transport.mirrorSpeechOutput(payload, options),
-      }));
+      });
     }
 
     const speech = Object.freeze({
@@ -5220,41 +5055,83 @@
       }
     }
 
+    function avatarCharacterName(value, errorCode = 'invalid_request') {
+      if (typeof value !== 'string' || !value.trim()
+        || value.length > 256 || Array.from(value).length > 128) {
+        fail(errorCode, 'Avatar character name must contain 1 to 128 characters');
+      }
+      return value.trim();
+    }
+
+    function avatarCharacterDescriptor(value) {
+      if (value == null) return null;
+      if (!plainObject(value)) fail('invalid_response', 'Invalid avatar character descriptor');
+      const name = avatarCharacterName(value.name, 'invalid_response');
+      let model = null;
+      if (value.model != null) {
+        const raw = value.model;
+        if (!plainObject(raw) || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(raw.type)
+          || typeof raw.path !== 'string' || !raw.path.trim() || raw.path.length > 2048) {
+          fail('invalid_response', 'Invalid avatar character model');
+        }
+        model = Object.freeze({ type: raw.type, path: raw.path.trim() });
+      }
+      return Object.freeze({ name, model, rendererAvailable: Boolean(model && value.rendererAvailable === true) });
+    }
+
+    function cancelAvatarQueries(reason) {
+      avatarQueryGeneration = {};
+      abortManagedRequests(avatarQueryRequests, reason);
+    }
+
+    async function queryAvatar(operation, method, args, options, normalize) {
+      requireCapability('avatar-renderer', operation);
+      if (['ending', 'ended', 'inactive'].includes(runtimePhase) || pageExitDispatched) {
+        fail('invalid_state', 'Avatar queries are unavailable after route exit', { operation });
+      }
+      if (typeof transport[method] !== 'function') fail('transport_unavailable', 'Avatar query transport unavailable');
+      if (avatarQueriesInFlight.size >= MAX_AVATAR_QUERIES) fail('busy', 'Avatar query limit reached');
+      const slot = {};
+      const generation = avatarQueryGeneration;
+      avatarQueriesInFlight.add(slot);
+      let invoked = false;
+      try {
+        const value = await performManagedHostRequest({
+          operation, pendingSet: avatarQueryRequests, limit: MAX_AVATAR_QUERIES,
+          timeoutMs: 10000, maximumTimeoutMs: 30000, requestOptions: options,
+          invoke: (managed) => {
+            invoked = true;
+            // A transport that ignores abort retains its slot until settlement.
+            return Promise.resolve().then(() => transport[method](...args, managed))
+              .then(normalize).finally(() => avatarQueriesInFlight.delete(slot));
+          },
+        });
+        ensureActive(operation);
+        if (generation !== avatarQueryGeneration) fail('cancelled', 'Avatar query belongs to an exited lifecycle');
+        return value;
+      } finally {
+        if (!invoked) avatarQueriesInFlight.delete(slot);
+      }
+    }
+
     const avatar = Object.freeze({
       get activeCount() { return avatarRenderers.size; },
-      async getCurrentCharacter() {
-        requireCapability('avatar-renderer', 'avatar.getCurrentCharacter');
-        if (typeof transport.getAvatarCharacter !== 'function') {
-          fail('transport_unavailable', 'The host does not support avatar character discovery');
-        }
-        try {
-          return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(''));
-        } catch (error) {
-          throw normalizeTransportError(error, 'avatar.getCurrentCharacter');
-        }
+      get pendingQueryCount() { return avatarQueriesInFlight.size; },
+      getCurrentCharacter(options = {}) {
+        return queryAvatar('avatar.getCurrentCharacter', 'getAvatarCharacter', [''], options, avatarCharacterDescriptor);
       },
-      async getCharacter(nameInput) {
-        requireCapability('avatar-renderer', 'avatar.getCharacter');
-        if (typeof transport.getAvatarCharacter !== 'function') {
-          fail('transport_unavailable', 'The host does not support avatar character discovery');
-        }
-        const name = normalizeAvatarCharacterName(nameInput);
-        try {
-          return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(name));
-        } catch (error) {
-          throw normalizeTransportError(error, 'avatar.getCharacter');
-        }
+      async getCharacter(name, options = {}) {
+        const requested = avatarCharacterName(name);
+        return queryAvatar('avatar.getCharacter', 'getAvatarCharacter', [requested], options, value => {
+          const descriptor = avatarCharacterDescriptor(value);
+          return descriptor?.name === requested ? descriptor : null;
+        });
       },
-      async listCharacters() {
-        requireCapability('avatar-renderer', 'avatar.listCharacters');
-        if (typeof transport.listAvatarCharacters !== 'function') {
-          fail('transport_unavailable', 'The host does not support avatar character discovery');
-        }
-        try {
-          return normalizeAvatarCharacterList(await transport.listAvatarCharacters());
-        } catch (error) {
-          throw normalizeTransportError(error, 'avatar.listCharacters');
-        }
+      listCharacters(options = {}) {
+        return queryAvatar('avatar.listCharacters', 'listAvatarCharacters', [], options, value => {
+          if (!Array.isArray(value) || value.length > 256) fail('invalid_response', 'Invalid character list');
+          return Object.freeze([...new Set(value.map(name => avatarCharacterName(name, 'invalid_response')))]);
+        });
       },
       async mount(configInput) {
         requireCapability('avatar-renderer', 'avatar.mount');
@@ -5313,15 +5190,6 @@
           async setModel(modelInput) {
             return callController('setModel', () => raw.setModel(normalizeAvatarModel(modelInput)));
           },
-          setView(viewInput) {
-            return callController('setView', () => raw.setView(normalizeAvatarView(viewInput)));
-          },
-          setSpeaking(active) {
-            if (typeof active !== 'boolean') {
-              fail('invalid_request', 'avatar speaking state must be boolean');
-            }
-            return callController('setSpeaking', () => raw.setSpeaking(active));
-          },
           focus(pointInput) {
             return callController('focus', () => raw.focus(normalizeAvatarFocus(pointInput)));
           },
@@ -5366,7 +5234,6 @@
       events,
       state,
       controls,
-      commands,
       results,
       context,
       memory,
@@ -5389,8 +5256,11 @@
         stopRuntimeOperation({ preserveEnd: disposeOptions.preserveRuntimeEnd === true });
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
-        abortManagedRequests(commandPendingRequests, 'disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
+        cancelAvatarQueries('disposed');
+        avatarQueriesInFlight.clear();
+        managedHostInFlight.clear();
+        protocolInFlight.clear();
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');
         abortManagedRequests(storagePendingRequests, 'disposed');

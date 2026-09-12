@@ -125,7 +125,11 @@ async function main() {
         return {
           ok: true,
           status: 200,
-          async json() { return responseData; },
+          async json() {
+            markDelayedDrainStarted();
+            await delayedDrainGate;
+            return responseData;
+          },
           clone() {
             return {
               async json() {
@@ -190,7 +194,6 @@ async function main() {
       'logger-one',
       'logger-two',
       'log-timeout-game',
-      'invalid-command-game',
     ], ...Array.from({ length: 70 }, (_unused, index) => `overflow-game-${index}`)]
       .map((gameId) => [gameId, {
       mode: gameId === 'example-game' ? 'registered' : 'development',
@@ -198,18 +201,6 @@ async function main() {
       publisherId: 'test-host',
       version: '1.0.0',
       allowedCapabilities: defaultCapabilities,
-      ...(gameId === 'example-game' ? {
-        commandRoutes: {
-          'round:input': {
-            path: 'round/input',
-            maxRequestBytes: 400 * 1024,
-            maxTimeoutMs: 1250,
-          },
-        },
-      } : {}),
-      ...(gameId === 'invalid-command-game' ? {
-        commandRoutes: { 'round:input': { path: '../admin' } },
-      } : {}),
       capabilityProviders: gameId === 'example-game' ? {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
       } : {},
@@ -301,17 +292,6 @@ async function main() {
   } catch (error) { missingRegistrationError = error; }
   assert(missingRegistrationError?.code === 'game_unregistered',
     'a game minted a registered host identity without a launch registration');
-  let invalidCommandRegistrationError = null;
-  try {
-    window.createNekoMiniGameSameOriginHost({
-      gameType: 'invalid-command-game',
-      fetchImpl,
-      windowImpl: windowMock,
-      navigatorImpl: windowMock.navigator,
-    });
-  } catch (error) { invalidCommandRegistrationError = error; }
-  assert(invalidCommandRegistrationError?.code === 'game_unregistered',
-    'a launch registration with a traversing command route was accepted');
   let overflowRegistrationError = null;
   try {
     window.createNekoMiniGameSameOriginHost({
@@ -344,14 +324,6 @@ async function main() {
         'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
         'voice-input',
       ],
-      contracts: {
-        commands: {
-          'round:input': {
-            request: { type: 'object' },
-            response: { type: 'object' },
-          },
-        },
-      },
     },
   });
   assert(handshake.grantedCapabilities.includes('context-read'),
@@ -411,7 +383,6 @@ async function main() {
   const startResponse = await host.start({
     session_id: 'attacker-session',
     lanlan_name: 'Attacker Neko',
-    sdk_route_instance_id: 'route-generation-1',
     game_memory_archive_enabled: false,
     legacyGameMemoryEnabled: false,
     legacy_game_memory_event_reply_enabled: false,
@@ -431,57 +402,6 @@ async function main() {
   assert(!Object.hasOwn(startCall.body, 'legacyGameMemoryEnabled')
     && !Object.hasOwn(startCall.body, 'legacy_game_memory_event_reply_enabled'),
   'caller-controlled legacy memory aliases survived the trusted host boundary');
-  const commandEnvelope = (payload, routeInstanceId = 'route-generation-1') => ({
-    protocolVersion: '1',
-    sequence: 1,
-    type: 'round:input',
-    sessionId: 'server-session',
-    routeInstanceId,
-    payload,
-  });
-  const commandResponse = await host.executeGameCommand(
-    'round:input',
-    commandEnvelope({
-      text: 'hello',
-      session_id: 'attacker-session',
-      game_type: 'attacker-game',
-      lanlan_name: 'Attacker Neko',
-      sdk_route_instance_id: 'attacker-generation',
-    }),
-    { timeoutMs: 5000 },
-  );
-  assert((await commandResponse.json()).accepted === true,
-    'a declared command did not receive its endpoint response');
-  const commandCall = calls.filter((call) => call.url.endsWith('/round/input')).at(-1);
-  assert(commandCall?.url === '/api/game/example-game/round/input'
-    && commandCall.body.text === 'hello'
-    && commandCall.body.session_id === 'server-session'
-    && commandCall.body.game_type === 'example-game'
-    && commandCall.body.lanlan_name === 'Server Neko'
-    && commandCall.body.sdk_route_instance_id === 'route-generation-1',
-  'the command endpoint or trusted runtime identity was not host-owned');
-  let oversizedCommandError = null;
-  const commandCallsBeforeOversize = calls.filter(
-    (call) => call.url.endsWith('/round/input'),
-  ).length;
-  try {
-    await host.executeGameCommand(
-      'round:input',
-      commandEnvelope({ text: 'x'.repeat((400 * 1024) + 1) }),
-    );
-  } catch (error) { oversizedCommandError = error; }
-  assert(oversizedCommandError?.code === 'invalid_payload'
-    && calls.filter((call) => call.url.endsWith('/round/input')).length === commandCallsBeforeOversize,
-  'a command above its host-owned request policy reached the backend');
-  let staleCommandError = null;
-  try {
-    await host.executeGameCommand(
-      'round:input',
-      commandEnvelope({ text: 'stale' }, 'stale-generation'),
-    );
-  } catch (error) { staleCommandError = error; }
-  assert(staleCommandError?.code === 'session_invalid',
-    'a command escaped its active route-generation fence');
   const ungrantedHost = createHost({
     gameType: 'third-party-game',
     sessionId: 'ungranted-session',
