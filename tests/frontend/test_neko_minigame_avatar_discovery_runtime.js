@@ -173,6 +173,29 @@ async function factories() {
 }
 
 async function queries() {
+  for (const method of ['getCharacter', 'listCharacters']) {
+    for (const [body, status] of [['', 200], ['{', 200], ['<html>proxy error</html>', 200], [null, 204], ['{', 503]]) {
+      const env = await environment(() => ({ mount() {}, dispose() {} }), async () => new Response(body, {status}));
+      const game = await env.game(env.host());
+      try {
+        await assert.rejects(method === 'getCharacter' ? game.avatar.getCharacter('Neko') : game.avatar.listCharacters(),
+          {code: status === 503 ? 'request_failed' : 'invalid_response'});
+      } finally { game.dispose(); }
+      assert.equal(env.timers.size, 0, 'malformed discovery retained a deadline');
+    }
+  }
+  for (const action of ['abort', 'dispose']) {
+    const env = await environment(() => ({ mount() {}, dispose() {} }));
+    const host = env.host(); const game = await env.game(host); const owner = new AbortController();
+    host._bufferResponse = async () => ({ok:true, json: async () => {
+      if (action === 'abort') owner.abort(); else host.dispose();
+      throw new SyntaxError('late malformed JSON');
+    }});
+    try {
+      await assert.rejects(host._readAvatarJson('character', 'Neko', {signal:owner.signal}),
+        {code:action === 'abort' ? 'cancelled' : 'disposed'});
+    } finally { game.dispose(); }
+  }
   for (const method of ['getAvatarCharacter', 'listAvatarCharacters']) {
     for (const mode of ['overflow', 'exact', 'header', 'abort', 'timeout', 'dispose', 'json-only']) {
       const limit = 16 * 1024 * 1024;
@@ -530,6 +553,24 @@ async function characterBinding() {
 }
 
 async function characterMetadata() {
+  for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const env = await environment(({characterSource}) => ({
+      mount() {}, dispose() {},
+      async getCharacter(name, options) {
+        const value = await characterSource.getCharacter(name, options);
+        return value && {...value, rendererAvailable: ['live2d','vrm'].includes(value.model?.type)};
+      },
+    }), async () => response({lanlan_name:'Neko', model_type:type, [`${type}_path`]:'/model'}));
+    const host = env.host(); const game = await env.game(host);
+    try {
+      for (const value of [await game.avatar.getCharacter('Neko'), await game.avatar.getCurrentCharacter()]) {
+        assert.equal(value.model.type, type);
+        assert.equal(value.rendererAvailable, ['live2d','vrm'].includes(type),
+          'provider discovery availability was overwritten by HTTP fallback');
+      }
+    } finally { game.dispose(); }
+    assert.equal(env.timers.size, 0);
+  }
   for (const customTransport of [false, true]) {
     let value;
     const env = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: async () => value }));

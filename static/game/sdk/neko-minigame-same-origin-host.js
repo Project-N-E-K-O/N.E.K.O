@@ -1413,7 +1413,14 @@
       // fallback HTTP body inside that scope, with the normal REST byte bound.
       const response = await this._bufferResponse(raw, DEFAULT_RESPONSE_BYTE_LIMIT, options.signal);
       if (!response.ok) throw this._hostError('request_failed', 'Avatar lookup failed', { status: response.status });
-      const data = await response.json();
+      let data;
+      try { data = await response.json(); }
+      catch (cause) {
+        if (this._disposed || options.signal?.aborted) {
+          throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+        }
+        throw this._hostError('invalid_response', 'Invalid Avatar discovery JSON', { cause });
+      }
       if (this._disposed || options.signal?.aborted) {
         throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
       }

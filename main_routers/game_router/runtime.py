@@ -4817,7 +4817,7 @@ async def game_character_names(game_type: str):
         raise HTTPException(status_code=413, detail="character_list_too_large")
     names = []
     for name in nekos:
-        if not isinstance(name, str) or not name.strip() or len(name) > 128:
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > 128:
             raise HTTPException(status_code=422, detail="invalid_character_name")
         names.append(name)
     return {"names": names}

@@ -901,6 +901,23 @@ providers that implement mounting but delegate discovery to the built-in source.
 Its availability flag reports a configured model candidate, not a guarantee that
 the registered provider can load that type; mounting still validates renderer support.
 Providers may supply their own display-only descriptors and availability flags.
+For a provider that supports only a subset of model types, override discovery
+using the factory's existing `characterSource`; do not treat the generic HTTP
+candidate flag as a renderer capability probe. For example, add this method to
+the returned provider (the same method also handles current-character queries):
+
+```js
+async getCharacter(name, options) {
+  const value = await characterSource.getCharacter(name, options);
+  return value && {
+    ...value,
+    rendererAvailable: ['live2d', 'vrm'].includes(value.model?.type),
+  };
+}
+```
+
+This uses the existing discovery contract; mount-only legacy providers remain
+compatible. Mount failures still need handling (for example, missing assets).
 
 A trusted provider may optionally implement `getCurrentCharacter(options)`,
 `getCharacter(name, options)` and `listCharacters(options)`. Missing methods use
