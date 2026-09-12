@@ -148,3 +148,18 @@ async def test_response_limit(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"x"*33))) as client:
         with pytest.raises(ImageGenerationError, match="response_too_large"):
             await generate_image(ImageRequest("cat"), config_manager=manager(), client=client)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError("private proxy"), FileNotFoundError("private cert")])
+async def test_owned_client_creation_error_is_sanitized(monkeypatch, error):
+    def fail(**kwargs):
+        raise error
+    monkeypatch.setattr(httpx, "AsyncClient", fail)
+    with pytest.raises(ImageGenerationError, match="client_initialization_failed") as caught:
+        await generate_image(ImageRequest("cat"), config_manager=manager())
+    assert "private" not in str(caught.value)
+
+
+def test_multiple_trailing_slashes_rejected_at_runtime():
+    with pytest.raises(ValueError):
+        resolve_image_config(manager("custom", imageModelUrl="https://custom.example/v1//", imageModelId="image").raw)

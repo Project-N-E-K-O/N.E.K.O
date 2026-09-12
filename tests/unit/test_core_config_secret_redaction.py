@@ -621,3 +621,34 @@ def test_image_equivalent_endpoint_preserves_custom_key(config_manager, core_con
     })))
     assert result["success"] is True
     assert config_manager.load_json_config("core_config.json", {})["imageModelApiKey"] == "private-image-key"
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", ["disabled", "qwen"])
+def test_retained_image_key_cannot_move_while_inactive(config_manager, core_config_router, provider):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelProvider": provider, "imageModelUrl": "https://new.example/v1",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["imageModelUrl"] == "https://old.example/v1"
+    assert saved["imageModelProvider"] == "custom"
+
+
+@pytest.mark.unit
+def test_multiple_trailing_slashes_do_not_preserve_custom_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": "https://old.example/v1//",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False

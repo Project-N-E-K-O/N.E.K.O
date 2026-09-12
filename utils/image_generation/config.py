@@ -53,6 +53,7 @@ def resolve_image_config(raw: dict, *, enabled: bool = True) -> ImageConfig | No
         parsed.port
         valid_url = parsed.scheme == "https" and parsed.hostname and not (
             parsed.username or parsed.password or parsed.query or parsed.fragment
+            or parsed.path.endswith("//")
         )
     except ValueError:
         valid_url = False

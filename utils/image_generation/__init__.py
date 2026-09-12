@@ -45,7 +45,10 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
         raise ImageGenerationError("invalid_configuration")
     owned = client is None
     if owned:
-        client = await asyncio.to_thread(httpx.AsyncClient, trust_env=True, follow_redirects=False)
+        try:
+            client = await asyncio.to_thread(httpx.AsyncClient, trust_env=True, follow_redirects=False)
+        except (ValueError, OSError):
+            raise ImageGenerationError("client_initialization_failed") from None
     try:
         async with asyncio.timeout(timeout):
             image = await adapter.generate(client, config, request)
