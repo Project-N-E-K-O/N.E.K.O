@@ -32,7 +32,11 @@ export async function run(game, character) {
         if(!response.ok || response.data?.ok===false)throw Error(response.data?.reason || 'Scene start failed');
       }
       if(!current())return true;
-      if(media && !$('video').ended){prefetchNext();return true;}
+      if(media && !$('video').ended){
+        if($('video').paused)await play();
+        else prefetchNext();
+        return true;
+      }
       if(selected && !automaticPending) {
         automaticPending=true;
         await play();return true;

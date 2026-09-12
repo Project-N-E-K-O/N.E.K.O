@@ -119,6 +119,26 @@ assert.equal(mediaMounts,2,'manual retry mounts a fresh controller');
 assert.equal(mediaFailure.elements.get('play').hidden,true);
 mediaFailure.handlers['runtime-inactive']();
 console.log('watch-together scene: asynchronous media error releases playback and permits manual retry');
+for(const paused of [true,false]) {
+  const enabling=await fixture(false,false,{total_tokens:1});
+  let enablingPlays=0,enablingMounts=0;
+  const originalMount=enabling.game.media.mount;
+  enabling.game.media.mount=async options=>{
+    enablingMounts++;
+    const controller=await originalMount(options);
+    return {...controller,async play(){enablingPlays++;enabling.elements.get('video').paused=false;}};
+  };
+  await enabling.elements.get('play').onclick();
+  enabling.elements.get('video').paused=paused;
+  enabling.elements.get('automatic-enabled').checked=true;
+  enabling.elements.get('automatic-enabled').onchange();
+  await waitFor(()=>enabling.calls.some(call=>call.action==='discover'));
+  assert.equal(enablingPlays,paused?2:1,'enabling automatic resumes only paused playback');
+  assert.equal(enablingMounts,1,'resume reuses the mounted media controller');
+  assert.equal(enabling.elements.get('video').paused,false);
+  await enabling.elements.get('watch-stop').onclick();
+}
+console.log('watch-together scene: enabling automatic resumes paused playback without restarting active playback');
 let finishOldDiscovery, discoveryCount=0;
 const retrying=await fixture(false,false,{total_tokens:1},()=>{
   discoveryCount++;
