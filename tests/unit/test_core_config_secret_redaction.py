@@ -579,3 +579,45 @@ def test_image_config_round_trip_uses_core_snapshot(config_manager, core_config_
     response = asyncio.run(core_config_router.get_core_config_api())
     assert response["assistApiKeyQwen"] == core_config_router.CORE_CONFIG_SECRET_SENTINEL
     assert response["imageModelProvider"] == "qwen"
+
+@pytest.mark.unit
+@pytest.mark.parametrize("core,assist,image,expected", [
+    ("qwen", "qwen", "qwen", "legacy-key"),
+    ("openai", "openai", "openai", "legacy-key"),
+    ("qwen_intl", "qwen_intl", "qwen_intl", "legacy-key"),
+    ("openai", "qwen", "qwen", "legacy-key"),
+    ("openai", "openai", "qwen", ""),
+    ("free", "free", "qwen", ""),
+])
+def test_image_legacy_key_fallback_matches_key_book(
+    config_manager, core_config_router, core, assist, image, expected
+):
+    _write_core_config(config_manager, {
+        "coreApi": core, "assistApi": assist,
+        "coreApiKey": "free-access" if core == "free" else "legacy-key",
+        "enableCustomApi": True, "imageModelProvider": image,
+    })
+    config = config_manager.get_model_api_config("image")
+    assert config["api_key"] == expected
+    response = asyncio.run(core_config_router.get_core_config_api())
+    field = {"qwen": "assistApiKeyQwen", "qwen_intl": "assistApiKeyQwenIntl", "openai": "assistApiKeyOpenai"}[image]
+    assert bool(response[field]) == bool(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", [
+    "https://old.example/v1/", "  https://old.example/v1  ",
+    "https://OLD.example:443/v1",
+])
+def test_image_equivalent_endpoint_preserves_custom_key(config_manager, core_config_router, url):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": url,
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["imageModelApiKey"] == "private-image-key"

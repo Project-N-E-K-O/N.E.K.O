@@ -1630,6 +1630,14 @@ class CoreConfigMixin:
                         "imageModelApiKey", "assistApiKeyOpenai",
                         "assistApiKeyQwen", "assistApiKeyQwenIntl")
         }
+        # Reuse the same provider-gated legacy key resolution as the Key Book.
+        # Never introduce a cross-provider fallback for image generation.
+        for field, resolved_field in (
+            ("assistApiKeyOpenai", "ASSIST_API_KEY_OPENAI"),
+            ("assistApiKeyQwen", "ASSIST_API_KEY_QWEN"),
+            ("assistApiKeyQwenIntl", "ASSIST_API_KEY_QWEN_INTL"),
+        ):
+            config["IMAGE_GENERATION_CONFIG"][field] = config.get(resolved_field, "")
         return config
 
     def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:

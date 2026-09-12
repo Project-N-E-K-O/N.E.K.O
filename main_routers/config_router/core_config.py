@@ -576,7 +576,12 @@ async def update_core_config(request: Request):
             if candidate.get("imageModelProvider") == "custom":
                 old_url = core_cfg.get("imageModelUrl", "")
                 new_url = candidate.get("imageModelUrl", "")
-                if old_url != new_url and core_cfg.get("imageModelApiKey") and (
+                from utils.http.url import same_endpoint
+                equivalent_url = (
+                    isinstance(old_url, str) and isinstance(new_url, str)
+                    and same_endpoint(old_url.strip().rstrip("/"), new_url.strip().rstrip("/"))
+                )
+                if not equivalent_url and core_cfg.get("imageModelApiKey") and (
                     "imageModelApiKey" not in data
                     or is_core_config_secret_placeholder(data["imageModelApiKey"])
                 ):
