@@ -20,6 +20,7 @@ NODE_RUNTIME_TESTS = (
     "test_neko_minigame_sdk_runtime.js",
     "test_neko_minigame_lifecycle_runtime.js",
     "test_neko_minigame_same_origin_host_runtime.js",
+    "test_neko_minigame_response_memory_runtime.js",
     "test_neko_minigame_avatar_host_runtime.js",
     "test_neko_minigame_avatar_speech_runtime.js",
     "test_neko_minigame_drawing_avatar_host_runtime.js",

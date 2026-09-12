@@ -47,6 +47,7 @@
   const ROUTE_END_ESSENTIAL_REASON_CHARS = 512;
   const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
   const DEFAULT_PENDING_REQUEST_LIMIT = 64;
+  const DEFAULT_RESPONSE_BYTE_LIMIT = 16 * 1024 * 1024;
   const DEFAULT_PROTOCOL_QUEUE_LIMIT = 64;
   const HOST_COMMAND_ROUTE_LIMIT = 64;
   const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
@@ -1061,61 +1062,72 @@
         throw cancelled();
       }
       if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
+        const byteLimit = maxBytes === undefined ? DEFAULT_RESPONSE_BYTE_LIMIT : maxBytes;
+        if (!Number.isSafeInteger(byteLimit) || byteLimit < 1 || byteLimit > DEFAULT_RESPONSE_BYTE_LIMIT) {
+          cancelBody(response.body);
+          throw this._hostError('invalid_response', 'Invalid host response byte limit');
+        }
         let bytes;
-        if (maxBytes !== undefined || typeof response.body?.getReader === 'function') {
+        {
           const overflow = () => this._hostError('invalid_response', 'Host response exceeds its byte limit');
-          if (Number(response.headers?.get?.('content-length')) > maxBytes) {
+          if (Number(response.headers?.get?.('content-length')) > byteLimit) {
             cancelBody(response.body);
             throw overflow();
           }
-          if (!response.body) bytes = new Uint8Array(0);
+          if (response.body === null) bytes = new Uint8Array(0);
           else {
-            if (typeof response.body.getReader !== 'function') throw overflow();
+            if (typeof response.body?.getReader !== 'function') {
+              cancelBody(response.body);
+              throw this._hostError('invalid_response', 'A host response requires a readable body');
+            }
             const reader = response.body.getReader();
-            const buffer = maxBytes === undefined ? null : new Uint8Array(maxBytes);
-            // Legacy REST calls retain their complete-response contract. Their
-            // chunks live only within this deadline/cancellation-owned read.
-            const chunks = [];
+            // Grow only as needed, with the same hard bound for every read.
+            // A cancelled custom reader may never settle: drop our bytes in
+            // the abort handler, not only in this coroutine's delayed finally.
+            let buffer = null;
             let size = 0;
             let readerCancelled = false;
             const cancelReader = () => {
               if (readerCancelled) return;
               readerCancelled = true;
+              buffer = null;
+              size = 0;
+              signal?.removeEventListener('abort', cancelReader);
               cancelBody(reader);
             };
             signal?.addEventListener('abort', cancelReader, { once: true });
             try {
               if (signal?.aborted) { cancelReader(); throw cancelled(); }
               while (true) {
-                const { done, value } = await reader.read();
+                let { done, value } = await reader.read();
                 if (signal?.aborted) throw cancelled();
                 if (done) break;
-                if (maxBytes !== undefined && value.byteLength > maxBytes - size) {
+                if (value.byteLength > byteLimit - size) {
                   throw overflow();
                 }
-                if (buffer) buffer.set(value, size);
-                else chunks.push(new Uint8Array(value));
-                size += value.byteLength;
-              }
-              if (buffer) bytes = buffer.subarray(0, size);
-              else {
-                bytes = new Uint8Array(size);
-                let offset = 0;
-                for (const chunk of chunks) {
-                  bytes.set(chunk, offset);
-                  offset += chunk.byteLength;
+                const needed = size + value.byteLength;
+                if (needed > (buffer?.byteLength || 0)) {
+                  let grown = new Uint8Array(Math.min(byteLimit,
+                    Math.max(needed, buffer ? buffer.byteLength * 2 : 64 * 1024)));
+                  if (buffer) grown.set(buffer.subarray(0, size));
+                  buffer = grown;
+                  grown = null;
                 }
+                if (value.byteLength) buffer.set(value, size);
+                size += value.byteLength;
+                value = null;
               }
+              bytes = buffer ? buffer.subarray(0, size) : new Uint8Array(0);
             } catch (error) {
               cancelReader();
               throw error;
             } finally {
-              signal?.removeEventListener('abort', cancelReader);
+              buffer = null;
+              if (!readerCancelled) signal?.removeEventListener('abort', cancelReader);
               reader.releaseLock();
-              chunks.length = 0;
             }
           }
-        } else bytes = await response.arrayBuffer();
+        }
         const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
           status: response.status, statusText: response.statusText, headers: response.headers,
         });

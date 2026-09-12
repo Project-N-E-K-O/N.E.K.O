@@ -680,6 +680,92 @@ async function main() {
   assert((await fullLegacyResponse.clone().text()) === exactResponse + ' '
     && (await fullLegacyResponse.json()).text.length === 2 * 1024 * 1024 - 11,
   'legacy response reading imposed the command limit or lost complete replay semantics');
+  const defaultResponseLimit = 16 * 1024 * 1024;
+  let unboundedArrayRead = false;
+  const unreadableResponse = await host._bufferResponse({
+    status: 200, headers: new Headers(),
+    arrayBuffer() { unboundedArrayRead = true; return new ArrayBuffer(1); },
+  }).catch(error => error);
+  assert(unreadableResponse?.code === 'invalid_response' && !unboundedArrayRead,
+    'ordinary response used an unbounded arrayBuffer-only fallback');
+  for (const mode of ['exact', 'overflow', 'header-overflow']) {
+    let emitted = 0;
+    let cancelled = 0;
+    const total = defaultResponseLimit + (mode === 'exact' ? 0 : 1);
+    const body = new ReadableStream({
+      pull(controller) {
+        const count = Math.min(1024 * 1024, total - emitted);
+        if (!count) { controller.close(); return; }
+        controller.enqueue(new Uint8Array(count));
+        emitted += count;
+      },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 });
+    const boundedHost = createHost({ gameType: 'example-game', windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator, fetchImpl: async () => new Response(body,
+        mode === 'header-overflow' ? { headers: { 'content-length': String(total) } } : {}),
+    });
+    try {
+      const response = await boundedHost._request('/ordinary-rest').catch(error => error);
+      if (mode === 'exact') {
+        assert((await response.arrayBuffer()).byteLength === defaultResponseLimit,
+          'ordinary REST rejected its exact default byte budget');
+      } else {
+        assert(response?.code === 'invalid_response' && cancelled === 1,
+          `${mode}: ordinary REST response exceeded its default byte budget`);
+        if (mode === 'header-overflow') assert(emitted === 0, 'oversized header read the body');
+      }
+      assert(boundedHost._rawRequests.size === 0 && !body.locked,
+        'default-budget response retained raw capacity or reader lock');
+    } finally { boundedHost.dispose(); }
+  }
+  // Nonstandard readers may ignore both read cancellation and the fetch signal.
+  // The caller retires promptly, but a raw slot is not free until read settles.
+  for (const mode of ['abort', 'timeout', 'dispose']) {
+    let finishRead;
+    let reads = 0;
+    let cancels = 0;
+    let releases = 0;
+    const response = { status: 200, headers: new Headers(),
+      arrayBuffer() { throw new Error('must use the bounded reader'); },
+      body: { getReader() { return {
+        read() {
+          if (++reads === 1) return Promise.resolve({ done: false, value: new Uint8Array(1024 * 1024) });
+          return new Promise(resolve => { finishRead = resolve; });
+        },
+        cancel() { cancels++; return new Promise(() => {}); },
+        releaseLock() { releases++; },
+      }; } },
+    };
+    const blockedHost = createHost({ gameType: 'example-game', windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator, pendingRequestLimit: 1, fetchImpl: async () => response,
+    });
+    const abort = new AbortController();
+    const request = blockedHost._request('/ordinary-rest', {}, {
+      signal: abort.signal, timeoutMs: mode === 'timeout' ? 30 : 1000,
+    }).catch(error => error);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert(reads === 2, 'non-cooperative read fixture did not reach its wait');
+      if (mode === 'abort') abort.abort();
+      if (mode === 'dispose') blockedHost.dispose();
+      const result = await request;
+      assert(result.code === (mode === 'abort' ? 'cancelled' : mode === 'dispose' ? 'disposed' : 'timeout')
+        && cancels === 1 && blockedHost._pendingRequests.size === 0,
+      'non-cooperative reader delayed caller cancellation');
+      if (mode !== 'dispose') {
+        assert(blockedHost._rawRequests.size === 1
+          && (await blockedHost._request('/next').catch(error => error)).code === 'busy',
+        'cancellation falsely retired unfinished raw work');
+      }
+    } finally {
+      finishRead?.({ done: false, value: new Uint8Array(16) });
+      await new Promise(resolve => setImmediate(resolve));
+      assert(reads === 2 && releases === 1 && blockedHost._rawRequests.size === 0,
+        'late reader result resumed buffering or failed to release raw capacity');
+      blockedHost.dispose();
+    }
+  }
   const commandCall = calls.find((call) => call.url.endsWith('/round/input') && call.body.text === 'hello');
   assert(commandCall?.url === '/api/game/example-game/round/input'
     && commandCall.body.text === 'hello'
