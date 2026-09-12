@@ -107,6 +107,26 @@ def test_imported_surrogates_are_safe_for_utf8_responses(tmp_path, surrogate):
     assert (folder / 'timeline.json').read_bytes() == original
 
 
+@pytest.mark.parametrize('second_key', ['\udfff', '\ufffd'])
+@pytest.mark.parametrize('nested', [False, True])
+def test_normalized_key_collisions_preserve_archive_as_incomplete(tmp_path, second_key, nested):
+    archive = source(tmp_path, 'unicode-key-collision')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    collision = {'\ud800': 'first', second_key: 'second'}
+    metadata = {'usage': collision} if nested else collision
+    original = json.dumps({'status': 'ready', 'video': f'/media/{JOB}/video.mp4', 'events': [], **metadata}).encode('utf-8')
+    (folder / 'timeline.json').write_bytes(original)
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['status'] == 'incomplete'
+    with pytest.raises(ValueError, match='keys collide'):
+        library.timeline(JOB, row['version'])
+    assert library.resource(JOB, row['version'], 'timeline.json').read_bytes() == original
+    assert (folder / 'timeline.json').read_bytes() == original
+
+
 @pytest.mark.parametrize('constant', ['NaN', 'Infinity', '-Infinity'])
 def test_non_json_constants_do_not_break_history(tmp_path, constant):
     archive = source(tmp_path, 'constant')

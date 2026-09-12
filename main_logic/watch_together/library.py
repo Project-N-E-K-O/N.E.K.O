@@ -254,7 +254,13 @@ class Library:
                     return prefix + quote(value[len(f"/media/{job}/"):], safe='/')
                 return value
             if isinstance(value, dict):
-                return {clean_text(k): remap(v, depth + 1) for k, v in value.items()}
+                normalized = {}
+                for key, item in value.items():
+                    key = clean_text(key)
+                    if key in normalized:
+                        raise ValueError("Timeline keys collide after Unicode normalization")
+                    normalized[key] = remap(item, depth + 1)
+                return normalized
             if isinstance(value, list):
                 return [remap(v, depth + 1) for v in value]
             return value
