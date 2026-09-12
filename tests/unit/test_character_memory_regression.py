@@ -238,6 +238,27 @@ def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_character_audit_rejects_unpersisted_ids_and_reuses_them_after_retry(tmp_path, warm_cache):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        if warm_cache:
+            cm.load_characters()
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm._characters_dirty
+        cached_id = cm._characters_cache["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        # Normal chat retains the existing in-memory fallback behavior.
+        assert cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"] == cached_id
+    assert numeric_v2_character_ids(cm) == {"Legacy": cached_id}
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cancelled_thread_call_returns_retained_lock_transaction():
     """Cancellation must wait for the worker and preserve its cleanup token."""

@@ -1161,6 +1161,7 @@ async def speak_numeric_block(request: Request):
     session_id = str(payload.get("session_id") or "").strip()
     playback_request_id = str(payload.get("playback_request_id") or "").strip()
     revision = payload.get("revision")
+    lifecycle_revision = payload.get("lifecycle_revision")
     block_index = payload.get("block_index")
     dialogue_block_indexes = payload.get("dialogue_block_indexes")
     if (
@@ -1171,6 +1172,8 @@ async def speak_numeric_block(request: Request):
         or isinstance(revision, bool)
         or not isinstance(revision, int)
         or revision < 0
+        or type(lifecycle_revision) is not int
+        or lifecycle_revision < 0
         or isinstance(block_index, bool)
         or not isinstance(block_index, int)
         or block_index < 0
@@ -1203,6 +1206,10 @@ async def speak_numeric_block(request: Request):
             current_binding = _ensure_current_catgirl(stored.session, config_manager)
             if stored.session.revision != revision:
                 return _error("numeric_base_revision_mismatch", 409)
+            if stored.session.lifecycle_revision != lifecycle_revision:
+                return _error("numeric_base_lifecycle_revision_mismatch", 409)
+            if stored.session.ended_reason == "user_exit":
+                return _error("session_already_ended", 409)
             if revision == 0:
                 performance = stored.session.opening_performance
             else:
@@ -1257,6 +1264,12 @@ async def speak_numeric_block(request: Request):
                 )
                 if latest.session.revision != revision:
                     return _error("numeric_base_revision_mismatch", 409)
+                # End/resume leaves story revision and prose unchanged. Fence
+                # its lifecycle separately, while allowing natural ending audio.
+                if latest.session.lifecycle_revision != lifecycle_revision:
+                    return _error("numeric_base_lifecycle_revision_mismatch", 409)
+                if latest.session.ended_reason == "user_exit":
+                    return _error("session_already_ended", 409)
                 if revision == 0:
                     latest_performance = latest.session.opening_performance
                 else:

@@ -48,8 +48,8 @@ class CharactersMixin:
         from config import get_localized_default_characters
         return get_localized_default_characters()
 
-    def load_characters(self, character_json_path=None):
-        """Load character configs"""
+    def load_characters(self, character_json_path=None, *, require_authoritative=False):
+        """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
         use_default_path = character_json_path is None
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
@@ -86,6 +86,8 @@ class CharactersMixin:
                     current_mtime = None
                 if cache_dirty and current_mtime is None:
                     # An unreadable source cannot supersede an unpersisted identity.
+                    if require_authoritative:
+                        raise ValueError("character_config_not_authoritative")
                     return deepcopy(cache)
                 if current_mtime == cache_mtime and (
                     current_mtime is not None or cache_dirty
@@ -102,6 +104,8 @@ class CharactersMixin:
                         )
                         logger.info("已补写此前未持久化的角色保留字段迁移。")
                     except Exception as persist_err:
+                        if require_authoritative:
+                            raise
                         try:
                             from utils.cloudsave_runtime import MaintenanceModeError
                         except Exception:
@@ -124,12 +128,16 @@ class CharactersMixin:
                 except OSError:
                     loaded_mtime = None
             except FileNotFoundError:
+                if require_authoritative:
+                    raise
                 if cache_dirty and cache is not None and cache_path == character_json_path:
                     return deepcopy(cache)
                 logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
                 character_data = self.get_default_characters()
                 loaded_mtime = None
             except Exception as e:
+                if require_authoritative:
+                    raise
                 if cache_dirty and cache is not None and cache_path == character_json_path:
                     # Preserve the dirty flag and original mtime for a later retry.
                     return deepcopy(cache)
@@ -147,6 +155,8 @@ class CharactersMixin:
 
             migrated = False
             if not isinstance(character_data, dict):
+                if require_authoritative:
+                    raise ValueError("character_config_not_authoritative")
                 logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
                 character_data = self.get_default_characters()
                 loaded_mtime = None
@@ -184,6 +194,8 @@ class CharactersMixin:
                         self._characters_cache_mtime = loaded_mtime
                         self._characters_cache_path = character_json_path
                         self._characters_dirty = True
+                    if require_authoritative:
+                        raise
                     # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
                     try:
                         from utils.cloudsave_runtime import MaintenanceModeError

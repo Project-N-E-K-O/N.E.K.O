@@ -15,20 +15,27 @@ from .llm_context import _load_player_address
 def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
     """返回当前已安装猫娘角色卡的稳定身份索引。"""  # noqa: DOCSTRING_CJK
 
-    characters = config_manager.load_characters()
+    # This index authorizes destructive storage audit. Chat's fallback profiles
+    # and IDs that failed to persist cannot prove that a saved character is gone.
+    try:
+        characters = config_manager.load_characters(require_authoritative=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError("numeric_character_config_unavailable") from exc
     catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
     if not isinstance(catgirls, dict):
-        return {}
+        raise ValueError("numeric_character_config_unavailable")
     result: dict[str, str] = {}
     for name, profile in catgirls.items():
         if not isinstance(profile, dict):
-            continue
+            raise ValueError("numeric_character_config_unavailable")
         character_id = normalize_character_id(
             get_reserved(profile, "character_id", default="")
         )
         normalized_name = str(name or "").strip()
         if normalized_name and character_id:
             result[normalized_name] = character_id
+        else:
+            raise ValueError("numeric_character_config_unavailable")
     return result
 
 

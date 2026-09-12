@@ -1742,3 +1742,69 @@ def test_bridge_hides_theater_options_without_a_registered_callback(mock_page: P
     assert mock_page.evaluate('window.__suggestionSelected') == ['把信交给她']
     mock_page.evaluate('window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(null)')
     expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)
+
+
+@pytest.mark.frontend
+def test_bridge_preserves_theater_draft_until_submit_callback_is_ready(mock_page: Page, running_server: str):
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost?.isMounted()')
+    mock_page.evaluate('''() => {
+        window.reactChatWindowHost.setOnTheaterSubmit(null);
+        window.reactChatWindowHost.setViewProps({theaterPresentation:{
+            active:true, phase:'awaiting_player', history:[], suggestedInputs:[]
+        }});
+    }''')
+    expect(mock_page.locator('.app-shell')).to_have_attribute('data-theater-active', 'true')
+    if mock_page.locator('.composer-input').count() == 0:
+        mock_page.locator('.compact-chat-capsule-button').click()
+    composer = mock_page.locator('.composer-input')
+    composer.fill('先把信收好')
+    composer.press('Enter')
+    expect(composer).to_have_value('先把信收好')
+    mock_page.evaluate('''() => {
+        window.__theaterSubmissions = [];
+        window.reactChatWindowHost.setOnTheaterSubmit(text => window.__theaterSubmissions.push(text));
+    }''')
+    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    composer.press('Enter')
+    assert mock_page.evaluate('window.__theaterSubmissions') == ['先把信收好']
+    expect(composer).to_have_value('')
+    mock_page.evaluate('window.reactChatWindowHost.setOnTheaterSubmit(null)')
+    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    composer.fill('等她回应')
+    composer.press('Enter')
+    expect(composer).to_have_value('等她回应')
+    assert mock_page.evaluate('window.__theaterSubmissions') == ['先把信收好']
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('action', ['theater:external-end', 'theater:story-deleted', 'unrelated'])
+def test_pointer_restore_obeys_lifecycle_notifications(mock_page: Page, running_server: str, action):
+    pending = {}
+    def handler(route: Route):
+        if '/api/theater-numeric/session/session-review' in route.request.url:
+            pending['route'] = route
+            return
+        route.continue_()
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script("sessionStorage.setItem('neko.theater.numeric.v2.capsule-pointer.v1', JSON.stringify({story_id:'story-review',session_id:'session-review'})); localStorage.setItem('neko_tutorial_settings','seen');")
+    mock_page.goto(running_server + '/', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.nekoTheaterRuntime')
+    for _ in range(100):
+        if 'route' in pending:
+            break
+        mock_page.wait_for_timeout(20)
+    assert 'route' in pending
+    assert mock_page.evaluate('window.nekoTheaterRuntime.isActive()') is False
+    mock_page.evaluate('''action => window.dispatchEvent(new MessageEvent('message', {origin:location.origin, data:{
+        schema:'neko.theater.interpage.v1', action:action === 'unrelated' ? 'theater:external-end' : action,
+        story_id:action === 'unrelated' ? 'other-story' : 'story-review', session_id:'session-review'
+    }}))''', action)
+    with mock_page.expect_response('**/session/session-review?*'):
+        pending['route'].fulfill(status=200, content_type='application/json',
+            body=json.dumps(_snapshot(revision=0, story_id='story-review', session_id='session-review')))
+    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    state = mock_page.evaluate('window.nekoTheaterRuntime.getState().active')
+    assert state is (action == 'unrelated')
+    if action != 'unrelated':
+        assert mock_page.evaluate("sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1')") is None

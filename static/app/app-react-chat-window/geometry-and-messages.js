@@ -1567,7 +1567,8 @@
             onComposerScreenshot: I.handleComposerScreenshot,
             onComposerRemoveAttachment: I.handleComposerRemoveAttachment,
             onComposerSubmit: I.handleComposerSubmit,
-            onTheaterSubmit: I.handleTheaterSubmit,
+            onTheaterSubmit: typeof I.state.onTheaterSubmit === 'function'
+                ? I.handleTheaterSubmit : undefined,
             onAvatarInteraction: I.handleAvatarInteraction,
             onAvatarToolStateChange: I.handleAvatarToolStateChange,
             onJukeboxClick: I.handleJukeboxClick,

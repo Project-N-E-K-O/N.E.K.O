@@ -224,7 +224,7 @@ class _ConfigManager:
         self.local_state_dir.mkdir(parents=True, exist_ok=True)
         return True
 
-    def load_characters(self) -> dict:
+    def load_characters(self, *, require_authoritative=False) -> dict:
         return {
             "当前猫娘": "测试猫娘",
             "猫娘": {"测试猫娘": _catgirl_profile("测试猫娘", "安静而认真。")},
@@ -2643,7 +2643,7 @@ def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -3062,7 +3062,7 @@ def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
 def test_skip_archive_rechecks_owner_after_waiting_for_character_lock(tmp_path, monkeypatch):
     class Config(_ConfigManager):
         current_name = "测试猫娘"
-        def load_characters(self):
+        def load_characters(self, *, require_authoritative=False):
             data = super().load_characters()
             data["猫娘"]["新猫娘"] = _catgirl_profile("新猫娘", "另一个角色")
             data["当前猫娘"] = self.current_name
@@ -3229,7 +3229,7 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -3474,7 +3474,7 @@ def test_numeric_v2_router_rechecks_catgirl_before_commit(tmp_path, monkeypatch)
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {self.current_name: _catgirl_profile(self.current_name, "测试人格")},
@@ -3534,7 +3534,7 @@ def test_numeric_v2_router_rechecks_catgirl_after_opening(tmp_path, monkeypatch)
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {self.current_name: _catgirl_profile(self.current_name, "测试人格")},
@@ -3574,7 +3574,7 @@ def test_numeric_v2_start_rejects_selector_character_after_switch(
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -3716,7 +3716,7 @@ def test_numeric_v2_router_preserves_each_catgirls_story_session(tmp_path, monke
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -3786,7 +3786,7 @@ def test_numeric_v2_router_rejects_reusing_id_when_same_catgirl_profile_changed(
             super().__init__(root)
             self.personality = "安静而认真。"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": "测试猫娘",
                 "猫娘": {
@@ -4000,6 +4000,7 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
                 "revision": 0,
                 "block_index": 0,
                 "playback_request_id": "tts-narration",
+                "lifecycle_revision": 0,
             },
         )
         assert narration.status_code == 422
@@ -4015,6 +4016,7 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
                 "block_index": 2,
                 "dialogue_block_indexes": [2, 4],
                 "playback_request_id": "tts-dialogue",
+                "lifecycle_revision": 0,
             },
         )
 
@@ -4027,6 +4029,106 @@ def test_numeric_tts_merges_committed_dialogue_blocks_without_actions(tmp_path, 
     assert captured["character_lock_held"] is True
     assert captured["story_lock_held"] is True
     assert restore_calls == [False, True]
+
+
+@pytest.mark.parametrize("change", ["exit", "exit_current", "exit_resume", "resume_current", "ending", "none"])
+@pytest.mark.parametrize("during_request", [False, True])
+def test_numeric_tts_fences_lifecycle_changes(tmp_path, monkeypatch, change, during_request):
+    """Reject stale speech while allowing current speech and natural ending playback."""
+    queued = []
+    original_restore = numeric_theater_router.NumericV2Runtime.restore_session
+    scope = {"story_id": "numeric_v2_contract", "session_id": "tts_lifecycle"}
+
+    async def capture_speech(*args, **kwargs):
+        queued.append(args[0])
+        return {"audio_queued": True, "speech_id": "lifecycle-speech"}
+
+    async def change_lifecycle(runtime):
+        if change == "none":
+            return
+        await runtime.end_session(scope["session_id"], base_revision=0,
+            base_lifecycle_revision=0, reason="natural_ending" if change == "ending" else "user_exit")
+        if change in {"exit_resume", "resume_current"}:
+            await runtime.resume_session(scope["session_id"], base_revision=0, base_lifecycle_revision=1)
+
+    async def restore_then_change(runtime, session_id):
+        stored = await original_restore(runtime, session_id)
+        # Place the lifecycle change between the unlocked read and final enqueue guard.
+        monkeypatch.setattr(numeric_theater_router.NumericV2Runtime, "restore_session", original_restore)
+        await change_lifecycle(runtime)
+        return stored
+
+    monkeypatch.setattr(numeric_theater_router, "speak_committed_line", capture_speech)
+    with _client(tmp_path, monkeypatch) as client:
+        assert client.post("/api/theater-numeric/session/start", json=scope).status_code == 200
+        if during_request:
+            monkeypatch.setattr(numeric_theater_router.NumericV2Runtime, "restore_session", restore_then_change)
+        else:
+            runtime = client.portal.call(numeric_theater_router._runtime_for_story,
+                numeric_theater_router.get_config_manager(), scope["story_id"])
+            client.portal.call(change_lifecycle, runtime)
+        # A natural ending response carries its new lifecycle version.
+        lifecycle_revision = 1 if change == "ending" and not during_request else 0
+        if not during_request and change in {"exit_current", "resume_current"}:
+            lifecycle_revision = 1 if change == "exit_current" else 2
+        response = client.post("/api/theater-numeric/session/speak-block", json={**scope,
+            "revision": 0, "lifecycle_revision": lifecycle_revision, "block_index": 1,
+            "playback_request_id": f"tts-{change}-{during_request}"})
+        allowed = change == "none" or (change in {"ending", "resume_current"} and not during_request)
+        assert response.status_code == (200 if allowed else 409), response.text
+        assert bool(queued) is allowed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["malformed", "unreadable", "missing", "non_object", "bad_map"])
+async def test_numeric_audit_defers_when_character_source_is_unavailable(tmp_path, monkeypatch, failure):
+    """Fallback profiles must never quarantine real saves or consume the audit-once marker."""
+    import builtins
+    from contextlib import nullcontext
+    from tests.unit.test_character_memory_regression import _make_config_manager
+    from services.theater import numeric_v2_maintenance
+    from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "C0", "猫娘": {
+        f"C{i}": {"_reserved": {"character_id": "character_" + f"{i + 1:032x}"}}
+        for i in range(8)}, "主人": {"昵称": "哥哥"}}, bypass_write_fence=True)
+    root = numeric_theater_router._numeric_root(cm)
+    registry = numeric_theater_router.NumericV2PackageRegistry(root / "numeric_v2" / "packages")
+    registry.import_package(numeric_v2_story())
+    runtime = numeric_theater_router.NumericV2Runtime(registry.load_engine("numeric_v2_contract"), root)
+    for i in range(8):
+        await runtime.start_session(session_id=f"audit_c{i}",
+            catgirl_binding=numeric_v2_catgirl_binding(cm, f"C{i}"),
+            opening_performance=_performance("你回来了。", opening=True))
+    before = {path: path.read_bytes() for path in (root / "numeric_v2").rglob("*.json")}
+    config_path = Path(cm.get_config_path("characters.json"))
+    original_config = config_path.read_bytes()
+    cm._characters_cache = None
+    monkeypatch.setattr(numeric_theater_router, "assert_cloudsave_writable", lambda *a, **kw: None)
+    monkeypatch.setattr(numeric_theater_router, "_numeric_write_transaction", lambda *a: nullcontext)
+    with monkeypatch.context() as broken:
+        if failure == "unreadable":
+            original_open = builtins.open
+            def unreadable(path, *args, **kwargs):
+                if Path(path) == config_path:
+                    raise PermissionError("test-unreadable")
+                return original_open(path, *args, **kwargs)
+            broken.setattr(builtins, "open", unreadable)
+        elif failure == "missing":
+            config_path.unlink()
+        else:
+            config_path.write_text({"malformed": '{"猫娘":', "non_object": '[]',
+                                    "bad_map": '{"猫娘": []}'}[failure], encoding="utf-8")
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            await numeric_theater_router._registry(cm)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (root / "numeric_v2" / "quarantine").exists()
+    assert str(root.resolve()) not in numeric_v2_maintenance._MAINTAINED_ROOTS
+    config_path.write_bytes(original_config)
+    await numeric_theater_router._registry(cm)
+    assert str(root.resolve()) in numeric_v2_maintenance._MAINTAINED_ROOTS
+    assert len(list((root / "numeric_v2" / "sessions").glob("*.json"))) == 8
 
 
 def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypatch):
@@ -4533,7 +4635,7 @@ def test_numeric_story_memory_forget_rejects_switched_character(
             super().__init__(root)
             self.current_name = "测试猫娘"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -5113,7 +5215,7 @@ def test_numeric_session_survives_current_catgirl_rename(tmp_path, monkeypatch):
             super().__init__(root)
             self.current_name = "改名前"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -5163,7 +5265,7 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
             super().__init__(root)
             self.current_name = "改名前"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": self.current_name,
                 "猫娘": {
@@ -5240,7 +5342,7 @@ def test_numeric_turn_rejects_profile_edit_during_actor_wait(tmp_path, monkeypat
             super().__init__(root)
             self.personality = "安静而认真。"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": "测试猫娘",
                 "猫娘": {
@@ -5302,7 +5404,7 @@ def test_numeric_turn_preserves_player_address_fact_during_model_wait(
             super().__init__(root)
             self.player_address = "你"
 
-        def load_characters(self) -> dict:
+        def load_characters(self, *, require_authoritative=False) -> dict:
             return {
                 "当前猫娘": "测试猫娘",
                 "猫娘": {

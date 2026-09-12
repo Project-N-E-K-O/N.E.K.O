@@ -536,8 +536,9 @@
             try {
                 result = await requestJson(api.speakBlock, { method: 'POST', body: {
                     story_id: state.storyId, session_id: state.sessionId, revision: revision, block_index: blockIndex,
+                    lifecycle_revision: state.lifecycleRevision,
                     dialogue_block_indexes: dialogueBlockIndexes,
-                    playback_request_id: 'theater_speech_' + state.sessionId + '_' + revision + '_' + blockIndex
+                    playback_request_id: 'theater_speech_' + state.sessionId + '_' + revision + '_' + state.lifecycleRevision + '_' + blockIndex
                 }});
             } catch (_) {
                 // TTS 是表现层旁路；请求失败时按阅读时长继续，不能中断正文播放或锁住输入。
@@ -1002,32 +1003,39 @@
         if (!pointer) return;
         // 启动恢复只属于读取指针时的 launch 世代；任何更新的选剧启动都有更高优先级。
         var restoreLaunchEpoch = launchEpoch;
-        var snapshot;
+        // Refresh restoration is a pending launch too: end/delete notifications
+        // can arrive before its GET resolves, while the runtime is still inactive.
+        pendingLaunch = { token: restoreLaunchEpoch, storyId: pointer.story_id, sessionId: pointer.session_id };
         try {
-            snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
-        } catch (_) {
-            // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
-            return;
+            var snapshot;
+            try {
+                snapshot = await requestJson(api.session + '/' + encodeURIComponent(pointer.session_id) + '?story_id=' + encodeURIComponent(pointer.story_id));
+            } catch (_) {
+                // 暂时性网络失败保留指针供下次恢复，但不让启动 Promise 产生未处理拒绝。
+                return;
+            }
+            if (restoreLaunchEpoch !== launchEpoch) return;
+            if (!snapshot.ok || !snapshot.session) { try { window.sessionStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
+            applySnapshot(snapshot);
+            if (snapshot.end_receipt_id) state.pendingEnd = {
+                story_id: state.storyId,
+                session_id: state.sessionId,
+                revision: state.revision,
+                end_receipt_id: snapshot.end_receipt_id,
+                archive_request_id: snapshot.archive_request_id || ''
+            };
+            state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
+            var hostReady = await waitForHost();
+            if (restoreLaunchEpoch !== launchEpoch) return;
+            if (!hostReady) {
+                // 指针恢复同样依赖 React 胶囊；宿主不可用时清除不可见运行态和失效指针。
+                clear('pointer-host-unavailable');
+                return;
+            }
+            render();
+        } finally {
+            if (pendingLaunch && pendingLaunch.token === restoreLaunchEpoch) pendingLaunch = null;
         }
-        if (restoreLaunchEpoch !== launchEpoch) return;
-        if (!snapshot.ok || !snapshot.session) { try { window.sessionStorage.removeItem(POINTER_KEY); } catch (_) {} return; }
-        applySnapshot(snapshot);
-        if (snapshot.end_receipt_id) state.pendingEnd = {
-            story_id: state.storyId,
-            session_id: state.sessionId,
-            revision: state.revision,
-            end_receipt_id: snapshot.end_receipt_id,
-            archive_request_id: snapshot.archive_request_id || ''
-        };
-        state.active = true; state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player'; state.history = buildCommittedHistory(snapshot); state.currentBlock = null;
-        var hostReady = await waitForHost();
-        if (restoreLaunchEpoch !== launchEpoch) return;
-        if (!hostReady) {
-            // 指针恢复同样依赖 React 胶囊；宿主不可用时清除不可见运行态和失效指针。
-            clear('pointer-host-unavailable');
-            return;
-        }
-        render();
     }
     function handleCrossWindowMessage(event) {
         if (event && event.origin && event.origin !== window.location.origin) return;
@@ -1042,6 +1050,7 @@
         )) {
             launchEpoch += 1;
             pendingLaunch = null;
+            if (!state.active) rememberPointer();
         }
         if (message.action === 'theater:launch-ready' && message.launch_id) {
             stopDesktopLaunchRelay(message.launch_id);
