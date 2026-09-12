@@ -51,6 +51,7 @@
   const HOST_COMMAND_ROUTE_LIMIT = 64;
   const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
   const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
+  const MAX_COMMAND_RESPONSE_BYTES = 2 * 1024 * 1024;
   const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
   const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
@@ -1041,13 +1042,40 @@
       return `${operation}-${Date.now().toString(36)}-${this._nextRequestId.toString(36)}`;
     }
 
-    async _bufferResponse(response) {
+    async _bufferResponse(response, maxBytes) {
       // All _request callers consume finite REST responses, not streaming audio.
       // Buffer before releasing the fetch signal/deadline, then hand back a fresh
       // Response so legacy json()/clone(), headers and bodyUsed semantics survive.
       const ResponseImpl = this._window.Response || globalThis.Response;
       if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
-        const bytes = await response.arrayBuffer();
+        let bytes;
+        if (maxBytes !== undefined) {
+          const overflow = () => this._hostError('invalid_response', 'Host response exceeds its byte limit');
+          if (Number(response.headers?.get?.('content-length')) > maxBytes) {
+            await response.body?.cancel?.().catch(() => {});
+            throw overflow();
+          }
+          if (!response.body) bytes = new Uint8Array(0);
+          else {
+            if (typeof response.body.getReader !== 'function') throw overflow();
+            const reader = response.body.getReader();
+            const buffer = new Uint8Array(maxBytes);
+            let size = 0;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value.byteLength > maxBytes - size) {
+                  await reader.cancel().catch(() => {});
+                  throw overflow();
+                }
+                buffer.set(value, size);
+                size += value.byteLength;
+              }
+              bytes = buffer.subarray(0, size);
+            } finally { reader.releaseLock(); }
+          }
+        } else bytes = await response.arrayBuffer();
         const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
           status: response.status, statusText: response.statusText, headers: response.headers,
         });
@@ -1062,6 +1090,9 @@
       let data;
       let failure;
       try { data = await response.json(); } catch (error) { failure = error; }
+      if (!failure && maxBytes !== undefined && utf8ByteLength(JSON.stringify(data) || '') > maxBytes) {
+        throw this._hostError('invalid_response', 'Host response exceeds its byte limit');
+      }
       const replay = () => ({
         ...response,
         json: async () => { if (failure) throw failure; return data; },
@@ -1123,11 +1154,13 @@
         const work = Promise.resolve().then(() => {
           if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
           return this._fetchImpl(url, { ...init, signal: controller.signal });
-        }).then(response => this._bufferResponse(response)).finally(() => this._rawRequests.delete(entry));
+        }).then(response => this._bufferResponse(response, options.maxResponseBytes))
+          .finally(() => this._rawRequests.delete(entry));
         const response = await Promise.race([work, cancellation]);
         if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
         return response;
       } catch (error) {
+        if (!entry.cancelReason && error instanceof NekoMiniGameHostError) throw error;
         const code = entry.cancelReason || (error?.name === 'AbortError' ? 'cancelled' : 'network_error');
         const message = code === 'timeout'
           ? `${this.displayName} host request timed out after ${timeoutMs}ms`
@@ -1280,6 +1313,7 @@
       }, {
         operation: options.operation || 'post',
         timeoutMs: options.timeoutMs,
+        maxResponseBytes: options.maxResponseBytes,
         signal: options.signal,
       });
     }
@@ -1701,7 +1735,14 @@
         const data = await response.json();
         if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
         if (!response.ok || data?.ok !== true) {
-          throw this._hostError('request_failed', 'Vision analysis failed', { reason: String(data?.reason || '').slice(0, 80) });
+          const reasons = {
+            invalid_image: 'invalid_image', unsupported_attachment: 'unsupported_attachment',
+            busy: 'busy', timeout: 'timeout', vision_unavailable: 'capability_unavailable',
+            route_inactive: 'session_invalid', invalid_model_response: 'invalid_response',
+          };
+          const code = typeof data?.reason === 'string' && Object.prototype.hasOwnProperty.call(reasons, data.reason)
+            ? reasons[data.reason] : 'request_failed';
+          throw this._hostError(code, 'Vision analysis failed');
         }
         if (typeof data.text !== 'string' || data.text.length > 8192) throw this._hostError('invalid_response', 'Invalid vision result');
         return attached ? {text:data.text} : { text: data.text, width: capture.width, height: capture.height };
@@ -1812,6 +1853,7 @@
         {
           timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
           maxRequestBytes: policy.maxRequestBytes,
+          maxResponseBytes: MAX_COMMAND_RESPONSE_BYTES,
           signal: options.signal,
           operation: 'game_command',
         },

@@ -195,6 +195,10 @@ declare host-owned route identity or memory-policy fields; those values are
 stripped or replaced at the trust boundary. Response schemas may use any
 supported JSON type.
 
+Command responses (including non-2xx bodies) are limited to 2 MiB while reading
+the network stream, before JSON parsing. Oversized responses are cancelled and
+reject with `invalid_response`; normal response JSON/clone behavior is preserved.
+
 The command deadline covers both transport dispatch and response-body reading.
 Cancellation, route end/reset and client disposal settle waiting callers and
 discard late results. A transport that ignores abort keeps its bounded raw slot
@@ -868,8 +872,11 @@ the existing role registry and canonical model-path endpoints; it keeps no role
 data copy and exposes no persona, memory, credentials or raw response fields.
 The mount contract accepts Live2D, VRM, MMD and PNGtuber descriptors, but the
 registered provider must implement the corresponding renderer. The default
-character source reports Live2D/VRM availability only; providers that support
-MMD/PNGtuber supply their own display-only descriptors and availability flags.
+character source discovers all four model types, including MMD/PNGtuber for
+providers that implement mounting but delegate discovery to the built-in source.
+Its availability flag reports a configured model candidate, not a guarantee that
+the registered provider can load that type; mounting still validates renderer support.
+Providers may supply their own display-only descriptors and availability flags.
 
 A trusted provider may optionally implement `getCurrentCharacter(options)`,
 `getCharacter(name, options)` and `listCharacters(options)`. Missing methods use
@@ -978,7 +985,8 @@ controller disposal. Disposal of an already accepted call returns `false`.
 An uncooperative renderer keeps its single raw slot until it settles (`busy`
 for another manual call); timed-out waiters on automatic playback are removed.
 Reapplying manual motion after model replacement/resume is best-effort and
-cannot change the model/resume result or delay it indefinitely.
+does not delay or change the model/resume result. In particular, `await resume()`
+confirms renderer resumption, not completion of an optional manual mouth update.
 
 When the trusted host provides character discovery, games can call
 `avatar.listCharacters()`, `avatar.getCurrentCharacter()` and

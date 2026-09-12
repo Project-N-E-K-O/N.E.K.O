@@ -129,6 +129,7 @@ async function sdkTests() {
   w.Blob=Blob; w.btoa=btoa;
   const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
   let bodyWait = null;
+  let visionFailure = null;
   w.fetch = async (url, init = {}) => {
     if (String(url).endsWith('/cors-denied.png')) throw new TypeError('CORS denied');
     if (String(url).includes('page_config')) return response({ autostart_csrf_token: 'test-token' });
@@ -137,6 +138,7 @@ async function sdkTests() {
       game_route_active: true, session_id: body.session_id, lanlan_name: 'Example',
     } });
     if (String(url).endsWith('/vision/analyze')) {
+      if (visionFailure) return response({ ok: false, reason: visionFailure });
       posts.push(body);
       assert.ok(env.stops > 0, 'sharing must stop before model request');
       return { ...response({ ok: true, text: 'A blue square.' }), json: async () => bodyWait ? bodyWait.promise : { ok: true, text: 'A blue square.' } };
@@ -188,6 +190,18 @@ async function sdkTests() {
   assert.equal(posts.length,2);
   assert.equal(posts[1].text,'Compare');
   assert.equal(posts[1].attachments[0].image_data_url,'data:image/png;base64,AQID');
+  for (const [reason, code] of Object.entries({
+    invalid_image: 'invalid_image', unsupported_attachment: 'unsupported_attachment',
+    busy: 'busy', timeout: 'timeout', vision_unavailable: 'capability_unavailable',
+    route_inactive: 'session_invalid', invalid_model_response: 'invalid_response',
+    vision_failed: 'request_failed', 'private backend detail': 'request_failed',
+  })) {
+    visionFailure = reason;
+    await assert.rejects(game.vision.analyze({text:'Observe', attachments:[
+      {type:'image',source:new Uint8Array([1,2,3]),mimeType:'image/png'},
+    ]}), error => error.code === code && !JSON.stringify(error).includes('private backend detail'));
+  }
+  visionFailure = null;
   assert.deepEqual(posts[1].attachments.map(item=>item.label),['before','after']);
   for(const bad of [{text:'Example',attachments:[]},
     {text:'Example',attachments:[{type:'audio',source:'anything'}]},

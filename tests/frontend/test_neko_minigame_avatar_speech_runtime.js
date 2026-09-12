@@ -277,6 +277,16 @@ async function main() {
     await assert.rejects(restoring.setSpeaking(false), { code: 'busy' });
     manualBlocker = null; releaseManual(); await flush();
     await restoring.setSpeaking(false);
+    await restoring.setSpeaking(true);
+    restoring.pause();
+    manualBlocker = new Promise(resolve => { releaseManual = resolve; });
+    const resumed = Promise.resolve(restoring.resume()).then(() => 'resumed');
+    await flush();
+    assert.equal(await Promise.race([resumed, Promise.resolve('unsettled')]), 'resumed',
+      'optional manual speech delayed renderer resumption');
+    await assert.rejects(restoring.setSpeaking(false), {code:'busy'});
+    manualBlocker = null; releaseManual(); await flush();
+    await restoring.setSpeaking(false);
     blocker = new Promise(() => {});
     emit({ active: false }); await flush();
     const endedWait = restoring.setSpeaking(true).catch(error => error); await flush();

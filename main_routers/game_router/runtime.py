@@ -4831,18 +4831,6 @@ async def game_character(game_type: str, request: Request = None):
     paths resolved by the host. Each mini game chooses the renderer it supports
     without redefining the current character's model-selection policy.
     """
-    def normalize_live3d_path(raw: str, static_dir: str) -> str:
-        if not raw or not isinstance(raw, str):
-            return ''
-        normalized = raw.strip().replace('\\', '/')
-        if not normalized:
-            return ''
-        if normalized.startswith(('http://', 'https://', '/user_', '/static/', '/workshop/')):
-            return normalized
-        if normalized.startswith(f'{static_dir}/'):
-            return f'/static/{normalized}'
-        return f'/static/{static_dir}/{normalized}'
-
     try:
         config_manager = get_config_manager()
         characters = await asyncio.to_thread(config_manager.load_characters)
@@ -4901,7 +4889,22 @@ async def game_character(game_type: str, request: Request = None):
 
             mmd_info = avatar.get('mmd', {})
             if isinstance(mmd_info, dict):
-                mmd_path = normalize_live3d_path(mmd_info.get('model_path', ''), 'mmd')
+                # Match the trusted provider's legacy character projection.
+                raw_mmd = neko_data.get('mmd')
+                if not isinstance(raw_mmd, str) or not raw_mmd.strip():
+                    raw_mmd = mmd_info.get('model_path', '')
+                effective_type = neko_data.get('model_type') or model_type
+                effective_subtype = neko_data.get('live3d_sub_type') or live3d_sub_type
+                if not raw_mmd and (effective_type == 'mmd' or (
+                    effective_type == 'live3d' and effective_subtype == 'mmd'
+                )):
+                    raw_mmd = neko_data.get('model_path', '')
+                if isinstance(raw_mmd, str) and raw_mmd.strip() and len(raw_mmd) <= 2048:
+                    from ..config_router.page_config import _resolve_mmd_path
+
+                    mmd_path = await asyncio.to_thread(
+                        _resolve_mmd_path, raw_mmd.strip().replace('\\', '/'), config_manager, current_name,
+                    )
 
             vrm_info = avatar.get('vrm', {})
             if isinstance(vrm_info, dict):

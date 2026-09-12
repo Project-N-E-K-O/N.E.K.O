@@ -623,6 +623,11 @@ async function main() {
     if (target.includes('/api/characters/current_live2d_model?')) {
       return jsonResponse({ success: true, model_info: { path: '/resolved/live.model3.json' } });
     }
+    if (target.startsWith('/api/game/sdk-avatar/character?')) {
+      const name = new URL(target, 'http://localhost').searchParams.get('lanlan_name');
+      const model = characters[name]?._reserved?.avatar?.mmd?.model_path;
+      return jsonResponse({ lanlan_name: name, mmd_path: model ? `/user_mmd/${model}` : '' });
+    }
     if (target === '/resolved/live.model3.json') {
       onLiveModelFetch?.();
       if (liveModelFetchGate) await liveModelFetchGate;
@@ -733,7 +738,7 @@ async function main() {
       assert(timers.size === 0, 'completed body retained deadline');
     } finally { finishBody?.(); await probe.dispose(); }
   }
-  for (const stage of ['current', 'catalog', 'canonical']) {
+  for (const stage of ['current', 'catalog', 'canonical', 'mmd']) {
     const owner = new AbortController();
     let entered;
     let release;
@@ -742,11 +747,13 @@ async function main() {
     const started = new Promise((resolve) => { entered = resolve; });
     const { probe, timers } = queryProbe(async (url, options) => {
       calls += 1;
-      const target = url.includes('current_catgirl') ? 'current'
+      const target = url.includes('/sdk-avatar/character') ? 'mmd'
+        : url.includes('current_catgirl') ? 'current'
         : url.includes('current_live2d_model') ? 'canonical' : 'catalog';
-      const payload = target === 'current' ? { current_catgirl: 'Example' }
+      const payload = target === 'mmd' ? {lanlan_name:'Example',mmd_path:'/user_mmd/example.pmx'}
+        : target === 'current' ? { current_catgirl: 'Example' }
         : target === 'canonical' ? { success: true, model_info: { path: '/resolved.model3.json' } }
-          : queryCatalog;
+          : stage === 'mmd' ? {猫娘:{Example:{model_type:'live2d',mmd:'example.pmx'}}} : queryCatalog;
       if (blocked && target === stage) {
         entered(options.signal);
         // Deliberately ignore abort until released to exercise late completion.
@@ -1009,13 +1016,14 @@ async function main() {
   } } };
   const fallbackCallsStart = calls.length;
   const fallbackDescriptor = await host.getCharacter('Fallback Example');
-  assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'mmd'),
+  assert(fallbackDescriptor.fallbackModels?.some(model => model.type === 'mmd'
+    && model.path === '/user_mmd/fallback.pmx'),
     'canonical fallback was not exposed');
   assert(fallbackDescriptor.fallbackModels?.some(model =>
     model.type === 'pngtuber' && model.path === '/avatars/fallback.png'),
   'PNGTuber fallback was not exposed through public discovery');
   for (const model of [
-    { type: 'mmd', path: '/static/mmd/fallback.pmx' },
+    fallbackDescriptor.fallbackModels.find(model => model.type === 'mmd'),
     { type: 'pngtuber', path: '/avatars/fallback.png' },
   ]) {
     const fallback = await host.mount(mountConfig('Fallback Example', model));
@@ -1027,6 +1035,10 @@ async function main() {
     'fallback lost private PNG configuration');
   assert(calls.slice(fallbackCallsStart).some(entry => entry[0] === 'mmd-idle-load'
     && entry[1] === '/animations/fallback.vmd'), 'fallback lost private MMD motion');
+  for (const path of ['fallback.pmx', '/static/mmd/fallback.pmx']) {
+    const rejected = await rejection(host.mount(mountConfig('Fallback Example', {type:'mmd',path})));
+    assert(rejected?.code === 'model_not_allowed', 'unresolved MMD alias escaped canonical authorization');
+  }
   calls.splice(fallbackCallsStart);
 
   const rendererCallsBeforeAttacks = calls.length;
@@ -1249,14 +1261,14 @@ async function main() {
       && entry[1] === '/animations/mmd-idle-2.vmd'),
   'MMD did not apply saved settings in the required init/load/apply/idle order');
   assert(calls.some((entry) => entry[0] === 'mmd-model'
-    && entry[1] === '/mmd-resolved/avatar.pmx')
+    && entry[1] === '/mmd-resolved//user_mmd/avatar.pmx')
     && !calls.some((entry) => entry.includes('/animations/mmd-stale-list.vmd')
       || entry.includes('/animations/mmd-stale-single.vmd')
       || entry.includes('/animations/mmd-clear-stale-list.vmd')
       || entry.includes('/animations/mmd-stale.vmd')),
   'MMD did not prefer its canonical model path or respect an explicit idle clear');
   const legacyMmdModel = calls.findIndex((entry) => entry[0] === 'mmd-model'
-    && entry[1] === '/mmd-resolved/legacy-avatar.pmx');
+    && entry[1] === '/mmd-resolved//user_mmd/legacy-avatar.pmx');
   const legacyMmdIdleLoad = calls.findIndex((entry, index) => index > legacyMmdModel
     && entry[0] === 'mmd-idle-load' && entry[1] !== '/static/mmd/animation/wait03.vmd');
   assert(legacyMmdModel >= 0 && legacyMmdIdleLoad > legacyMmdModel

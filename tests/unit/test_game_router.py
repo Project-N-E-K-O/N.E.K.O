@@ -3071,6 +3071,9 @@ async def test_game_character_returns_mmd_path_for_live3d_mmd(
     tmp_path,
     game_character_locale_loader,
 ):
+    static_mmd = tmp_path / "static" / "mmd" / "Miku" / "Miku.pmx"
+    static_mmd.parent.mkdir(parents=True)
+    static_mmd.touch()
     user_vrm = tmp_path / "user_vrm" / "ignored-but-direct.vrm"
     user_vrm.parent.mkdir(parents=True)
     user_vrm.write_text("vrm", encoding="utf-8")
