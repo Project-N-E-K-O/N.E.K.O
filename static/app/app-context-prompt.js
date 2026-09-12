@@ -131,7 +131,7 @@
 
     function _dismissActiveContextPromptForGameRoute() {
         // 内置小游戏不属于活动情境提示场景。丢掉尚未重放的信号，并把 play
-        // 记作已处理，避免游戏结束后把“检测到外部游戏”的过期提示补弹。
+        // 记作已处理，避免游戏结束后把"检测到外部游戏"的过期提示补弹。
         _pendingContexts.clear();
         _shownPlay = true;
         if (!_activeContext) return;
@@ -143,6 +143,22 @@
         if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
             _activePromptOverlay.click();
         }
+    }
+
+    function _dismissActiveContextPromptForGoodbye() {
+        // 请她离开模式开启时，所有主动搭话已静默，弹窗无意义。
+        _pendingContexts.clear();
+        if (!_activeContext) return;
+        _markShown(_activeContext);
+
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
+    function _isGoodbyeActive() {
+        return !!(window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active);
     }
 
     async function handle(context) {
@@ -199,7 +215,7 @@
                 ],
                 onShown: function (modal) {
                     _activePromptOverlay = modal && modal.overlay ? modal.overlay : null;
-                    if (_cancelActivePrompt || S.gameRouteActive) {
+                    if (_cancelActivePrompt || S.gameRouteActive || _isGoodbyeActive()) {
                         _cancelActivePrompt = true;
                         if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
                             _activePromptOverlay.click();
@@ -256,6 +272,15 @@
         const detail = event && event.detail ? event.detail : {};
         if (detail.action === 'opened') {
             _dismissActiveContextPromptForGameRoute();
+        }
+    });
+    // 请她离开模式开启时，dismiss 正在显示或排队中的情境弹窗。
+    window.addEventListener('live2d-goodbye-click', function () {
+        _dismissActiveContextPromptForGoodbye();
+    });
+    window.addEventListener('neko:auto-goodbye:state-change', function (event) {
+        if (_isGoodbyeActive()) {
+            _dismissActiveContextPromptForGoodbye();
         }
     });
 
