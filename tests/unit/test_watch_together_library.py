@@ -9,6 +9,28 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+def test_reserved_resource_names_round_trip_through_urls(tmp_path):
+    from urllib.parse import unquote, urlsplit
+    archive = source(tmp_path, 'reserved')
+    folder = archive / JOB
+    names = ['video#1%.mp4', 'reaction#1%23.wav']
+    for name in names:
+        (folder / name).write_bytes(b'media')
+    data = {'status': 'ready', 'video': f'/media/{JOB}/{names[0]}',
+            'events': [{'at': 0, 'duration': 1, 'audio': f'/media/{JOB}/{names[1]}'}]}
+    (folder / 'timeline.json').write_text(json.dumps(data))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['status'] == 'ready'
+    timeline = library.timeline(JOB, row['version'])
+    for url, name in zip([timeline['video'], timeline['events'][0]['audio']], names):
+        parsed = urlsplit(url)
+        assert not parsed.fragment and not parsed.query
+        assert unquote(parsed.path.rsplit('/', 1)[1]) == name
+        assert library.resource(JOB, row['version'], name).read_bytes() == b'media'
+
+
 @pytest.mark.parametrize('depth', [2, 40, 1500])
 def test_deep_timeline_does_not_break_history(tmp_path, depth):
     archive = source(tmp_path, 'nested')

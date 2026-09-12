@@ -148,6 +148,8 @@ export async function run(game, character) {
     } catch(error) {
       if(stale())return;
       try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
+      if(selection!==selectionGeneration || game.disposed)return;
+      $('video').src = selected?.video || '';
       status(error.message);
     }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }

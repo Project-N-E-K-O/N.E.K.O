@@ -379,4 +379,17 @@ await inactivePlay;
 assert.equal(inactiveMounts,0);
 assert.equal(inactiveWrites.length,0,'inactive routes cannot accept fabricated cleanup events');
 assert.equal(inactiveStart.elements.get('video').controls,false);
-console.log('watch-together scene: all regressions passed, including inactive delayed watch start');
+const retryPlayback=await fixture(false,false,{total_tokens:1});
+let failPlayback=true;
+retryPlayback.game.media.mount=async()=>({
+  async play(){if(failPlayback)throw Error('lock unavailable');},
+  dispose(){retryPlayback.elements.get('video').src='';}
+});
+await retryPlayback.elements.get('play').onclick();
+assert.equal(retryPlayback.elements.get('video').src,'/video','retry unlock needs the source before async startup');
+assert.equal(retryPlayback.elements.get('play').disabled,false);
+failPlayback=false;
+await retryPlayback.elements.get('play').onclick();
+assert.match(retryPlayback.elements.get('status').textContent,/playing/);
+retryPlayback.handlers['runtime-inactive']();
+console.log('watch-together scene: all regressions passed, including playback failure retry');

@@ -17,6 +17,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from urllib.parse import quote, unquote
 
 JOB_ID = re.compile(r"[a-f0-9]{32}")
 
@@ -202,7 +203,7 @@ class Library:
             if depth > 32:
                 raise ValueError("Timeline nesting exceeds load budget")
             if isinstance(value, str) and value.startswith(f"/media/{job}/"):
-                return prefix + value[len(f"/media/{job}/"):]
+                return prefix + quote(value[len(f"/media/{job}/"):], safe='/')
             if isinstance(value, dict):
                 return {k: remap(v, depth + 1) for k, v in value.items()}
             if isinstance(value, list):
@@ -231,7 +232,7 @@ class Library:
             references = [(timeline.get('video'), {'.mp4', '.webm'})]
             references.extend((cue.get('audio'), {'.wav', '.mp3', '.ogg', '.m4a'}) for cue in events if cue.get('audio'))
             for url, extensions in references:
-                name = url[len(prefix):] if isinstance(url, str) and url.startswith(prefix) else None
+                name = unquote(url[len(prefix):]) if isinstance(url, str) and url.startswith(prefix) else None
                 entry = manifest.get(name)
                 if entry is None or Path(name).suffix.lower() not in extensions or not (self.objects / entry['sha256']).is_file():
                     timeline['status'] = 'incomplete'
