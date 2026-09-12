@@ -3426,6 +3426,8 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     omni: 'emotion',
     agent: 'tts',
     tts: 'agent',
+    game: 'image',
+    image: 'game',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
