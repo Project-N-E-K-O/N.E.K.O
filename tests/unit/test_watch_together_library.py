@@ -82,6 +82,31 @@ def test_corrupt_playable_object_is_incomplete(tmp_path, monkeypatch):
     assert (folder / 'video.mp4').read_bytes() == b'not a video'
 
 
+@pytest.mark.parametrize('surrogate', ['\ud800', '\udfff'])
+def test_imported_surrogates_are_safe_for_utf8_responses(tmp_path, surrogate):
+    archive = source(tmp_path, 'unicode-metadata')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    original = json.dumps({'status': 'ready', 'title': f'Cat {surrogate} \U0001f431',
+                          'video': f'/media/{JOB}/video.mp4',
+                          'warnings': [surrogate], 'usage': {surrogate: {'text': surrogate}},
+                          'events': [{'at': 1, 'text': surrogate}],
+                          'unused': f'/media/{JOB}/{surrogate}.wav'}).encode('utf-8')
+    (folder / 'timeline.json').write_bytes(original)
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    timeline = library.timeline(JOB, row['version'])
+    assert timeline['title'] == 'Cat \ufffd \U0001f431'
+    assert timeline['warnings'] == ['\ufffd']
+    assert timeline['usage'] == {'\ufffd': {'text': '\ufffd'}}
+    assert timeline['events'][0]['text'] == '\ufffd'
+    assert timeline['unused'].endswith('/%EF%BF%BD.wav')
+    json.dumps({'history': library.history_page(), 'timeline': timeline}, ensure_ascii=False).encode('utf-8')
+    assert library.resource(JOB, row['version'], 'timeline.json').read_bytes() == original
+    assert (folder / 'timeline.json').read_bytes() == original
+
+
 @pytest.mark.parametrize('constant', ['NaN', 'Infinity', '-Infinity'])
 def test_non_json_constants_do_not_break_history(tmp_path, constant):
     archive = source(tmp_path, 'constant')

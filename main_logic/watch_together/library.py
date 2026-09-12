@@ -238,16 +238,23 @@ class Library:
         if isinstance(data.get('events'), list) and len(data['events']) > 1000:
             data = {**data, 'status': 'incomplete', 'events': []}
         prefix = f"/api/watch-together/media/{job}/{version}/"
+        def clean_text(value):
+            # JSON accepts escaped lone UTF-16 surrogates; UTF-8 responses do not.
+            return re.sub(r'[\ud800-\udfff]', '\ufffd', value)
+
         def remap(value, depth=0):
             if depth > 32:
                 raise ValueError("Timeline nesting exceeds load budget")
             if isinstance(value, float) and not math.isfinite(value):
                 invalid_constants.append('non-finite number')
                 return None
-            if isinstance(value, str) and value.startswith(f"/media/{job}/"):
-                return prefix + quote(value[len(f"/media/{job}/"):], safe='/')
+            if isinstance(value, str):
+                value = clean_text(value)
+                if value.startswith(f"/media/{job}/"):
+                    return prefix + quote(value[len(f"/media/{job}/"):], safe='/')
+                return value
             if isinstance(value, dict):
-                return {k: remap(v, depth + 1) for k, v in value.items()}
+                return {clean_text(k): remap(v, depth + 1) for k, v in value.items()}
             if isinstance(value, list):
                 return [remap(v, depth + 1) for v in value]
             return value
