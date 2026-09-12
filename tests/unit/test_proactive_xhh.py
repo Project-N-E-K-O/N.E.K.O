@@ -245,6 +245,14 @@ def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
     assert posts[0]["content"] == "可用的后备摘要。"
 
 
+def test_normalize_neko_community_feed_skips_content_only_unidentified_cards():
+    posts = normalize_neko_community_feed(
+        {"items": [{"content": "只有正文、没有可识别卡片身份。"}]}
+    )
+
+    assert posts == []
+
+
 def test_normalize_neko_community_feed_falls_back_after_blank_title():
     posts = normalize_neko_community_feed(
         {
@@ -281,6 +289,43 @@ def test_normalize_neko_community_feed_bounds_body():
     )
 
     assert posts[0]["content"] == content[: trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS]
+
+
+def test_community_label_values_stops_after_tag_limit():
+    seen_items: list[str] = []
+
+    class CountingTags(list):
+        def __iter__(self):
+            for item in super().__iter__():
+                seen_items.append(item)
+                yield item
+
+    tags = CountingTags(f"tag-{index}" for index in range(20))
+    values = trending_content._community_label_values(
+        tags,
+        limit=trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT,
+        max_chars=trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS,
+    )
+
+    assert len(values) == trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT
+    assert len(seen_items) == trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT
+
+
+def test_normalize_neko_community_feed_falls_back_after_unusable_author():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "author-fallback",
+                    "title": "作者后备卡牌",
+                    "author": {"id": "only-an-id"},
+                    "author_name": "可用作者",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["author"] == "可用作者"
 
 
 def test_normalize_neko_community_feed_bounds_tags():

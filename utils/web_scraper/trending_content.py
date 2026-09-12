@@ -1852,12 +1852,21 @@ def _community_text(value: Any) -> str:
     return ""
 
 
-def _community_label_values(items: Any) -> list[str]:
+def _community_label_values(
+    items: Any, *, limit: int, max_chars: int
+) -> list[str]:
+    """Normalize only the bounded tag set retained for prompt rendering."""
+
     values: list[str] = []
+    seen: set[str] = set()
     for item in items if isinstance(items, list) else []:
-        value = _community_text(item)
-        if value and value not in values:
-            values.append(value)
+        value = _community_text(item)[:max_chars]
+        if not value or value in seen:
+            continue
+        values.append(value)
+        seen.add(value)
+        if len(values) >= limit:
+            break
     return values
 
 
@@ -1869,7 +1878,9 @@ def _community_identifier(value: Any) -> str:
     return _community_text(value)
 
 
-def _community_card_url(raw: dict[str, Any]) -> str:
+def _community_card_url(
+    raw: dict[str, Any], *, discover_fallback: bool = True
+) -> str:
     _, discover_url = _neko_community_urls()
     for key in (
         "url",
@@ -1902,7 +1913,7 @@ def _community_card_url(raw: dict[str, Any]) -> str:
             return resolved_url
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
-    return discover_url
+    return discover_url if discover_fallback else ""
 
 
 def normalize_neko_community_feed(
@@ -1933,6 +1944,16 @@ def normalize_neko_community_feed(
             if content:
                 break
         content = content[:NEKO_COMMUNITY_CONTENT_MAX_CHARS]
+        item_id = ""
+        for identifier in (raw.get("id"), raw.get("post_id"), raw.get("uuid")):
+            item_id = _community_identifier(identifier)
+            if item_id:
+                break
+        card_url = _community_card_url(raw, discover_fallback=False)
+        # Content alone is too weak an identity for a community source card.
+        # Skip it rather than making a discover-page fallback look distinct.
+        if not title and not item_id and not card_url:
+            continue
         published_at = ""
         for field in ("created_at", "createdAt"):
             value = raw.get(field)
@@ -1945,25 +1966,23 @@ def normalize_neko_community_feed(
             title = content[:80]
         if not title:
             continue
-        author_data = (
-            raw.get("author")
-            or raw.get("author_name")
-            or raw.get("user")
-            or raw.get("creator")
-        )
-        author = _community_text(author_data)[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
-        labels = [
-            label[:NEKO_COMMUNITY_TAG_MAX_CHARS]
-            for label in _community_label_values(
-                raw.get("tags") or raw.get("topics") or raw.get("categories")
-            )[:NEKO_COMMUNITY_TAG_MAX_COUNT]
-        ]
-        url = _community_card_url(raw)
-        item_id = ""
-        for identifier in (raw.get("id"), raw.get("post_id"), raw.get("uuid")):
-            item_id = _community_identifier(identifier)
-            if item_id:
+        author = ""
+        for author_candidate in (
+            raw.get("author"),
+            raw.get("author_name"),
+            raw.get("user"),
+            raw.get("creator"),
+        ):
+            author = _community_text(author_candidate)
+            if author:
                 break
+        author = author[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
+        labels = _community_label_values(
+            raw.get("tags") or raw.get("topics") or raw.get("categories"),
+            limit=NEKO_COMMUNITY_TAG_MAX_COUNT,
+            max_chars=NEKO_COMMUNITY_TAG_MAX_CHARS,
+        )
+        url = card_url or _community_card_url(raw)
         dedupe_key = item_id or f"{url}|{title.casefold()}"
         title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
         if dedupe_key in seen:
