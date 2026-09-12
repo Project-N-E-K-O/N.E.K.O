@@ -2,6 +2,24 @@
 import { ReactionClock } from './media-clock.mjs';
 // A media element can be attached to Web Audio only once, including across mounts.
 const videoGraphs = new WeakMap();
+function videoGraph(video) {
+  let graph=videoGraphs.get(video);
+  if(!graph) {
+    const context=new AudioContext(), soundtrack=context.createGain();
+    context.createMediaElementSource(video).connect(soundtrack);soundtrack.connect(context.destination);
+    graph={context,soundtrack};videoGraphs.set(video,graph);
+  }
+  return graph;
+}
+
+// Called by the trusted page directly inside the user's click, before network work.
+export function unlock(video) {
+  const graph=videoGraph(video);
+  void graph.context.resume().catch(()=>{});
+  const started=video.play();
+  video.pause();
+  void started?.catch(()=>{});
+}
 
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {} }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
@@ -121,12 +139,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     async play() {
       if (disposed) throw Error('Media controller disposed');
       if (!context) {
-        let graph = videoGraphs.get(video);
-        if (!graph) {
-          const ctx = new AudioContext(), gain = ctx.createGain();
-          ctx.createMediaElementSource(video).connect(gain);gain.connect(ctx.destination);
-          graph = {context:ctx, soundtrack:gain};videoGraphs.set(video,graph);
-        }
+        const graph = videoGraph(video);
         context = graph.context;soundtrack = graph.soundtrack;
         analyser=context.createAnalyser();analyser.fftSize=256;
         // Lift quiet reactions above the soundtrack without boosting the video.

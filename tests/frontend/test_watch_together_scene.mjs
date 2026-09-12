@@ -271,3 +271,13 @@ assert.match(analysisPaging.elements.get('history').children[0].textContent,/Old
 assert.equal(analysisPaging.elements.get('history-next').disabled,true);
 await analysisPaging.elements.get('history-previous').onclick();
 assert.match(analysisPaging.elements.get('history').children[0].textContent,/Recent analysis/);
+const longTitle=await fixture(false,false,{total_tokens:1});
+const longRequest=longTitle.game.media.request;
+longTitle.game.media.request=async(action,payload)=>{
+  const result=await longRequest(action,payload);
+  if(action==='load')result.title='猫'.repeat(300);
+  return result;
+};
+await longTitle.elements.get('history').children[0].onclick();
+await longTitle.elements.get('discover').onsubmit({preventDefault(){}});
+assert.equal(longTitle.calls.filter(c=>c.action==='discover').at(-1).payload.topic.length,200);

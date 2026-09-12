@@ -1,5 +1,5 @@
 // Trusted page composition. The scene only receives the SDK client.
-import '../../sdk/neko-minigame-media-host.mjs';
+import {unlock} from '../../sdk/neko-minigame-media-host.mjs';
 import { run } from './scene.mjs';
 import { initializeDisplay } from './display.mjs';
 import { create as createLive2D } from './live2d-host.mjs';
@@ -8,6 +8,9 @@ let renderer = null;
 // The bootstrap exports window.i18n before localechange on success or fallback.
 if (!window.i18n) await new Promise(resolve=>window.addEventListener('localechange',resolve,{once:true}));
 initializeDisplay();
+document.getElementById('play').addEventListener('click',()=>{
+  try {unlock(document.getElementById('video'));} catch (_) { /* Normal playback reports failures. */ }
+},{capture:true});
 const container = document.getElementById('avatar');
 const avatarHost = NekoMiniGameAvatarHost.create({slots:{companion:{container,createController:({config})=>{
   renderer = (config.model.type==='vrm'?createVRM:createLive2D)(container);return renderer;

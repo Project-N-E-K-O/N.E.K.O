@@ -4,6 +4,7 @@ export async function run(game, character) {
   const $ = id => document.getElementById(id);
   const t = key => window.i18n?.t?.(`watchTogether.${key}`) || key;
   const renderLanguage = () => document.documentElement?.lang || window.i18n?.language || new URLSearchParams(location.search).get('ui_lang') || '';
+  const discoveryTopic = () => $('topic').value.trim() || Array.from(String(selected?.title || '').trim()).slice(0,200).join('');
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
   let selectionGeneration = 0;
@@ -31,7 +32,7 @@ export async function run(game, character) {
   function prefetchNext() {
     if(!$('prefetch-enabled').checked || !selected || nextQueue.busy || preparing || queuedFor===selected.id)return;
     queuedFor=selected.id;
-    void nextQueue.start({topic:$('topic').value.trim() || selected.title || '',exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
+    void nextQueue.start({topic:discoveryTopic(),exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
   }
   const status = message => { $('status').textContent = message; };
   function renderUsage(stats) {
@@ -80,6 +81,7 @@ export async function run(game, character) {
     history.replaceState(null,'',address);
     $('title').textContent = selected.title;
     $('video').poster = selected.cover || '';
+    $('video').src = selected.video || '';
     $('voice-label').textContent = `${t('savedAudio')} · ${selected.voice || t('unknown')}`;
     $('warnings').textContent = [...(selected.warnings || []),...(selected.warning_keys || []).map(t)].join('\n');
     renderUsage(selected.usage);
@@ -179,7 +181,7 @@ export async function run(game, character) {
     preparing=true;updatePrepareButtons();
     try {
       status(t('searching'));
-      const topic = $('topic').value.trim() || selected?.title || '';
+      const topic = discoveryTopic();
       const result = await game.media.request('discover',{topic,exclude:[...seenVideos].slice(-128)});
       if(generation!==selectionGeneration || game.disposed)return;
       if (!result.video) {status(t('noCandidates'));return;}

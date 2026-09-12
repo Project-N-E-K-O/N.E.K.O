@@ -13,7 +13,13 @@ from main_logic.watch_together.library import Library
 
 def repair(root):
     library = Library(Path(root))
-    history = library.history()
+    history, offset = [], 0
+    while True:
+        page = library.history_page(100, offset)
+        history.extend(page['analyses'])
+        if page['next_offset'] is None:
+            break
+        offset = page['next_offset']
     repaired = set()
     for row in history:
         if row['status'] == 'ready':
@@ -44,7 +50,7 @@ def repair(root):
         timeline = json.loads((folder / 'timeline.json').read_text(encoding='utf-8-sig'))
         events, until = [], -1
         for event in timeline.get('events', []):
-            name = event.get('audio', '').split(f"/media/{row['job']}/")[-1]
+            name = (event.get('audio') or '').split(f"/media/{row['job']}/")[-1]
             if name in malformed:
                 event['duration'] = duration(folder / name)
             if event['at'] < until or event['at'] + event.get('duration', 0) > timeline['duration']:
