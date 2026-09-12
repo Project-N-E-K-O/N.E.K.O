@@ -152,6 +152,8 @@
             _pendingContexts.delete(context);
             return;
         }
+        // 请她离开模式：所有主动搭话已静默，弹窗无意义
+        if (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active) return;
         // settings 还没合并就绪（branch 未决议，nekoTelemetryBranch 为 undefined）：暂存
         // 这次事件，等 neko:telemetry-branch-resolved 再重放。不能直接丢——后端一次性推送
         // 不会重发。GET 失败时 branch 永远 undefined、该事件也永不重放，等于 fail-closed
