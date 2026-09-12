@@ -81,6 +81,7 @@ async function main() {
   let slowLogEnableGate = null;
   let releaseSlowLogEnable = null;
   let commandCsrfFailure = false;
+  let nextCommandResponse = null;
   let csrfToken = 'test-token';
   const protocolTwoGate = new Promise((resolve) => { releaseProtocolTwo = resolve; });
   const protocolTwoStarted = new Promise((resolve) => { markProtocolTwoStarted = resolve; });
@@ -97,6 +98,11 @@ async function main() {
     }
     const body = init.body ? JSON.parse(init.body) : {};
     calls.push({ url: pathName, init, body });
+    if (pathName.endsWith('/round/input') && nextCommandResponse) {
+      const response = nextCommandResponse;
+      nextCommandResponse = null;
+      return response;
+    }
     if (pathName.endsWith('/round/input') && commandCsrfFailure) {
       commandCsrfFailure = false;
       csrfToken = 'test-token-longer';
@@ -552,7 +558,40 @@ async function main() {
   );
   assert((await commandResponse.json()).accepted === true,
     'a declared command did not receive its endpoint response');
-  const commandCall = calls.filter((call) => call.url.endsWith('/round/input')).at(-1);
+  for (const status of [200, 500]) {
+    let cancelled = false;
+    let reads = 0;
+    nextCommandResponse = new Response(new ReadableStream({
+      pull(controller) {
+        reads += 1;
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        if (reads === 5) controller.close();
+      },
+      cancel() { cancelled = true; },
+    }), { status });
+    let failure;
+    try { await host.executeGameCommand('round:input', commandEnvelope({ text: 'bounded' })); }
+    catch (error) { failure = error; }
+    assert(failure?.code === 'invalid_response' && cancelled && reads < 5,
+      `command response ${status} was buffered past its limit or not cancelled`);
+  }
+  const exactResponse = JSON.stringify({text:'x'.repeat(2 * 1024 * 1024 - 11)});
+  assert(Buffer.byteLength(exactResponse) === 2 * 1024 * 1024);
+  nextCommandResponse = new Response(exactResponse, {headers:{'content-type':'application/json'}});
+  const boundedResponse = await host.executeGameCommand('round:input', commandEnvelope({text:'response'}));
+  assert((await boundedResponse.clone().json()).text.length === 2 * 1024 * 1024 - 11,
+    'an exactly bounded response lost JSON/clone compatibility');
+  assert((await boundedResponse.json()).text.length === 2 * 1024 * 1024 - 11);
+  let headerCancelled = false;
+  nextCommandResponse = new Response(new ReadableStream({
+    cancel() { headerCancelled = true; },
+  }), {headers:{'content-length':String(2 * 1024 * 1024 + 1)}});
+  let headerError;
+  try { await host.executeGameCommand('round:input', commandEnvelope({text:'response'})); }
+  catch (error) { headerError = error; }
+  assert(headerError?.code === 'invalid_response' && headerCancelled,
+    'an oversized declared response was not cancelled before reading');
+  const commandCall = calls.find((call) => call.url.endsWith('/round/input') && call.body.text === 'hello');
   assert(commandCall?.url === '/api/game/example-game/round/input'
     && commandCall.body.text === 'hello'
     && commandCall.body.session_id === 'server-session'

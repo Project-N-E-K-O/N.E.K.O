@@ -51,16 +51,6 @@
       && Object.prototype.hasOwnProperty.call(value, key);
   }
 
-  // Match the game character endpoint's canonical MMD asset projection.
-  // This is an alias of a configured path, never a caller-supplied allowlist.
-  function canonicalModelPath(type, value) {
-    const path = cleanString(value);
-    if (type !== 'mmd' || !path) return path;
-    const normalized = path.replace(/\\/g, '/');
-    if (/^(https?:\/\/|\/user_|\/static\/|\/workshop\/)/.test(normalized)) return normalized;
-    return cleanString(normalized.startsWith('mmd/') ? `/static/${normalized}` : `/static/mmd/${normalized}`);
-  }
-
   function firstOwnValue(candidates) {
     for (const [source, key] of candidates) {
       if (hasOwn(source, key)) return source[key];
@@ -379,7 +369,7 @@
         model,
         rendererAvailable: Boolean(model),
         fallbackModels: Object.freeze(TYPES.filter(type => type !== descriptor.type)
-          .map(type => ({ type, path: canonicalModelPath(type, descriptor.paths[type]) }))
+          .map(type => ({ type, path: descriptor.paths[type] }))
           .filter(model => model.path).map(Object.freeze)),
       });
     }
@@ -391,7 +381,7 @@
       const path = cleanString(model?.path);
       const configuredPath = descriptor?.paths[type];
       if (!descriptor || !TYPES.includes(type) || !path || !configuredPath
-          || (configuredPath !== path && canonicalModelPath(type, configuredPath) !== path)) {
+          || configuredPath !== path) {
         fail('model_not_allowed', 'Avatar model is not the trusted character model', {
           characterName: name,
         });
@@ -415,6 +405,19 @@
         : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
+      const configuredMmd = cleanString(configured.paths.mmd).replace(/\\/g, '/');
+      if (configuredMmd && !/^(https?:\/\/|\/)/.test(configuredMmd)) {
+        // The browser cannot decide which filesystem owns a relative model.
+        // Use the existing game-independent character projection, not a
+        // guessed static prefix, for both primary and fallback MMD models.
+        const resolved = await json(
+          `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
+        );
+        if (resolved?.lanlan_name !== requested) fail('invalid_response', 'Avatar character identity changed');
+        const path = cleanString(resolved?.mmd_path);
+        configured.paths = Object.freeze({ ...configured.paths, mmd: path });
+        if (configured.type === 'mmd') configured.path = path;
+      }
       if (configured.type === 'live2d') {
         configured.path = await resolveLive2DPath(requested, configured.path, requestOptions);
         configured.paths = Object.freeze({ ...configured.paths, live2d: configured.path });

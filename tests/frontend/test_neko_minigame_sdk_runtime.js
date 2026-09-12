@@ -1288,7 +1288,12 @@ async function main() {
             'active reset must reject without cancelling the current command');
         }
         await commandGame.runtime.end();
-        if (action === 'end-then-reset') commandGame.runtime.reset();
+        if (action === 'end-then-reset') {
+          const session = commandGame.runtime.reset();
+          assert(session.id === `command-${action}` && session.characterName === 'Example'
+            && session.routeInstanceId === '' && Object.isFrozen(session),
+          'reset did not return the immutable cleared RuntimeSession');
+        }
       }
       const result = await Promise.race([pending, new Promise(resolve => {
         watchdog = setTimeout(() => resolve('hung'), 1000);
