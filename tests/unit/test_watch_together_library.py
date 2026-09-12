@@ -9,6 +9,40 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+def test_verify_counts_standalone_deduplicated_audio_and_detects_corruption(tmp_path):
+    assets = tmp_path / 'assets'
+    assets.mkdir()
+    (assets / 'a.mp3').write_bytes(b'audio')
+    (assets / 'b.mp3').write_bytes(b'audio')
+    library = Library(tmp_path / 'data')
+    imported = library.import_audio_assets(assets)
+    report = library.verify()
+    assert report['verified'] and report['unique_objects'] == 1
+    assert report['audio_assets'] == 2
+    (library.objects / imported[0]['sha256']).write_bytes(b'broken')
+    assert set(library.verify()['failures']) == {'a.mp3', 'b.mp3'}
+
+
+def test_concurrent_watch_updates_preserve_all_events(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    library = Library(tmp_path / 'data')
+    library.import_sources([source(tmp_path, 'concurrent')])
+    watch = library.start_watch(JOB, library.history()[0]['version'], 'cat')
+    barrier = Barrier(8)
+
+    def update(index):
+        barrier.wait(timeout=10)
+        library.record_watch(watch, index, {'type': 'progress', 'index': index})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(update, range(40)))
+    with library.connect() as db:
+        events = json.loads(db.execute('SELECT events FROM watches WHERE id=?', (watch,)).fetchone()['events'])
+    assert len(events) == 40
+    assert {event['index'] for event in events} == set(range(40))
+
+
 @pytest.mark.parametrize('events', [None, {}, 'invalid', 42, [None], ['invalid'], [42],
                                   [{}], [{'at': '1'}], [{'at': True}], [{'at': float('inf')}],
                                   [{'at': -1}], [{'at': 10**1000}],

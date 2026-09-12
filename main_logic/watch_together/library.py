@@ -265,6 +265,7 @@ class Library:
     def record_watch(self, identifier: str, progress: float, event: dict) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT events FROM watches WHERE id=?", (identifier,)).fetchone()
             if row is None:
                 raise KeyError(identifier)
@@ -299,14 +300,17 @@ class Library:
                 key = entry['sha256']
                 path = self.objects / key
                 if key not in checked:
-                    checked[key] = path.is_file() and digest(path) == key and path.stat().st_size == entry['bytes']
-                if not checked[key]:
+                    checked[key] = path.stat().st_size if path.is_file() and digest(path) == key else None
+                if checked[key] != entry['bytes']:
                     failures.append(f"{row['job']}/{row['version']}/{name}")
                 file_count += 1
                 logical_bytes += entry['bytes']
         for entry in assets:
-            path = self.objects / entry['sha256']
-            if not path.is_file() or digest(path) != entry['sha256'] or path.stat().st_size != entry['bytes']:
+            key = entry['sha256']
+            path = self.objects / key
+            if key not in checked:
+                checked[key] = path.stat().st_size if path.is_file() and digest(path) == key else None
+            if checked[key] != entry['bytes']:
                 failures.append(entry['name'])
         return {'jobs':len({row['job'] for row in versions}), 'versions':len(versions),
                 'files':file_count, 'logical_bytes':logical_bytes, 'audio_assets':len(assets),
