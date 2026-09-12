@@ -122,6 +122,11 @@ console.log('watch-together scene: asynchronous media error releases playback an
 for(const paused of [true,false]) {
   const enabling=await fixture(false,false,{total_tokens:1});
   let enablingPlays=0,enablingMounts=0;
+  const enablingRuntimeCalls={start:0,reset:0};
+  for(const method of ['start','reset']) {
+    const original=enabling.game.runtime[method];
+    enabling.game.runtime[method]=function(...args){enablingRuntimeCalls[method]++;return original.apply(this,args);};
+  }
   const originalMount=enabling.game.media.mount;
   enabling.game.media.mount=async options=>{
     enablingMounts++;
@@ -129,12 +134,14 @@ for(const paused of [true,false]) {
     return {...controller,async play(){enablingPlays++;enabling.elements.get('video').paused=false;}};
   };
   await enabling.elements.get('play').onclick();
+  const runtimeAfterPlay={...enablingRuntimeCalls};
   enabling.elements.get('video').paused=paused;
   enabling.elements.get('automatic-enabled').checked=true;
   enabling.elements.get('automatic-enabled').onchange();
   await waitFor(()=>enabling.calls.some(call=>call.action==='discover'));
   assert.equal(enablingPlays,paused?2:1,'enabling automatic resumes only paused playback');
   assert.equal(enablingMounts,1,'resume reuses the mounted media controller');
+  assert.deepEqual(enablingRuntimeCalls,runtimeAfterPlay,'enabling automatic preserves the running route without start or reset');
   assert.equal(enabling.elements.get('video').paused,false);
   await enabling.elements.get('watch-stop').onclick();
 }
