@@ -1662,15 +1662,20 @@ async def handle_proactive_chat(
 
                 if selected_links:
                     all_web_links.extend(selected_links)
-                    lines = [
-                        _ttt(
+                    lines = []
+                    for index, item in _number_phase1_links_by_source(
+                        selected_links, source_positions=phase1_source_positions
+                    ):
+                        rendered = _ttt(
                             _format_phase1_link_candidate(index, item),
                             PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
                         )
-                        for index, item in _number_phase1_links_by_source(
-                            selected_links, source_positions=phase1_source_positions
-                        )
-                    ]
+                        rendered_title = rendered.removeprefix(f"{index}. ").split(
+                            " | ", 1
+                        )[0].strip()
+                        if rendered_title:
+                            item["phase1_rendered_title"] = rendered_title
+                        lines.append(rendered)
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))
                         continue

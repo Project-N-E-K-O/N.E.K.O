@@ -1675,8 +1675,8 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
         "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제|\u0422\u0435\u043c\u0430)[ \t]*[：:][ \t]*(.+)",
-        "source": r"^[ \t]*(?:来源|Source|出典|출처|\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a)[ \t]*[：:][ \t]*(.+)",
-        "number": r"^[ \t]*(?:序号|No|番号|번호|\u041d\u043e\u043c\u0435\u0440)\.?[ \t]*[：:][ \t]*(\d+)",
+        "source": r"^[ \t]*(?:来源|來源|Source|出典|출처|\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a)[ \t]*[：:][ \t]*(.+)",
+        "number": r"^[ \t]*(?:序号|序號|No|番号|번호|\u041d\u043e\u043c\u0435\u0440)\.?[ \t]*[：:][ \t]*(\d+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
@@ -2090,7 +2090,7 @@ def _link_matches_phase1_title(title: str, link: dict) -> bool:
     title_lower = title.lower().strip()
     if not title_lower:
         return False
-    for field in ("title", "phase1_title"):
+    for field in ("title", "phase1_title", "phase1_rendered_title"):
         link_title = str(link.get(field) or "").lower().strip()
         if link_title and (
             link_title == title_lower
@@ -2135,7 +2135,7 @@ def _link_has_exact_phase1_title(title: str, link: dict) -> bool:
     title_lower = title.lower().strip()
     return bool(title_lower) and any(
         str(link.get(field) or "").lower().strip() == title_lower
-        for field in ("title", "phase1_title")
+        for field in ("title", "phase1_title", "phase1_rendered_title")
     )
 
 

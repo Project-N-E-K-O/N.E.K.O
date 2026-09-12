@@ -53,6 +53,35 @@ def test_phase1_web_candidates_are_balanced_across_modes(monkeypatch):
     assert all(link["mode"] == "personal" for link in selected["personal"])
 
 
+def test_parse_web_screening_result_accepts_traditional_chinese_fields():
+    parsed = sr_parsing._parse_web_screening_result(
+        "來源：喵宇宙社群\n序號：2\n話題：繁體社群卡牌"
+    )
+
+    assert parsed == {"source": "喵宇宙社群", "number": "2", "title": "繁體社群卡牌"}
+
+
+def test_phase1_numbered_selection_accepts_rendered_title_prefix():
+    prefix = "相同的截斷標題"
+    first = {
+        "title": prefix + "甲",
+        "phase1_rendered_title": prefix,
+        "source": "喵宇宙社区",
+    }
+    second = {
+        "title": prefix + "乙",
+        "phase1_rendered_title": prefix,
+        "source": "喵宇宙社区",
+    }
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": prefix, "source": "喵宇宙社区", "number": "2"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
 def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
     first = {
         "title": "同名社区卡",

@@ -148,6 +148,21 @@ async def test_selected_community_candidate_localizes_phase2_context():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_selected_community_candidate_preserves_traditional_chinese_locale():
+    _, topic = await proactive_candidate.prepare_selected_web_candidate(
+        {"mode": "community", "title": "繁體社群卡牌", "tags": ["靈感"]},
+        fallback_topic="unused",
+        language="zh-TW",
+    )
+
+    assert "標題：繁體社群卡牌" in topic
+    assert "標籤：靈感" in topic
+    assert "內文摘要：無；不得根據標題杜撰具體內容。" in topic
+    assert "标题：" not in topic
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_selected_community_candidate_escapes_data_boundary_markers():
     candidate = {
         "mode": "community",
