@@ -68,6 +68,8 @@ NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT = 64
 NEKO_COMMUNITY_CONTENT_MAX_CHARS = 500
 NEKO_COMMUNITY_TEXT_MAX_DEPTH = 8
 NEKO_COMMUNITY_TEXT_MAX_NODES = 128
+NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS = 200
+NEKO_COMMUNITY_URL_MAX_CHARS = 2048
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -1838,9 +1840,17 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
 
 
 def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
-    """Return the first list-shaped card collection from a feed response."""
+    """Return a bounded prefix of the first list-shaped card collection."""
+
+    def bounded_items(items: list[Any]) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in islice(items, NEKO_COMMUNITY_FEED_PAGE_SIZE)
+            if isinstance(item, dict)
+        ]
+
     if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
+        return bounded_items(payload)
     if not isinstance(payload, dict):
         return []
 
@@ -1851,13 +1861,13 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
             containers.append(value)
     for container in containers:
         if isinstance(container, list):
-            return [item for item in container if isinstance(item, dict)]
+            return bounded_items(container)
         if not isinstance(container, dict):
             continue
         for key in ("items", "posts", "cards", "results", "list"):
             value = container.get(key)
             if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+                return bounded_items(value)
     return []
 
 
@@ -1938,11 +1948,11 @@ def _community_label_values(
 
 
 def _community_identifier(value: Any) -> str:
-    """Normalize a public card identifier while retaining scalar numeric IDs."""
+    """Normalize a bounded public card identifier for durable deduplication."""
 
     if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-        return str(value).strip()
-    return _community_text(value)
+        return str(value).strip()[:NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS]
+    return _community_text(value, max_chars=NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS)
 
 
 def _community_card_url(
@@ -1959,7 +1969,7 @@ def _community_card_url(
         "detail_url",
         "path",
     ):
-        candidate = _community_text(raw.get(key))
+        candidate = _community_text(raw.get(key), max_chars=NEKO_COMMUNITY_URL_MAX_CHARS)
         if not candidate or "\\" in candidate:
             continue
         try:
@@ -1976,7 +1986,10 @@ def _community_card_url(
             urlparse(resolved_url)
         except ValueError:
             continue
-        if _same_community_origin(resolved_url, discover_url):
+        if (
+            len(resolved_url) <= NEKO_COMMUNITY_URL_MAX_CHARS
+            and _same_community_origin(resolved_url, discover_url)
+        ):
             return resolved_url
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
@@ -2064,9 +2077,11 @@ def normalize_neko_community_feed(
             )
             if labels:
                 break
+        _, discover_url = _neko_community_urls()
         url = card_url or _community_card_url(raw)
         title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
-        dedupe_key = item_id or f"{url}|{title.casefold()}"
+        permalink = card_url if card_url and card_url != discover_url else ""
+        dedupe_key = item_id or permalink or f"{url}|{title.casefold()}"
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)

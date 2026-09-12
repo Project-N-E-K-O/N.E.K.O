@@ -228,6 +228,54 @@ def test_normalize_neko_community_feed_uses_live_card_story_and_author_name():
     ]
 
 
+def test_community_feed_items_bounds_untrusted_collection_prefix():
+    payload = [None] * trending_content.NEKO_COMMUNITY_FEED_PAGE_SIZE + [
+        {"id": "outside-bound", "title": "不应扫描到"}
+    ]
+
+    assert trending_content._community_feed_items(payload) == []
+
+
+def test_normalize_neko_community_feed_bounds_identifier():
+    identifier = "i" * (trending_content.NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS + 1)
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": identifier, "title": "长 ID 卡牌"}]}
+    )
+
+    assert posts[0]["id"] == identifier[: trending_content.NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS]
+    assert posts[0]["dedupe_key"] == posts[0]["id"]
+
+
+def test_normalize_neko_community_feed_rejects_overlong_card_url():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "title": "超长链接卡牌",
+                    "url": "/post/" + "x" * trending_content.NEKO_COMMUNITY_URL_MAX_CHARS,
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["url"] == "https://community.project-neko.cn/discover"
+    assert len(posts[0]["url"]) <= trending_content.NEKO_COMMUNITY_URL_MAX_CHARS
+
+
+def test_normalize_neko_community_feed_uses_permalink_for_idless_deduplication():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {"title": "旧标题", "url": "/posts/stable-card"},
+                {"title": "新标题", "url": "/posts/stable-card"},
+            ]
+        },
+        limit=2,
+    )
+
+    assert len(posts) == 1
+    assert posts[0]["dedupe_key"] == "https://community.project-neko.cn/posts/stable-card"
+
 def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
     posts = normalize_neko_community_feed(
         {
