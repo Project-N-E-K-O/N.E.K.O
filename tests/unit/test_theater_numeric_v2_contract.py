@@ -1106,25 +1106,21 @@ def test_numeric_v2_registry_publishes_complete_package_without_hard_links(tmp_p
         raise OSError("hard links unavailable")
 
     monkeypatch.setattr(numeric_v2_registry.os, "link", no_hard_links)
-    original_open = numeric_v2_registry.os.open
+    original_replace = numeric_v2_registry.os.replace
     target = registry.package_path('numeric_v2_contract')
+    published = []
 
-    def observe_open(path, flags, *args, **kwargs):
-        fd = original_open(path, flags, *args, **kwargs)
-        if target.exists():
-            # A reader must never see an empty/partial installed JSON while
-            # the importer is still writing the package.
-            try:
-                registry.load_engine('numeric_v2_contract')
-            except Exception:
-                numeric_v2_registry.os.close(fd)
-                raise
-        return fd
+    def observe_replace(source, destination):
+        assert destination == target
+        assert not target.exists()
+        original_replace(source, destination)
+        published.append(registry.load_engine('numeric_v2_contract').story_id)
 
-    monkeypatch.setattr(numeric_v2_registry.os, 'open', observe_open)
+    monkeypatch.setattr(numeric_v2_registry.os, 'replace', observe_replace)
     result = registry.import_package(numeric_v2_story())
 
     assert result["story_id"] == "numeric_v2_contract"
+    assert published == ['numeric_v2_contract']
     assert (package_root / "numeric_v2_contract.json").is_file()
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())

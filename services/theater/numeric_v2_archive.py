@@ -108,6 +108,13 @@ class NumericV2ArchiveStore:
         self._write(self._forget_path(story_id, character_id), pending)
         return pending
 
+    def forget_paths_for_character(self, character_id: str) -> list[Path]:
+        """Expose validated intent files for character deletion and rollback."""
+        if not character_id:
+            return []
+        return [self._forget_path(story_id, character_id)
+                for story_id in self.pending_forget_story_ids(character_id)]
+
     def delete_forget_files(self, pending: Mapping[str, Any]) -> None:
         """Retry the original deletion list, including pointers orphaned by an interruption."""
         targets = []

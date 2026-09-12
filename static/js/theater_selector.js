@@ -467,11 +467,11 @@
         $('theater-modal-confirm').disabled = busy;
     }
     // 启动演绎前必须等本体回执 launch-ready，避免选剧页先关闭导致快照丢失。
-    async function handoff(snapshot, action) {
+    async function handoff(snapshot, action, storyId) {
         var launchId = createId('theater_launch_');
         var payload = {
             action: 'theater:launch-request', launch_id: launchId, launch_action: action,
-            story_id: state.storyId, session_id: snapshot.session.session_id, revision: snapshot.session.revision,
+            story_id: storyId, session_id: snapshot.session.session_id, revision: snapshot.session.revision,
             // 开场用量随启动回执传给演绎页，仅用于显示，不成为会话或剧情字段。
             token_usage: snapshot.token_usage || null
         };
@@ -497,8 +497,8 @@
             window.setTimeout(function () { if (!settled) { cleanup(); resolve(false); } }, 40000);
         });
     }
-    async function launchSnapshot(snapshot, action) {
-        var ready = await handoff(snapshot, action);
+    async function launchSnapshot(snapshot, action, storyId) {
+        var ready = await handoff(snapshot, action, storyId);
         if (ready) { window.close(); return; }
         setFeedback(t('theater.connectNekoFailed', '无法连接 N.E.K.O 本体，请保持本体开启后重试。'), true);
         setStatus('theater.failed', '出错了');
@@ -507,44 +507,54 @@
         if (state.busy || !state.storyId || !state.characterId) return;
         var startCharacterEpoch = characterEpoch;
         var startCharacterId = state.characterId;
+        var startStoryId = state.storyId;
+        // Starting the visible story is an explicit selection; a late memory
+        // list must not restore the earlier URL preference over this action.
+        var startSelectionEpoch = ++storySelectionEpoch;
         setBusy(true); setFeedback('');
         try {
             var result = await requestJson(api.start, { method: 'POST', body: {
-                story_id: state.storyId,
+                story_id: startStoryId,
                 session_id: createId('numeric_capsule_session_'),
                 character_id: startCharacterId,
                 replace_existing: replaceExisting === true
             }});
-            if (startCharacterEpoch !== characterEpoch) return;
+            if (startCharacterEpoch !== characterEpoch || startStoryId !== state.storyId || startSelectionEpoch !== storySelectionEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'start_failed');
             state.session = result.session;
             renderActions();
-            await launchSnapshot(result, replaceExisting ? 'restart' : (result.resumed ? 'continue' : 'start'));
+            await launchSnapshot(result, replaceExisting ? 'restart' : (result.resumed ? 'continue' : 'start'), startStoryId);
         } catch (_) {
+            if (startCharacterEpoch !== characterEpoch || startStoryId !== state.storyId || startSelectionEpoch !== storySelectionEpoch) return;
             setFeedback(t('theater.startFailed', '启动演出失败，请重试。'), true);
             setStatus('theater.failed', '出错了');
         } finally { setBusy(false); }
     }
     async function continueSession() {
         var kind = sessionKind();
-        if (!state.session || (kind !== 'active' && kind !== 'paused')) return;
+        if (state.busy || !state.session || (kind !== 'active' && kind !== 'paused')) return;
         var continueCharacterEpoch = characterEpoch;
+        var continueStoryId = state.storyId;
+        var continueSelectionEpoch = ++storySelectionEpoch;
         setBusy(true);
         try {
             var result = kind === 'paused'
                 ? await requestJson(api.resume, { method: 'POST', body: {
-                    story_id: state.storyId,
+                    story_id: continueStoryId,
                     session_id: state.session.session_id,
                     base_revision: state.session.revision,
                     base_lifecycle_revision: state.session.lifecycle_revision
                 }})
-                : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(state.storyId));
-            if (continueCharacterEpoch !== characterEpoch) return;
+                : await requestJson('/api/theater-numeric/session/' + encodeURIComponent(state.session.session_id) + '?story_id=' + encodeURIComponent(continueStoryId));
+            if (continueCharacterEpoch !== characterEpoch || continueStoryId !== state.storyId || continueSelectionEpoch !== storySelectionEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'restore_failed');
             state.session = result.session;
             renderActions();
-            await launchSnapshot(result, 'continue');
-        } catch (_) { setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true); }
+            await launchSnapshot(result, 'continue', continueStoryId);
+        } catch (_) {
+            if (continueCharacterEpoch !== characterEpoch || continueStoryId !== state.storyId || continueSelectionEpoch !== storySelectionEpoch) return;
+            setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true);
+        }
         finally { setBusy(false); }
     }
     // 选剧页是胶囊结束按钮之外的独立兜底入口；成功后同步本体运行时解除锁定。

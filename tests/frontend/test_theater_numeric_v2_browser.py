@@ -1020,3 +1020,48 @@ def test_returning_to_story_ignores_first_selection_response(mock_page: Page, ru
     expect(mock_page.locator('#theater-modal')).to_be_hidden()
     expect(mock_page.locator('#theater-inline-feedback')).not_to_contain_text('读取失败')
     expect(mock_page.locator('#theater-continue-btn')).to_be_enabled()
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('operation', ['start', 'continue', 'resume'])
+def test_background_memory_selection_cannot_steal_session_launch(mock_page: Page, running_server: str, operation):
+    pending = {}
+    session = {'session_id':'launch-session', 'story_package_id':STORY['story_id'], 'revision':1,
+        'lifecycle_revision':0, 'status':'ended' if operation == 'resume' else 'active'}
+    if operation == 'resume':
+        session['ended_reason'] = 'user_exit'
+    _install_selector_routes(mock_page, session=None if operation == 'start' else session)
+
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/memory/stories'):
+            pending['memory'] = route
+        elif path.endswith('/session/start') or path.endswith('/session/resume') or path.endswith('/session/launch-session'):
+            pending['launch'] = route
+        else:
+            route.fallback()
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.add_init_script('''window.__launches = [];
+        window.__launchChannel = new BroadcastChannel('neko_page_channel');
+        window.__launchChannel.onmessage = event => {
+            if (event.data.action !== 'theater:launch-request') return;
+            window.__launches.push(event.data);
+            window.__launchChannel.postMessage({...event.data, action:'theater:launch-ready'});
+        };''')
+    with mock_page.expect_request('**/memory/stories'):
+        mock_page.goto(f'{running_server}/theater?story_id=deleted-memory', wait_until='domcontentloaded')
+    button = '#theater-start-btn' if operation == 'start' else '#theater-continue-btn'
+    expect(mock_page.locator(button)).to_be_enabled()
+    with mock_page.expect_request(lambda request: '/session/' in request.url and (
+        request.url.endswith('/start') or request.url.endswith('/resume') or '/session/launch-session?' in request.url)):
+        mock_page.locator(button).click()
+    _fulfill(pending['memory'], {'ok':True, 'character_id':CHARACTER_ID,
+        'stories':[{**STORY, 'story_id':'deleted-memory', 'title':'已删除的另一剧本', 'memory_only':True}]})
+    expect(mock_page.locator('.theater-story-card')).to_have_count(2)
+    _fulfill(pending['launch'], {'ok':True, 'session':{**session, 'status':'active'}})
+    mock_page.wait_for_function('() => window.__launches.length === 1')
+    launch = mock_page.evaluate('window.__launches[0]')
+    assert launch['story_id'] == STORY['story_id']
+    assert launch['session_id'] == session['session_id']
+    expect(mock_page.locator('#theater-detail-title')).to_have_text(STORY['title'])

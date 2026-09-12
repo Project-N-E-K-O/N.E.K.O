@@ -379,6 +379,21 @@ describe('App', () => {
     expect(input).toHaveValue('等待剧场宿主就绪');
   });
 
+  it('only shows theater Galgame options while the selection callback is available', () => {
+    const props = {
+      theaterPresentation: { active: true, phase: 'awaiting_player' as const, suggestedInputs: ['推开教室门'] },
+    };
+    const { container, rerender } = render(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+    const onTheaterSuggestedInputSelect = vi.fn();
+    rerender(<App {...props} onTheaterSuggestedInputSelect={onTheaterSuggestedInputSelect} />);
+    fireEvent.click(document.querySelector('.composer-galgame-option')!);
+    expect(onTheaterSuggestedInputSelect).toHaveBeenCalledExactlyOnceWith('推开教室门');
+    expect(container.querySelectorAll('.composer-input').length).toBeLessThanOrEqual(1);
+    rerender(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+  });
+
   it.each(['evaluating', 'performing', 'ended'] as const)(
     'locks the open theater composer during %s and preserves its draft', (phase) => {
       const onTheaterSubmit = vi.fn();

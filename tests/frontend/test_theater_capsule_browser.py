@@ -1681,3 +1681,64 @@ def test_end_response_cannot_close_resumed_same_revision(mock_page: Page, runnin
     state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
     assert state['active'] and state['phase'] == 'awaiting_player'
     assert state['lifecycleRevision'] == 2 and state['pendingEnd'] is None
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('event_kind', ['external-end', 'story-deleted', 'unrelated'])
+def test_launch_is_invalidated_while_stopping_ordinary_voice(mock_page: Page, running_server: str, event_kind):
+    mock_page.route('**/session/capsule-browser-session?**', lambda route: route.fulfill(json=_snapshot(revision=0)))
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost && window.appState')
+    mock_page.evaluate('''() => {
+        window.__launchReady = [];
+        const channel = new BroadcastChannel('neko_page_channel');
+        channel.onmessage = event => {
+            if (event.data.action === 'theater:launch-ready') window.__launchReady.push(event.data);
+        };
+        window.__launchObserver = channel;
+        window.appState.isRecording = true;
+        window.appAudioCapture.stopMicCapture = () => new Promise(resolve => { window.__finishVoiceStop = resolve; });
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'voice-stop-launch', launch_action:'continue', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:0}, location.origin);
+    }''')
+    mock_page.wait_for_function("() => typeof window.__finishVoiceStop === 'function'")
+    mock_page.evaluate('''kind => {
+        window.dispatchEvent(new MessageEvent('message', {origin:location.origin, data:{
+            schema:'neko.theater.interpage.v1', action:'theater:' + (kind === 'unrelated' ? 'external-end' : kind),
+            story_id:kind === 'unrelated' ? 'other-story' : 'capsule-browser-story', session_id:'capsule-browser-session'
+        }}));
+        window.appState.isRecording = false;
+        window.__finishVoiceStop();
+    }''', event_kind)
+    if event_kind == 'unrelated':
+        mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+        mock_page.wait_for_function('() => window.__launchReady.length === 1')
+    else:
+        # The stop promise has been released; drain its continuation and UI work.
+        mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        assert mock_page.evaluate('window.nekoTheaterRuntime.getState().active') is False
+        assert mock_page.evaluate('window.__launchReady') == []
+        assert mock_page.evaluate("sessionStorage.getItem('neko.theater.numeric.v2.capsule-pointer.v1')") is None
+
+
+@pytest.mark.frontend
+def test_bridge_hides_theater_options_without_a_registered_callback(mock_page: Page, running_server: str):
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate('''() => {
+        window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(null);
+        window.reactChatWindowHost.setViewProps({theaterPresentation:{
+            active:true, phase:'awaiting_player', history:[], suggestedInputs:['把信交给她']
+        }});
+    }''')
+    expect(mock_page.locator('.app-shell')).to_have_attribute('data-theater-active', 'true')
+    expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)
+    mock_page.evaluate('''() => {
+        window.__suggestionSelected = [];
+        window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(text => window.__suggestionSelected.push(text));
+    }''')
+    mock_page.locator('.composer-galgame-option').click()
+    assert mock_page.evaluate('window.__suggestionSelected') == ['把信交给她']
+    mock_page.evaluate('window.reactChatWindowHost.setOnTheaterSuggestedInputSelect(null)')
+    expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)

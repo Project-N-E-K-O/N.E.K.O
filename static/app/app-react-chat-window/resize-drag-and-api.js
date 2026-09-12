@@ -967,6 +967,7 @@
         },
         setOnTheaterSuggestedInputSelect: function (handler) {
             I.state.onTheaterSuggestedInputSelect = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
         },
         setOnTheaterEnd: function (handler) {
             I.state.onTheaterEnd = typeof handler === 'function' ? handler : null;

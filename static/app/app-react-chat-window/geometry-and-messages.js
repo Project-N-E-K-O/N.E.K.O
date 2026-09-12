@@ -1576,7 +1576,8 @@
             onTranslateToggle: I.handleTranslateToggle,
             onGalgameModeToggle: I.handleGalgameModeToggle,
             onGalgameOptionSelect: I.handleGalgameOptionSelect,
-            onTheaterSuggestedInputSelect: I.handleTheaterSuggestedInputSelect,
+            onTheaterSuggestedInputSelect: typeof I.state.onTheaterSuggestedInputSelect === 'function'
+                ? I.handleTheaterSuggestedInputSelect : undefined,
             onTheaterEnd: I.handleTheaterEnd,
             onChoiceSelect: I.handleChoiceSelect,
             onCompactChatStateChange: I.handleCompactChatStateChange,

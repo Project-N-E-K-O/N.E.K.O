@@ -1287,7 +1287,8 @@ function CompactChatApp({
         text,
       }))
     : [];
-  const theaterOptionsVisible = compactChoiceInteractionsAllowed && theaterSuggestedOptions.length > 0;
+  const theaterOptionsVisible = compactChoiceInteractionsAllowed && theaterSuggestedOptions.length > 0
+    && typeof onTheaterSuggestedInputSelect === 'function';
   const choicePromptHasOptions = compactChoiceInteractionsAllowed && !theaterActive
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =

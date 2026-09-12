@@ -1687,6 +1687,12 @@ async def test_character_management_and_recent_save_regression():
             original_session = numeric_session_path.read_bytes()
             original_characters = cm.load_characters()
             original_recent = recent_path.read_bytes()
+            delete_character_id = original_characters['猫娘']['测试角色']['_reserved']['character_id']
+            for story_id in ('numeric_v2_contract', 'already_deleted_story'):
+                numeric_archive_store.prepare_forget(story_id=story_id, character_id=delete_character_id,
+                    legacy_catgirl_name='测试角色')
+            numeric_archive_store.prepare_forget(story_id='already_deleted_story', character_id='other-character',
+                legacy_catgirl_name='另一角色')
             for corrupt_bytes in (b"{broken-json", b"\xff"):
                 numeric_session_path.write_bytes(corrupt_bytes)
                 with pytest.raises(NumericV2StoreError, match="numeric_session_read_failed"):
@@ -1704,6 +1710,8 @@ async def test_character_management_and_recent_save_regression():
             assert not (Path(cm.memory_dir) / "测试角色").exists()
             assert not numeric_session_path.exists()
             assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids(delete_character_id) == []
+            assert numeric_archive_store.pending_forget_story_ids('other-character') == ['already_deleted_story']
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
 
@@ -1785,7 +1793,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["正常角色"] = {"昵称": "正常角色"}
-            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色"}
+            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色", "_reserved": {"character_id": "unsafe-delete-id"}}
             characters["当前猫娘"] = "正常角色"
             cm.save_characters(characters, bypass_write_fence=True)
 
@@ -1810,6 +1818,8 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             })
             assert numeric_public_archive_path.is_file()
 
+            numeric_archive_store.prepare_forget(story_id='unsafe_name_story', character_id='unsafe-delete-id',
+                legacy_catgirl_name='.')
             characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
@@ -1825,6 +1835,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
             assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids('unsafe-delete-id') == []
             mock_delete_memory.assert_not_called()
 
 
@@ -4571,7 +4582,8 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
-            characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
+            characters.setdefault("猫娘", {})["删除回滚角色"] = {
+                "昵称": "删除回滚角色", "_reserved": {"character_id": "rollback-delete-id"}}
             cm.save_characters(characters, bypass_write_fence=True)
 
             memory_dir = Path(cm.memory_dir) / "删除回滚角色"
@@ -4596,6 +4608,11 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 "character_id": "",
                 "catgirl_name": "删除回滚角色",
             })
+            numeric_archive_store.prepare_forget(story_id='deleted_story', character_id='rollback-delete-id',
+                legacy_catgirl_name='删除回滚角色')
+            forget_path = numeric_archive_store._forget_path('deleted_story', 'rollback-delete-id')
+            forget_before = forget_path.read_bytes()
+            deleted_before_config_save = []
 
             fake_response = type(
                 "Resp",
@@ -4611,6 +4628,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
             def _fail_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
                 if not bypass_write_fence and "删除回滚角色" not in (data.get("猫娘") or {}):
+                    deleted_before_config_save.append(not forget_path.exists())
                     raise OSError("disk full")
                 return original_save_characters(
                     data,
@@ -4633,6 +4651,8 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             assert "删除回滚角色" in cm.load_characters().get("猫娘", {})
             assert (memory_dir / "recent.json").is_file()
             assert numeric_public_archive_path.is_file()
+            assert deleted_before_config_save == [True]
+            assert forget_path.read_bytes() == forget_before
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
 

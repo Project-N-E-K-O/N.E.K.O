@@ -31,6 +31,7 @@
     var launchReplyTargets = Object.create(null);
     var desktopLaunchRelayTimers = Object.create(null);
     var launchEpoch = 0;
+    var pendingLaunch = null;
     var endConfirmationPending = false;
     var committedSnapshot = null;
 
@@ -673,9 +674,12 @@
         var launchToken = ++launchEpoch;
         var nextStoryId = String(message.story_id);
         var nextSessionId = String(message.session_id);
+        pendingLaunch = { token: launchToken, storyId: nextStoryId, sessionId: nextSessionId };
         var request = performLaunch(message, launchToken).catch(function () {
             if (isCurrentLaunch(launchToken, nextStoryId, nextSessionId)) clear('launch-request-failed');
             return false;
+        }).finally(function () {
+            if (pendingLaunch && pendingLaunch.token === launchToken) pendingLaunch = null;
         });
         launchRequests[launchId] = request;
         launchRequestOrder.push(launchId);
@@ -1030,6 +1034,15 @@
         var message = event && event.data;
         if (!message || typeof message !== 'object') return;
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
+        // A candidate is not active yet while ordinary voice shuts down.
+        // Matching lifecycle events must still revoke its right to take over.
+        if (pendingLaunch && message.story_id === pendingLaunch.storyId && (
+            message.action === 'theater:story-deleted'
+            || (message.action === 'theater:external-end' && message.session_id === pendingLaunch.sessionId)
+        )) {
+            launchEpoch += 1;
+            pendingLaunch = null;
+        }
         if (message.action === 'theater:launch-ready' && message.launch_id) {
             stopDesktopLaunchRelay(message.launch_id);
         }
