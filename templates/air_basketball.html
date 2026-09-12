@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <title data-i18n="airBasketball.title">空气投篮</title>
+  <link rel="stylesheet" href="/static/air-basketball/air-basketball.css?v={{ static_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/air-basketball/avatar.css?v={{ static_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/air-basketball/arcade.css?v={{ static_asset_version | default('0') }}">
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      window.lanlan_config = window.lanlan_config || {
+        lanlan_name: params.get('lanlan_name') || '', model_type: 'live2d', live3d_sub_type: ''
+      };
+      window.LanLan1 = window.LanLan1 || {};
+      window._cardExportPage = true;
+      window.__NEKO_CARD_MAKER_EMBED__ = true;
+      window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;
+      window.mouseTrackingEnabled = false;
+    })();
+  </script>
+</head>
+<body>
+  <main class="game-shell">
+    <header class="match-header">
+      <div class="brand"><span class="brand-ball">●</span><span data-i18n="airBasketball.title">空气投篮</span></div>
+      <div class="round-clock"><span id="clock-label" data-i18n="airBasketball.timeLeft">剩余</span><strong id="match-clock">60</strong><span id="clock-unit" data-i18n="airBasketball.seconds">秒</span></div>
+      <div class="header-actions">
+        <button id="stop-match" class="stop-match" type="button" hidden data-i18n="airBasketball.stopMatch">结束本局</button>
+        <button id="chat-toggle" class="round-button chat-button" type="button" data-i18n-aria-label="airBasketball.chat" aria-label="边玩边聊">✦</button>
+        <button id="sound-toggle" class="round-button" type="button" data-i18n-aria-label="airBasketball.soundOff" aria-label="关闭音效">♪</button>
+      </div>
+    </header>
+
+    <section class="arcade-floor" data-i18n-aria-label="airBasketball.arenaLabel" aria-label="双人投篮赛场">
+      <article class="arcade-machine player-machine" data-side="player">
+        <div class="machine-marquee"><span data-i18n="airBasketball.you">你</span><small data-i18n="airBasketball.anglePower">角度 × 力度</small></div>
+        <div class="machine-screen">
+          <canvas id="player-court" data-i18n-aria-label="airBasketball.playerArcadeLabel" aria-label="玩家投篮机"></canvas>
+          <div class="lane-hud">
+            <span><i data-i18n="airBasketball.score">得分</i><b id="player-score">0</b></span>
+            <span><i data-i18n="airBasketball.stage">阶段</i><b id="player-stage">1</b></span>
+            <span><i data-i18n="airBasketball.combo">连中</i><b id="player-combo">0</b></span>
+            <span><i data-i18n="airBasketball.time">时间</i><b id="player-time">60</b></span>
+          </div>
+          <div class="stage-banner"><span data-i18n="airBasketball.stageTarget">下一阶段</span><b id="player-target">12</b></div>
+          <div id="player-callout" class="callout"></div>
+          <div id="player-combo-burst" class="combo-burst" aria-live="polite"><strong>0</strong><span>COMBO</span></div>
+          <div class="aim-panel" aria-hidden="true">
+            <div><span data-i18n="airBasketball.power">力度</span><b id="player-power">0</b></div>
+            <i><em id="player-power-fill"></em></i>
+            <div><span data-i18n="airBasketball.angle">角度</span><b id="player-angle">0°</b></div>
+          </div>
+          <div class="fever-meter player-fever"><span data-i18n="airBasketball.fever">爆发</span><i><em id="player-fever-fill"></em></i></div>
+          <div class="interference-meter focus-meter"><i id="player-focus-fill"></i><span data-i18n="airBasketball.interference">专注</span></div>
+          <div id="player-guide" class="gesture-guide"><span>↗</span><b data-i18n="airBasketball.gestureHint">按住篮球拖动蓄力；向右斜投可以闯入对方球场</b></div>
+        </div>
+        <div class="machine-controls"><span class="joystick"></span><span class="control-copy" data-i18n="airBasketball.playerControl">由你控制</span><span class="arcade-button"></span></div>
+      </article>
+
+      <div class="versus" aria-hidden="true"><span>V</span><span>S</span><i id="cross-ball" class="cross-ball"></i></div>
+
+      <article class="arcade-machine neko-machine" data-side="neko">
+        <div class="machine-marquee"><span id="opponent-name">N.E.K.O</span><small data-i18n="airBasketball.autoChallenge">自动挑战</small></div>
+        <div class="machine-screen">
+          <canvas id="neko-court" data-i18n-aria-label="airBasketball.opponentArcadeLabel" aria-label="猫娘投篮机"></canvas>
+          <div class="lane-hud">
+            <span><i data-i18n="airBasketball.score">得分</i><b id="neko-score">0</b></span>
+            <span><i data-i18n="airBasketball.stage">阶段</i><b id="neko-stage">1</b></span>
+            <span><i data-i18n="airBasketball.combo">连中</i><b id="neko-combo">0</b></span>
+            <span><i data-i18n="airBasketball.time">时间</i><b id="neko-time">60</b></span>
+          </div>
+          <div class="stage-banner"><span data-i18n="airBasketball.stageTarget">下一阶段</span><b id="neko-target">12</b></div>
+          <div id="neko-callout" class="callout"></div>
+          <div id="neko-combo-burst" class="combo-burst" aria-live="polite"><strong>0</strong><span>COMBO</span></div>
+          <div class="fever-meter neko-fever"><span data-i18n="airBasketball.fever">爆发</span><i><em id="neko-fever-fill"></em></i></div>
+          <div class="interference-meter focus-meter"><i id="neko-focus-fill"></i><span data-i18n="airBasketball.interference">专注</span></div>
+          <div id="neko-interference-hint" class="interference-hint" data-i18n="airBasketball.interfereHint">拖动篮球、篮筐，或拍打猫娘干扰她</div>
+          <div class="neko-status"><span class="status-dot"></span><b id="neko-status-text" data-i18n="airBasketball.nekoReady">猫娘准备中</b></div>
+        </div>
+        <div class="machine-controls"><span class="joystick neko-stick"></span><span class="control-copy" data-i18n="airBasketball.aiControl">自动控制</span><span class="arcade-button neko-button"></span></div>
+        <div id="air-neko-avatar" class="neko-avatar" data-i18n-aria-label="airBasketball.avatarLabel" aria-label="可以拍打的当前角色">
+          <div id="air-neko-live2d" class="avatar-renderer" hidden>
+            <canvas id="air-neko-live2d-canvas"></canvas>
+          </div>
+          <div id="air-neko-vrm" class="avatar-renderer" hidden>
+            <canvas id="air-neko-vrm-canvas"></canvas>
+          </div>
+          <div id="air-neko-avatar-fallback" class="avatar-fallback" hidden>
+            <span aria-hidden="true">◇</span>
+            <strong id="air-neko-avatar-fallback-name">N.E.K.O</strong>
+            <small id="air-neko-avatar-fallback-type" data-i18n-label="airBasketball.avatarUnavailable">角色资源暂不可用</small>
+          </div>
+          <span class="avatar-hit-zone avatar-hit-zone-head" aria-hidden="true"></span>
+          <span class="avatar-hit-zone avatar-hit-zone-torso" aria-hidden="true"></span>
+          <span class="avatar-hit-zone avatar-hit-zone-lower" aria-hidden="true"></span>
+          <span class="neko-hit-spark" aria-hidden="true">✦</span>
+        </div>
+        <div id="neko-speech" class="neko-speech" aria-live="polite"></div>
+        <div id="neko-avatar-loading" class="neko-avatar-loading">N.E.K.O</div>
+      </article>
+    </section>
+
+    <div id="mouse-steal-layer" class="mouse-steal-layer" aria-hidden="true">
+      <i id="mouse-steal-tether" class="mouse-steal-tether" aria-hidden="true"></i>
+      <div id="stolen-cursor" class="stolen-cursor" aria-hidden="true">
+        <img class="stolen-cursor-arrow" src="/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png" alt="">
+        <img class="stolen-cursor-paw" src="/static/assets/tutorial/highlight/cat-paw.png" alt="">
+      </div>
+      <div id="mouse-steal-hint" class="mouse-steal-hint" role="status" aria-live="polite">
+        <strong id="mouse-steal-title"></strong>
+        <span data-i18n="airBasketball.mouseStealEscape">快速甩动鼠标挣脱</span>
+      </div>
+    </div>
+  </main>
+
+  <div id="start-overlay" class="overlay">
+    <section class="start-card">
+      <div class="logo-ball">🏀</div>
+      <p class="eyebrow">PLAYER 1 · VS · <span id="start-opponent-name">N.E.K.O</span></p>
+      <h1 data-i18n="airBasketball.title">空气投篮</h1>
+      <p id="start-copy" data-i18n="airBasketball.intro">双方共享同一套专注与计分规则；投篮和捣乱都要把握节奏。</p>
+      <div class="rule-chips"><span data-i18n="airBasketball.ruleAim">角度力度</span><span data-i18n="airBasketball.ruleStage">四段篮筐</span><span data-i18n="airBasketball.ruleFever">连续爆发</span></div>
+      <div class="mode-picker" role="radiogroup" data-i18n-aria-label="airBasketball.chooseMode" aria-label="选择比赛模式">
+        <label>
+          <input type="radio" name="match-mode" value="timed" checked>
+          <span><b data-i18n="airBasketball.timedMode">限时对决</b><small data-i18n="airBasketball.timedModeHint">60 秒冲分，时间到自动结算</small></span>
+        </label>
+        <label>
+          <input type="radio" name="match-mode" value="endless">
+          <span><b data-i18n="airBasketball.endlessMode">自由胡闹</b><small data-i18n="airBasketball.endlessModeHint">不限时间，想停时随时结算</small></span>
+        </label>
+      </div>
+      <div id="result-board" class="result-board" hidden>
+        <strong id="result-title"></strong>
+        <span><b id="final-player">0</b><i>:</i><b id="final-neko">0</b></span>
+      </div>
+      <button id="start-button" type="button" data-i18n="airBasketball.start">开始比赛</button>
+    </section>
+  </div>
+
+  <aside id="game-chat" class="game-chat is-closed" aria-hidden="true">
+    <header><strong data-i18n="airBasketball.chat">边玩边聊</strong><button id="chat-close" type="button" data-i18n-aria-label="airBasketball.closeChat" aria-label="关闭聊天">×</button></header>
+    <iframe id="game-chat-frame" title="N.E.K.O Chat"></iframe>
+  </aside>
+
+  <script src="/static/libs/live2dcubismcore.min.js"></script>
+  <script src="/static/libs/live2d.min.js"></script>
+  <script src="/static/libs/pixi.min.js"></script>
+  <script src="/static/libs/index.min.js"></script>
+  <script src="/static/live2d/live2d-core.js"></script>
+  <script src="/static/live2d/live2d-emotion.js"></script>
+  <script src="/static/live2d/live2d-model.js"></script>
+  <script src="/static/live2d/live2d-interaction.js"></script>
+  <script src="/static/live2d/live2d-init.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/static/libs/three.module.js",
+      "three/addons/": "/static/libs/three/addons/",
+      "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+      "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    window.THREE = THREE;
+    window.dispatchEvent(new CustomEvent('three-ready'));
+  </script>
+  <script src="/static/vrm/vrm-init.js"></script>
+  <script src="/static/game/system/game-audio-system.js"></script>
+  <script src="/static/game/sdk/neko-minigame-avatar-host.js"></script>
+  <script src="/static/game/sdk/neko-minigame-audio-host.js"></script>
+  <script src="/static/game/sdk/neko-minigame-sdk.js"></script>
+  <script id="neko-minigame-host-launch" type="application/json">{"registrations":{"air-basketball":{"mode":"registered","gameId":"air-basketball","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["runtime","logging","avatar-renderer","audio","speech-output"]}}}</script>
+  <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js"></script>
+  <script type="module" src="/static/air-basketball/chat-dock.js?v={{ static_asset_version | default('0') }}"></script>
+  <script type="module" src="/static/air-basketball/game.js?v={{ static_asset_version | default('0') }}"></script>
+</body>
+</html>

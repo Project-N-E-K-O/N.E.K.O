@@ -194,6 +194,16 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/vrm/motion/player.js",
+    _PROJECT_ROOT / "static/air-basketball/air-basketball.css",
+    _PROJECT_ROOT / "static/air-basketball/avatar.css",
+    _PROJECT_ROOT / "static/air-basketball/avatar-host.js",
+    _PROJECT_ROOT / "static/air-basketball/avatar.js",
+    _PROJECT_ROOT / "static/air-basketball/arcade.css",
+    _PROJECT_ROOT / "static/air-basketball/chat-dock.js",
+    _PROJECT_ROOT / "static/air-basketball/game.js",
+    _PROJECT_ROOT / "static/air-basketball/i18n.js",
+    _PROJECT_ROOT / "static/air-basketball/physics.js",
+    _PROJECT_ROOT / "static/air-basketball/sdk-bootstrap.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
@@ -320,6 +330,16 @@ async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""
     templates = get_templates()
     return templates.TemplateResponse("templates/badminton_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/air_basketball", response_class=HTMLResponse)
+async def air_basketball(request: Request):
+    """Air basketball shooting mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/air_basketball.html", {
         "request": request,
         **_static_assets_ctx(),
     })

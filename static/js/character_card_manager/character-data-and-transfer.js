@@ -707,6 +707,7 @@ const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
     'card_maker',
     'soccer_demo',
     'badminton_demo',
+    'air_basketball',
     'jukebox',
     'static',
     'user_live2d',

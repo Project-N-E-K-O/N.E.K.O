@@ -1655,7 +1655,7 @@ async def test_invite_short_circuit_returns_options_for_router(monkeypatch):
     assert payload is not None
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in ('soccer', 'badminton')
+    assert payload['game_type'] in ('soccer', 'badminton', 'air_basketball')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1726,8 +1726,11 @@ def test_badminton_invite_config_and_i18n_complete():
 
     assert 'badminton' in MINI_GAME_INVITE_AVAILABLE_GAMES
     assert MINI_GAME_LAUNCH_URL_BY_GAME['badminton'] == '/badminton_demo'
-    for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+    assert 'air_basketball' in MINI_GAME_INVITE_AVAILABLE_GAMES
+    assert MINI_GAME_LAUNCH_URL_BY_GAME['air_basketball'] == '/air_basketball'
+    for lang in ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
         assert MINI_GAME_INVITE_LINES_BY_GAME['badminton'][lang].strip()
+        assert MINI_GAME_INVITE_LINES_BY_GAME['air_basketball'][lang].strip()
         work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['badminton'][lang]
         assert work_break_prompt.strip()
         assert '{master}' in work_break_prompt
