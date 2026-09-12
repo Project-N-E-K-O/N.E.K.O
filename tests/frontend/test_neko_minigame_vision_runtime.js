@@ -242,6 +242,18 @@ async function sdkTests() {
     ]}), error => error.code === code && !JSON.stringify(error).includes('private backend detail'));
   }
   visionFailure = null;
+  for (const input of [request, {text:'Observe', attachments:[
+    {type:'image',source:new Uint8Array([1,2,3]),mimeType:'image/png'},
+  ]}]) {
+    for (const [status, body] of [[200, ''], [200, '{broken'], [204, null], [500, '<html>private proxy error</html>']]) {
+      nextVisionResponse = new Response(body, {status});
+      await assert.rejects(game.vision.analyze(input), error => error.code === 'invalid_response'
+        && !JSON.stringify(error).includes('private proxy error'));
+      await tick();
+      assert.equal(host._visionOperations.size, 0, 'bad JSON retained the vision operation');
+      assert.equal(host._rawRequests.size, 0, 'bad JSON retained a raw request slot');
+    }
+  }
   for (const status of [200, 500]) {
     let cancelled = false;
     let chunks = 0;

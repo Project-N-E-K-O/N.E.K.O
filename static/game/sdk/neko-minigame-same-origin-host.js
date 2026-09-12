@@ -1735,7 +1735,12 @@
         }, { signal: controller.signal, timeoutMs: 60000, operation: 'vision.analyze',
           maxResponseBytes: MAX_BOUNDED_RESPONSE_BYTES });
         // Body consumption remains under the capture/request lifetime and raw slot.
-        const data = await response.json();
+        let data;
+        try { data = await response.json(); }
+        catch (_) {
+          if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+          throw this._hostError('invalid_response', 'Vision response must contain valid JSON');
+        }
         if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
         if (!response.ok || data?.ok !== true) {
           const reasons = {
