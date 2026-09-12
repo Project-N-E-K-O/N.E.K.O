@@ -189,19 +189,24 @@ class Library:
         path = self.resource(job, version, "timeline.json")
         if path.stat().st_size > 8 * 1024 * 1024:
             raise ValueError("Timeline exceeds load budget")
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except RecursionError as error:
+            raise ValueError("Timeline nesting exceeds load budget") from error
         if not isinstance(data, dict):
             raise ValueError("Timeline must be an object")
         if isinstance(data.get('events'), list) and len(data['events']) > 1000:
             data = {**data, 'status': 'incomplete', 'events': []}
         prefix = f"/api/watch-together/media/{job}/{version}/"
-        def remap(value):
+        def remap(value, depth=0):
+            if depth > 32:
+                raise ValueError("Timeline nesting exceeds load budget")
             if isinstance(value, str) and value.startswith(f"/media/{job}/"):
                 return prefix + value[len(f"/media/{job}/"):]
             if isinstance(value, dict):
-                return {k: remap(v) for k, v in value.items()}
+                return {k: remap(v, depth + 1) for k, v in value.items()}
             if isinstance(value, list):
-                return [remap(v) for v in value]
+                return [remap(v, depth + 1) for v in value]
             return value
         timeline = {**remap(data), "id": job, "version": version}
         if timeline.get('status') == 'ready':
@@ -223,12 +228,12 @@ class Library:
                 timeline['status'] = 'incomplete'
                 return timeline
             manifest = self.manifest(job, version)
-            references = [timeline.get('video')]
-            references.extend(cue.get('audio') for cue in events if cue.get('audio'))
-            for url in references:
+            references = [(timeline.get('video'), {'.mp4', '.webm'})]
+            references.extend((cue.get('audio'), {'.wav', '.mp3', '.ogg', '.m4a'}) for cue in events if cue.get('audio'))
+            for url, extensions in references:
                 name = url[len(prefix):] if isinstance(url, str) and url.startswith(prefix) else None
                 entry = manifest.get(name)
-                if entry is None or not (self.objects / entry['sha256']).is_file():
+                if entry is None or Path(name).suffix.lower() not in extensions or not (self.objects / entry['sha256']).is_file():
                     timeline['status'] = 'incomplete'
                     break
         return timeline

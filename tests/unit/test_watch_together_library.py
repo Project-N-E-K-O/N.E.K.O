@@ -9,6 +9,37 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('depth', [40, 1500])
+def test_deep_timeline_does_not_break_history(tmp_path, depth):
+    archive = source(tmp_path, 'nested')
+    path = archive / JOB / 'timeline.json'
+    raw = '{"status":"ready","unused":' + '[' * depth + '0' + ']' * depth + '}'
+    path.write_text(raw)
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    assert library.history()[0]['status'] == 'incomplete'
+    assert path.read_text() == raw
+
+
+@pytest.mark.parametrize('role', ['video', 'audio'])
+def test_image_reference_cannot_be_used_as_playable_media(tmp_path, role):
+    archive = source(tmp_path, 'wrong-role')
+    path = archive / JOB / 'timeline.json'
+    data = json.loads(path.read_text())
+    (archive / JOB / 'video.mp4').write_bytes(b'video')
+    (archive / JOB / 'cover.jpg').write_bytes(b'image')
+    data['video'] = f'/media/{JOB}/video.mp4'
+    data['events'] = [{'at': 0, 'audio': f'/media/{JOB}/laugh.mp3', 'duration': 1}]
+    if role == 'video':
+        data['video'] = f'/media/{JOB}/cover.jpg'
+    else:
+        data['events'][0]['audio'] = f'/media/{JOB}/cover.jpg'
+    path.write_text(json.dumps(data))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    assert library.history()[0]['status'] == 'incomplete'
+
+
 def test_verify_counts_standalone_deduplicated_audio_and_detects_corruption(tmp_path):
     assets = tmp_path / 'assets'
     assets.mkdir()
