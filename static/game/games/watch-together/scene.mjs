@@ -231,7 +231,8 @@ export async function run(game, character) {
   $('next-video').onclick=async()=>{
     if(!nextRow)return;
     const row=nextRow;
-    try {if(await load(row))await $('play').onclick();}catch(error){status(error.message);}
+    // Playback needs a fresh trusted Play gesture after asynchronous selection.
+    try {await load(row);}catch(error){status(error.message);}
   };
   $('exit').onclick = async () => {
     nextQueue.dispose();

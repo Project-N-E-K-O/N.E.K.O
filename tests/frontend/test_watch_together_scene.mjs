@@ -392,4 +392,23 @@ failPlayback=false;
 await retryPlayback.elements.get('play').onclick();
 assert.match(retryPlayback.elements.get('status').textContent,/playing/);
 retryPlayback.handlers['runtime-inactive']();
-console.log('watch-together scene: all regressions passed, including playback failure retry');
+const nextSelection=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
+const nextRequest=nextSelection.game.media.request;
+nextSelection.game.media.request=async(action,payload)=>{
+  if(action==='prepare')return {id:'next-job'};
+  if(action==='preparation')return {status:'ready'};
+  if(action==='history')return {analyses:[{job:'next-job',version:'v',status:'ready'}]};
+  return nextRequest(action,payload);
+};
+nextSelection.elements.get('prefetch-enabled').checked=true;
+await nextSelection.elements.get('play').onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(nextSelection.elements.get('next-video').disabled,false);
+const startsBeforeNext=nextSelection.calls.filter(call=>call.action==='watch' && call.payload.action==='start').length;
+await nextSelection.elements.get('next-video').onclick();
+assert.equal(nextSelection.calls.filter(call=>call.action==='watch' && call.payload.action==='start').length,startsBeforeNext,
+  'selecting the next video must wait for a fresh Play gesture');
+assert.equal(nextSelection.elements.get('play').hidden,false);
+assert.equal(nextSelection.elements.get('play').disabled,false);
+assert.equal(nextSelection.elements.get('video').src,'/video');
+console.log('watch-together scene: all regressions passed, including next-video gesture boundary');
