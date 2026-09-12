@@ -278,10 +278,21 @@
       const base = await options.characterSource.getCharacter(name, requestOptions);
       if (!base || hostDisposed) return null;
       if (base.model && ['live2d', 'vrm'].includes(base.model.type)) return base;
-      if (!metadataHost) metadataHost = createExtendedHost();
-      const configured = await metadataHost.getCharacter(base.name, requestOptions);
-      if (hostDisposed || requestOptions?.signal?.aborted) return null;
-      return configured ? { ...base, ...configured } : base;
+      try {
+        if (!metadataHost) metadataHost = createExtendedHost();
+        const configured = await metadataHost.getCharacter(base.name, requestOptions);
+        if (hostDisposed || requestOptions?.signal?.aborted) return null;
+        return configured ? { ...base, ...configured } : base;
+      } catch (error) {
+        if (hostDisposed || requestOptions?.signal?.aborted
+            || ['cancelled', 'disposed', 'timeout', 'busy'].includes(error.code)
+            || error.name === 'AbortError') throw error;
+        // Supplemental extended-renderer metadata is optional. Keep the
+        // canonical standard fallbacks and identity already resolved above.
+        const fallbackModels = (base.fallbackModels || []).slice(0, 4)
+          .filter(model => ['live2d', 'vrm'].includes(model?.type));
+        return { ...base, model: null, fallbackModels, rendererAvailable: fallbackModels.length > 0 };
+      }
     }
 
     function markAiAvatar(type, path, ready = true) {

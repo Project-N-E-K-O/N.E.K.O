@@ -68,6 +68,37 @@ async function main() {
   vm.runInThisContext(soccerSource, { filename: soccerHostPath });
 
   const host = windowMock.createSoccerAvatarHost();
+  for (const failure of ['network', 'factory', 'cancelled', 'timeout', 'disposed', 'aborted']) {
+    const owner = new AbortController();
+    const error = Object.assign(new Error(failure), { code: failure });
+    const base = { name: 'Fallback Neko', rendererAvailable: true,
+      model: { type: 'mmd', path: '/neko.pmx' },
+      fallbackModels: [{ type: 'vrm', path: '/neko.vrm' }, { type: 'live2d', path: '/neko.model3.json' }],
+      languagePreference: { resolved: true, locale: 'ja' } };
+    let released = 0;
+    windowMock.NekoMiniGameDrawingAvatarHost = { create() {
+      if (failure === 'factory') throw error;
+      return { mount() {}, dispose() { released++; }, async getCharacter() {
+        if (failure === 'aborted') owner.abort();
+        throw error;
+      } };
+    } };
+    const fallbackHost = windowMock.createSoccerAvatarHost({
+      characterSource: { getCharacter: async () => base },
+    });
+    try {
+      if (['network', 'factory'].includes(failure)) {
+        const result = await fallbackHost.getCharacter(base.name, { signal: owner.signal });
+        assert(result.name === base.name && result.model === null, 'failed metadata advertised the extended model');
+        assert(JSON.stringify(result.fallbackModels) === JSON.stringify(base.fallbackModels), 'standard fallbacks were lost');
+        assert(result.languagePreference.locale === 'ja', 'fallback lost the trusted language');
+      } else {
+        const caught = await fallbackHost.getCharacter(base.name, { signal: owner.signal }).catch(cause => cause);
+        assert(caught === error, `${failure}: cancellation became a fallback success`);
+      }
+    } finally { fallbackHost.dispose(); }
+    assert(released === (failure === 'factory' ? 0 : 1), 'supplemental host was not released');
+  }
   const pendingMount = host.mount({
     slot: 'ai',
     model: { type: 'live2d', path: '/models/stuck.model3.json' },
