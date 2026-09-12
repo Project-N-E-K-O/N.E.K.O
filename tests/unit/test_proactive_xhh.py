@@ -328,6 +328,22 @@ def test_normalize_neko_community_feed_falls_back_after_unusable_author():
     assert posts[0]["author"] == "可用作者"
 
 
+def test_normalize_neko_community_feed_falls_back_after_unusable_tags():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "tag-fallback",
+                    "title": "标签后备卡牌",
+                    "tags": {"unsupported": "shape"},
+                    "topics": ["可用话题"],
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["tags"] == ["可用话题"]
+
 def test_normalize_neko_community_feed_bounds_tags():
     tags = [
         f"tag-{index}-" + "x" * trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS
@@ -563,6 +579,42 @@ async def test_fetch_neko_community_feed_does_not_read_oauth_for_http():
     assert "Authorization" not in kwargs["headers"]
 
 
+@pytest.mark.asyncio
+async def test_fetch_neko_community_feed_uses_oauth_for_loopback_http():
+    class CommunityResponse(_FakeResponse):
+        status_code = 200
+
+        def json(self):
+            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+
+    class AuthenticatedClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return CommunityResponse()
+
+    auth_client = AuthenticatedClient()
+    access_token = AsyncMock(return_value="desktop-access-token")
+    with patch(
+        "utils.web_scraper.trending_content.social_base_url",
+        return_value="http://127.0.0.1:8000",
+    ), patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=access_token,
+    ), patch(
+        "utils.web_scraper.trending_content.httpx.AsyncClient",
+        return_value=auth_client,
+    ):
+        result = await fetch_neko_community_feed(limit=1)
+
+    access_token.assert_awaited_once_with("http://127.0.0.1:8000/api/feed")
+    assert result["authenticated"] is True
+    assert auth_client.call[1]["headers"]["Authorization"] == "Bearer desktop-access-token"
 @pytest.mark.asyncio
 async def test_neko_community_access_token_uses_only_matching_oauth_origin(
     monkeypatch, tmp_path

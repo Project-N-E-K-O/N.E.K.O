@@ -94,6 +94,19 @@ def _same_community_origin(left: str, right: str) -> bool:
         return False
 
 
+def _neko_community_bearer_transport_allowed(feed_api: str) -> bool:
+    """Allow bearer transport over HTTPS or the desktop's loopback HTTP hosts."""
+
+    try:
+        parsed = urlparse(feed_api)
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").casefold()
+    return parsed.scheme.lower() == "https" or (
+        parsed.scheme.lower() == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
+    )
+
+
 def _neko_community_legacy_session_path() -> Path | None:
     try:
         from utils.config_manager import get_config_manager
@@ -1977,11 +1990,19 @@ def normalize_neko_community_feed(
             if author:
                 break
         author = author[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
-        labels = _community_label_values(
-            raw.get("tags") or raw.get("topics") or raw.get("categories"),
-            limit=NEKO_COMMUNITY_TAG_MAX_COUNT,
-            max_chars=NEKO_COMMUNITY_TAG_MAX_CHARS,
-        )
+        labels: list[str] = []
+        for label_candidate in (
+            raw.get("tags"),
+            raw.get("topics"),
+            raw.get("categories"),
+        ):
+            labels = _community_label_values(
+                label_candidate,
+                limit=NEKO_COMMUNITY_TAG_MAX_COUNT,
+                max_chars=NEKO_COMMUNITY_TAG_MAX_CHARS,
+            )
+            if labels:
+                break
         url = card_url or _community_card_url(raw)
         dedupe_key = item_id or f"{url}|{title.casefold()}"
         title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
@@ -2035,7 +2056,7 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
         }
         params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
         access_token = ""
-        if urlparse(feed_api).scheme.lower() == "https":
+        if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
         if authenticated:
