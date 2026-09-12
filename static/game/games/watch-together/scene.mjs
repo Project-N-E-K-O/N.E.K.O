@@ -208,13 +208,13 @@ export async function run(game, character) {
       setTimeout(()=>{if(!window.closed)location.href='/';},100);
     }
   };
-  let watchOffset=0, watchNext=null, watchGeneration=0, watchLoading=false;
+  let watchOffset=0, watchNext=null, watchGeneration=0, watchLoading=false, watchRefreshPending=false;
   $('watches-previous').onclick=()=>refreshWatches(Math.max(0,watchOffset-50));
   $('watches-next').onclick=()=>{if(watchNext!==null)return refreshWatches(watchNext);};
   async function refreshWatches(offset) {
     // Promise.then(record) passes its result; only explicit numeric offsets paginate.
     if(!Number.isInteger(offset)) {
-      if(watchLoading)return;
+      if(watchLoading){watchRefreshPending=true;return;}
       offset=watchOffset;
     }
     const generation=++watchGeneration;
@@ -232,6 +232,10 @@ export async function run(game, character) {
         watchLoading=false;
         $('watches-previous').disabled=watchOffset===0;
         $('watches-next').disabled=watchNext===null;
+        if(watchRefreshPending) {
+          watchRefreshPending=false;
+          void refreshWatches();
+        }
       }
     }
   }

@@ -249,10 +249,14 @@ pagingDuringPlayback.game.media.request=(action,payload)=>{
   return playbackRequest(action,payload);
 };
 const navigating=pagingDuringPlayback.elements.get('watches-previous').onclick();
-pagingDuringPlayback.record({type:'progress',position:5});
+pagingDuringPlayback.record({type:'ended',position:125});
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(pageRequests,1,'background refresh must not supersede pending navigation');
 finishPage({watches:[{job:'Requested page'}],next_offset:null});
 await navigating;
 assert.match(pagingDuringPlayback.elements.get('watches').textContent,/Requested page/);
+assert.equal(pageRequests,2,'final progress refresh must run after navigation');
+finishPage({watches:[{job:'Requested page',progress:125}],next_offset:null});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.match(pagingDuringPlayback.elements.get('watches').textContent,/125s/);
 pagingDuringPlayback.handlers['runtime-inactive']();
