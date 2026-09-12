@@ -38,6 +38,8 @@ def test_air_basketball_mvp_interaction_contract():
     sdk_bootstrap = ROOT.joinpath("static", "air-basketball", "sdk-bootstrap.js").read_text(encoding="utf-8")
     arcade_css = ROOT.joinpath("static", "air-basketball", "arcade.css").read_text(encoding="utf-8")
     chat = ROOT.joinpath("static", "air-basketball", "chat-dock.js").read_text(encoding="utf-8")
+    main_server = ROOT.joinpath("app", "main_server", "__init__.py").read_text(encoding="utf-8")
+    character_names = ROOT.joinpath("utils", "character_name.py").read_text(encoding="utf-8")
 
     assert 'canvas id="player-court"' in html
     assert 'canvas id="neko-court"' in html
@@ -54,7 +56,15 @@ def test_air_basketball_mvp_interaction_contract():
     assert "import(`./physics.js${assetVersion}`)" in game
     assert "import(`./avatar.js${assetVersion}`)" in game
     assert "import(`./sdk-bootstrap.js${assetVersion}`)" in game
+    assert "if (lane === nekoLane && ball.owner === 'player' && !ball.scored) missed('player')" in game
+    assert "* lane.width / Math.max(1, rect.width)" in game
+    assert "const requestedCost = Math.hypot(dx, dy) * ACTION_BALANCE.JAM_DRAG_SCALE" in game
+    assert game.index("spendFocus('player', cost)") < game.index("lane.interfere(appliedDx, appliedDy, appliedPoint)")
     assert "class ShotLane" in physics
+    assert "const assetVersion = new URL(import.meta.url).search" in physics
+    assert "versionedAsset('./assets/neko-basketball.png')" in physics
+    assert "ball.vx *= scaleX" in physics
+    assert "ball.vy *= scaleY" in physics
     assert "collideRim" in physics
     assert "getAimTelemetry" in physics
     assert "getHoopPose" in physics
@@ -71,6 +81,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "PNGTuber" not in avatar_host
     assert "game.avatar.mount" in avatar
     assert "createAirBasketballAvatarHost" in avatar_host
+    assert "function waitForVrmModules(signal" in avatar_host
+    assert "function waitForVrmModules(signal, timeoutMs = 15000) {\n  throwIfAborted(signal);" in avatar_host
     assert "window.NekoMiniGameAvatarHost.create" in avatar_host
     assert "window.live2dManager" in avatar_host
     assert "window.VRMManager" in avatar_host
@@ -192,9 +204,17 @@ def test_air_basketball_mvp_interaction_contract():
     assert '"air-basketball"' in html
     assert "/static/game/sdk/neko-minigame-sdk.js" in html
     assert "/static/game/sdk/neko-minigame-same-origin-bootstrap.js" in html
+    assert '"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v=' in html
     assert "/static/game/sdk/neko-minigame-avatar-host.js" in html
     assert "/static/game/sdk/neko-minigame-audio-host.js" in html
+    assert "/static/game/sdk/neko-minigame-audio-host.js?v=" in html
+    assert 'three/addons/loaders/GLTFLoader.js": "/static/libs/three/addons/loaders/GLTFLoader.js?v=' in html
+    assert "user-scalable=no" not in html
+    assert html.count('<link rel="preload" as="image" href="/static/air-basketball/assets/') == 3
     assert "window.NekoMiniGame.connect" in sdk_bootstrap
+    assert "import(`./avatar-host.js${assetVersion}`)" in sdk_bootstrap
+    assert "NekoMiniGame audio host is unavailable" in sdk_bootstrap
+    assert "transport.getCharacter(identity.name)" in sdk_bootstrap
     assert "requiredCapabilities:['runtime', 'logging', 'avatar-renderer', 'audio', 'speech-output']" in sdk_bootstrap
     assert "game.audio.mount" in sdk_bootstrap
     assert "audio.playSfx" in sdk_bootstrap
@@ -286,6 +306,9 @@ def test_air_basketball_mvp_interaction_contract():
     assert "pageParams.get('test_mode') === '1'" in game
     assert "prepareIsolatedCrossTest" in game
     assert "position: fixed" in arcade_css
+    assert ".mode-picker input:focus-visible + span" in arcade_css
+    assert "@media (max-height: 680px)" in arcade_css
+    assert "overflow-y: auto" in arcade_css
     assert "@keyframes cross-flight" not in arcade_css
     assert 'id="player-power-fill"' in html
     assert 'id="player-fever-fill"' in html
@@ -299,6 +322,10 @@ def test_air_basketball_mvp_interaction_contract():
     assert 'loading="lazy"' not in html
     assert 'class="game-chat is-closed"' in html
     assert "dock.classList.contains('is-closed')" in chat
+    limited_pages = main_server.split("_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {", 1)[1].split("}", 1)[0]
+    assert '"/air_basketball"' not in limited_pages
+    reserved_routes = character_names.split("RESERVED_ROUTE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
+    assert '"air_basketball"' in reserved_routes
     expected_keys = {
         "title", "gestureHint", "chaosBall", "opponentReady", "voiceOpening",
         "avatarUnavailable", "arenaLabel", "closeChat", "mouseStealCaught",
@@ -309,6 +336,7 @@ def test_air_basketball_mvp_interaction_contract():
             ROOT.joinpath("static", "locales", f"{locale}.json").read_text(encoding="utf-8")
         )
         assert expected_keys <= payload["airBasketball"].keys()
+        assert payload["airBasketball"]["feverOn"].endswith("+1")
 
 
 @pytest.mark.unit

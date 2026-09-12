@@ -206,7 +206,7 @@
   opacity: 1;
   border: 0;
   border-radius: 50%;
-  background: url("./assets/neko-basketball.png") center / contain no-repeat;
+  background: var(--air-basketball-ball-image) center / contain no-repeat;
   filter: drop-shadow(0 4px 5px rgba(45,77,99,.25));
   box-shadow: none;
   pointer-events: none;
@@ -722,7 +722,7 @@ body::after {
   border: 0;
   border-radius: 50%;
   color: transparent;
-  background: url("./assets/neko-basketball.png") center / contain no-repeat;
+  background: var(--air-basketball-ball-image) center / contain no-repeat;
   filter: drop-shadow(0 10px 12px rgba(80,78,112,.18));
   box-shadow: none;
 }
@@ -945,6 +945,11 @@ body::after {
   color: #587886;
   background: rgba(235,248,252,.86);
   box-shadow: 0 7px 17px rgba(66,137,169,.11),inset 3px 0 #62b9dc;
+}
+
+.mode-picker input:focus-visible + span {
+  outline: 3px solid rgba(38,126,166,.72);
+  outline-offset: 3px;
 }
 
 .mode-picker label:last-child input:checked + span {
@@ -1212,6 +1217,16 @@ body::after {
 .start-card::after { background: rgba(232,148,185,.14); }
 .start-card button { background: #61b7dd; box-shadow: 0 5px 0 #3d8fb3,0 13px 24px rgba(61,143,179,.2); }
 .start-card button:hover { transform: translateY(-1px); box-shadow: 0 4px 0 #3d8fb3,0 12px 22px rgba(61,143,179,.2); }
+
+@media (max-height: 680px) {
+  .overlay {
+    place-items: start center;
+    overflow-y: auto;
+  }
+
+  .start-card::before,
+  .start-card::after { display: none; }
+}
 
 /* The browser cannot move the OS pointer; this layer shows the in-game cursor
    being tugged by the character while the real pointer remains escapable. */

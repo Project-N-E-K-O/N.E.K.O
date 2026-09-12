@@ -1,4 +1,5 @@
-import { createAirBasketballAvatarHost } from './avatar-host.js';
+const assetVersion = new URL(import.meta.url).search;
+const { createAirBasketballAvatarHost } = await import(`./avatar-host.js${assetVersion}`);
 
 // Trusted same-origin adapter. The transport and host helpers stay private to
 // this module; game.js receives only public SDK clients/controllers.
@@ -71,6 +72,7 @@ function resolveIdentity(character) {
 
 async function bootstrap() {
   if (!window.NekoMiniGame?.connect) throw new Error('NekoMiniGame SDK is unavailable');
+  if (!window.NekoMiniGameAudioHost?.create) throw new Error('NekoMiniGame audio host is unavailable');
   const createHost = await window.nekoMiniGameSameOriginHostReady;
   const avatarHost = createAirBasketballAvatarHost();
   const audioHost = window.NekoMiniGameAudioHost.create({
@@ -107,7 +109,7 @@ async function bootstrap() {
     settings:{ maxConcurrent:12, maxPreloadEntries:32 }
   });
   Object.keys(sfx).forEach(key => audio.preloadSfx(key));
-  sdkContext = Object.freeze({ game, identity, audio });
+  sdkContext = Object.freeze({ game, identity, audio, transport });
   return sdkContext;
 }
 
@@ -135,7 +137,7 @@ export async function speakNekoSpeech(request) {
 
 let lifecycleTail = Promise.resolve();
 function enqueueLifecycle(operation) {
-  lifecycleTail = lifecycleTail.catch(() => undefined).then(async () => operation((await airBasketballSdkReady).game));
+  lifecycleTail = lifecycleTail.catch(() => undefined).then(async () => operation(await airBasketballSdkReady));
   return lifecycleTail;
 }
 
@@ -150,8 +152,12 @@ export async function configureGameRuntime(payload, pageExitPayload) {
 }
 
 export function startGameRuntime(payload) {
-  return enqueueLifecycle(async game => {
-    if (['ended', 'inactive'].includes(game.runtime.state)) game.runtime.reset({ newSession:true });
+  return enqueueLifecycle(async ({ game, identity, transport }) => {
+    if (['ended', 'inactive'].includes(game.runtime.state)) {
+      game.runtime.reset({ newSession:true });
+      const characterResponse = await transport.getCharacter(identity.name);
+      if (!characterResponse.ok) throw new Error(`Character restore failed (${characterResponse.status})`);
+    }
     const result = await game.runtime.start(payload);
     await game.logger.enableAfterRuntimeStart();
     return result;
@@ -159,7 +165,7 @@ export function startGameRuntime(payload) {
 }
 
 export function endGameRuntime(payload, options = {}) {
-  return enqueueLifecycle(async game => {
+  return enqueueLifecycle(async ({ game }) => {
     await Promise.resolve(options.after).catch(() => undefined);
     if (!['running', 'degraded', 'starting'].includes(game.runtime.state)) return undefined;
     return game.runtime.end(payload);

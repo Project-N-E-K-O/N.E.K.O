@@ -1,4 +1,6 @@
 export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const assetVersion = new URL(import.meta.url).search;
+const versionedAsset = path => new URL(`${path}${assetVersion}`, import.meta.url).href;
 
 const STAGE_RULES = [
   { rimScale: 1, moveX: 0, moveY: 0, speed: 0 },
@@ -27,13 +29,13 @@ export class ShotLane {
     this.hoopVelocity = 0;
     this.backgroundImage = new Image();
     this.backgroundImage.decoding = 'async';
-    this.backgroundImage.src = new URL('./assets/neko-arcade-lane-v2.webp', import.meta.url).href;
+    this.backgroundImage.src = versionedAsset('./assets/neko-arcade-lane-v2.webp');
     this.ballImage = new Image();
     this.ballImage.decoding = 'async';
-    this.ballImage.src = new URL('./assets/neko-basketball.png', import.meta.url).href;
+    this.ballImage.src = versionedAsset('./assets/neko-basketball.png');
     this.hoopImage = new Image();
     this.hoopImage.decoding = 'async';
-    this.hoopImage.src = new URL('./assets/neko-hoop.png', import.meta.url).href;
+    this.hoopImage.src = versionedAsset('./assets/neko-hoop.png');
     this.disruption = 0;
     this.fever = false;
     this.resize();
@@ -41,6 +43,8 @@ export class ShotLane {
 
   resize() {
     const rect = this.canvas.getBoundingClientRect();
+    const previousWidth = this.width;
+    const previousHeight = this.height;
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.width = Math.max(240, rect.width);
     this.height = Math.max(360, rect.height);
@@ -53,6 +57,34 @@ export class ShotLane {
       rimY: this.height * .39,
       baseRimW: clamp(this.width * .23, 70, 108)
     };
+    if (previousWidth && previousHeight
+        && (previousWidth !== this.width || previousHeight !== this.height)) {
+      const scaleX = this.width / previousWidth;
+      const scaleY = this.height / previousHeight;
+      const scaleBall = ball => {
+        if (!ball || ball.expired) return;
+        ball.x *= scaleX;
+        ball.y *= scaleY;
+        ball.vx *= scaleX;
+        ball.vy *= scaleY;
+        ball.r *= scaleX;
+      };
+      if (this.ball?.flying || this.ball?.inTransit) scaleBall(this.ball);
+      this.guests.forEach(scaleBall);
+      this.particles.forEach(particle => {
+        particle.x *= scaleX;
+        particle.y *= scaleY;
+        particle.vx *= scaleX;
+        particle.vy *= scaleY;
+        particle.size *= scaleX;
+      });
+      if (this.aim) {
+        this.aim.x *= scaleX;
+        this.aim.y *= scaleY;
+      }
+      this.hoopOffset *= scaleX;
+      this.hoopVelocity *= scaleX;
+    }
     if (!this.ball?.flying && !this.ball?.inTransit) this.resetBall();
   }
 

@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 保留上游你画我猜、PNGTuber 文案并新增足球 SDK 启动失败提示；递增版本让
-    // Electron、Docker 等长期缓存重新拉取完整语言包，避免显示未本地化 key。
-    const LOCALE_VERSION = '2026-09-12-core-image-generation';
+    // 空气投篮新增完整文案键；递增版本让 Electron、Docker 等长期缓存重新拉取
+    // 完整语言包，避免把未缓存的新 key 直接显示给用户。
+    const LOCALE_VERSION = '2026-09-12-air-basketball';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

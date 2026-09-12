@@ -223,6 +223,7 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
         else None,
     )
     page.on("pageerror", lambda error: runtime_errors.append(str(error)))
+    page.add_init_script("localStorage.setItem('i18nextLng', 'zh-CN')")
     page.route(
         "**/api/game/air-basketball/character*",
         lambda route: route.fulfill(
@@ -248,9 +249,9 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
     module_urls = page.evaluate(
         """performance.getEntriesByType('resource')
         .map(entry => entry.name)
-        .filter(url => /air-basketball[/](i18n|physics|avatar)[.]js/.test(url))"""
+        .filter(url => /air-basketball[/](i18n|physics|avatar|sdk-bootstrap|avatar-host)[.]js/.test(url))"""
     )
-    assert len(module_urls) == 3
+    assert len(module_urls) == 5
     assert all("?v=" in url for url in module_urls)
     assert len({url.split("?v=", 1)[1] for url in module_urls}) == 1
 
@@ -433,6 +434,132 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
     expect(page.locator("#cross-ball")).to_be_visible()
     assert console_errors == []
     assert runtime_errors == []
+
+
+@pytest.mark.e2e
+def test_air_basketball_narrow_canvas_input_uses_lane_coordinates(
+    page: Page,
+    running_server: str,
+):
+    page.set_viewport_size({"width": 390, "height": 700})
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")
+    page.evaluate("window.AirBasketballMVP.test.prepareIsolatedCrossTest()")
+
+    box = page.locator("#player-court").bounding_box()
+    assert box and box["width"] < 240
+    start_x = box["x"] + box["width"] * 0.5
+    start_y = box["y"] + box["height"] * 0.82
+    page.mouse.move(start_x, start_y)
+    page.mouse.down()
+    page.mouse.move(start_x, start_y - box["height"] * 0.28, steps=6)
+    page.mouse.up()
+
+    page.wait_for_function("window.AirBasketballMVP.getState().playerBallFlying === true")
+
+
+@pytest.mark.e2e
+def test_air_basketball_new_session_restores_character_identity(
+    page: Page,
+    running_server: str,
+):
+    character_requests = []
+
+    def fulfill_character(route):
+        character_requests.append(route.request.url)
+        route.fulfill(
+            json={
+                "lanlan_name": "Round Two Lolita",
+                "model_type": "unavailable",
+                "live3d_sub_type": "",
+                "live2d_path": "",
+                "vrm_path": "",
+            }
+        )
+
+    page.route("**/api/game/air-basketball/character*", fulfill_character)
+    page.goto(
+        f"{running_server}/air_basketball?lanlan_name=Round%20Two%20Lolita",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")
+    expect(page.locator("#opponent-name")).to_have_text("Round Two Lolita")
+
+    page.locator(".mode-picker label").nth(1).click()
+    page.locator("#start-button").click()
+    page.wait_for_timeout(400)
+    assert len(character_requests) == 1
+
+    page.locator("#stop-match").click()
+    expect(page.locator("#start-overlay")).to_be_visible()
+    page.locator("#start-button").click()
+    for _ in range(60):
+        if len(character_requests) >= 2:
+            break
+        page.wait_for_timeout(50)
+    assert len(character_requests) >= 2
+    assert "lanlan_name=Round+Two+Lolita" in character_requests[-1]
+
+
+@pytest.mark.e2e
+def test_air_basketball_resize_preserves_active_ball_state(
+    page: Page,
+    running_server: str,
+):
+    page.goto(f"{running_server}/air_basketball", wait_until="domcontentloaded")
+    result = page.evaluate(
+        """
+        async () => {
+          const version = new URL(
+            document.querySelector('script[src*="/air-basketball/game.js"]').src
+          ).search;
+          const { ShotLane } = await import(`/static/air-basketball/physics.js${version}`);
+          const canvas = document.createElement('canvas');
+          Object.assign(canvas.style, {
+            position:'fixed', left:'0', top:'0', width:'480px', height:'720px'
+          });
+          document.body.appendChild(canvas);
+          const lane = new ShotLane({
+            canvas,
+            side:'player',
+            onScore:() => {},
+            onMiss:() => {},
+            onCross:() => false,
+            onGuestScore:() => {},
+            onBallClash:() => {}
+          });
+          lane.shoot(420, -250);
+          const guest = lane.receiveGuestBall({
+            x:120, y:310, r:20, vx:180, vy:-90, owner:'neko'
+          });
+          const before = [lane.ball, guest].map(ball => ({
+            x:ball.x / lane.width,
+            y:ball.y / lane.height,
+            vx:ball.vx / lane.width,
+            vy:ball.vy / lane.height,
+            r:ball.r / lane.width
+          }));
+          canvas.style.width = '300px';
+          canvas.style.height = '450px';
+          lane.resize();
+          const after = [lane.ball, guest].map(ball => ({
+            x:ball.x / lane.width,
+            y:ball.y / lane.height,
+            vx:ball.vx / lane.width,
+            vy:ball.vy / lane.height,
+            r:ball.r / lane.width
+          }));
+          canvas.remove();
+          return { before, after };
+        }
+        """
+    )
+    for before, after in zip(result["before"], result["after"]):
+        for key in ("x", "y", "vx", "vy", "r"):
+            assert after[key] == pytest.approx(before[key], abs=1e-9)
 
 
 @pytest.mark.e2e

@@ -24,6 +24,7 @@ async function waitForLive2DModel(manager, signal, timeoutMs = 15000) {
 }
 
 function waitForVrmModules(signal, timeoutMs = 15000) {
+  throwIfAborted(signal);
   if (window.vrmModuleLoaded && window.VRMManager) return Promise.resolve();
   return new Promise((resolve, reject) => {
     let timer = 0;

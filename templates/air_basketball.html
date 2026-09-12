@@ -2,11 +2,14 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title data-i18n="airBasketball.title">空气投篮</title>
   <link rel="stylesheet" href="/static/air-basketball/air-basketball.css?v={{ static_asset_version | default('0') }}">
   <link rel="stylesheet" href="/static/air-basketball/avatar.css?v={{ static_asset_version | default('0') }}">
   <link rel="stylesheet" href="/static/air-basketball/arcade.css?v={{ static_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-arcade-lane-v2.webp?v={{ static_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-basketball.png?v={{ static_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/air-basketball/assets/neko-hoop.png?v={{ static_asset_version | default('0') }}">
   <script>
     (() => {
       const params = new URLSearchParams(window.location.search);
@@ -21,7 +24,7 @@
     })();
   </script>
 </head>
-<body>
+<body style="--air-basketball-ball-image:url('/static/air-basketball/assets/neko-basketball.png?v={{ static_asset_version | default('0') }}')">
   <main class="game-shell">
     <header class="match-header">
       <div class="brand"><span class="brand-ball">●</span><span data-i18n="airBasketball.title">空气投篮</span></div>
@@ -105,8 +108,8 @@
     <div id="mouse-steal-layer" class="mouse-steal-layer" aria-hidden="true">
       <i id="mouse-steal-tether" class="mouse-steal-tether" aria-hidden="true"></i>
       <div id="stolen-cursor" class="stolen-cursor" aria-hidden="true">
-        <img class="stolen-cursor-arrow" src="/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png" alt="">
-        <img class="stolen-cursor-paw" src="/static/assets/tutorial/highlight/cat-paw.png" alt="">
+        <img class="stolen-cursor-arrow" src="/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png?v={{ static_asset_version | default('0') }}" alt="">
+        <img class="stolen-cursor-paw" src="/static/assets/tutorial/highlight/cat-paw.png?v={{ static_asset_version | default('0') }}" alt="">
       </div>
       <div id="mouse-steal-hint" class="mouse-steal-hint" role="status" aria-live="polite">
         <strong id="mouse-steal-title"></strong>
@@ -145,22 +148,22 @@
     <iframe id="game-chat-frame" title="N.E.K.O Chat"></iframe>
   </aside>
 
-  <script src="/static/libs/live2dcubismcore.min.js"></script>
-  <script src="/static/libs/live2d.min.js"></script>
-  <script src="/static/libs/pixi.min.js"></script>
-  <script src="/static/libs/index.min.js"></script>
-  <script src="/static/live2d/live2d-core.js"></script>
-  <script src="/static/live2d/live2d-emotion.js"></script>
-  <script src="/static/live2d/live2d-model.js"></script>
-  <script src="/static/live2d/live2d-interaction.js"></script>
-  <script src="/static/live2d/live2d-init.js"></script>
+  <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/libs/live2d.min.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/libs/pixi.min.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/libs/index.min.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/live2d/live2d-core.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/live2d/live2d-model.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/live2d/live2d-interaction.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/live2d/live2d-init.js?v={{ static_asset_version | default('0') }}"></script>
   <script type="importmap">
   {
     "imports": {
-      "three": "/static/libs/three.module.js",
-      "three/addons/": "/static/libs/three/addons/",
-      "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
-      "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+      "three": "/static/libs/three.module.js?v={{ static_asset_version | default('0') }}",
+      "three/addons/loaders/GLTFLoader.js": "/static/libs/three/addons/loaders/GLTFLoader.js?v={{ static_asset_version | default('0') }}",
+      "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js?v={{ static_asset_version | default('0') }}",
+      "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js?v={{ static_asset_version | default('0') }}"
     }
   }
   </script>
@@ -169,13 +172,13 @@
     window.THREE = THREE;
     window.dispatchEvent(new CustomEvent('three-ready'));
   </script>
-  <script src="/static/vrm/vrm-init.js"></script>
-  <script src="/static/game/system/game-audio-system.js"></script>
-  <script src="/static/game/sdk/neko-minigame-avatar-host.js"></script>
-  <script src="/static/game/sdk/neko-minigame-audio-host.js"></script>
-  <script src="/static/game/sdk/neko-minigame-sdk.js"></script>
-  <script id="neko-minigame-host-launch" type="application/json">{"registrations":{"air-basketball":{"mode":"registered","gameId":"air-basketball","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["runtime","logging","avatar-renderer","audio","speech-output"]}}}</script>
-  <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js"></script>
+  <script src="/static/vrm/vrm-init.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version | default('0') }}"></script>
+  <script id="neko-minigame-host-launch" type="application/json">{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version | default('0') }}","registrations":{"air-basketball":{"mode":"registered","gameId":"air-basketball","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["runtime","logging","avatar-renderer","audio","speech-output"]}}}</script>
+  <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version | default('0') }}"></script>
   <script type="module" src="/static/air-basketball/chat-dock.js?v={{ static_asset_version | default('0') }}"></script>
   <script type="module" src="/static/air-basketball/game.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
