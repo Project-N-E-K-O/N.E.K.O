@@ -9,6 +9,22 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('at,duration,ready', [(9, 5, False), (9, 1, True), (10, 1, False), (11, 1, False)])
+def test_imported_audio_must_finish_within_video(tmp_path, at, duration, ready):
+    archive = source(tmp_path, 'video-end')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    original = json.dumps({'status': 'ready', 'duration': 10,
+        'video': f'/media/{JOB}/video.mp4',
+        'events': [{'at': at, 'duration': duration, 'audio': f'/media/{JOB}/laugh.mp3'}]}).encode()
+    (folder / 'timeline.json').write_bytes(original)
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert (row['status'] == 'ready') is ready
+    assert library.resource(JOB, row['version'], 'timeline.json').read_bytes() == original
+
+
 @pytest.mark.parametrize('second_at,text_only,ready', [
     (2, False, False), (2, True, False), (1, False, False),
     (11, False, True), (12.2, False, True),

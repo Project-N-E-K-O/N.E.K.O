@@ -103,7 +103,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   function sync() {
     if (!active || !running()) { stop(); return; }
     const offset = video.currentTime - active.at;
-    if (offset < 0 || offset >= active.duration) { stop(true); return; }
+    const duration=Number.isFinite(active.duration) && active.duration>0?active.duration:3;
+    if (offset < 0 || offset >= duration) { stop(true); return; }
+    if (!active.audio) return;
     audio.playbackRate = video.playbackRate;
     if (audio.paused) {
       outputStopped=false;
@@ -151,6 +153,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       stop(true);
       if (typeof cue.audio === 'string' && cue.audio.startsWith(prefix)) {
         active = cue; audio.src = resources.get(cue.audio); sync();
+      } else if (cue.audio == null || cue.audio === '') {
+        active = cue; onCue(cue);
       }
     }
     sync();
