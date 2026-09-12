@@ -5546,13 +5546,14 @@ function populateImageProviders(providers) {
     select.replaceChildren();
     appendModelProviderOption(select, 'disabled', 'api.imageDisabled', '未配置');
     Object.entries(providers).forEach(([key, meta]) => {
-        if (isProviderRestricted(key)) return;
+        if (isProviderRestricted(key) && key !== previous) return;
         const option = document.createElement('option');
         option.value = key;
         option.textContent = meta.name;
+        option.disabled = !!isProviderRestricted(key);
         select.appendChild(option);
     });
-    select.value = Object.hasOwn(providers, previous) && !isProviderRestricted(previous) ? previous : 'disabled';
+    select.value = Object.hasOwn(providers, previous) ? previous : 'disabled';
 }
 
 function onImageProviderChange({ loading = false } = {}) {
@@ -5582,13 +5583,14 @@ function onImageProviderChange({ loading = false } = {}) {
 function loadImageSettings(data) {
     const select = document.getElementById('imageModelProvider');
     if (!select) return;
-    const savedProvider = data.imageModelProvider || 'disabled';
-    const provider = isProviderRestricted(savedProvider) ? 'disabled' : savedProvider;
-    // Preserve an unknown saved selection when metadata is temporarily missing.
+    const provider = data.imageModelProvider || 'disabled';
+    // Preserve saved restricted selections without making them available to choose.
+    // Also preserve unknown selections when metadata is temporarily missing.
     if (!Array.from(select.options).some(option => option.value === provider)) {
         const option = document.createElement('option');
         option.value = provider;
-        option.textContent = provider;
+        option.textContent = _imageProviders[provider]?.name || provider;
+        option.disabled = !!isProviderRestricted(provider);
         select.appendChild(option);
     }
     select.value = provider;

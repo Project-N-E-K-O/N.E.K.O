@@ -67,3 +67,16 @@ def test_image_settings_real_page_round_trip(mock_page, running_server):
         "imageModelProvider": "disabled", "imageModelUrl": "",
         "imageModelId": "", "imageModelApiKey": "",
     }
+
+    # A saved restricted provider survives unrelated saves in the real select widget.
+    mock_page.evaluate("""() => {
+        isMainlandChinaUser = true;
+        _apiKeyRegistry.openai = {..._apiKeyRegistry.openai, restricted: true};
+        populateImageProviders(_imageProviders);
+        loadImageSettings({imageModelProvider: 'openai', imageModelId: 'saved-image'});
+    }""")
+    assert mock_page.evaluate("imageSettingsPayload().imageModelProvider") == "openai"
+    assert mock_page.evaluate("imageSettingsPayload().imageModelId") == "saved-image"
+    assert mock_page.locator('#imageModelProvider option[value="openai"]').is_disabled()
+    mock_page.evaluate("confirmClearCustomApi()")
+    assert mock_page.evaluate("imageSettingsPayload().imageModelProvider") == "disabled"

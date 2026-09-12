@@ -47,11 +47,18 @@ test('missing provider metadata preserves saved values', () => {
     assert.equal(context.imageSettingsPayload().imageModelId, 'saved-model');
 });
 
-test('restricted providers cannot be selected or restored from saved settings', () => {
+test('restricted providers preserve saved selection without becoming selectable', () => {
     const {inputs, context} = setup(['openai', 'qwen_intl']);
     context.populateImageProviders({openai: {name: 'OpenAI'}, qwen_intl: {name: 'Singapore'}, qwen: {name: 'Beijing'}, custom: {name: 'Custom'}});
     assert.deepEqual(inputs.imageModelProvider.options.map(option => option.value), ['disabled', 'qwen', 'custom']);
     context.loadImageSettings({imageModelProvider: 'openai', imageModelId: 'saved'});
+    assert.equal(context.imageSettingsPayload().imageModelProvider, 'openai');
+    assert.equal(context.imageSettingsPayload().imageModelId, 'saved');
+    assert.equal(inputs.imageModelProvider.options.find(option => option.value === 'openai').disabled, true);
+    context.populateImageProviders({openai: {name: 'OpenAI'}, qwen: {name: 'Beijing'}});
+    assert.equal(context.imageSettingsPayload().imageModelProvider, 'openai');
+    assert.equal(inputs.imageModelProvider.options.find(option => option.value === 'openai').disabled, true);
+    inputs.imageModelProvider.value = 'disabled';
+    context.onImageProviderChange();
     assert.equal(context.imageSettingsPayload().imageModelProvider, 'disabled');
-    assert.equal(inputs.imageModelProvider.options.some(option => option.value === 'openai'), false);
 });
