@@ -4202,7 +4202,7 @@
             fail('invalid_request', 'Vision expects bounded text and 1–4 images');
           }
           let bytes = 0;
-          const attachments = input.attachments.map(item => {
+          const attachments = Array.from(input.attachments, item => {
             if (!plainObject(item) || Object.keys(item).some(key => !['type', 'source', 'label', 'mimeType'].includes(key))) {
               fail('invalid_request', 'Invalid vision attachment');
             }

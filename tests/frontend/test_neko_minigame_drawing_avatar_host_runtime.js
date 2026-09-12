@@ -1097,7 +1097,10 @@ async function main() {
     assert(controller.getState().paused === true, `${expectedType} controller did not enter paused state`);
     await controller.resume();
     assert(controller.getState().paused === false, `${expectedType} controller did not resume`);
-    await controller.setSpeaking(false);
+    assert(await controller.setSpeaking(false) === false,
+      `${expectedType}: stopping must return the inactive state`);
+    assert(controller.getState().speaking === false,
+      `${expectedType}: false stop result did not stop speech`);
     // Auto playback supplies actual bounded samples even when this game
     // window has no local audio player/analyser. No game setSpeaking call.
     const remoteFrame = { active: true, mouthFrame: {
@@ -1145,6 +1148,17 @@ async function main() {
       assert(!controller.getState().speaking, `${expectedType}: HTTP acceptance opened the mouth`);
       emitSpeech(); await flushSpeech();
       assert(controller.getState().speaking, `${expectedType}: SDK did not reach drawing renderer`);
+      await avatar.setSpeaking(true); await flushSpeech();
+      emitSpeech({active:false}); await flushSpeech();
+      assert(controller.getState().speaking, `${expectedType}: automatic silence took manual ownership`);
+      assert(await avatar.setSpeaking(false) === false,
+        `${expectedType}: SDK changed the successful stop result`);
+      await flushSpeech();
+      assert(!controller.getState().speaking, `${expectedType}: manual stop failed`);
+      await game.speech.speak({text:'Automatic after manual stop'}); await flushSpeech();
+      emitSpeech(); await flushSpeech();
+      assert(controller.getState().speaking,
+        `${expectedType}: successful false stop retained manual ownership`);
       avatar.pause(); await flushSpeech();
       assert(!controller.getState().speaking, `${expectedType}: SDK pause retained speech`);
       const pausedReloadStart = calls.length;
