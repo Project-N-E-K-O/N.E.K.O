@@ -1043,17 +1043,29 @@
       return `${operation}-${Date.now().toString(36)}-${this._nextRequestId.toString(36)}`;
     }
 
-    async _bufferResponse(response, maxBytes) {
+    async _bufferResponse(response, maxBytes, signal) {
       // All _request callers consume finite REST responses, not streaming audio.
       // Buffer before releasing the fetch signal/deadline, then hand back a fresh
       // Response so legacy json()/clone(), headers and bodyUsed semantics survive.
       const ResponseImpl = this._window.Response || globalThis.Response;
+      // A trusted custom fetch may return after cancellation or ignore its
+      // signal while reading. Cancel the stream itself, without awaiting a
+      // source cancel hook that may never settle.
+      const cancelBody = (body) => {
+        try { Promise.resolve(body?.cancel?.()).catch(() => {}); }
+        catch (_) { /* cancellation must not replace the request error */ }
+      };
+      const cancelled = () => this._hostError('cancelled', 'Host response reading was cancelled');
+      if (signal?.aborted) {
+        cancelBody(response?.body);
+        throw cancelled();
+      }
       if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
         let bytes;
         if (maxBytes !== undefined) {
           const overflow = () => this._hostError('invalid_response', 'Host response exceeds its byte limit');
           if (Number(response.headers?.get?.('content-length')) > maxBytes) {
-            await response.body?.cancel?.().catch(() => {});
+            cancelBody(response.body);
             throw overflow();
           }
           if (!response.body) bytes = new Uint8Array(0);
@@ -1062,19 +1074,33 @@
             const reader = response.body.getReader();
             const buffer = new Uint8Array(maxBytes);
             let size = 0;
+            let readerCancelled = false;
+            const cancelReader = () => {
+              if (readerCancelled) return;
+              readerCancelled = true;
+              cancelBody(reader);
+            };
+            signal?.addEventListener('abort', cancelReader, { once: true });
             try {
+              if (signal?.aborted) { cancelReader(); throw cancelled(); }
               while (true) {
                 const { done, value } = await reader.read();
+                if (signal?.aborted) throw cancelled();
                 if (done) break;
                 if (value.byteLength > maxBytes - size) {
-                  await reader.cancel().catch(() => {});
                   throw overflow();
                 }
                 buffer.set(value, size);
                 size += value.byteLength;
               }
               bytes = buffer.subarray(0, size);
-            } finally { reader.releaseLock(); }
+            } catch (error) {
+              cancelReader();
+              throw error;
+            } finally {
+              signal?.removeEventListener('abort', cancelReader);
+              reader.releaseLock();
+            }
           }
         } else bytes = await response.arrayBuffer();
         const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
@@ -1156,7 +1182,7 @@
         const work = Promise.resolve().then(() => {
           if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
           return this._fetchImpl(url, { ...init, signal: controller.signal });
-        }).then(response => this._bufferResponse(response, options.maxResponseBytes))
+        }).then(response => this._bufferResponse(response, options.maxResponseBytes, controller.signal))
           .finally(() => this._rawRequests.delete(entry));
         const response = await Promise.race([work, cancellation]);
         if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');

@@ -592,6 +592,86 @@ async function main() {
   catch (error) { headerError = error; }
   assert(headerError?.code === 'invalid_response' && headerCancelled,
     'an oversized declared response was not cancelled before reading');
+
+  // A custom fetch can ignore its signal even when it returns a real Response.
+  // Cancelling the reader must settle pending reads without waiting for the
+  // underlying source's (possibly non-cooperative) cancellation promise.
+  for (const mode of ['timeout', 'abort', 'dispose', 'read-error', 'overflow', 'header-overflow', 'late']) {
+    let cancelCalls = 0;
+    let bodyController;
+    let requestSignal;
+    let releaseFetch;
+    let abortListeners = 0;
+    const body = new ReadableStream({
+      start(controller) { bodyController = controller; },
+      cancel() {
+        cancelCalls += 1;
+        if (mode === 'abort') return Promise.reject(new Error('cancel hook failed'));
+        return new Promise(() => {});
+      },
+    });
+    const streamResponse = new Response(body, mode === 'header-overflow'
+      ? { headers: { 'content-length': '33' } } : {});
+    if (mode === 'read-error') {
+      const getReader = body.getReader.bind(body);
+      body.getReader = () => {
+        const reader = getReader();
+        reader.read = async () => { throw new Error('injected reader failure'); };
+        return reader;
+      };
+    }
+    const streamHost = createHost({
+      gameType: 'example-game', windowImpl: windowMock, navigatorImpl: windowMock.navigator,
+      pendingRequestLimit: 1,
+      fetchImpl: async (_url, init) => {
+        requestSignal = init.signal;
+        const add = requestSignal.addEventListener.bind(requestSignal);
+        const remove = requestSignal.removeEventListener.bind(requestSignal);
+        requestSignal.addEventListener = (type, ...args) => {
+          if (type === 'abort') abortListeners += 1;
+          return add(type, ...args);
+        };
+        requestSignal.removeEventListener = (type, ...args) => {
+          if (type === 'abort') abortListeners -= 1;
+          return remove(type, ...args);
+        };
+        if (mode === 'late') await new Promise(resolve => { releaseFetch = resolve; });
+        return streamResponse;
+      },
+    });
+    const external = new AbortController();
+    const result = streamHost._request('/bounded-stream', {}, {
+      signal: external.signal, maxResponseBytes: 32, timeoutMs: mode === 'timeout' ? 30 : 300,
+    }).then(() => null, error => error);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      if (mode === 'abort' || mode === 'late') external.abort();
+      if (mode === 'dispose') streamHost.dispose();
+      if (mode === 'overflow') bodyController.enqueue(new Uint8Array(33));
+      const failure = await result;
+      if (mode === 'late') {
+        assert(streamHost._rawRequests.size === 1, 'unreturned fetch prematurely freed its raw slot');
+        releaseFetch();
+      }
+      await new Promise(resolve => setImmediate(resolve));
+      const expected = mode === 'timeout' ? 'timeout' : mode === 'dispose' ? 'disposed'
+        : mode.includes('overflow') ? 'invalid_response' : mode === 'read-error' ? 'network_error' : 'cancelled';
+      assert(failure?.code === expected, `${mode}: lost request failure semantics`);
+      assert(cancelCalls === 1 && !body.locked && abortListeners === 0,
+        `${mode}: response reader or abort listener was not released`);
+      assert(streamHost._pendingRequests.size === 0 && streamHost._rawRequests.size === 0,
+        `${mode}: completed body cancellation retained a request slot`);
+      if (mode !== 'dispose') {
+        streamHost._fetchImpl = async () => jsonResponse({ ok: true });
+        assert((await (await streamHost._request('/next', {}, { maxResponseBytes: 32 })).json()).ok,
+          `${mode}: a cancelled response left the next request busy`);
+      }
+    } finally {
+      releaseFetch?.();
+      try { bodyController.close(); } catch (_) { /* already closed by cancellation */ }
+      streamHost.dispose();
+    }
+  }
   const commandCall = calls.find((call) => call.url.endsWith('/round/input') && call.body.text === 'hello');
   assert(commandCall?.url === '/api/game/example-game/round/input'
     && commandCall.body.text === 'hello'
