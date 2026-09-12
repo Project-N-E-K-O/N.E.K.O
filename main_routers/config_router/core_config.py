@@ -567,6 +567,10 @@ async def update_core_config(request: Request):
             "imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"
         )):
             from utils.image_generation.config import PROVIDERS, resolve_image_config
+            if any(not isinstance(data[field], str) for field in (
+                "imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"
+            ) if field in data):
+                return {"success": False, "error": "Image settings must be strings"}
             candidate = {**core_cfg, **{
                 field: data[field] for field in (
                     "imageModelProvider", "imageModelUrl", "imageModelId"

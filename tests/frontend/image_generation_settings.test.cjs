@@ -65,3 +65,13 @@ test('restricted providers preserve saved selection without becoming selectable'
     context.onImageProviderChange();
     assert.equal(context.imageSettingsPayload().imageModelProvider, 'disabled');
 });
+
+
+test('unknown provider fields round trip verbatim across reloads', () => {
+    const {context} = setup();
+    context.populateImageProviders({});
+    const saved = {imageModelProvider: 'future', imageModelUrl: '  https://future.example/v1  ', imageModelId: ' model ', imageModelApiKey: '__NEKO_SECRET_MASKED__'};
+    context.loadImageSettings(saved);
+    context.populateImageProviders({custom: {name: 'Custom'}});
+    assert.deepEqual(JSON.parse(JSON.stringify(context.imageSettingsPayload())), saved);
+});

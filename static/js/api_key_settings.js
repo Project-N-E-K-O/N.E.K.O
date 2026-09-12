@@ -5611,10 +5611,11 @@ function imageSettingsPayload() {
     const select = document.getElementById('imageModelProvider');
     if (!select) return {};
     const payload = { imageModelProvider: select.value };
+    const knownProvider = select.value === 'disabled' || Object.hasOwn(_imageProviders, select.value);
     for (const suffix of ['Url', 'Id', 'ApiKey']) {
         const input = document.getElementById('imageModel' + suffix);
         payload['imageModel' + suffix] = suffix === 'ApiKey'
-            ? getRealKey(input) : input.value.trim();
+            ? getRealKey(input) : (knownProvider ? input.value.trim() : input.value);
     }
     return payload;
 }

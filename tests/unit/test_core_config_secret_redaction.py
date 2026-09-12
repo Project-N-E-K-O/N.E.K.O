@@ -665,8 +665,8 @@ def test_multiple_trailing_slashes_do_not_preserve_custom_key(config_manager, co
 ])
 def test_unknown_image_provider_preserved_only_unchanged(config_manager, core_config_router, change, success):
     image = {
-        "imageModelProvider": "future-provider", "imageModelUrl": "https://future.example/v1",
-        "imageModelId": "future-model", "imageModelApiKey": "private-image-key",
+        "imageModelProvider": "future-provider", "imageModelUrl": " https://future.example/v1 ",
+        "imageModelId": " future-model ", "imageModelApiKey": "private-image-key",
     }
     _write_core_config(config_manager, {
         "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access", **image,
@@ -690,3 +690,15 @@ def test_new_unknown_image_provider_still_rejected(config_manager, core_config_r
     _write_core_config(config_manager, {"coreApi": "free", "assistApi": "free", "coreApiKey": "free-access"})
     result = asyncio.run(core_config_router.update_core_config(_FakeRequest({"imageModelProvider": "future-provider"})))
     assert result["success"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"])
+@pytest.mark.parametrize("value", [None, 123, False, [], {}])
+def test_disabled_image_fields_require_strings(config_manager, core_config_router, field, value):
+    original = {"coreApi": "free", "assistApi": "free", "coreApiKey": "free-access", "imageModelProvider": "disabled"}
+    _write_core_config(config_manager, original)
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({"imageModelProvider": "disabled", field: value})))
+    assert result["success"] is False
+    assert result["error"] == "Image settings must be strings"
+    assert config_manager.load_json_config("core_config.json", {}) == original

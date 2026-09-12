@@ -83,8 +83,9 @@ def test_image_settings_real_page_round_trip(mock_page, running_server):
 
     # Locale/registry reloads must also retain an unknown saved provider.
     mock_page.evaluate("""() => {
-        loadImageSettings({imageModelProvider: 'future-provider', imageModelId: 'saved-future'});
+        loadImageSettings({imageModelProvider: 'future-provider', imageModelId: ' saved-future ', imageModelUrl: ' https://future.example/v1 '});
         populateImageProviders(_imageProviders);
     }""")
     assert mock_page.evaluate("imageSettingsPayload().imageModelProvider") == "future-provider"
-    assert mock_page.evaluate("imageSettingsPayload().imageModelId") == "saved-future"
+    assert mock_page.evaluate("imageSettingsPayload().imageModelId") == " saved-future "
+    assert mock_page.evaluate("imageSettingsPayload().imageModelUrl") == " https://future.example/v1 "
