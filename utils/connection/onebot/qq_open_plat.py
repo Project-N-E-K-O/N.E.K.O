@@ -165,7 +165,32 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
     HTTP API -> send messages.
     """
 
-    _API_BASE = "https://api.sgroup.qq.com"
+    #: 正式环境与沙箱是**两套域名**。未上线的机器人只存在于沙箱环境里：连正式网关会
+    #: 握手成功、拿到 READY，但平台侧一直显示离线、也收不到任何事件 —— 所以沙箱不是
+    #: 可选优化，是开发阶段的必需能力。
+    #:
+    #: 注意 ``_TOKEN_URL`` **不跟着切**：取 access_token 的 ``bots.qq.com`` 两套环境
+    #: 共用，只有 API/网关域名分环境。
+    _API_BASE_PRODUCTION = "https://api.sgroup.qq.com"
+    _API_BASE_SANDBOX = "https://sandbox.api.sgroup.qq.com"
+
+    @property
+    def _API_BASE(self) -> str:
+        """REST 与网关的基址（按沙箱开关切换）。
+
+        做成属性而非类常量：``_API_BASE`` 有 7 处 ``self._API_BASE`` 引用（REST 路径
+        与网关 URL 都从它拼），属性让它们全部保持不变；而开关用零参回调传入时，
+        改设置**立即生效**，不必重建连接。
+        """
+        sandbox = self._sandbox
+        if callable(sandbox):
+            try:
+                sandbox = sandbox()
+            except Exception:
+                # 读设置失败一律回落正式环境：宁可连错环境并报错，
+                # 也不要在用户没要求时静默切到沙箱。
+                sandbox = False
+        return self._API_BASE_SANDBOX if sandbox else self._API_BASE_PRODUCTION
     _TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 
     def __init__(
@@ -177,7 +202,11 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         message_queue_size: int = 100,
         identity_probe: Any = None,
         emit_log: Any = None,
+        sandbox: Any = None,
     ):
+        #: 沙箱开关：bool 或零参回调（与 ``identity_probe`` 同约定）。传回调时改设置
+        #: 立即生效 —— 用户切环境不必重启应用。
+        self._sandbox = sandbox
         #: Zero-arg callback; only records R11 forensics when it returns truthy
         #: (see module top). A callback (not a bool) so the toggle takes effect
         #: immediately without reconnecting.

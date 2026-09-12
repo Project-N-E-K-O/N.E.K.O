@@ -42,6 +42,10 @@ def create_onebot_connection(
                 get_settings().get("qq_open_identity_probe_enabled", False)
             ),
             emit_log=emit_log,
+            # 沙箱环境：未上线的机器人只在沙箱域名下可见。同样传回调，改设置立即生效。
+            sandbox=lambda: bool(
+                get_settings().get("qq_open_sandbox_enabled", False)
+            ),
         )
 
     return OneBotClient(
