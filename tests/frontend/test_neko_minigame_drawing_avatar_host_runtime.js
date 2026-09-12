@@ -738,7 +738,7 @@ async function main() {
       assert(timers.size === 0, 'completed body retained deadline');
     } finally { finishBody?.(); await probe.dispose(); }
   }
-  for (const stage of ['current', 'catalog', 'canonical', 'mmd']) {
+  for (const stage of ['current', 'catalog', 'canonical', 'mmd', 'fallback']) {
     const owner = new AbortController();
     let entered;
     let release;
@@ -753,8 +753,10 @@ async function main() {
       const payload = target === 'mmd' ? {lanlan_name:'Example',mmd_path:'/user_mmd/example.pmx'}
         : target === 'current' ? { current_catgirl: 'Example' }
         : target === 'canonical' ? { success: true, model_info: { path: '/resolved.model3.json' } }
-          : stage === 'mmd' ? {猫娘:{Example:{model_type:'live2d',mmd:'example.pmx'}}} : queryCatalog;
-      if (blocked && target === stage) {
+          : stage === 'mmd' ? {猫娘:{Example:{model_type:'live2d',mmd:'example.pmx'}}}
+            : stage === 'fallback' ? {猫娘:{Example:{model_type:'pngtuber',
+              pngtuber:{idle_image:'/avatar.png'},live2d:'example/example.model3.json'}}} : queryCatalog;
+      if (blocked && target === (stage === 'fallback' ? 'canonical' : stage)) {
         entered(options.signal);
         // Deliberately ignore abort until released to exercise late completion.
         return await new Promise((resolve) => { release = () => resolve(jsonResponse(payload)); });
@@ -1040,6 +1042,24 @@ async function main() {
     assert(rejected?.code === 'model_not_allowed', 'unresolved MMD alias escaped canonical authorization');
   }
   calls.splice(fallbackCallsStart);
+
+  const liveFallbackCallsStart = calls.length;
+  characters['Live2D Fallback Example'] = { _reserved: { avatar: {
+    model_type: 'pngtuber', pngtuber: {idle_image:'/avatars/fallback.png'},
+    live2d: {model_path:'example/example.model3.json'},
+  } } };
+  const liveFallback = await host.getCharacter('Live2D Fallback Example');
+  assert(liveFallback.model.type === 'pngtuber', 'fallback resolution replaced the primary model');
+  const canonicalLive = liveFallback.fallbackModels.find(model => model.type === 'live2d');
+  assert(canonicalLive?.path === '/resolved/live.model3.json', 'relative Live2D fallback was not canonicalized');
+  const mountedLiveFallback = await host.mount(mountConfig('Live2D Fallback Example', canonicalLive));
+  await mountedLiveFallback.dispose();
+  assert(calls.slice(liveFallbackCallsStart).some(entry => entry[0] === 'live2d-model'
+    && entry[1] === '/resolved/live.model3.json'), 'fallback did not load the canonical path');
+  assert((await rejection(host.mount(mountConfig('Live2D Fallback Example', {
+    type:'live2d',path:'example/example.model3.json',
+  }))))?.code === 'model_not_allowed', 'raw Live2D fallback alias remained authorized');
+  calls.splice(liveFallbackCallsStart);
 
   const rendererCallsBeforeAttacks = calls.length;
   const forgedNameError = await rejection(host.mount(mountConfig('Forged Neko', current.model)));
