@@ -181,10 +181,10 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       }
       await context.resume();
       if (!release) {
-        if (!navigator.locks) throw Error('Exclusive audio ownership unavailable');
+        if (!navigator.locks) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
         await new Promise((resolve, reject) => {
           navigator.locks.request('neko:media-timeline:audio', { ifAvailable: true }, async lock => {
-            if (!lock) { reject(Error('Another watch scene owns the audio')); return; }
+            if (!lock) { reject(Object.assign(Error('Another watch scene owns the audio'),{name:'AudioOwnershipError'})); return; }
             await new Promise(done => { release = done; resolve(); });
           }).catch(reject);
         });

@@ -1,5 +1,19 @@
 import assert from 'node:assert/strict';
 import {createNextVideoQueue} from '../../static/game/games/watch-together/next-video.mjs';
+for(const analyses of [[],[{job:'bad',status:'incomplete'}]]) {
+  const states=[];let polling=0,delays=0;
+  const incompleteQueue=createNextVideoQueue({media:{async request(action){
+    if(action==='discover')return {video:{url:'bad',bvid:'bad'}};
+    if(action==='prepare')return {id:'bad'};
+    if(action==='preparation'){polling++;return {status:'ready',persistence_complete:polling>1};}
+    if(action==='history')return {analyses};
+  }}},state=>states.push(state),async()=>{delays++;});
+  await incompleteQueue.start({topic:'cats'});
+  assert.equal(polling,2,'wait for persistence before inspecting ready output');
+  assert.equal(delays,1,'unplayable persisted output terminates polling');
+  assert.equal(incompleteQueue.busy,false);
+  assert.ok(states.some(state=>state.status==='error'));
+}
 const calls=[],updates=[];
 let finishDiscovery;
 const row={job:'next',version:'v',status:'ready'};

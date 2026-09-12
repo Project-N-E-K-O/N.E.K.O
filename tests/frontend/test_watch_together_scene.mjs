@@ -146,6 +146,53 @@ for(const paused of [true,false]) {
   await enabling.elements.get('watch-stop').onclick();
 }
 console.log('watch-together scene: enabling automatic resumes paused playback without restarting active playback');
+const overlapping=await fixture(false,false,{total_tokens:1});
+let finishWatchStart,overlapStarts=0,overlapMounts=0;
+const overlapRequest=overlapping.game.media.request;
+overlapping.game.media.request=(action,payload)=>{
+  if(action==='watch' && payload.action==='start') {
+    overlapStarts++;
+    return new Promise(resolve=>{finishWatchStart=()=>resolve({id:'shared-watch'});});
+  }
+  return overlapRequest(action,payload);
+};
+const overlapMount=overlapping.game.media.mount;
+overlapping.game.media.mount=options=>{overlapMounts++;return overlapMount(options);};
+const initialPlay=overlapping.elements.get('play').onclick();
+await waitFor(()=>finishWatchStart);
+overlapping.elements.get('automatic-enabled').checked=true;
+overlapping.elements.get('automatic-enabled').onchange();
+await new Promise(resolve=>setTimeout(resolve,20));
+assert.equal(overlapStarts,1,'automatic shares the pending manual watch start');
+finishWatchStart();await initialPlay;
+await waitFor(()=>overlapping.calls.some(call=>call.action==='discover'));
+assert.equal(overlapMounts,1);
+await overlapping.elements.get('watch-stop').onclick();
+assert.ok(overlapping.calls.some(call=>call.action==='watch' && call.payload.id==='shared-watch' && call.payload.event?.type==='exit'));
+for(const analyses of [[],[{job:'unplayable',status:'incomplete'}]]) {
+  const incomplete=await fixture(false);
+  let preparationPolls=0;
+  const originalRequest=incomplete.game.media.request;
+  incomplete.game.media.request=async(action,payload)=>{
+    if(action==='prepare')return {id:'unplayable'};
+    if(action==='preparation'){preparationPolls++;return {status:'ready',persistence_complete:true};}
+    if(action==='history')return {analyses};
+    return originalRequest(action,payload);
+  };
+  await incomplete.elements.get('prepare').onsubmit({preventDefault(){}});
+  assert.equal(preparationPolls,1);
+  assert.match(incomplete.elements.get('status').textContent,/prepareFailed/);
+  assert.equal(incomplete.elements.get('prepare-button').disabled,false);
+}
+const ownership=await fixture(false,false,{total_tokens:1});
+ownership.game.media.mount=async()=>({dispose(){},async play(){throw Object.assign(Error('Another watch scene owns the audio'),{name:'AudioOwnershipError'});}});
+ownership.elements.get('automatic-enabled').checked=true;
+ownership.elements.get('automatic-enabled').onchange();
+await waitFor(()=>!ownership.elements.get('automatic-enabled').checked && !ownership.elements.get('automatic-enabled').disabled);
+assert.equal(ownership.calls.some(call=>['discover','prepare'].includes(call.action)),false,'ownership failure must not spend on replacement videos');
+assert.equal(ownership.elements.get('video').src,'/video');
+assert.equal(ownership.elements.get('play').disabled,false);
+console.log('watch-together scene: shared watch start, terminal unplayable result and ownership stop passed');
 let finishOldDiscovery, discoveryCount=0;
 const retrying=await fixture(false,false,{total_tokens:1},()=>{
   discoveryCount++;

@@ -12,6 +12,7 @@ export async function run(game, character) {
   let playbackGeneration = 0;
   let ending = null;
   let watchStarting = null;
+  let playbackStart = null;
   let mountingController = null;
   let runtimeStarting = null;
   function startRuntime() {
@@ -187,7 +188,14 @@ export async function run(game, character) {
     }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   }
-  async function play() {
+  function play() {
+    if(playbackStart?.selection===selectionGeneration)return playbackStart.promise;
+    const start={selection:selectionGeneration};
+    start.promise=beginPlayback().finally(()=>{if(playbackStart===start)playbackStart=null;});
+    playbackStart=start;
+    return start.promise;
+  }
+  async function beginPlayback() {
     const selection = selectionGeneration;
     const playback = ++playbackGeneration;
     const stale = () => selection !== selectionGeneration || playback !== playbackGeneration || game.disposed;
@@ -221,6 +229,9 @@ export async function run(game, character) {
       if(selection!==selectionGeneration || game.disposed)return;
       $('video').src = selected?.video || '';
       status(error.message);
+      if(automatic.enabled && error.name==='AudioOwnershipError') {
+        await stopAutomatic();status(error.message);return;
+      }
       if(automatic.enabled)throw error;
     }
     finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
@@ -269,11 +280,12 @@ export async function run(game, character) {
           continue;
         }
         if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
-        if (state.status === 'ready') {
+        if (state.status === 'ready' && state.persistence_complete!==false) {
           const history = await game.media.request('history');
           await refreshHistory();
           const row = history.analyses.find(item=>item.job===result.id && item.status==='ready');
           if (row) { if(selection===selectionGeneration)await load(row); break; }
+          throw Error(t('prepareFailed'));
         }
         await new Promise(resolve=>setTimeout(resolve,1000));
       }

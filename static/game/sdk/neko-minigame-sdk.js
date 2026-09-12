@@ -5246,11 +5246,19 @@
         const generation = runtimeRouteInstanceId;
         mediaMountPending = true;
         mediaMountAbort = new AbortControllerImpl();
+        const mountAbort = mediaMountAbort;
+        const callerSignal = config.signal;
+        const abortFromCaller = () => mountAbort.abort();
         let controller;
-        try { controller = await transport.mountMedia({ ...config, signal:mediaMountAbort.signal }); }
+        try {
+          if(callerSignal?.aborted)mountAbort.abort();
+          else callerSignal?.addEventListener('abort',abortFromCaller,{once:true});
+          if(mountAbort.signal.aborted)fail('cancelled','Media mount cancelled');
+          controller = await transport.mountMedia({ ...config, signal:mountAbort.signal });
+        }
         catch(error) { throw normalizeTransportError(error, 'media.mount'); }
-        finally { mediaMountPending = false; mediaMountAbort = null; }
-        if (disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
+        finally { callerSignal?.removeEventListener('abort',abortFromCaller);mediaMountPending = false; mediaMountAbort = null; }
+        if (mountAbort.signal.aborted || disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
           controller.dispose(); fail('cancelled', 'Media route changed while loading');
         }
         mediaControllers.add(controller);

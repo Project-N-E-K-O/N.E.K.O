@@ -18,6 +18,15 @@ let nextFrame=null;
 globalThis.requestAnimationFrame=fn=>{nextFrame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{nextFrame=null;};
 Object.defineProperty(globalThis,'navigator',{value:{locks:{request:async(_name,_options,fn)=>fn({})}}});
 const {mount}=await import('../../static/game/sdk/neko-minigame-media-host.mjs');
+const savedLocks=navigator.locks;
+for(const locks of [null,{request:async(_name,_options,fn)=>fn(null)}]) {
+  navigator.locks=locks;
+  const owned=await mount({video:new Media(),timeline:{id:'owned',version:'v',status:'ready',video:'/video',events:[]}});
+  await assert.rejects(owned.play(),{name:'AudioOwnershipError'});
+  owned.dispose();
+}
+navigator.locks=savedLocks;
+audios.length=0;gains.length=0;
 const events=[];const video=new Media();
 const cue={id:'cue-1',at:4,duration:2,audio:'/api/watch-together/media/job/version/comment.mp3'};
 const controller=await mount({video,timeline:{id:'job',version:'version',status:'ready',video:'/video',events:[cue]},onEvent:e=>events.push(e)});

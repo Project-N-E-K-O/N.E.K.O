@@ -1458,6 +1458,34 @@ async function main() {
   'memory stopped being granted even when runtime was');
   grantedRuntimeClient.dispose();
 
+  let mountedSignal,abortObserved=false,mediaDisposed=0;
+  const mediaTransport={...transport,requestMedia:async()=>({}),mountMedia:config=>{
+    mountedSignal=config.signal;
+    return new Promise((_resolve,reject)=>config.signal.addEventListener('abort',()=>{abortObserved=true;reject(Error('cancelled'));},{once:true}));
+  }};
+  const mediaClient=await window.NekoMiniGame.connect({id:'media-cancellation',version:'1.0.0',requiredCapabilities:['logging','runtime','media-timeline']},{transport:mediaTransport});
+  await mediaClient.runtime.start({});
+  const callerAbort=new AbortController();
+  const pendingMount=mediaClient.media.mount({signal:callerAbort.signal}).then(()=>false,()=>true);
+  callerAbort.abort();
+  assert(await pendingMount,'caller abort did not reject pending mount');
+  assert(abortObserved && mountedSignal.aborted,'caller abort did not reach transport');
+  assert(mediaClient.runtime.state==='running','mount cancellation ended the route');
+  mediaTransport.mountMedia=async()=>({dispose(){mediaDisposed++;},play(){},pause(){},interrupt(){}});
+  const replacementMedia=await mediaClient.media.mount({});replacementMedia.dispose();
+  assert(mediaDisposed===1,'cancelled mount did not free replacement slot');
+  const alreadyAborted=new AbortController();alreadyAborted.abort();
+  const rejected=await mediaClient.media.mount({signal:alreadyAborted.signal}).then(()=>false,()=>true);
+  assert(rejected,'pre-aborted caller signal was ignored');
+  let finishCancelledMount;
+  mediaTransport.mountMedia=()=>new Promise(resolve=>{finishCancelledMount=resolve;});
+  const lateAbort=new AbortController();
+  const lateMount=mediaClient.media.mount({signal:lateAbort.signal}).then(()=>false,()=>true);
+  lateAbort.abort();
+  finishCancelledMount({dispose(){mediaDisposed++;}});
+  assert(await lateMount,'transport completion after caller abort was accepted');
+  assert(mediaDisposed===2,'late cancelled controller was not disposed');
+  mediaClient.dispose();
   process.stdout.write('mini-game SDK runtime test passed\n');
 }
 

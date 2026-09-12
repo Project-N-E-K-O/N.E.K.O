@@ -36,7 +36,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
     persona = str(getattr(manager, "lanlan_prompt", "") or "")
-    job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": []}
+    job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": [],
+           "persistence_complete": False}
     jobs[job["id"]] = job
 
     async def confirm_download(title, duration):
@@ -100,6 +101,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 # terminal state even when the history transaction never commits.
                 job.update(status="error", stage="Saving preparation failed", stage_key="saveFailed", error=type(exc).__name__)
                 print(f"Watch preparation persistence failed: {type(exc).__name__}")
+            finally:
+                job["persistence_complete"] = True
 
     task = asyncio.create_task(run())
     tasks.add(task)

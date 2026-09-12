@@ -156,7 +156,45 @@ async def test_import_failure_is_terminal_and_preserves_staging(tmp_path, monkey
     assert job["status"] == "error"
     assert job["stage"] == "Saving preparation failed"
     assert job["error"] == type(failure).__name__
+    assert job["persistence_complete"] is True
     assert (tmp_path / "preparations" / result["id"] / "timeline.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_ready_job_waits_for_persistence(tmp_path, monkeypatch):
+    import threading
+    started, release = threading.Event(), threading.Event()
+
+    class Engine:
+        def __init__(self, root, *_args, **_kwargs):
+            self.root = root
+
+        async def vision_config(self):
+            return {}
+
+        async def prepare(self, job, *_args, **_kwargs):
+            (self.root / job["id"]).mkdir(parents=True)
+            job["status"] = "ready"
+
+    def import_sources(*_args, **_kwargs):
+        started.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(preparation, "Engine", Engine)
+    monkeypatch.setattr(preparation, "application_library", lambda: SimpleNamespace(root=tmp_path, import_sources=import_sources))
+    monkeypatch.setattr(preparation, "jobs", {})
+    monkeypatch.setattr(preparation, "tasks", set())
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready, game_speech_audio_cache_identity=lambda *args, **kwargs: ("key", "voice"))
+    result = await preparation.prepare("video", manager, "cat")
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        job = preparation.jobs[result["id"]]
+        assert job["status"] == "ready"
+        assert job["persistence_complete"] is False
+    finally:
+        release.set()
+        await asyncio.gather(*preparation.tasks)
+    assert job["persistence_complete"] is True
 
 @pytest.mark.asyncio
 async def test_library_initialization_yields_and_rechecks_preparation_slot(monkeypatch):
