@@ -9,6 +9,15 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('constant', ['NaN', 'Infinity', '-Infinity'])
+def test_non_json_constants_do_not_break_history(tmp_path, constant):
+    archive = source(tmp_path, 'constant')
+    (archive / JOB / 'timeline.json').write_text('{"status":"ready","unused":' + constant + '}')
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    assert library.history()[0]['status'] == 'incomplete'
+
+
 def test_imported_metadata_is_bounded_and_warning_shapes_are_safe(tmp_path):
     archive = source(tmp_path, 'metadata')
     folder = archive / JOB

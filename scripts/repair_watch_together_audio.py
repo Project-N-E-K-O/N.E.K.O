@@ -49,7 +49,7 @@ def repair(root):
             write_speech_wav([payload], folder / name)
         timeline = json.loads((folder / 'timeline.json').read_text(encoding='utf-8-sig'))
         events, until = [], -1
-        for event in timeline.get('events', []):
+        for event in sorted(timeline.get('events', []), key=lambda item: item['at']):
             name = (event.get('audio') or '').split(f"/media/{row['job']}/")[-1]
             if name in malformed:
                 event['duration'] = duration(folder / name)

@@ -202,8 +202,12 @@ class Library:
         path = self.resource(job, version, "timeline.json")
         if path.stat().st_size > 8 * 1024 * 1024:
             raise ValueError("Timeline exceeds load budget")
+        invalid_constants = []
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            def reject_constant(value):
+                invalid_constants.append(value)
+                return None
+            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=reject_constant)
         except RecursionError as error:
             raise ValueError("Timeline nesting exceeds load budget") from error
         if not isinstance(data, dict):
@@ -214,6 +218,9 @@ class Library:
         def remap(value, depth=0):
             if depth > 32:
                 raise ValueError("Timeline nesting exceeds load budget")
+            if isinstance(value, float) and not math.isfinite(value):
+                invalid_constants.append('non-finite number')
+                return None
             if isinstance(value, str) and value.startswith(f"/media/{job}/"):
                 return prefix + quote(value[len(f"/media/{job}/"):], safe='/')
             if isinstance(value, dict):
@@ -222,6 +229,8 @@ class Library:
                 return [remap(v, depth + 1) for v in value]
             return value
         timeline = {**remap(data), "id": job, "version": version}
+        if invalid_constants:
+            timeline['status'] = 'incomplete'
         title = timeline.get('title')
         timeline['title'] = title[:500] if isinstance(title, str) else job
         usage = timeline.get('usage')

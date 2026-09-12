@@ -7,7 +7,8 @@ function videoGraph(video) {
   if(!graph) {
     const context=new AudioContext(), soundtrack=context.createGain();
     context.createMediaElementSource(video).connect(soundtrack);soundtrack.connect(context.destination);
-    graph={context,soundtrack};videoGraphs.set(video,graph);
+    const audio=new Audio(), reactionSource=context.createMediaElementSource(audio);
+    graph={context,soundtrack,audio,reactionSource};videoGraphs.set(video,graph);
   }
   return graph;
 }
@@ -19,6 +20,11 @@ export function unlock(video) {
   const started=video.play();
   video.pause();
   void started?.catch(()=>{});
+  // Reuse this exact reaction element across mounts; Safari gates each element.
+  if(!graph.audio.src)graph.audio.src='data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA==';
+  const reactionStarted=graph.audio.play();
+  graph.audio.pause();
+  void reactionStarted?.catch(()=>{});
 }
 
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {} }) {
@@ -55,7 +61,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   const clock = new ReactionClock(timeline.events || []);
   let active = null, disposed = false, waiting = false, frame = 0, release = null;
   let generation = 0, playingGeneration = -1, playAttempt = 0;
-  const audio = new Audio();
+  const graph = videoGraph(video), audio = graph.audio;
   let context = null, analyser = null, soundtrack = null;
   const voiceNodes = [];
   let outputStopped = true, ducked = false;
@@ -139,7 +145,6 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     async play() {
       if (disposed) throw Error('Media controller disposed');
       if (!context) {
-        const graph = videoGraph(video);
         context = graph.context;soundtrack = graph.soundtrack;
         analyser=context.createAnalyser();analyser.fftSize=256;
         // Lift quiet reactions above the soundtrack without boosting the video.
@@ -150,7 +155,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
         compressor.ratio.value = 20;
         compressor.attack.value = 0.003;
         compressor.release.value = 0.1;
-        const source = context.createMediaElementSource(audio);
+        const source = graph.reactionSource;
         voiceNodes.push(source,analyser,voiceGain,compressor);
         source.connect(analyser);
         analyser.connect(voiceGain);voiceGain.connect(compressor);compressor.connect(context.destination);

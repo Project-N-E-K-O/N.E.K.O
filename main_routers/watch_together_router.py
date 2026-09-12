@@ -128,7 +128,12 @@ async def prepare_video(request: Request):
         raise HTTPException(400, "Invalid video URL")
     try:
         from main_logic.watch_together.discovery import inspect_video, enforce_policy
-        info = await inspect_video(url)
+        try:
+            info = await inspect_video(url)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise HTTPException(502, "Video metadata unavailable") from exc
         automatic = data.get("source") == "discovery"
         confirmed = data.get("confirmed_duration")
         if not enforce_policy(info, automatic=automatic, confirmed_duration=confirmed):

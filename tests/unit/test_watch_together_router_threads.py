@@ -7,6 +7,21 @@ from main_routers import watch_together_router as router
 
 
 @pytest.mark.asyncio
+async def test_prepare_metadata_outage_is_controlled(monkeypatch):
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+    from main_routers import shared_state
+    from main_logic.watch_together import discovery
+    monkeypatch.setattr(shared_state, 'get_config_manager', lambda: SimpleNamespace(load_characters=lambda: {}))
+    monkeypatch.setattr(shared_state, 'get_session_manager', lambda: {'cat': object()})
+    monkeypatch.setattr(discovery, 'inspect_video', AsyncMock(side_effect=TimeoutError()))
+    request = SimpleNamespace(headers={}, json=AsyncMock(return_value={'lanlan_name': 'cat', 'url': 'BV1GJ411x7h7'}))
+    with pytest.raises(HTTPException) as caught:
+        await router.prepare_video(request)
+    assert caught.value.status_code == 502
+
+
+@pytest.mark.asyncio
 async def test_library_construction_and_history_query_run_off_event_loop(monkeypatch):
     event_thread = threading.get_ident()
     def checked(value):

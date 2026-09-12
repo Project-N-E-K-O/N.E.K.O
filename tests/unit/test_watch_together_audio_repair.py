@@ -7,8 +7,8 @@ from scripts import repair_watch_together_audio as repair
 def test_repair_pages_all_versions_and_preserves_silent_cues(tmp_path, monkeypatch):
     rows = [{'job': 'job', 'version': str(i), 'status': 'incomplete'} for i in range(101)]
     rows[-1]['status'] = 'ready'
-    timeline = {'duration': 10, 'events': [{'at': 0, 'audio': None},
-                {'at': 3, 'audio': '/media/job/bad.wav', 'duration': 1}]}
+    timeline = {'duration': 10, 'events': [{'at': 3, 'audio': '/media/job/bad.wav', 'duration': 1},
+                {'at': 0, 'audio': None}]}
     (tmp_path / 'timeline.json').write_text(json.dumps(timeline))
     header = bytearray(44)
     header[:4] = b'RIFF'
@@ -33,4 +33,5 @@ def test_repair_pages_all_versions_and_preserves_silent_cues(tmp_path, monkeypat
     assert len(imports) == 1
     repaired = json.loads((imports[0] / 'job' / 'timeline.json').read_text())
     assert repaired['events'][0]['audio'] is None
+    assert [event['at'] for event in repaired['events']] == [0, 3]
     assert repaired['audio_repair_source_version'] == '100'

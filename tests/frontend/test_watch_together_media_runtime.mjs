@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 class Media extends EventTarget {
   constructor(){super();this.volume=1;this.currentTime=0;this.duration=2;this.paused=true;this.playbackRate=1;this.readyState=4;this.seeking=false;this.ended=false;}
-  async play(){this.paused=false;this.dispatchEvent(new Event('play'));this.dispatchEvent(new Event('playing'));}
+  async play(){this.playCalls=(this.playCalls || 0)+1;this.paused=false;this.dispatchEvent(new Event('play'));this.dispatchEvent(new Event('playing'));}
   pause(){const was=this.paused;this.paused=true;if(!was)this.dispatchEvent(new Event('pause'));}
   removeAttribute(name){delete this[name];}load(){}
 }
@@ -95,3 +95,9 @@ unlocked.play=()=>{gesturePlay=true;unlocked.paused=false;return Promise.resolve
 unlock(unlocked);
 assert.equal(gesturePlay,true,'unlock calls media play synchronously');
 assert.equal(unlocked.paused,true,'unlock does not leave video playing during startup');
+const blessedReaction=audios.at(-1);
+assert.equal(blessedReaction.playCalls,1,'reaction element is played synchronously during the gesture');
+assert.equal(blessedReaction.paused,true);
+const blessedMount=await mount({video:unlocked,timeline:{status:'ready',id:'j',version:'v',video:'/video',events:[]}});
+assert.equal(audios.at(-1),blessedReaction,'mount reuses the already authorized reaction element');
+blessedMount.dispose();
