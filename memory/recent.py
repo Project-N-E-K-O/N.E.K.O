@@ -2145,6 +2145,9 @@ class CompressedRecentHistoryManager:
             except recent_file.RecentFileDeletedError:
                 return ('failed', None)
 
+        # Apply the same fiction boundary to caller snapshots and legacy reads.
+        # This filtered snapshot also defines the ordinary-message commit slots.
+        snapshot = [message for message in snapshot if not is_theater_memory_message(message)]
         if not snapshot:
             _safe_print(f"{lanlan_name} 的历史记录为空，无需审阅")
             return ('failed', None)

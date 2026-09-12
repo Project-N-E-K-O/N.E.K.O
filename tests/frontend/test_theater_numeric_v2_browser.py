@@ -964,3 +964,55 @@ def test_memory_target_survives_async_loading_unless_player_selects(mock_page: P
         expect(mock_page.locator('#theater-memory-list')).to_contain_text(memory['memory_summaries'][0])
         expect(mock_page.locator('#theater-start-btn')).to_be_disabled()
         expect(mock_page).to_have_url(f'{running_server}/theater?story_id={STORY["story_id"]}')
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('delayed_stage', ['active', 'archives'])
+@pytest.mark.parametrize('failed_response', [False, True])
+def test_returning_to_story_ignores_first_selection_response(mock_page: Page, running_server: str, delayed_stage, failed_response):
+    other = {**STORY, 'story_id': 'other_story', 'title': '另一份剧本'}
+    counts = {'active': 0, 'archives': 0}
+    pending = {}
+    fresh = {'ok': True, 'session': {'session_id': 'fresh-session', 'revision': 3, 'status': 'active'}}
+
+    def handler(route: Route):
+        path = route.request.url.split('?', 1)[0]
+        if path.endswith('/theater-numeric/stories'):
+            _fulfill(route, {'ok': True, 'character_id': CHARACTER_ID, 'stories': [STORY, other]})
+        elif STORY['story_id'] in route.request.url and (
+            path.endswith('/session/active') or path.endswith('/memory/archives')
+        ):
+            stage = 'active' if path.endswith('/session/active') else 'archives'
+            counts[stage] += 1
+            if stage == delayed_stage and counts[stage] == 1:
+                pending['route'] = route
+            elif stage == 'active':
+                _fulfill(route, fresh)
+            else:
+                _fulfill(route, {'ok': True, 'archives': [{'session_id': 'fresh-archive', 'revision': 3}]})
+        else:
+            route.fallback()
+
+    _install_selector_routes(mock_page)
+    mock_page.route('**/api/theater-numeric/**', handler)
+    endpoint = 'session/active' if delayed_stage == 'active' else 'memory/archives'
+    with mock_page.expect_request(f'**/{endpoint}?story_id={STORY["story_id"]}'):
+        mock_page.goto(f'{running_server}/theater', wait_until='domcontentloaded')
+    mock_page.locator('[data-story-id="other_story"]').click()
+    expect(mock_page.locator('#theater-detail-title')).to_have_text(other['title'])
+    mock_page.locator(f'[data-story-id="{STORY["story_id"]}"]').click()
+    expect(mock_page.locator('[data-theater-view-session="fresh-archive"]')).to_be_visible()
+    if failed_response:
+        pending['route'].abort('failed')
+    elif delayed_stage == 'active':
+        _fulfill(pending['route'], {'ok': True, 'session': {'session_id': 'stale-session', 'revision': 1,
+            'status': 'ended'}, 'end_receipt_id': 'stale-receipt', 'archive_status': 'pending'})
+    else:
+        _fulfill(pending['route'], {'ok': True, 'archives': [{'session_id': 'stale-archive', 'revision': 1}]})
+    # A response event alone precedes its promise continuation; wait for the UI
+    # thread to drain both the fetch continuation and the following render.
+    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    expect(mock_page.locator('[data-theater-view-session="fresh-archive"]')).to_be_visible()
+    expect(mock_page.locator('#theater-modal')).to_be_hidden()
+    expect(mock_page.locator('#theater-inline-feedback')).not_to_contain_text('读取失败')
+    expect(mock_page.locator('#theater-continue-btn')).to_be_enabled()

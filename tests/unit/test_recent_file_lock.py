@@ -1394,6 +1394,41 @@ def _review_corrected() -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize('explicit_snapshot', [False, True])
+@pytest.mark.parametrize('placement', ['head', 'middle', 'only'])
+def test_review_entry_preserves_theater_messages(tmp_path, monkeypatch, explicit_snapshot, placement):
+    mgr, name, path = _make_manager(tmp_path)
+    capsule = SystemMessage(content='theater-only-private-fiction', metadata={
+        'source': 'theater_numeric_v2', 'memory_tier': 'episode_summary',
+        'story_id': 'story', 'session_id': 'session', 'episode_status': 'completed',
+    })
+    history = [] if placement == 'only' else _review_snapshot()
+    history.insert(2 if placement == 'middle' else 0, capsule)
+    _write_disk(path, history)
+    prompts = []
+    llm = _ReviewLLM(_review_corrected())
+    invoke = llm.ainvoke
+
+    async def record_prompt(prompt):
+        prompts.append(prompt)
+        return await invoke(prompt)
+
+    monkeypatch.setattr(llm, 'ainvoke', record_prompt)
+    monkeypatch.setattr(mgr, '_get_review_llm', lambda: llm)
+    result = asyncio.run(mgr.review_history(name, snapshot=list(history) if explicit_snapshot else None))
+    persisted = _read_disk(path)
+    if placement == 'only':
+        assert result == ('failed', None)
+        assert prompts == []
+    else:
+        assert result[0] == 'patched'
+        assert len(prompts) == 1
+        assert capsule.content not in prompts[0]
+        assert any(message.content == 'hi 1 fixed' for message in persisted)
+    remaining = [message for message in persisted if message.metadata.get('source') == 'theater_numeric_v2']
+    assert messages_to_dict(remaining) == messages_to_dict([capsule])
+
+
 def test_review_persist_failure_returns_failed_exactly(tmp_path, monkeypatch):
     """A failed review persist must report ('failed', None) — never 'white'.
 

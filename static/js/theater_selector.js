@@ -315,12 +315,15 @@
             }
         } finally { setBusy(false); }
     }
-    async function loadMemoryArchives(storyId, expectedCharacterEpoch) {
+    async function loadMemoryArchives(storyId, expectedCharacterEpoch, expectedSelectionEpoch) {
         var loadCharacterEpoch = expectedCharacterEpoch === undefined
             ? characterEpoch
             : expectedCharacterEpoch;
+        var loadSelectionEpoch = expectedSelectionEpoch === undefined
+            ? storySelectionEpoch
+            : expectedSelectionEpoch;
         var result = await requestJson(api.memoryArchives + '?story_id=' + encodeURIComponent(storyId));
-        if (state.storyId !== storyId || loadCharacterEpoch !== characterEpoch) return;
+        if (state.storyId !== storyId || loadCharacterEpoch !== characterEpoch || loadSelectionEpoch !== storySelectionEpoch) return;
         // 后端读取失败不能伪装成空归档；交给 selectStory 的错误链路显示可重试反馈。
         if (!result.ok || !Array.isArray(result.archives)) throw new Error('archive_list_load_failed');
         state.archives = result.archives;
@@ -329,7 +332,7 @@
     var storySelectionEpoch = 0;
     async function selectStory(storyId, forceWhileBusy) {
         if ((state.busy && forceWhileBusy !== true) || !storyId) return;
-        storySelectionEpoch += 1;
+        var selectionEpoch = ++storySelectionEpoch;
         var selectionCharacterEpoch = characterEpoch;
         state.storyId = storyId;
         state.session = null;
@@ -351,12 +354,12 @@
             result = await requestJson(api.active + '?story_id=' + encodeURIComponent(storyId));
         } catch (_) {
             // 只允许当前选择发布断网状态；旧请求失败不能覆盖玩家后来切换的剧本。
-            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return false;
+            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch || selectionEpoch !== storySelectionEpoch) return false;
             setStatus('theater.failed', '出错了');
             setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
             return false;
         }
-        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
+        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch || selectionEpoch !== storySelectionEpoch) return;
         if (result.ok && result.session) {
             state.session = result.session;
             if (result.session.status === 'ended' && result.end_receipt_id) {
@@ -376,16 +379,16 @@
         }
         else if (result._status !== 404) setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
         try {
-            await loadMemoryArchives(storyId, selectionCharacterEpoch);
+            await loadMemoryArchives(storyId, selectionCharacterEpoch, selectionEpoch);
         } catch (_) {
             // 记忆列表同属详情快照；请求失败时结束 loading 状态并保留当前可重试选择。
-            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return false;
+            if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch || selectionEpoch !== storySelectionEpoch) return false;
             setStatus('theater.failed', '出错了');
             setFeedback(t('theater.sessionLoadFailed', '演绎进度读取失败，请重试。'), true);
             return false;
         }
         // 归档请求返回期间可能已经切换剧本；旧选择不能覆盖详情或地址栏。
-        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
+        if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch || selectionEpoch !== storySelectionEpoch) return;
         renderDetail();
         setStatus('theater.ready', '就绪');
         var url = new URL(window.location.href);

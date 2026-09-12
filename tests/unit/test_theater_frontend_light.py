@@ -181,13 +181,13 @@ def test_selector_does_not_publish_stale_story_after_archive_load():
     active_catch = script.index("} catch (_) {", active_await)
     active_failure = script.index("setStatus('theater.failed', '出错了');", active_catch)
     archive_await = script.index(
-        "await loadMemoryArchives(storyId, selectionCharacterEpoch);",
+        "await loadMemoryArchives(storyId, selectionCharacterEpoch, selectionEpoch);",
         selection,
     )
     archive_catch = script.index("} catch (_) {", archive_await)
     archive_failure = script.index("setStatus('theater.failed', '出错了');", archive_catch)
     recheck = script.index(
-        "if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;",
+        "if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch || selectionEpoch !== storySelectionEpoch) return;",
         archive_await,
     )
     replace_url = script.index("window.history.replaceState", recheck)
