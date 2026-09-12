@@ -2589,7 +2589,8 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
 
 async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
   const { api } = loadHarness();
-  api.installRoundLifecycleHarness([], () => Promise.resolve());
+  const elements = api.installRoundLifecycleHarness([], () => Promise.resolve());
+  elements.modelStage = { dataset: {}, style: { setProperty() {} } };
   api.installRouteUiSpies();
   const descriptor = {
     name: 'route-character', rendererAvailable: true,
@@ -2601,10 +2602,15 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
   const client = {
     disposed: false,
     runtime: {
+      state: 'inactive',
       session: { id: 'same-session', characterName: descriptor.name },
       bindCharacter() { bindings += 1; return Promise.resolve(descriptor); },
+      start() { this.state = 'running'; return Promise.resolve({ ok: true, data: { ok: true } }); },
     },
     avatar: { mount() { mounts += 1; return Promise.resolve(nextMount); } },
+    memory: { consent: { locked: true, configured: true, enabled: false } },
+    capabilities: { granted: [], has() { return false; } },
+    logger: { enableAfterRuntimeStart() { return Promise.resolve({ ok: false }); } },
   };
   function controller() {
     return {
@@ -2614,6 +2620,7 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
     };
   }
   api.state.lanlanName = descriptor.name;
+  api.state.sdkClient = client;
   await api.bindDrawingCharacter(client, descriptor.name);
   const current = controller();
   nextMount = current;
@@ -2640,9 +2647,9 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
 
   const restarted = controller();
   nextMount = restarted;
-  assert(await api.mountAvatarDescriptor(client,
-    await api.bindDrawingCharacter(client, descriptor.name), api.state.avatarLoadToken),
-  'the cached character must mount again after route cleanup');
+  assertEqual(await api.startRoute(), true, 'the actual route restart must succeed');
+  await waitFor(() => api.state.avatarController === restarted,
+    'the actual route restart must remount the cached character');
   assertEqual(bindings, 1, 'remounting must not perform a prohibited runtime rebind');
   api.cleanupRouteResources();
   api.cleanupRouteResources();

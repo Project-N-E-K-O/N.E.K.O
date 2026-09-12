@@ -1563,6 +1563,7 @@
 
   function cleanupRouteResources() {
     disposeAvatarController();
+    setModelLoadState('idle');
     beginRoundFlow();
     state.activeRoundToken = state.roundFlowToken;
     state.roundSessionReady = false;
@@ -2856,6 +2857,12 @@
         return isSdkRouteRunning(client);
       }).then(function (started) {
         if (!started) return false;
+        // Route cleanup retires the renderer, but the bound descriptor remains
+        // valid for this session. Restore the preview without rebinding.
+        if (!state.avatarController && state.modelLoadState !== 'loading'
+            && state.sdkBoundCharacter) {
+          initModelSlotForCurrentCharacter(state.lanlanName, state.sdkBoundCharacter);
+        }
         // The host owns the single microphone session. Reflect its current
         // state without starting a second recognizer or taking over capture.
         querySdkVoiceRouteState(client).catch(function () {});
