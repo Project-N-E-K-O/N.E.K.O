@@ -638,8 +638,9 @@ def test_drawing_guess_static_route_contract():
     assert "if (!isCanvasInteractionEnabled() || event.button !== 0) return;" in script
     assert "if (!state.isDrawing || !isCanvasInteractionEnabled()) return;" in script
     assert "state.isDrawing = false;" in script
-    assert "if (!isSdkRouteRunning(client)) return false;" in script
-    assert "return isSdkRouteRunning(client);" in script
+    assert "if (!isStartedRouteCurrent()) return false;" in script
+    assert "return isStartedRouteCurrent();" in script
+    assert "isSdkRouteRunning(client)" in script
     assert "els.doneButton.hidden = roundSummaryOpen || finalSummaryOpen;" in script
     assert "els.nextRoundButton.hidden = !roundSummaryOpen;" in script
     assert "els.endButton.hidden = finalSummaryOpen;" in script

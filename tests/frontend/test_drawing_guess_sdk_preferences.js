@@ -2686,7 +2686,74 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
   api.cleanupRouteResources();
 }
 
+async function testCanonicalAvatarFailureKeepsOnlyItsRunningRoute() {
+  for (const scenario of ['network', 'timeout', 'invalid', 'ended', 'new-session', 'new-preview']) {
+    const { api } = loadHarness();
+    const elements = api.installRoundLifecycleHarness([], () => Promise.resolve());
+    elements.modelStage = { dataset: {}, style: { setProperty() {} } };
+    api.installRouteUiSpies();
+    const descriptor = { name: 'before', rendererAvailable: true,
+      model: { type: 'live2d', path: '/model.json' } };
+    const gate = deferred();
+    let reads = 0;
+    let logStarts = 0;
+    let releases = 0;
+    const client = {
+      disposed: false,
+      runtime: {
+        state: 'inactive', session: { id: 'original-session', characterName: 'before' },
+        bindCharacter() { throw new Error('the cached pre-start binding must be reused'); },
+        start() {
+          this.state = 'running';
+          this.session.characterName = 'canonical';
+          return Promise.resolve({ ok: true, data: { ok: true, state: { lanlan_name: 'canonical' } } });
+        },
+        end() { throw new Error('an optional avatar must not end a successful route'); },
+      },
+      avatar: {
+        getCharacter() { reads += 1; return gate.promise; },
+        mount() { throw new Error('a failed descriptor must not mount the stale avatar'); },
+      },
+      memory: { consent: { locked: true, configured: true, enabled: false } },
+      capabilities: { granted: [], has() { return false; } },
+      logger: { enableAfterRuntimeStart() { logStarts += 1; return Promise.resolve({ ok: false }); } },
+    };
+    Object.assign(api.state, { lanlanName: 'before', sdkClient: client,
+      sdkBoundCharacter: descriptor, sdkBoundCharacterClient: client,
+      sdkBoundCharacterSessionId: 'original-session',
+      avatarController: { dispose() { releases += 1; } } });
+    const pending = api.startRoute();
+    await waitFor(() => reads === 1, 'canonical descriptor refresh did not start');
+    if (scenario === 'ended') {
+      client.runtime.state = 'ended';
+      api.state.routeActive = false;
+      api.cleanupRouteResources();
+    } else if (scenario === 'new-session') {
+      client.runtime.session.id = 'new-session';
+      api.state.modelLoadState = 'ready';
+    } else if (scenario === 'new-preview') {
+      api.state.avatarLoadToken += 1;
+      api.state.modelLoadState = 'ready';
+    }
+    if (scenario === 'invalid') gate.resolve(null);
+    else gate.reject(Object.assign(new Error(scenario), { code: scenario === 'timeout' ? 'timeout' : 'request_failed' }));
+    const shouldStart = ['network', 'timeout', 'invalid'].includes(scenario);
+    assertEqual(await pending, shouldStart, scenario + ': optional avatar failure changed route startup');
+    assertEqual(logStarts, shouldStart ? 1 : 0, scenario + ': stale startup continued logging');
+    assertEqual(releases, 1, 'the old preview must be released exactly once');
+    assertEqual(api.state.sdkBoundCharacter, null, 'the stale descriptor must stay retired');
+    assertEqual(api.state.sdkCharacterBindingRequest, null, 'the query request must be released');
+    assertEqual(api.state.sdkStartPromise, null, 'the startup promise must be released');
+    assertEqual(api.state.modelLoadState, shouldStart ? 'fallback' : scenario === 'ended' ? 'idle' : 'ready',
+      scenario + ': late avatar failure changed the current model display');
+    assertEqual(client.runtime.state, scenario === 'ended' ? 'ended' : 'running');
+    assertEqual(api.state.routeActive, scenario !== 'ended');
+    api.cleanupRouteResources();
+  }
+}
+
 async function main() {
+  await testCanonicalAvatarFailureKeepsOnlyItsRunningRoute();
   await testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding();
   assertDeepEqual(loadHarness().api.state.modelView, { scale: 100, x: 0, y: 0 },
     'the game default must not magnify or pan the SDK fitted model');

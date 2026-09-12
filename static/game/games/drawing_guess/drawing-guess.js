@@ -2840,20 +2840,38 @@
       state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
+      var startedSessionId = client.runtime.session.id;
+      var startedCharacterName = state.lanlanName;
+      var startedRouteGeneration = state.sdkPulseGeneration;
+      function isStartedRouteCurrent() {
+        return !client.disposed && isSdkRouteRunning(client)
+          && client.runtime.session.id === startedSessionId
+          && client.runtime.session.characterName === startedCharacterName
+          && state.lanlanName === startedCharacterName
+          && state.sdkPulseGeneration === startedRouteGeneration;
+      }
       var characterReady = Promise.resolve();
       if (state.sdkBoundCharacter && state.sdkBoundCharacter.name !== state.lanlanName) {
         disposeAvatarController();
         setModelLoadState('idle');
         // runtime.start has already committed the canonical identity. Refresh
         // its public descriptor; rebinding a running route is forbidden.
-        characterReady = bindDrawingCharacter(client, state.lanlanName, true);
+        var refreshLoadToken = state.avatarLoadToken;
+        characterReady = bindDrawingCharacter(client, state.lanlanName, true).catch(function () {
+          if (!isStartedRouteCurrent() || refreshLoadToken !== state.avatarLoadToken) return false;
+          // The route is already owned and running. Optional avatar discovery
+          // failure must not report a failed start while leaving that route live.
+          showConfiguredFallback();
+          return true;
+        });
       }
       // Do not expose the active round until the session-scoped logging gate
       // has settled. The host bounds and aborts this enable request, preventing
       // a late /logs/enable from reactivating an already-ended session.
-      return characterReady.then(function () {
+      return characterReady.then(function (ready) {
+        if (ready === false || !isStartedRouteCurrent()) return false;
         return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
-          if (!isSdkRouteRunning(client)) return false;
+          if (!isStartedRouteCurrent()) return false;
           if (logResult && logResult.ok) {
             logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
               sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
@@ -2863,7 +2881,7 @@
           }
           return true;
         }).catch(function () {
-          return isSdkRouteRunning(client);
+          return isStartedRouteCurrent();
         }).then(function (started) {
           if (!started) return false;
           // Route cleanup retires the renderer, but the bound descriptor remains
