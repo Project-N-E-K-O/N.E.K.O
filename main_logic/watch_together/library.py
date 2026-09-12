@@ -300,6 +300,16 @@ class Library:
                    for cue in events):
                 timeline['status'] = 'incomplete'
                 return timeline
+            audio_until = -1
+            for cue in sorted(events, key=lambda cue: cue['at']):
+                if cue['at'] < audio_until:
+                    timeline['status'] = 'incomplete'
+                    return timeline
+                if cue.get('audio'):
+                    audio_until = cue['at'] + cue['duration']
+                    if not valid_time(audio_until):
+                        timeline['status'] = 'incomplete'
+                        return timeline
             manifest = self.manifest(job, version)
             audio_urls = {cue['audio'] for cue in events if cue.get('audio')}
             audio_bytes = 0

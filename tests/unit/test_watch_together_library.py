@@ -9,6 +9,28 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('second_at,text_only,ready', [
+    (2, False, False), (2, True, False), (1, False, False),
+    (11, False, True), (12.2, False, True),
+])
+def test_imported_overlapping_cues_are_incomplete_without_changing_archive(tmp_path, second_at, text_only, ready):
+    archive = source(tmp_path, 'overlap')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    first = {'at': 1, 'duration': 10, 'audio': f'/media/{JOB}/laugh.mp3'}
+    second = {'at': second_at, 'text': 'next'} if text_only else {**first, 'at': second_at, 'duration': 1}
+    # Out-of-order input must be checked in playback order.
+    data = {'status': 'ready', 'video': f'/media/{JOB}/video.mp4', 'events': [second, first]}
+    original = json.dumps(data).encode()
+    (folder / 'timeline.json').write_bytes(original)
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert (row['status'] == 'ready') is ready
+    assert library.resource(JOB, row['version'], 'timeline.json').read_bytes() == original
+    assert (folder / 'timeline.json').read_bytes() == original
+
+
 @pytest.mark.parametrize('bvid', [123, {}, 'x' * 33, 'BV1GJ411x7h7'])
 @pytest.mark.parametrize('cover', ['https://tracker.test/pixel', '/media/' + JOB + '/cover.png', '/media/' + JOB + '/missing.png'])
 def test_imported_metadata_cannot_poison_discovery_or_fetch_remote_cover(tmp_path, bvid, cover):
@@ -48,7 +70,7 @@ def test_history_matches_unique_audio_preload_budgets(tmp_path, monkeypatch, cou
         (folder / name).write_bytes(b'audio')
         events.append({'at': index, 'duration': 1, 'audio': f'/media/{JOB}/{name}'})
     # Repeated URLs must not consume the budget twice.
-    events += events
+    events += [{**cue, 'at': cue['at'] + count} for cue in events]
     (folder / 'timeline.json').write_text(json.dumps({'status': 'ready',
         'video': f'/media/{JOB}/video.mp4', 'events': events}))
     library = Library(tmp_path / 'data')
