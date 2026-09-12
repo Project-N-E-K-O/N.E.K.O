@@ -404,6 +404,63 @@ def test_normalize_neko_community_feed_bounds_tags():
     )
 
 
+def test_community_text_stops_at_nested_depth_limit():
+    nested: object = "too-deep"
+    for _ in range(trending_content.NEKO_COMMUNITY_TEXT_MAX_DEPTH + 1):
+        nested = {"content": nested}
+
+    assert trending_content._community_text(nested) == ""
+
+
+def test_community_text_stops_after_node_budget():
+    seen_items: list[object] = []
+
+    class CountingValues(list):
+        def __iter__(self):
+            for item in super().__iter__():
+                seen_items.append(item)
+                yield item
+
+    values = CountingValues([None] * (trending_content.NEKO_COMMUNITY_TEXT_MAX_NODES + 1))
+
+    assert trending_content._community_text(values) == ""
+    assert len(seen_items) <= trending_content.NEKO_COMMUNITY_TEXT_MAX_NODES
+
+
+def test_community_text_counts_list_separators_within_bound():
+    title = trending_content._community_text(
+        ["a" * 100, "b" * 100],
+        max_chars=trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS,
+    )
+
+    assert title == "a" * 100 + " " + "b" * 99
+    assert len(title) == trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS
+
+
+def test_normalize_neko_community_feed_bounds_timestamp_before_normalization(monkeypatch):
+    original_plain_text = trending_content._plain_xhh_text
+    normalized_lengths: list[int] = []
+
+    def track_plain_text(value):
+        normalized_lengths.append(len(value))
+        return original_plain_text(value)
+
+    monkeypatch.setattr(trending_content, "_plain_xhh_text", track_plain_text)
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "long-time",
+                    "title": "时间卡牌",
+                    "created_at": "p" * (trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS + 1),
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["created_at"] == "p" * trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS
+    assert max(normalized_lengths) == trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS
+
 def test_normalize_neko_community_feed_bounds_published_at():
     published_at = "p" * (
         trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS + 1
@@ -1062,6 +1119,21 @@ def test_community_links_use_neko_community_cards():
         }
     ]
 
+
+def test_normalized_idless_list_titles_dedupe_by_bounded_title():
+    title_prefix = ["a" * 100, "b" * 100]
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {"title": title_prefix + ["甲"], "url": "/discover"},
+                {"title": title_prefix + ["乙"], "url": "/discover"},
+            ]
+        },
+        limit=2,
+    )
+
+    assert len(posts) == 1
+    assert len(posts[0]["title"]) == trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS
 
 def test_normalized_idless_community_cards_dedupe_by_bounded_title():
     prefix = "标题" * trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS

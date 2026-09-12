@@ -25,6 +25,21 @@ def test_phase1_aggregate_budget_keeps_complete_source_sections():
 
     assert merged == first_part
 
+def test_phase1_aggregate_budget_keeps_later_sections_after_overflow():
+    first_header = "--- 第一来源 ---"
+    first_candidate = "1. 第一条完整候选"
+    overflowing_candidate = "2. " + "长" * 1000
+    second_part = "--- 第二来源 ---\n1. 第二来源的较短候选"
+    expected = "\n\n".join([first_header + "\n" + first_candidate, second_part])
+    from utils.tokenize import count_tokens
+
+    merged = proactive_service._merge_phase1_parts_within_token_budget(
+        [first_header + "\n" + first_candidate + "\n" + overflowing_candidate, second_part],
+        max_tokens=count_tokens(expected),
+    )
+
+    assert merged == expected
+
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
     parsed = sr_parsing._parse_unified_phase1_result(
         """

@@ -198,17 +198,23 @@ _PHASE1_TOTAL_TOPIC_TARGET = (
 def _merge_phase1_parts_within_token_budget(
     parts: list[str], *, max_tokens: int
 ) -> str:
-    """Keep complete Phase 1 source sections within the aggregate token budget."""
+    """Keep complete Phase 1 candidates while fitting the aggregate budget."""
 
     from utils.tokenize import truncate_to_tokens
 
-    kept: list[str] = []
+    kept_parts: list[str] = []
     for part in parts:
-        merged = "\n\n".join([*kept, part])
-        if truncate_to_tokens(merged, max_tokens) != merged:
-            break
-        kept.append(part)
-    return "\n\n".join(kept)
+        header, separator, candidates_text = part.partition("\n")
+        candidates = candidates_text.splitlines() if separator else []
+        kept_candidates: list[str] = []
+        for candidate in candidates:
+            section = header + "\n" + "\n".join([*kept_candidates, candidate])
+            merged = "\n\n".join([*kept_parts, section])
+            if truncate_to_tokens(merged, max_tokens) == merged:
+                kept_candidates.append(candidate)
+        if kept_candidates:
+            kept_parts.append(header + "\n" + "\n".join(kept_candidates))
+    return "\n\n".join(kept_parts)
 
 
 def _open_threads_for_activity_state(

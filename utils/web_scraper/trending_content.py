@@ -66,6 +66,8 @@ NEKO_COMMUNITY_TAG_MAX_COUNT = 8
 NEKO_COMMUNITY_TAG_MAX_CHARS = 80
 NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT = 64
 NEKO_COMMUNITY_CONTENT_MAX_CHARS = 500
+NEKO_COMMUNITY_TEXT_MAX_DEPTH = 8
+NEKO_COMMUNITY_TEXT_MAX_NODES = 128
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -1859,16 +1861,35 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _community_text(value: Any, *, max_chars: int | None = None) -> str:
-    """Flatten common community-card text shapes, optionally bounding input work."""
+def _community_text(
+    value: Any,
+    *,
+    max_chars: int | None = None,
+    _depth: int = 0,
+    _nodes_remaining: list[int] | None = None,
+) -> str:
+    """Flatten bounded community-card text without unbounded nested traversal."""
 
+    nodes_remaining = (
+        _nodes_remaining
+        if _nodes_remaining is not None
+        else [NEKO_COMMUNITY_TEXT_MAX_NODES]
+    )
+    if _depth > NEKO_COMMUNITY_TEXT_MAX_DEPTH or nodes_remaining[0] <= 0:
+        return ""
+    nodes_remaining[0] -= 1
     if isinstance(value, str):
         if max_chars is not None:
             value = value[:max_chars]
         return _plain_xhh_text(value)
     if isinstance(value, dict):
         for key in ("text", "content", "body", "value", "name", "display_name"):
-            text = _community_text(value.get(key), max_chars=max_chars)
+            text = _community_text(
+                value.get(key),
+                max_chars=max_chars,
+                _depth=_depth + 1,
+                _nodes_remaining=nodes_remaining,
+            )
             if text:
                 return text
         return ""
@@ -1876,14 +1897,24 @@ def _community_text(value: Any, *, max_chars: int | None = None) -> str:
         values: list[str] = []
         remaining = max_chars
         for item in value:
-            text = _community_text(item, max_chars=remaining)
+            if nodes_remaining[0] <= 0:
+                break
+            allowed_chars = remaining
+            if allowed_chars is not None and values:
+                allowed_chars -= 1
+            if allowed_chars is not None and allowed_chars <= 0:
+                break
+            text = _community_text(
+                item,
+                max_chars=allowed_chars,
+                _depth=_depth + 1,
+                _nodes_remaining=nodes_remaining,
+            )
             if not text:
                 continue
             values.append(text)
             if remaining is not None:
-                remaining -= len(text)
-                if remaining <= 0:
-                    break
+                remaining -= len(text) + (1 if len(values) > 1 else 0)
         return _plain_xhh_text(" ".join(values))
     return ""
 
@@ -1996,7 +2027,9 @@ def normalize_neko_community_feed(
         for field in ("created_at", "createdAt"):
             value = raw.get(field)
             if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-                published_at = _plain_xhh_text(str(value))
+                published_at = _plain_xhh_text(
+                    str(value)[:NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS]
+                )
             if published_at:
                 break
         published_at = published_at[:NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS]
@@ -2032,8 +2065,8 @@ def normalize_neko_community_feed(
             if labels:
                 break
         url = card_url or _community_card_url(raw)
-        dedupe_key = item_id or f"{url}|{title.casefold()}"
         title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
+        dedupe_key = item_id or f"{url}|{title.casefold()}"
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
