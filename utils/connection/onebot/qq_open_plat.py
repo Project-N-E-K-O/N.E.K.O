@@ -179,13 +179,25 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
 
     @property
     def _API_BASE(self) -> str:
-        """Base URL for REST calls and the gateway, selected by the sandbox toggle.
+        """Base URL for REST calls and the gateway, pinned for the connection's lifetime.
 
-        A property rather than a class constant: seven ``self._API_BASE`` references
-        (every REST path and the gateway URL are built from it) keep working unchanged,
-        and a zero-arg callable as the toggle makes a settings change take effect
-        immediately, with no reconnect.
+        The environment is a property of a **connection**, not of a request: REST sends
+        and gateway events must agree on where they are talking to. So the toggle is
+        sampled once in :meth:`connect` and held until :meth:`disconnect`, and a settings
+        change takes effect on the next explicit reconnect -- the same rule the plugin
+        already applies to the other connection settings (its save response reports
+        ``reconnect_required``).
+
+        Resolving per call would be the worse bug: ``_API_BASE`` feeds both the REST
+        paths and (via ``_get_gateway_url``) the gateway URL, so flipping it mid-flight
+        makes sends go to one environment while the live WebSocket -- and every
+        ``_try_reconnect`` from it -- keeps talking to the other.
         """
+        pinned = getattr(self, "_pinned_api_base", None)
+        return pinned or self._resolve_api_base()
+
+    def _resolve_api_base(self) -> str:
+        """Current environment per the toggle (unsampled; see :attr:`_API_BASE`)."""
         sandbox = self._sandbox
         if callable(sandbox):
             try:
@@ -281,6 +293,13 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         if not self._app_id or not self._client_secret:
             raise RuntimeError("QQ 开放平台: app_id 和 client_secret 未配置")
         self._closing = False
+        # Sample the environment once, for this connection's lifetime. REST and the
+        # gateway must agree on where they are talking to, so a settings change only
+        # takes effect on the next explicit connect() -- see _API_BASE.
+        self._pinned_api_base = self._resolve_api_base()
+        if self.logger:
+            env = "沙箱" if self._pinned_api_base == self._API_BASE_SANDBOX else "正式"
+            self.logger.info(f"[QQOpenPlatform] 环境: {env} ({self._pinned_api_base})")
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(15.0))
         await self._refresh_token()
         if self.logger:
@@ -346,6 +365,9 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
 
     async def disconnect(self) -> None:
         self._closing = True
+        # Unpin: the next connect() samples the toggle again, so switching environments
+        # is "stop, then start" -- deterministic, never a mid-flight split.
+        self._pinned_api_base = None
         self._cancel_inbound_sink_tasks()
         for task in [self._heartbeat_task, self._receive_task]:
             if task and not task.done():
