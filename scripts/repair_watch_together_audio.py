@@ -1,5 +1,6 @@
 """Preserve malformed legacy WAV objects; import corrected audio as new versions."""
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -30,6 +31,15 @@ def repair(root):
             continue
         if row['status'] != 'ready':
             continue
+        value = library.timeline(row['job'], row['version']).get('duration')
+        if type(value) not in (int, float):
+            continue
+        try:
+            total_duration = float(value)
+        except OverflowError:
+            continue
+        if not math.isfinite(total_duration) or total_duration < 0:
+            continue
         manifest = library.manifest(row['job'], row['version'])
         malformed = {}
         for name in manifest:
@@ -53,7 +63,7 @@ def repair(root):
             name = (event.get('audio') or '').split(f"/media/{row['job']}/")[-1]
             if name in malformed:
                 event['duration'] = duration(folder / name)
-            if event['at'] < until or event['at'] + event.get('duration', 0) > timeline['duration']:
+            if event['at'] < until or event['at'] + event.get('duration', 0) > total_duration:
                 continue
             events.append(event)
             until = event['at'] + event.get('duration', 0) + 1.2
