@@ -313,7 +313,9 @@ slowProgress.game.media.request=async(action,payload)=>{
 slowProgress.record({type:'progress',position:1});
 await new Promise(resolve=>setTimeout(resolve,0));
 for(let position=2;position<=12;position++)slowProgress.record({type:'progress',position});
+slowProgress.record({type:'seek',position:200});
+slowProgress.record({type:'progress',position:250});
 releaseWrite();
 await new Promise(resolve=>setTimeout(resolve,0));
-assert.deepEqual(positions,[1,12],'pending progress writes coalesce to latest position');
+assert.deepEqual(positions,[1,12,200,250],'only consecutive progress writes coalesce, preserving seek order');
 slowProgress.handlers['runtime-inactive']();

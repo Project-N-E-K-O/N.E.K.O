@@ -52,7 +52,7 @@ export async function run(game, character) {
     if(event.type==='progress') {
       if(pendingProgress){pendingProgress.payload=payload;return;}
       pendingProgress=queued;
-    }
+    } else pendingProgress=null;
     writing = writing.then(async () => {
       if(pendingProgress===queued)pendingProgress=null;
       await game.media.request('watch', queued.payload);
