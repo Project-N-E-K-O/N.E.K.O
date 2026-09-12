@@ -209,11 +209,24 @@ discard late results. A transport that ignores abort keeps its bounded raw slot
 until the body settles: `pendingCount` may be zero after cancellation while new
 commands still receive `busy`. This prevents repeated retries from accumulating
 abandoned body reads; capacity is released when those reads actually finish.
-Standard readable responses, including legacy calls without a byte budget,
-are actively cancelled on timeout, cancellation or disposal. Reader locks and
+Other REST responses use a default 16 MiB pre-parse byte limit, with room for
+character catalogs and configuration; command and vision responses retain their
+stricter 2 MiB limit. Oversized headers or streamed bodies reject with
+`invalid_response`. Buffer storage grows on demand within the limit (growth
+can briefly hold both old and new buffers); it does not collect unlimited chunks.
+Standard readable responses, including legacy REST calls,
+are actively cancelled on timeout, cancellation or disposal. Already buffered
+bytes are dereferenced immediately on cancellation even if a custom reader's
+pending `read()` does not settle; that raw request still occupies capacity.
+Reader locks and
 abort listeners are released without awaiting an unresponsive source cancel
 hook. A fetch that has not returned yet, or a legacy JSON-only transport that
-ignores cancellation, still retains its raw slot until it settles.
+ignores cancellation, still retains its raw slot until it settles. JSON-only
+response subsets remain a trusted compatibility path for legacy calls only:
+their custom `json()` implementation must bound its own input and honor abort;
+the host cannot impose a pre-parse byte limit on arbitrary JavaScript. New
+transports must use standard readable `Response` objects. ArrayBuffer-only
+responses without a readable body are not an alternative to bounded streaming.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
