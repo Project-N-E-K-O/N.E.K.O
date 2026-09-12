@@ -276,7 +276,6 @@ function loadHarness() {
     roundCommandContracts: ROUND_COMMAND_CONTRACTS,
     submitPlayerText: submitPlayerText,
     handleSdkVoiceState: handleSdkVoiceState,
-    handleSpeechPlaybackState: handleSpeechPlaybackState,
     handleSdkPageExit: handleSdkPageExit,
     querySdkVoiceRouteState: querySdkVoiceRouteState,
     stopSdkVoiceBestEffort: stopSdkVoiceBestEffort,

@@ -134,7 +134,6 @@
     sdkStateUnsubscribe: null,
     sdkInactiveUnsubscribe: null,
     sdkPageExitUnsubscribe: null,
-    sdkSpeechStateUnsubscribe: null,
     sdkSpeechErrorUnsubscribe: null,
     sdkVoiceStateUnsubscribe: null,
     sdkVoiceTranscriptUnsubscribe: null,
@@ -165,7 +164,6 @@
     voiceRouteActive: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
-    speechPlaybackActive: false,
     lastVoiceTranscriptRequestId: '',
     playerTextQueueGeneration: 0,
     playerTextChain: Promise.resolve(),
@@ -1133,18 +1131,6 @@
     return node;
   }
 
-  function speechPlaybackHasPendingAudioWork(detail) {
-    return !!(detail && (
-      detail.pendingAudioWork === true
-      || detail.pending_audio_work === true
-    ));
-  }
-
-  function handleSpeechPlaybackState(playbackState) {
-    var detail = (playbackState && playbackState.detail) || playbackState || {};
-    state.speechPlaybackActive = !!detail.active || speechPlaybackHasPendingAudioWork(detail);
-  }
-
   function clearNekoVoiceQueue() {
     state.nekoVoiceQueue = [];
     if (state.nekoVoiceController) {
@@ -1798,7 +1784,6 @@
         state.sdkStateUnsubscribe = client.events.on('runtime-state', handleSdkRuntimeState);
         state.sdkInactiveUnsubscribe = client.events.on('runtime-inactive', handleSdkRuntimeInactive);
         state.sdkPageExitUnsubscribe = client.events.on('page-exit', handleSdkPageExit);
-        state.sdkSpeechStateUnsubscribe = client.speech.onState(handleSpeechPlaybackState);
         state.sdkSpeechErrorUnsubscribe = client.speech.onError(function (error) {
           logSdkBestEffort(client, 'warn', 'speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
             reason: String((error && (error.code || error.message)) || 'unknown')

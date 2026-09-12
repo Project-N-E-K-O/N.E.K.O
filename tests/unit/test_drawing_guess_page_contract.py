@@ -206,7 +206,6 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
         assert f"'{command}'" in script
     assert "client.commands.execute(command, payload || {}" in script
     assert "client.speech.speak({" in script
-    assert "client.speech.onState(handleSpeechPlaybackState)" in script
     assert "client.voice.onState(handleSdkVoiceState)" in script
     assert "client.voice.onTranscript(handleSdkVoiceTranscript)" in script
     assert "client.voice.onError(handleSdkVoiceError)" in script
@@ -823,7 +822,6 @@ def test_drawing_guess_static_route_contract():
     assert "failAiGuessTimeoutSettlement(readableRequestError(err))" in script
     assert "recentNekoMessages" not in script
     assert "client.speech.speak({" in script
-    assert "client.speech.onState(handleSpeechPlaybackState)" in script
     assert "roundFlowToken: state.roundFlowToken" in script
     assert "sessionId: state.sessionId" in script
     assert "routeInstanceId: sdkRouteInstanceId()" in script
