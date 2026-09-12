@@ -335,31 +335,34 @@ class Engine:
 
     async def vision_config(self):
         cfg = await asyncio.to_thread(self.cm.get_model_api_config, "vision")
-        if not cfg.get("api_key"):
+        if not cfg.get("api_key") and not cfg.get('is_custom'):
             raise RuntimeError("请先配置猫娘的视觉模型 API")
         return cfg
 
     async def llm(self, content, job):
-        from openai import AsyncOpenAI
+        from utils.llm_client import create_chat_llm_async
+        from utils.llm_client.anthropic_client import _is_anthropic_endpoint
         cfg = await self.vision_config()
-        options = {"response_format": {"type": "json_object"}}
-        if str(cfg["model"]).startswith("deepseek-"):
-            options["extra_body"] = {"thinking": {"type": "disabled"}}
+        options = {} if _is_anthropic_endpoint(cfg.get('base_url'), cfg.get('provider_type')) else {"response_format": {"type": "json_object"}}
         from main_logic.mini_game_sdk.structured_output import (
             run_isolated_structured_output, StructuredOutputContentError,
         )
         async def attempt(_number, isolation_id):
-            async with AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=120, max_retries=0) as client:
-                response = await client.chat.completions.create(
-                    model=cfg["model"], temperature=0.65,
-                    messages=[{"role":"system", "content":self.director_prompt},
+            client = await create_chat_llm_async(model=cfg['model'], api_key=cfg.get('api_key'),
+                base_url=cfg.get('base_url'), provider_type=cfg.get('provider_type'),
+                temperature=0.65, timeout=120, max_retries=0, max_completion_tokens=8192)
+            try:
+                response = await client.ainvoke(
+                    [{"role":"system", "content":self.director_prompt},
                         {"role":"user", "content":content}],
-                    max_tokens=8192, **options)
+                    **options)
                 record_usage(job, response, cfg["model"], job.get("stage", "Visual analysis"))
                 try:
-                    return json_object(response.choices[0].message.content or "")
+                    return json_object(response.content or "")
                 except (ValueError, TypeError, IndexError) as exc:
                     raise StructuredOutputContentError("invalid_timeline_json") from exc
+            finally:
+                await client.aclose()
         def validate(value):
             valid = isinstance(value, dict) and isinstance(value.get("events"), list)
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]

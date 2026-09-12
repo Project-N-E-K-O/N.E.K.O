@@ -392,6 +392,7 @@ failPlayback=false;
 await retryPlayback.elements.get('play').onclick();
 assert.match(retryPlayback.elements.get('status').textContent,/playing/);
 retryPlayback.handlers['runtime-inactive']();
+assert.equal(retryPlayback.elements.get('video').src,'/video','runtime loss restores the source for trusted retry');
 const nextSelection=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
 const nextRequest=nextSelection.game.media.request;
 nextSelection.game.media.request=async(action,payload)=>{

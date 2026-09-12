@@ -157,7 +157,7 @@ export async function run(game, character) {
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
   game.voice.onTranscript(() => media?.interrupt());
   game.voice.onState(state => {if(state.active || state.starting)media?.interrupt();});
-  game.events.on('runtime-inactive',()=>{playbackGeneration++;media?.dispose();media=null;$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
     if(nextQueue.busy)return;

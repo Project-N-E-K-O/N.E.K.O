@@ -1,4 +1,27 @@
 import pytest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('provider', ['openai', 'anthropic'])
+async def test_vision_uses_provider_factory_and_accepts_keyless_custom(tmp_path, monkeypatch, provider):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from main_logic.watch_together.engine import Engine
+    from utils import llm_client
+    response = SimpleNamespace(content='{"events":[]}', response_metadata={'token_usage': {'input_tokens': 10, 'output_tokens': 2}})
+    client = SimpleNamespace(ainvoke=AsyncMock(return_value=response), aclose=AsyncMock())
+    factory = AsyncMock(return_value=client)
+    monkeypatch.setattr(llm_client, 'create_chat_llm_async', factory)
+    instance = Engine(tmp_path, None, 'cat')
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: {'api_key': '', 'is_custom': True,
+        'model': 'local', 'base_url': 'http://localhost:8000', 'provider_type': provider})
+    job = {}
+    assert await instance.llm([], job) == {'events': []}
+    assert factory.call_args.kwargs['provider_type'] == provider
+    assert factory.call_args.kwargs['api_key'] == ''
+    assert ('response_format' in client.ainvoke.call_args.kwargs) is (provider == 'openai')
+    assert job['usage']['total_tokens'] == 12
+    client.aclose.assert_awaited_once()
 from main_logic.watch_together.engine import Engine
 from main_logic.watch_together.engine import subtitle_priority, dash_audio, media_binary
 

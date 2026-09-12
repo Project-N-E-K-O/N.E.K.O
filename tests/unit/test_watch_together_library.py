@@ -9,6 +9,29 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+def test_imported_metadata_is_bounded_and_warning_shapes_are_safe(tmp_path):
+    archive = source(tmp_path, 'metadata')
+    folder = archive / JOB
+    (folder / 'video.mp4').write_bytes(b'video')
+    data = {'status': 'ready', 'video': f'/media/{JOB}/video.mp4', 'events': [],
+            'title': 'x' * 100000, 'usage': 'x' * 100000, 'warnings': {}, 'warning_keys': 42}
+    (folder / 'timeline.json').write_text(json.dumps(data))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['status'] == 'ready' and len(row['title']) == 500 and row['usage'] is None
+    timeline = library.timeline(JOB, row['version'])
+    assert timeline['warnings'] == timeline['warning_keys'] == []
+
+
+def test_application_library_reuses_instance_per_root(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from main_logic.watch_together import library as module
+    from utils import config_manager
+    monkeypatch.setattr(config_manager, 'get_config_manager', lambda: SimpleNamespace(app_docs_dir=tmp_path))
+    assert module.application_library() is module.application_library()
+
+
 def test_reserved_resource_names_round_trip_through_urls(tmp_path):
     from urllib.parse import unquote, urlsplit
     archive = source(tmp_path, 'reserved')

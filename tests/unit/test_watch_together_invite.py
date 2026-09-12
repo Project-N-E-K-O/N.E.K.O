@@ -22,6 +22,13 @@ def test_unavailable_worker_cannot_invite_even_when_completion_supported(monkeyp
     assert not invites._watch_together_available(current)
 
 
+def test_keyless_custom_vision_can_invite(monkeypatch):
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    current = manager()
+    current._config_manager.get_model_api_config = lambda _: {'api_key': '', 'is_custom': True}
+    assert invites._watch_together_available(current)
+
+
 @pytest.mark.parametrize('options', [{'vision':False}, {'disabled':True}, {'supported':False}, {'key':''}, {}])
 def test_invitation_checks_vision_and_speech_without_synthesis(monkeypatch, options):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)

@@ -18,13 +18,25 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote
+from functools import lru_cache
+from threading import Lock
 
 JOB_ID = re.compile(r"[a-f0-9]{32}")
 
 
+_library_lock = Lock()
+
+
+@lru_cache(maxsize=8)
+def _library_for_root(root):
+    return Library(root)
+
+
 def application_library() -> "Library":
     from utils.config_manager import get_config_manager
-    return Library(Path(get_config_manager().app_docs_dir) / "watch_together")
+    root = (Path(get_config_manager().app_docs_dir) / "watch_together").resolve()
+    with _library_lock:
+        return _library_for_root(root)
 
 
 def digest(path: Path) -> str:
@@ -210,6 +222,13 @@ class Library:
                 return [remap(v, depth + 1) for v in value]
             return value
         timeline = {**remap(data), "id": job, "version": version}
+        title = timeline.get('title')
+        timeline['title'] = title[:500] if isinstance(title, str) else job
+        usage = timeline.get('usage')
+        timeline['usage'] = usage if isinstance(usage, dict) and len(json.dumps(usage, ensure_ascii=True)) <= 32768 else None
+        for key in ('warnings', 'warning_keys'):
+            values = timeline.get(key)
+            timeline[key] = [value[:500] for value in values[:32] if isinstance(value, str)] if isinstance(values, list) else []
         if timeline.get('status') == 'ready':
             events = timeline.get('events', [])
             if not isinstance(events, list) or any(not isinstance(cue, dict) for cue in events):
