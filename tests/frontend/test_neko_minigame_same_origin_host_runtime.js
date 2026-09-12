@@ -1201,6 +1201,26 @@ async function main() {
   // advertises it, but this method enumerates _post options explicitly (so
   // operation/keepalive/headers cannot be overridden) and used to drop it.
   const endOptionCalls = [];
+  const mediaCalls = [];
+  const realMediaRequest = host._request;
+  host._request = async (url, init, options) => {
+    mediaCalls.push({url, options});
+    return {ok:true, json:async () => ({})};
+  };
+  try {
+    await host.requestMedia('history');
+    await host.requestMedia('load', {job:'job', version:'version'});
+    assert(mediaCalls[0].options.timeoutMs >= 50 * 257 * 10000,
+      'cold history budget does not cover the allowed probe workload');
+    assert(mediaCalls[1].options.timeoutMs >= 257 * 10000,
+      'cold timeline load retains the ordinary API timeout');
+    const controller = new AbortController();
+    await host.requestMedia('history', {}, {signal:controller.signal, timeoutMs:1234});
+    assert(mediaCalls[2].options.signal === controller.signal && mediaCalls[2].options.timeoutMs === 1234,
+      'history must preserve explicit cancellation and timeout options');
+  } finally {
+    host._request = realMediaRequest;
+  }
   const realPost = host._post.bind(host);
   host._post = (url, body, options) => {
     endOptionCalls.push({ url: String(url), timeoutMs: options?.timeoutMs });

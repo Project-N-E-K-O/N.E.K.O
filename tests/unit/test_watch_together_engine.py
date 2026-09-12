@@ -2,6 +2,21 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('model', [None, '', '   ', 123])
+async def test_missing_vision_model_blocks_preflight_and_invitation(tmp_path, monkeypatch, model):
+    from types import SimpleNamespace
+    from main_logic.watch_together import engine
+    from main_logic.proactive_chat import mini_game_invite
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    config = SimpleNamespace(get_model_api_config=lambda _: {'api_key': 'key', 'model': model})
+    instance = engine.Engine(tmp_path, None, 'cat')
+    instance._cm = config
+    with pytest.raises(RuntimeError):
+        await instance.vision_config()
+    assert not mini_game_invite._watch_together_available(SimpleNamespace(_config_manager=config))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('provider', ['openai', 'anthropic'])
 async def test_vision_uses_provider_factory_and_accepts_keyless_custom(tmp_path, monkeypatch, provider):
     from types import SimpleNamespace

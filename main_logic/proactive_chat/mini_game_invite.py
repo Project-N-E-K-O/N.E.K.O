@@ -359,7 +359,8 @@ def _watch_together_available(manager) -> bool:
         if manager is None:
             return False
         vision = manager._config_manager.get_model_api_config('vision')
-        if not vision.get('api_key') and not vision.get('is_custom'):
+        if (not isinstance(vision.get('model'), str) or not vision['model'].strip()
+                or (not vision.get('api_key') and not vision.get('is_custom'))):
             return False
         worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
         from main_logic.tts_client._infra import configured_tts_unavailable_worker

@@ -252,6 +252,14 @@ class Library:
                 return [remap(v, depth + 1) for v in value]
             return value
         timeline = {**remap(data), "id": job, "version": version}
+        bvid = timeline.get('bvid')
+        timeline['bvid'] = bvid if isinstance(bvid, str) and re.fullmatch(r'BV[0-9A-Za-z]{10}', bvid) else None
+        cover = timeline.get('cover')
+        cover_name = unquote(cover[len(prefix):]) if isinstance(cover, str) and cover.startswith(prefix) else None
+        cover_entry = self.manifest(job, version).get(cover_name)
+        if (cover_entry is None or Path(cover_name).suffix.lower() not in {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                or not (self.objects / cover_entry['sha256']).is_file()):
+            timeline['cover'] = None
         if invalid_constants:
             timeline['status'] = 'incomplete'
         title = timeline.get('title')

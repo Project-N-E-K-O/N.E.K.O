@@ -335,7 +335,8 @@ class Engine:
 
     async def vision_config(self):
         cfg = await asyncio.to_thread(self.cm.get_model_api_config, "vision")
-        if not cfg.get("api_key") and not cfg.get('is_custom'):
+        if (not isinstance(cfg.get('model'), str) or not cfg['model'].strip()
+                or (not cfg.get("api_key") and not cfg.get('is_custom'))):
             raise RuntimeError("请先配置猫娘的视觉模型 API")
         return cfg
 

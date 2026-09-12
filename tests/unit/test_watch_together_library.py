@@ -9,6 +9,25 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('bvid', [123, {}, 'x' * 33, 'BV1GJ411x7h7'])
+@pytest.mark.parametrize('cover', ['https://tracker.test/pixel', '/media/' + JOB + '/cover.png', '/media/' + JOB + '/missing.png'])
+def test_imported_metadata_cannot_poison_discovery_or_fetch_remote_cover(tmp_path, bvid, cover):
+    archive = source(tmp_path, 'metadata-boundary')
+    folder = archive / JOB
+    (folder / 'cover.png').write_bytes(b'image')
+    (folder / 'video.mp4').write_bytes(b'video')
+    (folder / 'timeline.json').write_text(json.dumps({'status': 'ready', 'bvid': bvid,
+        'cover': cover, 'video': f'/media/{JOB}/video.mp4', 'events': []}))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    loaded = library.timeline(JOB, row['version'])
+    assert loaded['bvid'] == ('BV1GJ411x7h7' if bvid == 'BV1GJ411x7h7' else None)
+    assert bool(loaded['cover']) is cover.endswith('/cover.png')
+    if loaded['cover']:
+        assert loaded['cover'].startswith('/api/watch-together/media/')
+
+
 @pytest.fixture(autouse=True)
 def valid_media_probe(monkeypatch):
     # These archive fixtures use placeholder bytes; probe behavior has dedicated tests.

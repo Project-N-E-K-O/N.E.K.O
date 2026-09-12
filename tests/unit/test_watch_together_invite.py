@@ -7,7 +7,7 @@ from main_logic.watch_together import engine
 
 def manager(vision=True, disabled=False, supported=True, key='tts-key', provider='provider', base_url='http://127.0.0.1:9881'):
     return SimpleNamespace(
-        _config_manager=SimpleNamespace(get_model_api_config=lambda kind: {'api_key': 'vision-key' if vision else ''}
+        _config_manager=SimpleNamespace(get_model_api_config=lambda kind: {'api_key': 'vision-key' if vision else '', 'model': 'vision-model'}
                                         if kind == 'vision' else {'base_url': base_url}),
         _resolve_tts_worker_spec=lambda: (None, key, '', provider, disabled, {}),
         _tts_worker_supports_completion=lambda *args: supported,
@@ -25,7 +25,7 @@ def test_unavailable_worker_cannot_invite_even_when_completion_supported(monkeyp
 def test_keyless_custom_vision_can_invite(monkeypatch):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
     current = manager()
-    current._config_manager.get_model_api_config = lambda _: {'api_key': '', 'is_custom': True}
+    current._config_manager.get_model_api_config = lambda _: {'api_key': '', 'is_custom': True, 'model': 'local'}
     assert invites._watch_together_available(current)
 
 
