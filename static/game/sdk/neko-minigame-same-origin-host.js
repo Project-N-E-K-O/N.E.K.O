@@ -1425,7 +1425,7 @@
         if (!Array.isArray(value.fallbackModels) || value.fallbackModels.length > 4) {
           throw this._hostError('invalid_response', 'Invalid fallback models');
         }
-        result.fallbackModels = Object.freeze(value.fallbackModels.map(model => {
+        result.fallbackModels = Object.freeze(Array.from(value.fallbackModels, model => {
           if (!model || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
             || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048) {
             throw this._hostError('invalid_response', 'Invalid fallback model');

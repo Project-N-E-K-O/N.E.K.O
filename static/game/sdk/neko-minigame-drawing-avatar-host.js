@@ -418,9 +418,10 @@
         configured.paths = Object.freeze({ ...configured.paths, mmd: path });
         if (configured.type === 'mmd') configured.path = path;
       }
-      if (configured.type === 'live2d') {
-        configured.path = await resolveLive2DPath(requested, configured.path, requestOptions);
-        configured.paths = Object.freeze({ ...configured.paths, live2d: configured.path });
+      if (configured.type === 'live2d' || configured.paths.live2d) {
+        const path = await resolveLive2DPath(requested, configured.paths.live2d, requestOptions);
+        configured.paths = Object.freeze({ ...configured.paths, live2d: path });
+        if (configured.type === 'live2d') configured.path = path;
       }
       const descriptor = Object.freeze({
         ...configured,

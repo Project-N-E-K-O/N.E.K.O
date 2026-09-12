@@ -425,10 +425,18 @@ async function characterMetadata() {
         { languagePreference: null }, { fallbackModels: Array(5).fill(descriptor.model) },
         { fallbackModels: [{ type: 'unknown', path: '/model' }] },
         { fallbackModels: [{ type: 'vrm', path: 'x'.repeat(2049) }] },
+        { fallbackModels: new Array(1) },
+        { fallbackModels: [, descriptor.model] },
+        { fallbackModels: [descriptor.model, ,] },
+        { fallbackModels: [descriptor.model, , descriptor.model] },
       ]) {
         value = { ...descriptor, ...extra };
         await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
+        if (!customTransport) await assert.rejects(host.getAvatarCharacter(), {code:'invalid_response'});
       }
+      value = descriptor;
+      assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor,
+        'invalid metadata retained a query slot');
     } finally { game.dispose(); }
     assert.equal(env.timers.size, 0);
   }

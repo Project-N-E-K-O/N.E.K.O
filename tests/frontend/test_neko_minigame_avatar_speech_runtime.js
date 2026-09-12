@@ -74,6 +74,7 @@ async function main() {
   let manualBlocker = null;
   const calls = new Map();
   const manual = new Map();
+  const manualCalls = [];
   const transport = {
     logger: { log() {}, info() {}, warn() {}, error() {}, reset() {}, flush() {}, enable() {}, enableAfterRouteStart() {} },
     connectGame({ manifest }) {
@@ -114,9 +115,12 @@ async function main() {
           manual.set(config.slot, false); return 'model loaded';
         },
         setSpeaking(active) {
+          manualCalls.push([config.slot, active]);
           if (failManual) throw new Error('manual rejected');
           if (rejectManual) return false;
-          if (manualBlocker) return manualBlocker;
+          if (manualBlocker) return manualBlocker.then(() => {
+            manual.set(config.slot, active); return active;
+          });
           manual.set(config.slot, active); return true;
         },
         setSpeechPlayback(frame) {
@@ -289,6 +293,32 @@ async function main() {
     assert.equal(await Promise.race([disposedWait, Promise.resolve('unsettled')]), false);
     blocker = null;
     const restoring = await mount('restoring', 'Neko'); await flush();
+    await restoring.setSpeaking(true);
+    for (const action of ['restore', 'pause', 'end', 'dispose']) {
+      const lateStop = await mount(`late-stop-${action}`, 'Neko'); await flush();
+      await lateStop.setSpeaking(true);
+      let finishStop;
+      manualBlocker = new Promise(resolve => { finishStop = resolve; });
+      const stopping = lateStop.setSpeaking(false).catch(error => error); await flush();
+      for (const [id, callback] of [...timers]) { timers.delete(id); callback(); }
+      await flush(); assert.equal((await stopping).code, 'timeout');
+      await assert.rejects(lateStop.setSpeaking(false), {code:'busy'});
+      if (action === 'end') { await game.runtime.end(); await flush(); }
+      if (action === 'dispose') { lateStop.dispose(); await flush(); }
+      if (action === 'pause') { await lateStop.pause(); await flush(); }
+      manualBlocker = null; finishStop(); await flush();
+      assert.equal(manual.get(`late-stop-${action}`), action === 'restore',
+        `${action}: late stop did not reconcile current manual ownership`);
+      if (action === 'pause') {
+        await lateStop.resume(); await flush();
+        assert.equal(manual.get(`late-stop-${action}`), true, 'paused manual intent did not resume');
+      }
+      assert.deepEqual(manualCalls.filter(([slot]) => slot === `late-stop-${action}`).map(([,active]) => active),
+        action === 'restore' || action === 'pause' ? [true, false, true] : [true, false],
+        `${action}: late stop restarted manual motion more than once`);
+      lateStop.dispose(); await flush();
+      if (action === 'end') { game.runtime.reset(); await game.runtime.start(); await flush(); }
+    }
     await restoring.setSpeaking(true);
     let releaseManual;
     manualBlocker = new Promise(resolve => { releaseManual = resolve; });
