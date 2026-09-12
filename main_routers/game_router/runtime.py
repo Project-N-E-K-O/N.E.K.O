@@ -4888,23 +4888,24 @@ async def game_character(game_type: str, request: Request = None):
                     logger.warning("🎮 Live2D 模型路径解析失败: %s", type(exc).__name__)
 
             mmd_info = avatar.get('mmd', {})
-            if isinstance(mmd_info, dict):
-                # Match the trusted provider's legacy character projection.
-                raw_mmd = neko_data.get('mmd')
-                if not isinstance(raw_mmd, str) or not raw_mmd.strip():
-                    raw_mmd = mmd_info.get('model_path', '')
-                effective_type = neko_data.get('model_type') or model_type
-                effective_subtype = neko_data.get('live3d_sub_type') or live3d_sub_type
-                if not raw_mmd and (effective_type == 'mmd' or (
-                    effective_type == 'live3d' and effective_subtype == 'mmd'
-                )):
-                    raw_mmd = neko_data.get('model_path', '')
-                if isinstance(raw_mmd, str) and raw_mmd.strip() and len(raw_mmd) <= 2048:
-                    from ..config_router.page_config import _resolve_mmd_path
+            if not isinstance(mmd_info, dict):
+                mmd_info = {}
+            # Match the trusted provider's legacy character projection.
+            raw_mmd = neko_data.get('mmd')
+            if not isinstance(raw_mmd, str) or not raw_mmd.strip():
+                raw_mmd = mmd_info.get('model_path', '')
+            effective_type = neko_data.get('model_type') or model_type
+            effective_subtype = neko_data.get('live3d_sub_type') or live3d_sub_type
+            if not raw_mmd and (effective_type == 'mmd' or (
+                effective_type == 'live3d' and effective_subtype == 'mmd'
+            )):
+                raw_mmd = neko_data.get('model_path', '')
+            if isinstance(raw_mmd, str) and raw_mmd.strip() and len(raw_mmd) <= 2048:
+                from ..config_router.page_config import _resolve_mmd_path
 
-                    mmd_path = await asyncio.to_thread(
-                        _resolve_mmd_path, raw_mmd.strip().replace('\\', '/'), config_manager, current_name,
-                    )
+                mmd_path = await asyncio.to_thread(
+                    _resolve_mmd_path, raw_mmd.strip().replace('\\', '/'), config_manager, current_name,
+                )
 
             vrm_info = avatar.get('vrm', {})
             if isinstance(vrm_info, dict):

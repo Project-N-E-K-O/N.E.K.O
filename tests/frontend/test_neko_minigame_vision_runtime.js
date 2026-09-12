@@ -124,12 +124,45 @@ async function captureTests() {
   await assert.rejects(helper.capture(rectangle, { windowImpl: w }), { code: 'capture_unavailable' });
 }
 
+async function optionalVisionBootstrapTests() {
+  for (const mode of ['omitted', 'optional', 'required']) {
+    const {w} = environment();
+    w.fetch = async () => new Response('{}');
+    const launch = {remove() {}, textContent:JSON.stringify({registrations:{'example-game':{
+      gameId:'example-game', version:'1', mode:'registered', allowedCapabilities:['runtime','logging','vision'],
+    }}})};
+    w.document.getElementById = () => launch;
+    let removed = 0;
+    w.document.createElement = () => ({remove() { removed++; }});
+    w.document.head = {appendChild(script) {
+      if (script.src.endsWith('vision-host.js')) { script.onerror(); return; }
+      w.document.currentScript = script;
+      vm.runInThisContext(fs.readFileSync(path.join(sdk, path.basename(script.src)), 'utf8'));
+      w.document.currentScript = null;
+      script.onload();
+    }};
+    global.window = w;
+    vm.runInThisContext(fs.readFileSync(path.join(sdk, 'neko-minigame-same-origin-bootstrap.js'), 'utf8'));
+    await w.nekoMiniGameSameOriginHostReady;
+    assert.equal(removed, 2, 'failed optional helper and adapter scripts must be detached');
+    vm.runInThisContext(fs.readFileSync(path.join(sdk, 'neko-minigame-sdk.js'), 'utf8'));
+    const transport = w.createNekoMiniGameSameOriginHost({gameType:'example-game', windowImpl:w});
+    const connecting = w.NekoMiniGame.connect({id:'example-game',version:'1',
+      requiredCapabilities:['runtime','logging', ...(mode === 'required' ? ['vision'] : [])],
+      optionalCapabilities:mode === 'optional' ? ['vision'] : [],
+    }, {transport, windowImpl:w, documentImpl:w.document});
+    if (mode === 'required') await assert.rejects(connecting, {code:'capability_unavailable'});
+    else (await connecting).dispose();
+  }
+}
+
 async function sdkTests() {
   const env = environment(); const { w } = env; const posts = [];
   w.Blob=Blob; w.btoa=btoa;
-  const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
+  const response = (data) => new Response(JSON.stringify(data), {headers:{'content-type':'application/json'}});
   let bodyWait = null;
   let visionFailure = null;
+  let nextVisionResponse = null;
   w.fetch = async (url, init = {}) => {
     if (String(url).endsWith('/cors-denied.png')) throw new TypeError('CORS denied');
     if (String(url).includes('page_config')) return response({ autostart_csrf_token: 'test-token' });
@@ -138,10 +171,17 @@ async function sdkTests() {
       game_route_active: true, session_id: body.session_id, lanlan_name: 'Example',
     } });
     if (String(url).endsWith('/vision/analyze')) {
+      if (nextVisionResponse) { const value = nextVisionResponse; nextVisionResponse = null; return value; }
       if (visionFailure) return response({ ok: false, reason: visionFailure });
       posts.push(body);
       assert.ok(env.stops > 0, 'sharing must stop before model request');
-      return { ...response({ ok: true, text: 'A blue square.' }), json: async () => bodyWait ? bodyWait.promise : { ok: true, text: 'A blue square.' } };
+      if (bodyWait) return new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(await bodyWait.promise)));
+          controller.close();
+        },
+      }));
+      return response({ ok: true, text: 'A blue square.' });
     }
     return response({ ok: true, active: false });
   };
@@ -202,6 +242,21 @@ async function sdkTests() {
     ]}), error => error.code === code && !JSON.stringify(error).includes('private backend detail'));
   }
   visionFailure = null;
+  for (const status of [200, 500]) {
+    let cancelled = false;
+    let chunks = 0;
+    nextVisionResponse = new Response(new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        if (++chunks === 6) controller.close();
+      },
+      cancel() { cancelled = true; },
+    }), {status});
+    await assert.rejects(game.vision.analyze({text:'Observe', attachments:[
+      {type:'image',source:new Uint8Array([1,2,3]),mimeType:'image/png'},
+    ]}), {code:'invalid_response'});
+    assert.ok(cancelled && chunks < 6, 'oversized vision body was fully buffered');
+  }
   assert.deepEqual(posts[1].attachments.map(item=>item.label),['before','after']);
   for(const bad of [{text:'Example',attachments:[]},
     {text:'Example',attachments:[{type:'audio',source:'anything'}]},
@@ -285,5 +340,5 @@ async function attachmentTests() {
   assert.equal((await helper.normalizeAttachments([{type:'image',source:data}],options)).length,1);
 }
 
-(async () => { await captureTests(); await attachmentTests(); await sdkTests(); console.log('mini-game vision runtime tests passed'); })()
+(async () => { await captureTests(); await attachmentTests(); await optionalVisionBootstrapTests(); await sdkTests(); console.log('mini-game vision runtime tests passed'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });

@@ -1195,6 +1195,7 @@ async function main() {
   }
 
   const SCALAR_COMMAND_RESPONSE_CASES = [
+    ['object', { type: 'object' }, {}],
     ['string', { type: 'string', maxLength: 32 }, 'ready'],
     ['number', { type: 'number' }, 42.5],
     ['boolean', { type: 'boolean' }, false],
@@ -1227,8 +1228,20 @@ async function main() {
       `a ${shape} command response schema stopped connecting`);
     await scalarCommandResponseGame.runtime.start();
     const scalarCommandResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
-    assert(scalarCommandResponse.ok === true && Object.is(scalarCommandResponse.data, responseValue),
+    assert(scalarCommandResponse.ok === true && (shape === 'object'
+      ? JSON.stringify(scalarCommandResponse.data) === '{}' : Object.is(scalarCommandResponse.data, responseValue)),
       `a ${shape} JSON command response was replaced before contract validation`);
+
+    if (shape === 'object') {
+      for (const body of ['', '{invalid']) {
+        scalarCommandTransport.executeGameCommand = async () => new Response(body);
+        const error = await scalarCommandResponseGame.commands.execute('round:probe', {}).then(() => null, e => e);
+        assert(error?.code === 'invalid_response', 'malformed successful command JSON was accepted');
+        scalarCommandTransport.executeGameCommand = async () => new Response(body, {status:503});
+        const failed = await scalarCommandResponseGame.commands.execute('round:probe', {});
+        assert(failed.ok === false && failed.status === 503, 'malformed HTTP failure lost its status');
+      }
+    }
 
     if (shape === 'string') {
       scalarCommandTransport.executeGameCommand = async () => 'direct-ready';
@@ -1686,6 +1699,7 @@ async function main() {
   // contract that declares either would validate one value in the SDK and send
   // a stripped or replaced value to the backend.
   const hostReservedCommandFields = [
+    '_csrf_token',
     'session_id', 'sessionId', 'game_type', 'gameType',
     'lanlan_name', 'lanlanName', 'character_name', 'characterName',
     'window_lanlan_name', 'windowLanlanName',
