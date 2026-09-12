@@ -64,3 +64,22 @@ async def test_takeover_while_proactive_tts_waits_for_lock_drops_chunk():
     manager._takeover_active = True
     lock.release()
     assert await pending is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [RuntimeError, asyncio.CancelledError])
+async def test_failed_takeover_rolls_back_activation_before_releasing_route_lock(failure):
+    manager = SimpleNamespace(
+        _takeover_active=True, _takeover_input_dispatcher=object(),
+        interrupt_ordinary_speech_for_takeover=AsyncMock(side_effect=failure()),
+    )
+    state = dict.fromkeys([
+        'game_route_active', 'game_external_voice_route_active',
+        'game_external_text_route_active', 'heartbeat_enabled',
+    ], True)
+    with pytest.raises(failure):
+        await runtime._start_watch_speech_takeover(state, manager)
+    assert manager._takeover_active is False
+    assert manager._takeover_input_dispatcher is None
+    assert not any(state[key] for key in state if key != 'exit_reason')
+    assert state['exit_reason'] == 'speech_takeover_failed'

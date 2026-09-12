@@ -3,7 +3,9 @@
 The built-in `/watch_together` scene uses the mini-game SDK exclusively. The
 shared React chat surfaces expose a manual entry; the existing proactive
 mini-game invitation policy also offers this scene. Accepting an invitation
-opens the scene. Only pressing Play starts audible playback.
+opens the scene. In manual mode, only pressing Play starts audible playback.
+Enabling Automatic watching may start audible playback once a selected or
+discovered video is ready, subject to browser autoplay restrictions.
 The manual button is in the expanded chat title bar. Compact mode retains its
 existing seven-slot tool wheel and tutorial indices; use the direct scene URL
 or an accepted invitation while remaining in that layout.

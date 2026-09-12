@@ -14,8 +14,6 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
         const found=await game.media.request('discover',{topic,exclude});
         if(disposed || game.disposed || token!==generation)return;
         if(!found.video){publish(token,{status:'empty',busy:true});return;}
-        // Do not get stuck repeatedly paying to prepare a failing candidate.
-        changed({candidate:found.video.bvid});
         const title=found.video.title;
         publish(token,{status:'preparing',title,busy:true});
         const job=await game.media.request('prepare',{url:found.video.url,source:'discovery',lanlan_name:character,render_language});
@@ -24,7 +22,11 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
         // This keeps the single preparation slot occupied until the backend frees it.
         while(!disposed && !game.disposed) {
           const state=await game.media.request('preparation',{job:job.id});
-          if(['error','cancelled'].includes(state.status))throw Error(state.stage_key || 'prepareFailed');
+          if(['error','cancelled'].includes(state.status)) {
+            // A completed attempt is excluded; a failed submission can retry.
+            changed({candidate:found.video.bvid});
+            throw Error(state.stage_key || 'prepareFailed');
+          }
           publish(token,{status:'preparing',title,stage:state.stage_key,progress:state.progress,busy:true});
           if(state.status==='ready') {
             if(!disposed && !game.disposed)changed({candidate:found.video.bvid});

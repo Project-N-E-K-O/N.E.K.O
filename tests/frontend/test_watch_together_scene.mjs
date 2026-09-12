@@ -452,15 +452,16 @@ assert.equal(endedRoute,1,'late runtime start is released after stop');
 assert.equal(delayedAutomatic.calls.some(c=>c.action==='watch'),false,'late start cannot begin playback');
 console.log('watch-together: automatic continuation keeps takeover, stop releases late startup');
 
-const emptyAutomatic=await fixture(false,false,null,()=>({video:{bvid:'first',url:'first',title:'First'}}));
+let discovered=0,preparedJob='';const automaticLoadedJobs=[];
+const emptyAutomatic=await fixture(false,false,null,()=>{const id=`candidate-${++discovered}`;return {video:{bvid:id,url:id,title:id}};});
 const emptyRequest=emptyAutomatic.game.media.request;
 let autoLoads=0,autoPlays=0;
 emptyAutomatic.game.media.mount=async options=>{emptyAutomatic.emit=options.onEvent;return {play:async()=>{autoPlays++;emptyAutomatic.elements.get('video').ended=false;},dispose(){}};};
 emptyAutomatic.game.media.request=async(action,payload)=>{
-  if(action==='prepare')return {id:'auto-job'};
+  if(action==='prepare'){preparedJob=payload.url;return {id:preparedJob};}
   if(action==='preparation')return {status:'ready'};
-  if(action==='history')return {analyses:[{job:'auto-job',version:'v',status:'ready'}]};
-  if(action==='load')autoLoads++;
+  if(action==='history')return {analyses:[{job:preparedJob,version:'v',status:'ready'}]};
+  if(action==='load'){autoLoads++;automaticLoadedJobs.push(payload.job);}
   return emptyRequest(action,payload);
 };
 emptyAutomatic.elements.get('automatic-enabled').checked=true;emptyAutomatic.elements.get('automatic-enabled').onchange();
@@ -469,6 +470,7 @@ assert.equal(autoLoads,1);assert.equal(autoPlays,1,'automatic mode discovers and
 emptyAutomatic.elements.get('video').ended=true;emptyAutomatic.emit({type:'ended'});
 await new Promise(resolve=>setTimeout(resolve,20));
 assert.equal(autoLoads,2,'first completion must load another item instead of replaying the first');
+assert.deepEqual(automaticLoadedJobs,['candidate-1','candidate-2']);
 await emptyAutomatic.elements.get('watch-stop').onclick();
 
 // A failed current item is skipped, even if it failed before starting prefetch.

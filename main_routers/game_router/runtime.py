@@ -1872,6 +1872,25 @@ async def _finalize_superseded_route_if_current(
     )
 
 
+async def _start_watch_speech_takeover(state: dict, manager) -> None:
+    """Caller holds the route/supersede locks; no host resources are started yet."""
+    try:
+        await manager.interrupt_ordinary_speech_for_takeover()
+    except (Exception, asyncio.CancelledError) as exc:
+        # Roll back synchronously before releasing either lock. Do not launch a
+        # postgame task which could later unmute a replacement route, and do not
+        # report successful startup when ordinary audio could still be playing.
+        state['game_route_active'] = False
+        state['game_external_voice_route_active'] = False
+        state['game_external_text_route_active'] = False
+        state['heartbeat_enabled'] = False
+        state['exit_reason'] = 'speech_takeover_failed'
+        manager._takeover_active = False
+        manager._takeover_input_dispatcher = None
+        logger.warning('watch-together speech takeover failed: error_type=%s', type(exc).__name__)
+        raise
+
+
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
     """Declare that the game window is open and main external inputs are hijacked."""
@@ -2052,7 +2071,7 @@ async def game_route_start(game_type: str, request: Request):
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
                 if game_type == "watch-together":
-                    await mgr.interrupt_ordinary_speech_for_takeover()
+                    await _start_watch_speech_takeover(state, mgr)
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )

@@ -53,6 +53,13 @@ await pendingWork;
 assert.deepEqual(invalidatedUpdates.find(s=>s.history)?.history.analyses,[row]);
 assert.equal(invalidatedUpdates.some(s=>s.row || s.status==='ready'),false,'stale result updates history only');
 console.log('next-video queue: invalidated preparation refreshes history without changing next selection');
+const submissionStates=[];
+const submissionFailure=createNextVideoQueue({media:{async request(action){
+  if(action==='discover')return {video:{bvid:'temporary',url:'video'}};
+  throw Error('temporary prepare submission failure');
+}}},state=>submissionStates.push(state));
+await submissionFailure.start({topic:'cats'});
+assert.equal(submissionStates.some(state=>state.candidate),false,'a submission failure must not exclude an unattempted video');
 for(const failure of ['error','cancelled']) {
   const states=[];
   const failing={media:{async request(action){
