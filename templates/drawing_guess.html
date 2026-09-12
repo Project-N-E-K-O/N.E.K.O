@@ -1476,13 +1476,8 @@
       pointer-events: none;
     }
 
-    .dg-model-stage[data-model-kind="vrm"] #vrm-container,
-    .dg-model-stage[data-model-kind="mmd"] #mmd-container,
-    .dg-model-stage[data-model-kind="pngtuber"] #pngtuber-container {
-      transform: translate(var(--dg-model-offset-x, 0), var(--dg-model-offset-y, 0)) scale(var(--dg-model-scale, 1));
-      transform-origin: center center;
-      transition: transform 160ms ease;
-    }
+    /* SDK renderers apply the view inside their viewport. A second CSS
+       transform would double the portrait zoom and crop off the head. */
 
     .dg-pngtuber-renderer {
       overflow: hidden;

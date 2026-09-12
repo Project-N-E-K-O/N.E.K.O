@@ -27,7 +27,8 @@
       request: {
         type: 'object',
         properties: Object.assign({
-          client_round_token: { type: 'integer', minimum: 0 }
+          client_round_token: { type: 'integer', minimum: 0 },
+          render_language: { type: 'string', minLength: 1, maxLength: 32 }
         }, extraProperties || {}),
         required: ['client_round_token'].concat(requiredProperties || []),
         additionalProperties: false
@@ -213,7 +214,7 @@
     modelKind: 'fallback',
     modelLoadState: 'idle',
     modelView: {
-      scale: 100,
+      scale: 260,
       x: 0,
       y: 0
     },
@@ -366,7 +367,9 @@
   };
 
   var MODEL_VIEW_DEFAULTS = {
-    scale: 100,
+    // Fill the panel with a waist-up portrait, leaving the lower body outside
+    // the viewport. The SDK keeps the head aligned to the padded top edge.
+    scale: 260,
     x: 0,
     y: 0
   };
@@ -1491,6 +1494,7 @@
 
   function routePayload(extra) {
     return Object.assign({
+      render_language: currentLanguage(),
       lanlan_name: state.lanlanName,
       window_lanlan_name: state.windowLanlanName || state.lanlanName,
       source: 'drawing_guess',
@@ -1909,6 +1913,8 @@
 
   function roundCommandPayload(extra) {
     return Object.assign({
+      // UI language is a fallback, not an explicit conversation preference.
+      render_language: currentLanguage(),
       client_round_token: state.activeRoundToken != null ? state.activeRoundToken : state.roundFlowToken
     }, extra || {});
   }
@@ -2096,7 +2102,7 @@
       ellipse: ['cx', 'cy', 'rx', 'ry'],
       path: ['d']
     }[type];
-    var allowedKeys = ['type', 'stroke', 'fill', 'stroke_width', 'line_cap', 'line_join'].concat(geometryKeys);
+    var allowedKeys = ['type', 'stroke', 'fill', 'stroke_width', 'line_cap', 'line_join', 'opacity'].concat(geometryKeys);
     if (Object.keys(value).some(function (key) { return allowedKeys.indexOf(key) < 0; })) return null;
     if (value.stroke != null && !isAiDrawingPlanColor(value.stroke)) return null;
     if (value.fill != null && !isAiDrawingPlanColor(value.fill)) return null;
@@ -2109,6 +2115,8 @@
     if (!aiDrawingPlanHasPaint(stroke) && !aiDrawingPlanHasPaint(fill)) return null;
     var strokeWidth = aiDrawingPlanNumber(value.stroke_width == null ? 4 : value.stroke_width, 0.5, 32);
     if (strokeWidth == null) return null;
+    var opacity = aiDrawingPlanNumber(value.opacity === undefined ? 1 : value.opacity, 0.001, 1);
+    if (opacity == null) return null;
     var rawLineCap = String(value.line_cap == null ? 'round' : value.line_cap).trim().toLowerCase();
     var rawLineJoin = String(value.line_join == null ? 'round' : value.line_join).trim().toLowerCase();
     if (['butt', 'round', 'square'].indexOf(rawLineCap) < 0) return null;
@@ -2121,6 +2129,7 @@
       stroke_width: strokeWidth,
       line_cap: rawLineCap,
       line_join: rawLineJoin,
+      opacity: opacity,
       point_count: 0
     };
 
@@ -2190,7 +2199,9 @@
     var width = value.width;
     var height = value.height;
     if (version !== 1 || width !== AI_DRAW_PLAN_WIDTH || height !== AI_DRAW_PLAN_HEIGHT) return null;
-    if (String(value.background || '').trim().toLowerCase() !== '#fffdfa') return null;
+    if (typeof value.background !== 'string') return null;
+    var background = aiDrawingPlanColor(value.background, '', false);
+    if (!background) return null;
     if (!Array.isArray(value.elements) || !value.elements.length || value.elements.length > AI_DRAW_PLAN_MAX_ELEMENTS) return null;
     var totalPoints = 0;
     var elements = [];
@@ -2210,13 +2221,14 @@
       version: 1,
       width: width,
       height: height,
-      background: '#fffdfa',
+      background: background,
       elements: elements
     };
   }
 
   function paintAiDrawingPlanBackground(context, plan) {
     context.save();
+    context.globalAlpha = 1;
     if (typeof context.setTransform === 'function') context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, plan.width, plan.height);
     context.fillStyle = plan.background;
@@ -2245,6 +2257,7 @@
 
   function paintAiDrawingPlanElement(context, element) {
     context.save();
+    context.globalAlpha = element.opacity;
     context.beginPath();
     context.lineWidth = element.stroke_width;
     context.lineCap = element.line_cap;
@@ -2354,6 +2367,7 @@
         node.setAttribute('stroke-width', aiDrawingPlanNumberText(element.stroke_width));
         node.setAttribute('stroke-linecap', element.line_cap);
         node.setAttribute('stroke-linejoin', element.line_join);
+        node.setAttribute('opacity', String(element.opacity));
         svg.appendChild(node);
       });
       try {
@@ -3336,7 +3350,7 @@
     return executeRoundCommand(
       ROUND_COMMANDS.TIMEOUT,
       roundCommandPayload({ timeout_kind: 'user_guessing' }),
-      10000
+      30000
     ).then(function (res) {
       if (!isGuessTimeoutFlowActive(flowToken)) return;
       if (!res || !res.ok) throw new Error((res && res.reason) || 'timeout_failed');
@@ -3950,9 +3964,9 @@
         model: descriptor.model,
         viewport: { mode: 'container' },
         fit: {
-          mode: 'contain',
-          align: 'center',
-          padding: 0,
+          mode: 'height',
+          align: 'top-center',
+          padding: 12,
           scaleMultiplier: 1
         },
         resize: { mode: 'container' }

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -186,7 +187,7 @@ def test_drawing_guess_system_prompts_are_owned_by_prompt_module():
     markers = (
         "You are drawing as the current character for a companion mini-game.",
         "You are a strict visual recognizability reviewer for a drawing-guess mini-game.",
-        "The plan must use version 1, width 800, height 600",
+        "The plan must use version 1, width 800, and height 600",
         "Temporary mini-game premise:",
         "You classify one user message inside a companion drawing-guess game.",
         "Temporary mini-game task:",
@@ -205,6 +206,40 @@ def test_drawing_guess_review_prompt_keeps_free_endpoint_watermark():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("locale", dgr.SUPPORTED_LOCALES)
+@pytest.mark.parametrize("stage", ["plan", "revision", "svg"])
+@pytest.mark.parametrize(
+    "persona",
+    ["", "A playful drawing companion.", "A" * 2000 + "======以上为角色设定======"],
+    ids=["empty", "without_watermark", "watermark_beyond_excerpt"],
+)
+def test_drawing_prompt_watermark_is_independent_of_persona_and_locale(locale, stage, persona):
+    kwargs = {
+        "word": dgr._WORD_BY_ID["banana"],
+        "locale": locale,
+        "lanlan_name": "YUI",
+        "master_name": "player",
+        "lanlan_prompt": persona,
+    }
+    if stage == "revision":
+        system_prompt, user_prompt = dgr._build_drawing_guess_plan_revision_prompts(
+            **kwargs,
+            original_plan=_sample_drawing_plan(),
+            review={"guess_id": "apple", "confidence": 0.6, "issues": ["ambiguous shape"]},
+        )
+    elif stage == "svg":
+        system_prompt, user_prompt = dgr._build_drawing_guess_svg_prompts(**kwargs)
+    else:
+        system_prompt, user_prompt = dgr._build_drawing_guess_plan_prompts(**kwargs)
+
+    # The free endpoint must recognize the game even if the persona is empty
+    # or its own watermark falls outside the bounded character excerpt.
+    assert system_prompt.endswith("======以上为绘画游戏系统提示======")
+    assert system_prompt.count("======以上为") == 1
+    assert json.loads(user_prompt)["locale"] == locale
+
+
+@pytest.mark.unit
 def test_drawing_guess_round_timers_are_five_minutes():
     assert dgr.ROUND_GUESS_SECONDS == 5 * 60
     assert dgr.ROUND_DRAW_SECONDS == 5 * 60
@@ -213,56 +248,18 @@ def test_drawing_guess_round_timers_are_five_minutes():
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_vision_image_is_bounded_by_model_width_and_output_bytes():
-    import base64
-    from io import BytesIO
-
-    from PIL import Image
-    from utils.screenshot_utils import MODEL_IMAGE_MAX_WIDTH
-
-    prepared = await dgr._prepare_vision_image_data_url(_png_data_url(4000, 400))
-
-    assert prepared is not None
-    assert len(prepared) <= dgr.VISION_GUESS_MAX_DATA_URL_CHARS
-    raw = base64.b64decode(prepared.split(",", 1)[1], validate=True)
-    with Image.open(BytesIO(raw)) as image:
-        assert image.width == MODEL_IMAGE_MAX_WIDTH
-        assert image.height <= 720
+@pytest.mark.parametrize("value", [None, 123, {}, "", "  "])
+def test_drawing_vision_command_rejects_missing_image(value):
+    assert dgr._bounded_vision_image_data_url(value) is None
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_vision_image_rejects_excessive_pixels_before_full_decode(monkeypatch):
-    from utils import screenshot_utils
+def test_drawing_vision_command_bounds_input_without_reencoding(monkeypatch):
+    original = _png_data_url(8, 8)
+    monkeypatch.setattr(dgr, "VISION_GUESS_MAX_DATA_URL_CHARS", len(original))
 
-    monkeypatch.setattr(
-        screenshot_utils,
-        "_probe_image_profile",
-        lambda _encoded: ("PNG", (dgr.VISION_GUESS_MAX_INPUT_PIXELS + 1, 1)),
-    )
-
-    def fail_full_decode(_image_bytes):
-        raise AssertionError("pixel limit must run before full image decode")
-
-    monkeypatch.setattr(screenshot_utils, "_validate_image_data", fail_full_decode)
-
-    assert await dgr._prepare_vision_image_data_url(_png_data_url(1, 1)) is None
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_vision_image_rejects_oversized_compressed_output(monkeypatch):
-    from utils import screenshot_utils
-
-    oversized_raw_length = (dgr.VISION_GUESS_MAX_DATA_URL_CHARS * 3 // 4) + 256
-    monkeypatch.setattr(
-        screenshot_utils,
-        "compress_screenshot",
-        lambda *_args, **_kwargs: b"x" * oversized_raw_length,
-    )
-
-    assert await dgr._prepare_vision_image_data_url(_png_data_url(1, 1)) is None
+    assert dgr._bounded_vision_image_data_url(original) == original
+    assert dgr._bounded_vision_image_data_url(original + "x") is None
 
 
 @pytest.mark.unit
@@ -467,6 +464,10 @@ def test_user_guessing_chat_context_gives_private_answer_without_forcing_reveal(
     assert payload["public_details"]["character_knows_own_hidden_answer"] is True
     assert payload["public_details"]["character_private_answer_label"] == "banana"
     assert payload["public_details"]["allow_character_drawing_answer_reveal"] is False
+    assert payload["public_details"]["backend_judgement_is_authoritative"] is True
+    assert payload["public_details"]["user_guess_confirmed_correct"] is False
+    assert payload["public_details"]["may_announce_user_guess_success"] is False
+    assert "never say the user guessed correctly" in system_prompt
     assert payload["safety"]["do_not_reveal_hidden_answers"] is True
 
 
@@ -550,6 +551,115 @@ async def test_persona_game_line_discards_hidden_answer_for_non_reveal_events(mo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("times_out", [False, True])
+async def test_persona_game_line_has_bounded_extended_budget_and_fallback(monkeypatch, times_out):
+    import utils.llm_client as llm_client
+
+    _install_fake_character_llm(monkeypatch, '{"line":"Keep guessing!"}')
+    original_factory = llm_client.create_chat_llm_async
+    original_wait_for = asyncio.wait_for
+    cancelled = False
+
+    async def blocked_invoke(_messages):
+        nonlocal cancelled
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled = True
+
+    async def capture_factory(*args, **kwargs):
+        assert kwargs["timeout"] == 16.0
+        client = await original_factory(*args, **kwargs)
+        if times_out:
+            client.ainvoke = blocked_invoke
+        return client
+
+    async def bounded_wait(coro, *, timeout):
+        assert timeout == 17.0
+        return await original_wait_for(coro, timeout=0.01)
+
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", capture_factory)
+    monkeypatch.setattr(dgr.asyncio, "wait_for", bounded_wait)
+
+    line, source = await dgr._generate_persona_game_line(
+        session={"session_id": "reply-budget", "phase": "user_guessing", "ai_word_id": "banana"},
+        locale="en", lanlan_name="YUI", event="ai_drawing_ready", fallback="Fallback.",
+    )
+
+    assert source == ("fallback" if times_out else "persona_model")
+    assert line == ("Fallback." if times_out else "Keep guessing!")
+    assert cancelled is times_out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_timeout_generates_independent_lines_concurrently(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({"lanlan_name": "YUI", "session_id": "parallel-settlement"}))
+    session = dgr._drawing_guess_sessions["YUI:parallel-settlement"]
+    session.update(phase="ai_guessing", user_word_id="banana")
+    evaluation_started = asyncio.Event()
+
+    async def reply(**_kwargs):
+        await evaluation_started.wait()
+        return "Time is up.", "persona_model"
+
+    async def evaluation(**_kwargs):
+        evaluation_started.set()
+        return "That was a tricky drawing.", "persona_model"
+
+    async def no_memory(**_kwargs):
+        return None
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", reply)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", evaluation)
+    monkeypatch.setattr(dgr, "_maybe_write_drawing_guess_memory_summary", no_memory)
+    result = await asyncio.wait_for(dgr._settle_drawing_guess_ai_timeout(data={}, session=session, locale="en"), timeout=1)
+
+    assert result["message"] == "Time is up."
+    assert result["evaluation"] == "That was a tricky drawing."
+    assert result["phase"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_timeout_cancellation_joins_both_dialogue_requests(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({"lanlan_name": "YUI", "session_id": "cancel-settlement"}))
+    session = dgr._drawing_guess_sessions["YUI:cancel-settlement"]
+    session.update(phase="ai_guessing", user_word_id="banana")
+    reply_started, evaluation_started = asyncio.Event(), asyncio.Event()
+    cancelled = set()
+
+    async def reply(**_kwargs):
+        reply_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.add("reply")
+
+    async def evaluation(**_kwargs):
+        evaluation_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.add("evaluation")
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", reply)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", evaluation)
+    task = asyncio.create_task(dgr._settle_drawing_guess_ai_timeout(data={}, session=session, locale="en"))
+    try:
+        await asyncio.wait_for(asyncio.gather(reply_started.wait(), evaluation_started.wait()), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert cancelled == {"reply", "evaluation"}
+    assert session["phase"] == "summary"
+    assert dgr._ai_guess_transition_result(session, "en")["message_source"] == "fallback"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_persona_chat_discards_hidden_answer_alias(monkeypatch):
     _install_fake_character_llm(monkeypatch, '{"line":"Maybe the answer is 火车."}')
     session = {
@@ -568,6 +678,57 @@ async def test_persona_chat_discards_hidden_answer_alias(monkeypatch):
     )
 
     assert line is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("locale", "reply"), [
+    ("zh-CN", "嗯……差不多就是那个意思，你猜对啦。陪我坐一会儿好吗？"),
+    ("zh-TW", "你猜對啦！換你畫了。"),
+    ("en", "You guessed correctly! Your turn to draw."),
+    ("ja", "正解だよ！次はあなたが描いてね。"),
+    ("ko", "맞혔어요! 이제 그려 주세요."),
+    ("ru", "Ты угадал! Теперь рисуй."),
+    ("pt", "Você acertou! Agora desenhe."),
+    ("es", "¡Acertaste! Ahora dibuja."),
+])
+async def test_persona_chat_reserves_success_for_backend_scored_turns(monkeypatch, locale, reply):
+    _install_fake_character_llm(monkeypatch, json.dumps({"line": reply}))
+    session = {"phase": "user_guessing", "ai_word_id": "computer"}
+    kwargs = dict(session=session, locale=locale, lanlan_name="YUI", user_text="hmm")
+
+    assert await dgr._generate_persona_chat_line(**kwargs, event="guessing_chat") is None
+    # Once scoring really advanced the game, the same wording is legitimate.
+    session["phase"] = "word_picking"
+    assert await dgr._generate_persona_chat_line(**kwargs, event="word_picking_chat") == reply
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [
+    "我就在这里陪你，慢慢想。",
+    "可以换个说法，把你猜的东西再说一次吗？",
+    "Keep guessing, I'm enjoying this!",
+    "Think about something you use on your desk.",
+])
+async def test_persona_chat_keeps_natural_replies_without_score_claims(monkeypatch, reply):
+    _install_fake_character_llm(monkeypatch, json.dumps({"line": reply}))
+    assert await dgr._generate_persona_chat_line(
+        session={"phase": "user_guessing", "ai_word_id": "computer"},
+        locale="zh-CN", lanlan_name="YUI", user_text="hmm", event="guessing_chat",
+    ) == reply
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["user_guess_wrong", "hint_request", "ai_drawing_ready"])
+async def test_unscored_game_lines_cannot_announce_guess_success(monkeypatch, event):
+    _install_fake_character_llm(monkeypatch, '{"line":"你猜对啦，换你画！"}')
+    assert await dgr._generate_persona_game_line(
+        session={"phase": "user_guessing", "ai_word_id": "computer"},
+        locale="zh-CN", lanlan_name="YUI", event=event,
+        fallback="Safe fallback.", details={"allow_answer_reveal": False},
+    ) == ("Safe fallback.", "fallback")
 
 
 @pytest.mark.unit
@@ -698,6 +859,89 @@ def test_text_context_guess_prompt_keeps_character_setting_first_and_wraps_conte
     assert "Character persona excerpt" not in system_prompt
     assert payload["task"] == "guess_user_drawing_from_text_context"
     assert payload["user_hint"] == "有一条尾巴"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", dgr.SUPPORTED_LOCALES)
+@pytest.mark.parametrize("phase", ["user_guessing", "ai_guess_feedback"])
+@pytest.mark.parametrize(
+    "persona",
+    ["", "A playful companion.", "A" * 2000 + "======以上为角色设定======"],
+    ids=["empty", "without_watermark", "watermark_beyond_excerpt"],
+)
+def test_input_intent_prompt_watermark_is_independent_of_persona_and_locale(locale, phase, persona):
+    system_prompt, payload_raw = dgr._build_game_input_intent_prompts(
+        session={"phase": phase, "game_chat_history": []},
+        locale=locale,
+        lanlan_name="YUI",
+        master_name="Master",
+        lanlan_prompt=persona,
+        user_text="Is it an apple?",
+        phase=phase,
+    )
+
+    assert system_prompt.endswith("======以上为绘画游戏系统提示======")
+    assert system_prompt.count("======以上为") == 1
+    payload = json.loads(payload_raw)
+    assert payload["locale"] == locale
+    assert payload["phase"] == phase
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "user_text", "intent", "guess_text"),
+    [
+        ("user_guessing", "Is it an apple?", "guess", "apple"),
+        ("ai_guess_feedback", "It has a tail.", "hint", ""),
+    ],
+)
+async def test_input_intent_model_request_keeps_free_endpoint_watermark(
+    monkeypatch, phase, user_text, intent, guess_text,
+):
+    import utils.llm_client as llm_client
+
+    expected = {"intent": intent, "guess_text": guess_text, "confidence": 0.95}
+    captured = []
+
+    class _FakeIntentLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def ainvoke(self, messages):
+            captured.extend(messages)
+            if "======以上为" not in messages[0].content:
+                raise ValueError("Missing project marker")
+            return SimpleNamespace(content=json.dumps(expected))
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        return _FakeIntentLLM()
+
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    monkeypatch.setattr(game_router, "_get_character_info", lambda lanlan_name: {
+        "lanlan_name": lanlan_name,
+        "master_name": "Master",
+        "lanlan_prompt": "A" * 2000 + "======以上为角色设定======",
+        "model": "test-model",
+        "base_url": "https://model.example.test/v1",
+        "api_key": "test-key",
+    })
+
+    result = await dgr._classify_game_input_intent(
+        session={"session_id": "intent-watermark", "phase": phase, "game_chat_history": []},
+        locale="en",
+        lanlan_name="YUI",
+        user_text=user_text,
+        phase=phase,
+    )
+
+    assert result == expected
+    assert len(captured) == 2
+    assert captured[0].content.endswith("======以上为绘画游戏系统提示======")
+    assert json.loads(captured[1].content)["phase"] == phase
 
 
 @pytest.mark.unit
@@ -1041,6 +1285,97 @@ def test_drawing_plan_sanitizer_accepts_declared_transparent_paint():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("color", ["#eef8ff", "#eef7fa", "#ffffff", "#000", " #AbC "])
+def test_drawing_plan_preserves_custom_background_through_svg(color):
+    raw_plan = _sample_drawing_plan()
+    raw_plan["background"] = color
+
+    drawing, reason = dgr._validated_drawing_from_plan(
+        raw_plan, word=dgr._WORD_BY_ID["banana"], source="model_plan",
+    )
+
+    assert reason == "ok"
+    assert drawing["plan"]["background"] == color.strip().lower()
+    assert f'fill="{color.strip().lower()}"' in drawing["svg"]
+    assert raw_plan["background"] == color
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("color", [None, True, 123, "", "none", "transparent", "red", "#ffff", "url(https://example.test/a)", '<script>alert(1)</script>'])
+def test_drawing_plan_rejects_unsafe_or_nonopaque_background(color):
+    raw_plan = _sample_drawing_plan()
+    raw_plan["background"] = color
+
+    assert dgr._sanitize_drawing_plan(raw_plan) == (None, "drawing_plan_invalid_background")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("opacity", [0.001, 0.25, 0.75, 1])
+def test_drawing_plan_preserves_safe_opacity_through_svg(opacity):
+    raw_plan = _sample_drawing_plan()
+    raw_plan["elements"][0]["opacity"] = opacity
+
+    drawing, reason = dgr._validated_drawing_from_plan(
+        raw_plan, word=dgr._WORD_BY_ID["banana"], source="model_plan",
+    )
+
+    assert reason == "ok"
+    assert drawing["plan"]["elements"][0]["opacity"] == opacity
+    assert f'opacity="{opacity}"' in drawing["svg"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("opacity", [None, True, "0.5", 0, -1, 1.1, float("nan"), float("inf")])
+def test_drawing_plan_rejects_invalid_opacity(opacity):
+    raw_plan = _sample_drawing_plan()
+    raw_plan["elements"][0]["opacity"] = opacity
+
+    plan, reason = dgr._sanitize_drawing_plan(raw_plan)
+
+    assert plan is None
+    assert reason.endswith("elements[0].opacity")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("alias", "canonical"), dgr._DRAWING_PLAN_STYLE_ALIASES.items())
+def test_drawing_plan_normalizes_only_supported_style_aliases(alias, canonical):
+    raw_plan = _sample_drawing_plan()
+    value = raw_plan["elements"][0].pop(canonical, "round")
+    raw_plan["elements"][0][alias] = value
+
+    plan, reason = dgr._sanitize_drawing_plan(raw_plan)
+
+    assert reason == "ok"
+    assert plan["elements"][0][canonical] == value
+    assert alias not in plan["elements"][0]
+    assert alias in raw_plan["elements"][0]
+
+
+@pytest.mark.unit
+def test_drawing_plan_rejects_ambiguous_style_aliases():
+    raw_plan = _sample_drawing_plan()
+    raw_plan["elements"][0]["strokeWidth"] = 3
+
+    assert dgr._sanitize_drawing_plan(raw_plan) == (None, "drawing_plan_conflicting_style_fields:0")
+
+
+@pytest.mark.unit
+def test_drawing_prompts_do_not_require_fixed_background():
+    system, user = dgr._build_drawing_guess_plan_prompts(
+        word=dgr._WORD_BY_ID["banana"], locale="en", lanlan_name="YUI",
+        master_name="Player", lanlan_prompt="",
+    )
+    retry = json.loads(dgr._build_drawing_guess_plan_retry_prompt(
+        original_user_prompt=user, rejection_reason="drawing_plan_invalid_background", attempt=2,
+    ))
+
+    assert "only an example, not a required color" in system
+    assert "background" not in json.loads(user)["canvas"]
+    assert "background #fffdfa" not in " ".join(retry["retry_rules"])
+    assert "opacity" in system
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("mutate", "expected_reason"),
     (
@@ -1200,6 +1535,46 @@ def test_user_guess_extraction_uses_alias_boundaries():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("text", [
+    "电脑", "是电脑吗？", "是 电 脑 吗 ？", "电 脑", "我 猜 电 脑",
+    "是\t电\t脑\t吗？", "是\u3000電\u3000腦\u3000嗎？", "是 电\n脑 吗？",
+])
+def test_han_spacing_is_shared_by_direct_and_classifier_guess_matching(text):
+    assert dgr._extract_user_guess_word(text).id == "computer"
+    assert dgr._extract_explicit_classifier_guess(text, "电脑").id == "computer"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("text", "candidate"), [
+    ("不 是 电 脑 吗？", "电脑"),
+    ("我 不 觉 得 是 电 脑 吧？", "电脑"),
+    ("不 像 是 電 腦 吧？", "電腦"),
+    ("not 电 脑?", "电脑"),
+    ("是 火 车 吗？", "车"),
+    ("是 热 狗 吗？", "狗"),
+    ("是 月 球 吗？", "球"),
+    ("是 电，脑 吗？", "电脑"),
+    ("是 电 脑 桌 吗？", "电脑"),
+    ("入 电 脑 吗 ？", "电脑"),
+    ("is it c a t?", "cat"),
+    ("is it скот?", "кот"),
+    ("它 在 桌 上，有 很 多 图 标", "电脑"),
+])
+def test_han_spacing_does_not_bypass_negation_word_boundaries_or_explicit_guess(text, candidate):
+    assert dgr._extract_explicit_classifier_guess(text, candidate) is None
+
+
+@pytest.mark.unit
+def test_han_spacing_preserves_other_scripts_and_compound_words():
+    assert dgr._collapse_han_spaces("ice cream / мой ответ / 고양이 아닌가요?") == (
+        "ice cream / мой ответ / 고양이 아닌가요?"
+    )
+    assert dgr._extract_user_guess_word("是 火 车 吗？").id == "train"
+    assert dgr._extract_user_guess_word("不 是 猫，我 猜 电 脑").id == "computer"
+    assert dgr._model_output_mentions_word("答案不是电 脑哦。", dgr._WORD_BY_ID["computer"])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [
     "\u4e0d\u662f\u732b\u5427\uff1f",
     "\u4e0d\u662f\u4e00\u53ea\u732b\u5427\uff1f",
     "\u8fd9\u4e0d\u50cf\u662f\u732b\u5427\uff1f",
@@ -1275,6 +1650,65 @@ def test_user_guess_extraction_accepts_korean_affirmative_questions(text):
 @pytest.mark.unit
 def test_user_guess_extraction_can_match_later_non_negated_alias():
     assert dgr._extract_user_guess_word("not dog, I guess cat").id == "cat"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locale", dgr.SUPPORTED_LOCALES)
+async def test_sdk_round_and_ai_dialogue_follow_render_language(monkeypatch, locale):
+    from main_routers.game_router import char_info
+
+    manager = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    monkeypatch.setattr(char_info, "get_session_manager", lambda: {"YUI": manager})
+    payload = {"lanlan_name": "YUI", "session_id": "sdk-language", "render_language": locale}
+    assert (await dgr.drawing_guess_round_start(_FakeRequest(payload)))["ok"]
+    session = dgr._drawing_guess_sessions["YUI:sdk-language"]
+    assert session["locale"] == locale
+
+    async def fallback_drawing(*args, **kwargs):
+        return None
+
+    async def capture_persona(**kwargs):
+        assert kwargs["locale"] == locale
+        assert kwargs["fallback"] == dgr._localized_line(locale, "ai_drawing_ready")
+        return kwargs["fallback"], "fallback"
+
+    monkeypatch.setattr(dgr, "_generate_model_drawing", fallback_drawing)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", capture_persona)
+    result = await dgr.drawing_guess_ai_draw(_FakeRequest(payload))
+    assert result["ok"]
+    assert result["message"] == dgr._localized_line(locale, "ai_drawing_ready")
+
+    async def capture_chat(**kwargs):
+        assert kwargs["locale"] == locale
+        return "localized reply"
+
+    monkeypatch.setattr(dgr, "_generate_persona_chat_line", capture_chat)
+    result = await dgr._handle_drawing_guess_input_payload({
+        **payload, "text": "chat probe", "summary_chat_only": True,
+    })
+    assert result["message"] == "localized reply"
+    # The page locale must not become a durable conversation-language override.
+    assert manager.user_language == "en"
+    assert manager._user_language_explicit is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("payload", "session", "expected"), [
+    ({"render_language": "zh-CN"}, None, "ja"),
+    ({"render_language": "zh-CN", "i18n_language": "zh-TW"}, None, "zh-TW"),
+    ({}, None, "ja"),
+    ({}, {"locale": "zh-TW"}, "zh-TW"),
+    ({"render_language": "invalid", "i18n_language": "invalid"}, {"locale": "zh-CN"}, "zh-CN"),
+    ({"render_language": "zh-TW"}, {"locale": "en"}, "ja"),
+])
+def test_round_language_respects_explicit_preference_and_legacy_session(monkeypatch, payload, session, expected):
+    from main_routers.game_router import char_info
+
+    manager = SimpleNamespace(user_language="ja", _user_language_explicit=True)
+    monkeypatch.setattr(char_info, "get_session_manager", lambda: {"YUI": manager})
+    assert dgr._resolve_round_locale({"lanlan_name": "YUI", **payload}, session) == expected
+    assert manager.user_language == "ja"
 
 
 @pytest.mark.unit
@@ -2299,9 +2733,11 @@ async def test_generate_model_drawing_retries_invalid_plan_then_returns_plan_and
         "provider_type": "openai",
     })
     prompts = []
+    system_prompts = []
 
     async def fake_call_drawing_guess_plan_model(**kwargs):
         prompts.append(kwargs["user_prompt"])
+        system_prompts.append(kwargs["system_prompt"])
         plan = _sample_drawing_plan()
         if len(prompts) == 1:
             plan["elements"][0]["text"] = "banana"
@@ -2325,6 +2761,7 @@ async def test_generate_model_drawing_retries_invalid_plan_then_returns_plan_and
     assert drawing["plan"]["width"] == 800
     assert '<svg xmlns="http://www.w3.org/2000/svg"' in drawing["svg"]
     assert len(prompts) == 2
+    assert all(prompt.endswith("======以上为绘画游戏系统提示======") for prompt in system_prompts)
     assert "previous_rejection_reason" not in prompts[0]
     assert "drawing_plan_extra_element_fields:0" in prompts[1]
 
@@ -2368,6 +2805,7 @@ async def test_generate_model_drawing_revision_retries_and_accepts_direct_plan(m
     assert drawing["sanitizer"] == {"ok": True, "attempt": 2, "revision": 1}
     assert drawing["plan"]["elements"][0]["fill"] == "#f0b429"
     assert len(calls) == 2
+    assert all(call["system_prompt"].endswith("======以上为绘画游戏系统提示======") for call in calls)
     assert {call["call_type"] for call in calls} == {"drawing_guess_drawing_revision"}
     retry_payload = json.loads(calls[1]["user_prompt"])
     assert retry_payload["task"] == "retry_revise_the_drawing_plan_after_visual_review"
@@ -3177,6 +3615,102 @@ async def test_user_guessing_explicit_guess_still_counts():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["typed", "frontend_voice", "backend_voice"])
+@pytest.mark.parametrize(("text", "correct"), [("是 电 脑 吗 ？", True), ("是 火 车 吗 ？", False)])
+async def test_spaced_guess_is_scored_consistently_across_voice_and_text(monkeypatch, entry, text, correct):
+    payload = {"lanlan_name": "YUI", "session_id": "spaced-guess", "i18n_language": "zh-CN"}
+    await dgr.drawing_guess_round_start(_FakeRequest(payload))
+    session = dgr._drawing_guess_sessions["YUI:spaced-guess"]
+    session.update(phase="user_guessing", ai_word_id="computer")
+    _install_fake_character_llm(monkeypatch, json.dumps({"line": "你猜对啦！" if correct else "再想一想。"}))
+    intent_calls = []
+
+    async def unexpected_intent(**kwargs):
+        intent_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", unexpected_intent)
+    if entry == "backend_voice":
+        result = await dgr.handle_external_drawing_guess_transcript(
+            "YUI", "spaced-guess", text,
+            route_state={"last_state": {"phase": "user_guessing", "i18n_language": "zh-CN"}},
+            request_id="voice-spaced-guess",
+        )
+    else:
+        result = await dgr.drawing_guess_input(_FakeRequest({
+            **payload, "text": text, "input_kind": "user-text" if entry == "typed" else "user-voice",
+        }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "guess"
+    assert result["correct"] is correct
+    assert result["state"]["phase"] == ("word_picking" if correct else "user_guessing")
+    assert session["user_score"] == int(correct)
+    assert result["message_source"] == "persona_model"
+    assert result["message"] == ("你猜对啦！" if correct else "再想一想。")
+    assert session["game_chat_history"][-2]["text"] == text
+    assert not intent_calls
+    if correct:
+        assert result["answer"]["id"] == "computer"
+        assert len(result["user_draw_options"]) == dgr.USER_DRAW_OPTION_COUNT
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["不是 电 脑 吗？", "入 电 脑 吗 ？", "有 图 标 的"])
+async def test_unconfirmed_voice_guess_cannot_score_from_classifier_or_chat_claim(monkeypatch, text):
+    payload = {"lanlan_name": "YUI", "session_id": "unconfirmed-voice", "i18n_language": "zh-CN"}
+    await dgr.drawing_guess_round_start(_FakeRequest(payload))
+    session = dgr._drawing_guess_sessions["YUI:unconfirmed-voice"]
+    session.update(phase="user_guessing", ai_word_id="computer")
+    _install_fake_character_llm(monkeypatch, '{"line":"嗯，差不多就是那个意思，你猜对啦。"}')
+
+    async def inferred_intent(**_kwargs):
+        return {"intent": "guess", "guess_text": "电脑", "confidence": 1.0}
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", inferred_intent)
+    result = await dgr.handle_external_drawing_guess_transcript(
+        "YUI", "unconfirmed-voice", text,
+        route_state={"last_state": {"phase": "user_guessing", "i18n_language": "zh-CN"}},
+    )
+
+    assert result["ok"] is True
+    assert result["kind"] == "chat"
+    assert result["source"] == "fallback"
+    assert result["message"] == dgr._localized_line("zh-CN", "chat_fallback")
+    assert "answer" not in result
+    assert result["state"]["phase"] == "user_guessing"
+    assert session["user_score"] == 0
+    assert session["game_chat_history"][-1]["text"] == result["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_classifier_can_validate_spaced_explicit_word_without_guess_phrase(monkeypatch):
+    payload = {"lanlan_name": "YUI", "session_id": "classified-spaces", "i18n_language": "zh-CN"}
+    await dgr.drawing_guess_round_start(_FakeRequest(payload))
+    session = dgr._drawing_guess_sessions["YUI:classified-spaces"]
+    session.update(phase="user_guessing", ai_word_id="computer")
+    _install_fake_character_llm(monkeypatch, '{"line":"你猜对啦！"}')
+    text = "电 脑，或许就这个"
+    assert dgr._extract_user_guess_word(text) is None
+    intent_calls = []
+
+    async def explicit_intent(**kwargs):
+        intent_calls.append(kwargs["user_text"])
+        return {"intent": "guess", "guess_text": "电脑", "confidence": 1.0}
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", explicit_intent)
+    result = await dgr.drawing_guess_input(_FakeRequest({**payload, "text": text, "input_kind": "user-voice"}))
+    assert intent_calls == [text]
+    assert result["correct"] is True
+    assert result["kind"] == "guess"
+    assert result["state"]["phase"] == "word_picking"
+    assert session["user_score"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_user_guessing_wrong_guess_sends_backend_judgement(monkeypatch):
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
@@ -3976,9 +4510,6 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
                 "api_key": "test-key",
             }
 
-    async def fake_prepare_image(_value):
-        return _png_data_url(8, 8)
-
     calls = []
 
     class _FakeVisionLLM:
@@ -3998,8 +4529,6 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
         calls.append({"args": args, "kwargs": kwargs})
         return _FakeVisionLLM()
 
-    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
-
     from utils import game_vision as vision_service
     from main_routers import game_router
 
@@ -4015,7 +4544,7 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
         session={"session_id": "dg-vision", "ai_guess_attempts": 1, "game_chat_history": []},
         locale="en",
         lanlan_name="YUI",
-        image_data_url="data:image/png;base64,ignored",
+        image_data_url=_png_data_url(8, 8),
         user_hint="yellow",
     )
 
@@ -4051,9 +4580,6 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
                 "provider_type": "openai",
             }
 
-    async def fake_prepare_image(_value):
-        return _png_data_url(8, 8)
-
     calls = []
 
     class _FakeVisionLLM:
@@ -4077,8 +4603,6 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
         calls.append({"args": args, "kwargs": kwargs})
         return _FakeVisionLLM()
 
-    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
-
     from utils import game_vision as vision_service
 
     monkeypatch.setattr(vision_service, "get_config_manager", lambda: _FakeConfigManager())
@@ -4092,7 +4616,7 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
         },
         locale="en",
         lanlan_name="YUI",
-        image_data_url="data:image/png;base64,ignored",
+        image_data_url=_png_data_url(8, 8),
     )
 
     assert result == {
@@ -4121,10 +4645,12 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_ai_drawing_review_invalid_image_is_unavailable_without_model_call(monkeypatch):
-    async def fake_prepare_image(_value):
-        return None
+    from utils import game_vision as vision_service
 
-    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
+    async def forbid_model(**_kwargs):
+        pytest.fail("an invalid image must not reach a vision model")
+
+    monkeypatch.setattr(vision_service, "_invoke", forbid_model)
 
     result = await dgr._review_ai_drawing(
         session={"session_id": "dg-ai-review-invalid", "ai_word_id": "banana"},
@@ -4153,9 +4679,6 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
                 "api_key": "test-key",
             }
 
-    async def fake_prepare_image(_value):
-        return _png_data_url(8, 8)
-
     class _FakeVisionLLM:
         async def __aenter__(self):
             return self
@@ -4168,8 +4691,6 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
 
     async def fake_create_chat_llm_async(*_args, **_kwargs):
         return _FakeVisionLLM()
-
-    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
 
     from utils import game_vision as vision_service
     from main_routers import game_router
@@ -4186,7 +4707,7 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
         session={"session_id": "dg-vision", "ai_guess_attempts": 1, "game_chat_history": []},
         locale="en",
         lanlan_name="YUI",
-        image_data_url="data:image/png;base64,abc",
+        image_data_url=_png_data_url(8, 8),
         user_hint="yellow",
     )
 

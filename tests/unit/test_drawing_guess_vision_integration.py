@@ -192,3 +192,86 @@ async def test_real_service_cancellation_keeps_slot_until_provider_settles(monke
         await asyncio.gather(*list(service._active_analyses), return_exceptions=True)
         await asyncio.sleep(0)
     assert not service._active_analyses
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review", [False, True])
+async def test_shared_service_is_the_only_image_normalization_layer(monkeypatch, review):
+    from utils import game_vision as service
+
+    # Hidden blue RGB under full transparency must become white, not blue.
+    with Image.new("RGBA", (2048, 1024), (0, 0, 255, 0)) as picture, BytesIO() as output:
+        picture.save(output, "PNG")
+        original = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    supplied, model_inputs, encodings = [], [], []
+    analyze = service.analyze_game_vision
+    save = Image.Image.save
+
+    async def observe_service(**kwargs):
+        supplied.append(kwargs["attachments"][0]["image_data_url"])
+        return await analyze(**kwargs)
+
+    async def invoke(**kwargs):
+        model_inputs.append(kwargs["attachments"][0]["image_data_url"])
+        return '{"guess_id":"banana","confidence":1,"issues":[]}'
+
+    def observe_encoding(picture, output, format=None, **kwargs):
+        encodings.append(format)
+        return save(picture, output, format=format, **kwargs)
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda name: {"lanlan_name": name})
+    monkeypatch.setattr(service, "analyze_game_vision", observe_service)
+    monkeypatch.setattr(service, "_invoke", invoke)
+    monkeypatch.setattr(Image.Image, "save", observe_encoding)
+    request = dict(session={"session_id": "single-image-pass", "ai_word_id": "banana"},
+                   locale="en", lanlan_name="YUI", image_data_url=original)
+    result = await (game._review_ai_drawing(**request) if review else
+                    game._generate_vision_guess(**request, user_hint=""))
+
+    assert result["accepted"] if review else result["word"].id == "banana"
+    assert supplied == [original], "the game rewrote the original image before the shared service"
+    assert encodings == ["JPEG"], "the image was compressed more than once"
+    assert len(model_inputs) == 1
+    with Image.open(BytesIO(base64.b64decode(model_inputs[0].split(",", 1)[1]))) as prepared:
+        assert prepared.format == "JPEG"
+        assert prepared.size == (1280, 640)
+        assert prepared.getpixel((0, 0)) == (255, 255, 255)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review", [False, True])
+@pytest.mark.parametrize("invalid", ["base64", "mime", "dimensions", "pixels", "animated"])
+async def test_shared_image_validation_rejects_original_input_before_model(monkeypatch, review, invalid):
+    from utils import game_vision as service
+
+    if invalid == "base64":
+        original = "data:image/png;base64,invalid!"
+    else:
+        size = {"dimensions": (4097, 1), "pixels": (2049, 2048)}.get(invalid, (8, 8))
+        with Image.new("RGB", size, "red") as first, Image.new("RGB", size, "blue") as second, BytesIO() as output:
+            options = {"save_all": True, "append_images": [second], "duration": 100} if invalid == "animated" else {}
+            first.save(output, "PNG", **options)
+            mime = "jpeg" if invalid == "mime" else "png"
+            original = f"data:image/{mime};base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+    model_calls = []
+
+    async def forbid_model(**kwargs):
+        model_calls.append(kwargs)
+        pytest.fail("the shared service accepted invalid original image bytes")
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda name: {"lanlan_name": name})
+    monkeypatch.setattr(service, "_invoke", forbid_model)
+    request = dict(session={"session_id": "invalid-original", "ai_word_id": "banana"},
+                   locale="en", lanlan_name="YUI", image_data_url=original)
+    result = await (game._review_ai_drawing(**request) if review else
+                    game._generate_vision_guess(**request, user_hint=""))
+
+    if review:
+        assert result["available"] is False
+        assert result["reason"] == "invalid_image"
+    else:
+        assert result is None
+    assert not model_calls

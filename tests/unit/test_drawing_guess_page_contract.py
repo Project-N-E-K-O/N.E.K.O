@@ -519,7 +519,7 @@ def test_drawing_guess_static_route_contract():
         ),
         "round timeout": (
             r"executeRoundCommand\(\s*ROUND_COMMANDS\.TIMEOUT,\s*"
-            r"roundCommandPayload\(\{\s*timeout_kind: 'user_guessing'\s*\}\),\s*10000\s*\)"
+            r"roundCommandPayload\(\{\s*timeout_kind: 'user_guessing'\s*\}\),\s*30000\s*\)"
         ),
         "vision guess": (
             r"executeRoundCommand\(ROUND_COMMANDS\.VISION_GUESS,\s*"

@@ -237,6 +237,9 @@ function loadHarness() {
       SDK_PREFERENCE_WRITE_RETRY_DELAY_MS = Number(value) || 1;
     },
     saveModelViewSettings: saveModelViewSettings,
+    normalizeModelViewSettings: normalizeModelViewSettings,
+    loadModelViewSettings: loadModelViewSettings,
+    resizeActiveModelRenderer: resizeActiveModelRenderer,
     resetModelView: resetModelView,
     saveColorHistory: saveColorHistory,
     configureSdkMemoryConsent: configureSdkMemoryConsent,
@@ -267,6 +270,10 @@ function loadHarness() {
     addNekoMessage: addNekoMessage,
     logSdkBestEffort: logSdkBestEffort,
     currentLanguage: currentLanguage,
+    syncPageLocale: syncPageLocale,
+    roundCommandPayload: roundCommandPayload,
+    routePayload: routePayload,
+    roundCommandContracts: ROUND_COMMAND_CONTRACTS,
     submitPlayerText: submitPlayerText,
     handleSdkVoiceState: handleSdkVoiceState,
     handleSpeechPlaybackState: handleSpeechPlaybackState,
@@ -686,7 +693,7 @@ async function testModelViewResetSurvivesReloadAndLateHydration() {
     }
     await waitFor(() => writes.length === 1 && !channel.inFlight,
       'reset model view was not persisted');
-    const defaults = { scale: 100, x: 0, y: 0 };
+    const defaults = { scale: 260, x: 0, y: 0 };
     assertDeepEqual(api.state.modelView, defaults, 'late hydration restored the pre-reset view');
     assertDeepEqual(backingValue, [{ character: 'Local Neko', view: defaults }, other],
       'reset did not replace the old view while preserving other characters');
@@ -705,7 +712,7 @@ async function testModelViewResetSurvivesReloadAndLateHydration() {
       'reload discarded the explicitly saved default or another character');
   }
   const bounded = loadHarness().api;
-  const defaults = { scale: 100, x: 0, y: 0 };
+  const defaults = { scale: 260, x: 0, y: 0 };
   const entries = Array.from({ length: 33 }, (_, i) => ({ character: `Neko ${i}`, view: defaults }));
   const boundedClient = makeStorageClient({
     get() { return Promise.resolve(storageResult(entries)); },
@@ -1315,6 +1322,49 @@ async function testCanvasDrawingPlanIsBoundedRenderedAndSerializable() {
   outOfBoundsPlan.elements[0].cx = 790;
   assertEqual(api.normalizeAiDrawingPlan(outOfBoundsPlan), null,
     'the browser silently changed an out-of-bounds backend drawing plan');
+}
+
+async function testDrawingPlanPreservesChosenBackgroundAndOpacity() {
+  const harness = loadHarness();
+  const api = harness.api;
+  for (const color of ['#eef8ff', '#eef7fa', '#ffffff', '#000', ' #AbC ']) {
+    const plan = sampleDrawingPlan();
+    plan.background = color;
+    plan.elements[0].opacity = 0.125;
+    const normalized = api.normalizeAiDrawingPlan(plan);
+    assert(normalized, 'a safe chosen background was rejected');
+    assertEqual(normalized.background, color.trim().toLowerCase(), 'the chosen background was replaced');
+    assertEqual(normalized.elements[0].opacity, 0.125, 'opacity was discarded');
+
+    const canvas = harness.sandbox.document.createElement('canvas');
+    const alphaValues = [];
+    const paintedBackgrounds = [];
+    Object.defineProperty(canvas.__context, 'globalAlpha', {
+      set(value) { alphaValues.push(value); },
+    });
+    canvas.__context.fillRect = function () { paintedBackgrounds.push(this.fillStyle); };
+    assertEqual(api.renderAiDrawingPlanToCanvas(normalized, canvas), true, 'custom-color plan failed to render');
+    assertEqual(paintedBackgrounds[0], normalized.background, 'Canvas used the old fixed background');
+    assertDeepEqual(alphaValues, [1, 0.125, 1], 'Canvas did not reset/apply per-element opacity');
+    const svg = api.aiDrawingPlanToSvg(normalized);
+    assert(svg.includes(`fill="${normalized.background}"`), 'SVG lost the chosen background');
+    assert(svg.includes('opacity="0.125"'), 'SVG lost the chosen opacity');
+    const count = harness.createdCanvases.length;
+    assert(api.captureAiDrawingReviewImage(normalized).startsWith('data:image/jpeg'),
+      'custom-color plan could not be captured for review');
+    assertEqual(harness.createdCanvases[count + 1].__context.fillStyle, normalized.background,
+      'JPEG review used a different background');
+  }
+  for (const color of [null, true, 123, '', 'none', 'transparent', 'red', '#ffff', 'url(https://example.test/a)']) {
+    const plan = sampleDrawingPlan();
+    plan.background = color;
+    assertEqual(api.normalizeAiDrawingPlan(plan), null, 'unsafe or nonopaque background was accepted');
+  }
+  for (const opacity of [null, true, '0.5', 0, -1, 1.1, NaN, Infinity]) {
+    const plan = sampleDrawingPlan();
+    plan.elements[0].opacity = opacity;
+    assertEqual(api.normalizeAiDrawingPlan(plan), null, 'invalid opacity was accepted');
+  }
 }
 
 async function testRawAiSvgFillsResponsiveStage() {
@@ -2236,6 +2286,24 @@ function correctUserGuessResponse() {
   };
 }
 
+async function testGuessTimeoutAllowsExtendedPersonaReplyBudget() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies(() => correctUserGuessResponse(), events);
+  api.state.phase = 'loading_round';
+  api.state.roundFlowToken = 42;
+  api.state.activeRoundToken = 42;
+
+  await api.requestGuessTimeout(42, 0);
+
+  assertEqual(events.commands.length, 1, 'timeout issued an extra command');
+  assertEqual(events.commands[0].command, 'round:timeout', 'timeout used the wrong command');
+  assertEqual(events.commands[0].timeoutMs, 30000, 'the browser can cancel a valid slow persona reply');
+}
+
 async function testGuessTimeoutRetryIsCancelledWhenPendingInputWins() {
   const harness = loadHarness();
   const api = harness.api;
@@ -2510,7 +2578,7 @@ async function testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan() {
   assertEqual(result.calls[0].payload.image_data_url, 'data:image/jpeg;base64,384x288',
     'drawing review did not send the bounded local Canvas capture');
   assertDeepEqual(Object.keys(result.calls[0].payload).sort(),
-    ['client_round_token', 'image_data_url'],
+    ['client_round_token', 'image_data_url', 'render_language'],
     'drawing review sent model plans or host-owned identity outside its SDK contract');
   assertEqual(result.calls[0].options.timeoutMs, 120000,
     'drawing review did not use its bounded command timeout');
@@ -2752,12 +2820,94 @@ async function testCanonicalAvatarFailureKeepsOnlyItsRunningRoute() {
   }
 }
 
+async function testRoundCommandsCarryUiLanguageWithoutClaimingExplicitPreference() {
+  const harness = loadHarness();
+  const api = harness.api;
+  api.installLocaleUiSpies();
+  for (const locale of ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'pt', 'es']) {
+    harness.sandbox.i18n = { language: locale };
+    api.syncPageLocale();
+    const payload = api.roundCommandPayload();
+    assertEqual(payload.render_language, locale, 'round request lost current UI language');
+    assertEqual(api.routePayload().render_language, locale, 'route request lost current UI language');
+    assert(!Object.hasOwn(payload, 'i18n_language'), 'UI language became an explicit conversation preference');
+    for (const [name, contract] of Object.entries(api.roundCommandContracts)) {
+      assertEqual(contract.request.properties.render_language.type, 'string', `${name} rejects the UI language field`);
+      assertEqual(contract.request.additionalProperties, false, `${name} relaxed unrelated request validation`);
+    }
+  }
+  assertEqual(harness.localStorageReads(), 0, 'language payload bypassed the SDK storage boundary');
+}
+
+async function testDefaultModelViewFramesUpperBodyAndPreservesCustomViews() {
+  const defaults = { scale: 260, x: 0, y: 0 };
+  const fitSandbox = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+    '../../static/game/sdk/neko-minigame-avatar-host.js'), 'utf8'), fitSandbox);
+  const fitRectangle = fitSandbox.window.NekoMiniGameAvatarHost.fitRectangle;
+  const styles = fs.readFileSync(path.resolve(__dirname, '../../templates/drawing_guess.html'), 'utf8')
+    .match(/<style>([\s\S]*?)<\/style>/)[1];
+  for (const kind of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const { api } = loadHarness();
+    const mounts = [];
+    const views = [];
+    const controller = {
+      setView(view) { views.push({ ...view }); },
+      setEmotion() {},
+    };
+    const client = { avatar: { async mount(config) { mounts.push(config); return controller; } } };
+    api.state.lanlanName = 'Portrait Neko';
+    assertDeepEqual(api.state.modelView, defaults, `${kind} lost the initial half-body zoom`);
+    api.state.modelViewSettings = api.normalizeModelViewSettings([
+      { character: 'Portrait Neko', view: { scale: 100, x: 0, y: 0 } },
+    ]);
+    api.loadModelViewSettings();
+    assertDeepEqual(api.state.modelView, { scale: 100, x: 0, y: 0 },
+      'an explicitly saved whole-body view must remain available');
+    api.state.modelViewSettings = [];
+    api.loadModelViewSettings();
+    assertDeepEqual(api.state.modelView, defaults, 'a character without a saved view should use half-body framing');
+    await api.mountAvatarDescriptor(client, {
+      name: 'Portrait Neko', rendererAvailable: true, model: { type: kind, path: '/test-model' },
+    }, api.state.avatarLoadToken);
+    assertDeepEqual(mounts[0].fit,
+      { mode: 'height', align: 'top-center', padding: 12, scaleMultiplier: 1 },
+      `${kind} should anchor the head and use the panel height as its zoom baseline`);
+    for (const [width, height] of [[420, 610], [420, 470], [708, 470], [280, 220]]) {
+      const viewport = { width, height };
+      const fitted = fitRectangle({ width: 500, height: 1800 }, viewport, mounts[0].fit);
+      const portrait = fitRectangle({
+        width: fitted.width * defaults.scale / 100,
+        height: fitted.height * defaults.scale / 100,
+      }, viewport, { ...mounts[0].fit, autoScale: false, scaleMultiplier: 1 });
+      assertEqual(portrait.y, 12, `${kind} cropped the top of the portrait after resizing`);
+      assert(Math.abs(portrait.x + portrait.width / 2 - width / 2) < 1e-6,
+        `${kind} lost horizontal centering after resizing`);
+      assert(portrait.height > height * 2, `${kind} reverted to a full-body fit`);
+    }
+    const layerRules = new RegExp(`[^{}]*#${kind}-container[^{}]*\\{([^{}]*)\\}`, 'g');
+    for (const rule of styles.matchAll(layerRules)) {
+      assert(!/transform\s*:[^;]*var\(--dg-model-/.test(rule[1]),
+        `${kind} applies the SDK view a second time in CSS`);
+    }
+    assertDeepEqual(views[views.length - 1], defaults, `${kind} did not receive the default view`);
+    api.state.modelViewSettings = [{ character: 'Portrait Neko', view: { scale: 245, x: 12, y: -8 } }];
+    api.loadModelViewSettings();
+    assertDeepEqual(views[views.length - 1], { scale: 245, x: 12, y: -8 },
+      'a saved manual view must remain available');
+    api.resetModelView();
+    for (let i = 0; i < 5; i += 1) api.resizeActiveModelRenderer();
+    assertDeepEqual(views[views.length - 1], defaults, 'reset and resize should keep stable half-body framing');
+    assertDeepEqual(api.state.modelViewSettings[0].view, defaults, 'reset should save the new default');
+  }
+}
+
 async function main() {
   await testCanonicalAvatarFailureKeepsOnlyItsRunningRoute();
   await testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding();
-  assertDeepEqual(loadHarness().api.state.modelView, { scale: 100, x: 0, y: 0 },
-    'the game default must not magnify or pan the SDK fitted model');
+  await testDefaultModelViewFramesUpperBodyAndPreservesCustomViews();
   await testEndWaitsForRoundSessionCreation();
+  await testRoundCommandsCarryUiLanguageWithoutClaimingExplicitPreference();
   await testWordChoiceRecoversCommittedBackendTransition();
   await testLateRoundStartCannotRestoreEndAfterCleanup();
   await testLateHydrationKeepsLocalSideAndColorChanges();
@@ -2779,6 +2929,7 @@ async function main() {
   await testCharacterBindingIsSharedRetiredAndRebound();
   await testBucketFillTreatsCanvasDisplayEdgeAsBoundary();
   await testCanvasDrawingPlanIsBoundedRenderedAndSerializable();
+  await testDrawingPlanPreservesChosenBackgroundAndOpacity();
   await testRawAiSvgFillsResponsiveStage();
   await testComplexDrawingPlanSupportsCurvesAndMoreDetail();
   await testDrawingReviewCaptureIsLowResolutionOpaqueJpeg();
@@ -2801,6 +2952,7 @@ async function main() {
   await testDeferredTimeoutSettlesAfterVisionRequestFinishes();
   await testTimeoutPhaseAdvanceStopsWhenRoundChanges();
   await testUserGuessUsesFullClassifiedInputBudget();
+  await testGuessTimeoutAllowsExtendedPersonaReplyBudget();
   await testGuessTimeoutRetryIsCancelledWhenPendingInputWins();
   await testLateGuessTimeoutFailureCannotRearmAfterInputWins();
   await testRecoveredGuessTimeoutWinsWithoutDoubleApplyingInput();
