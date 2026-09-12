@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import {run} from '../../static/game/games/watch-together/scene.mjs';
 
 async function waitFor(predicate, diagnostics=()=> '') {
-  const deadline=Date.now()+15000;
+  const deadline=Date.now()+5000;
   while(!predicate()) {
-    assert.ok(Date.now()<deadline,`scene did not reach the expected state within 15 seconds: ${diagnostics()}`);
+    assert.ok(Date.now()<deadline,`scene did not reach the expected state within 5 seconds: ${diagnostics()}`);
     await new Promise(resolve=>setTimeout(resolve,10));
   }
 }
@@ -288,8 +288,20 @@ let disposed=false,closed=false;
 exiting.game.runtime.end=async()=>{throw Error('shutdown failed');};
 exiting.game.dispose=()=>{disposed=true;};
 window.close=()=>{closed=true;window.closed=true;};
-await exiting.elements.get('exit').onclick();
+const exitTimeout=globalThis.setTimeout;
+let exitFallback;
+globalThis.setTimeout=(callback,delay,...args)=>{
+  if(delay===100){exitFallback=()=>callback(...args);return 0;}
+  return exitTimeout(callback,delay,...args);
+};
+try {await exiting.elements.get('exit').onclick();}
+finally {globalThis.setTimeout=exitTimeout;}
 assert.equal(disposed,true);assert.equal(closed,true);
+assert.equal(typeof exitFallback,'function');
+// Run the page-exit callback against its own window before the next fixture
+// replaces browser globals; otherwise its delayed navigation corrupts that URL.
+exitFallback();
+assert.equal(location.href,'http://localhost/watch_together');
 console.log('watch-together scene: stale discovery ignored and failed shutdown still closes');
 let finishCandidate, discoveries=0;
 const exclusions=await fixture(false,false,{total_tokens:1},()=>{
