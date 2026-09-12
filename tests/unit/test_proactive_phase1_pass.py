@@ -13,6 +13,18 @@ from config.prompts import prompts_proactive as proactive_prompts
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
+def test_phase1_aggregate_budget_keeps_complete_source_sections():
+    first_part = "--- 第一来源 ---\n1. 完整候选标题"
+    second_part = "--- 第二来源 ---\n1. 不应进入提示词的候选标题"
+    from utils.tokenize import count_tokens
+
+    merged = proactive_service._merge_phase1_parts_within_token_budget(
+        [first_part, second_part],
+        max_tokens=count_tokens(first_part),
+    )
+
+    assert merged == first_part
+
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
     parsed = sr_parsing._parse_unified_phase1_result(
         """

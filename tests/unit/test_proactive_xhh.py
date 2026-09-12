@@ -328,12 +328,32 @@ def test_community_label_values_stops_after_tag_limit():
         tags,
         limit=trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT,
         max_chars=trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS,
+        scan_limit=trending_content.NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT,
     )
 
     assert len(values) == trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT
     assert len(seen_items) == trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT
 
 
+def test_community_label_values_stops_after_tag_scan_limit():
+    seen_items: list[str] = []
+
+    class CountingTags(list):
+        def __iter__(self):
+            for item in super().__iter__():
+                seen_items.append(item)
+                yield item
+
+    tags = CountingTags([""] * (trending_content.NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT + 1))
+    values = trending_content._community_label_values(
+        tags,
+        limit=trending_content.NEKO_COMMUNITY_TAG_MAX_COUNT,
+        max_chars=trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS,
+        scan_limit=trending_content.NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT,
+    )
+
+    assert values == []
+    assert len(seen_items) == trending_content.NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT
 def test_normalize_neko_community_feed_falls_back_after_unusable_author():
     posts = normalize_neko_community_feed(
         {
@@ -1043,7 +1063,7 @@ def test_community_links_use_neko_community_cards():
     ]
 
 
-def test_normalized_idless_community_cards_keep_pre_truncation_dedupe_keys():
+def test_normalized_idless_community_cards_dedupe_by_bounded_title():
     prefix = "标题" * trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS
     posts = normalize_neko_community_feed(
         {
@@ -1055,11 +1075,11 @@ def test_normalized_idless_community_cards_keep_pre_truncation_dedupe_keys():
         limit=2,
     )
 
-    assert len(posts) == 2
-    assert posts[0]["title"] == posts[1]["title"]
-    assert posts[0]["dedupe_key"] != posts[1]["dedupe_key"]
-    links = _extract_links_from_raw("community", {"posts": posts})
-    assert links[0]["dedupe_key"] != links[1]["dedupe_key"]
+    bounded_title = prefix[: trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS]
+    assert len(posts) == 1
+    assert posts[0]["title"] == bounded_title
+    assert posts[0]["dedupe_key"] == f"https://community.project-neko.cn/discover|{bounded_title}"
+    assert len(_extract_links_from_raw("community", {"posts": posts})) == 1
 def test_community_cards_use_distinct_dedupe_keys_with_shared_discover_url():
     links = _extract_links_from_raw(
         "community",

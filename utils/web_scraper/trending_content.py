@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from itertools import zip_longest
+from itertools import islice, zip_longest
 import json
 import os
 from pathlib import Path
@@ -64,6 +64,7 @@ NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
 NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
 NEKO_COMMUNITY_TAG_MAX_COUNT = 8
 NEKO_COMMUNITY_TAG_MAX_CHARS = 80
+NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT = 64
 NEKO_COMMUNITY_CONTENT_MAX_CHARS = 500
 
 
@@ -1888,14 +1889,14 @@ def _community_text(value: Any, *, max_chars: int | None = None) -> str:
 
 
 def _community_label_values(
-    items: Any, *, limit: int, max_chars: int
+    items: Any, *, limit: int, max_chars: int, scan_limit: int
 ) -> list[str]:
-    """Normalize only the bounded tag set retained for prompt rendering."""
+    """Normalize a bounded number of tags retained for prompt rendering."""
 
     values: list[str] = []
     seen: set[str] = set()
-    for item in items if isinstance(items, list) else []:
-        value = _community_text(item)[:max_chars]
+    for item in islice(items if isinstance(items, list) else [], scan_limit):
+        value = _community_text(item, max_chars=max_chars)
         if not value or value in seen:
             continue
         values.append(value)
@@ -1962,7 +1963,7 @@ def normalize_neko_community_feed(
     for raw in _community_feed_items(payload):
         title = ""
         for field in ("title", "headline", "subject"):
-            title = _community_text(raw.get(field))
+            title = _community_text(raw.get(field), max_chars=NEKO_COMMUNITY_TITLE_MAX_CHARS)
             if title:
                 break
         content = ""
@@ -2010,7 +2011,9 @@ def normalize_neko_community_feed(
             raw.get("user"),
             raw.get("creator"),
         ):
-            author = _community_text(author_candidate)
+            author = _community_text(
+                author_candidate, max_chars=NEKO_COMMUNITY_AUTHOR_MAX_CHARS
+            )
             if author:
                 break
         author = author[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
@@ -2024,6 +2027,7 @@ def normalize_neko_community_feed(
                 label_candidate,
                 limit=NEKO_COMMUNITY_TAG_MAX_COUNT,
                 max_chars=NEKO_COMMUNITY_TAG_MAX_CHARS,
+                scan_limit=NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT,
             )
             if labels:
                 break

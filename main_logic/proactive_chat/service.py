@@ -195,6 +195,22 @@ _PHASE1_TOTAL_TOPIC_TARGET = (
 )
 
 
+def _merge_phase1_parts_within_token_budget(
+    parts: list[str], *, max_tokens: int
+) -> str:
+    """Keep complete Phase 1 source sections within the aggregate token budget."""
+
+    from utils.tokenize import truncate_to_tokens
+
+    kept: list[str] = []
+    for part in parts:
+        merged = "\n\n".join([*kept, part])
+        if truncate_to_tokens(merged, max_tokens) != merged:
+            break
+        kept.append(part)
+    return "\n\n".join(kept)
+
+
 def _open_threads_for_activity_state(
     activity_snapshot, fresh_open_threads
 ) -> list[str]:
@@ -1712,9 +1728,10 @@ async def handle_proactive_chat(
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1
 
-            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
-            merged_web_content = _ttt(
-                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            # Keep source sections whole so any rendered title remains exactly
+            # as visible to the Phase 1 model.
+            merged_web_content = _merge_phase1_parts_within_token_budget(
+                parts, max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
             )
 
         # ============================================================
