@@ -681,6 +681,29 @@ async function main() {
     && (await fullLegacyResponse.json()).text.length === 2 * 1024 * 1024 - 11,
   'legacy response reading imposed the command limit or lost complete replay semantics');
   const defaultResponseLimit = 16 * 1024 * 1024;
+  let nullBodyRead = false;
+  const nullBodyFailure = await host._bufferResponse({
+    body: null, status: 200, headers: new Headers(),
+    arrayBuffer() { nullBodyRead = true; return new ArrayBuffer(8); },
+  }).catch(error => error);
+  assert(nullBodyFailure?.code === 'invalid_response' && !nullBodyRead,
+    'custom null body silently discarded arrayBuffer data');
+  for (const status of [200, 204, 205, 304]) {
+    const empty = await host._bufferResponse(new Response(null, { status }));
+    assert(empty.status === status && (await empty.arrayBuffer()).byteLength === 0,
+      'native null-body response was rejected');
+  }
+  // Native branding must not depend on the provider's constructor identity.
+  const brandedEmpty = new Response(null);
+  function OtherResponse(body, init) { return new Response(body, init); }
+  Object.defineProperty(OtherResponse.prototype, 'body', Object.getOwnPropertyDescriptor(Response.prototype, 'body'));
+  const originalResponse = host._window.Response;
+  host._window.Response = OtherResponse;
+  try {
+    assert(!(brandedEmpty instanceof OtherResponse), 'test did not separate constructor identity');
+    assert((await (await host._bufferResponse(brandedEmpty)).arrayBuffer()).byteLength === 0,
+      'native response brand was rejected solely by constructor identity');
+  } finally { host._window.Response = originalResponse; }
   let unboundedArrayRead = false;
   const unreadableResponse = await host._bufferResponse({
     status: 200, headers: new Headers(),
