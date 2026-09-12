@@ -75,13 +75,28 @@ async def test_character_resolves_mmd_against_static_and_user_directories(monkey
     character.pop("mmd")
     model["model_path"] = ""
     character.update(model_type="mmd", model_path="example/avatar.pmx")
+    result = await runtime.game_character("sdk-avatar")
+    assert result["model_type"] == "mmd"
     assert (await runtime.game_character("sdk-avatar"))["mmd_path"] == "/static/mmd/example/avatar.pmx"
+    character.update(model_type="live3d", live3d_sub_type="mmd")
+    result = await runtime.game_character("sdk-avatar")
+    assert (result["model_type"], result["live3d_sub_type"]) == ("live3d", "mmd")
+    assert result["mmd_path"] == "/static/mmd/example/avatar.pmx"
     for malformed in [None, "legacy", []]:
         character["_reserved"]["avatar"]["mmd"] = malformed
         assert (await runtime.game_character("sdk-avatar"))["mmd_path"] == "/static/mmd/example/avatar.pmx"
         character["mmd"] = "example/avatar.pmx"
         assert (await runtime.game_character("sdk-avatar"))["mmd_path"] == "/static/mmd/example/avatar.pmx"
         character.pop("mmd")
+
+    character.pop("model_type")
+    character.pop("live3d_sub_type")
+    character["_reserved"]["avatar"].update(
+        model_type="live3d", live3d_sub_type="mmd", mmd={"model_path": "example/avatar.pmx"},
+    )
+    result = await runtime.game_character("sdk-avatar")
+    assert (result["model_type"], result["live3d_sub_type"]) == ("live3d", "mmd")
+    assert result["mmd_path"] == "/static/mmd/example/avatar.pmx"
 
 
 @pytest.mark.unit

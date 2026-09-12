@@ -68,6 +68,7 @@ async function main() {
   let blocker = null;
   let speechMode = 'success';
   let failManual = false;
+  let rejectManual = false;
   let pauseFailure = '';
   let modelFailure = false;
   let manualBlocker = null;
@@ -114,6 +115,7 @@ async function main() {
         },
         setSpeaking(active) {
           if (failManual) throw new Error('manual rejected');
+          if (rejectManual) return false;
           if (manualBlocker) return manualBlocker;
           manual.set(config.slot, active); return true;
         },
@@ -229,6 +231,26 @@ async function main() {
     speechMode = 'success';
     await game.speech.speak({ text: 'Automatic after manual failure' }); emit(); await flush();
     assert.equal(calls.get('opponent').at(-1).active, true, 'manual failure retained ownership');
+    rejectManual = true;
+    assert.equal(await avatar.setSpeaking(true), false);
+    const rejectedCount = calls.get('opponent').length;
+    await game.speech.speak({ text: 'Automatic after declined manual activation' }); emit(); await flush();
+    assert(calls.get('opponent').length > rejectedCount
+      && calls.get('opponent').at(-1).active, 'declined manual activation retained automatic ownership');
+    rejectManual = false;
+    await avatar.setSpeaking(true);
+    rejectManual = true;
+    assert.equal(await avatar.setSpeaking(true), false);
+    const ownedCount = calls.get('opponent').length;
+    emit({ active: false }); await flush();
+    assert.equal(calls.get('opponent').length, ownedCount, 'rejected update lost previous manual ownership');
+    await avatar.setSpeaking(false); await flush();
+    await avatar.pause();
+    assert.equal(await avatar.setSpeaking(true), false);
+    rejectManual = false;
+    await avatar.resume(); await flush();
+    assert.equal(manual.get('opponent'), true, 'paused manual intent did not resume');
+    await avatar.setSpeaking(false); await flush();
     let finishOldFrame;
     blocker = new Promise(resolve => { finishOldFrame = resolve; });
     emit({ active: false }); await flush();

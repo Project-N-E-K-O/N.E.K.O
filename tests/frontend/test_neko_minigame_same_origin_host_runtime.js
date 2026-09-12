@@ -596,7 +596,11 @@ async function main() {
   // A custom fetch can ignore its signal even when it returns a real Response.
   // Cancelling the reader must settle pending reads without waiting for the
   // underlying source's (possibly non-cooperative) cancellation promise.
-  for (const mode of ['timeout', 'abort', 'dispose', 'read-error', 'overflow', 'header-overflow', 'late']) {
+  const streamCases = [32, undefined].flatMap(maxBytes =>
+    ['timeout', 'abort', 'dispose', 'read-error', 'overflow', 'header-overflow', 'late']
+      .filter(mode => maxBytes !== undefined || !mode.includes('overflow'))
+      .map(mode => ({ maxBytes, mode })));
+  for (const { maxBytes, mode } of streamCases) {
     let cancelCalls = 0;
     let bodyController;
     let requestSignal;
@@ -641,7 +645,7 @@ async function main() {
     });
     const external = new AbortController();
     const result = streamHost._request('/bounded-stream', {}, {
-      signal: external.signal, maxResponseBytes: 32, timeoutMs: mode === 'timeout' ? 30 : 300,
+      signal: external.signal, maxResponseBytes: maxBytes, timeoutMs: mode === 'timeout' ? 30 : 300,
     }).then(() => null, error => error);
     try {
       await new Promise(resolve => setImmediate(resolve));
@@ -658,7 +662,7 @@ async function main() {
         : mode.includes('overflow') ? 'invalid_response' : mode === 'read-error' ? 'network_error' : 'cancelled';
       assert(failure?.code === expected, `${mode}: lost request failure semantics`);
       assert(cancelCalls === 1 && !body.locked && abortListeners === 0,
-        `${mode}: response reader or abort listener was not released`);
+        `${mode} (maxBytes=${maxBytes}): response reader or abort listener was not released`);
       assert(streamHost._pendingRequests.size === 0 && streamHost._rawRequests.size === 0,
         `${mode}: completed body cancellation retained a request slot`);
       if (mode !== 'dispose') {
@@ -672,6 +676,10 @@ async function main() {
       streamHost.dispose();
     }
   }
+  const fullLegacyResponse = await host._bufferResponse(new Response(exactResponse + ' '));
+  assert((await fullLegacyResponse.clone().text()) === exactResponse + ' '
+    && (await fullLegacyResponse.json()).text.length === 2 * 1024 * 1024 - 11,
+  'legacy response reading imposed the command limit or lost complete replay semantics');
   const commandCall = calls.find((call) => call.url.endsWith('/round/input') && call.body.text === 'hello');
   assert(commandCall?.url === '/api/game/example-game/round/input'
     && commandCall.body.text === 'hello'
