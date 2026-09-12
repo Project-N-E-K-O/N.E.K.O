@@ -165,30 +165,35 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
     HTTP API -> send messages.
     """
 
-    #: 正式环境与沙箱是**两套域名**。未上线的机器人只存在于沙箱环境里：连正式网关会
-    #: 握手成功、拿到 READY，但平台侧一直显示离线、也收不到任何事件 —— 所以沙箱不是
-    #: 可选优化，是开发阶段的必需能力。
+    #: Production and sandbox are **two different domains**. An unpublished bot only
+    #: exists in the sandbox: connecting to the production gateway completes the
+    #: handshake and returns READY, yet the platform keeps reporting it offline and
+    #: no event ever arrives -- so sandbox support is not an optional nicety, it is
+    #: a prerequisite for using the platform before the bot is published.
     #:
-    #: 注意 ``_TOKEN_URL`` **不跟着切**：取 access_token 的 ``bots.qq.com`` 两套环境
-    #: 共用，只有 API/网关域名分环境。
+    #: Note that ``_TOKEN_URL`` does **not** switch with it: the access-token
+    #: endpoint on ``bots.qq.com`` is shared by both environments; only the
+    #: API/gateway domain is environment-specific.
     _API_BASE_PRODUCTION = "https://api.sgroup.qq.com"
     _API_BASE_SANDBOX = "https://sandbox.api.sgroup.qq.com"
 
     @property
     def _API_BASE(self) -> str:
-        """REST 与网关的基址（按沙箱开关切换）。
+        """Base URL for REST calls and the gateway, selected by the sandbox toggle.
 
-        做成属性而非类常量：``_API_BASE`` 有 7 处 ``self._API_BASE`` 引用（REST 路径
-        与网关 URL 都从它拼），属性让它们全部保持不变；而开关用零参回调传入时，
-        改设置**立即生效**，不必重建连接。
+        A property rather than a class constant: seven ``self._API_BASE`` references
+        (every REST path and the gateway URL are built from it) keep working unchanged,
+        and a zero-arg callable as the toggle makes a settings change take effect
+        immediately, with no reconnect.
         """
         sandbox = self._sandbox
         if callable(sandbox):
             try:
                 sandbox = sandbox()
             except Exception:
-                # 读设置失败一律回落正式环境：宁可连错环境并报错，
-                # 也不要在用户没要求时静默切到沙箱。
+                # Read failure falls back to production: better to connect to the
+                # wrong environment and report it than to silently switch to sandbox
+                # when the user never asked for it.
                 sandbox = False
         return self._API_BASE_SANDBOX if sandbox else self._API_BASE_PRODUCTION
     _TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
@@ -204,8 +209,9 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         emit_log: Any = None,
         sandbox: Any = None,
     ):
-        #: 沙箱开关：bool 或零参回调（与 ``identity_probe`` 同约定）。传回调时改设置
-        #: 立即生效 —— 用户切环境不必重启应用。
+        #: Sandbox toggle: a bool or a zero-arg callable (same convention as
+        #: ``identity_probe``). Passed as a callable, a settings change takes effect
+        #: immediately -- switching environments needs no restart.
         self._sandbox = sandbox
         #: Zero-arg callback; only records R11 forensics when it returns truthy
         #: (see module top). A callback (not a bool) so the toggle takes effect
@@ -469,7 +475,7 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[dict[str, Any]]:
         try:
-            message = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)  # noqa: ASYNC_BLOCK — _message_queue 是 asyncio.Queue，.get() 可 await，不阻塞事件循环
+            message = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)  # noqa: ASYNC_BLOCK -- _message_queue is an asyncio.Queue; .get() is awaitable and does not block the event loop
         except asyncio.TimeoutError:
             return None
         # Inbound broadcast hook (optional): hand the normalized message to the

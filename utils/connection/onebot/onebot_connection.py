@@ -158,8 +158,8 @@ class OneBotConnectionBase(ABC):
     # inbound QQ messages to other plugins; a plugin that owns its own connection
     # can also attach its own sink. Never blocks the message pipeline (best-effort).
     _INBOUND_SINK_ATTR = "_inbound_sink"
-    #: 入站 sink 任务集上限;满了 cancel + 丢弃最旧(与 SSE 通道的 drop-oldest 一致)。
-    #: 否则一个慢/永不完成的 sink 会让未完成任务集按消息量无限增长,拖垮连接器进程。
+    #: Cap on the inbound-sink task set; when full, cancel and drop the oldest.
+    #: Same drop-oldest semantics as the SSE channel -- otherwise a slow or never-finishing sink grows the unfinished-task set with the message rate and takes the connector process down.
     _INBOUND_SINK_MAX_BACKLOG = 100
 
     @property
@@ -204,9 +204,9 @@ class OneBotConnectionBase(ABC):
         if tasks is None:
             tasks = collections.deque()
             setattr(self, "_inbound_sink_tasks", tasks)
-        # 有界 backlog:满了就 cancel + 丢弃最旧(队首)未完成任务。这是 best-effort
-        # 广播,压力下丢旧保新(与 SSE 通道的 drop-oldest 语义一致);否则慢/永不完成
-        # 的 sink 会让任务集按消息量无限增长,最终拖垮连接器进程。
+        # Bounded backlog: when full, cancel and drop the oldest (front-of-queue) unfinished task.
+        # Best-effort broadcast -- under pressure drop old, keep new, matching the SSE channel's drop-oldest.
+        # Otherwise a slow or never-finishing sink grows the task set without bound and takes the connector process down.
         while len(tasks) >= self._INBOUND_SINK_MAX_BACKLOG:
             tasks.popleft().cancel()
         tasks.append(task)
@@ -220,7 +220,8 @@ class OneBotConnectionBase(ABC):
         try:
             tasks.remove(task)
         except ValueError:
-            # 已在 drop-oldest 时从队首清除;cancel 后 done_callback 又触发一次,忽略。
+            # Already removed from the front by drop-oldest; the done_callback fires once more
+# after cancel -- ignore it.
             pass
 
     def _cancel_inbound_sink_tasks(self) -> None:
