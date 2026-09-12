@@ -283,6 +283,11 @@
     // At most two model snapshots survive a runtime reset. Restoration or
     // page exit releases them; never retain a disposed renderer/controller.
     const soccerAvatarRestore = { player: null, ai: null };
+    function isSoccerAvatarModel(model, slot) {
+      return model && (slot === 'player' ? model.type === 'vrm'
+        : ['vrm', 'live2d', 'mmd', 'pngtuber'].includes(model.type))
+        && typeof model.path === 'string' && model.path.trim() && model.path.length <= 2048;
+    }
     function resetSoccerCharacterInfo() {
       soccerCharacterInfoGeneration += 1;
       soccerCharacterInfoPromise = null;
@@ -291,7 +296,10 @@
         const controller = window[key];
         if (controller && !controller.disposed) {
           const state = controller.getState();
-          soccerAvatarRestore[slot] = { model: { ...state.model }, paused: state.paused === true };
+          soccerAvatarRestore[slot] = {
+            model: isSoccerAvatarModel(state.model, slot) ? { ...state.model } : null,
+            paused: state.paused === true,
+          };
           controller.dispose();
         }
         window[key] = null;
@@ -364,16 +372,43 @@
     // Two fixed slots, no queued replacements. SDK disposal cancels any mount
     // in progress; finally releases the game-side fence on every outcome.
     const soccerAvatarChanging = { player: false, ai: false };
-    async function restoreSoccerAvatars() {
+    async function restoreSoccerAvatars(character) {
+      const generation = soccerCharacterInfoGeneration;
       for (const slot of ['player', 'ai']) {
         const snapshot = soccerAvatarRestore[slot];
         if (!snapshot) continue;
+        // Consume once, including failure. A bad saved file must not become
+        // an unbounded retry gate in front of every future route start.
+        soccerAvatarRestore[slot] = null;
         const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
-        if (!window[key] || window[key].disposed) {
-          const controller = await replaceSoccerAvatar(slot, snapshot.model);
-          if (snapshot.paused) controller.pause();
+        if (window[key] && !window[key].disposed) continue;
+        const candidates = [snapshot.model, ...(slot === 'player'
+          ? [{ type: 'vrm', path: '/static/vrm/sensei.vrm' }]
+          : [character?.model, ...(character?.fallbackModels || []).slice(0, 4)])];
+        const tried = new Set();
+        for (const model of candidates) {
+          if (!isSoccerAvatarModel(model, slot)) continue;
+          const identity = JSON.stringify([model.type, model.path]);
+          if (tried.has(identity)) continue;
+          tried.add(identity);
+          try {
+            const controller = await replaceSoccerAvatar(slot, model);
+            if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed) {
+              controller.dispose();
+              throw new Error('avatar_change_cancelled');
+            }
+            if (snapshot.paused) controller.pause();
+            break;
+          } catch (error) {
+            if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed
+                || ['cancelled', 'disposed', 'busy', 'timeout'].includes(error.code)
+                || ['avatar_change_cancelled', 'avatar_change_busy'].includes(error.message)
+                || error.name === 'AbortError') throw error;
+            console.warn('[soccer_demo] Avatar restore candidate unavailable:', error);
+          }
         }
-        if (soccerAvatarRestore[slot] === snapshot) soccerAvatarRestore[slot] = null;
+        // As with initial asset loading, unavailable optional rendering must
+        // not prevent gameplay when all bounded fallback candidates fail.
       }
     }
     async function replaceSoccerAvatar(slot, model) {
@@ -4557,8 +4592,8 @@
           try {
             window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
             resetSoccerSessionDebugLogEnableState();
-            await ensureSoccerCharacterInfo();
-            await restoreSoccerAvatars();
+            const character = await ensureSoccerCharacterInfo();
+            await restoreSoccerAvatars(character);
             const consent = await soccerGame.memory.configureConsent(_isGameMemoryEnabled());
             if (!consent.ok || consent.data?.ok === false) throw new Error('memory_consent_failed');
             const resp = await soccerGame.runtime.start(_gameRoutePayload(_gameRouteStartOptions));

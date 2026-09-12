@@ -75,6 +75,7 @@ async function main() {
   const renderers = [];
   let modelGate = null;
   let mountGate = null;
+  const unavailableModels = new Set();
   const listeners = new Map();
   const addEventListener = (type, handler) => {
     if (!listeners.has(type)) listeners.set(type, new Set());
@@ -95,6 +96,7 @@ async function main() {
     console, AbortController, setTimeout, clearTimeout,
     createSoccerAvatarHost: () => ({ async mount(config) {
       if (mountGate) await mountGate;
+      if (unavailableModels.has(config.model.path)) throw new Error('asset_missing');
       if (config.model.path === '/broken.pmx') throw new Error('asset_failed');
       const renderer = { config, model: config.model, disposed: false, paused: false,
         async setModel(model) {
@@ -475,6 +477,36 @@ async function main() {
     await game.runtime.end({});
     window.__SoccerAiAvatarController.dispose();
     window.__SoccerPlayerAvatarController.dispose();
+    for (const failure of ['empty', 'removed', 'unauthorized', 'all-unavailable']) {
+      game.runtime.reset({ newSession: true });
+      sandbox.resetSoccerCharacterInfo();
+      await vm.runInThisContext('ensureSoccerCharacterInfo()');
+      await sandbox.setAiAvatar({ type: 'vrm', path: '/saved.vrm' });
+      window.__SoccerAiAvatarController.pause();
+      const previous = window.__SoccerAiAvatarController;
+      if (failure === 'empty') renderers.at(-1).model = null;
+      if (failure === 'unauthorized') renderers.at(-1).model = { type: 'mmd', path: '/revoked.pmx' };
+      if (failure === 'removed' || failure === 'all-unavailable') unavailableModels.add('/saved.vrm');
+      if (failure === 'all-unavailable') {
+        unavailableModels.add('/test.vrm');
+        unavailableModels.add('/fallback.model3.json');
+      }
+      game.runtime.reset({ newSession: true });
+      sandbox.resetSoccerCharacterInfo();
+      assert.equal(previous.disposed, true);
+      const saved = vm.runInThisContext('soccerAvatarRestore.ai');
+      assert(!saved || !saved.model || saved.model.type, 'reset saved an empty model object');
+      await sandbox._startGameRoute();
+      assert.equal(game.runtime.state, 'running', `${failure}: avatar recovery blocked route startup`);
+      assert.equal(vm.runInThisContext('soccerAvatarRestore.ai'), null, `${failure}: invalid snapshot survived`);
+      if (failure !== 'all-unavailable') {
+        assert.equal(window.__SoccerAiAvatarController.getState().model.path, '/test.vrm');
+        assert.equal(window.__SoccerAiAvatarController.getState().paused, true);
+      }
+      await game.runtime.end({});
+      unavailableModels.clear();
+      window.__SoccerAiAvatarController?.dispose();
+    }
     game.runtime.reset({ newSession: true });
     sandbox.resetSoccerCharacterInfo();
     await vm.runInThisContext('ensureSoccerCharacterInfo()');
