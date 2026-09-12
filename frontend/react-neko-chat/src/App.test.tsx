@@ -379,6 +379,52 @@ describe('App', () => {
     expect(input).toHaveValue('等待剧场宿主就绪');
   });
 
+  it.each(['evaluating', 'performing', 'ended'] as const)(
+    'locks the open theater composer during %s and preserves its draft', (phase) => {
+      const onTheaterSubmit = vi.fn();
+      const onComposerSubmit = vi.fn();
+      const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+      const { rerender } = render(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      const input = screen.getByPlaceholderText('Type a message...');
+      fireEvent.change(input, { target: { value: '留在这里等她' } });
+      rerender(<App {...props} theaterPresentation={{ active: true, phase }} />);
+
+      expect(input).toHaveAttribute('readonly');
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      fireEvent.change(input, { target: { value: '不能写入的草稿' } });
+      pressEnter(input);
+      fireEvent.submit(input.closest('form')!);
+      expect(onTheaterSubmit).not.toHaveBeenCalled();
+      expect(onComposerSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue('留在这里等她');
+
+      rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      expect(input).not.toHaveAttribute('readonly');
+      pressEnter(input);
+      expect(onTheaterSubmit).toHaveBeenCalledExactlyOnceWith('留在这里等她');
+    },
+  );
+
+  it('restores a theater IME draft on blur without overwriting the ordinary draft', () => {
+    const onTheaterSubmit = vi.fn();
+    const onComposerSubmit = vi.fn();
+    const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+    const { rerender } = render(<App {...props} />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'ordinary draft' } });
+    rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+    fireEvent.change(input, { target: { value: '等待她回应' } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true });
+    fireEvent.input(input, { target: { value: '等待她回应\n' }, inputType: 'insertLineBreak' });
+    fireEvent.blur(input);
+    expect(input).toHaveValue('等待她回应');
+    expect(onTheaterSubmit).not.toHaveBeenCalled();
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    rerender(<App {...props} />);
+    expect(input).toHaveValue('ordinary draft');
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(

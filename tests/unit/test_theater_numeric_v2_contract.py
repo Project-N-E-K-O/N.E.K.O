@@ -1098,7 +1098,7 @@ def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
     assert registry.list_packages()[0]["story_id"] == "numeric_v2_contract"
 
 
-def test_numeric_v2_registry_falls_back_to_exclusive_creation(tmp_path, monkeypatch):
+def test_numeric_v2_registry_publishes_complete_package_without_hard_links(tmp_path, monkeypatch):
     package_root = tmp_path / "theater" / "numeric_v2" / "packages"
     registry = NumericV2PackageRegistry(package_root)
 
@@ -1106,9 +1106,74 @@ def test_numeric_v2_registry_falls_back_to_exclusive_creation(tmp_path, monkeypa
         raise OSError("hard links unavailable")
 
     monkeypatch.setattr(numeric_v2_registry.os, "link", no_hard_links)
+    original_open = numeric_v2_registry.os.open
+    target = registry.package_path('numeric_v2_contract')
+
+    def observe_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if target.exists():
+            # A reader must never see an empty/partial installed JSON while
+            # the importer is still writing the package.
+            try:
+                registry.load_engine('numeric_v2_contract')
+            except Exception:
+                numeric_v2_registry.os.close(fd)
+                raise
+        return fd
+
+    monkeypatch.setattr(numeric_v2_registry.os, 'open', observe_open)
     result = registry.import_package(numeric_v2_story())
 
     assert result["story_id"] == "numeric_v2_contract"
     assert (package_root / "numeric_v2_contract.json").is_file()
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())
+
+
+@pytest.mark.parametrize('failure_point', ['fsync', 'replace'])
+def test_numeric_v2_registry_failed_publish_leaves_no_installed_package(tmp_path, monkeypatch, failure_point):
+    registry = NumericV2PackageRegistry(tmp_path)
+
+    def fail(*args, **kwargs):
+        raise OSError('injected publish failure')
+
+    monkeypatch.setattr(numeric_v2_registry.os, failure_point, fail)
+    with pytest.raises(NumericV2PackageError, match='numeric_v2_import_failed'):
+        registry.import_package(numeric_v2_story())
+    assert not registry.package_path('numeric_v2_contract').exists()
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_numeric_v2_registry_concurrent_imports_never_replace_the_winner(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def install(title):
+        registry = NumericV2PackageRegistry(tmp_path)
+        story = numeric_v2_story()
+        story['meta']['title'] = title
+        barrier.wait(timeout=5)
+        try:
+            return registry.import_package(story)['title']
+        except NumericV2PackageExistsError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(install, ['First candidate', 'Second candidate']))
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    assert NumericV2PackageRegistry(tmp_path).list_packages()[0]['title'] == winners[0]
+
+
+def test_numeric_v2_registry_does_not_replace_dangling_package_link(tmp_path):
+    registry = NumericV2PackageRegistry(tmp_path)
+    target = registry.package_path('numeric_v2_contract')
+    try:
+        target.symlink_to(tmp_path / 'missing.json')
+    except OSError:
+        pytest.skip('symlink creation is unavailable on this filesystem')
+    with pytest.raises(NumericV2PackageExistsError):
+        registry.import_package(numeric_v2_story())
+    assert target.is_symlink()

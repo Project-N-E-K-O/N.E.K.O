@@ -975,7 +975,8 @@ function CompactChatApp({
   const theaterActive = theaterPresentation.active === true;
   const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
-  const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
+  const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
+    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
@@ -1054,7 +1055,6 @@ function CompactChatApp({
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
-  const compactCapsuleEntryLocked = compactTextEntryLocked || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -6277,7 +6277,9 @@ function CompactChatApp({
                             composerImeCommitPendingRef.current = false;
 
                             if (shouldRestoreDraft) {
-                              if (catLocalTextOnly) {
+                              if (theaterActive) {
+                                setTheaterDraft(draftBeforeEnter);
+                              } else if (catLocalTextOnly) {
                                 setCatDraft(draftBeforeEnter);
                               } else {
                                 setDraft(draftBeforeEnter);
@@ -6305,10 +6307,10 @@ function CompactChatApp({
                           data-compact-hit-region="true"
                           data-compact-hit-region-id="capsule:text"
                           data-compact-hit-region-kind="capsule-text"
-                          disabled={compactCapsuleEntryLocked}
+                          disabled={compactTextEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (compactCapsuleEntryLocked) return;
+                            if (compactTextEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >

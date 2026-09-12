@@ -1347,9 +1347,11 @@ def test_theater_end_confirm_is_transparent_and_clickable(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('legacy_actions', [False, True])
 def test_theater_capsule_restores_action_and_scene_narration_without_mixing(
     mock_page: Page,
     running_server: str,
+    legacy_actions: bool,
 ):
     """恢复历史时也必须按换场 phase 区分括号动作和独立场景旁白。"""  # noqa: DOCSTRING_CJK
 
@@ -1382,6 +1384,11 @@ def test_theater_capsule_restores_action_and_scene_narration_without_mixing(
         "transition_delivered": True,
         "visible_node_id": "mainline_02",
     }
+    if legacy_actions:
+        transition['segments'][0]['content'][0]['type'] = 'action'
+        # A legacy action-only bridge remains an action bubble, even though
+        # scene narration in the same phase normally uses a system bubble.
+        transition['segments'][1]['content'] = [{'type': 'action', 'text': '她跨过站台的积水。'}]
 
     def handler(route: Route) -> None:
         path = route.request.url.split("?", 1)[0]
@@ -1438,15 +1445,18 @@ def test_theater_capsule_restores_action_and_scene_narration_without_mixing(
     assistant_messages = history.locator(".compact-export-history-message.is-assistant")
     system_messages = history.locator(".compact-export-history-message.is-system")
     expect(assistant_messages).to_have_count(3)
-    expect(system_messages).to_have_count(3)
+    expect(system_messages).to_have_count(2 if legacy_actions else 3)
     # 已有括号不能被重复包装，换场桥和目标开场也不能误显示成微动作。
     source_response_message = assistant_messages.nth(1)
     expect(source_response_message).to_contain_text("（她收好旧信。）")
     expect(source_response_message).not_to_contain_text("（（她收好旧信。））")
-    expect(system_messages.nth(1)).to_contain_text("雨停后，两人来到车站。")
-    expect(system_messages.nth(1)).not_to_contain_text("（雨停后，两人来到车站。）")
-    expect(system_messages.nth(2)).to_contain_text("末班车的灯照亮空荡站台。")
-    expect(system_messages.nth(2)).not_to_contain_text("（末班车的灯照亮空荡站台。）")
+    if legacy_actions:
+        expect(source_response_message).to_contain_text('（她跨过站台的积水。）')
+    else:
+        expect(system_messages.nth(1)).to_contain_text("雨停后，两人来到车站。")
+        expect(system_messages.nth(1)).not_to_contain_text("（雨停后，两人来到车站。）")
+    expect(system_messages.last).to_contain_text("末班车的灯照亮空荡站台。")
+    expect(system_messages.last).not_to_contain_text("（末班车的灯照亮空荡站台。）")
 
 
 @pytest.mark.frontend
@@ -1617,6 +1627,11 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
     mock_page.evaluate("""() => window.dispatchEvent(new CustomEvent(
         'neko-assistant-speech-end', {detail:{turnId:'unrelated-speech'}}))""")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
+    for kind in ('end', 'cancel', 'unavailable'):
+        mock_page.evaluate("""kind => window.dispatchEvent(new CustomEvent(
+            'neko-assistant-speech-' + kind, {detail:{reason:'ordinary-session-stop'}}))""", kind)
+        mock_page.clock.run_for(100)
+        assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
     if completion == "timeout":
         # 完成事件丢失时仍有有限兜底，不永久锁住玩家输入。
         mock_page.clock.run_for(100000)

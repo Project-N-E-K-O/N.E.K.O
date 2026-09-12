@@ -279,6 +279,12 @@
                 raw.forEach(function (block) {
                     var type = block && block.type;
                     var text = String(block && block.text || '').trim();
+                    if (text && type === 'action') {
+                        // Legacy ordered actions retain character-bubble
+                        // formatting even in an opening or transition bridge.
+                        blocks.push(presentationBlock('narration', text, 'ordinary'));
+                        return;
+                    }
                     if (text && (type === 'narration' || (type === 'dialogue' && block.speaker_id === 'active_catgirl'))) {
                         blocks.push(presentationBlock(type, text, phase));
                     }
@@ -493,7 +499,9 @@
             }
             function onEnd(event) {
                 var turnId = event && event.detail && event.detail.turnId;
-                if (!speechId || !turnId || String(turnId) === String(speechId)) finish();
+                // Ordinary-session shutdown can emit an uncorrelated event;
+                // only this theater utterance may release its playback wait.
+                if (speechId && turnId && String(turnId) === String(speechId)) finish();
             }
             window.addEventListener('neko-assistant-speech-end', onEnd);
             window.addEventListener('neko-assistant-speech-unavailable', onEnd);

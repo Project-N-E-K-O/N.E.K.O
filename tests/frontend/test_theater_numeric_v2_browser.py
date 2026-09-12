@@ -1002,16 +1002,20 @@ def test_returning_to_story_ignores_first_selection_response(mock_page: Page, ru
     expect(mock_page.locator('#theater-detail-title')).to_have_text(other['title'])
     mock_page.locator(f'[data-story-id="{STORY["story_id"]}"]').click()
     expect(mock_page.locator('[data-theater-view-session="fresh-archive"]')).to_be_visible()
-    if failed_response:
-        pending['route'].abort('failed')
-    elif delayed_stage == 'active':
-        _fulfill(pending['route'], {'ok': True, 'session': {'session_id': 'stale-session', 'revision': 1,
-            'status': 'ended'}, 'end_receipt_id': 'stale-receipt', 'archive_status': 'pending'})
-    else:
-        _fulfill(pending['route'], {'ok': True, 'archives': [{'session_id': 'stale-archive', 'revision': 1}]})
-    # A response event alone precedes its promise continuation; wait for the UI
-    # thread to drain both the fetch continuation and the following render.
-    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    delayed_request = pending['route'].request
+    with mock_page.expect_event(
+        'requestfailed' if failed_response else 'requestfinished',
+        predicate=lambda request: request == delayed_request,
+    ):
+        if failed_response:
+            pending['route'].abort('failed')
+        elif delayed_stage == 'active':
+            _fulfill(pending['route'], {'ok': True, 'session': {'session_id': 'stale-session', 'revision': 1,
+                'status': 'ended'}, 'end_receipt_id': 'stale-receipt', 'archive_status': 'pending'})
+        else:
+            _fulfill(pending['route'], {'ok': True, 'archives': [{'session_id': 'stale-archive', 'revision': 1}]})
+    # Wait for the exact delayed request to finish before draining UI work.
+    mock_page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
     expect(mock_page.locator('[data-theater-view-session="fresh-archive"]')).to_be_visible()
     expect(mock_page.locator('#theater-modal')).to_be_hidden()
     expect(mock_page.locator('#theater-inline-feedback')).not_to_contain_text('读取失败')

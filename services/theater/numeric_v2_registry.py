@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
+import portalocker
+
 from .numeric_v2 import NumericV2CompileError, NumericV2Compiler
 
 
@@ -235,7 +237,7 @@ class NumericV2PackageRegistry:
         temporary_path: Path | None = None
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            if target.exists():
+            if os.path.lexists(target):
                 raise NumericV2PackageExistsError("numeric_v2_story_exists")
             with tempfile.NamedTemporaryFile(
                 dir=self.root,
@@ -243,40 +245,21 @@ class NumericV2PackageRegistry:
                 suffix=".tmp",
                 delete=False,
             ) as temporary:
+                temporary_path = Path(temporary.name)
                 temporary.write(compiled.json_bytes)
                 temporary.flush()
                 os.fsync(temporary.fileno())
-                temporary_path = Path(temporary.name)
-            try:
-                os.link(temporary_path, target)
-            except FileExistsError as exc:
-                raise NumericV2PackageExistsError("numeric_v2_story_exists") from exc
-            except OSError:
-                # Some user-selected filesystems do not support hard links.
-                # Fall back to exclusive creation without ever replacing a
-                # target that another process may have created concurrently.
-                try:
-                    target_fd = os.open(
-                        target,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                        0o600,
-                    )
-                except FileExistsError as exc:
-                    raise NumericV2PackageExistsError("numeric_v2_story_exists") from exc
-                try:
-                    with os.fdopen(target_fd, "wb") as target_file:
-                        target_file.write(compiled.json_bytes)
-                        target_file.flush()
-                        os.fsync(target_file.fileno())
-                except Exception:
-                    try:
-                        target.unlink()
-                    except OSError:
-                        pass
-                    raise
+            # Serialize the existence check and publication across registry
+            # instances/processes. Keep the lock file: unlinking it could let
+            # waiters lock different inodes. Readers only see complete JSON,
+            # including on user-selected filesystems without hard links.
+            with portalocker.Lock(str(self.root / ".imports.lock"), mode="a", timeout=10):
+                if os.path.lexists(target):
+                    raise NumericV2PackageExistsError("numeric_v2_story_exists")
+                os.replace(temporary_path, target)
         except NumericV2PackageError:
             raise
-        except OSError as exc:
+        except (OSError, portalocker.exceptions.LockException) as exc:
             raise NumericV2PackageError("numeric_v2_import_failed") from exc
         finally:
             if temporary_path is not None and temporary_path.exists():
