@@ -8,6 +8,8 @@ async def test_vision_uses_provider_factory_and_accepts_keyless_custom(tmp_path,
     from unittest.mock import AsyncMock
     from main_logic.watch_together.engine import Engine
     from utils import llm_client
+    from utils import tokenize
+    monkeypatch.setattr(tokenize, '_get_encoder', lambda _: None)
     response = SimpleNamespace(content='{"events":[]}', response_metadata={'token_usage': {'input_tokens': 10, 'output_tokens': 2}})
     client = SimpleNamespace(ainvoke=AsyncMock(return_value=response), aclose=AsyncMock())
     factory = AsyncMock(return_value=client)

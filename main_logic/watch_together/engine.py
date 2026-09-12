@@ -353,8 +353,8 @@ class Engine:
             bounded = []
             for block in content:
                 if block.get('type') == 'text':
-                    value = truncate_to_tokens(block.get('text', ''), remaining)
-                    remaining = max(0, remaining - count_tokens(value))
+                    value = await asyncio.to_thread(truncate_to_tokens, block.get('text', ''), remaining)
+                    remaining = max(0, remaining - await asyncio.to_thread(count_tokens, value))
                     bounded.append({**block, 'text': value})
                 else:
                     bounded.append(block)
