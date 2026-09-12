@@ -346,6 +346,16 @@ async function attachmentTests() {
     Array(4).fill({type:'image',source:new Blob([new Uint8Array(2*1024*1024)],{type:'image/png'})}),
   ]) await assert.rejects(helper.normalizeAttachments(input,options));
   const oldRequests=requests;
+  class MisreportedBlob extends Blob {
+    constructor(length) { super([new Uint8Array(1)], {type:'image/png'}); this.length=length; }
+    async arrayBuffer() { return new ArrayBuffer(this.length); }
+  }
+  for (const lengths of [[2*1024*1024+1], [2*1024*1024,2*1024*1024,2*1024*1024,1]]) {
+    await assert.rejects(helper.normalizeAttachments(lengths.map(length => ({
+      type:'image',source:new MisreportedBlob(length),
+    })),options), {code:'invalid_image'});
+    assert.equal((await helper.normalizeAttachments([{type:'image',source:data}],options)).length,1);
+  }
   w.fetch=async()=>{ throw new TypeError('CORS denial with private URL'); };
   await assert.rejects(helper.normalizeAttachments([{type:'image',source:'https://other.invalid/a.png'}],options),
     error=>error.code==='image_unavailable'&&!error.message.includes('private'));

@@ -4850,6 +4850,8 @@ async def game_character(game_type: str, request: Request = None):
         # 获取 _reserved.avatar 配置
         reserved = neko_data.get('_reserved', {})
         avatar = reserved.get('avatar', {}) if isinstance(reserved, dict) else {}
+        if not isinstance(avatar, dict):
+            avatar = {}
 
         model_type = avatar.get('model_type', '') if isinstance(avatar, dict) else ''
         live3d_sub_type = avatar.get('live3d_sub_type', '') if isinstance(avatar, dict) else ''
@@ -4872,8 +4874,9 @@ async def game_character(game_type: str, request: Request = None):
                     pngtuber_path = await asyncio.to_thread(
                         _resolve_pngtuber_image_path, raw_png, config_manager, current_name,
                     )
-            live2d_info = avatar.get('live2d', {})
-            if isinstance(live2d_info, dict):
+            # The canonical resolver owns legacy aliases and fallback policy,
+            # including malformed/missing reserved Live2D subobjects.
+            if isinstance(neko_data, dict):
                 # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。
                 # 始终复用主角色接口的规范解析结果；即使保存路径为空，主页面也可能
                 # 已经选定回退模型，小游戏不能再自行选择另一只默认角色。
@@ -4907,13 +4910,16 @@ async def game_character(game_type: str, request: Request = None):
                     _resolve_mmd_path, raw_mmd.strip().replace('\\', '/'), config_manager, current_name,
                 )
 
-            vrm_info = avatar.get('vrm', {})
-            if isinstance(vrm_info, dict):
-                raw = vrm_info.get('model_path', '')
-                if raw:
-                    from ..config_router import _resolve_vrm_path
+            from utils.config_manager.reserved_schema import get_reserved
 
-                    vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
+            raw_vrm = get_reserved(neko_data, 'avatar', 'vrm', 'model_path',
+                                   default='', legacy_keys=('vrm',))
+            if isinstance(raw_vrm, str) and raw_vrm.strip() and len(raw_vrm) <= 2048:
+                from ..config_router import _resolve_vrm_path
+
+                vrm_path = await asyncio.to_thread(
+                    _resolve_vrm_path, raw_vrm.strip(), config_manager, current_name,
+                )
 
         language, language_preference_resolved = (
             await _load_game_character_prompt_locale(current_name)

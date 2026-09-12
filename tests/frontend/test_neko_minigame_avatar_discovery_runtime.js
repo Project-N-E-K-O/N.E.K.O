@@ -405,6 +405,9 @@ async function characterBinding() {
         const mounting = client.avatar.mount(config); await tick();
         if (order === 'mounted') await mounting;
         await assert.rejects(client.runtime.bindCharacter('Other'), {code:'invalid_state'});
+        client.runtime.reset();
+        await assert.rejects(client.runtime.bindCharacter('Other'), {code:'invalid_state'},
+          'reset must not erase an actual renderer or raw mount owner');
         assert.equal(h.routeLanlanName, '', 'mount race rebound the host');
         mountGate.resolve(); const controller = await mounting;
         controller.dispose();
@@ -413,6 +416,31 @@ async function characterBinding() {
     } finally { mountGate.resolve(); bindGate.resolve(other); client.dispose(); }
     assert.equal(e.timers.size, 0);
   }
+
+  const capacityEnv = await environment(() => ({getCharacter: () => ({...descriptor,name:'Other'}), mount() {}, dispose() {}}));
+  const capacityHost = capacityEnv.host();
+  const held = [];
+  capacityHost.mountAvatar = () => new Promise((resolve, reject) => { held.push({resolve,reject}); });
+  const capacityClient = await capacityEnv.game(capacityHost);
+  const config = {slot:'opponent',characterName:'Neko',model:descriptor.model,
+    viewport:{mode:'fixed',width:200,height:300},resize:{mode:'fixed'}};
+  const pendingMounts = [];
+  try {
+    for (let i=0;i<8;i++) {
+      pendingMounts.push(capacityClient.avatar.mount({...config,slot:`slot-${i}`}).catch(error => error));
+      capacityClient.runtime.reset();
+    }
+    await assert.rejects(capacityClient.avatar.mount(config), {code:'busy'});
+    await assert.rejects(capacityClient.runtime.bindCharacter('Other'), {code:'invalid_state'});
+    assert.equal(held.length,8,'reset bypassed the hard raw mount bound');
+    for (const item of held) item.reject(new Error('provider recovered'));
+    await Promise.all(pendingMounts);
+    assert.equal((await capacityClient.runtime.bindCharacter('Other')).name,'Other');
+  } finally {
+    for (const item of held) item.reject(new Error('test cleanup'));
+    await Promise.all(pendingMounts); capacityClient.dispose();
+  }
+  assert.equal(capacityEnv.timers.size,0);
 
   for (const action of ['reset', 'abort', 'timeout', 'dispose']) {
     const gate = deferred();

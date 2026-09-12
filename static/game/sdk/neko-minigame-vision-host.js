@@ -164,8 +164,11 @@
         } else {
           blob = new w.Blob([source], {type:item.mimeType});
         }
-        account(blob.size);
+        // Preflight declared storage, but account the actual returned buffer:
+        // supported Blob subclasses may override arrayBuffer().
+        if (!blob.size || blob.size > MAX_IMAGE_BYTES || total + blob.size > MAX_TOTAL_BYTES) invalidImage();
         const bytes = new Uint8Array(await blob.arrayBuffer()); check();
+        account(bytes.byteLength);
         let binary = '';
         for (let offset=0;offset<bytes.length;offset+=8192) binary += String.fromCharCode(...bytes.subarray(offset,offset+8192));
         source = `data:${blob.type};base64,${w.btoa(binary)}`;

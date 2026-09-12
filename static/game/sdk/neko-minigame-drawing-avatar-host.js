@@ -11,6 +11,9 @@
   const SLOT = 'drawing-guess-character';
   const CHARACTER_LIMIT = 256;
   const QUERY_LIMIT = 4;
+  // Catalogs and model JSON are not command/image payloads. Keep a separate,
+  // finite input budget, enforced before materializing the parsed object.
+  const MAX_JSON_BYTES = 16 * 1024 * 1024;
   const NAME_LIMIT = 128;
   const PATH_LIMIT = 2048;
   const VRM_DEFAULT_IDLE = '/static/vrm/animation/wait03.vrma.gz';
@@ -308,11 +311,49 @@
         const response = await fetchImpl(url, {
           cache: 'no-store', credentials: 'same-origin', ...requestOptions, signal: controller.signal,
         });
-        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
-        if (!response?.ok) fail('request_failed', 'The Avatar character request failed', {
-          status: Number(response?.status || 0),
-        });
-        const value = await response.json();
+        const cancelBody = () => {
+          try { response?.body?.cancel?.()?.catch?.(() => {}); } catch (_) { /* already closed */ }
+        };
+        if (controller.signal.aborted) { cancelBody(); fail('cancelled', 'Avatar request cancelled'); }
+        if (!response?.ok) {
+          cancelBody();
+          fail('request_failed', 'The Avatar character request failed', {status: Number(response?.status || 0)});
+        }
+        if (Number(response.headers?.get?.('Content-Length')) > MAX_JSON_BYTES) {
+          cancelBody(); fail('invalid_response', 'Avatar JSON response exceeds 16 MiB');
+        }
+        if (typeof response.body?.getReader !== 'function') {
+          cancelBody(); fail('invalid_response', 'Avatar fetch must return a readable Response');
+        }
+        const reader = response.body.getReader();
+        let complete = false;
+        let bytes = 0;
+        let text = '';
+        const cancelReader = () => {
+          try { reader.cancel()?.catch?.(() => {}); } catch (_) { /* already closed */ }
+        };
+        controller.signal.addEventListener('abort', cancelReader, {once:true});
+        let value;
+        try {
+          const decoder = new TextDecoder('utf-8');
+          while (true) {
+            if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+            const chunk = await reader.read();
+            if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+            if (chunk.done) { complete = true; break; }
+            bytes += chunk.value.byteLength;
+            if (bytes > MAX_JSON_BYTES) fail('invalid_response', 'Avatar JSON response exceeds 16 MiB');
+            text += decoder.decode(chunk.value, {stream:true});
+          }
+          text += decoder.decode();
+          try { value = JSON.parse(text); }
+          catch (_) { fail('invalid_response', 'Invalid Avatar JSON response'); }
+        } finally {
+          controller.signal.removeEventListener('abort', cancelReader);
+          if (!complete) cancelReader();
+          reader.releaseLock();
+          text = '';
+        }
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         return value;
       } catch (cause) {
@@ -1164,7 +1205,14 @@
               : state.kind === 'mmd' ? state.manager?.animationModule : state.manager;
             const method = state.kind === 'pngtuber' ? 'setSpeaking' : 'startLipSync';
             if (typeof target?.[method] !== 'function') state.speaking = false;
-            else target[method](state.kind === 'pngtuber' ? true : speechAnalyser);
+            else {
+              try { target[method](state.kind === 'pngtuber' ? true : speechAnalyser); }
+              catch (error) {
+                stopSpeaking();
+                state.automaticSpeech = false;
+                throw error;
+              }
+            }
           }
           return state.speaking;
         },
