@@ -357,4 +357,26 @@ assert.equal(routeEnded,true);
 assert.equal(exitWrites.length,1);
 assert.equal(exitWrites[0].id,'late-watch');
 assert.equal(exitWrites[0].event.type,'exit');
-console.log('watch-together scene: all regressions passed, including delayed watch start cleanup');
+const inactiveStart=await fixture(false,false,{total_tokens:1});
+const inactiveRequest=inactiveStart.game.media.request;
+let finishInactiveStart, inactiveMounts=0;
+const inactiveWrites=[];
+inactiveStart.game.media.mount=async()=>{inactiveMounts++;throw Error('must not mount');};
+inactiveStart.game.media.request=async(action,payload)=>{
+  if(action==='watch') {
+    if(payload.action==='start')return new Promise(resolve=>{finishInactiveStart=resolve;});
+    inactiveWrites.push(payload);
+    throw Error('inactive route');
+  }
+  return inactiveRequest(action,payload);
+};
+const inactivePlay=inactiveStart.elements.get('play').onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+inactiveStart.game.runtime.state='inactive';
+inactiveStart.handlers['runtime-inactive']();
+finishInactiveStart({id:'interrupted-attempt'});
+await inactivePlay;
+assert.equal(inactiveMounts,0);
+assert.equal(inactiveWrites.length,0,'inactive routes cannot accept fabricated cleanup events');
+assert.equal(inactiveStart.elements.get('video').controls,false);
+console.log('watch-together scene: all regressions passed, including inactive delayed watch start');
