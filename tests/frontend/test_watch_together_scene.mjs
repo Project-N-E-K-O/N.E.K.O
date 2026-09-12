@@ -470,3 +470,27 @@ emptyAutomatic.elements.get('video').ended=true;emptyAutomatic.emit({type:'ended
 await new Promise(resolve=>setTimeout(resolve,20));
 assert.equal(autoLoads,2,'first completion must load another item instead of replaying the first');
 await emptyAutomatic.elements.get('watch-stop').onclick();
+
+// A failed current item is skipped, even if it failed before starting prefetch.
+const realTimeout=globalThis.setTimeout;
+globalThis.setTimeout=(fn,delay,...args)=>realTimeout(fn,Math.min(delay,10),...args);
+const recovery=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'replacement',url:'replacement',title:'Replacement'}}));
+const recoveryRequest=recovery.game.media.request;
+let attempts=0,replacementLoads=0;
+recovery.game.media.mount=async()=>({play:async()=>{attempts++;if(attempts===1)throw Error('unplayable current item');},dispose(){}});
+recovery.game.media.request=async(action,payload)=>{
+  if(action==='prepare')return {id:'replacement-job'};
+  if(action==='preparation')return {status:'ready'};
+  if(action==='history')return {analyses:[{job:'replacement-job',version:'v',status:'ready'}]};
+  if(action==='load')replacementLoads++;
+  return recoveryRequest(action,payload);
+};
+try {
+  recovery.elements.get('automatic-enabled').checked=true;recovery.elements.get('automatic-enabled').onchange();
+  for(let i=0;i<100 && attempts<2;i++)await new Promise(resolve=>realTimeout(resolve,10));
+  assert.equal(attempts,2,'a failed Play must eventually play a newly discovered replacement');
+  assert.equal(replacementLoads,1,'failure skips the broken selection rather than looping it');
+  assert.ok(recovery.calls.some(call=>call.action==='discover'),'retry starts discovery when no next item was prefetched');
+} finally {
+  await recovery.elements.get('watch-stop').onclick();globalThis.setTimeout=realTimeout;
+}
