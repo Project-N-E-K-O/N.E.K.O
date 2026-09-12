@@ -26,7 +26,14 @@ async def inspect_video(url):
             raise ValueError("Invalid video URL")
         async with httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
             response = await client.get(url)
-            url = response.headers.get("location", "")
+            location = response.headers.get("location", "").strip()
+            if response.status_code not in (301, 302, 303, 307, 308) or not location:
+                raise httpx.HTTPStatusError("Short-link metadata unavailable", request=response.request, response=response)
+            url = str(response.url.join(location))
+            try:
+                parse_video_url(url)
+            except ValueError as exc:
+                raise httpx.HTTPStatusError("Invalid short-link destination", request=response.request, response=response) from exc
     bvid, page = parse_video_url(url)
     credential = await asyncio.to_thread(_get_bilibili_credential)
     info = await asyncio.wait_for(video.Video(bvid=bvid, credential=credential or Credential()).get_info(), 40)

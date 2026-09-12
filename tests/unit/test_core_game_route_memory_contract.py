@@ -807,7 +807,9 @@ async def test_tts_audio_done_resolves_game_speech_completion_slot():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_speech_preload_captures_audio_without_sending_playback():
+@pytest.mark.parametrize('oversized', [False, True])
+@pytest.mark.parametrize('tagged', [False, True])
+async def test_game_speech_preload_captures_audio_without_sending_playback(oversized, tagged):
     GAME_SPEECH_AUDIO_CACHE.clear()
     mgr = _make_manager()
     mgr.send_speech = AsyncMock(return_value=True)
@@ -832,7 +834,8 @@ async def test_game_speech_preload_captures_audio_without_sending_playback():
                     active_speech_id = None
                 continue
             active_speech_id = speech_id
-            response_queue.put(("__audio__", speech_id, b"silent-preload-pcm"))
+            payload = b'x' * (GAME_SPEECH_AUDIO_CACHE.max_entry_bytes + 1) if oversized else b"silent-preload-pcm"
+            response_queue.put(("__audio__", speech_id, payload) if tagged else payload)
 
     mgr._resolve_tts_worker_spec = lambda: (
         fake_worker,
@@ -848,6 +851,13 @@ async def test_game_speech_preload_captures_audio_without_sending_playback():
             ["  预载这句  ", "预载这句"],
         )
 
+        if oversized:
+            assert result['ok'] is False
+            assert result['results'] == [{'index': 0, 'status': 'failed', 'reason': 'audio_too_large'}]
+            assert GAME_SPEECH_AUDIO_CACHE.get('preload-cache-key') is None
+            assert mgr._game_speech_preload_active_workers == {}
+            mgr.send_speech.assert_not_awaited()
+            return
         assert result["ok"] is True
         assert result["results"] == [{"index": 0, "status": "loaded"}]
         assert GAME_SPEECH_AUDIO_CACHE.get("preload-cache-key") == (

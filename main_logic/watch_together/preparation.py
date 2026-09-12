@@ -3,7 +3,7 @@ import asyncio
 import json
 import uuid
 
-from .engine import Engine, media_binary
+from .engine import Engine, SpeechCueTooLarge, media_binary
 from .library import application_library
 
 jobs = {}
@@ -60,7 +60,11 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         if signature != voice_signature:
             raise ValueError("Character voice changed during preparation")
         result = await manager.preload_game_speech_audio([text], render_language=language)
-        if not result.get("ok") or manager.game_speech_audio_cache_identity(text, render_language=language) != (key, signature):
+        if manager.game_speech_audio_cache_identity(text, render_language=language) != (key, signature):
+            raise ValueError("Character voice changed during preparation")
+        if not result.get("ok") and any(item.get("reason") == "audio_too_large" for item in result.get("results", [])):
+            raise SpeechCueTooLarge()
+        if not result.get("ok"):
             raise ValueError("Character voice changed or synthesis failed")
         chunks = GAME_SPEECH_AUDIO_CACHE.get(key)
         if not chunks:

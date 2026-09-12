@@ -39,6 +39,43 @@ async def speech_ready(*args, **kwargs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('reason,changed,expected', [
+    ('audio_too_large', False, preparation.SpeechCueTooLarge),
+    ('tts_incomplete', False, ValueError),
+    ('audio_too_large', True, ValueError),
+])
+async def test_preparation_distinguishes_oversized_audio_from_voice_failure(tmp_path, monkeypatch, reason, changed, expected):
+    from unittest.mock import AsyncMock
+    signature = 'voice'
+    async def preload(*args, **kwargs):
+        nonlocal signature
+        if changed:
+            signature = 'new-voice'
+        return {'ok': False, 'results': [{'index': 0, 'status': 'failed', 'reason': reason}]}
+    manager = SimpleNamespace(
+        game_speech_audio_cache_identity=lambda *a, **kw: ('key', signature),
+        preflight_game_speech_audio=speech_ready, preload_game_speech_audio=preload,
+    )
+    seen = []
+    class Engine:
+        vision_config = AsyncMock()
+        def __init__(self, root, synthesize, *args, **kwargs):
+            self.synthesize = synthesize
+        async def prepare(self, job, *args, **kwargs):
+            try:
+                await self.synthesize('cue', tmp_path / 'cue.wav')
+            except ValueError as exc:
+                seen.append(type(exc))
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("accepted", [True, False])
 async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, monkeypatch, accepted):
     analyzed = []

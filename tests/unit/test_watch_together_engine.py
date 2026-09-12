@@ -2,6 +2,54 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['oversized', 'provider'])
+async def test_synthesis_skips_only_oversized_cues(tmp_path, monkeypatch, failure):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from main_logic.watch_together import engine
+
+    video = SimpleNamespace(
+        get_info=AsyncMock(return_value={'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101}}),
+        get_subtitle=AsyncMock(return_value={'subtitles': []}),
+        get_danmakus=AsyncMock(return_value=[]),
+        get_download_url=AsyncMock(return_value={'durl': [{'url': 'https://example.com/video'}]}),
+    )
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(Credential=lambda: None, video=SimpleNamespace(Video=lambda **kw: video)))
+    monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    async def download(client, stream, path, **kwargs):
+        path.write_bytes(b'video')
+    monkeypatch.setattr(engine, 'download_stream', download)
+    monkeypatch.setattr(engine, 'run_media_async', AsyncMock())
+    monkeypatch.setattr(engine, 'duration_async', AsyncMock(side_effect=lambda path: 60 if path.name == 'video.mp4' else 1))
+    async def synthesize(text, path):
+        if text != 'short':
+            if failure == 'oversized':
+                raise engine.SpeechCueTooLarge()
+            raise RuntimeError('provider unavailable')
+        path.write_bytes(b'audio')
+    instance = engine.Engine(tmp_path, synthesize, 'cat')
+    monkeypatch.setattr(instance, 'vision_config', AsyncMock())
+    monkeypatch.setattr(instance, 'llm', AsyncMock(return_value={'events': []}))
+    monkeypatch.setattr(engine, 'normalize_events', lambda *args: [
+        {'at': 5, 'kind': 'comment', 'text': 'long'},
+        {'at': 15, 'kind': 'laugh', 'text': ''},
+        {'at': 25, 'kind': 'comment', 'text': 'short'},
+    ])
+    job = {'id': 'job'}
+    if failure == 'provider':
+        with pytest.raises(RuntimeError, match='provider unavailable'):
+            await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+        return
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert job['status'] == 'ready'
+    assert [cue['text'] for cue in job['events']] == ['short']
+    assert job['skipped_cues'] == [{'index': 0, 'reason': 'audio_too_large'}, {'index': 1, 'reason': 'audio_too_large'}]
+    assert (tmp_path / 'job' / 'planning.json').exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('model', [None, '', '   ', 123])
 async def test_missing_vision_model_blocks_preflight_and_invitation(tmp_path, monkeypatch, model):
     from types import SimpleNamespace

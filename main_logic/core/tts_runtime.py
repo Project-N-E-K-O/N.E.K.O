@@ -887,6 +887,7 @@ class TtsRuntimeMixin:
                         request_queue.put((None, None))
                         loaded = False
                         failure_reason = "tts_incomplete"
+                        received_bytes = 0
                         item_deadline = (
                             time.monotonic()
                             + item_timeout_seconds
@@ -903,11 +904,14 @@ class TtsRuntimeMixin:
                                 ):
                                     _, response_speech_id, audio = message
                                     if str(response_speech_id or "") == speech_id:
+                                        if isinstance(audio, (bytes, bytearray, memoryview)):
+                                            received_bytes += audio.nbytes if isinstance(audio, memoryview) else len(audio)
                                         GAME_SPEECH_AUDIO_CACHE.append_capture(
                                             capture_owner, speech_id, audio
                                         )
                                     continue
                                 if isinstance(message, (bytes, bytearray, memoryview)):
+                                    received_bytes += message.nbytes if isinstance(message, memoryview) else len(message)
                                     GAME_SPEECH_AUDIO_CACHE.append_capture(
                                         capture_owner, speech_id, message
                                     )
@@ -936,9 +940,9 @@ class TtsRuntimeMixin:
                                         # re-read.)
                                         runtime_signature,
                                     )
-                                    failure_reason = (
-                                        "tts_incomplete" if not loaded else ""
-                                    )
+                                    failure_reason = "" if loaded else "tts_incomplete"
+                                    if not loaded and received_bytes > GAME_SPEECH_AUDIO_CACHE.max_entry_bytes:
+                                        failure_reason = "audio_too_large"
                                     break
                                 if (
                                     isinstance(message, tuple)

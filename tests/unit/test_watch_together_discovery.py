@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 
 from main_logic.watch_together import discovery
 
@@ -147,3 +148,16 @@ async def test_authoritative_numeric_string_danmaku_has_density(monkeypatch):
     info = await discovery.inspect_video('BV1GJ411x7h7')
     assert info['danmaku_per_minute'] == 101
     assert discovery.enforce_policy(info, automatic=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,location', [
+    (429, None), (500, None), (200, None), (302, None),
+    (302, 'https://example.com/unusable'),
+])
+async def test_short_link_provider_failure_is_not_invalid_input(monkeypatch, status, location):
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(Credential=None, video=None))
+    client_type = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        status, headers={'location': location} if location else {}))
+    monkeypatch.setattr(discovery.httpx, 'AsyncClient', lambda **kwargs: client_type(transport=transport, **kwargs))
+    with pytest.raises(httpx.HTTPStatusError):
+        await discovery.inspect_video('https://b23.tv/test')
