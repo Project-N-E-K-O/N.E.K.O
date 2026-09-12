@@ -2159,3 +2159,11 @@ font-size: 0.8em;
         box-shadow: 0 0 6px rgba(64, 197, 241, 0.5);
     }
 }
+
+/* Image infrastructure owns a full row without shifting existing model pairs. */
+.custom-api-container > .model-config-container:has(> #image-model-content) {
+    grid-column: 1 / -1;
+}
+.custom-api-container > .model-config-container > #image-model-content.expanded {
+    width: 100%;
+}

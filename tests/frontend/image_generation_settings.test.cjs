@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
 
-function setup() {
+function setup(restricted = []) {
     const inputs = Object.fromEntries(['Provider', 'Url', 'Id', 'ApiKey'].map(suffix => [
         'imageModel' + suffix, {value: '', dataset: {}, options: [], appendChild(option) { this.options.push(option); }, replaceChildren() { this.options = []; }}
     ]));
@@ -15,6 +15,7 @@ function setup() {
         setSecretInputValue: (id, value) => { inputs[id].value = value; },
         getRealKey: input => input.value,
         syncProviderSelectDropdowns: () => {},
+        isProviderRestricted: key => restricted.includes(key),
     });
     vm.runInContext('let _imageProviders = {};\n'.replace('\\n', '\n') + source.slice(source.indexOf('function populateImageProviders(')), context);
     return {inputs, context};
@@ -44,4 +45,13 @@ test('missing provider metadata preserves saved values', () => {
     context.loadImageSettings({imageModelProvider: 'qwen', imageModelUrl: 'https://dashscope.aliyuncs.com', imageModelId: 'saved-model', imageModelApiKey: ''});
     assert.equal(context.imageSettingsPayload().imageModelProvider, 'qwen');
     assert.equal(context.imageSettingsPayload().imageModelId, 'saved-model');
+});
+
+test('restricted providers cannot be selected or restored from saved settings', () => {
+    const {inputs, context} = setup(['openai', 'qwen_intl']);
+    context.populateImageProviders({openai: {name: 'OpenAI'}, qwen_intl: {name: 'Singapore'}, qwen: {name: 'Beijing'}, custom: {name: 'Custom'}});
+    assert.deepEqual(inputs.imageModelProvider.options.map(option => option.value), ['disabled', 'qwen', 'custom']);
+    context.loadImageSettings({imageModelProvider: 'openai', imageModelId: 'saved'});
+    assert.equal(context.imageSettingsPayload().imageModelProvider, 'disabled');
+    assert.equal(inputs.imageModelProvider.options.some(option => option.value === 'openai'), false);
 });

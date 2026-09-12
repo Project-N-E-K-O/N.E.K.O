@@ -23,7 +23,7 @@ async def request_json(client, method, url, *, key, **kwargs):
             body.extend(chunk)
     try:
         result = await asyncio.to_thread(json.loads, body)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise ImageGenerationError("invalid_response") from None
     if not isinstance(result, dict):
         raise ImageGenerationError("invalid_response")

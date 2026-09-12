@@ -163,3 +163,12 @@ async def test_owned_client_creation_error_is_sanitized(monkeypatch, error):
 def test_multiple_trailing_slashes_rejected_at_runtime():
     with pytest.raises(ValueError):
         resolve_image_config(manager("custom", imageModelUrl="https://custom.example/v1//", imageModelId="image").raw)
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_provider_json_is_normalized():
+    import sys
+    payload = b'[' * (sys.getrecursionlimit() + 100) + b'0' + b']' * (sys.getrecursionlimit() + 100)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=payload))) as client:
+        with pytest.raises(ImageGenerationError, match="^invalid_response$"):
+            await generate_image(ImageRequest("test"), config_manager=manager(), client=client)
