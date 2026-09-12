@@ -224,6 +224,20 @@ assert.equal(switching.elements.get('play').disabled,true,'old Play must not ena
 finishSelection({status:'ready',id:'new',version:'v',title:'New',events:[]});
 await pendingSelection;
 assert.equal(switching.elements.get('play').disabled,false);
+const lateMount=await fixture(false,false,{total_tokens:1});
+let finishMount, oldDisposed=0, oldPlayed=0, newPlayed=0;
+lateMount.game.media.mount=()=>new Promise(resolve=>{finishMount=resolve;});
+const oldPlay=lateMount.elements.get('play').onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+await lateMount.elements.get('history').children[0].onclick();
+finishMount({dispose(){oldDisposed++;},async play(){oldPlayed++;}});
+await oldPlay;
+assert.equal(oldDisposed,1);
+assert.equal(oldPlayed,0,'superseded mount must never start playing');
+lateMount.game.media.mount=async()=>({dispose(){},async play(){newPlayed++;}});
+await lateMount.elements.get('play').onclick();
+assert.equal(newPlayed,1,'new selection must mount a fresh controller');
+lateMount.handlers['runtime-inactive']();
 const paged=await fixture(false);
 const pageRequest=paged.game.media.request;
 paged.game.media.request=async(action,payload)=>action==='watches'
@@ -319,3 +333,4 @@ releaseWrite();
 await new Promise(resolve=>setTimeout(resolve,0));
 assert.deepEqual(positions,[1,12,200,250],'only consecutive progress writes coalesce, preserving seek order');
 slowProgress.handlers['runtime-inactive']();
+console.log('watch-together scene: all regressions passed, including late mount disposal');

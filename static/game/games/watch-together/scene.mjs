@@ -8,6 +8,7 @@ export async function run(game, character) {
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
   let selectionGeneration = 0;
+  let playbackGeneration = 0;
   let ending = null;
   let progressTimer = null;
   let nextRow=null, queuedFor=null, preparing=false;
@@ -66,6 +67,7 @@ export async function run(game, character) {
     return ending;
   }
   async function finishEnd() {
+    playbackGeneration++;
     clearInterval(progressTimer); progressTimer = null;
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
@@ -115,23 +117,35 @@ export async function run(game, character) {
   }
   $('play').onclick = async () => {
     const selection = selectionGeneration;
+    const playback = ++playbackGeneration;
+    const stale = () => selection !== selectionGeneration || playback !== playbackGeneration || game.disposed;
     $('play').disabled = true;
     try {
       if (!media) {
         const response = await game.runtime.start({lanlan_name:character});
+        if(stale())return;
         if (!response.ok || response.data?.ok === false) throw Error(response.data?.reason || 'Scene start failed');
         const started = await game.media.request('watch',{action:'start',job:selected.id,version:selected.version});
+        if(stale()) {
+          await game.media.request('watch',{id:started.id,position:0,event:{type:'exit'}});
+          return;
+        }
         watch = started.id;
         await refreshWatches();
-        media = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,onEvent:record,
+        if(stale())return;
+        const mounted = await game.media.mount({video:$('video'),job:selected.id,version:selected.version,onEvent:record,
           onCue:cue=>{ $('bubble').textContent = cue?.text || ''; avatar?.setEmotion(cue?'happy':'neutral'); }});
+        if(stale()){mounted.dispose();return;}
+        media = mounted;
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
       }
       await media.play();
+      if(stale())return;
       $('video').controls = true; $('play').hidden = true;
       status(t('playing'));
       prefetchNext();
     } catch(error) {
+      if(stale())return;
       try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
       status(error.message);
     }
@@ -140,7 +154,7 @@ export async function run(game, character) {
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
   game.voice.onTranscript(() => media?.interrupt());
   game.voice.onState(state => {if(state.active || state.starting)media?.interrupt();});
-  game.events.on('runtime-inactive',()=>{media?.dispose();media=null;$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{playbackGeneration++;media?.dispose();media=null;$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
     if(nextQueue.busy)return;

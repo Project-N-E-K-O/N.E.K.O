@@ -145,3 +145,16 @@ async def test_subtitle_payload_drops_extra_fields_and_bounds_text():
     result = await fetch_subtitles(client, [{'subtitle_url': 'https://subs.test'}], 'en')
     assert sum(len(row['content']) for row in result) <= 24000
     assert all(len(row['content']) <= 240 and set(row) == {'from', 'to', 'content'} for row in result)
+
+@pytest.mark.asyncio
+async def test_subtitle_budget_preserves_late_windows_and_skips_invalid_tracks():
+    from main_logic.watch_together.engine import fetch_subtitles
+    from unittest.mock import AsyncMock
+    rows = [{'from': 0, 'to': 1, 'content': 'x' * 240}] * 3000
+    rows += [{'from': 1190, 'to': 1195, 'content': 'ending dialogue'}]
+    response = type('Response', (), {'raise_for_status': lambda self: None, 'json': lambda self: {'body': rows}})()
+    client = type('Client', (), {'get': AsyncMock(return_value=response)})()
+    result = await fetch_subtitles(client, [None, 1, 'bad', {'subtitle_url': 'https://subs.test'}], 'en')
+    assert result[-1]['content'] == 'ending dialogue'
+    assert sum(len(row['content']) for row in result if row['from'] == 0) <= 600
+    client.get.assert_awaited_once()

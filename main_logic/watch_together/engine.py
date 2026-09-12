@@ -42,6 +42,7 @@ def subtitle_priority(track, language):
 
 
 async def fetch_subtitles(client, tracks, language):
+    tracks = [track for track in tracks if isinstance(track, dict)] if isinstance(tracks, list) else []
     for track in sorted(tracks, key=lambda t: subtitle_priority(t, language)):
         try:
             url = track['subtitle_url']
@@ -51,7 +52,9 @@ async def fetch_subtitles(client, tracks, language):
             response.raise_for_status()
             body = response.json().get('body', [])
             valid = []
-            remaining = 24000
+            # Reserve evidence for every 30-second analysis window, including the tail.
+            budgets = [600] * (MAX_SECONDS // 30)
+            counts = [0] * len(budgets)
             for row in body if isinstance(body, list) else []:
                 if not isinstance(row, dict) or any(isinstance(row.get(key), bool) for key in ('from', 'to')):
                     continue
@@ -59,17 +62,19 @@ async def fetch_subtitles(client, tracks, language):
                     start, end = float(row['from']), float(row['to'])
                 except (KeyError, TypeError, ValueError, OverflowError):
                     continue
-                if math.isfinite(start) and math.isfinite(end) and 0 <= start <= end:
+                if math.isfinite(start) and math.isfinite(end) and 0 <= start <= end and start < MAX_SECONDS:
+                    bucket = int(start // 30)
+                    if budgets[bucket] <= 0 or counts[bucket] >= 50:
+                        continue
                     content = row.get('content')
                     if not isinstance(content, str):
                         continue
-                    content = content[:min(240, remaining)]
+                    content = content[:min(240, budgets[bucket])]
                     if not content.strip():
                         continue
                     valid.append({'from': start, 'to': end, 'content': content})
-                    remaining -= len(content)
-                    if remaining <= 0 or len(valid) >= 2000:
-                        break
+                    budgets[bucket] -= len(content)
+                    counts[bucket] += 1
             if valid:
                 return valid
         except Exception:
