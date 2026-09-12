@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import {run} from '../../static/game/games/watch-together/scene.mjs';
 
+async function waitFor(predicate) {
+  const deadline=Date.now()+5000;
+  while(!predicate()) {
+    assert.ok(Date.now()<deadline,'scene did not reach the expected state within 5 seconds');
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+}
+
 async function fixture(confirm, afterDownload=false, usage=null, discover=null) {
   const elements = new Map();
   globalThis.document = {createElement(){return {};},getElementById(id) {
@@ -431,10 +439,10 @@ continuous.game.media.request=async(action,payload)=>{
 };
 continuous.elements.get('automatic-enabled').checked=true;
 continuous.elements.get('automatic-enabled').onchange();
-await new Promise(resolve=>setTimeout(resolve,20));
+await waitFor(()=>plays===1 && !continuous.elements.get('next-video').disabled);
 assert.equal(plays,1);
 continuous.elements.get('video').ended=true;continuous.emit({type:'ended'});
-await new Promise(resolve=>setTimeout(resolve,20));
+await waitFor(()=>plays===2);
 assert.equal(plays,2,'ended automatically loads and plays the prepared next item');
 assert.equal(routeStarts,1);assert.equal(routeEnds,0,'speech takeover stays active across videos');
 await continuous.elements.get('watch-stop').onclick();
@@ -446,7 +454,7 @@ delayedAutomatic.game.runtime.start=()=>new Promise(resolve=>{releaseRoute=()=>{
 delayedAutomatic.game.runtime.end=async()=>{endedRoute++;delayedAutomatic.game.runtime.state='ended';};
 delayedAutomatic.elements.get('automatic-enabled').checked=true;
 delayedAutomatic.elements.get('automatic-enabled').onchange();
-await new Promise(resolve=>setTimeout(resolve,10));
+await waitFor(()=>typeof releaseRoute==='function');
 const stopped=delayedAutomatic.elements.get('watch-stop').onclick();releaseRoute();await stopped;
 assert.equal(endedRoute,1,'late runtime start is released after stop');
 assert.equal(delayedAutomatic.calls.some(c=>c.action==='watch'),false,'late start cannot begin playback');
@@ -465,10 +473,10 @@ emptyAutomatic.game.media.request=async(action,payload)=>{
   return emptyRequest(action,payload);
 };
 emptyAutomatic.elements.get('automatic-enabled').checked=true;emptyAutomatic.elements.get('automatic-enabled').onchange();
-await new Promise(resolve=>setTimeout(resolve,20));
+await waitFor(()=>autoPlays===1 && !emptyAutomatic.elements.get('next-video').disabled);
 assert.equal(autoLoads,1);assert.equal(autoPlays,1,'automatic mode discovers and plays without an existing selection');
 emptyAutomatic.elements.get('video').ended=true;emptyAutomatic.emit({type:'ended'});
-await new Promise(resolve=>setTimeout(resolve,20));
+await waitFor(()=>autoLoads===2 && autoPlays===2);
 assert.equal(autoLoads,2,'first completion must load another item instead of replaying the first');
 assert.deepEqual(automaticLoadedJobs,['candidate-1','candidate-2']);
 await emptyAutomatic.elements.get('watch-stop').onclick();
