@@ -2599,15 +2599,28 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
   let bindings = 0;
   let mounts = 0;
   let nextMount;
+  let canonicalDescriptor = descriptor;
+  let canonicalReads = 0;
   const client = {
     disposed: false,
     runtime: {
       state: 'inactive',
       session: { id: 'same-session', characterName: descriptor.name },
       bindCharacter() { bindings += 1; return Promise.resolve(descriptor); },
-      start() { this.state = 'running'; return Promise.resolve({ ok: true, data: { ok: true } }); },
+      start() {
+        this.state = 'running';
+        this.session.characterName = canonicalDescriptor.name;
+        return Promise.resolve({ ok: true, data: { ok: true, state: { lanlan_name: canonicalDescriptor.name } } });
+      },
     },
-    avatar: { mount() { mounts += 1; return Promise.resolve(nextMount); } },
+    avatar: {
+      mount() { mounts += 1; return Promise.resolve(nextMount); },
+      getCharacter(name) {
+        canonicalReads += 1;
+        assertEqual(name, client.runtime.session.characterName, 'refresh must read the runtime-bound identity');
+        return Promise.resolve(canonicalDescriptor);
+      },
+    },
     memory: { consent: { locked: true, configured: true, enabled: false } },
     capabilities: { granted: [], has() { return false; } },
     logger: { enableAfterRuntimeStart() { return Promise.resolve({ ok: false }); } },
@@ -2654,6 +2667,23 @@ async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
   api.cleanupRouteResources();
   api.cleanupRouteResources();
   assertEqual(restarted.releases, 1, 'repeated cleanup must dispose each controller once');
+  const oldPreview = controller();
+  nextMount = oldPreview;
+  await api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken);
+  api.state.routeActive = false;
+  client.runtime.state = 'inactive';
+  canonicalDescriptor = { ...descriptor, name: 'canonical-route-character' };
+  const canonicalAvatar = controller();
+  nextMount = canonicalAvatar;
+  assertEqual(await api.startRoute(), true, 'canonical-name startup must succeed');
+  await waitFor(() => api.state.avatarController === canonicalAvatar,
+    'canonical-name startup did not replace the old preview');
+  assertEqual(api.state.sdkBoundCharacter.name, canonicalDescriptor.name);
+  assertEqual(api.state.modelLoadState, 'ready', 'canonical remount remained in loading');
+  assertEqual(canonicalReads, 1, 'canonical identity must be refreshed through public discovery');
+  assertEqual(bindings, 1, 'running canonical refresh must not call runtime.bindCharacter');
+  assertEqual(oldPreview.releases, 1, 'canonical refresh retained the old preview');
+  api.cleanupRouteResources();
 }
 
 async function main() {

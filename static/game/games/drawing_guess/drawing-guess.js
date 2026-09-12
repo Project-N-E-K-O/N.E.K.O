@@ -2840,33 +2840,43 @@
       state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
+      var characterReady = Promise.resolve();
+      if (state.sdkBoundCharacter && state.sdkBoundCharacter.name !== state.lanlanName) {
+        disposeAvatarController();
+        setModelLoadState('idle');
+        // runtime.start has already committed the canonical identity. Refresh
+        // its public descriptor; rebinding a running route is forbidden.
+        characterReady = bindDrawingCharacter(client, state.lanlanName, true);
+      }
       // Do not expose the active round until the session-scoped logging gate
       // has settled. The host bounds and aborts this enable request, preventing
       // a late /logs/enable from reactivating an already-ended session.
-      return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
-        if (!isSdkRouteRunning(client)) return false;
-        if (logResult && logResult.ok) {
-          logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
-            sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
-            host_version: String(client.host && client.host.version || ''),
-            capabilities: client.capabilities.granted.slice()
-          });
-        }
-        return true;
-      }).catch(function () {
-        return isSdkRouteRunning(client);
-      }).then(function (started) {
-        if (!started) return false;
-        // Route cleanup retires the renderer, but the bound descriptor remains
-        // valid for this session. Restore the preview without rebinding.
-        if (!state.avatarController && state.modelLoadState !== 'loading'
-            && state.sdkBoundCharacter) {
-          initModelSlotForCurrentCharacter(state.lanlanName, state.sdkBoundCharacter);
-        }
-        // The host owns the single microphone session. Reflect its current
-        // state without starting a second recognizer or taking over capture.
-        querySdkVoiceRouteState(client).catch(function () {});
-        return true;
+      return characterReady.then(function () {
+        return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
+          if (!isSdkRouteRunning(client)) return false;
+          if (logResult && logResult.ok) {
+            logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
+              sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
+              host_version: String(client.host && client.host.version || ''),
+              capabilities: client.capabilities.granted.slice()
+            });
+          }
+          return true;
+        }).catch(function () {
+          return isSdkRouteRunning(client);
+        }).then(function (started) {
+          if (!started) return false;
+          // Route cleanup retires the renderer, but the bound descriptor remains
+          // valid for this session. Restore the preview without rebinding.
+          if (!state.avatarController && state.modelLoadState !== 'loading'
+              && state.sdkBoundCharacter) {
+            initModelSlotForCurrentCharacter(state.lanlanName, state.sdkBoundCharacter);
+          }
+          // The host owns the single microphone session. Reflect its current
+          // state without starting a second recognizer or taking over capture.
+          querySdkVoiceRouteState(client).catch(function () {});
+          return true;
+        });
       });
     }).catch(function (error) {
       var failureReason = sdkErrorReason(error);
@@ -3952,7 +3962,7 @@
   // One descriptor, one active request and at most one cancelling successor.
   // All binding state is retired on page exit.
   // Preview discovery stays read-only; gameplay explicitly binds before requests.
-  function bindDrawingCharacter(client, name) {
+  function bindDrawingCharacter(client, name, readBoundIdentity) {
     var requestedName = String(name || '').trim();
     var sessionId = client.runtime.session.id;
     if (client.disposed) return Promise.reject(new Error('character_binding_cancelled'));
@@ -3981,6 +3991,8 @@
     function assertCurrent() {
       if (client.disposed || request.controller.signal.aborted
           || client.runtime.session.id !== sessionId
+          || (readBoundIdentity && (client.runtime.session.characterName !== requestedName
+            || !isSdkRouteRunning(client)))
           || state.sdkCharacterBindingRequest !== request) {
         throw new Error('character_binding_cancelled');
       }
@@ -3988,6 +4000,10 @@
     async function startBinding() {
       request.previous = null;
       assertCurrent();
+      if (readBoundIdentity) {
+        return client.avatar.getCharacter(requestedName,
+          { timeoutMs: 8000, signal: request.controller.signal });
+      }
       return client.runtime.bindCharacter(requestedName || undefined,
         { timeoutMs: 8000, signal: request.controller.signal });
     }
