@@ -1629,6 +1629,37 @@ async function main() {
     assert(soccerHost.activeCount === 0 && soccerHost.pendingCount === 0, `${kind}: soccer retained a controller`);
     assert(activeTimeouts.size === 0 && activeIntervals.size === 0 && frames.size === 0,
       `${kind}: soccer lifecycle leaked timers`);
+    // A legacy primary may retain a canonical extended fallback. Exercise the
+    // actual soccer -> shared provider chain, including its private settings.
+    const primaryCharacter = characters[name];
+    const primaryAvatar = primaryCharacter._reserved.avatar;
+    characters[name] = { ...primaryCharacter, _reserved: { avatar: {
+      ...primaryAvatar, model_type: 'live3d', live3d_sub_type: 'vrm',
+      vrm: { model_path: 'missing-primary.vrm' },
+    } } };
+    const fallbackSoccer = windowMock.createSoccerAvatarHost({ fetchImpl, characterSource: {
+      getCharacter: async () => ({ name, model: { type: 'vrm', path: '/missing-primary.vrm' },
+        fallbackModels: [descriptor.model] }),
+    } });
+    try {
+      const fallbackDescriptor = await fallbackSoccer.getCharacter(name);
+      const fallback = await fallbackSoccer.mount({ slot: 'ai', characterName: name,
+        model: fallbackDescriptor.fallbackModels[0],
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+      assert(fallback.getState().ready && fallback.getState().model.type === kind,
+        `${kind}: canonical extended fallback was not mounted`);
+      await fallback.dispose();
+      const arbitrary = await rejection(fallbackSoccer.mount({ slot: 'ai', characterName: name,
+        model: { type: kind, path: '/not-owned-by-this-character' },
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } }));
+      assert(arbitrary?.code === 'model_not_allowed', `${kind}: arbitrary fallback was admitted`);
+    } finally {
+      characters[name] = primaryCharacter;
+      await fallbackSoccer.dispose();
+    }
+    assert(fallbackSoccer.activeCount === 0 && fallbackSoccer.pendingCount === 0
+      && activeTimeouts.size === 0 && activeIntervals.size === 0 && frames.size === 0,
+    `${kind}: fallback chain retained a renderer or timer`);
     let releaseLookup;
     let lookupStarted;
     const lookupGate = new Promise(resolve => { releaseLookup = resolve; });
