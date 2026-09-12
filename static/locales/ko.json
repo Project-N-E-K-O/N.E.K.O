@@ -1058,6 +1058,10 @@
         "connectionError": "연결 오류"
     },
     "api": {
+    "imageModelConfig": "이미지 생성",
+    "imageModelExamplePlaceholder": "예: gpt-image-2, wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "사용자 지정 엔드포인트 키. 기본 제공자는 API 키 관리부 사용",
+    "imageDisabled": "설정되지 않음",
         "settings": "API 키 설정",
         "settingsTitle": "API 키 설정 - 프로젝트 Lanlan",
         "quickStart": "빠른 시작",

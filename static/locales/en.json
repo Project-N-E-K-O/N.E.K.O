@@ -1058,6 +1058,10 @@
         "connectionError": "Connection Error"
     },
     "api": {
+    "imageModelConfig": "Image generation",
+    "imageModelExamplePlaceholder": "e.g., gpt-image-2, wanx2.1-t2i-turbo",
+    "imageModelApiKeyPlaceholder": "Custom endpoint key; named providers use the API Key Book",
+    "imageDisabled": "Not configured",
         "settings": "API Key Settings",
         "settingsTitle": "API Key Settings - Project Lanlan",
         "quickStart": "Quick Start",

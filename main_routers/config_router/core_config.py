@@ -34,7 +34,7 @@ CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
     'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'vision', 'agent', 'omni', 'tts',
+    'vision', 'agent', 'omni', 'tts', 'image',
 )
 
 CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
@@ -562,6 +562,30 @@ async def update_core_config(request: Request):
             and not is_core_config_secret_placeholder(data['ttsModelApiKey'])
         )
 
+        # A retained custom credential must never follow an endpoint change.
+        if any(field in data for field in (
+            "imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"
+        )):
+            from utils.image_generation.config import resolve_image_config
+            candidate = {**core_cfg, **{
+                field: data[field] for field in (
+                    "imageModelProvider", "imageModelUrl", "imageModelId"
+                ) if field in data
+            }}
+            apply_core_config_secret_update(candidate, data, "imageModelApiKey")
+            if candidate.get("imageModelProvider") == "custom":
+                old_url = core_cfg.get("imageModelUrl", "")
+                new_url = candidate.get("imageModelUrl", "")
+                if old_url != new_url and core_cfg.get("imageModelApiKey") and (
+                    "imageModelApiKey" not in data
+                    or is_core_config_secret_placeholder(data["imageModelApiKey"])
+                ):
+                    return {"success": False, "error": "Changing image endpoint requires replacing or clearing its API key"}
+            try:
+                resolve_image_config(candidate)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
@@ -733,7 +757,10 @@ async def get_api_providers_config():
             logger.warning(f"加载 TTS provider 元数据失败: {e}")
             tts_providers = []
 
+        from utils.image_generation.config import PROVIDERS as image_providers
+
         return {
+            "image_providers": image_providers,
             "success": True,
             "core_api_providers": core_providers,
             "assist_api_providers": assist_providers,

@@ -19,7 +19,7 @@ _ASSIST_API_KEY_FIELDS = (
 
 _MODEL_TYPES = (
     'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'vision', 'agent', 'omni', 'tts',
+    'vision', 'agent', 'omni', 'tts', 'image',
 )
 
 _MODEL_API_KEY_FIELDS = tuple(
@@ -546,3 +546,36 @@ def test_legacy_masks_are_narrowly_recognized_as_placeholders(
     assert saved['assistApiKeyQwen'] == stored['assistApiKeyQwen']
     assert saved['assistApiKeyOpenai'] == '**'
     assert saved['mcpToken'] == 'real***secret'
+
+@pytest.mark.unit
+def test_image_endpoint_change_requires_new_custom_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": "https://new.example/v1",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False
+    assert config_manager.load_json_config("core_config.json", {})["imageModelUrl"] == "https://old.example/v1"
+
+
+@pytest.mark.unit
+def test_image_config_round_trip_uses_core_snapshot(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "enableCustomApi": True,
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelProvider": "qwen", "imageModelUrl": "https://dashscope.aliyuncs.com",
+        "imageModelId": "wanx2.1-t2i-turbo", "assistApiKeyQwen": "image-qwen-key",
+    })))
+    assert result["success"] is True
+    config = config_manager.get_model_api_config("image")
+    assert config["api_key"] == "image-qwen-key"
+    assert config["protocol"] == "dashscope"
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response["assistApiKeyQwen"] == core_config_router.CORE_CONFIG_SECRET_SENTINEL
+    assert response["imageModelProvider"] == "qwen"
