@@ -401,9 +401,6 @@
       var character = String(entry.character || '').trim().slice(0, 128);
       if (!character || seen[character]) continue;
       var view = normalizeModelView(entry.view);
-      // The old page used 100/0/0 as an implicit baseline. Do not revive that
-      // stale value after the SDK migration changed the fitted default.
-      if (view.scale === 100 && view.x === 0 && view.y === 0) continue;
       seen[character] = true;
       normalized.push({ character: character, view: view });
     }

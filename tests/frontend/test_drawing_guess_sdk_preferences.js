@@ -237,6 +237,7 @@ function loadHarness() {
       SDK_PREFERENCE_WRITE_RETRY_DELAY_MS = Number(value) || 1;
     },
     saveModelViewSettings: saveModelViewSettings,
+    resetModelView: resetModelView,
     saveColorHistory: saveColorHistory,
     configureSdkMemoryConsent: configureSdkMemoryConsent,
     normalizeAiDrawingPlan: normalizeAiDrawingPlan,
@@ -649,6 +650,72 @@ async function testLateModelViewHydrationMergesWithLocalPriority() {
   assertDeepEqual(api.state.modelView, local.view, 'the active model view should remain the local value');
   assertEqual(writes.length, 1, 'the merged model-view snapshot should be persisted once');
   assertEqual(writes[0].value.length, 2, 'the persisted model-view snapshot should contain both characters');
+}
+
+async function testModelViewResetSurvivesReloadAndLateHydration() {
+  for (const resetDuringHydration of [false, true]) {
+    const api = loadHarness().api;
+    const read = deferred();
+    const customView = { scale: 245, x: 12, y: -8 };
+    const other = { character: 'Other Neko', view: { scale: 175, x: -4, y: 9 } };
+    let backingValue = [{ character: 'Local Neko', view: customView }, other];
+    const storedSnapshot = JSON.parse(JSON.stringify(backingValue));
+    const writes = [];
+    const client = makeStorageClient({
+      get() { return read.promise; },
+      set(key, value) {
+        backingValue = JSON.parse(JSON.stringify(value));
+        writes.push({ key, value: backingValue });
+        return Promise.resolve(storedResult());
+      },
+    });
+    api.state.sdkClient = client;
+    api.state.lanlanName = 'Local Neko';
+    const channel = api.ensureSdkPreferenceChannels().modelViews;
+    const hydration = api.hydrateSdkPreferenceChannel(client, channel);
+    if (!resetDuringHydration) {
+      read.resolve(storageResult(storedSnapshot));
+      await hydration;
+      assertDeepEqual(api.state.modelView, customView, 'saved custom view was not loaded');
+    }
+    api.resetModelView();
+    if (resetDuringHydration) {
+      read.resolve(storageResult(storedSnapshot));
+      await hydration;
+    }
+    await waitFor(() => writes.length === 1 && !channel.inFlight,
+      'reset model view was not persisted');
+    const defaults = { scale: 100, x: 0, y: 0 };
+    assertDeepEqual(api.state.modelView, defaults, 'late hydration restored the pre-reset view');
+    assertDeepEqual(backingValue, [{ character: 'Local Neko', view: defaults }, other],
+      'reset did not replace the old view while preserving other characters');
+
+    const reloaded = loadHarness().api;
+    const reloadClient = makeStorageClient({
+      get() { return Promise.resolve(storageResult(backingValue)); },
+      set() { throw new Error('reading saved preferences must not rewrite them'); },
+    });
+    reloaded.state.sdkClient = reloadClient;
+    reloaded.state.lanlanName = 'Local Neko';
+    await reloaded.hydrateSdkPreferenceChannel(reloadClient,
+      reloaded.ensureSdkPreferenceChannels().modelViews);
+    assertDeepEqual(reloaded.state.modelView, defaults, 'reload restored the pre-reset view');
+    assertDeepEqual(reloaded.state.modelViewSettings, backingValue,
+      'reload discarded the explicitly saved default or another character');
+  }
+  const bounded = loadHarness().api;
+  const defaults = { scale: 100, x: 0, y: 0 };
+  const entries = Array.from({ length: 33 }, (_, i) => ({ character: `Neko ${i}`, view: defaults }));
+  const boundedClient = makeStorageClient({
+    get() { return Promise.resolve(storageResult(entries)); },
+    set() { throw new Error('reading saved preferences must not rewrite them'); },
+  });
+  bounded.state.sdkClient = boundedClient;
+  await bounded.hydrateSdkPreferenceChannel(boundedClient,
+    bounded.ensureSdkPreferenceChannels().modelViews);
+  assertEqual(bounded.state.modelViewSettings.length, 32, 'saved default views exceeded the entry limit');
+  assertDeepEqual(bounded.state.modelViewSettings, entries.slice(0, 32),
+    'default views did not preserve bounded first-entry ordering');
 }
 
 async function testCommittedWriteWaitsForHydrationBeforePersisting() {
@@ -2527,6 +2594,7 @@ async function main() {
   await testLateRoundStartCannotRestoreEndAfterCleanup();
   await testLateHydrationKeepsLocalSideAndColorChanges();
   await testLateModelViewHydrationMergesWithLocalPriority();
+  await testModelViewResetSurvivesReloadAndLateHydration();
   await testCommittedWriteWaitsForHydrationBeforePersisting();
   await testFailedHydrationRetriesBeforeMergingAndWriting();
   await testPreferenceWritesAreSerializedAndCoalesceFinalSnapshot();
