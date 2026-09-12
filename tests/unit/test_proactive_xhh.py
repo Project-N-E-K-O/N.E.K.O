@@ -245,6 +245,29 @@ def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
     assert posts[0]["content"] == "可用的后备摘要。"
 
 
+def test_normalize_neko_community_feed_bounds_content_before_normalization(monkeypatch):
+    original_plain_text = trending_content._plain_xhh_text
+    normalized_lengths: list[int] = []
+
+    def track_plain_text(value):
+        normalized_lengths.append(len(value))
+        return original_plain_text(value)
+
+    monkeypatch.setattr(trending_content, "_plain_xhh_text", track_plain_text)
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "large-content",
+                    "content": "x" * (trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS + 1),
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["content"] == "x" * trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS
+    assert max(normalized_lengths) == trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS
+
 def test_normalize_neko_community_feed_skips_content_only_unidentified_cards():
     posts = normalize_neko_community_feed(
         {"items": [{"content": "只有正文、没有可识别卡片身份。"}]}
@@ -641,6 +664,29 @@ async def test_neko_community_access_token_uses_only_matching_oauth_origin(
     ) == ""
 
 
+@pytest.mark.asyncio
+async def test_neko_community_access_token_falls_back_after_blank_session_aliases(
+    tmp_path, monkeypatch
+):
+    session_path = tmp_path / "social_session.json"
+    session_path.write_text(
+        """{
+  "token": "   ",
+  "access_token": "desktop-access-token",
+  "baseUrl": "  ",
+  "base_url": "https://community.example.test"
+}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        trending_content,
+        "_neko_community_session_paths",
+        lambda: [session_path],
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "desktop-access-token"
 @pytest.mark.asyncio
 async def test_neko_community_access_token_requires_session_origin(tmp_path, monkeypatch):
     session_path = tmp_path / "social_session.json"

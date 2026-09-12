@@ -161,8 +161,16 @@ def _load_neko_community_access_token(feed_api: str) -> str:
             continue
         if not isinstance(data, dict):
             continue
-        access_token = str(data.get("token") or data.get("access_token") or "").strip()
-        base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
+        access_token = ""
+        for token_candidate in (data.get("token"), data.get("access_token")):
+            access_token = str(token_candidate or "").strip()
+            if access_token:
+                break
+        base_url = ""
+        for base_url_candidate in (data.get("baseUrl"), data.get("base_url")):
+            base_url = str(base_url_candidate or "").strip()
+            if base_url:
+                break
         if access_token and base_url and _same_community_origin(base_url, feed_api):
             return access_token
 
@@ -1850,18 +1858,32 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _community_text(value: Any) -> str:
-    """Flatten the common text shapes used by public community feed cards."""
+def _community_text(value: Any, *, max_chars: int | None = None) -> str:
+    """Flatten common community-card text shapes, optionally bounding input work."""
+
     if isinstance(value, str):
+        if max_chars is not None:
+            value = value[:max_chars]
         return _plain_xhh_text(value)
     if isinstance(value, dict):
         for key in ("text", "content", "body", "value", "name", "display_name"):
-            text = _community_text(value.get(key))
+            text = _community_text(value.get(key), max_chars=max_chars)
             if text:
                 return text
         return ""
     if isinstance(value, list):
-        return _plain_xhh_text(" ".join(_community_text(item) for item in value))
+        values: list[str] = []
+        remaining = max_chars
+        for item in value:
+            text = _community_text(item, max_chars=remaining)
+            if not text:
+                continue
+            values.append(text)
+            if remaining is not None:
+                remaining -= len(text)
+                if remaining <= 0:
+                    break
+        return _plain_xhh_text(" ".join(values))
     return ""
 
 
@@ -1953,7 +1975,9 @@ def normalize_neko_community_feed(
             "description",
             "excerpt",
         ):
-            content = _community_text(raw.get(field))
+            content = _community_text(
+                raw.get(field), max_chars=NEKO_COMMUNITY_CONTENT_MAX_CHARS
+            )
             if content:
                 break
         content = content[:NEKO_COMMUNITY_CONTENT_MAX_CHARS]
