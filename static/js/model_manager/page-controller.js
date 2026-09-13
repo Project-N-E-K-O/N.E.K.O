@@ -8049,7 +8049,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const result = await response.json();
 
             if (result.success) {
-                uploadStatus.textContent = `✓ ${result.message}`;
+                uploadStatus.textContent = `✓ ${t('live2d.pngtuberImportSuccess', 'PNGTuber model imported successfully.')}`;
                 uploadStatus.style.color = '#28a745';
                 await loadPNGTuberModels();
                 if (result.folder && modelSelect) {

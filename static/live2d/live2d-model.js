@@ -1672,7 +1672,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 scheduleIdleMotion(1000, { replace: true });
                 return;
             }
-            if (!motionManager.playing) {
+            const hasConfiguredIdle = Array.isArray(this._userIdleAnimations)
+                && this._userIdleAnimations.length > 0;
+            if (!motionManager.playing || hasConfiguredIdle) {
                 Promise.resolve(this._playIdleMotion(motionManager)).catch((e) => {
                     console.warn('[Live2D] 播放 Idle motion 失败:', e);
                 });
@@ -1713,8 +1715,10 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 console.warn('[Live2D] motionFinish 后清理 motion 参数失败:', e);
             }
         }
-        const randomDelay = 1000 + Math.random() * 2000;
-        scheduleIdleMotion(randomDelay);
+        const hasConfiguredIdle = Array.isArray(this._userIdleAnimations)
+            && this._userIdleAnimations.length > 0;
+        const delay = hasConfiguredIdle ? 0 : 1000 + Math.random() * 2000;
+        scheduleIdleMotion(delay);
     };
     model.internalModel.events.on('motionFinish', this._idleMotionFinishHandler);
 
@@ -1803,8 +1807,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         const indexes = getRandomizedIndexes(group.length);
         for (const idx of indexes) {
             const motion = group[idx];
-            if (filter && !filter(motion)) continue;
-            const file = getMotionFile(motion);
+            // Loaded Cubism motion instances generally do not retain their source
+            // path, so fall back to the definition at the same runtime index.
+            const file = getMotionFile(motion) || getRegisteredMotionFile(groupName, idx);
+            if (filter && !filter(motion, file)) continue;
             if (await startTrackedMotion(groupName, idx, file)) return true;
         }
         return false;
@@ -1818,19 +1824,42 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
-            const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
-                const motionFile = getMotionFile(motion);
+            const isConfiguredIdle = (motion, file) => {
+                const motionFile = file || getMotionFile(motion);
                 return motionFile && idleAnimations.includes(motionFile.split('/').pop());
-            });
-            if (startedUserIdle) {
-                return;
-            }
-            if (Array.isArray(group) && group.length > 0) {
-                const available = group.filter((motion) => {
-                    const motionFile = getMotionFile(motion);
-                    return motionFile && idleAnimations.includes(motionFile.split('/').pop());
-                });
-                if (available.length > 0) {
+            };
+            const available = Array.isArray(group)
+                ? group.filter((motion, index) => isConfiguredIdle(
+                    motion,
+                    getRegisteredMotionFile('PreviewAll', index)
+                ))
+                : [];
+            if (available.length > 0) {
+                const currentGroup = motionManager.state?.currentGroup;
+                const currentIndex = motionManager.state?.currentIndex;
+                const currentFile = getRegisteredMotionFile(currentGroup, currentIndex);
+                if (motionManager.playing
+                    && currentGroup === 'PreviewAll'
+                    && currentFile
+                    && idleAnimations.includes(currentFile.split('/').pop())) {
+                    return;
+                }
+                if (typeof this.hasActiveActionMotion === 'function'
+                    && this.hasActiveActionMotion(expectedModel)) {
+                    return;
+                }
+                if (motionManager.playing
+                    && Number(motionManager.state?.currentPriority || 0) <= LIVE2D_MOTION_PRIORITY.IDLE
+                    && typeof motionManager.stopAllMotions === 'function') {
+                    motionManager.stopAllMotions();
+                }
+                const startedUserIdle = await startTrackedGroupMotion(
+                    'PreviewAll', group, isConfiguredIdle
+                );
+                if (startedUserIdle) {
+                    return;
+                }
+                if (isCurrentIdleRequest()) {
                     console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
             }
@@ -1899,18 +1928,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.modelName = null;
     }
 
-    // 配置渲染纹理数量以支持更多蒙版
+    // 模型尚未加入舞台，蒙版纹理也尚未创建；此时调整数量即可让首帧
+    // 按三个缓冲区分配。不要再次 initialize()，该方法会向现有的
+    // ClippingContext/Drawable 映射追加数据，导致每次调用都产生重复项。
     if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
         model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-        if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
-            model.internalModel.renderer._clippingManager.initialize(
-                model.internalModel.coreModel,
-                model.internalModel.coreModel.getDrawableCount(),
-                model.internalModel.coreModel.getDrawableMasks(),
-                model.internalModel.coreModel.getDrawableMaskCounts(),
-                3
-            );
-        }
         console.log('渲染纹理数量已设置为3');
     }
 

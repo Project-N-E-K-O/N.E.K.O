@@ -19,7 +19,7 @@ _ASSIST_API_KEY_FIELDS = (
 
 _MODEL_TYPES = (
     'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'vision', 'agent', 'omni', 'tts',
+    'vision', 'agent', 'omni', 'tts', 'image',
 )
 
 _MODEL_API_KEY_FIELDS = tuple(
@@ -546,3 +546,159 @@ def test_legacy_masks_are_narrowly_recognized_as_placeholders(
     assert saved['assistApiKeyQwen'] == stored['assistApiKeyQwen']
     assert saved['assistApiKeyOpenai'] == '**'
     assert saved['mcpToken'] == 'real***secret'
+
+@pytest.mark.unit
+def test_image_endpoint_change_requires_new_custom_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": "https://new.example/v1",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False
+    assert config_manager.load_json_config("core_config.json", {})["imageModelUrl"] == "https://old.example/v1"
+
+
+@pytest.mark.unit
+def test_image_config_round_trip_uses_core_snapshot(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "enableCustomApi": True,
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelProvider": "qwen", "imageModelUrl": "https://dashscope.aliyuncs.com",
+        "imageModelId": "wanx2.1-t2i-turbo", "assistApiKeyQwen": "image-qwen-key",
+    })))
+    assert result["success"] is True
+    config = config_manager.get_model_api_config("image")
+    assert config["api_key"] == "image-qwen-key"
+    assert config["protocol"] == "dashscope"
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response["assistApiKeyQwen"] == core_config_router.CORE_CONFIG_SECRET_SENTINEL
+    assert response["imageModelProvider"] == "qwen"
+
+@pytest.mark.unit
+@pytest.mark.parametrize("core,assist,image,expected", [
+    ("qwen", "qwen", "qwen", "legacy-key"),
+    ("openai", "openai", "openai", "legacy-key"),
+    ("qwen_intl", "qwen_intl", "qwen_intl", "legacy-key"),
+    ("openai", "qwen", "qwen", "legacy-key"),
+    ("openai", "openai", "qwen", ""),
+    ("free", "free", "qwen", ""),
+])
+def test_image_legacy_key_fallback_matches_key_book(
+    config_manager, core_config_router, core, assist, image, expected
+):
+    _write_core_config(config_manager, {
+        "coreApi": core, "assistApi": assist,
+        "coreApiKey": "free-access" if core == "free" else "legacy-key",
+        "enableCustomApi": True, "imageModelProvider": image,
+    })
+    config = config_manager.get_model_api_config("image")
+    assert config["api_key"] == expected
+    response = asyncio.run(core_config_router.get_core_config_api())
+    field = {"qwen": "assistApiKeyQwen", "qwen_intl": "assistApiKeyQwenIntl", "openai": "assistApiKeyOpenai"}[image]
+    assert bool(response[field]) == bool(expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", [
+    "https://old.example/v1/", "  https://old.example/v1  ",
+    "https://OLD.example:443/v1",
+])
+def test_image_equivalent_endpoint_preserves_custom_key(config_manager, core_config_router, url):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": url,
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is True
+    assert config_manager.load_json_config("core_config.json", {})["imageModelApiKey"] == "private-image-key"
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", ["disabled", "qwen"])
+def test_retained_image_key_cannot_move_while_inactive(config_manager, core_config_router, provider):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelProvider": provider, "imageModelUrl": "https://new.example/v1",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False
+    saved = config_manager.load_json_config("core_config.json", {})
+    assert saved["imageModelUrl"] == "https://old.example/v1"
+    assert saved["imageModelProvider"] == "custom"
+
+
+@pytest.mark.unit
+def test_multiple_trailing_slashes_do_not_preserve_custom_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access",
+        "imageModelProvider": "custom", "imageModelUrl": "https://old.example/v1",
+        "imageModelId": "image-model", "imageModelApiKey": "private-image-key",
+    })
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        "imageModelUrl": "https://old.example/v1//",
+        "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+    })))
+    assert result["success"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("change,success", [
+    ({}, True),
+    ({"imageModelId": "changed"}, False),
+    ({"imageModelUrl": "https://changed.example/v1"}, False),
+    ({"imageModelApiKey": "replacement"}, False),
+    ({"imageModelProvider": "another-future-provider"}, False),
+    ({"imageModelProvider": "disabled", "imageModelUrl": "", "imageModelId": "", "imageModelApiKey": ""}, True),
+])
+def test_unknown_image_provider_preserved_only_unchanged(config_manager, core_config_router, change, success):
+    image = {
+        "imageModelProvider": "future-provider", "imageModelUrl": " https://future.example/v1 ",
+        "imageModelId": " future-model ", "imageModelApiKey": "private-image-key",
+    }
+    _write_core_config(config_manager, {
+        "coreApi": "free", "assistApi": "free", "coreApiKey": "free-access", **image,
+    })
+    payload = {**image, "imageModelApiKey": core_config_router.CORE_CONFIG_SECRET_SENTINEL,
+               "disableTts": True, **change}
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest(payload)))
+    assert result["success"] is success
+    saved = config_manager.load_json_config("core_config.json", {})
+    if success:
+        assert saved["disableTts"] is True
+    if not change or not success:
+        assert {field: saved[field] for field in image} == image
+    else:
+        assert saved["imageModelProvider"] == "disabled"
+        assert saved["imageModelApiKey"] == ""
+
+
+@pytest.mark.unit
+def test_new_unknown_image_provider_still_rejected(config_manager, core_config_router):
+    _write_core_config(config_manager, {"coreApi": "free", "assistApi": "free", "coreApiKey": "free-access"})
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({"imageModelProvider": "future-provider"})))
+    assert result["success"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["imageModelProvider", "imageModelUrl", "imageModelId", "imageModelApiKey"])
+@pytest.mark.parametrize("value", [None, 123, False, [], {}])
+def test_disabled_image_fields_require_strings(config_manager, core_config_router, field, value):
+    original = {"coreApi": "free", "assistApi": "free", "coreApiKey": "free-access", "imageModelProvider": "disabled"}
+    _write_core_config(config_manager, original)
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({"imageModelProvider": "disabled", field: value})))
+    assert result["success"] is False
+    assert result["error"] == "Image settings must be strings"
+    assert config_manager.load_json_config("core_config.json", {}) == original

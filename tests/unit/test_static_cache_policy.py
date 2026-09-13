@@ -476,3 +476,14 @@ async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
     await static_files.get_response(f"{tool_id}/default.png", scope)
 
     assert seen["thread"] != loop_thread, "path check still ran on the event loop"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('query', [b'', b'v=1760000000'])
+async def test_game_modules_revalidate_relative_imports(tmp_path, query):
+    folder = tmp_path / 'game' / 'sdk'
+    folder.mkdir(parents=True)
+    (folder / 'media-clock.mjs').write_text('export {};', encoding='utf-8')
+    scope = {'type':'http', 'method':'GET', 'path':'/game/sdk/media-clock.mjs',
+             'root_path':'', 'query_string':query, 'headers':[]}
+    response = await CustomStaticFiles(directory=tmp_path).get_response('game/sdk/media-clock.mjs', scope)
+    assert response.headers['cache-control'] == 'no-cache'

@@ -44,6 +44,98 @@ def test_valid_runtime_contract_manifest_passes(validator: Draft202012Validator)
     validator.validate(manifest())
 
 
+def test_command_contracts_have_an_independent_large_string_bound(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "snapshot:analyze": {
+            "request": {
+                "type": "object",
+                "properties": {
+                    "snapshot": {"type": "string", "maxLength": 1_800_000},
+                },
+                "required": ["snapshot"],
+            },
+            "response": {"type": "object"},
+        },
+    }
+    validator.validate(value)
+
+    ordinary_contract = deepcopy(value)
+    ordinary_contract["contracts"]["events"]["score"] = {
+        "type": "string",
+        "maxLength": 4097,
+    }
+    assert_invalid(validator, ordinary_contract)
+
+    oversized_command_contract = deepcopy(value)
+    oversized_command_contract["contracts"]["commands"]["snapshot:analyze"]["request"][
+        "properties"
+    ]["snapshot"]["maxLength"] = 1_800_001
+    assert_invalid(validator, oversized_command_contract)
+
+
+def test_command_contract_requires_request_and_response(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:start": {"request": {"type": "object"}},
+    }
+    assert_invalid(validator, value)
+
+
+@pytest.mark.parametrize(
+    "request_schema",
+    (
+        None,
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "integer"},
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+        ["ready", "waiting"],
+        {"type": "object", "minLength": 1},
+    ),
+    ids=(
+        "null",
+        "boolean",
+        "number",
+        "integer",
+        "string",
+        "array",
+        "enum-shorthand",
+        "object-with-scalar-keyword",
+    ),
+)
+def test_command_request_contract_rejects_non_object_shapes_and_keywords(
+    validator: Draft202012Validator,
+    request_schema: object,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:probe": {
+            "request": request_schema,
+            "response": {"type": "object"},
+        },
+    }
+    assert_invalid(validator, value)
+
+
+def test_command_response_contract_still_allows_scalar_schema(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:probe": {
+            "request": {"type": "object"},
+            "response": {"type": "string", "maxLength": 32},
+        },
+    }
+    validator.validate(value)
+
+
 def test_array_contract_requires_items(validator: Draft202012Validator) -> None:
     value = manifest()
     value["contracts"]["events"]["score"] = {"type": "array"}

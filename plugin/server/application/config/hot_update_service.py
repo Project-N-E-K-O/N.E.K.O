@@ -8,6 +8,7 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_queries import load_plugin_config
+from plugin.server.infrastructure.config_access import get_config_access
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
 logger = get_logger("server.application.config.hot_update")
@@ -48,6 +49,10 @@ def _ensure_mapping(value: object, *, field: str) -> dict[str, object]:
 def _get_host_sync(plugin_id: str) -> object | None:
     from plugin.core.state import state
 
+    snapshot = get_config_access(plugin_id)
+    if snapshot is not None:
+        host = snapshot.host
+        return None if getattr(host, _QUARANTINED_HOST_ATTR, False) is True else host
     with state.acquire_plugin_hosts_read_lock():
         host = state.plugin_hosts.get(plugin_id)
         if getattr(host, _QUARANTINED_HOST_ATTR, False) is True:
@@ -64,8 +69,7 @@ async def hot_update_plugin_config(
     timeout: float = 10.0,
 ) -> dict[str, object]:
     normalized_updates = _ensure_mapping(updates, field="updates")
-    loop = asyncio.get_running_loop()
-    host = await loop.run_in_executor(None, _get_host_sync, plugin_id)
+    host = await asyncio.to_thread(_get_host_sync, plugin_id)
 
     if host is None:
         if mode == "temporary":
@@ -75,13 +79,13 @@ async def hot_update_plugin_config(
                 status_code=400,
                 details={"plugin_id": plugin_id, "mode": mode},
             )
-        persisted = await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
+        persisted = await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
         persisted["hot_reloaded"] = False
         persisted["mode"] = mode
         return persisted
 
     if mode == "permanent":
-        await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
+        await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
 
     if not hasattr(host, "send_config_update"):
         raise ServerDomainError(
@@ -92,7 +96,7 @@ async def hot_update_plugin_config(
         )
 
     if mode == "permanent":
-        config_payload = await loop.run_in_executor(None, load_plugin_config, plugin_id)
+        config_payload = await asyncio.to_thread(load_plugin_config, plugin_id)
         full_config_obj = config_payload.get("config")
         if not isinstance(full_config_obj, Mapping):
             raise ServerDomainError(

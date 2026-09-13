@@ -644,12 +644,17 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
       if (buildMode.value === 'all') {
         let response: PluginCliBuildResponse
+        // This workbench lists managed sources; implicit API "all" also builds
+        // development archives, which belong to the protected development page.
+        const refs = targetRefs(targets)
         try {
           response = await buildPluginCli({
-            mode: 'all',
+            mode: 'selected',
+            plugin_refs: refs.length > 0 ? refs : undefined,
+            plugins: refs.length > 0 ? undefined : targets,
             target_dir: buildForm.value.target_dir || undefined,
             keep_staging: !!buildForm.value.keep_staging,
-          })
+          }, { timeout: 300_000 })
         } catch (error) {
           response = failedBuildResponse('all', error)
           setResult('build', response)

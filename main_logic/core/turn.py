@@ -1870,6 +1870,24 @@ class TurnMixin:
         except Exception as e:
             logger.warning("[%s] %s turn_end send failed: %s", self.lanlan_name, log_context or "mirror", e)
 
+    async def interrupt_ordinary_speech_for_takeover(self) -> None:
+        """Invalidate queued/in-flight ordinary output before a host takes audio."""
+        async with self.lock:
+            if not self._takeover_active:
+                return
+            interrupted_speech_id = self.current_speech_id
+            self.current_speech_id = str(uuid4())
+        self.audio_resampler.clear()
+        await self._clear_tts_pipeline()
+        self.release_speech_playback_gain(interrupted_speech_id)
+        if isinstance(self.session, OmniRealtimeClient):
+            try:
+                await self.session.cancel_response()
+            except Exception:
+                # Handler-level takeover guards still discard provider output.
+                pass
+        await self.send_user_activity(interrupted_speech_id)
+
     async def mirror_assistant_speech(
         self,
         line: str,

@@ -406,6 +406,40 @@
     const SPEECH_PLAYBACK_STATE_HEARTBEAT_MS = 200;
     let _speechPlaybackChannel = null;
     let _speechPlaybackStateHeartbeatTimer = 0;
+    let _speechMouthBins = null;
+    let _speechMouthWave = null;
+
+    function captureSpeechMouthFrame(state) {
+        // Sample the existing speech analyser, never the microphone or game
+        // BGM. Reuse the 200ms bridge heartbeat and at most 512 scratch bytes.
+        const analyser = S.globalAnalyser;
+        if (!state.active || !state.correlationId || state.audioContextState !== 'running'
+            || state.remainingSeconds <= 0.05 || !S.scheduledSources.length
+            || state.audioContextTime < state.playbackStartAudioTime || !analyser) {
+            _speechMouthBins = null;
+            _speechMouthWave = null;
+            return null;
+        }
+        const count = Math.min(256, Number(analyser.frequencyBinCount));
+        const rate = Number(analyser.context?.sampleRate || S.audioPlayerContext?.sampleRate);
+        if (!Number.isInteger(count) || count < 16 || (count & (count - 1)) !== 0
+            || !Number.isFinite(rate) || rate <= 0) return null;
+        try {
+            if (_speechMouthBins?.length !== count) _speechMouthBins = new Uint8Array(count);
+            if (!_speechMouthWave) _speechMouthWave = new Uint8Array(256);
+            analyser.getByteFrequencyData(_speechMouthBins);
+            analyser.getByteTimeDomainData(_speechMouthWave);
+            let sum = 0;
+            for (const byte of _speechMouthWave) sum += ((byte - 128) / 128) ** 2;
+            return {
+                bins: Array.from(_speechMouthBins),
+                // Only low-frequency bins are sent; preserve their actual Hz
+                // spacing when the receiving renderer reads this snapshot.
+                sampleRate: rate * count / analyser.frequencyBinCount,
+                rms: Math.min(1, Math.sqrt(sum / _speechMouthWave.length)),
+            };
+        } catch (_) { return null; }
+    }
 
     function getSpeechPlaybackChannel() {
         if (_speechPlaybackChannel !== null) {
@@ -476,6 +510,7 @@
         if (!state.active) {
             state.remainingSeconds = 0;
         }
+        state.mouthFrame = captureSpeechMouthFrame(state);
 
         window.NekoSpeechPlaybackState = state;
         try {
@@ -1481,11 +1516,39 @@
 
     // ======================== Lip-sync ========================
 
-    function startLipSync(model, analyser) {
-        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+    // 定时器驱动时的取消句柄（rAF 驱动时用 S.animationFrameId）
+    let _lipSyncPacedCancel = null;
+
+    // 取消已排的口型同步帧：rAF / 定时器两种驱动都覆盖
+    function cancelLipSyncFrame() {
         if (S.animationFrameId) {
             cancelAnimationFrame(S.animationFrameId);
+            S.animationFrameId = null;
         }
+        if (_lipSyncPacedCancel) {
+            try { _lipSyncPacedCancel(); } catch (_) {}
+            _lipSyncPacedCancel = null;
+        }
+    }
+
+    // 排下一帧：Electron Pet 里渲染后端切到定时器驱动时，本循环也走定时器（周期同渲染
+    // tick），否则这条 rAF 链会单独把 Blink 主帧顶回显示器刷新率。返回是否为定时器驱动。
+    function scheduleLipSyncFrame(animate) {
+        const pacing = window.nekoFramePacing;
+        if (pacing && typeof pacing.requestPacedFrame === 'function' &&
+            typeof pacing.currentTimerTickFps === 'function' && pacing.currentTimerTickFps() != null) {
+            S.animationFrameId = null;
+            _lipSyncPacedCancel = pacing.requestPacedFrame(animate);
+            return true;
+        }
+        _lipSyncPacedCancel = null;
+        S.animationFrameId = requestAnimationFrame(animate);
+        return false;
+    }
+
+    function startLipSync(model, analyser) {
+        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+        cancelLipSyncFrame();
 
         _lastMouthOpen = 0;
         _lipSyncSkipCounter = 0;
@@ -1494,9 +1557,11 @@
 
         function animate() {
             if (!analyser) return;
-            S.animationFrameId = requestAnimationFrame(animate);
+            const pacedByTimer = scheduleLipSyncFrame(animate);
 
-            if (++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
+            // 定时器驱动时周期已经是渲染 tick（≤ 配置帧率），不再隔帧；rAF 驱动才按
+            // LIP_SYNC_EVERY_N_FRAMES 隔帧采样
+            if (!pacedByTimer && ++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
             _lipSyncSkipCounter = 0;
 
             analyser.getByteTimeDomainData(dataArray);
@@ -1522,10 +1587,7 @@
 
     function stopLipSync(model) {
         console.log('[LipSync] 停止口型同步');
-        if (S.animationFrameId) {
-            cancelAnimationFrame(S.animationFrameId);
-            S.animationFrameId = null;
-        }
+        cancelLipSyncFrame();
         if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
             window.LanLan1.setMouth(0);
         } else if (model && model.internalModel && model.internalModel.coreModel) {

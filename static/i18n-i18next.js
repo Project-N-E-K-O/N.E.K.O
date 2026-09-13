@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增 Plugin API 设置入口文案；递增版本让 Electron、Docker 等长期缓存
-    // 重新拉取完整语言包，避免界面直接显示 api.pluginApiSettings key。
-    const LOCALE_VERSION = '2026-09-06-plugin-model-api';
+    // 合并 Plugin API 设置入口与 PNGTuber / 一起看新增 key；递增版本让 Electron、Docker 等长期缓存
+    // 重新拉取完整语言包，避免界面直接显示新 key。
+    const LOCALE_VERSION = '2026-09-13-plugin-model-api-watch-together';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

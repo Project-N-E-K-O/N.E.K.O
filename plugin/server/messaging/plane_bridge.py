@@ -155,16 +155,67 @@ class _Bridge:
             return
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop.clear()
-        t = threading.Thread(target=self._run, daemon=True)
+        # A NEW event, never ``clear()`` on the shared one. ``stop()`` gives up
+        # after a bounded join, so a slow thread can still be draining here --
+        # clearing the event it is watching would put it straight back into its
+        # send loop, PUSHing to the endpoint it was retired from, competing with
+        # the new thread for the same queue, and swallowing every send failure.
+        # Records it happened to pick up would vanish, which is the exact silent
+        # loss the retirement path exists to end. Its own event stays set, so it
+        # leaves on its own schedule and cannot be recalled.
+        self._stop = threading.Event()
+        t = threading.Thread(target=self._run, args=(self._stop,), daemon=True)
         self._thread = t
         t.start()
 
+    def is_alive(self) -> bool:
+        """Whether the sender thread is running.
+
+        A bridge switched off by configuration answers True: there is no thread
+        to lose, and callers use this to decide whether to tear the delivery
+        path down and rebuild it, which would achieve nothing here.
+
+        The case worth catching is a thread that left on its own. ``_run``
+        returns when ``connect()`` fails, and ``start()`` raised nothing, so
+        from the outside the bridge still looks started. ``enqueue_delta`` goes
+        on accepting records and ``publish_record`` goes on answering True, so
+        nothing surfaces until all 4096 queue slots fill -- by which time every
+        plugin message, state burst and alert in between is gone.
+        """
+        if not self._enabled:
+            return True
+        t = self._thread
+        return t is not None and t.is_alive()
+
     def stop(self) -> None:
+        """Stop the sender thread and wait for it, so ``start()`` can follow.
+
+        The join and the ``_thread`` reset are what make stop/start usable as a
+        pair. ``_run`` connects its PUSH socket ONCE and then loops forever, so a
+        thread that outlives a plane rebuild keeps sending to the old endpoint --
+        the only way to repoint it is to let it die and start a new one. Without
+        clearing ``_thread`` here, the ``start()`` right after would see the
+        still-draining thread, return early, and leave the bridge stopped for
+        good. The loop wakes every 0.2s, so the wait is short.
+        """
         try:
             self._stop.set()
         except _RUNTIME_ERRORS:
+            # Interpreter teardown can leave the Event unusable. Nothing to
+            # salvage and nothing to report -- the thread is a daemon and dies
+            # with the process anyway; raising here would only turn a clean
+            # shutdown into a traceback.
             pass
+        t = self._thread
+        self._thread = None
+        if t is not None and t.is_alive():
+            try:
+                t.join(timeout=1.0)
+            except _RUNTIME_ERRORS:
+                # Same: at teardown ``join`` can refuse. The wait is a courtesy
+                # to the next ``start()``, not a correctness requirement -- the
+                # retired thread holds its own stop event and cannot be recalled.
+                pass
 
     def enqueue_delta(
         self,
@@ -238,24 +289,27 @@ class _Bridge:
         except queue.Full:
             return
 
-    def _wait_tcp_ready(self, endpoint: str) -> None:
+    def _wait_tcp_ready(self, endpoint: str, stop: threading.Event) -> None:
         parsed = _parse_tcp_endpoint(endpoint)
         if parsed is None:
             return
         host, port = parsed
-        while not self._stop.is_set():
+        while not stop.is_set():
             try:
                 with socket.create_connection((host, port), timeout=0.2):
                     return
             except OSError:
                 time.sleep(0.2)
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
+        # ``stop`` is THIS thread's event, handed over at start. Never
+        # ``self._stop`` -- that name is rebound for each new thread, so reading
+        # it here would make a retired thread obey its successor's lifetime.
         try:
-            self._wait_tcp_ready(self._endpoint)
+            self._wait_tcp_ready(self._endpoint, stop)
         except _RUNTIME_ERRORS:
             pass
-        if self._stop.is_set():
+        if stop.is_set():
             return
 
         ctx = zmq.Context.instance()
@@ -275,7 +329,7 @@ class _Bridge:
             return
 
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 try:
                     msg = self._q.get(timeout=0.2)
                 except queue.Empty:
@@ -302,6 +356,11 @@ def start_bridge() -> None:
 
 def stop_bridge() -> None:
     _bridge.stop()
+
+
+def message_bridge_is_alive() -> bool:
+    """Whether the sender thread is running. See ``_Bridge.is_alive``."""
+    return _bridge.is_alive()
 
 
 def refresh_ingest_endpoint() -> str:

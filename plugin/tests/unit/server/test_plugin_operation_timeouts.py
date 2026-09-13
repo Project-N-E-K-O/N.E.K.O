@@ -209,7 +209,7 @@ async def test_reload_all_stops_at_its_budget_and_says_which_were_skipped(
     service = module.PluginLifecycleService()
     stopped: list[str] = []
 
-    async def _slow_stop(plugin_id: str, *, stop_deadline=None):
+    async def _slow_stop(plugin_id: str, *, stop_deadline=None, development_snapshot=None):
         stopped.append(plugin_id)
         await asyncio.sleep(0.12)
         return module._ReloadOutcome(plugin_id=plugin_id, success=False, error="x")
@@ -324,7 +324,7 @@ async def test_a_stopped_plugin_is_always_started_again(
     service = module.PluginLifecycleService()
     started: list[str] = []
 
-    async def _stop(plugin_id: str, *, stop_deadline=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None, development_snapshot=None):
         # 停止阶段把预算花光——但两个都停成功了。
         await asyncio.sleep(0.20)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
@@ -390,7 +390,7 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
 
     service = module.PluginLifecycleService()
 
-    async def _stop(plugin_id: str, *, stop_deadline=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None, development_snapshot=None):
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
     seen: list[float | None] = []
@@ -571,7 +571,7 @@ async def test_a_spent_budget_still_buys_a_real_wait_for_the_lock(
     service = module.PluginLifecycleService()
     started: list[str] = []
 
-    async def _stop(plugin_id: str, *, stop_deadline=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None, development_snapshot=None):
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
     # 带真decorator：这条用例要的就是它去抢那把真锁。
@@ -635,7 +635,7 @@ async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
     service = module.PluginLifecycleService()
     attempted: list[str] = []
 
-    async def _stop(plugin_id: str, *, stop_deadline=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None, development_snapshot=None):
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
     async def _start(plugin_id: str, *, start_deadline=None):

@@ -1929,7 +1929,11 @@ class PluginUiQueryService:
                 "has_ui": has_ui,
                 "explicitly_registered": explicitly_registered,
                 "ui_path": f"/plugin/{plugin_id}/ui/" if has_ui else None,
-                "static_dir": str(static_dir) if static_dir is not None else None,
+                "static_dir": (
+                    str(static_dir) if static_dir is not None
+                    and plugin_meta.get("source") != "development"
+                    and not plugin_meta.get("development_ref") else None
+                ),
                 "static_files": static_files[:50],
                 "static_files_count": len(static_files),
             }

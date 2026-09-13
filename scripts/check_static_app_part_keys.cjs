@@ -33,7 +33,7 @@ const expectedPublicKeys = {
     appUi: [
         'completeGoodbyeResourceSuspend', 'ensureHiddenElements', 'hideLive2d',
         'hideVoicePreparingToast', 'initFinalUiGuards', 'initFloatingButtonListeners',
-        'restoreGoodbyeResourceSuspend', 'showCurrentModel', 'showLive2d',
+        'restoreGoodbyeResourceSuspend', 'returnFromGoodbye', 'showCurrentModel', 'showLive2d',
         'showProminentNotice', 'showReadyToSpeakToast', 'showStatusToast', 'showSurveyModal',
         'showVoicePreparingToast', 'syncFloatingMicButtonState', 'syncFloatingScreenButtonState',
     ],
