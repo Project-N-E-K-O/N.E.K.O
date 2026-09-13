@@ -11,6 +11,33 @@ tasks = set()
 pending_confirmations = {}
 
 
+def is_available(manager) -> bool:
+    """Check local preparation prerequisites without synthesis or network probes."""
+    from . import engine
+    try:
+        engine.media_binary('ffmpeg')
+        engine.media_binary('ffprobe')
+        if manager is None:
+            return False
+        vision = manager._config_manager.get_model_api_config('vision')
+        if (not isinstance(vision.get('model'), str) or not vision['model'].strip()
+                or (not vision.get('api_key') and not vision.get('is_custom'))):
+            return False
+        worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
+        from main_logic.tts_client._infra import configured_tts_unavailable_worker
+        if worker is configured_tts_unavailable_worker:
+            return False
+        if provider == 'gptsovits':
+            from utils.gptsovits_config import is_valid_http_url, normalize_gsv_api_url
+            local_config = manager._config_manager.get_model_api_config('tts_custom')
+            if not is_valid_http_url(normalize_gsv_api_url(local_config.get('base_url'))):
+                return False
+        credentials_available = bool(key) or provider in ('custom', 'vllm_omni', 'local_cosyvoice', 'gptsovits')
+        return bool(not disabled and credentials_available and manager._tts_worker_supports_completion(worker, provider, config))
+    except Exception:
+        return False
+
+
 def confirm_preparation(identifier, manager, accepted, duration):
     pending = pending_confirmations.get(identifier)
     if (not pending or pending[0] is not manager or pending[1].done()

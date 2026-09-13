@@ -19,7 +19,6 @@ from config.prompts.prompts_watch_together import (
     LAUGH_TEXT_BY_LANGUAGE,
     WATCH_TOGETHER_DIRECTOR_PROMPT,
 )
-from main_logic.watch_together.usage import record_usage
 
 FRAME_SECONDS = 5
 MAX_SECONDS = 1200
@@ -317,16 +316,52 @@ def normalize_events(raw, length):
     return spaced[:max(1, math.ceil(length / 8))]
 
 
+def record_usage(job, response, model, stage):
+    """Account only provider-reported usage; never estimate image/TTS tokens."""
+    usage = getattr(response, "usage", None)
+    metadata = getattr(response, 'response_metadata', None)
+    if usage is None and isinstance(metadata, dict):
+        usage = metadata.get('token_usage')
+    if hasattr(usage, "model_dump"):
+        usage = usage.model_dump()
+    usage = usage if isinstance(usage, dict) else {}
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    prompt = count(usage.get("prompt_tokens"))
+    completion = count(usage.get("completion_tokens"))
+    if prompt is None and count(usage.get('input_tokens')) is not None:
+        prompt = usage['input_tokens'] + sum(count(usage.get(key)) or 0 for key in ('cache_creation_input_tokens', 'cache_read_input_tokens'))
+    if completion is None:
+        completion = count(usage.get('output_tokens'))
+    total = count(usage.get("total_tokens"))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    prompt_details = usage.get("prompt_tokens_details")
+    completion_details = usage.get("completion_tokens_details")
+    cached = count(prompt_details.get("cached_tokens")) if isinstance(prompt_details, dict) else None
+    if cached is None:
+        cached = count(usage.get("prompt_cache_hit_tokens"))
+    if cached is None:
+        cached = count(usage.get('cache_read_input_tokens'))
+    reasoning = count(completion_details.get("reasoning_tokens")) if isinstance(completion_details, dict) else None
+    stats = job.setdefault("usage", {"calls": [], "input_tokens": 0, "output_tokens": 0,
+                                   "total_tokens": 0, "missing_usage_calls": 0})
+    stats["calls"].append({"model": model, "stage": stage, "input_tokens": prompt,
+                           "output_tokens": completion, "total_tokens": total,
+                           "cached_tokens": cached, "reasoning_tokens": reasoning})
+    for key, value in (("input_tokens", prompt), ("output_tokens", completion), ("total_tokens", total)):
+        if value is not None:
+            stats[key] += value
+    if any(value is None for value in (prompt, completion, total)):
+        stats["missing_usage_calls"] += 1
+
+
 class Engine:
     def __init__(self, cache: Path, synthesize, character: str, language="en", persona=""):
         self.cache, self.synthesize, self.character = cache, synthesize, character
         self.language = language
-        self.director_prompt = (
-            f"Current character: {character}\nCharacter persona:\n{persona}\n\n"
-            + WATCH_TOGETHER_DIRECTOR_PROMPT
-            + f" Speak as {character}, using this character's personality, phrasing and relationship with the user."
-            + " Do not narrate as a generic commentator or invent personal experiences."
-            + f" Write all reaction text and explanations in {language}."
+        self.director_prompt = WATCH_TOGETHER_DIRECTOR_PROMPT.format(
+            character=character, persona=persona, language=language,
         )
         self.laugh_text = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])
         self.cache.mkdir(parents=True, exist_ok=True)

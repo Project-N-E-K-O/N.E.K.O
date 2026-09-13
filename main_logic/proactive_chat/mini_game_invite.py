@@ -351,32 +351,6 @@ def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> 
     return f"{url_template}{separator}{_urlencode(query)}"
 
 
-def _watch_together_available(manager) -> bool:
-    from main_logic.watch_together.engine import media_binary
-    try:
-        media_binary('ffmpeg')
-        media_binary('ffprobe')
-        if manager is None:
-            return False
-        vision = manager._config_manager.get_model_api_config('vision')
-        if (not isinstance(vision.get('model'), str) or not vision['model'].strip()
-                or (not vision.get('api_key') and not vision.get('is_custom'))):
-            return False
-        worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
-        from main_logic.tts_client._infra import configured_tts_unavailable_worker
-        if worker is configured_tts_unavailable_worker:
-            return False
-        if provider == 'gptsovits':
-            from utils.gptsovits_config import is_valid_http_url, normalize_gsv_api_url
-            local_config = manager._config_manager.get_model_api_config('tts_custom')
-            if not is_valid_http_url(normalize_gsv_api_url(local_config.get('base_url'))):
-                return False
-        credentials_available = bool(key) or provider in ('custom', 'vllm_omni', 'local_cosyvoice', 'gptsovits')
-        return bool(not disabled and credentials_available and manager._tts_worker_supports_completion(worker, provider, config))
-    except Exception:
-        return False
-
-
 def _pick_mini_game_type(lanlan_name: str | None = None, *, manager=None) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
@@ -387,8 +361,10 @@ def _pick_mini_game_type(lanlan_name: str | None = None, *, manager=None) -> str
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
-    if 'watch-together' in candidates and not _watch_together_available(manager):
-        candidates.remove('watch-together')
+    if 'watch-together' in candidates:
+        from main_logic.watch_together.preparation import is_available
+        if not is_available(manager):
+            candidates.remove('watch-together')
     if lanlan_name:
         candidates = [
             g for g in candidates

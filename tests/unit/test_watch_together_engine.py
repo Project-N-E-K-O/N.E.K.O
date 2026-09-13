@@ -54,14 +54,14 @@ async def test_synthesis_skips_only_oversized_cues(tmp_path, monkeypatch, failur
 async def test_missing_vision_model_blocks_preflight_and_invitation(tmp_path, monkeypatch, model):
     from types import SimpleNamespace
     from main_logic.watch_together import engine
-    from main_logic.proactive_chat import mini_game_invite
+    from main_logic.watch_together import preparation
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
     config = SimpleNamespace(get_model_api_config=lambda _: {'api_key': 'key', 'model': model})
     instance = engine.Engine(tmp_path, None, 'cat')
     instance._cm = config
     with pytest.raises(RuntimeError):
         await instance.vision_config()
-    assert not mini_game_invite._watch_together_available(SimpleNamespace(_config_manager=config))
+    assert not preparation.is_available(SimpleNamespace(_config_manager=config))
 
 
 @pytest.mark.asyncio
@@ -97,12 +97,14 @@ from main_logic.watch_together.engine import Engine
 from main_logic.watch_together.engine import subtitle_priority, dash_audio, media_binary
 
 
-def test_director_uses_current_persona_and_requested_language(tmp_path):
-    engine = Engine(tmp_path, None, 'Yui', language='zh-CN', persona='Gentle, playful; call the user captain.')
-    assert 'Gentle, playful; call the user captain.' in engine.director_prompt
+@pytest.mark.parametrize('language', ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'es', 'pt', 'ru'])
+def test_director_uses_current_persona_and_requested_language(tmp_path, language):
+    persona = 'Gentle, playful; call the user {captain}. ' * 200
+    engine = Engine(tmp_path, None, 'Yui', language=language, persona=persona)
+    assert persona in engine.director_prompt
     assert 'Speak as Yui' in engine.director_prompt
-    assert 'in zh-CN' in engine.director_prompt
-    assert '======以上为' in engine.director_prompt
+    assert f'in {language}.' in engine.director_prompt
+    assert engine.director_prompt.endswith('======以上为陪看规则======')
 
 
 def test_subtitle_script_and_generated_language_priority():

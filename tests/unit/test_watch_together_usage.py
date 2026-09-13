@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from main_logic.watch_together.usage import record_usage
+from main_logic.watch_together.engine import record_usage
 
 
 def test_cached_and_reasoning_are_subsets_not_added_twice():
