@@ -316,6 +316,13 @@ async def soccer_demo(request: Request):
     })
 
 
+@router.get("/watch_together", response_class=HTMLResponse)
+async def watch_together(request: Request):
+    return get_templates().TemplateResponse("templates/watch_together.html", {
+        "request": request, **_static_assets_ctx(),
+    })
+
+
 @router.get("/badminton_demo", response_class=HTMLResponse)
 async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""

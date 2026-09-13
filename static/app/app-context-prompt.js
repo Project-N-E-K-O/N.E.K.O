@@ -131,7 +131,7 @@
 
     function _dismissActiveContextPromptForGameRoute() {
         // 内置小游戏不属于活动情境提示场景。丢掉尚未重放的信号，并把 play
-        // 记作已处理，避免游戏结束后把“检测到外部游戏”的过期提示补弹。
+        // 记作已处理，避免游戏结束后把"检测到外部游戏"的过期提示补弹。
         _pendingContexts.clear();
         _shownPlay = true;
         if (!_activeContext) return;
@@ -145,6 +145,22 @@
         }
     }
 
+    function _dismissActiveContextPromptForGoodbye() {
+        // 请她离开模式开启时，所有主动搭话已静默，弹窗无意义。
+        _pendingContexts.clear();
+        if (!_activeContext) return;
+        _markShown(_activeContext);
+
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
+    function _isGoodbyeActive() {
+        return !!(window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active);
+    }
+
     async function handle(context) {
         if (context !== 'play' && context !== 'work') return;
         if (S.gameRouteActive) {
@@ -152,6 +168,8 @@
             _pendingContexts.delete(context);
             return;
         }
+        // 请她离开模式：所有主动搭话已静默，弹窗无意义
+        if (window.__nekoGoodbyeSilentState && window.__nekoGoodbyeSilentState.active) return;
         // settings 还没合并就绪（branch 未决议，nekoTelemetryBranch 为 undefined）：暂存
         // 这次事件，等 neko:telemetry-branch-resolved 再重放。不能直接丢——后端一次性推送
         // 不会重发。GET 失败时 branch 永远 undefined、该事件也永不重放，等于 fail-closed
@@ -197,7 +215,7 @@
                 ],
                 onShown: function (modal) {
                     _activePromptOverlay = modal && modal.overlay ? modal.overlay : null;
-                    if (_cancelActivePrompt || S.gameRouteActive) {
+                    if (_cancelActivePrompt || S.gameRouteActive || _isGoodbyeActive()) {
                         _cancelActivePrompt = true;
                         if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
                             _activePromptOverlay.click();
@@ -254,6 +272,21 @@
         const detail = event && event.detail ? event.detail : {};
         if (detail.action === 'opened') {
             _dismissActiveContextPromptForGameRoute();
+        }
+    });
+    // 请她离开模式开启时，dismiss 正在显示或排队中的情境弹窗。
+    // tryAutoGoodbye() 先派发 live2d-goodbye-click 再确认 isGoodbyeActive()；
+    // 激活被拒时会恢复静默状态。延到微任务再检查，避免误杀。
+    window.addEventListener('live2d-goodbye-click', function () {
+        queueMicrotask(function () {
+            if (_isGoodbyeActive()) {
+                _dismissActiveContextPromptForGoodbye();
+            }
+        });
+    });
+    window.addEventListener('neko:auto-goodbye:state-change', function (event) {
+        if (_isGoodbyeActive()) {
+            _dismissActiveContextPromptForGoodbye();
         }
     });
 

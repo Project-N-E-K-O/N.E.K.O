@@ -777,6 +777,48 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <!-- 图片生成 -->
+                                <div class="model-config-container">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('image')"
+                                        aria-controls="image-model-content" aria-expanded="false"
+                                        style="width: 100%; border: 0; text-align: left; font: inherit;">
+                                        <span class="model-title">
+                                            <img src="/static/icons/vision_model_icon.png"
+                                                data-i18n-alt="api.imageModelConfig" class="model-title-icon">
+                                            <span data-i18n="api.imageModelConfig">图片生成</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </button>
+                                    <div id="image-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="imageModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="imageModelProvider" onchange="onImageProviderChange()" class="api-provider-select" style="max-width: 600px;">
+                                            </select>
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="imageModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="imageModelUrl"
+                                                data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                placeholder="e.g., https://api.openai.com/v1" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="imageModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="imageModelId"
+                                                data-i18n-placeholder="api.imageModelExamplePlaceholder"
+                                                placeholder="e.g., gpt-image-2, wanx2.1-t2i-turbo" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="imageModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="imageModelApiKey"
+                                                data-i18n-placeholder="api.imageModelApiKeyPlaceholder"
+                                                placeholder="API Key" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

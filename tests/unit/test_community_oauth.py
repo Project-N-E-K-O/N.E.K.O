@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -585,6 +586,48 @@ async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeyp
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("replace_social", [False, True])
+async def test_oauth_status_resolves_login_preserved_by_rejected_cleanup(
+    oauth_app, monkeypatch, replace_social,
+):
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    new_auth = {
+        "access_token": "new-login-token",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    validated = []
+
+    async def lookup_identity(_base, access):
+        validated.append(access)
+        if access == "rejected-token":
+            # A login may have written only the auth mirror when the older
+            # authoritative session's cloud validation comes back rejected.
+            assert C._save_auth(new_auth)
+            if replace_social:
+                assert C._save_social_session(
+                    "https://community.example", "new-login-token", None,
+                    local_user_id=USER_ID, auth_source="oauth",
+                )
+            return C._CloudIdentityLookup(None, 401, "rejected")
+        assert access == "new-login-token"
+        return C._CloudIdentityLookup(C._CloudIdentity(USER_ID, "oauth", {}), 200)
+
+    # Keep real file reads and cleanup: their successful conditional deletion
+    # is precisely what used to bypass revalidation of the surviving login.
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+    status = await O.resolve_saved_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["snapshot"]["access_token"] == "new-login-token"
+    assert status["auth"] == new_auth
+    assert validated == ["rejected-token", "new-login-token"]
+    assert json.loads(auth.read_text(encoding="utf-8")) == new_auth
+
+
+@pytest.mark.unit
 async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     worker_threads: list[int] = []
 
@@ -891,8 +934,10 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
     monkeypatch.setattr(O, "_load_oauth_pending", load_pending)
     monkeypatch.setattr(O, "_unlink_pending", unlink_pending)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", save_social)
+    # Both records are written inside one social-session lock scope, so the
+    # callback now goes through the unlocked writers.
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", save_social)
 
     event_loop_thread = threading.get_ident()
     response = await O._handle_oauth_callback("auth-code", "expected-state")
@@ -956,8 +1001,8 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
     monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
 
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
@@ -969,6 +1014,185 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     else:
         assert not auth.exists()
         assert not social.exists()
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_rolls_back_the_tokens_seen_under_the_lock(
+    tmp_path,
+    monkeypatch,
+):
+    """A refresh committing before the lock owns the tokens; do not roll it back."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps({"access_token": "old-access", "refresh_token": "old-refresh"}),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+
+    real_lock = C._social_session_lock
+
+    @contextmanager
+    def rotating_lock(path):
+        with real_lock(path):
+            auth.write_text(
+                json.dumps(
+                    {
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            social.write_text(
+                json.dumps(
+                    {
+                        "token": "rotated-access",
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "local_user_id": USER_ID,
+                        "auth_source": "oauth",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield
+
+    monkeypatch.setattr(C, "_social_session_lock", rotating_lock)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # Restoring the pre-refresh snapshot would reinstate a consumed refresh
+    # token and the next refresh would die with invalid_grant.
+    assert json.loads(auth.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+    assert json.loads(social.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_leaves_an_untouched_social_file_alone(
+    tmp_path,
+    monkeypatch,
+):
+    """Rollback must not rewrite (and risk destroying) the social file it never modified."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    old_social = {
+        "token": "old-access",
+        "access_token": "old-access",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(json.dumps(old_social), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_save_auth_unlocked", lambda *_args, **_kwargs: False)
+
+    social_writes = []
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == social:
+            social_writes.append(data)
+            raise OSError("rollback must not rewrite the untouched social file")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    cleared = []
+    monkeypatch.setattr(C, "_clear_auth", lambda: cleared.append(True) or True)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    assert social_writes == []
+    # A failed save leaves the old session byte-identical; rewriting it could
+    # fail too and make _clear_auth() delete a still-usable login.
+    assert cleared == []
+    assert json.loads(social.read_text(encoding="utf-8")) == old_social
+    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
+    tmp_path,
+    monkeypatch,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == auth and data == old_auth:
+            raise OSError("restore failed")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # A new auth record left beside the old session reads as an active login.
+    assert not auth.exists()
+    assert not social.exists()
 
 
 @pytest.mark.unit
@@ -1025,3 +1249,84 @@ def test_legacy_login_returns_410(oauth_app):
     )
     assert response.status_code == 410
     assert response.json() == {"detail": "legacy_community_login_removed"}
+
+
+@pytest.mark.unit
+def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
+    """A bind repair starting as cleanup releases its lock cannot revive auth."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    cleanup_unlocked = threading.Event()
+    continue_cleanup = threading.Event()
+    repair_read = threading.Event()
+    continue_repair = threading.Event()
+    worker_ids = {}
+    real_lock = C._social_session_lock
+    real_read = C._read_json_dict
+
+    @contextmanager
+    def pause_after_cleanup_unlock(path):
+        with real_lock(path):
+            yield
+        if threading.get_ident() == worker_ids.get("cleanup"):
+            cleanup_unlocked.set()
+            assert continue_cleanup.wait(5)
+
+    def pause_after_repair_read(path):
+        data = real_read(path)
+        if path == auth and threading.get_ident() == worker_ids.get("repair"):
+            repair_read.set()
+            assert continue_repair.wait(5)
+        return data
+
+    def clear_rejected():
+        worker_ids["cleanup"] = threading.get_ident()
+        return O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    def repair_bind():
+        worker_ids["repair"] = threading.get_ident()
+        C._persist_repaired_bind("rejected-token", {"bound": True})
+
+    monkeypatch.setattr(C, "_social_session_lock", pause_after_cleanup_unlock)
+    monkeypatch.setattr(C, "_read_json_dict", pause_after_repair_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cleanup = pool.submit(clear_rejected)
+        try:
+            assert cleanup_unlocked.wait(5)
+            repair = pool.submit(repair_bind)
+            assert repair_read.wait(5)
+            continue_cleanup.set()
+            assert cleanup.result(timeout=5)
+        finally:
+            continue_cleanup.set()
+            continue_repair.set()
+        repair.result(timeout=5)
+
+    assert not social.exists()
+    assert not auth.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("current_token", ["rejected-token", "new-login-token"])
+def test_rejected_snapshot_cleanup_checks_both_session_paths(
+    oauth_app, monkeypatch, current_token,
+):
+    _client, auth, social, _pending = oauth_app
+    legacy = social.with_name("legacy_social_session.json")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    auth.write_text(json.dumps({"access_token": current_token}), encoding="utf-8")
+    social.write_text(json.dumps({"token": current_token}), encoding="utf-8")
+    legacy.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+
+    assert O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    assert not legacy.exists()
+    if current_token == "rejected-token":
+        assert not auth.exists()
+        assert not social.exists()
+    else:
+        assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == current_token
+        assert json.loads(social.read_text(encoding="utf-8"))["token"] == current_token

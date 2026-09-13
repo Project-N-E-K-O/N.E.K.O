@@ -23,7 +23,7 @@ import asyncio
 
 from config import GSV_VOICE_PREFIX
 from utils.config_manager import _as_bool, get_config_manager
-from utils.gptsovits_config import gsv_ws_url_from_http_base, is_valid_http_url, normalize_gsv_api_url, redact_url_for_log
+from utils.gptsovits_config import gsv_ws_url_from_http_base, is_valid_http_url, redact_url_for_log, resolve_worker_gsv_api_url
 
 from .._infra import AudioDoneEmitter, TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
 from .._telemetry import _record_tts_telemetry
@@ -131,9 +131,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     _ = audio_api_key  # 未使用，但保持接口一致
 
     # 获取配置
-    cm = get_config_manager()
-    tts_config = cm.get_model_api_config('tts_custom')
-    base_url = normalize_gsv_api_url(tts_config.get('base_url'))
+    base_url = resolve_worker_gsv_api_url(get_config_manager())
 
     if not is_valid_http_url(base_url):
         message = "GPT-SoVITS URL 配置无效：需要 http(s):// 的有效地址（本地或远程均可）"

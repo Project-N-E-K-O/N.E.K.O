@@ -1,3 +1,4 @@
+import { WatchTogetherButton } from './WatchTogetherButton';
 import {
   useState,
   useEffect,
@@ -5898,6 +5899,7 @@ function CompactChatApp({
             <h1 className="window-title" id="react-chat-window-title">{title}</h1>
           </div>
           {/* Avatar button moved to #react-chat-window-header-actions in host template */}
+          <WatchTogetherButton />
         </header>
 
         {chatBodyNode}

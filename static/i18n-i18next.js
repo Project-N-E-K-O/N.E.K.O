@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并主分支游戏提示与声纹会话激活 key；递增版本让
+    // 合并主分支陪看/图像生成与声纹会话激活 key；递增版本让
     // Electron、Docker 等长期缓存重新拉取完整语言包，避免界面直接显示 key。
-    const LOCALE_VERSION = '2026-09-11-voice-session-activation-main';
+    const LOCALE_VERSION = '2026-09-13-voice-session-activation-watch-together';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
