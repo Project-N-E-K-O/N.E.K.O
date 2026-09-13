@@ -73,8 +73,10 @@ async function main() {
   const calls = [];
   const storage = new Map();
   const renderers = [];
+  const mountAttempts = [];
   let modelGate = null;
   let mountGate = null;
+  let mountGatePath = null;
   const unavailableModels = new Set();
   const listeners = new Map();
   const addEventListener = (type, handler) => {
@@ -95,7 +97,8 @@ async function main() {
     document, navigator: {}, location: { origin: 'http://localhost', search: '' },
     console, AbortController, setTimeout, clearTimeout,
     createSoccerAvatarHost: () => ({ async mount(config) {
-      if (mountGate) await mountGate;
+      mountAttempts.push(config.model.path);
+      if (mountGate && (!mountGatePath || mountGatePath === config.model.path)) await mountGate;
       if (unavailableModels.has(config.model.path)) throw new Error('asset_missing');
       if (config.model.path === '/broken.pmx') throw new Error('asset_failed');
       const renderer = { config, model: config.model, disposed: false, paused: false,
@@ -223,6 +226,34 @@ async function main() {
         { type: 'mmd', path: '/broken.pmx' }, { type: 'pngtuber', path: '/fallback.png' },
       ],
     });
+    for (const [oldModel, failedModel] of [
+      [{ type: 'live2d', path: '/old.model3.json' }, { type: 'vrm', path: '/missing.vrm' }],
+      [{ type: 'vrm', path: '/old.vrm' }, { type: 'live2d', path: '/missing.model3.json' }],
+      [{ type: 'pngtuber', path: '/image.png' }, { type: 'mmd', path: '/broken.pmx' }],
+    ]) {
+      await sandbox.setAiAvatar(oldModel);
+      await window.__SoccerAiAvatarController.pause();
+      const eventCount = avatarEvents.length;
+      const attemptCount = mountAttempts.length;
+      unavailableModels.add(failedModel.path);
+      await assert.rejects(sandbox.setAiAvatar(failedModel), /asset_missing/);
+      unavailableModels.delete(failedModel.path);
+      const restored = window.__SoccerAiAvatarController;
+      assert(restored && !restored.disposed, 'cross-fit failure left the AI blank');
+      assert.deepEqual(restored.getState().model, oldModel);
+      assert.equal(restored.getState().paused, true, 'cross-fit recovery lost pause');
+      assert.equal(restored.config.fit.mode, ['vrm', 'mmd'].includes(oldModel.type) ? 'height' : 'contain');
+      assert.equal(mountAttempts.length - attemptCount, 2, 'recovery must attempt the previous model once');
+      assert.equal(avatarEvents.length, eventCount, 'failed replacement emitted success');
+    }
+    unavailableModels.add('/image.png');
+    unavailableModels.add('/missing.vrm');
+    const failedRecoveryAttempts = mountAttempts.length;
+    await assert.rejects(sandbox.setAiAvatar({ type: 'vrm', path: '/missing.vrm' }), /asset_missing/);
+    assert.equal(window.__SoccerAiAvatarController, null, 'failed recovery kept a disposed controller');
+    assert.equal(mountAttempts.length - failedRecoveryAttempts, 2, 'failed recovery retried indefinitely');
+    assert.equal(vm.runInThisContext('soccerAvatarChanging.ai'), false);
+    unavailableModels.clear();
     await sandbox.setAiAvatar({ type: 'vrm', path: '/preserved.vrm' });
     const preservedAi = window.__SoccerAiAvatarController;
     preservedAi.pause();
@@ -509,6 +540,27 @@ async function main() {
     }
     game.runtime.reset({ newSession: true });
     sandbox.resetSoccerCharacterInfo();
+    await vm.runInThisContext('ensureSoccerCharacterInfo()');
+    for (const phase of ['candidate', 'recovery']) {
+      await sandbox.setAiAvatar({ type: 'live2d', path: '/before-reset.model3.json' });
+      let release;
+      mountGatePath = phase === 'candidate' ? '/reset-missing.vrm' : '/before-reset.model3.json';
+      mountGate = new Promise(resolve => { release = resolve; });
+      unavailableModels.add('/reset-missing.vrm');
+      const pending = sandbox.setAiAvatar({ type: 'vrm', path: '/reset-missing.vrm' }).catch(error => error);
+      for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(mountAttempts.at(-1), mountGatePath, `${phase}: did not reach delayed mount`);
+      const attemptsAtReset = mountAttempts.length;
+      sandbox.resetSoccerCharacterInfo();
+      release();
+      assert(await pending instanceof Error);
+      mountGate = null; mountGatePath = null;
+      unavailableModels.clear();
+      assert.equal(window.__SoccerAiAvatarController, null, `${phase}: reset revived an old avatar`);
+      assert.equal(mountAttempts.length, attemptsAtReset, `${phase}: reset started another recovery`);
+      assert.equal(vm.runInThisContext('soccerAvatarChanging.ai'), false);
+      if (phase === 'recovery') assert.equal(renderers.at(-1).disposed, true, 'late recovery leaked its renderer');
+    }
     await vm.runInThisContext('ensureSoccerCharacterInfo()');
     host.getAvatarCharacter = originalCharacterQuery;
     document.getElementById = previousGetElement;

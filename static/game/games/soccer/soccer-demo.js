@@ -397,7 +397,11 @@
               controller.dispose();
               throw new Error('avatar_change_cancelled');
             }
-            if (snapshot.paused) controller.pause();
+            if (snapshot.paused) await controller.pause();
+            if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed) {
+              controller.dispose();
+              throw new Error('character_binding_cancelled');
+            }
             break;
           } catch (error) {
             if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed
@@ -416,6 +420,10 @@
       soccerAvatarChanging[slot] = true;
       const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
       let mounted = null;
+      let restore = null;
+      const generation = soccerCharacterInfoGeneration;
+      const canMount = () => !soccerGame.disposed && generation === soccerCharacterInfoGeneration
+        && window[key] === null;
       try {
         if (slot === 'ai' && ['mmd', 'pngtuber'].includes(model.type)) {
           const bound = await ensureSoccerCharacterInfo();
@@ -432,16 +440,37 @@
           if (previous.disposed || soccerGame.disposed) throw new Error('avatar_change_cancelled');
           return previous;
         }
-        const paused = previous && !previous.disposed && previous.getState().paused;
+        const oldState = previous && !previous.disposed ? previous.getState() : null;
+        const paused = oldState?.paused === true;
+        if (isSoccerAvatarModel(oldState?.model, slot)) {
+          restore = { model: { ...oldState.model }, paused };
+        }
         if (previous && !previous.disposed) await previous.dispose();
+        if (generation !== soccerCharacterInfoGeneration || soccerGame.disposed) {
+          throw new Error('avatar_change_cancelled');
+        }
         window[key] = null;
         mounted = await soccerGame.avatar.mount(soccerAvatarMountConfig(slot, model));
         if (paused) await mounted.pause();
-        if (mounted.disposed || soccerGame.disposed) throw new Error('avatar_change_cancelled');
+        if (mounted.disposed || !canMount()) throw new Error('avatar_change_cancelled');
         window[key] = mounted;
         return mounted;
       } catch (error) {
         if (mounted) await mounted.dispose();
+        // Shared slots cannot host two engine instances safely. Recover the
+        // old model once after a failed remount, only in the same lifecycle.
+        if (restore && canMount() && !['cancelled', 'timeout', 'disposed'].includes(error?.code)
+            && error?.message !== 'avatar_change_cancelled') {
+          let recovered = null;
+          try {
+            recovered = await soccerGame.avatar.mount(soccerAvatarMountConfig(slot, restore.model));
+            if (restore.paused) await recovered.pause();
+            if (recovered.disposed || !canMount()) throw new Error('avatar_change_cancelled');
+            window[key] = recovered;
+            recovered = null;
+          } catch (_) { /* Preserve the original replacement error, without retrying. */ }
+          finally { if (recovered) await recovered.dispose(); }
+        }
         throw error;
       } finally {
         soccerAvatarChanging[slot] = false;
