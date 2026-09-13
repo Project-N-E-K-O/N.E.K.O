@@ -4069,3 +4069,370 @@ async def test_start_plugin_checks_python_requirements_off_the_event_loop(
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["current", 3])
+async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    schema_version: int,
+) -> None:
+    """A stale ``plugin.meta.json`` sends ``start_plugin`` through the worker.
+
+    Schema 3 handlers are truncated and are refused by the reader; the fallback
+    that turns that refusal into one isolated scan lives in ``start_plugin``,
+    not in the reader. A current artifact must still start without any scan.
+
+    Mutation: drop the ``isolated_metadata is None`` branch from ``start_plugin``.
+    """
+    import json
+    import tomllib
+
+    from plugin.server.infrastructure import packaged_metadata
+
+    if schema_version == "current":
+        schema_version = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
+    current = schema_version == packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
+    plugin_dir = tmp_path / "packaged_adapter"
+    plugin_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'packaged_adapter'",
+                "name = 'Packaged Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    conf = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    handler = {"event_type": "plugin_entry", "id": "list_servers", "name": "List Servers"}
+    payload = {
+        "schema_version": schema_version,
+        "sdk_version": packaged_metadata.SDK_VERSION,
+        "source_sha256": packaged_metadata.compute_source_sha256(plugin_dir),
+        "source_files": packaged_metadata.source_file_names(plugin_dir)[0],
+        "source_bytes": packaged_metadata.source_stat_summary(plugin_dir).total_bytes,
+        "build_env": packaged_metadata.build_environment(),
+        "entries": [{"id": "list_servers", "name": "List Servers"}],
+        "handlers": {
+            "packaged_adapter.list_servers": handler,
+            "packaged_adapter:plugin_entry:list_servers": handler,
+        },
+        "entry_methods": {"list_servers": "list_servers"},
+        "entries_config_sha256": packaged_metadata.entries_config_digest(conf, conf["plugin"]),
+    }
+    (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["packaged_adapter"] = {
+                "id": "packaged_adapter",
+                "name": "Packaged Adapter",
+                "type": "adapter",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
+        scans: list[str] = []
+        scanned_handler = dict(handler, name="Scanned")
+
+        def _recording_scan(**kwargs):
+            scans.append(str(kwargs["plugin_id"]))
+            kwargs.pop("timeout", None)
+            scanned = inner_scan(**kwargs)
+            # 扫描结果和包里那份只差一个 name，好分辨最终注册的是哪一份。
+            return IsolatedPluginMetadata(
+                entries_preview=scanned.entries_preview,
+                handlers={"packaged_adapter.list_servers": scanned_handler},
+                entry_methods={"list_servers": "list_servers"},
+            )
+
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _recording_scan)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        response = await module.PluginLifecycleService().start_plugin(
+            "packaged_adapter", refresh_registry=False,
+        )
+
+        assert response["success"] is True
+        registered = module.state.event_handlers["packaged_adapter.list_servers"].meta
+        if current:
+            assert scans == [], "当前 schema 的包不该再起隔离扫描"
+            assert registered.name == "List Servers", "注册的不是包里那份 handler"
+        else:
+            assert scans == ["packaged_adapter"], (
+                f"过期 schema 的包应该恰好回落扫描一次：{scans}"
+            )
+            assert registered.name == "Scanned", "扫描结果没有被应用到注册表"
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+def _write_stale_package(plugin_dir: Path, *, schema_version: object, handler: dict) -> Path:
+    """A plugin.meta.json that matches this tree except for its schema version."""
+    import json
+
+    from plugin.server.infrastructure import packaged_metadata
+
+    config_path = plugin_dir / "plugin.toml"
+    payload = {
+        "schema_version": schema_version,
+        "sdk_version": packaged_metadata.SDK_VERSION,
+        "source_sha256": packaged_metadata.compute_source_sha256(plugin_dir),
+        "source_files": packaged_metadata.source_file_names(plugin_dir)[0],
+        "source_bytes": packaged_metadata.source_stat_summary(plugin_dir).total_bytes,
+        "build_env": packaged_metadata.build_environment(),
+        "entries": [{"id": "list_servers", "name": "List Servers"}],
+        "handlers": {"packaged_adapter.list_servers": handler},
+        "entry_methods": {"list_servers": "list_servers"},
+        "entries_config_sha256": packaged_metadata.entries_config_digest({}, {}),
+    }
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    return config_path
+
+
+async def _start_packaged_adapter(
+    monkeypatch, config_path: Path, *, scanned_handler: dict, effective_overlay: dict | None = None,
+    runtime_id: str = "packaged_adapter", scan_side_effect=None, start_deadline: float | None = None,
+) -> list[str]:
+    """Run start_plugin against a fake host and return the plugin ids that were scanned."""
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins.clear()
+        module.state.plugins["packaged_adapter"] = {
+            "id": "packaged_adapter",
+            "name": "Packaged Adapter",
+            "type": "adapter",
+            "config_path": str(config_path),
+            "entry_point": "tests.fake_mcp:FakeAdapterPlugin",
+        }
+    with module.state.acquire_plugin_hosts_write_lock():
+        module.state.plugin_hosts.clear()
+    with module.state.acquire_event_handlers_write_lock():
+        module.state.event_handlers.clear()
+    monkeypatch.setattr(
+        module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": {**kwargs["base_config"], **(effective_overlay or {})},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: runtime_id)
+    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+    inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
+    scans: list[str] = []
+
+    def _recording_scan(**kwargs):
+        scans.append(str(kwargs["plugin_id"]))
+        kwargs.pop("timeout", None)
+        if scan_side_effect is not None:
+            scan_side_effect()
+        scanned = inner_scan(**kwargs)
+        return IsolatedPluginMetadata(
+            entries_preview=scanned.entries_preview,
+            handlers={f"{runtime_id}.list_servers": scanned_handler},
+            entry_methods={"list_servers": "list_servers"},
+        )
+
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _recording_scan)
+    response = await module.PluginLifecycleService().start_plugin(
+        "packaged_adapter", refresh_registry=False, start_deadline=start_deadline,
+    )
+    assert response["success"] is True
+    return scans
+
+
+@pytest.fixture
+def _isolated_plugin_state():
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        yield
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+def _packaged_adapter_dir(tmp_path: Path) -> Path:
+    plugin_dir = tmp_path / "packaged_adapter"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'packaged_adapter'",
+                "name = 'Packaged Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return plugin_dir
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_a_stale_package_is_upgraded_in_place_by_its_first_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolated_plugin_state,
+) -> None:
+    """One scan, then the fast path — instead of one scan per start forever.
+
+    A schema bump refuses every package built before it. Nothing rewrote the
+    file, so a plugin whose author never repackages paid an isolated import on
+    every start. The start path has just imported the tree; what it learned is
+    what the packager would have written.
+
+    Mutation: drop the ``_upgrade_stale_packaged_metadata`` call.
+    """
+    import json
+
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = _packaged_adapter_dir(tmp_path)
+    old_handler = {"event_type": "plugin_entry", "id": "list_servers", "name": "Old"}
+    config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
+    scanned = {"event_type": "plugin_entry", "id": "list_servers", "name": "Scanned", "timeout": 7}
+
+    scans = await _start_packaged_adapter(monkeypatch, config_path, scanned_handler=scanned)
+    assert scans == ["packaged_adapter"]
+
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    written = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert written["schema_version"] == packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
+    assert written["handlers"]["packaged_adapter.list_servers"] == scanned
+    assert written["entries"][0]["id"] == "list_servers"
+    # 写出来的文件要能被读取器原样接受，下次启动才真的不再扫描。
+    packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert packaged is not None
+    assert packaged.handlers["packaged_adapter.list_servers"]["name"] == "Scanned"
+    manifest = {"plugin": {"id": "packaged_adapter"}}
+    reused = module._read_packaged_isolated_metadata(
+        config_path, "packaged_adapter", conf=manifest, pdata=manifest["plugin"],
+    )
+    assert reused is not None
+    assert reused.handlers["packaged_adapter.list_servers"]["timeout"] == 7
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "no_file", "current_schema", "config_overrides", "unwritable", "renamed",
+    "import_mutates_tree", "reload_budget",
+])
+async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolated_plugin_state, reason,
+) -> None:
+    """The upgrade is for a stale file, nothing else.
+
+    No file means a hand-dropped or dev-mode plugin, which never had one and
+    must not start growing one. A current-schema file that was refused for
+    another reason (a foreign build environment here) is not fixed by a
+    rewrite. An effective configuration that overrides the entries table would
+    freeze one machine's overrides into the package. A directory the host
+    cannot write to is not a failed start. A plugin renamed by an id
+    conflict scans handler keys under the runtime id, which must not land in
+    the package of the manifest id (coderabbit). An import that changes its
+    own tree leaves handlers and fingerprint describing different states, the
+    case the packager refuses too (codex). And under a reload_all deadline the
+    optional work is skipped rather than charged to the round (codex).
+    """
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = _packaged_adapter_dir(tmp_path)
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    old_handler = {"event_type": "plugin_entry", "id": "list_servers", "name": "Old"}
+    scanned = {"event_type": "plugin_entry", "id": "list_servers", "name": "Scanned"}
+    conf_overlay = None
+    if reason == "no_file":
+        config_path = plugin_dir / "plugin.toml"
+    elif reason == "current_schema":
+        config_path = _write_stale_package(
+            plugin_dir, schema_version=packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION,
+            handler=old_handler,
+        )
+        monkeypatch.setattr(packaged_metadata, "_environment_matches", lambda raw: False)
+    elif reason == "config_overrides":
+        config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
+        conf_overlay = {"entries": [{"id": "list_servers", "timeout": 5}]}
+    elif reason == "unwritable":
+        config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
+
+        def _refuse(*args, **kwargs):
+            raise PermissionError("read-only plugin directory")
+
+        monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", _refuse)
+    else:
+        config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
+    before = meta_path.read_bytes() if meta_path.exists() else None
+
+    def _import_writes_a_cache_file():
+        (plugin_dir / "cache.json").write_text("{}", encoding="utf-8")
+
+    scans = await _start_packaged_adapter(
+        monkeypatch, config_path, scanned_handler=scanned, effective_overlay=conf_overlay,
+        runtime_id="packaged_adapter_1" if reason == "renamed" else "packaged_adapter",
+        scan_side_effect=_import_writes_a_cache_file if reason == "import_mutates_tree" else None,
+        start_deadline=time.monotonic() + 20.0 if reason == "reload_budget" else None,
+    )
+    assert scans == ["packaged_adapter_1" if reason == "renamed" else "packaged_adapter"]
+    if before is None:
+        assert not meta_path.exists(), "没有元数据文件的插件不该被凭空造出一份"
+    elif reason == "config_overrides":
+        assert meta_path.read_bytes() == before, "生效配置改过 entries 表，不能把这台机器的覆盖冻进包里"
+    elif reason == "unwritable":
+        assert meta_path.read_bytes() == before
+    else:
+        assert meta_path.read_bytes() == before, "当前 schema 的文件被拒是别的原因，重写修不了它"

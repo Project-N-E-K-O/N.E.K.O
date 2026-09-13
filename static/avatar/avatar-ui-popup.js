@@ -507,7 +507,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
         }
     });
 
-    // 5. 桌面端添加导航菜单
+    // 6. 桌面端添加导航菜单
     if (!window.isMobileWidth || !window.isMobileWidth()) {
         const separator = document.createElement('div');
         separator.className = `${prefix}-settings-separator`;

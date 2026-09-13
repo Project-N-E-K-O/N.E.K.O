@@ -17,6 +17,7 @@ async function main() {
   let mountedAvatarConfig = null;
   const handshakeRequests = [];
   const protocolMessages = [];
+  const commandRequests = [];
   const voiceRequests = [];
   let controlBridgeOptions = null;
   let controlBridgeStopped = 0;
@@ -124,6 +125,10 @@ async function main() {
       }
       return { ok: true, accepted: true };
     },
+    executeGameCommand: async (name, envelope, options = {}) => {
+      commandRequests.push({ name, envelope, options });
+      return { ok: true, echo: envelope.payload.text };
+    },
     startGameControlBridge(options) {
       controlBridgeOptions = options;
       return true;
@@ -142,6 +147,15 @@ async function main() {
       };
     },
     stopVoiceControlBridge() { voiceStopped += 1; },
+    async getAvatarCharacter(name) {
+      return {
+        name: name || 'SDK Neko',
+        model: { type: 'mmd', path: '/models/sdk-neko.pmx' },
+        rendererAvailable: true,
+        privatePrompt: 'must-not-cross-sdk-boundary',
+      };
+    },
+    async listAvatarCharacters() { return ['SDK Neko', 'Second Neko']; },
     async mountAvatar(config) {
       if (avatarMountFailure) {
         throw Object.assign(new Error('viewport unavailable'), { code: 'viewport_unavailable' });
@@ -149,6 +163,8 @@ async function main() {
       mountedAvatarConfig = config;
       return {
         async setModel(model) { calls.push(['avatar-model', model]); },
+        setView(view) { calls.push(['avatar-view', view]); },
+        setSpeaking(active) { calls.push(['avatar-speaking', active]); },
         focus(point) {
           if (avatarFocusFailure) {
             throw Object.assign(new Error('avatar host busy'), { code: 'busy' });
@@ -221,6 +237,23 @@ async function main() {
       },
       controls: {
         stance: ['steady', 'press', 'retreat'],
+      },
+      commands: {
+        'round:input': {
+          request: {
+            type: 'object',
+            properties: { text: { type: 'string', minLength: 1, maxLength: 1800000 } },
+            required: ['text'],
+          },
+          response: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              echo: { type: 'string', maxLength: 1800000 },
+            },
+            required: ['ok', 'echo'],
+          },
+        },
       },
       results: {
         match: {
@@ -400,9 +433,111 @@ async function main() {
   catch (error) { inactiveDialogueError = error; }
   assert(inactiveDialogueError?.code === 'invalid_state',
     'dialogue request was allowed before an active runtime route existed');
+  let inactiveCommandError = null;
+  try { await game.commands.execute('round:input', { text: 'before start' }); }
+  catch (error) { inactiveCommandError = error; }
+  assert(inactiveCommandError?.code === 'invalid_state' && commandRequests.length === 0,
+    'game command reached the host before an active runtime route existed');
+  const resetSession = game.runtime.reset();
+  assert(resetSession.id === 'sdk-test-session'
+    && resetSession.characterName === ''
+    && resetSession.routeInstanceId === ''
+    && Object.isFrozen(resetSession),
+  'runtime reset did not return a complete immutable RuntimeSession');
   const started = await game.runtime.start({ mode: 'default' });
   assert(started.data.payload.mode === 'default', 'runtime start did not use the host transport');
   const routeInstanceId = started.data.payload.sdk_route_instance_id;
+  assert(game.runtime.session.routeInstanceId === routeInstanceId,
+    'runtime did not expose the active route generation');
+  const commandResult = await game.commands.execute('round:input', { text: 'hello' });
+  assert(commandResult.ok === true
+    && commandResult.data.echo === 'hello'
+    && Object.isFrozen(commandResult.data),
+  'game command response was not validated and frozen');
+  assert(commandRequests.at(-1).envelope.sessionId === 'sdk-test-session'
+    && commandRequests.at(-1).envelope.routeInstanceId === routeInstanceId,
+  'game command was not bound to the active runtime identity');
+
+  const successfulCommandTransport = transport.executeGameCommand;
+  transport.executeGameCommand = async () => ({
+    ok: false,
+    status: 422,
+    async json() { return { detail: 'bad request' }; },
+  });
+  const failedHttpCommand = await game.commands.execute('round:input', { text: 'http failure' });
+  assert(failedHttpCommand.ok === false
+    && failedHttpCommand.status === 422
+    && failedHttpCommand.data.detail === 'bad request'
+    && Object.isFrozen(failedHttpCommand.data),
+  'an HTTP command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({
+    ok: true,
+    status: 200,
+    async json() { return { ok: false, reason: 'session_busy' }; },
+  });
+  const failedApplicationCommand = await game.commands.execute(
+    'round:input', { text: 'application failure' },
+  );
+  assert(failedApplicationCommand.ok === true
+    && failedApplicationCommand.status === 200
+    && failedApplicationCommand.data.ok === false
+    && failedApplicationCommand.data.reason === 'session_busy'
+    && Object.isFrozen(failedApplicationCommand.data),
+  'an application command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({ ok: true });
+  let invalidSuccessfulCommandError = null;
+  try { await game.commands.execute('round:input', { text: 'invalid success' }); }
+  catch (error) { invalidSuccessfulCommandError = error; }
+  assert(invalidSuccessfulCommandError?.code === 'invalid_contract',
+    'a successful command response bypassed its declared response contract');
+  transport.executeGameCommand = successfulCommandTransport;
+
+  // Headers are not completion: body reads keep the deadline and raw capacity.
+  for (const reason of ['cancelled', 'timeout']) {
+    const abort = new AbortController();
+    let watchdog;
+    const bodies = [];
+    const signals = [];
+    transport.executeGameCommand = async (_name, _envelope, options) => ({
+      ok: true, status: 200,
+      json: () => new Promise(resolve => { bodies.push(resolve); signals.push(options.signal); }),
+    });
+    const requests = Array.from({ length: 8 }, () => game.commands.execute(
+      'round:input', { text: 'pending body' }, { signal: abort.signal, timeoutMs: 250 },
+    ).then(() => 'unexpected_success', error => error.code));
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert(bodies.length === 8 && game.commands.pendingCount === 8,
+        'command headers released pending capacity before reading the response body');
+      if (reason === 'cancelled') abort.abort();
+      const completed = await Promise.race([
+        Promise.all(requests),
+        new Promise(resolve => { watchdog = setTimeout(() => resolve(['hung']), 1000); }),
+      ]);
+      assert(completed.length === 8 && completed.every(code => code === reason),
+        `command body did not settle on ${reason}`);
+      assert(signals.every(signal => signal.aborted), 'command body lost cancellation signal');
+      const overflow = await game.commands.execute('round:input', { text: 'overflow' }, { timeoutMs: 250 })
+        .then(() => 'unexpected_success', error => error.code);
+      assert(overflow === 'busy' && bodies.length === 8,
+        'cancelled command bodies freed raw capacity before settling');
+    } finally {
+      clearTimeout(watchdog);
+      bodies.forEach(resolve => resolve({ ok: true, echo: 'late body' }));
+      await Promise.all(requests);
+      await new Promise(resolve => setImmediate(resolve));
+      transport.executeGameCommand = successfulCommandTransport;
+    }
+    assert((await game.commands.execute('round:input', { text: 'released' })).data.echo === 'released',
+      'settled command bodies did not release raw capacity');
+  }
+
+  const wideCommandText = 'x'.repeat(300 * 1024);
+  const wideCommandResult = await game.commands.execute('round:input', { text: wideCommandText });
+  assert(wideCommandResult.data.echo.length === wideCommandText.length,
+    'the command payload budget still used the ordinary 256 KiB contract limit');
   // Validation and delivery, now that a route actually exists.
   controlBridgeOptions.onControl({
     protocolVersion: '1',
@@ -633,13 +768,46 @@ async function main() {
   assert(mountedAvatarConfig?.viewport?.width === 200, 'avatar viewport was not normalized');
   assert(mountedAvatarConfig?.resize?.mode === 'fixed', 'fixed resize policy was not forwarded');
   assert(Object.isFrozen(mountedAvatarConfig.fit), 'avatar layout contract must be immutable');
+  assert(mountedAvatarConfig.fit.autoScale === true, 'automatic fit must default on');
+  const fitTestConfig = { slot: 'fit-test', model: { type: 'mmd', path: '/example.pmx' },
+    viewport: { mode: 'fixed', width: 200, height: 300 } };
+  for (const mode of ['width', 'height', 'native']) {
+    const fitted = await game.avatar.mount({ ...fitTestConfig,
+      fit: { mode, autoScale: false, minHeight: 180 } });
+    assert(mountedAvatarConfig.fit.autoScale === false && mountedAvatarConfig.fit.minHeight === 180,
+      'SDK dropped manual scaling/minimum configuration');
+    fitted.dispose();
+  }
+  for (const fit of [{ autoScale: 'false' }, { minWidth: -1 }, { minHeight: Infinity }]) {
+    let invalid = null;
+    try { await game.avatar.mount({ ...fitTestConfig, fit }); } catch (error) { invalid = error; }
+    assert(invalid?.code === 'invalid_request', 'SDK accepted invalid fit inputs');
+  }
   avatar.focus({ x: 12, y: 34 });
   avatar.setEmotion('smile');
+  await avatar.setView({ scale: 190, x: 4, y: 28 });
+  await avatar.setSpeaking(true);
   await avatar.setModel({ type: 'vrm', path: '/models/ai.vrm' });
   assert(calls.some((entry) => entry[0] === 'avatar-focus' && entry[1].x === 12),
     'avatar focus did not use the host controller');
   assert(calls.some((entry) => entry[0] === 'avatar-model' && entry[1].type === 'vrm'),
     'avatar model switch did not use the host controller');
+  assert(calls.some((entry) => entry[0] === 'avatar-view' && entry[1].scale === 190)
+    && calls.some((entry) => entry[0] === 'avatar-speaking' && entry[1] === true),
+  'avatar view or speaking state bypassed the host controller');
+  const currentAvatarCharacter = await game.avatar.getCurrentCharacter();
+  const namedAvatarCharacter = await game.avatar.getCharacter('Second Neko');
+  const avatarCharacters = await game.avatar.listCharacters();
+  assert(currentAvatarCharacter.name === 'SDK Neko'
+    && currentAvatarCharacter.model.type === 'mmd'
+    && currentAvatarCharacter.privatePrompt === undefined
+    && Object.isFrozen(currentAvatarCharacter)
+    && Object.isFrozen(currentAvatarCharacter.model),
+  'avatar discovery did not project and freeze the host descriptor');
+  assert(namedAvatarCharacter.name === 'Second Neko'
+    && Object.isFrozen(avatarCharacters)
+    && avatarCharacters.join(',') === 'SDK Neko,Second Neko',
+  'avatar discovery facade did not use the host transport');
   const boundedAvatars = [avatar];
   for (let index = 1; index < 8; index += 1) {
     boundedAvatars.push(await game.avatar.mount({
@@ -699,6 +867,44 @@ async function main() {
   assert(listenerLimitError?.code === 'busy', 'listener growth was not bounded');
   stateListeners.forEach((unsubscribe) => unsubscribe());
 
+  const originalPublishProtocol = transport.publishGameProtocol;
+  let settleProtocolBody;
+  const protocolBody = new Promise(resolve => { settleProtocolBody = resolve; });
+  const bodySignals = [];
+  transport.publishGameProtocol = (_kind, _payload, options) => {
+    bodySignals.push(options.signal);
+    return { ok: false, status: 409, json: () => protocolBody };
+  };
+  const bodyAbort = new AbortController();
+  const bodyProtocolCalls = Array.from({ length: 8 }, (_, index) => game.events.emit(
+    'round-started', { round: index + 1 }, { signal: bodyAbort.signal, timeoutMs: 250 },
+  ).then(() => 'success', error => error.code));
+  await new Promise(resolve => setImmediate(resolve));
+  let bodyBusy;
+  void game.events.emit('round-started', { round: 9 }).then(
+    () => { bodyBusy = { code: 'unexpected_success' }; }, error => { bodyBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyBusy?.code === 'busy', 'protocol headers retired the slot before the JSON body');
+  bodyAbort.abort();
+  assert((await Promise.all(bodyProtocolCalls)).every(code => code === 'cancelled'),
+    'protocol body ignored cancellation after response headers');
+  assert(bodySignals.every(signal => signal.aborted), 'protocol cancellation lost the transport signal');
+  let bodyStillBusy;
+  void game.events.emit('round-started', { round: 10 }).then(
+    () => { bodyStillBusy = { code: 'unexpected_success' }; }, error => { bodyStillBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyStillBusy?.code === 'busy',
+    'a cancelled protocol request freed its slot before the abandoned body settled');
+  settleProtocolBody({ detail: 'late conflict' });
+  await new Promise(resolve => setImmediate(resolve));
+  transport.publishGameProtocol = originalPublishProtocol;
+
+  const recoveredProtocol = await game.events.emit('round-started', { round: 11 });
+  assert(recoveredProtocol.ok === true && recoveredProtocol.data.accepted === true,
+    'protocol request did not succeed after abandoned response bodies settled');
+
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })
@@ -720,7 +926,7 @@ async function main() {
   assert(voiceStopped === 0, 'SDK duplicated transport-owned voice cleanup');
   assert(controlBridgeStopped === 0, 'SDK duplicated transport-owned control cleanup');
   assert(disposed === 1, 'dispose did not release the injected transport');
-  assert(avatarDisposed === 8, 'dispose did not release active avatar controllers');
+  assert(avatarDisposed === 11, 'dispose did not release eight active and three fit-test controllers');
   let disposedError = null;
   try { await game.voice.toggle(); }
   catch (error) { disposedError = error; }
@@ -921,6 +1127,205 @@ async function main() {
 
   // Placed last: these connect extra clients, and every assertion above counts
   // handshakes and protocol messages on the shared transport.
+
+  // Command payloads are merged with trusted route identity by the host, so
+  // their root schema must be an object. Keep all other schema roots available
+  // for responses: only the request side has this transport constraint.
+  const INVALID_COMMAND_REQUEST_SCHEMAS = [
+    ['null', null],
+    ['boolean', { type: 'boolean' }],
+    ['number', { type: 'number' }],
+    ['integer', { type: 'integer' }],
+    ['string', { type: 'string' }],
+    ['array', { type: 'array', items: { type: 'string' } }],
+    ['enum shorthand', ['ready', 'waiting']],
+    ['object with scalar keyword', { type: 'object', minLength: 1 }],
+  ];
+  for (const [shape, request] of INVALID_COMMAND_REQUEST_SCHEMAS) {
+    let commandRequestError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `command-${shape.replace(/ /g, '-')}-request-test`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            'round:probe': {
+              request,
+              response: { type: 'object' },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { commandRequestError = error; }
+    assert(commandRequestError?.code === 'invalid_manifest',
+      `a command ${shape} request schema was accepted at connect time`);
+  }
+
+  // JSON Schema checks shape; connect additionally enforces shared budgets.
+  const nestedSchema = (depth) => {
+    let schema = { type: 'boolean' };
+    for (let i = 0; i < depth; i++) schema = { type: 'object', properties: { value: schema } };
+    return schema;
+  };
+  const commandsWithNodes = (extra) => Object.fromEntries(Array.from({ length: 4 }, (_, index) => [
+    `probe-${index}`, { request: { type: 'object', properties: Object.fromEntries(
+      Array.from({ length: 62 + (index === 3 ? extra : 0) }, (_v, field) => [`field${field}`, { type: 'boolean' }]),
+    ) }, response: { type: 'boolean' } },
+  ]));
+  const commandsWithChars = (extra) => Object.fromEntries(Array.from({ length: 2 }, (_, index) => [
+    `probe-${index}`, { request: { type: 'object' },
+      response: { type: 'string', enum: ['x'.repeat(16375 + (index ? extra : 0))] } },
+  ]));
+  for (const [label, commands, accepted] of [
+    ['depth 12', { probe: { request: nestedSchema(12), response: { type: 'boolean' } } }, true],
+    ['depth 13', { probe: { request: nestedSchema(13), response: { type: 'boolean' } } }, false],
+    ['nodes 256', commandsWithNodes(0), true], ['nodes 257', commandsWithNodes(1), false],
+    ['chars 65536', commandsWithChars(0), true], ['chars 65538', commandsWithChars(1), false],
+  ]) {
+    let connected = null; let failure = null;
+    try {
+      connected = await window.NekoMiniGame.connect({ id: 'example-game', version: '1',
+        requiredCapabilities: ['runtime', 'logging'], contracts: { commands },
+      }, { transport: { ...transport, dispose() {} } });
+    } catch (error) { failure = error; }
+    finally { connected?.dispose(); }
+    assert(accepted ? connected !== null : failure?.code === 'invalid_manifest',
+      `command schema boundary ${label} was not enforced`);
+  }
+
+  const SCALAR_COMMAND_RESPONSE_CASES = [
+    ['object', { type: 'object' }, {}],
+    ['string', { type: 'string', maxLength: 32 }, 'ready'],
+    ['number', { type: 'number' }, 42.5],
+    ['boolean', { type: 'boolean' }, false],
+    ['null', { type: 'null' }, null],
+  ];
+  for (const [shape, responseSchema, responseValue] of SCALAR_COMMAND_RESPONSE_CASES) {
+    const scalarCommandTransport = {
+      ...transport,
+      dispose() {},
+      executeGameCommand: async () => ({
+        ok: true,
+        status: 200,
+        async json() { return responseValue; },
+      }),
+    };
+    const scalarCommandResponseGame = await window.NekoMiniGame.connect({
+      id: `command-${shape}-response-test`,
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          'round:probe': {
+            request: { type: 'object' },
+            response: responseSchema,
+          },
+        },
+      },
+    }, { transport: scalarCommandTransport });
+    assert(scalarCommandResponseGame.manifest.contracts.commands['round:probe'].response.type === shape,
+      `a ${shape} command response schema stopped connecting`);
+    await scalarCommandResponseGame.runtime.start();
+    const scalarCommandResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+    assert(scalarCommandResponse.ok === true && (shape === 'object'
+      ? JSON.stringify(scalarCommandResponse.data) === '{}' : Object.is(scalarCommandResponse.data, responseValue)),
+      `a ${shape} JSON command response was replaced before contract validation`);
+
+    if (shape === 'object') {
+      for (const body of ['', '{invalid']) {
+        scalarCommandTransport.executeGameCommand = async () => new Response(body);
+        const error = await scalarCommandResponseGame.commands.execute('round:probe', {}).then(() => null, e => e);
+        assert(error?.code === 'invalid_response', 'malformed successful command JSON was accepted');
+        scalarCommandTransport.executeGameCommand = async () => new Response(body, {status:503});
+        const failed = await scalarCommandResponseGame.commands.execute('round:probe', {});
+        assert(failed.ok === false && failed.status === 503, 'malformed HTTP failure lost its status');
+      }
+    }
+
+    if (shape === 'string') {
+      scalarCommandTransport.executeGameCommand = async () => 'direct-ready';
+      const directScalarResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(directScalarResponse.ok === true && directScalarResponse.data === 'direct-ready',
+        'a direct-transport scalar command response was replaced before contract validation');
+
+      scalarCommandTransport.executeGameCommand = async () => ({
+        ok: false,
+        status: 503,
+        async json() { return 'temporarily unavailable'; },
+      });
+      const scalarErrorResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(scalarErrorResponse.ok === false
+        && scalarErrorResponse.status === 503
+        && scalarErrorResponse.data === 'temporarily unavailable',
+      'a scalar HTTP error body was discarded or success-validated');
+    }
+    scalarCommandResponseGame.dispose();
+  }
+
+  for (const action of ['end', 'end-then-reset', 'dispose']) {
+    let releaseBody;
+    let bodySignal;
+    const commandTransport = {
+      ...transport,
+      dispose() {},
+      getRuntimeState: () => ({ sessionId: `command-${action}`, characterName: 'Example' }),
+      resetRuntime() { return this.getRuntimeState(); },
+      applyRuntimeState() { return this.getRuntimeState(); },
+      start: async payload => ({ ok: true, state: {
+        game_route_active: true, session_id: payload.session_id,
+      } }),
+      executeGameCommand: async (_name, _payload, options) => ({
+        ok: true, status: 200,
+        json: () => new Promise(resolve => { releaseBody = resolve; bodySignal = options.signal; }),
+      }),
+    };
+    const commandGame = await window.NekoMiniGame.connect({
+      id: `command-${action}`, version: '1', requiredCapabilities: ['runtime', 'logging'],
+      contracts: { commands: { probe: { request: { type: 'object' }, response: { type: 'boolean' } } } },
+    }, { transport: commandTransport });
+    let pending;
+    let watchdog;
+    try {
+      await commandGame.runtime.start();
+      pending = commandGame.commands.execute('probe', {}, { timeoutMs: 250 })
+        .then(() => 'unexpected_success', error => error.code);
+      await new Promise(resolve => setImmediate(resolve));
+      assert(typeof releaseBody === 'function', 'command did not reach its response body');
+      if (action === 'dispose') commandGame.dispose();
+      else {
+        if (action === 'end-then-reset') {
+          let activeResetError;
+          try { commandGame.runtime.reset(); } catch (error) { activeResetError = error; }
+          assert(activeResetError?.code === 'invalid_state' && !bodySignal.aborted,
+            'active reset must reject without cancelling the current command');
+        }
+        await commandGame.runtime.end();
+        if (action === 'end-then-reset') {
+          const session = commandGame.runtime.reset();
+          assert(session.id === `command-${action}` && session.characterName === 'Example'
+            && session.routeInstanceId === '' && Object.isFrozen(session),
+          'reset did not return the immutable cleared RuntimeSession');
+        }
+      }
+      const result = await Promise.race([pending, new Promise(resolve => {
+        watchdog = setTimeout(() => resolve('hung'), 1000);
+      })]);
+      assert(result === (action === 'dispose' ? 'disposed' : 'cancelled') && bodySignal.aborted,
+        `command body survived runtime ${action}`);
+      if (action !== 'dispose') {
+        await commandGame.runtime.start();
+        releaseBody(true);
+        await new Promise(resolve => setImmediate(resolve));
+        assert(await pending === 'cancelled', 'old command delivered into the replacement route');
+      }
+    } finally {
+      clearTimeout(watchdog);
+      releaseBody?.(true);
+      commandGame.dispose();
+      if (pending) await pending;
+    }
+  }
 
   // The published schema declares minimum/maximum as numbers. `Number()`
   // coercion accepted a numeric-looking string, and turned `minimum: null` --
@@ -1290,6 +1695,77 @@ async function main() {
   assert(numericRequiredError?.code === 'invalid_manifest',
     'a non-string required entry was coerced into a matching property name');
 
+  // Command payload identity and memory policy are owned by the host. A game
+  // contract that declares either would validate one value in the SDK and send
+  // a stripped or replaced value to the backend.
+  const hostReservedCommandFields = [
+    '_csrf_token',
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+    'memory_enabled', 'enable_game_memory', 'legacyGameMemoryArchiveEnabled',
+  ];
+  for (const [index, field] of hostReservedCommandFields.entries()) {
+    let reservedFieldError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `reserved-command-field-${index}`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            probe: {
+              request: {
+                type: 'object',
+                properties: { [field]: { type: 'boolean' } },
+                required: index % 2 ? [field] : [],
+                additionalProperties: false,
+              },
+              response: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: true,
+              },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { reservedFieldError = error; }
+    assert(reservedFieldError?.code === 'invalid_manifest',
+      `a command contract declared the host-reserved field ${field}`);
+  }
+  let nestedMemoryPolicyError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'nested-reserved-command-field',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          probe: {
+            request: {
+              type: 'object',
+              properties: {
+                event: {
+                  type: 'object',
+                  properties: { legacyGameMemoryArchiveEnabled: { type: 'boolean' } },
+                  required: ['legacyGameMemoryArchiveEnabled'],
+                },
+              },
+              required: ['event'],
+            },
+            response: { type: 'object', additionalProperties: true },
+          },
+        },
+      },
+    }, { transport });
+  } catch (error) { nestedMemoryPolicyError = error; }
+  assert(nestedMemoryPolicyError?.code === 'invalid_manifest',
+    'a command contract declared memory policy inside the host-filtered event object');
+
   // `String(true)` is 'true', which matches the score-field pattern, so a boolean
   // silently became a board keyed on a field no entry will ever carry.
   let booleanScoreFieldError = null;
@@ -1420,6 +1896,68 @@ async function main() {
   'memory stopped being granted even when runtime was');
   grantedRuntimeClient.dispose();
 
+  let mountedSignal,abortObserved=false,mediaDisposed=0;
+  const mediaTransport={...transport,requestMedia:async()=>({}),mountMedia:config=>{
+    mountedSignal=config.signal;
+    return new Promise((_resolve,reject)=>config.signal.addEventListener('abort',()=>{abortObserved=true;reject(Error('cancelled'));},{once:true}));
+  }};
+  const mediaClient=await window.NekoMiniGame.connect({id:'media-cancellation',version:'1.0.0',requiredCapabilities:['logging','runtime','media-timeline']},{transport:mediaTransport});
+  await mediaClient.runtime.start({});
+  const callerAbort=new AbortController();
+  const assertCancelled=error=>assert(error instanceof window.NekoMiniGame.Error && error.code==='cancelled','mount cancellation must expose the SDK cancelled error');
+  const pendingMount=mediaClient.media.mount({signal:callerAbort.signal}).then(()=>null,error=>error);
+  callerAbort.abort();
+  assertCancelled(await pendingMount);
+  assert(abortObserved && mountedSignal.aborted,'caller abort did not reach transport');
+  assert(mediaClient.runtime.state==='running','mount cancellation ended the route');
+  mediaTransport.mountMedia=async()=>({dispose(){mediaDisposed++;},play(){},pause(){},interrupt(){}});
+  const replacementMedia=await mediaClient.media.mount({});replacementMedia.dispose();
+  assert(mediaDisposed===1,'cancelled mount did not free replacement slot');
+  const alreadyAborted=new AbortController();alreadyAborted.abort();
+  const rejected=await mediaClient.media.mount({signal:alreadyAborted.signal}).then(()=>null,error=>error);
+  assertCancelled(rejected);
+  let finishCancelledMount;
+  mediaTransport.mountMedia=()=>new Promise(resolve=>{finishCancelledMount=resolve;});
+  const lateAbort=new AbortController();
+  const lateMount=mediaClient.media.mount({signal:lateAbort.signal}).then(()=>null,error=>error);
+  lateAbort.abort();
+  finishCancelledMount({dispose(){mediaDisposed++;}});
+  assertCancelled(await lateMount);
+  assert(mediaDisposed===2,'late cancelled controller was not disposed');
+  const assertInvalid=(error,message)=>assert(error instanceof window.NekoMiniGame.Error && error.code==='invalid_request',message);
+  mediaTransport.mountMedia=async()=>({dispose(){mediaDisposed++;},play(){},pause(){},interrupt(){}});
+  for(const config of [undefined,null,[],'config']){
+    assertInvalid(await mediaClient.media.mount(config).then(()=>null,error=>error),'invalid media mount config must expose the SDK invalid_request error');
+  }
+  const afterInvalidMount=await mediaClient.media.mount({});afterInvalidMount.dispose();
+  assert(mediaDisposed===3,'invalid media mount config left the media slot busy');
+  assertInvalid(await mediaClient.media.request('history',{text:'中'.repeat(30000)}).then(()=>null,error=>error),'media payload limit must count UTF-8 bytes');
+  const nonJson=await mediaClient.media.request('history',{value:1n}).then(()=>null,error=>error);
+  assertInvalid(nonJson,'non-JSON media payload must expose the SDK invalid_request error');
+  assert(/JSON/.test(nonJson.message),'non-JSON media payload lost its JSON error message');
+  assert(await mediaClient.media.request('history',{text:'a'.repeat(60000)}).then(()=>true,()=>false),'ASCII media payload under the byte limit was rejected');
+  // Evaluate both hostile inputs before asserting so one run shows each result.
+  const hostileFailures=[];
+  const throwingSignal=await mediaClient.media.mount({get signal(){throw Error('signal getter');}}).then(()=>null,error=>error);
+  const afterThrowingSignal=await mediaClient.media.mount({}).then(controller=>{controller.dispose();return null;},error=>error);
+  if(!(throwingSignal instanceof window.NekoMiniGame.Error && throwingSignal.code==='invalid_request')||afterThrowingSignal!==null)hostileFailures.push('a throwing config.signal getter left the media slot busy');
+  // Invariant: a request is either rejected or transports at most the budget,
+  // counted the way the host clones it (enumerable data, toJSON ignored).
+  const rawChars=value=>typeof value==='string'?value.length:(value&&typeof value==='object')?Object.entries(value).reduce((sum,[key,item])=>key==='toJSON'?sum:sum+key.length+rawChars(item),0):0;
+  class DisguisedPayload{constructor(){this.text='a'.repeat(70000);}toJSON(){return {};}}
+  const disguisedPayloads={
+    'prototype toJSON':()=>new DisguisedPayload(),
+    'nested toJSON':()=>({nested:{text:'a'.repeat(70000),toJSON(){return {};}}}),
+  };
+  for(const [label,makePayload] of Object.entries(disguisedPayloads)){
+    let sentMediaPayload=null;
+    mediaTransport.requestMedia=async(_action,payload)=>{sentMediaPayload=payload;return {};};
+    const outcome=await mediaClient.media.request('history',makePayload()).then(()=>null,error=>error);
+    const rejected=outcome instanceof window.NekoMiniGame.Error && outcome.code==='invalid_request';
+    if(!rejected&&!(sentMediaPayload&&rawChars(sentMediaPayload)<=65536))hostileFailures.push(`${label}: media payload limit measured toJSON() instead of the transported fields (sent ${rawChars(sentMediaPayload)} chars)`);
+  }
+  assert(hostileFailures.length===0,hostileFailures.join('; '));
+  mediaClient.dispose();
   process.stdout.write('mini-game SDK runtime test passed\n');
 }
 

@@ -131,6 +131,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/music_ui.css",
     _PROJECT_ROOT / "static/assets/music/music-cover-placeholder.png",
     _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.css",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-neko-adapter.js",
     _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js",
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-export.js",
@@ -315,11 +316,28 @@ async def soccer_demo(request: Request):
     })
 
 
+@router.get("/watch_together", response_class=HTMLResponse)
+async def watch_together(request: Request):
+    return get_templates().TemplateResponse("templates/watch_together.html", {
+        "request": request, **_static_assets_ctx(),
+    })
+
+
 @router.get("/badminton_demo", response_class=HTMLResponse)
 async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""
     templates = get_templates()
     return templates.TemplateResponse("templates/badminton_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing Guess companion mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/drawing_guess.html", {
         "request": request,
         **_static_assets_ctx(),
     })

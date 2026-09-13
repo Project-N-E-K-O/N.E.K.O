@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 插件 HTML 卡片与 AgentHUD 新增了提示 key；递增版本让 Electron、
-    // Docker 等长期缓存重新拉取完整语言包，避免界面显示原始 key。
-    const LOCALE_VERSION = '2026-09-07-plugin-html-content';
+    // 插件 HTML 卡片与 AgentHUD 新增了提示 key，并合入 main 上陪看/图像生成的 key；
+    // 递增版本让 Electron、Docker 等长期缓存重新拉取完整语言包，避免界面显示原始 key。
+    const LOCALE_VERSION = '2026-09-13-plugin-html-content-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

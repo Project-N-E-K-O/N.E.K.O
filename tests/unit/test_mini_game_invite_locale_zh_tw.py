@@ -42,8 +42,8 @@ from main_logic.proactive_chat.mini_game_invite import (
 
 # 一一对应的字形标记；两侧同形的字（局/不/想/玩/球…）不能拿来当标记，
 # 否则会把一条好好的词条判成"没转换"。
-TRADITIONAL_ONLY = "來現遊戲會戰"
-SIMPLIFIED_ONLY = "来现游戏会战"
+TRADITIONAL_ONLY = "來現遊戲會戰選個"
+SIMPLIFIED_ONLY = "来现游戏会战选个"
 
 OPTION_KEYS = ("accept", "decline", "later")
 GAME_TYPES = tuple(MINI_GAME_INVITE_LINES_BY_GAME)

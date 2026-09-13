@@ -19,9 +19,10 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -57,9 +58,14 @@ _FACT_QUERY_MAX_EXCLUSIONS = 200
 _FACT_QUERY_MAX_EXCLUSION_LENGTH = 128
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
-_native_sync_tickets: dict[str, float] = {}
+_native_sync_tickets: dict[str, dict] = {}
 # digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
 _native_delegates: dict[str, dict] = {}
+# /sync-ticket 在事件循环线程签发，social-session-init 经 asyncio.to_thread 在
+# worker 线程消费（_clear_auth 也可能在线程里清 delegates）；两条线程都会迭代并
+# 修改这两张表，整段持锁，否则并发增删会让迭代抛 RuntimeError 把请求变成 500。
+_native_sync_tickets_lock = threading.Lock()
+_native_delegates_lock = threading.Lock()
 
 
 class _ClientBindingConflict(Exception):
@@ -108,44 +114,64 @@ def _normalize_sync_ticket(value: object) -> str:
 
 
 def _prune_sync_tickets(now: float | None = None) -> None:
+    """Caller must hold ``_native_sync_tickets_lock`` (it is not reentrant)."""
     current = time.monotonic() if now is None else now
-    expired = [digest for digest, expires_at in _native_sync_tickets.items() if expires_at <= current]
+    expired = [
+        digest
+        for digest, entry in _native_sync_tickets.items()
+        if entry["expires_at"] <= current
+    ]
     for digest in expired:
         _native_sync_tickets.pop(digest, None)
 
 
-def _issue_sync_ticket() -> str:
+def _issue_sync_ticket(session_fingerprint: str = "") -> str:
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
-        oldest = min(_native_sync_tickets, key=_native_sync_tickets.get)
-        _native_sync_tickets.pop(oldest, None)
-    ticket = secrets.token_urlsafe(32)
-    _native_sync_tickets[_sync_ticket_digest(ticket)] = now + _SYNC_TICKET_TTL_SEC
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
+            oldest = min(_native_sync_tickets, key=lambda key: _native_sync_tickets[key]["expires_at"])
+            _native_sync_tickets.pop(oldest, None)
+        ticket = secrets.token_urlsafe(32)
+        _native_sync_tickets[_sync_ticket_digest(ticket)] = {
+            "expires_at": now + _SYNC_TICKET_TTL_SEC,
+            "session_fingerprint": session_fingerprint,
+        }
     return ticket
 
 
-def _sync_ticket_is_valid(value: object) -> bool:
+def _sync_ticket_is_valid(value: object, *, session_fingerprint: str | None = None) -> bool:
     ticket = _normalize_sync_ticket(value)
     if not ticket:
         return False
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    return _native_sync_tickets.get(_sync_ticket_digest(ticket), 0) > now
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        entry = _native_sync_tickets.get(_sync_ticket_digest(ticket))
+        return bool(entry and (session_fingerprint is None or (
+            session_fingerprint and entry["session_fingerprint"] == session_fingerprint
+        )))
 
 
-def _consume_sync_ticket(value: object) -> bool:
+def _consume_sync_ticket(value: object, *, session_fingerprint: str | None = None) -> bool:
     ticket = _normalize_sync_ticket(value)
     if not ticket:
         return False
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    digest = _sync_ticket_digest(ticket)
-    expires_at = _native_sync_tickets.pop(digest, 0)
-    return expires_at > now
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        digest = _sync_ticket_digest(ticket)
+        entry = _native_sync_tickets.get(digest)
+        if not entry or (session_fingerprint is not None and (
+            not session_fingerprint or entry["session_fingerprint"] != session_fingerprint
+        )):
+            return False
+        _native_sync_tickets.pop(digest)
+        return True
 
 
 def _prune_native_delegates(now: float | None = None) -> None:
+    """Caller must hold ``_native_delegates_lock`` (it is not reentrant)."""
     current = time.monotonic() if now is None else now
     expired = [
         digest
@@ -157,7 +183,8 @@ def _prune_native_delegates(now: float | None = None) -> None:
 
 
 def _clear_native_delegates() -> None:
-    _native_delegates.clear()
+    with _native_delegates_lock:
+        _native_delegates.clear()
 
 
 def _desktop_session_fingerprint(snapshot: dict | None) -> str:
@@ -192,23 +219,24 @@ def _issue_native_delegate(
     scopes: frozenset[str] | None = None,
 ) -> str:
     now = time.monotonic()
-    _prune_native_delegates(now)
-    while len(_native_delegates) >= _NATIVE_DELEGATE_MAX_ACTIVE:
-        oldest = min(
-            _native_delegates,
-            key=lambda digest: float(_native_delegates[digest].get("expires_at") or 0),
-        )
-        _native_delegates.pop(oldest, None)
-    ticket = secrets.token_urlsafe(32)
-    requested_scopes = _NATIVE_DELEGATE_SCOPES if scopes is None else frozenset(scopes)
-    scoped = requested_scopes & _NATIVE_DELEGATE_SCOPES
-    _native_delegates[_sync_ticket_digest(ticket)] = {
-        "expires_at": now + _NATIVE_DELEGATE_TTL_SEC,
-        "scopes": scoped,
-        "local_user_id": _normalize_local_user_id(local_user_id),
-        "audience": (audience or "").strip().rstrip("/"),
-        "session_fingerprint": str(session_fingerprint or ""),
-    }
+    with _native_delegates_lock:
+        _prune_native_delegates(now)
+        while len(_native_delegates) >= _NATIVE_DELEGATE_MAX_ACTIVE:
+            oldest = min(
+                _native_delegates,
+                key=lambda digest: float(_native_delegates[digest].get("expires_at") or 0),
+            )
+            _native_delegates.pop(oldest, None)
+        ticket = secrets.token_urlsafe(32)
+        requested_scopes = _NATIVE_DELEGATE_SCOPES if scopes is None else frozenset(scopes)
+        scoped = requested_scopes & _NATIVE_DELEGATE_SCOPES
+        _native_delegates[_sync_ticket_digest(ticket)] = {
+            "expires_at": now + _NATIVE_DELEGATE_TTL_SEC,
+            "scopes": scoped,
+            "local_user_id": _normalize_local_user_id(local_user_id),
+            "audience": (audience or "").strip().rstrip("/"),
+            "session_fingerprint": str(session_fingerprint or ""),
+        }
     return ticket
 
 
@@ -217,17 +245,19 @@ def _native_delegate_entry(value: object) -> dict | None:
     if not ticket:
         return None
     now = time.monotonic()
-    _prune_native_delegates(now)
-    entry = _native_delegates.get(_sync_ticket_digest(ticket))
-    if not entry or float(entry.get("expires_at") or 0) <= now:
-        return None
-    return entry
+    with _native_delegates_lock:
+        _prune_native_delegates(now)
+        entry = _native_delegates.get(_sync_ticket_digest(ticket))
+        if not entry or float(entry.get("expires_at") or 0) <= now:
+            return None
+        return dict(entry)
 
 
 def _discard_native_delegate(value: object) -> None:
     ticket = _normalize_sync_ticket(value)
     if ticket:
-        _native_delegates.pop(_sync_ticket_digest(ticket), None)
+        with _native_delegates_lock:
+            _native_delegates.pop(_sync_ticket_digest(ticket), None)
 
 
 def _social_base_url() -> str:
@@ -659,7 +689,17 @@ def _write_social_session_record(path: Path, data: dict) -> None:
         _write_private_json(path, data)
 
 
-def _save_auth(data: dict) -> bool:
+@contextmanager
+def _social_session_locks(paths: list[Path]):
+    """Fence primary and legacy credentials in the same order for every writer."""
+    with ExitStack() as locks:
+        for path in sorted(set(paths), key=str):
+            locks.enter_context(_social_session_lock(path))
+        yield
+
+
+def _save_auth_unlocked(data: dict) -> bool:
+    """Write community_auth.json without locking; caller must hold the lock."""
     p = _auth_path()
     if not p:
         return False
@@ -671,7 +711,64 @@ def _save_auth(data: dict) -> bool:
     return True
 
 
-def _save_social_session(
+def _save_auth(data: dict) -> bool:
+    social_path = _social_session_path()
+    if social_path is None:
+        return _save_auth_unlocked(data)
+    try:
+        with _social_session_lock(social_path):
+            return _save_auth_unlocked(data)
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save auth failed: %s", exc)
+        return False
+
+
+def _persist_repaired_bind(access_token: str, bind: dict) -> None:
+    """Record a repaired bind without clobbering a concurrent refresh.
+
+    Serialized on the social-session lock rather than one keyed to the auth
+    file: ``_persist_refreshed_oauth_tokens`` rewrites ``community_auth.json``
+    while holding that lock, so it is the only lock both writers share.
+    """
+    path = _auth_path()
+    social_path = _social_session_path()
+    if path is None or social_path is None:
+        return
+    try:
+        with _social_session_lock(social_path):
+            current = _read_json_dict(path)
+            if not current:
+                return
+            if str(current.get("access_token") or "").strip() != access_token:
+                # 镜像 token 与本次 bind 的 token 不一致有两种含义：更新的登录或
+                # 刷新赢了（不该动），或者 refresh 已写入权威 social_session.json
+                # 而 community_auth.json 镜像那次 best-effort 写失败（该记，否则
+                # /auth-status 永远停在旧的瞬时错误上）。以权威快照裁决。
+                social = _desktop_session_snapshot()
+                authoritative = str((social or {}).get("access_token") or "").strip()
+                if authoritative != access_token:
+                    return
+                # A two-file account switch can leave a *newer* auth mirror
+                # beside the old social file. Only a matching identity proves
+                # that this is a lagging refresh mirror for the same account.
+                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
+                if not mirror_user or mirror_user != (social or {}).get("local_user_id"):
+                    return
+                if _normalize_auth_source(current.get("auth_source")) != social.get("auth_source"):
+                    return
+                # Persist the validated bind's session separately: the mirror
+                # may contain either lagging or ahead-of-social credentials.
+                # Rewriting its tokens here could roll back a newer refresh.
+                current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
+            else:
+                current.pop("bind_session_fingerprint", None)
+            _write_private_json(path, {**current, "bind": bind})
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: persist repaired bind failed: %s", exc)
+
+
+def _save_social_session_unlocked(
+    path: Path,
     base: str,
     access: str | None,
     refresh: str | None,
@@ -681,12 +778,10 @@ def _save_social_session(
     auth_public_url: str | None = None,
     client_id: str | None = None,
 ) -> bool:
+    """Write social session without acquiring lock; caller must hold it."""
     normalized_user_id = _normalize_local_user_id(local_user_id)
     normalized_source = _normalize_auth_source(auth_source)
     if not access or not normalized_user_id or not normalized_source:
-        return False
-    p = _social_session_path()
-    if not p:
         return False
     data = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
@@ -705,11 +800,41 @@ def _save_social_session(
     if oauth_client:
         data["client_id"] = oauth_client
     try:
-        _write_social_session_record(p, data)
+        _write_private_json(path, data)
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
         return False
     return True
+
+
+def _save_social_session(
+    base: str,
+    access: str | None,
+    refresh: str | None,
+    *,
+    local_user_id: str,
+    auth_source: str,
+    auth_public_url: str | None = None,
+    client_id: str | None = None,
+) -> bool:
+    p = _social_session_path()
+    if not p:
+        return False
+    try:
+        with _social_session_lock(p):
+            return _save_social_session_unlocked(
+                p,
+                base,
+                access,
+                refresh,
+                local_user_id=local_user_id,
+                auth_source=auth_source,
+                auth_public_url=auth_public_url,
+                client_id=client_id,
+            )
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save social session failed: %s", exc)
+        return False
 
 
 def _persist_session_credentials(
@@ -763,59 +888,71 @@ def _persist_session_identity_metadata(
     expected_access = str(snapshot.get("access_token") or "").strip()
     expected_base = str(snapshot.get("base_url") or _social_base_url()).strip().rstrip("/")
     expected_refresh = str(snapshot.get("refresh_token") or "").strip()
-    social_saved = False
-    found_social_session = False
-    for path in _social_session_paths():
-        try:
-            with _social_session_lock(path):
+    paths = _social_session_paths()
+    try:
+        # The fallback creation and auth mirror update must share the same
+        # fence as deletion, not just the write to an individual social file.
+        with _social_session_locks(paths):
+            auth = _load_auth()
+            for path in paths:
                 data = _read_json_dict(path)
                 access = str((data or {}).get("token") or "").strip()
                 if not data or not access:
                     continue
-                found_social_session = True
                 base = str(data.get("baseUrl") or _social_base_url()).strip().rstrip("/")
                 refresh = str(data.get("refresh_token") or "").strip()
                 if (access, base, refresh) != (
-                    expected_access,
-                    expected_base,
-                    expected_refresh,
+                    expected_access, expected_base, expected_refresh,
                 ):
-                    # The authoritative Electron session changed after validation.
                     return False
-                upgraded = {
+                _write_private_json(path, {
                     **data,
                     "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
                     "local_user_id": normalized_user_id,
                     "auth_source": normalized_source,
-                }
-                _write_private_json(path, upgraded)
+                })
+                break
+            else:
+                # Only a still-current auth-only session can create its social
+                # companion. A snapshot validated before logout is not enough.
+                if not auth or not paths or (
+                    str(auth.get("access_token") or "").strip(),
+                    str(auth.get("refresh_token") or "").strip(),
+                ) != (expected_access, expected_refresh):
+                    return False
+                if not _save_social_session_unlocked(
+                    paths[0], expected_base, expected_access, expected_refresh or None,
+                    local_user_id=normalized_user_id, auth_source=normalized_source,
+                ):
+                    return False
+
+            if auth is not None:
+                # Do not apply an older identity to a newer auth mirror.
+                if str(auth.get("access_token") or "").strip() != expected_access:
+                    return False
+                user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+                return _save_auth_unlocked({
+                    **auth,
+                    "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
+                    "local_user_id": normalized_user_id,
+                    "auth_source": normalized_source,
+                    "user": {**user, "id": normalized_user_id},
+                })
+            return True
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save social identity metadata failed: %s", exc)
+        return False
+
+
+def _unlink_credentials(paths: list[Path]) -> bool:
+    success = True
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
         except OSError as exc:
-            logger.warning("card_drop: save social identity metadata failed: %s", exc)
-            return False
-        social_saved = True
-        break
-
-    if not found_social_session:
-        # A pre-Electron community_auth.json session still needs the companion
-        # file. It is safe to create because no authoritative social file exists.
-        social_saved = _save_social_session(
-            expected_base,
-            expected_access,
-            expected_refresh or None,
-            local_user_id=normalized_user_id,
-            auth_source=normalized_source,
-        )
-
-    auth = _load_auth()
-    auth_saved = True
-    if auth is not None:
-        auth["schema_version"] = _SOCIAL_SESSION_SCHEMA_VERSION
-        auth["local_user_id"] = normalized_user_id
-        auth["auth_source"] = normalized_source
-        user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
-        auth["user"] = {**user, "id": auth["local_user_id"]}
-        auth_saved = _save_auth(auth)
-    return social_saved and auth_saved
+            success = False
+            logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
+    return success
 
 
 def _clear_auth() -> bool:
@@ -825,29 +962,32 @@ def _clear_auth() -> bool:
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
     success = auth_path is not None
-    for path in paths:
-        try:
-            if path.name == _SOCIAL_SESSION_FILENAME:
-                with _social_session_lock(path):
-                    path.unlink(missing_ok=True)
-            else:
-                path.unlink(missing_ok=True)
-        except OSError as exc:
-            success = False
-            logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
-    for path in paths:
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            success = False
-            logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
-        else:
-            success = False
-            logger.warning("card_drop: credential still exists after clear: %s", path)
-    if success:
-        _clear_native_delegates()
+    # community_auth.json 的删除也必须在 social-session 锁内：否则
+    # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
+    # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
+    try:
+        with _social_session_locks(_social_session_paths()):
+            success = _unlink_credentials(paths) and success
+            for path in paths:
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    success = False
+                    logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+                else:
+                    success = False
+                    logger.warning("card_drop: credential still exists after clear: %s", path)
+            if success:
+                _clear_native_delegates()
+                # A post-logout guest can mint a ticket as soon as these file
+                # locks are released, so invalidate older proofs before then.
+                with _native_sync_tickets_lock:
+                    _native_sync_tickets.clear()
+    except (OSError, TimeoutError) as exc:
+        success = False
+        logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
     return success
 
 
@@ -1200,17 +1340,80 @@ async def auth_status_endpoint(request: Request):
 
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
 async def sync_ticket_endpoint(request: Request):
-    """Issue a short-lived ticket readable only by the local NEKO page."""
-    if not _local_request_source_allowed(request):
+    """Issue a short-lived ticket readable only by the local NEKO page.
+
+    Minting uses the same browser boundary as /native-delegate, with Fetch
+    Metadata and local Origin checks. These headers do not authenticate raw
+    local processes, which can forge them. Bearer redemption additionally
+    requires the ticket to match its persisted issuing session.
+    """
+    if not _local_ui_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
             status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+    try:
+        # Resolve first, as for native delegates: redemption performs this same
+        # refresh/identity backfill and must not invalidate a just-minted proof.
+        # Missing or offline sessions still retain the guest-bind ticket path.
+        await _native_delegate_session_snapshot()
+        ticket = await asyncio.to_thread(_issue_sync_ticket_for_session)
+    except (OSError, TimeoutError):
+        return JSONResponse(
+            {"detail": "desktop_session_busy"}, status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     return JSONResponse(
-        {"sync_ticket": _issue_sync_ticket(), "expires_in": _SYNC_TICKET_TTL_SEC},
+        {"sync_ticket": ticket, "expires_in": _SYNC_TICKET_TTL_SEC},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+def _issue_sync_ticket_for_session() -> str:
+    with _social_session_locks(_social_session_paths()):
+        return _issue_sync_ticket(_desktop_session_fingerprint(_desktop_session_snapshot()))
+
+
+def _load_auth_for_verified_session(snapshot: dict) -> dict | None:
+    """Read the mirror only while the remotely verified session still owns it."""
+    try:
+        with _social_session_locks(_social_session_paths()):
+            auth = _load_auth() or {}
+            if _desktop_session_fingerprint(_desktop_session_snapshot()) != _desktop_session_fingerprint(snapshot):
+                return None
+            return auth
+    except (OSError, TimeoutError):
+        return None
+
+
+def _consume_sync_ticket_for_verified_session(
+    sync_ticket: object,
+    access_token: str,
+) -> str:
+    """Consume the ticket only while the verified session still owns the file.
+
+    Returns "ok", "changed" (desktop session was replaced / lock busy; ticket
+    preserved), or "invalid" (the ticket itself is spent).
+    """
+    try:
+        # The Electron main process takes this same lock for logout / account
+        # switch / token refresh, so its write either completed before this
+        # scope (the re-read below mismatches -> 409) or it waits until the
+        # ticket is consumed and the response is already being queued.
+        with _social_session_locks(_social_session_paths()):
+            current = _desktop_session_snapshot()
+            current_token = str((current or {}).get("access_token") or "").strip()
+            if current_token != access_token:
+                return "changed"
+            return "ok" if _consume_sync_ticket(
+                sync_ticket, session_fingerprint=_desktop_session_fingerprint(current)
+            ) else "invalid"
+    except (OSError, TimeoutError) as exc:
+        # A concurrent writer is holding the lock; assume the session is being
+        # replaced and keep the ticket for a retry.
+        logger.warning("card_drop: sync ticket consume fenced off: %s", exc)
+        return "changed"
 
 
 def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
@@ -1249,6 +1452,20 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     snapshot = await asyncio.to_thread(_desktop_session_snapshot)
     if snapshot is None:
         return None, "missing"
+    verified = status.get("snapshot") or {}
+    credentials_changed = any(
+        snapshot.get(key) != verified.get(key)
+        for key in ("base_url", "access_token", "refresh_token")
+    )
+    identity_changed = any(
+        verified.get(key) and snapshot.get(key) != verified.get(key)
+        for key in ("local_user_id", "auth_source")
+    )
+    if credentials_changed or identity_changed:
+        # A local replacement after cloud validation is not itself validated.
+        return None, "missing"
+    # A concurrent proof request may have backfilled missing identity metadata
+    # for these same validated credentials. Preserve that verified enrichment.
     if _desktop_session_fingerprint(snapshot):
         return snapshot, ""
 
@@ -1364,6 +1581,184 @@ async def native_delegate_handoff_endpoint(
         f"{dest}#native_delegate={quote(delegate, safe='')}",
         status_code=302,
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@router.options("/social-session-init", summary="社区网页复用 Desktop 登录态预检")
+async def social_session_init_options(request: Request):
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        return JSONResponse(
+            {"detail": "insecure_transport"}, status_code=403, headers=cors
+        )
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.post("/social-session-init", summary="一次性消费 native_sync ticket，交付 Desktop OAuth 会话")
+async def social_session_init_endpoint(request: Request, payload: dict = Body(...)):
+    """Hand the Desktop OAuth session to the community tab so it logs in once.
+
+    The community SPA (opened by NEKO with a ``#native_sync`` ticket) redeems
+    that one-time ticket here. In exchange it receives the Desktop
+    ``neko-servers-desktop-*`` access token, which N.E.K.O.Servers already
+    accepts (``AUTH_ALLOWED_DESKTOP_CLIENT_IDS``). The SPA then runs its normal
+    ``/api/auth/session/bootstrap`` and publishes the session, so no second
+    browser login is needed.
+
+    The refresh token stays here: Desktop is the sole owner of that rotating
+    family, and a second independent rotator would invalidate both sides. The
+    community session therefore lives as long as the handed-over access token.
+
+    Direction is Python → SPA over the allowlisted community Origin only; the
+    Web tab never sends its own bearer to localhost. Ticket is single-use, and
+    is consumed only once the response is known to be deliverable.
+    """
+    if not (request.headers.get("origin") or "").strip():
+        # Require the browser-origin contract even though raw local clients
+        # can forge Origin; this check alone is not process authentication.
+        return JSONResponse(
+            {"detail": "origin_required"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        return JSONResponse(
+            {"detail": "insecure_transport"}, status_code=403, headers=cors
+        )
+    sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+    if not _sync_ticket_is_valid(sync_ticket):
+        return JSONResponse(
+            {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
+    snapshot, failure = await _native_delegate_session_snapshot()
+    access_token = str((snapshot or {}).get("access_token") or "").strip()
+    local_user_id = str((snapshot or {}).get("local_user_id") or "").strip()
+    if not snapshot or not access_token or not local_user_id:
+        unavailable = failure in {"unavailable", "malformed"}
+        return JSONResponse(
+            {
+                "detail": (
+                    "identity_verification_unavailable"
+                    if unavailable
+                    else "desktop_login_required"
+                )
+            },
+            status_code=503 if unavailable else 409,
+            headers=cors,
+        )
+    if snapshot.get("auth_source") != "oauth":
+        return JSONResponse(
+            {"detail": "legacy_session_not_supported"}, status_code=409, headers=cors
+        )
+    if not _sync_ticket_is_valid(
+        sync_ticket, session_fingerprint=_desktop_session_fingerprint(snapshot)
+    ):
+        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
+    snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
+    if snapshot_base and not _same_originish(snapshot_base, _social_base_url()):
+        # The saved login belongs to another community; refuse rather than ship
+        # its bearer to the currently configured one. The session stays on disk
+        # so pointing NEKO_SOCIAL_BASE_URL back restores it.
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
+        )
+    from main_routers import community_oauth as _co
+
+    # Fence the local await against logout/refresh/account changes without
+    # repeating the remote identity lookup that just validated this snapshot.
+    auth = await asyncio.to_thread(_load_auth_for_verified_session, snapshot)
+    if auth is None:
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
+        )
+    # The auth mirror may already belong to a newer login while the social
+    # file is still authoritative for this one. Never reuse its bind outcome.
+    # Older mirrors without identity metadata are still tied by the exact
+    # bearer; a missing bind field retains the existing compatibility default.
+    auth_matches_session = (
+        str(auth.get("access_token") or "").strip() == access_token
+        and (not auth.get("local_user_id")
+             or _normalize_local_user_id(auth["local_user_id"]) == local_user_id)
+        and (not auth.get("auth_source")
+             or _normalize_auth_source(auth["auth_source"]) == snapshot["auth_source"])
+    )
+    bind = auth.get("bind") or {"bound": True, "error": None}
+    if auth and not auth_matches_session:
+        repaired_bind_matches = (
+            auth.get("bind_session_fingerprint") == _desktop_session_fingerprint(snapshot)
+            and _normalize_local_user_id(auth.get("local_user_id")) == local_user_id
+            and _normalize_auth_source(auth.get("auth_source")) == snapshot["auth_source"]
+        )
+        if not repaired_bind_matches:
+            bind = {"bound": False, "error": "desktop_bind_state_unavailable"}
+        # Issuer/client metadata must not leak across this boundary either.
+        # The authoritative snapshot or configured defaults supply the issuer.
+        auth = {}
+    bind_retried = False
+    if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
+        # Desktop binds once at callback time and never retries. Redeeming the
+        # ticket used to be the SPA's chance to repair a failed bind, so retry
+        # here before it is spent — but only after the session revalidation
+        # above, so a superseded account never reaches the cloud bind.
+        bind_retried = True
+        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+            # Persist repaired binds and terminal conflicts alike, or
+            # /auth-status keeps reporting the stale transient failure and
+            # every later handoff repeats the bind round trip.
+            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+    if bind_retried:
+        # bind 可能包含多个最长 30 秒的云端往返；期间 token 可能已被云端撤销而
+        # 本地文件未变，锁内复读只比本地 token 发现不了。重跑一次带云端校验的
+        # 复查（仅 bind 分支付出这个延迟），拒绝就 409 并保留票据给用户重试。
+        post_bind_snapshot, _ = await _native_delegate_session_snapshot()
+        post_bind_token = (
+            str(post_bind_snapshot.get("access_token") or "").strip()
+            if post_bind_snapshot
+            else ""
+        )
+        if post_bind_token != access_token:
+            return JSONResponse(
+                {"detail": "desktop_login_required"}, status_code=409, headers=cors
+            )
+    # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
+    # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
+    # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，
+    # 返回 409），要么被挡到 ticket 消费完成之后。bind 重试本身仍是 await 点，
+    # 没法放进同步锁作用域；残余窗口只剩「出锁 → 响应送达」这段本地回环时间。
+    consume_outcome = await asyncio.to_thread(
+        _consume_sync_ticket_for_verified_session, sync_ticket, access_token
+    )
+    if consume_outcome == "invalid":
+        return JSONResponse(
+            {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
+    if consume_outcome != "ok":
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
+        )
+    return JSONResponse(
+        {
+            "access_token": access_token,
+            "local_user_id": local_user_id,
+            "auth_public_url": str(
+                snapshot.get("auth_public_url")
+                or auth.get("auth_public_url")
+                or _co._auth_public_url()
+            ).rstrip("/"),
+            "client_id": str(
+                snapshot.get("client_id")
+                or auth.get("client_id")
+                or _co._desktop_client_id()
+            ),
+            "bind": bind,
+        },
+        headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},
     )
 
 

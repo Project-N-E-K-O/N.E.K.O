@@ -88,6 +88,13 @@ _BLOCKED_TEXT_MARKERS = (
 )
 
 
+# How long an already-sent log line keeps riding along in later state
+# bursts. Matched to the host delivery manager's cue TTL (90s): a queued
+# cue older than that is dropped there, so a line past it was never going
+# to arrive as news. See ``GameAgentService._fire_system_prompt``.
+_LOG_CARRY_TTL_SECONDS = 90.0
+
+
 def text_signals_blocked(text: str) -> bool:
     """True when free-text feedback indicates the action was actually
     blocked / unsuccessful despite a status that claims otherwise. Shared
@@ -96,6 +103,32 @@ def text_signals_blocked(text: str) -> bool:
         return False
     low = text.lower()
     return any(m in low for m in _BLOCKED_TEXT_MARKERS)
+
+
+# [ANTI-PARROT] A task that is a bare identifier rather than a sentence.
+# Observed 2026-09-07: the dialog LLM dispatched ``query_inventory`` (an entry
+# name it saw in the tool description) and ``mine_block`` (invented) as the
+# task text. mc-agent runs them literally, the in-progress cue echoes
+# ``You're doing: "mine_block"`` back, and the model re-sends the same token
+# forever. Three shapes cover every leak seen so far: snake_case, camelCase,
+# and single-token function-call syntax. A plain word ("stop", "mine") or any
+# text with a space / CJK stays allowed — those are real instructions.
+_IDENTIFIER_TASK_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+"          # mine_block, GET_DIAMOND
+    r"|[a-z]+(?:[A-Z][a-z0-9]*)+"                       # mineDiamonds, goToCoordinates
+    r"|[A-Za-z_][A-Za-z0-9_]*[(][^)]*[)]"               # goToCoordinates(1,2,3)
+    r")$"
+)
+
+
+def task_looks_like_identifier(text: str) -> bool:
+    """True when ``text`` is an internal identifier / command token rather
+    than a plain-language instruction. Shared by the facade handler and
+    ``execute_minecraft_task`` so both entry points refuse the same shapes."""
+    if not text:
+        return False
+    return bool(_IDENTIFIER_TASK_RE.match(text.strip()))
 
 
 @dataclass
@@ -116,6 +149,12 @@ class PendingTask:
     # pending slot (normal wake), a known previously-dispatched task
     # (emit retroactive completion cue), or unknown (FIFO fallback).
     task_id: str = ""
+    # Set when mc-agent answered this dispatch with ``status=duplicate``
+    # ("same instruction already running"): the id of the earlier dispatch
+    # of the same text that is actually running. The eventual
+    # ``task_finished`` arrives under THAT id, so ``_on_task_finished``
+    # treats a frame echoing ``alias_task_id`` as this slot's completion.
+    alias_task_id: str = ""
     # Filled in by the WebSocket callback (or by overwrite/timeout
     # paths) right before ``event`` is set.
     result: Dict[str, Any] = field(default_factory=dict)
@@ -198,6 +237,12 @@ class GameAgentService:
         # overwrites.
         self._dispatched_history: "collections.OrderedDict[str, str]" = collections.OrderedDict()
         self._dispatched_history_max: int = 32
+        # task_id → root task_id for dispatches mc-agent answered with
+        # ``duplicate`` (they never ran; the root is the one executing).
+        # ``_find_prior_dispatch_id`` resolves through this so a chain of
+        # re-dispatches of one long task all alias the root, never a sibling
+        # duplicate whose id no completion frame will ever carry.
+        self._duplicate_root: Dict[str, str] = {}
         # One-way latch: flips True the first time mc-agent echoes a
         # task_id on task_finished. Used by ``_on_task_finished`` to
         # disable the FIFO fallback once we know the agent is modern —
@@ -214,6 +259,11 @@ class GameAgentService:
         # and we'd never drain. ``deque(maxlen=...)`` drops oldest on
         # overflow which is fine — the LLM only needs recent context.
         self._log_cache: collections.deque[str] = collections.deque(maxlen=200)
+        # ``(timestamp, line)`` for lines already sent in a recent state burst.
+        # Re-sent while inside ``_LOG_CARRY_TTL_SECONDS`` so a burst that
+        # coalesces away does not take the game's recent events with it.
+        # Bounded by both that window and ``maxlen``. See ``_fire_system_prompt``.
+        self._log_carry: collections.deque[tuple[float, str]] = collections.deque(maxlen=200)
         # Bounded ring buffer of (image_bytes, mime). We carry the mime
         # alongside the bytes because the JPEG→PNG conversion in
         # ``_on_screenshot`` can fall through to "ship as-is" on Pillow
@@ -249,7 +299,12 @@ class GameAgentService:
         self._agent_busy: bool = False
         self._agent_busy_at: float = 0.0
         self._agent_activity: str = ""
-        self._agent_busy_ttl: float = 60.0
+        # TTL sized against the observed bot_status_nl cadence (~6s): 20s
+        # tolerates three missed frames and still self-heals fast. It used to be
+        # 60s, which meant one mis-read frame suppressed the keep-going nudge —
+        # and made ``_fire_system_prompt`` claim she was mid-action — for a full
+        # minute (~4 state bursts) while she stood still and the user waited.
+        self._agent_busy_ttl: float = 20.0
         # On-demand inventory refresh plumbing. ``_inventory_waiters`` are
         # asyncio.Futures that resolve when the next ``inventory`` frame
         # lands; multiple concurrent ``query_inventory`` calls can all
@@ -335,6 +390,7 @@ class GameAgentService:
     # thrashing mc-agent between goals. A genuine {MASTER_NAME} correction of a
     # <2s-old task is implausible; sub-2s overwrites are the runaway signature.
     _OVERWRITE_MIN_SURVIVAL_S = 2.0
+
 
     def set_lang(self, lang: str) -> None:
         """Set the locale used for every push_message cue + result
@@ -565,6 +621,9 @@ class GameAgentService:
         self._pending_screenshot = None
 
         self._log_cache.clear()
+        # Same session boundary as the cache above: carrying a dead session's
+        # lines into the next world would narrate events that never happened there.
+        self._log_carry.clear()
         self._screenshot_cache.clear()
         # Inventory snapshot belongs to the WS session that just ended.
         # game_agent_reload_config（ws_url 切换）/ 重启场景下，下一个 WS
@@ -759,7 +818,22 @@ class GameAgentService:
             return
         self._dispatched_history[task_id] = task_text
         while len(self._dispatched_history) > self._dispatched_history_max:
-            self._dispatched_history.popitem(last=False)
+            evicted, _ = self._dispatched_history.popitem(last=False)
+            self._duplicate_root.pop(evicted, None)
+
+    def _find_prior_dispatch_id(self, task_text: str, *, exclude: str) -> str:
+        """Id of the dispatch really running ``task_text``, other than
+        ``exclude`` (the current slot's own id). Walks history newest-first
+        and resolves any dispatch that itself got ``duplicate`` to its root,
+        so a chain of re-dispatches never aliases a sibling that never ran."""
+        for task_id, text in reversed(self._dispatched_history.items()):
+            if task_id == exclude or text != task_text:
+                continue
+            root = self._duplicate_root.get(task_id, task_id)
+            if root == exclude:
+                continue
+            return root
+        return ""
 
     async def try_claim_pending(
         self, task: str, *, overwrite: bool
@@ -780,6 +854,17 @@ class GameAgentService:
         async with self._pending_lock:
             if self._pending is not None:
                 if not overwrite:
+                    # Logged, not silent: this is the one refusal path that used
+                    # to leave no trace anywhere. With the happy path also silent
+                    # (registry + callback route only log failures), a log read
+                    # afterwards could not tell "the model never called the tool"
+                    # apart from "it called and we turned it away" — which is
+                    # exactly the question a stalled dispatch raises.
+                    self._log_info(
+                        "claim refused (busy, overwrite=False): running {!r}, "
+                        "refusing {!r}",
+                        self._pending.task_text[:40], task[:40],
+                    )
                     return None
                 # [ISSUE4c] Anti-thrash guard: even with overwrite=True, refuse
                 # to interrupt a task that has barely started (< _OVERWRITE_MIN_
@@ -826,6 +911,9 @@ class GameAgentService:
             )
             self._pending = my_pending
             self._task_finished = False
+            self._log_info(
+                "claim accepted (overwrite={}): {!r}", overwrite, task[:80],
+            )
             return my_pending
 
     async def run_claimed_task(self, my_pending: PendingTask) -> Dict[str, Any]:
@@ -943,6 +1031,12 @@ class GameAgentService:
         if not isinstance(task, str) or not task.strip():
             return {
                 "output": {"error": "task must be a non-empty string"},
+                "is_error": True,
+                "error": "INVALID_TASK",
+            }
+        if task_looks_like_identifier(task):
+            return {
+                "output": {"error": "task must be a plain-language instruction, not an identifier"},
                 "is_error": True,
                 "error": "INVALID_TASK",
             }
@@ -1170,9 +1264,19 @@ class GameAgentService:
                 self._task_finished = True
                 self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
         elif "action selection" in text_strip:
-            # Setting False unconditionally is safe — at worst it
-            # confirms what's already true (a task is in flight).
-            self._task_finished = False
+            if self._pending is not None:
+                # A task WE dispatched is in flight; the log just confirms it.
+                self._task_finished = False
+            else:
+                # Autonomous action selection — mc-agent picked this itself.
+                # It must NOT land on ``_task_finished``: nothing would ever
+                # reset that flag (``task run ended`` needs a real task run,
+                # the terminal paths need a pending slot), so the keep-going
+                # branch — gated on ``_task_finished`` — would be dead for the
+                # rest of the session. Route it to the busy latch instead,
+                # which is TTL-bounded and self-heals.
+                self._agent_busy = True
+                self._agent_busy_at = time.time()
         elif text_strip == "Connection lost and re-established.":
             # Connection bounce wipes the agent's task queue: any
             # pending task's ``task_finished`` will never arrive, so
@@ -1379,11 +1483,27 @@ class GameAgentService:
         inventing one (the historical UX problem: 猫娘 saw HP drop and
         made up "被怪物打了" with no evidence).
         """
-        text = str(data.get("text") or "").strip()
-        if not text:
-            return
         severity = str(data.get("severity") or "warn").lower()
         cause_hint = self._format_alert_cause(data.get("cause"))
+        text = str(data.get("text") or "").strip()
+        if not text:
+            # An alert with no prose is still an alert. mc-agent populates
+            # ``text`` best-effort, and dropping the frame threw away a ``cause``
+            # we had already rendered into a usable phrase -- for a death, the
+            # single most important thing that can happen to her. Fall back to the
+            # cause; only a frame carrying literally nothing is dropped, and that
+            # one gets logged rather than vanishing (this is the highest-severity
+            # channel there is, so a silent return here is never acceptable).
+            if not cause_hint:
+                self._log_warning(
+                    "alert dropped: no text and no usable cause (severity={}, keys={})",
+                    severity, sorted(data.keys()),
+                )
+                return
+            text = cause_hint
+            # Already the headline; a "Cause hint:" line repeating it verbatim
+            # just invites her to say the same thing twice.
+            cause_hint = ""
 
         sections = [prompts.t(
             "CUE_PREFIX_ALERT", lang=self._lang, severity=severity, text=text,
@@ -1602,7 +1722,9 @@ class GameAgentService:
             pending = self._pending
             historical_text: Optional[str] = None
             if echoed_task_id is not None:
-                if pending is not None and pending.task_id == echoed_task_id:
+                if pending is not None and echoed_task_id in (
+                    pending.task_id, pending.alias_task_id or None
+                ):
                     bucket = "current"
                     # Only flip the latch once the id has been proven to
                     # belong to OUR dispatch (current pending or recent
@@ -1644,6 +1766,29 @@ class GameAgentService:
             if parsed_inv is not None and bucket in ("current", "fifo", "retroactive"):
                 self._last_inventory = parsed_inv
                 self._last_inventory_at = time.time()
+
+            # ``duplicate`` is NOT a terminal frame. mc-agent sends it when the
+            # same instruction is already running ("继续当前任务、不重新开始…
+            # 请勿重发"). Treating it as a completion (observed 2026-09-07)
+            # cleared the slot AND told the dialog LLM the action "couldn't
+            # finish" → it re-sent the same text → duplicate again, forever.
+            # Keep the slot claimed and don't wake the handler; remember the
+            # id of the earlier dispatch that is really running so its
+            # eventual ``task_finished`` resolves this slot.
+            if status.strip().lower() == "duplicate" and bucket in ("current", "fifo"):
+                prior_id = self._find_prior_dispatch_id(
+                    pending.task_text, exclude=pending.task_id
+                )
+                if prior_id:
+                    pending.alias_task_id = prior_id
+                    self._duplicate_root[pending.task_id] = prior_id
+                if text:
+                    self._log_cache.append(text)
+                self._log_info(
+                    "task_finished duplicate: keeping pending {!r} (alias={})",
+                    pending.task_text[:40], prior_id or "-",
+                )
+                return
 
             if bucket == "current":
                 self._pending = None
@@ -1940,9 +2085,37 @@ class GameAgentService:
         "task running — comment if you like" tail.
         """
         log_text = ""
-        if self._log_cache:
-            log_text = _ANSI_RE.sub("", "\n".join(self._log_cache))
-            self._log_cache.clear()
+        # Re-send recent lines rather than draining them into one burst. These
+        # bursts coalesce on ``mc_state`` (latest wins) and a coalesced burst is
+        # dropped whole, so lines drained into it would be gone before the model
+        # ever saw them. They are not snapshot data like the inventory or a
+        # screenshot; they are the game's incremental events.
+        #
+        # The window is the host's own cue TTL, not a generation count. Carrying
+        # exactly one generation only survives ONE coalescing step, and the
+        # playback gate routinely stays shut for several burst intervals -- the
+        # queue has been observed at depth 25 -- so three bursts collapsing in a
+        # row is the normal case, not an edge one, and the older two would still
+        # vanish. Anything older than the TTL is dropped here because the host
+        # drops it too ("dropping stale cue ... reason=ttl"): it was never going
+        # to arrive as news, so keeping it would only pad the context.
+        #
+        # The plugin cannot do better than a window: ``push_message`` answers
+        # ``Submitted | Rejected`` and no delivery ack is plumbed back to it, so
+        # "keep until confirmed" has nothing to confirm against. The cost is that
+        # a line repeats across the bursts inside its window; the burst is
+        # ``ai_behavior="read"`` context rather than a speak cue, so that costs
+        # context, not a repeated sentence.
+        now = time.time()
+        fresh_lines = list(self._log_cache)
+        self._log_cache.clear()
+        while self._log_carry and (now - self._log_carry[0][0]) > _LOG_CARRY_TTL_SECONDS:
+            self._log_carry.popleft()
+        combined = [line for _ts, line in self._log_carry] + fresh_lines
+        for line in fresh_lines:
+            self._log_carry.append((now, line))
+        if combined:
+            log_text = _ANSI_RE.sub("", "\n".join(combined))
 
         sections: list[str] = []
         # Inventory line first — it's the closest thing to ground truth
@@ -1960,14 +2133,21 @@ class GameAgentService:
             sections.append(prompts.t(
                 "RECENT_EVENTS_BLOCK", lang=self._lang, log_text=log_text,
             ))
-        # [BUSY] The mc-agent's own activity counts as busy too: in autonomous
-        # play the plugin has no _pending task, so without this it would always
-        # look idle and keep telling her to dispatch. Use the BUSY body (narrate
-        # / stay quiet) whenever the agent is actively executing.
-        if self._task_finished and not self._mc_agent_busy():
-            sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
-        else:
+        # [BUSY] Three states, not two. mc-agent's own activity still suppresses
+        # the dispatch invitation (otherwise the loop keeps telling her to
+        # dispatch over whatever the agent is already doing), but it must not
+        # borrow the BUSY wording: with no ``_pending`` there IS no previous
+        # action of hers, and telling her there is stalls her for the whole
+        # busy-latch TTL while the user is asking her to move.
+        if self._pending is not None:
+            # A task we dispatched is genuinely in flight.
             sections.append(prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang=self._lang))
+        elif self._mc_agent_busy() or not self._task_finished:
+            # mc-agent is doing its own thing. Say exactly that, and keep the
+            # master-override door open.
+            sections.append(prompts.t("SYSTEM_PROMPT_AUTONOMOUS_BODY", lang=self._lang))
+        else:
+            sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
         prompt_text = prompts.t("CUE_PREFIX_STATE", lang=self._lang) + "\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM
@@ -1999,12 +2179,22 @@ class GameAgentService:
             # forcing an AI turn, so it can't make her narrate non-stop or
             # compete with real alert/completion cues in the pacing manager.
             # The specific nudges (in_progress / keep_going) remain "respond".
+            #
+            # ``coalesce_key`` matters as much as the pacing here. This burst is
+            # a SNAPSHOT of current state, so only the newest one is worth
+            # delivering — but it was the one minecraft category that never
+            # tagged a key, so every burst got a unique ``__uniq:N`` slot and
+            # they stacked. Observed in the wild: a delivery queue at pending=25
+            # (``__uniq:68``) where the user's one-line request had to compete
+            # with two dozen stale state bursts, several of them saying she was
+            # busy. Latest-wins collapses that back to one.
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
                 ai_behavior="read",
                 parts=parts,
                 priority=4,
+                coalesce_key="mc_state",
             )
         except Exception as exc:
             self._log_error(

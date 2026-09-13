@@ -39,6 +39,7 @@ from utils.logger_config import get_module_logger
 from ._infra import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
+    TTS_SOFT_FLUSH_SENTINEL,
     AudioDoneEmitter,
     _resample_audio,
     _parse_env_float,
@@ -151,7 +152,7 @@ __all__ = [
     "get_tts_worker", "_get_voice_meta", "_grok_voice_id_is_xai_custom",
     "_XAI_CUSTOM_VOICE_PATTERN", "logger",
     # shared infrastructure
-    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "AudioDoneEmitter",
+    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "TTS_SOFT_FLUSH_SENTINEL", "AudioDoneEmitter",
     "_resample_audio", "_parse_env_float", "_enqueue_error",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
     "_run_sentence_tts_worker", "_record_tts_telemetry",

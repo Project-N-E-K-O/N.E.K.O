@@ -230,7 +230,7 @@ class MMDCore {
 
     // ═══════════════════ 场景初始化 ═══════════════════
 
-    async init(canvasId, containerId) {
+    async init(canvasId, containerId, options = {}) {
         this._ensureThreeReady();
         const THREE = window.THREE;
 
@@ -251,14 +251,16 @@ class MMDCore {
         container.style.display = 'block';
         container.style.visibility = 'visible';
         container.style.opacity = '1';
-        container.style.width = '100%';
-        container.style.height = '100%';
-        container.style.position = 'fixed';
-        container.style.top = '0';
-        container.style.left = '0';
-        container.style.setProperty('pointer-events', 'auto', 'important');
-        // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
-        container.style.zIndex = '10';
+        if (options.embed !== true) {
+            container.style.width = '100%';
+            container.style.height = '100%';
+            container.style.position = 'fixed';
+            container.style.top = '0';
+            container.style.left = '0';
+            container.style.setProperty('pointer-events', 'auto', 'important');
+            // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
+            container.style.zIndex = '10';
+        }
 
         this.manager.clock = new THREE.Clock();
         this.manager.scene = new THREE.Scene();
@@ -382,7 +384,7 @@ class MMDCore {
         const alreadyRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'resize' && h.handler === this.manager._resizeHandler
         );
-        if (!alreadyRegistered) {
+        if (!alreadyRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
             window.addEventListener('resize', this.manager._resizeHandler);
         }
@@ -400,7 +402,7 @@ class MMDCore {
         const alreadyDisplayRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'electron-display-changed' && h.handler === this.manager._displayChangeHandler
         );
-        if (!alreadyDisplayRegistered) {
+        if (!alreadyDisplayRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'electron-display-changed', handler: this.manager._displayChangeHandler });
             window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);
         }
@@ -416,13 +418,13 @@ class MMDCore {
         const alreadyQualityRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'neko-render-quality-changed' && h.handler === qualityChangeHandler
         );
-        if (!alreadyQualityRegistered) {
+        if (!alreadyQualityRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'neko-render-quality-changed', handler: qualityChangeHandler });
             window.addEventListener('neko-render-quality-changed', qualityChangeHandler);
         }
 
         // 应用已保存的调试渲染设置
-        if (typeof window.applyMMDSavedDebugSettings === 'function') {
+        if (options.embed !== true && typeof window.applyMMDSavedDebugSettings === 'function') {
             try {
                 window.applyMMDSavedDebugSettings();
                 console.log('[MMD Core] 已应用保存的调试渲染设置');
@@ -555,6 +557,7 @@ class MMDCore {
             // 存储模型引用
             this.manager.currentModel = mmd;
             this.manager.currentModel.url = modelUrl;
+            this.manager.currentModel.configName = MMDCore.getConfigName(modelUrl);
             this.manager.scene.add(mmd.mesh);
 
             // 材质后处理：修正纹理颜色空间 + 强制材质更新
@@ -870,6 +873,23 @@ class MMDCore {
 
     // ═══════════════════ 模型信息 ═══════════════════
 
+    // 与后端模型列表的 Path.stem 一致；内部模型名仍仅用于展示元信息。
+    static getConfigName(modelUrl) {
+        if (typeof modelUrl !== 'string' || !modelUrl) return '';
+        try {
+            const filename = new URL(modelUrl, window.location.href).pathname.split('/').pop();
+            // Backend URLs can contain literal percent signs. Decode valid runs once,
+            // without rejecting the entire filename or double-decoding escaped names.
+            return filename.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            }).replace(/\.(pmx|pmd)$/i, '');
+        } catch (error) {
+            console.warn('[MMD Core] 无法从模型路径获取配置名称:', error);
+            return '';
+        }
+    }
+
     _buildModelInfo(mmd) {
         const mesh = mmd.mesh;
         const pmx = mmd.pmx;
@@ -877,6 +897,7 @@ class MMDCore {
 
         return {
             name: pmx?.header?.modelName || '未知模型',
+            configName: MMDCore.getConfigName(mmd.url),
             comment: pmx?.header?.comment || '',
             vertexCount: geometry?.attributes?.position?.count || 0,
             triangleCount: geometry?.index ? geometry.index.count / 3 : 0,
@@ -894,6 +915,8 @@ class MMDCore {
     // ═══════════════════ 模型清理 ═══════════════════
 
     _clearModel() {
+        // 模型卸载即取消其配置请求、旧表情计时和缓存；不改动画 Morph 写入规则。
+        this.manager.expression?.resetMoodMap();
         // 清理纹理修复兜底定时器（必须在早退之前，防止 currentModel 被外部提前置空时 timer 泄漏）
         if (this._fixMissingTexturesTimer) {
             clearTimeout(this._fixMissingTexturesTimer);

@@ -54,7 +54,10 @@ export function refreshPluginsRegistry(config?: AxiosRequestConfig & { preserveM
   failed: Array<{ plugin_id: string; config_path: string; error: string }>
   scanned_count: number
 }> {
-  return post('/plugins/refresh', undefined, config)
+  return post('/plugins/refresh', undefined, {
+    ...config,
+    headers: { ...config?.headers, 'X-Neko-Development': '1' },
+  })
 }
 
 /**
@@ -115,6 +118,7 @@ export function reloadAllPlugins(): Promise<{
 }> {
   return post('/plugins/reload', undefined, {
     timeout: PLUGIN_RELOAD_ALL_TIMEOUT,
+    headers: { 'X-Neko-Development': '1' },
   })
 }
 

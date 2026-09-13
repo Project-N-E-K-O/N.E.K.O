@@ -406,6 +406,40 @@
     const SPEECH_PLAYBACK_STATE_HEARTBEAT_MS = 200;
     let _speechPlaybackChannel = null;
     let _speechPlaybackStateHeartbeatTimer = 0;
+    let _speechMouthBins = null;
+    let _speechMouthWave = null;
+
+    function captureSpeechMouthFrame(state) {
+        // Sample the existing speech analyser, never the microphone or game
+        // BGM. Reuse the 200ms bridge heartbeat and at most 512 scratch bytes.
+        const analyser = S.globalAnalyser;
+        if (!state.active || !state.correlationId || state.audioContextState !== 'running'
+            || state.remainingSeconds <= 0.05 || !S.scheduledSources.length
+            || state.audioContextTime < state.playbackStartAudioTime || !analyser) {
+            _speechMouthBins = null;
+            _speechMouthWave = null;
+            return null;
+        }
+        const count = Math.min(256, Number(analyser.frequencyBinCount));
+        const rate = Number(analyser.context?.sampleRate || S.audioPlayerContext?.sampleRate);
+        if (!Number.isInteger(count) || count < 16 || (count & (count - 1)) !== 0
+            || !Number.isFinite(rate) || rate <= 0) return null;
+        try {
+            if (_speechMouthBins?.length !== count) _speechMouthBins = new Uint8Array(count);
+            if (!_speechMouthWave) _speechMouthWave = new Uint8Array(256);
+            analyser.getByteFrequencyData(_speechMouthBins);
+            analyser.getByteTimeDomainData(_speechMouthWave);
+            let sum = 0;
+            for (const byte of _speechMouthWave) sum += ((byte - 128) / 128) ** 2;
+            return {
+                bins: Array.from(_speechMouthBins),
+                // Only low-frequency bins are sent; preserve their actual Hz
+                // spacing when the receiving renderer reads this snapshot.
+                sampleRate: rate * count / analyser.frequencyBinCount,
+                rms: Math.min(1, Math.sqrt(sum / _speechMouthWave.length)),
+            };
+        } catch (_) { return null; }
+    }
 
     function getSpeechPlaybackChannel() {
         if (_speechPlaybackChannel !== null) {
@@ -476,6 +510,7 @@
         if (!state.active) {
             state.remainingSeconds = 0;
         }
+        state.mouthFrame = captureSpeechMouthFrame(state);
 
         window.NekoSpeechPlaybackState = state;
         try {

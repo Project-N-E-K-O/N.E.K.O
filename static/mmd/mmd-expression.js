@@ -34,15 +34,37 @@ class MMDExpression {
 
         // 常见 MMD 表情名（日文/英文）到情感的映射
         // 默认值，可通过 loadMoodMap() 从后端加载覆盖
-        this.moodMap = {
-            'neutral': ['default', 'ニュートラル'],
-            'happy': ['笑い', 'にやり', 'にこり', 'smile', 'happy', 'joy', 'ワ'],
-            'sad': ['悲しい', '泣き', 'sad', 'sorrow', 'しょんぼり'],
-            'angry': ['怒り', 'angry', 'anger', 'むっ'],
-            'surprised': ['驚き', 'びっくり', 'surprised', 'shock', 'おっ'],
-            'relaxed': ['穏やか', 'relaxed', 'calm', '微笑み'],
-            'fear': ['恐怖', 'fear', 'scared', 'おびえ']
+        this.moodMap = this._createDefaultMoodMap();
+        this._moodMapRequest = null;
+        this._moodMapDisposed = false;
+        // 一个实例仅持有一个监听器，在 dispose 时移除。跨窗口通知不依赖 opener 链。
+        this._moodMapStorageHandler = (event) => {
+            if (event.key !== 'neko_mmd_emotion_mapping_changed' || !event.newValue) return;
+            try {
+                const { model } = JSON.parse(event.newValue);
+                if (typeof model === 'string' && model === this.manager.currentModel?.configName) {
+                    void this.loadMoodMap(model);
+                }
+            } catch (error) {
+                console.warn('[MMD Expression] 无效的配置更新通知:', error);
+            }
         };
+        window.addEventListener('storage', this._moodMapStorageHandler);
+        // One fallback receiver per expression instance; closed by dispose().
+        this._moodMapChannel = null;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                this._moodMapChannel = new BroadcastChannel('neko_mmd_emotion_mapping_changed');
+                this._moodMapChannel.onmessage = (event) => {
+                    const model = event.data?.model;
+                    if (typeof model === 'string' && model === this.manager.currentModel?.configName) {
+                        void this.loadMoodMap(model);
+                    }
+                };
+            }
+        } catch (error) {
+            console.warn('[MMD Expression] Broadcast notifications unavailable:', error);
+        }
 
         // MMD 常见眨眼 morph 名
         this.blinkMorphNames = ['まばたき', 'blink', 'まばたき左', 'まばたき右', 'blink_l', 'blink_r'];
@@ -57,22 +79,79 @@ class MMDExpression {
         };
     }
 
+    _createDefaultMoodMap() {
+        return {
+            'neutral': ['default', 'ニュートラル'],
+            'happy': ['笑い', 'にやり', 'にこり', 'smile', 'happy', 'joy', 'ワ'],
+            'sad': ['悲しい', '泣き', 'sad', 'sorrow', 'しょんぼり'],
+            'angry': ['怒り', 'angry', 'anger', 'むっ'],
+            'surprised': ['驚き', 'びっくり', 'surprised', 'shock', 'おっ'],
+            'relaxed': ['穏やか', 'relaxed', 'calm', '微笑み'],
+            'fear': ['恐怖', 'fear', 'scared', 'おびえ']
+        };
+    }
+
     // ═══════════════════ 后端配置加载 ═══════════════════
 
     async loadMoodMap(modelName) {
-        if (!modelName) return;
+        if (!modelName || this._moodMapDisposed) return;
+        const model = this.manager.currentModel;
+        if (!model || (model.configName && model.configName !== modelName)) return;
+        this._moodMapRequest?.abort();
+        const request = new AbortController();
+        this._moodMapRequest = request;
+        const loadToken = this.manager._activeLoadToken;
+        const isCurrent = () => this._moodMapRequest === request && !this._moodMapDisposed
+            && this.manager.currentModel === model && this.manager._activeLoadToken === loadToken;
+        // 单个在途请求，最多等待 10 秒；替换、卸载和销毁均取消请求。
+        const timeout = setTimeout(() => request.abort(), 10000);
+        let mapping = {};
         try {
-            const response = await fetch(`/api/model/mmd/emotion_mapping?model=${encodeURIComponent(modelName)}`);
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success && data.mapping) {
-                    this.moodMap = { ...this.moodMap, ...data.mapping };
-                    console.log('[MMD Expression] 从后端加载了情感映射');
-                }
+            const response = await fetch(`/api/model/mmd/emotion_mapping?model=${encodeURIComponent(modelName)}`, {
+                signal: request.signal
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.success && data.mapping && typeof data.mapping === 'object' && !Array.isArray(data.mapping)) {
+                mapping = data.mapping;
             }
         } catch (error) {
-            console.warn('[MMD Expression] 加载情感映射失败，使用默认配置:', error);
+            if (isCurrent()) console.warn('[MMD Expression] 加载情感映射失败，使用默认配置:', error);
+        } finally {
+            clearTimeout(timeout);
+            if (isCurrent()) {
+                const nextMap = this._createDefaultMoodMap();
+                for (const emotion of Object.keys(nextMap)) {
+                    if (!Object.prototype.hasOwnProperty.call(mapping, emotion)) continue;
+                    const names = mapping[emotion];
+                    // 兼容旧的单字符串；明确 [] 不回退。非法类型不进入运行时。
+                    if (Array.isArray(names)) nextMap[emotion] = names.filter(name => typeof name === 'string');
+                    else if (typeof names === 'string') nextMap[emotion] = [names];
+                }
+                // 热更新移除了当前表情时，仅释放该手动表情，避免旧 Morph 无法被新映射清除。
+                const active = this.manualExpressionInProgress;
+                if (active && !nextMap[this.currentMood]?.includes(active)) {
+                    this.setMorphWeight(active, 0);
+                    clearTimeout(this.neutralReturnTimer);
+                    this.neutralReturnTimer = null;
+                    this.manualExpressionInProgress = null;
+                    this.currentMood = 'neutral';
+                }
+                this.moodMap = nextMap;
+            }
+            if (this._moodMapRequest === request) this._moodMapRequest = null;
         }
+    }
+
+    resetMoodMap() {
+        this._moodMapRequest?.abort();
+        this._moodMapRequest = null;
+        clearTimeout(this.neutralReturnTimer);
+        this.neutralReturnTimer = null;
+        this.manualExpressionInProgress = null;
+        this.currentMood = 'neutral';
+        this.currentWeights = {};
+        this.moodMap = this._createDefaultMoodMap();
     }
 
     // ═══════════════════ Morph 控制 ═══════════════════
@@ -377,12 +456,14 @@ class MMDExpression {
     // ═══════════════════ 清理 ═══════════════════
 
     dispose() {
-        if (this.neutralReturnTimer) {
-            clearTimeout(this.neutralReturnTimer);
-            this.neutralReturnTimer = null;
+        this._moodMapDisposed = true;
+        window.removeEventListener('storage', this._moodMapStorageHandler);
+        if (this._moodMapChannel) {
+            this._moodMapChannel.onmessage = null;
+            this._moodMapChannel.close();
+            this._moodMapChannel = null;
         }
-        this.currentWeights = {};
+        this.resetMoodMap();
         this.manualBlinkInProgress = null;
-        this.manualExpressionInProgress = null;
     }
 }

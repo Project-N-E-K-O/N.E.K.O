@@ -219,6 +219,10 @@
                 if (window.newUserIcebreaker.getActiveSession()) return true;
             }
         } catch (_) {}
+        try {
+            const state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function' && state.isPeriodActive()) return true;
+        } catch (_) {}
 
         const store = readNewUserIcebreakerStore();
         const days = store && typeof store.days === 'object' ? store.days : null;

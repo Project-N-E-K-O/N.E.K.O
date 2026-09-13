@@ -1352,6 +1352,11 @@ class VRMInteraction {
             this._cachedScreenBounds = { minX, maxX, minY, maxY };
             this._lastModelUpdateTime = Date.now();
 
+            // Hit testing/hover still need fresh bounds in embedded views, but
+            // desktop safe framing must not override the host's stable fit or
+            // deliberate cropping. This covers both expansion and relaxation.
+            if (this.manager._externalCameraFraming === true) return;
+
             // Keep animated extremities inside a modest screen-safe frame by
             // widening the lens, never by changing the model's bones, authored
             // root motion, saved position or user scale. FOV grows in small

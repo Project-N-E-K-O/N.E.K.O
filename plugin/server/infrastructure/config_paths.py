@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_access import get_config_access
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 from plugin.server.infrastructure.config_storage import atomic_write_bytes
 from plugin.settings import PLUGIN_CONFIG_ROOTS
@@ -64,6 +65,9 @@ def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
 
 
 def get_plugin_config_path(plugin_id: str) -> Path:
+    snapshot = get_config_access(plugin_id)
+    if snapshot is not None:
+        return snapshot.manifest_path
     if not re.match(r"^[a-zA-Z0-9_-]+$", plugin_id):
         raise HTTPException(
             status_code=400,

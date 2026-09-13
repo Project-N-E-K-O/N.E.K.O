@@ -4,8 +4,9 @@ from __future__ import annotations
 import atexit
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import AsyncIterator, Protocol, runtime_checkable
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -14,16 +15,21 @@ from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
-from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.operation_lock import (
+    _CrossLoopLock,
+    serialized_plugin_operation,
+)
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import (
     ingest_auth_token,
+    message_bridge_is_alive,
     refresh_ingest_endpoint,
     start_bridge,
     stop_bridge,
 )
 from plugin.server.messaging.proactive_bridge import (
+    proactive_bridge_is_alive,
     start_proactive_bridge,
     stop_proactive_bridge,
     wait_for_proactive_subscriber,
@@ -47,6 +53,29 @@ else:
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
+# How many consecutive failed health probes a nominally-alive runner gets before
+# it is retired and rebuilt. Small on purpose: each probe is a 1s bound and only
+# runs when something calls in, so three is a real chance to finish starting
+# without leaving a wedged plane in place indefinitely.
+_MAX_PLANE_PROBE_FAILURES = 3
+
+
+@asynccontextmanager
+async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
+    """``async with`` for ``_CrossLoopLock``, which exposes acquire/release only.
+
+    Waiting inherits any ``bounded_operation_wait`` budget in force, so a plugin
+    start that cannot get the lock in time raises ``PluginOperationBusy`` and the
+    route answers 409 instead of hanging. ``startup()`` runs outside any budget
+    and therefore waits.
+    """
+    await lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 @runtime_checkable
 class _PluginHostContract(Protocol):
     async def start(self, message_target_queue: object) -> None: ...
@@ -64,6 +93,30 @@ class ServerLifecycleService:
         self._message_plane_runner: MessagePlaneRunner | None = None
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
+        # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
+        # concurrent manual plugin start cannot both bring the plane up.
+        #
+        # Cross-loop, not ``asyncio.Lock``: the two callers genuinely run on
+        # different loops in different threads. ``startup()`` is awaited from the
+        # agent's loop (app/agent_server/plugin_host.py
+        # ``_ensure_plugin_lifecycle_started``), while ``POST /plugin/{id}/start``
+        # runs on the embedded plugin server's own loop in the ``plugin-server``
+        # thread. An ``asyncio.Lock`` binds its waiter futures to whichever loop
+        # first contends on it; the other loop then raises "attached to a
+        # different loop", and a release from the wrong loop does not wake the
+        # waiter -- so the exact race this lock exists for is the one that would
+        # break it. ``_CrossLoopLock`` keeps its state under a ``threading.Lock``
+        # and schedules each wake onto that waiter's own loop.
+        self._delivery_path_lock = _CrossLoopLock()
+        self._delivery_path_started = False
+        # Closed by ``shutdown`` under the same lock. Without it, a manual plugin
+        # start could win the lock after shutdown reset the flag and stand a fresh
+        # plane up that teardown has already walked past -- orphan threads and
+        # sockets, plus a ``True`` flag describing a plane nobody owns.
+        self._delivery_path_shutting_down = False
+        # Consecutive failed health probes against the CURRENT runner. Reset on a
+        # healthy probe and whenever the runner is replaced.
+        self._plane_probe_failures = 0
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -122,32 +175,204 @@ class ServerLifecycleService:
         with state.acquire_event_handlers_write_lock():
             state.event_handlers.clear()
 
-    async def _start_message_plane(self) -> None:
-        # Same process mints the credential and starts the plane that must
-        # accept it; start_bridge() below is the only writer.
-        self._message_plane_runner = build_message_plane_runner(
-            auth_token=ingest_auth_token(),
+    def _delivery_path_threads_alive(self) -> bool:
+        """Whether the components a latched path promises are still running.
+
+        Cheap by construction: all three are thread checks, so this can sit on
+        the per-plugin-start fast path. A bridge that never started cannot reach
+        here -- the path would not have latched in the first place, because
+        ``_start_delivery_path_locked`` reports it as a failed stage.
+
+        The message bridge belongs here for the same reason the other two do,
+        and it is the quietest of the three when it dies: its sender thread
+        returns if ``connect()`` fails during socket setup, well after
+        ``start_bridge()`` returned, and its queue keeps accepting records
+        afterwards. Leaving it out would let this answer True for a path over
+        which no plugin message can travel.
+        """
+        return (
+            self._message_plane_runner_is_alive()
+            and message_bridge_is_alive()
+            and proactive_bridge_is_alive()
         )
-        self._message_plane_runner.start()
+
+    def _message_plane_runner_is_alive(self) -> bool:
+        """Whether the runner's own threads are up. Unknown counts as alive."""
+        runner = self._message_plane_runner
+        if runner is None:
+            return False
+        probe = getattr(runner, "is_alive", None)
+        if not callable(probe):
+            # An implementation with no thread state to report. Treat it as
+            # coming up so the bounded probe counter, not this, decides.
+            return True
         try:
-            health_check_async = getattr(self._message_plane_runner, "health_check_async", None)
+            return bool(probe())
+        except Exception as exc:
+            logger.warning(
+                "message_plane liveness check failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return True
+
+    async def _retire_message_plane(self) -> None:
+        """Tear the plane AND both bridges down so a later entry rebuilds them all.
+
+        The bridges have to go too. Each connects its socket once, inside its own
+        thread: the plane bridge PUSHes to the ingest endpoint it read at connect
+        time and swallows send failures, and ``ProactiveBridge`` reads the PUB
+        endpoint once at thread start. Neither ever reconnects, and both
+        ``start()`` calls return early on a live thread. So a rebuild that lands
+        on fallback ports -- likely, since the retired plane may not have released
+        its own yet -- would leave two healthy-looking threads talking to an
+        endpoint nobody serves, and the next probe would latch the path as ready
+        on top of that. ``refresh_ingest_endpoint()`` does not save the plane
+        bridge either: it updates the field a running thread has already read.
+
+        Runs off the event loop: each stop joins its thread.
+        """
+        runner = self._message_plane_runner
+        self._message_plane_runner = None
+        self._plane_probe_failures = 0
+
+        def _teardown() -> None:
+            for what, stop in (
+                ("message_plane runner", getattr(runner, "stop", None)),
+                ("message bridge", stop_bridge),
+                ("proactive bridge", stop_proactive_bridge),
+            ):
+                if stop is None:
+                    continue
+                try:
+                    stop()
+                except Exception as exc:
+                    # All of it is being discarded; a failed stop must not abort
+                    # the retry that is trying to recover delivery.
+                    logger.warning(
+                        "failed to stop the retired {}: err_type={}, err={}",
+                        what,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+
+        await asyncio.to_thread(_teardown)
+
+    async def _check_message_plane_health(self) -> bool:
+        """Probe the current runner. Never raises; a failed probe is ``False``.
+
+        Liveness is part of "healthy", not a fallback consulted after a failed
+        probe. ``PythonMessagePlaneRunner.health_check`` reaches the RPC endpoint
+        only, so an ingest thread that exited while RPC kept serving answers
+        healthy: the plane accepts no records, yet the delivery path latches as
+        ready and nothing ever re-probes it. Checked first because it is cheap
+        and skips the 1s probe when the threads are already gone.
+        """
+        runner = self._message_plane_runner
+        if runner is None:
+            return False
+        if not self._message_plane_runner_is_alive():
+            logger.warning(
+                "message_plane threads are not all running; treating it as "
+                "unhealthy even if its RPC endpoint still answers"
+            )
+            return False
+        try:
+            health_check_async = getattr(runner, "health_check_async", None)
             if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
-                healthy = await health_check_async(timeout_s=1.0)
-            else:
-                # Fallback: runner only exposes the sync API — offload to a worker thread so we
-                # never block the event loop on the ~1s TCP probe + RPC round-trip.
-                healthy = await asyncio.to_thread(
-                    self._message_plane_runner.health_check, timeout_s=1.0
-                )
+                return bool(await health_check_async(timeout_s=1.0))
+            # Fallback: runner only exposes the sync API — offload to a worker thread so we
+            # never block the event loop on the ~1s TCP probe + RPC round-trip.
+            return bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.warning(
                 "message_plane health check failed: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
-            return
-        if not healthy:
-            logger.warning("message_plane health check returned false; it may still be starting")
+            return False
+
+    async def _start_message_plane(self) -> bool:
+        """Start the plane, or verify the one already standing. Returns usability."""
+        if self._message_plane_runner is not None:
+            # An earlier attempt in this run already stood the plane up and only
+            # a later step (endpoint refresh, or a bridge) failed. Building a
+            # second runner would strand the first one's threads and sockets --
+            # and worse, the first still holds the configured ports, so the
+            # replacement's port fallback picks DIFFERENT ones and the bridge
+            # ends up refreshed onto a plane that is not the one running. Both
+            # bridges guard on their own thread being alive, so reusing here
+            # makes a retry re-run exactly the parts that failed and nothing else.
+            #
+            # Re-probed, not assumed: a non-null runner only means ``start()``
+            # did not raise. The first attempt's probe may have failed or come
+            # back false, and that path deliberately leaves the runner assigned
+            # ("it may still be starting"). Reusing it unverified would let the
+            # bridges come up against a plane that never arrived and latch the
+            # whole path as ready -- push_message would keep answering
+            # submitted=True with nothing behind it, which is the exact failure
+            # this branch exists to prevent.
+            if not await self._check_message_plane_health():
+                self._plane_probe_failures += 1
+                alive = self._message_plane_runner_is_alive()
+                # Keeping an unhealthy runner instead of rebuilding avoids handing
+                # its ports to a second one -- but kept unconditionally it is kept
+                # FOREVER: nothing else stops it, so a runner whose threads died,
+                # or one that simply never answers, would fail every future probe
+                # and no manual plugin start could ever recover delivery short of
+                # a full lifecycle shutdown. Retire it when its threads are gone,
+                # or after a bounded number of failed probes when it is nominally
+                # alive but never becomes usable -- by then its ports are the
+                # lesser problem.
+                if not alive or self._plane_probe_failures >= _MAX_PLANE_PROBE_FAILURES:
+                    logger.warning(
+                        "retiring the message_plane runner after {} failed "
+                        "probe(s) (threads_alive={}); the next entry rebuilds it",
+                        self._plane_probe_failures,
+                        alive,
+                    )
+                    await self._retire_message_plane()
+                else:
+                    logger.warning(
+                        "message_plane is still not healthy (probe {} of {}); "
+                        "keeping it for the next retry rather than rebuilding, so "
+                        "its ports are not handed to a second runner",
+                        self._plane_probe_failures,
+                        _MAX_PLANE_PROBE_FAILURES,
+                    )
+                return False
+            self._plane_probe_failures = 0
+            logger.debug("message_plane already running; reusing it for this retry")
+            return True
+        # Same process mints the credential and starts the plane that must
+        # accept it; start_bridge() below is the only writer.
+        self._message_plane_runner = build_message_plane_runner(
+            auth_token=ingest_auth_token(),
+        )
+        self._plane_probe_failures = 0
+        self._message_plane_runner.start()
+        if not await self._check_message_plane_health():
+            # Counts toward the same budget the reuse branch spends: this is
+            # failure #1 against this runner, not a free one.
+            self._plane_probe_failures += 1
+            # Symmetric with the reuse branch, and for the same reason. Latching
+            # here would be permanent: nothing re-probes a path already marked
+            # started, so a plane that never arrived would keep answering
+            # ``submitted=True`` for the life of the process.
+            #
+            # Reporting failure costs nothing the old tolerance was buying. The
+            # runner stays assigned and both bridges still come up -- the next
+            # entry takes the reuse branch above, re-probes, and latches as soon
+            # as the plane is actually there. A plane that was merely slow (the
+            # probe is a 1s bound) recovers on its own; one that never arrives
+            # keeps saying so.
+            logger.warning(
+                "message_plane health check returned false; it may still be "
+                "starting, so the path is left unlatched for the next entry to "
+                "re-probe rather than marked ready"
+            )
+            return False
+        return True
 
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
         try:
@@ -232,6 +457,12 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        # Reopen the gate a previous shutdown closed: this service instance is
+        # reused across a restart in the same process, and a latched-closed gate
+        # would make every delivery-path start a no-op for the new run.
+        async with _held(self._delivery_path_lock):
+            self._delivery_path_shutting_down = False
+
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -241,7 +472,11 @@ class ServerLifecycleService:
 
         await self._migrate_layout_and_reconcile_install_sources()
 
-        await ensure_plugin_messaging_started()
+        # Router only. The delivery path is started below on ``self`` -- going
+        # through ``ensure_plugin_messaging_started`` here would start it on the
+        # module singleton instead, which is the same object in production and a
+        # second message plane anywhere else.
+        await _ensure_plugin_router_started()
 
         try:
             cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
@@ -254,15 +489,167 @@ class ServerLifecycleService:
                 str(exc),
             )
 
+        await self.ensure_delivery_path_started()
+
+        await self._refresh_registry_and_start_autostart_plugins()
+
+        await bus_subscription_manager.start()
+        logger.debug("bus subscription manager started")
+
+        def _get_hosts() -> dict[str, object]:
+            return self._get_plugin_hosts_snapshot()
+
+        await status_manager.start_status_consumer(plugin_hosts_getter=_get_hosts)
+        logger.debug("status consumer started")
+
+        await metrics_collector.start(plugin_hosts_getter=_get_hosts)
+        logger.debug("metrics collector started")
         try:
-            await self._start_message_plane()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
+            emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_startup_ready event: {}", exc)
+
+    async def ensure_delivery_path_started(self) -> bool:
+        """Bring up message plane + both bridges. Idempotent; safe to call twice.
+
+        Returns whether plugin messages can actually be delivered. Callers start
+        plugins either way -- refusing would break tool calls, which travel the
+        router and work fine -- but they must not do it silently: a plugin
+        brought up over a dead path pushes alerts that go nowhere while
+        ``push_message()`` answers ``submitted=True``, which is the failure this
+        whole mechanism exists to end.
+
+        Everything a plugin says to the character -- ``push_message``, alerts,
+        screenshots -- travels this path. The request router does NOT: it carries
+        entry triggers and ``@llm_tool`` calls, which is why a half-started server
+        can dispatch tools perfectly while every proactive message vanishes.
+
+        That asymmetry was reachable in production. ``ensure_plugin_messaging_started``
+        (the lazy path behind ``POST /plugin/{id}/start``) started only the router,
+        so a plugin started by hand before the startup lifecycle reached this block
+        ran with no delivery path at all -- while ``push_message()`` kept answering
+        ``submitted=True``. Observed 2026-09-10: the Minecraft plugin dispatched a
+        task fine, then emitted four priority-9 alerts including the character's
+        own death, and not one reached the dialog LLM. Nothing logged above DEBUG.
+        Both entry points funnel through here now.
+        """
+        async with _held(self._delivery_path_lock):
+            if self._delivery_path_shutting_down:
+                # Teardown owns the plane from here on. Standing a new one up now
+                # would leak it past ``_shutdown_internal``, which has already
+                # decided what there was to stop.
+                logger.debug("delivery path start skipped: shutting down")
+                return False
+            if self._delivery_path_started:
+                # Revalidated, not trusted. Everything else in this file makes a
+                # failure visible; a latch that is never re-read would quietly
+                # become the last lie left: a thread that dies AFTER the probe
+                # that latched it is never noticed, because this fast path never
+                # reaches ``_start_message_plane`` where the liveness check
+                # lives. Manual plugin starts keep answering "path is fine" and
+                # nothing ever retires the corpse.
+                #
+                # Liveness only -- thread checks, essentially free. A full RPC
+                # probe here would put a 1s round-trip on every plugin start to
+                # catch the narrower "alive but wedged" case, which the unlatched
+                # path already probes for.
+                if self._delivery_path_threads_alive():
+                    return True
+                logger.warning(
+                    "delivery path was marked ready but its threads are gone; "
+                    "retiring and rebuilding it"
+                )
+                self._delivery_path_started = False
+                # Retire here rather than letting the reuse branch discover it,
+                # so this single entry recovers instead of spending one call to
+                # notice and another to rebuild.
+                await self._retire_message_plane()
+            # Latch only a path that actually came up. Every step below swallows
+            # its own failure so one broken component cannot abort startup -- but
+            # latching a failed attempt would make the SECOND entry point useless,
+            # and recovery is the whole reason that entry point exists: a later
+            # manual plugin start would skip the retry and the plugin would stay
+            # mute until the process restarts.
+            failed = await self._start_delivery_path_locked()
+            self._delivery_path_started = not failed
+            if failed:
+                # Worded from WHICH stage failed, because the two cases have
+                # opposite prognoses and a single sentence lies about one of
+                # them. Only the plane failing its probe is self-healing: both
+                # bridges are up either way (nothing above returns early) and
+                # their sockets reattach once the plane binds. A bridge that
+                # raised is simply not running, and nothing reattaches it until
+                # something calls in again.
+                #
+                # Both branches point at the same definitive signal instead of
+                # asserting an outcome we cannot see from here: the per-message
+                # "message NOT delivered" warnings on the plugin's push path.
+                if failed == ["message_plane"]:
+                    logger.warning(
+                        "delivery path not verified: both bridges are up and "
+                        "will attach on their own if the plane is merely slow, "
+                        "and the next entry re-probes it. If it never arrives, "
+                        "pushes are accepted and dropped -- look for "
+                        "'message NOT delivered'"
+                    )
+                else:
+                    logger.warning(
+                        "delivery path incomplete: {} did not start. Nothing "
+                        "reattaches these on their own; the next entry retries "
+                        "them. Until then pushes are accepted and dropped -- "
+                        "look for 'message NOT delivered'",
+                        ", ".join(failed),
+                    )
+            return self._delivery_path_started
+
+    async def _start_delivery_path_locked(self) -> list[str]:
+        """Names the stages that did not come up; empty means the path is usable.
+
+        A list rather than a bool because the caller words its warning from it:
+        a plane that failed its probe self-heals, a bridge that raised does not,
+        and one sentence covering both is false about whichever it is not.
+
+        Every stage below catches ``Exception`` rather than an enumerated tuple.
+        The job here is to record a stage as failed and let the caller degrade,
+        and an enumeration cannot be complete: pyzmq raises ``ZMQError``, which
+        derives from ``ZMQBaseError(Exception)`` and is NOT an ``OSError``, so a
+        bind failure escaped the tuple this used to carry -- and through the
+        manual-start entry that shares this method it surfaced as a 500 from the
+        route instead of the degraded start where the router's tools stay usable.
+        ``BaseException`` is still not caught, so cancellation propagates.
+        """
+        failed: list[str] = []
+        try:
+            if not await self._start_message_plane():
+                failed.append("message_plane")
+        except Exception as exc:
             logger.warning(
                 "message_plane start failed: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
             self._message_plane_runner = None
+            failed.append("message_plane")
+
+        if self._message_plane_runner is None:
+            # No runner means no endpoint worth binding to, so stop before the
+            # bridges. ``ProactiveBridge._run`` reads
+            # ``NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT`` once at thread start and
+            # ``start()`` reuses a live thread, so a bridge started now is pinned
+            # to the endpoint this attempt published. When the next entry's
+            # ``build_message_plane_runner`` falls back to a different port -- the
+            # old one may not be released yet -- that thread stays subscribed to a
+            # plane nobody runs, looking perfectly healthy while every proactive
+            # message goes nowhere.
+            #
+            # The condition is "is there a runner", not "did it raise". Both the
+            # exception path and a probe-failure retirement end the attempt with
+            # none, and the first version of this guard covered only the throw --
+            # so a retirement walked straight into the split it was written to
+            # prevent. A probe that merely returned False keeps its runner and so
+            # still starts the bridges: the endpoint they read is the one that
+            # plane actually holds.
+            return failed
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
@@ -289,61 +676,86 @@ class ServerLifecycleService:
         # submitted=True——正是这条路要消灭的那种静默不投递。
         try:
             refresh_ingest_endpoint()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+        except Exception as exc:
             logger.warning(
                 "failed to refresh ingest endpoint: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
+            # Counts as a failure: an un-refreshed bridge publishes to whatever
+            # endpoint was frozen at import, which is the silent non-delivery the
+            # comment above describes.
+            failed.append("ingest_endpoint")
 
         try:
             start_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+        except Exception as exc:
             logger.warning(
                 "failed to start message bridge: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
+            failed.append("message_bridge")
+        else:
+            # Returning without raising is not the same as running. The sender
+            # thread waits for the ingest port and then connects, and it simply
+            # returns if that connect fails -- nothing propagates back here.
+            # There is no race in asking now: a thread still in socket setup is
+            # alive, so a False answer means it has already left (or the bridge
+            # is switched off in configuration, which reports alive).
+            if not message_bridge_is_alive():
+                logger.warning(
+                    "message bridge is not running after start; plugin records "
+                    "would queue up undelivered until a later entry rebuilds it"
+                )
+                failed.append("message_bridge")
 
         try:
             start_proactive_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+        except Exception as exc:
             logger.warning(
                 "failed to start proactive bridge: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
+            failed.append("proactive_bridge")
 
         # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
         # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
         # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
         # 起不来也不能把整个启动挂在这儿。
+        #
+        # A timeout here is NOT a failure by itself -- the SUB may still connect
+        # after this bounded wait and the components are up, so retrying would
+        # tear down a working plane to rebuild it.
+        #
+        # But ``wait_until_subscribed`` answers False for a DEAD thread too (it
+        # returns the un-set event immediately rather than waiting), so the two
+        # cases are indistinguishable from the return value alone. A bridge whose
+        # thread exited during socket setup would otherwise leave ``failed``
+        # empty, latch the path as started, and make every proactive message
+        # undeliverable until a full shutdown -- with nothing ever retrying it.
+        # Ask whether the thread is running and separate them.
         if not await asyncio.to_thread(
             wait_for_proactive_subscriber, _PROACTIVE_SUBSCRIBER_WAIT_SECONDS
         ):
-            logger.warning(
-                "proactive subscriber not ready after {}s; autostart plugins "
-                "pushing from their startup hook may go unheard",
-                _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
-            )
+            if not proactive_bridge_is_alive():
+                logger.warning(
+                    "proactive bridge is not running after start; proactive "
+                    "messages cannot be delivered until a later entry restarts "
+                    "it (start_proactive_bridge replaces a dead thread)"
+                )
+                if "proactive_bridge" not in failed:
+                    failed.append("proactive_bridge")
+            else:
+                logger.warning(
+                    "proactive subscriber not ready after {}s; the thread is "
+                    "alive and its SUB may still attach, so autostart plugins "
+                    "pushing from their startup hook may go unheard",
+                    _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
+                )
 
-        await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
-        logger.debug("bus subscription manager started")
-
-        def _get_hosts() -> dict[str, object]:
-            return self._get_plugin_hosts_snapshot()
-
-        await status_manager.start_status_consumer(plugin_hosts_getter=_get_hosts)
-        logger.debug("status consumer started")
-
-        await metrics_collector.start(plugin_hosts_getter=_get_hosts)
-        logger.debug("metrics collector started")
-        try:
-            emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
-        except Exception as exc:
-            logger.warning("failed to emit server_startup_ready event: {}", exc)
+        return failed
 
     async def _shutdown_hosts(self) -> bool:
         hosts_snapshot = self._get_plugin_hosts_snapshot()
@@ -489,6 +901,14 @@ class ServerLifecycleService:
         return _ShutdownResult(had_errors=had_errors)
 
     async def shutdown(self) -> None:
+        # Close the gate under the same lock the starter takes, so an
+        # ``ensure_delivery_path_started`` already in flight finishes before
+        # teardown proceeds and no later one can start a plane behind it. The
+        # flag is cleared here too -- leaving it latched would make the starter a
+        # silent no-op for the rest of the process. ``startup`` reopens the gate.
+        async with _held(self._delivery_path_lock):
+            self._delivery_path_shutting_down = True
+            self._delivery_path_started = False
         try:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
@@ -510,8 +930,39 @@ class ServerLifecycleService:
             logger.debug("server shutdown completed")
 
 
-async def ensure_plugin_messaging_started() -> None:
-    """Start plugin request messaging without running full plugin lifecycle."""
+async def ensure_plugin_messaging_started() -> bool:
+    """Start plugin messaging without running the full plugin lifecycle.
+
+    Both halves, not just the router. A plugin started through this path (the
+    lazy call behind ``POST /plugin/{id}/start``) pushes messages the moment it
+    comes up, and the router does not carry those -- see
+    ``ServerLifecycleService.ensure_delivery_path_started`` for what a
+    router-only start actually looked like in production.
+
+    Returns whether the delivery half is usable, so the caller can say which
+    plugin it is about to start over a dead path instead of leaving that to be
+    reconstructed from missing log lines afterwards.
+    """
+    await _ensure_plugin_router_started()
+
+    # Idempotent, and bound to the module singleton on purpose: this entry has no
+    # instance of its own. ``ServerLifecycleService.startup`` deliberately does
+    # NOT come through here -- see ``_ensure_plugin_router_started``.
+    return await _service.ensure_delivery_path_started()
+
+
+async def _ensure_plugin_router_started() -> None:
+    """Start the request router. Process-global, so instance-independent.
+
+    Split out from ``ensure_plugin_messaging_started`` because the delivery half
+    is NOT instance-independent. ``startup()`` used to call the full function and
+    then start the path again on ``self``: identical in production, where ``self``
+    is ``_service`` and the second call latches out, but on any other instance it
+    builds TWO message planes. The first holds the configured ports, the second
+    falls back to different ones, and the caller's ``shutdown()`` owns neither --
+    the port split and orphaned runner this PR already fixed twice, reachable
+    through a door the delivery-path call opened.
+    """
     try:
         _ = state.plugin_response_map
     except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:

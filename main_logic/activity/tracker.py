@@ -65,6 +65,7 @@ from main_logic.activity.system_signals import (
     SystemSignalCollector, SystemSnapshot, get_system_signal_collector,
 )
 from utils.activity_config import get_activity_preferences
+from utils.game_route_state import is_game_route_active
 from main_logic.activity.activity_guess_gate import ActivityGuessGate
 from config import (
     ACTIVITY_GUESS_BACKOFF_BASE_SECONDS,
@@ -1003,6 +1004,12 @@ class UserActivityTracker:
         self._context_prompt_pending = None
         callback = self._on_context_prompt
         if callback is None:
+            return
+        # 内置小游戏已经接管交互时，当前 ``gaming`` 信号描述的是 N.E.K.O 自己的
+        # 游戏窗口，不是用户刚打开的外部游戏。继续推送会让首页弹出“是否开启屏幕
+        # 分享”的情境选择框；Electron 又把小游戏窗口置于前台，于是该选择框看得见
+        # 却点不到。pending 已在上面消费，避免退出小游戏后补弹一条过期提示。
+        if is_game_route_active(self.lanlan_name):
             return
         try:
             await callback(pending['context'])

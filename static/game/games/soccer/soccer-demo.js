@@ -40,9 +40,68 @@
     // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
     window._cardExportPage = true;
 
-  const initializeSoccerPage = () => {
+  const initializeSoccerPage = async () => {
+      if (!window.NekoMiniGame || typeof window.NekoMiniGame.connect !== 'function') {
+        throw new Error('neko-minigame-sdk.js must load before soccer-demo.js');
+      }
+      if (!window.NekoMiniGameAvatarHost || typeof window.NekoMiniGameAvatarHost.create !== 'function') {
+        throw new Error('neko-minigame-avatar-host.js must load before soccer-demo.js');
+      }
+      if (!window.NekoMiniGameAudioHost || typeof window.NekoMiniGameAudioHost.create !== 'function') {
+        throw new Error('neko-minigame-audio-host.js must load before soccer-demo.js');
+      }
+      if (typeof window.createSoccerAvatarHost !== 'function') {
+        throw new Error('soccer-avatar-host.js must load before soccer-demo.js');
+      }
+      if (typeof window.createSoccerNekoAdapter !== 'function') {
+        throw new Error('soccer-neko-adapter.js must load before soccer-demo.js');
+      }
+      const soccerAvatarHostProxy = {
+        mount(config) {
+          if (!window.__SoccerAvatarHost || typeof window.__SoccerAvatarHost.mount !== 'function') {
+            throw new Error('soccer avatar host is not ready');
+          }
+          return window.__SoccerAvatarHost.mount(config);
+        },
+        dispose() {
+          window.__SoccerAvatarHost?.dispose?.();
+        },
+      };
+      const soccerHost = await window.createSoccerNekoAdapter({
+        gameType: 'soccer',
+        source: 'soccer_demo',
+        avatarHost: soccerAvatarHostProxy,
+        audioHost: window.NekoMiniGameAudioHost.create({
+          storageKeys: {
+            bgm: 'neko.soccerGameAudio.bgmVolume',
+            sfx: 'neko.soccerGameAudio.sfxVolume',
+          },
+        }),
+      });
+      const soccerGame = await window.NekoMiniGame.connect({
+        id: 'soccer',
+        version: '1.0.0',
+        protocolVersion: '1',
+        requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output', 'memory', 'context-read'],
+        optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'avatar-renderer', 'storage'],
+        contracts: {
+          controls: {
+            mood: ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'],
+            difficulty: ['max', 'lv2', 'lv3', 'lv4'],
+            reason: { type: 'string', maxLength: 120 },
+          },
+        },
+      }, {
+        // Temporary trusted same-origin transport. Public game code only uses
+        // the SDK facade; a later iframe/Electron bridge can replace this
+        // transport without changing the public capability calls below.
+        transport: soccerHost,
+      });
+      await soccerHost.migrateLegacySettings(soccerGame);
+      const _runtimeSessionId = () => soccerGame.runtime.session.id;
+      const _runtimeCharacterName = () => soccerGame.runtime.session.characterName;
       window.__SoccerLoading = (() => {
-        const state = { assets: false, route: false, routeStarting: false, started: false };
+        const state = { assets: false, route: false, choosing: false, routeStarting: false, started: false };
         const textEl = () => document.getElementById('loading-text');
         const overlayEl = () => document.getElementById('loading-overlay');
         const spinnerEl = () => document.getElementById('loading-spinner');
@@ -79,8 +138,11 @@
         const setExitVisible = (visible, enabled = true) => {
           const controls = topControlsEl();
           const button = exitButtonEl();
-          if (controls) controls.hidden = !visible;
-          if (button) button.disabled = !enabled;
+          if (controls) controls.hidden = false;
+          if (button) {
+            button.hidden = !visible;
+            button.disabled = !enabled;
+          }
         };
         const _fillFallback = (fallback, params = {}) => Object.entries(params).reduce(
           (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
@@ -95,7 +157,7 @@
           return _fillFallback(fallback, params);
         };
         const syncStartScreen = (fallbackText = '') => {
-          if (state.assets && state.route && !state.routeStarting && !state.started) {
+          if (state.assets && (state.route || state.choosing) && !state.routeStarting && !state.started) {
             updateText(fallbackText || _localized('startScreen.readyToStart', '准备完成，点击开始'));
             setSpinnerVisible(false);
             setStartVisible(true, true);
@@ -129,7 +191,11 @@
           isReady() {
             return state.assets && state.route && state.started;
           },
+          canStart() {
+            return state.assets && state.choosing && !state.routeStarting && !state.started;
+          },
           beginStart(text = _localized('loading.beginStartDefault', '分析开局上下文…')) {
+            state.choosing = false;
             state.route = false;
             state.routeStarting = true;
             state.started = false;
@@ -160,7 +226,8 @@
             showOverlay();
           },
           showStart(text = _localized('startScreen.readyToStart', '准备完成，点击开始')) {
-            state.route = true;
+            state.route = false;
+            state.choosing = true;
             state.routeStarting = false;
             state.started = false;
             syncStartScreen(text);
@@ -203,13 +270,9 @@
       if (soccerCharacterInfoPromise) return soccerCharacterInfoPromise;
       soccerCharacterInfoPromise = (async () => {
         const languageRevision = soccerCharacterLanguageRevision;
-        const url = new URL('/api/game/soccer/character', window.location.origin);
         const configuredName = String(window.lanlan_config?.lanlan_name || '').trim();
         const requestedName = String(window.__SoccerResolvedLanlanName || configuredName).trim();
-        if (requestedName && requestedName !== 'soccer_demo') {
-          url.searchParams.set('lanlan_name', requestedName);
-        }
-        const response = await fetch(url.toString());
+        const response = await soccerHost.getCharacter(requestedName);
         if (!response.ok) {
           soccerCharacterInfoPromise = null;
           return {};
@@ -234,6 +297,27 @@
       return soccerCharacterInfoPromise;
     };
 
+    const SOCCER_AVATAR_LAYOUT = Object.freeze({
+      viewport: Object.freeze({ mode: 'fixed', width: 200, height: 300 }),
+      fit: Object.freeze({
+        mode: 'contain',
+        align: 'bottom-center',
+        padding: 6,
+        scaleMultiplier: 1,
+      }),
+      resize: Object.freeze({ mode: 'fixed' }),
+    });
+
+    function soccerAvatarMountConfig(slot, model) {
+      return {
+        slot,
+        model,
+        viewport: SOCCER_AVATAR_LAYOUT.viewport,
+        fit: SOCCER_AVATAR_LAYOUT.fit,
+        resize: SOCCER_AVATAR_LAYOUT.resize,
+      };
+    }
+
     (async () => {
       const statusEl = document.getElementById('status');
       const soccerLoadingText = (key, fallback) => {
@@ -252,6 +336,7 @@
       const markAiAvatar = (type, path, ready = true) => {
         window.__SoccerAiAvatar = { type, path: path || '', ready: !!ready };
       };
+      let avatarEventEmitter = null;
 
       async function fetchSoccerCharacterInfo() {
         try {
@@ -270,317 +355,12 @@
         );
       }
 
-      function syncSoccerVrmCameraTarget(manager, lookY, dist) {
-        const THREE = window.THREE;
-        const cam = manager?.camera;
-        if (!THREE || !cam || !manager) return null;
-        const cameraTarget = new THREE.Vector3(0, lookY, 0);
-        cam.position.set(0, lookY, dist);
-        cam.lookAt(cameraTarget);
-        cam.updateProjectionMatrix();
-        manager._cameraTarget = cameraTarget;
-        if (manager.controls) {
-          manager.controls.target.copy(cameraTarget);
-          manager.controls.update();
-        }
-        return cameraTarget;
-      }
-
-      function fitVrmManagerCamera(manager, containerId, label = 'VRM') {
-        const THREE = window.THREE;
-        const vrm = manager?.currentModel?.vrm;
-        if (!THREE || !manager?.camera || !vrm?.scene) return;
-
-        vrm.scene.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(vrm.scene);
-        const mid = new THREE.Vector3();
-        box.getCenter(mid);
-        vrm.scene.position.x -= mid.x;
-        vrm.scene.position.z -= mid.z;
-        vrm.scene.position.y -= box.min.y;
-        vrm.scene.updateMatrixWorld(true);
-
-        const box2 = new THREE.Box3().setFromObject(vrm.scene);
-        const h = box2.max.y - box2.min.y;
-        const w = Math.max(box2.max.x - box2.min.x, box2.max.z - box2.min.z);
-        const cam = manager.camera;
-        const fovRad = cam.fov * Math.PI / 180;
-        const container = document.getElementById(containerId);
-        const aspect = container?.clientWidth && container?.clientHeight
-          ? container.clientWidth / container.clientHeight
-          : 200 / 300;
-        cam.aspect = aspect;
-        const visibleH = h * 1.15;
-        const dist = visibleH / (2 * Math.tan(fovRad / 2));
-        const lookY = visibleH / 2;
-        syncSoccerVrmCameraTarget(manager, lookY, dist);
-        console.log(`[soccer_demo] fit ${label}: h=`, h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
-      }
-
-      function isSoccerVrm0(gltf, vrm) {
-        const exts = gltf?.parser?.json?.extensionsUsed || [];
-        if (exts.includes('VRMC_vrm')) return false;
-        if (exts.includes('VRM')) return true;
-        const metaVersion = vrm?.meta?.metaVersion || vrm?.meta?.vrmVersion;
-        return typeof metaVersion === 'string' && metaVersion.startsWith('0');
-      }
-
-      function getSoccerVrmBoneNode(vrm, boneName) {
-        const humanoid = vrm?.humanoid;
-        if (!humanoid) return null;
-        try {
-          if (typeof humanoid.getRawBoneNode === 'function') {
-            const raw = humanoid.getRawBoneNode(boneName);
-            if (raw) return raw;
-          }
-          if (typeof humanoid.getNormalizedBoneNode === 'function') {
-            const normalized = humanoid.getNormalizedBoneNode(boneName);
-            if (normalized) return normalized;
-          }
-        } catch (_) {}
-        return humanoid.humanBones?.[boneName]?.node || null;
-      }
-
-      function countSoccerVrmReversedBonePairs(vrm) {
-        const THREE = window.THREE;
-        if (!THREE || !vrm?.scene) return { reversed: 0, checked: 0 };
-        const pairs = [
-          ['leftEye', 'rightEye'],
-          ['leftUpperArm', 'rightUpperArm'],
-          ['leftLowerArm', 'rightLowerArm'],
-          ['leftHand', 'rightHand'],
-        ];
-        const leftPos = new THREE.Vector3();
-        const rightPos = new THREE.Vector3();
-        let reversed = 0;
-        let checked = 0;
-        vrm.scene.updateMatrixWorld(true);
-        for (const [leftName, rightName] of pairs) {
-          const left = getSoccerVrmBoneNode(vrm, leftName);
-          const right = getSoccerVrmBoneNode(vrm, rightName);
-          if (!left || !right) continue;
-          left.getWorldPosition(leftPos);
-          right.getWorldPosition(rightPos);
-          if (!Number.isFinite(leftPos.x) || !Number.isFinite(rightPos.x)) continue;
-          if (Math.abs(leftPos.x - rightPos.x) < 0.001) continue;
-          checked += 1;
-          if (leftPos.x < rightPos.x) reversed += 1;
-        }
-        return { reversed, checked };
-      }
-
-      function sampleSoccerVrmHeadFaceZ(vrm) {
-        const THREE = window.THREE;
-        if (!THREE || !vrm?.scene) return null;
-        const namePattern = /(head|face|eye|eyeline|eyelash|hitomi|sirome|头|脸|眼|眉|睫|瞳)/i;
-        const point = new THREE.Vector3();
-        let positive = 0;
-        let negative = 0;
-        vrm.scene.updateMatrixWorld(true);
-        vrm.scene.traverse(object => {
-          if (!object?.isMesh || !object.geometry?.attributes?.position) return;
-          const materialNames = Array.isArray(object.material)
-            ? object.material.map(m => m?.name || '').join(' ')
-            : (object.material?.name || '');
-          const label = `${object.name || ''} ${materialNames}`;
-          if (!namePattern.test(label)) return;
-          const pos = object.geometry.attributes.position;
-          const step = Math.max(1, Math.floor(pos.count / 1200));
-          for (let i = 0; i < pos.count; i += step) {
-            point.fromBufferAttribute(pos, i);
-            object.localToWorld(point);
-            if (point.z > 0.001) positive += 1;
-            else if (point.z < -0.001) negative += 1;
-          }
-        });
-        return positive + negative > 0 ? { positive, negative } : null;
-      }
-
-      function shouldNormalizeSoccerVrm0FixedCameraYaw(gltf, vrm) {
-        if (!isSoccerVrm0(gltf, vrm)) return false;
-        const bonePairs = countSoccerVrmReversedBonePairs(vrm);
-        if (bonePairs.reversed >= 2) return true;
-        const headFaceZ = sampleSoccerVrmHeadFaceZ(vrm);
-        return bonePairs.reversed === 1 &&
-          !!headFaceZ &&
-          headFaceZ.negative > headFaceZ.positive * 1.25;
-      }
-
-      function applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager) {
-        const shouldNormalizeYaw = shouldNormalizeSoccerVrm0FixedCameraYaw(gltf, vrm);
-        if (manager) manager.__soccerFixedCameraNormalizeYaw = shouldNormalizeYaw;
-        if (shouldNormalizeYaw && vrm?.scene?.rotation) {
-          vrm.scene.rotation.y = Math.PI;
-          vrm.scene.updateMatrixWorld?.(true);
-        }
-        return shouldNormalizeYaw;
-      }
-
-      window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager(manager, path, {
-        canvasId,
-        containerId,
-        label = 'VRM',
-        playIdle = true,
-      } = {}) {
-        if (!manager) throw new Error(`${label}: VRM manager missing`);
-        if (!path) throw new Error(`${label}: VRM path required`);
-        if (!canvasId || !containerId) throw new Error(`${label}: canvas/container required`);
-        if (!manager.scene || !manager.camera || !manager.renderer) {
-          await manager.core.init(canvasId, containerId, null, { embed: true });
-        }
-        const [{ GLTFLoader }, vrmModule] = await Promise.all([
-          import('three/addons/loaders/GLTFLoader.js'),
-          import('@pixiv/three-vrm'),
-        ]);
-        const loader = new GLTFLoader();
-        loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-        const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
-        const vrm = gltf.userData.vrm;
-        if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
-        applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager);
-
-        if (manager.currentModel?.vrm?.scene) {
-          const oldScene = manager.currentModel.vrm.scene;
-          manager.scene.remove(oldScene);
-          try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
-          catch (e) { console.warn(`[${label}] deepDispose failed:`, e); }
-        }
-
-        manager.scene.add(vrm.scene);
-        manager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
-        vrm.scene.visible = true;
-        fitVrmManagerCamera(manager, containerId, label);
-
-        if (manager.renderer?.domElement) {
-          manager.renderer.domElement.style.opacity = '1';
-          manager.renderer.domElement.style.display = 'block';
-        }
-        if (typeof manager.startAnimateLoop === 'function' && !manager._animationFrameId) {
-          manager.startAnimateLoop();
-        }
-        if (typeof manager._initMouseLookAtTracking === 'function') {
-          manager._initMouseLookAtTracking();
-        }
-        if (manager.interaction?.enableMouseTracking) {
-          manager.interaction.enableMouseTracking(true);
-        }
-        if (manager._cursorFollow?.setEnabled) {
-          manager._cursorFollow.setEnabled(true);
-        }
-        const modelName = path.split('/').pop()?.replace(/\.vrm$/i, '') || '';
-        try { await manager.expression?.loadMoodMap?.(modelName); }
-        catch (e) { console.warn(`[${label}] mood map load failed:`, e); }
-
-        if (playIdle) {
-          try {
-            await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
-              loop: true, immediate: true, isIdle: true,
-            });
-          } catch (animErr) {
-            console.warn(`[${label}] idle animation failed (will keep T-pose):`, animErr);
-          }
-        }
-        return manager.currentModel;
-      };
-
-      window.__SoccerSetAiVrmFocus = function setAiVrmFocus(tx, ty) {
-        const follow = window.aiVrmManager?._cursorFollow;
-        if (!follow) return;
-        follow._rawMouseX = tx;
-        follow._rawMouseY = ty;
-        follow._hasPointerInput = true;
-        follow._lastPointerMoveAt = performance.now();
-        if (follow.setEnabled && !follow.isEnabled?.()) {
-          follow.setEnabled(true);
-        }
-      };
-
-      function pauseAiAvatarRenderer(type) {
-        try {
-          if (type === 'live2d') {
-            window.live2dManager?.pauseRendering?.();
-          } else if (type === 'vrm') {
-            window.aiVrmManager?.pauseRendering?.();
-          }
-        } catch (e) {
-          console.warn(`[soccer_demo] pause AI ${type} renderer failed:`, e);
-        }
-      }
-
-      function resumeAiAvatarRenderer(type) {
-        try {
-          if (type === 'live2d') {
-            window.live2dManager?.resumeRendering?.();
-          } else if (type === 'vrm') {
-            window.aiVrmManager?.resumeRendering?.();
-          }
-        } catch (e) {
-          console.warn(`[soccer_demo] resume AI ${type} renderer failed:`, e);
-        }
-      }
-
-      async function ensureAiLive2dReady() {
-        if (!window.live2dManager) throw new Error('live2dManager missing');
-        await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
-          width: 200,
-          height: 300,
-        });
-        const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
-        for (const name of uiStubs) {
-          if (typeof window.live2dManager[name] !== 'function') {
-            window.live2dManager[name] = () => {};
-          }
-        }
-      }
-
-      function fitAiLive2dModel() {
-        const l2dModel = window.live2dManager?.currentModel;
-        if (!l2dModel?.width || !l2dModel?.height) return;
-        const canvasW = 200, canvasH = 300, margin = 6;
-        const s = Math.min(
-          (canvasW - margin * 2) / l2dModel.width,
-          (canvasH - margin * 2) / l2dModel.height
-        );
-        l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
-        // L2D model 有 anchor，model.x/y 是 anchor 点位置，不是左上角。
-        const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
-        const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
-        const boundsX = (canvasW - l2dModel.width) / 2;
-        const boundsY = canvasH - margin - l2dModel.height;
-        l2dModel.x = boundsX + l2dModel.width * ax;
-        l2dModel.y = boundsY + l2dModel.height * ay;
-        // 背景 tab/headless 下 loadModel 内部 fade-in 可能卡在透明态。
-        l2dModel.alpha = 1;
-        if (window.live2dManager.pixi_app?.view) {
-          window.live2dManager.pixi_app.view.style.opacity = '1';
-        }
-        console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
-      }
-
-      window.__SoccerSetAiLive2dFocus = function setAiLive2dFocus(tx, ty) {
-        const mm = window.live2dManager?.currentModel;
-        const fc = mm?.internalModel?.focusController;
-        const aiCanvas = document.getElementById('ai-l2d-canvas');
-        if (!fc || !aiCanvas) return;
-        const rect = aiCanvas.getBoundingClientRect();
-        if (rect.width < 10) return;
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const reach = 400;
-        const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
-        const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach));
-        fc.focus(nx, ny);
-      };
-
-      window.__SoccerSetAiEmotion = function setAiEmotion(emotion) {
-        try {
-          if (window.__SoccerAiAvatar?.type === 'vrm') {
-            window.aiVrmManager?.expression?.setMood?.(emotion);
-            return;
-          }
-          window.live2dManager?.setEmotion?.(emotion);
-        } catch (_) {}
-      };
+      window.__SoccerAvatarHost = window.createSoccerAvatarHost({
+        onAvatarChanged(slot, model) {
+          if (slot === 'ai') markAiAvatar(model.type, model.path, true);
+          avatarEventEmitter?.(`${slot}-avatar-changed`, model);
+        },
+      });
 
       // 等 vrm 模块链加载完
       await new Promise(resolve => {
@@ -596,17 +376,14 @@
       try {
         console.log('[soccer_demo] modules ready, starting VRM init');
         setStatus('initializing VRM renderer…');
-        if (typeof VRMManager === 'undefined') {
-          throw new Error('VRMManager class not found');
-        }
-        window.vrmManager = new VRMManager();
+        soccerGame.capabilities.require('avatar-renderer');
         setStatus('loading sensei.vrm…');
-        await window.__SoccerLoadVrmIntoManager(window.vrmManager, '/static/vrm/sensei.vrm', {
-          canvasId: 'player-vrm-canvas',
-          containerId: 'player-vrm-container',
-          label: 'Player',
-          playIdle: true,
-        });
+        window.__SoccerPlayerAvatarController = await soccerGame.avatar.mount(
+          soccerAvatarMountConfig('player', {
+            type: 'vrm',
+            path: '/static/vrm/sensei.vrm',
+          }),
+        );
         setStatus('VRM ready');
 
         // --- 接当前猫娘头像作为 AI：当前支持 Live2D / VRM；MMD 继续回退到 Live2D ---
@@ -618,16 +395,9 @@
             try {
               const aiVrmPath = charData.vrm_path;
               setStatus('loading AI VRM…');
-              if (typeof VRMManager === 'undefined') throw new Error('VRMManager class not found');
-              window.aiVrmManager = window.aiVrmManager || new VRMManager();
-              pauseAiAvatarRenderer('live2d');
-              await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, aiVrmPath, {
-                canvasId: 'ai-l2d-canvas',
-                containerId: 'ai-l2d-container',
-                label: 'AI VRM',
-              });
-              window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
-              markAiAvatar('vrm', aiVrmPath, true);
+              window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
+                soccerAvatarMountConfig('ai', { type: 'vrm', path: aiVrmPath }),
+              );
               loadedAiAvatar = true;
               console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.lanlan_name, aiVrmPath);
             } catch (vrmErr) {
@@ -638,31 +408,14 @@
 
           if (!loadedAiAvatar) {
             setStatus('loading AI Live2D…');
-            pauseAiAvatarRenderer('vrm');
-            await ensureAiLive2dReady();
-            // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
-            // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
-            // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
-            let aiL2dPath = charData.live2d_path || '/static/mao_pro/mao_pro.model3.json';
+            // 后端返回与主页面相同的规范 Live2D 路径；接口异常时才使用同一默认回退。
+            const aiL2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';
             if (charData.live2d_path) {
               console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
             }
-            const loadPromise = window.live2dManager.loadModel(aiL2dPath);
-            loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
-            await new Promise((resolve, reject) => {
-              const t0 = Date.now();
-              const tick = () => {
-                if (window.live2dManager?.currentModel?.width > 0) return resolve();
-                if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
-                setTimeout(tick, 200);
-              };
-              tick();
-            });
-            console.log('[soccer_demo] L2D currentModel ready');
-
-            fitAiLive2dModel();
-            window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
-            markAiAvatar('live2d', aiL2dPath, true);
+            window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
+              soccerAvatarMountConfig('ai', { type: 'live2d', path: aiL2dPath }),
+            );
           }
 
           setStatus('all ready');
@@ -784,12 +537,14 @@
      *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, startle, ballGhost }
      *
      *  ── 键盘（debug 快捷键）
-     *     1-6   切换心情（同 setMood）
+     *     1-6   仅 ?test=true：切换心情（同 setMood）
+     *     U/I/O/P 仅 ?test=true：切换难度 max/lv2/lv3/lv4
+     *     [     仅 ?test=true：切换单人模式
      *     R     复位球权和双方位置
      *
      *  ═══════════════════════════════════════════════════════════════════════════
      */
-    (() => {
+    await (async () => {
       const _formatI18nFallback = (fallback, params = {}) => Object.entries(params || {}).reduce(
         (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
         fallback,
@@ -811,6 +566,14 @@
         'soccer.debugControls.voiceButton': '调试语音',
         'soccer.debugControls.send': '发送',
         'soccer.debugControls.voiceStatusHidden': '调试 STT：隐藏',
+        'soccer.debugControls.voiceVolumeHint': '点击可静音或恢复。无法调整正在播放的语音音量。',
+        'soccer.settings.button': '设置',
+        'soccer.settings.title': '游戏设置',
+        'soccer.settings.game': '游戏',
+        'soccer.settings.audio': '音量',
+        'soccer.settings.debug': '调试',
+        'soccer.voiceChat.label': '语音对话',
+        'soccer.voiceChat.connecting': '正在连接主语音入口…',
         'soccer.surrenderReminder.label': '认输提醒',
         'soccer.exitPrompt.continuePlay': '继续玩',
         'soccer.exitPrompt.endGame': '结束游戏',
@@ -854,6 +617,20 @@
           if (!fallback) return;
           const current = String(el.getAttribute('placeholder') || '').trim();
           if (!current || current === key) el.setAttribute('placeholder', fallback);
+        });
+        document.querySelectorAll('[data-i18n-title^="soccer."]').forEach((el) => {
+          const key = el.getAttribute('data-i18n-title');
+          const fallback = SOCCER_DOM_I18N_FALLBACKS[key];
+          if (!fallback) return;
+          const current = String(el.getAttribute('title') || '').trim();
+          if (!current || current === key) el.setAttribute('title', fallback);
+        });
+        document.querySelectorAll('[data-i18n-aria^="soccer."]').forEach((el) => {
+          const key = el.getAttribute('data-i18n-aria');
+          const fallback = SOCCER_DOM_I18N_FALLBACKS[key];
+          if (!fallback) return;
+          const current = String(el.getAttribute('aria-label') || '').trim();
+          if (!current || current === key) el.setAttribute('aria-label', fallback);
         });
       }
       window.addEventListener('localechange', () => setTimeout(applySoccerI18nFallbacks, 0));
@@ -1059,6 +836,10 @@
       });
       const voiceOutputToggle = document.getElementById('voice-output-toggle');
       const gameMemoryToggle = document.getElementById('game-memory-toggle');
+      const gameVoiceChatControl = document.getElementById('game-voice-chat-control');
+      const gameVoiceChatButton = document.getElementById('game-voice-chat-button');
+      const gameVoiceChatIcon = document.getElementById('game-voice-chat-icon');
+      const gameVoiceChatStatus = document.getElementById('game-voice-chat-status');
       const voiceControls = document.getElementById('voice-controls');
       const voiceMicButton = document.getElementById('voice-mic-button');
       const voiceTextInput = document.getElementById('voice-text-input');
@@ -1068,6 +849,11 @@
       const moodDebugReadout = document.getElementById('mood-debug-readout');
       const startButton = document.getElementById('soccer-start-button');
       const gameTopControls = document.getElementById('game-top-controls');
+      const topVoiceControlSlot = document.getElementById('top-voice-control-slot');
+      const settingsButton = document.getElementById('soccer-settings-button');
+      const settingsPanel = document.getElementById('controls');
+      const settingsVoiceControlSlot = document.getElementById('settings-voice-control-slot');
+      const settingsDebugGroup = document.getElementById('settings-debug-group');
       const surrenderReminderToggle = document.getElementById('surrender-reminder-toggle');
       const exitToStartButton = document.getElementById('exit-to-start-button');
       const exitPromptOverlay = document.getElementById('exit-prompt-overlay');
@@ -1079,9 +865,212 @@
       const exitPromptNeverAgain = document.getElementById('exit-prompt-never-again');
       const bgmVolumeInput = document.getElementById('game-bgm-volume');
       const bgmVolumeValue = document.getElementById('game-bgm-volume-value');
+      const bgmMuteButton = document.getElementById('game-bgm-mute');
       const sfxVolumeInput = document.getElementById('game-sfx-volume');
       const sfxVolumeValue = document.getElementById('game-sfx-volume-value');
-      const soccerGameAudio = (() => {
+      const sfxMuteButton = document.getElementById('game-sfx-mute');
+      const voiceVolumeInput = document.getElementById('game-voice-volume');
+      const voiceVolumeValue = document.getElementById('game-voice-volume-value');
+      const voiceMuteButton = document.getElementById('game-voice-mute');
+      const SOCCER_VOICE_MIX_STORAGE_KEY = 'settings/voice-mix-percent';
+      const DEFAULT_SOCCER_VOICE_MIX_PERCENT = 50;
+      const settingsUiAbortController = new AbortController();
+
+      function syncGameVoiceControlPlacement(settingsOpen) {
+        if (!gameVoiceChatControl || !topVoiceControlSlot || !settingsVoiceControlSlot) return;
+        const targetSlot = settingsOpen ? settingsVoiceControlSlot : topVoiceControlSlot;
+        if (gameVoiceChatControl.parentElement !== targetSlot) targetSlot.appendChild(gameVoiceChatControl);
+        topVoiceControlSlot.hidden = settingsOpen;
+      }
+
+      function setSettingsPanelOpen(open, { restoreFocus = false } = {}) {
+        if (!settingsButton || !settingsPanel) return false;
+        const next = open === true;
+        settingsPanel.hidden = !next;
+        settingsButton.setAttribute('aria-expanded', next ? 'true' : 'false');
+        syncGameVoiceControlPlacement(next);
+        if (next) deactivatePlayerPointerControl();
+        if (!next && restoreFocus) settingsButton.focus({ preventScroll: true });
+        return next;
+      }
+
+      syncGameVoiceControlPlacement(settingsButton?.getAttribute('aria-expanded') === 'true');
+
+      settingsButton?.addEventListener('click', () => {
+        setSettingsPanelOpen(settingsButton.getAttribute('aria-expanded') !== 'true');
+      }, { signal: settingsUiAbortController.signal });
+      document.addEventListener('pointerdown', (e) => {
+        if (settingsPanel?.hidden) return;
+        if (settingsPanel.contains(e.target) || settingsButton?.contains(e.target)) return;
+        setSettingsPanelOpen(false);
+      }, { signal: settingsUiAbortController.signal });
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') setSettingsPanelOpen(false, { restoreFocus: true });
+      }, { signal: settingsUiAbortController.signal });
+
+      let gameVoiceChatCommandPending = false;
+      let gameVoiceChatState = {
+        available: false,
+        active: false,
+        starting: false,
+        muted: false,
+        capture_owner: 'host',
+        transcription_mode: 'unavailable',
+        provider: '',
+        ready: false,
+        transcription_reason: 'voice_inactive',
+        reason: 'connecting',
+      };
+
+      function _gameVoiceChatStatusText(state = gameVoiceChatState) {
+        if (gameVoiceChatCommandPending) {
+          return state.active
+            ? _i18n('voiceChat.stopping', '正在关闭语音对话…')
+            : _i18n('voiceChat.starting', '正在开启语音对话…');
+        }
+        if (!state.available) {
+          if (state.reason === 'connecting') {
+            return _i18n('voiceChat.connecting', '正在连接主语音入口…');
+          }
+          if (state.reason === 'command_failed' || state.reason === 'start_failed' || state.reason === 'stop_failed') {
+            return _i18n('voiceChat.failed', '语音对话控制失败，请在主页面重试');
+          }
+          return _i18n('voiceChat.unavailable', '主语音入口暂不可用');
+        }
+        if (state.starting) return _i18n('voiceChat.starting', '正在开启语音对话…');
+        if (state.active && state.transcription_mode === 'unavailable') {
+          return _i18n('voiceChat.failed', '语音对话控制失败，请在主页面重试');
+        }
+        if (state.active && state.ready !== true) {
+          return _i18n('voiceChat.connecting', '正在连接主语音入口…');
+        }
+        if (state.active && state.muted) return _i18n('voiceChat.muted', '语音对话已开启 · 麦克风静音');
+        if (state.active) return _i18n('voiceChat.active', '语音对话已开启');
+        return _i18n('voiceChat.idle', '点击开启语音对话');
+      }
+
+      function _renderGameVoiceChatControl(nextState = {}) {
+        gameVoiceChatState = { ...gameVoiceChatState, ...nextState };
+        const active = gameVoiceChatState.active === true;
+        const busy = gameVoiceChatCommandPending || gameVoiceChatState.starting === true || gameVoiceChatState.busy === true;
+        const available = gameVoiceChatState.available === true;
+        const statusText = _gameVoiceChatStatusText(gameVoiceChatState);
+        if (gameVoiceChatButton) {
+          gameVoiceChatButton.disabled = !available || busy;
+          gameVoiceChatButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+          const routeUnavailable = active && gameVoiceChatState.transcription_mode === 'unavailable';
+          gameVoiceChatButton.dataset.error = (
+            routeUnavailable
+            || (!available && /failed$/.test(String(gameVoiceChatState.reason || '')))
+          ) ? 'true' : 'false';
+          const actionLabel = active
+            ? _i18n('voiceChat.stop', '关闭语音对话')
+            : _i18n('voiceChat.start', '开启语音对话');
+          gameVoiceChatButton.setAttribute('aria-label', actionLabel);
+          gameVoiceChatButton.title = actionLabel;
+        }
+        if (gameVoiceChatIcon && gameVoiceChatButton) {
+          gameVoiceChatIcon.src = active
+            ? gameVoiceChatButton.dataset.iconOn
+            : gameVoiceChatButton.dataset.iconOff;
+        }
+        if (gameVoiceChatStatus) gameVoiceChatStatus.textContent = statusText;
+      }
+
+      function _initGameVoiceChatControl() {
+        if (!soccerGame.capabilities.has('voice-input')) {
+          _renderGameVoiceChatControl({ available: false, reason: 'capability_unavailable' });
+          return;
+        }
+        soccerGame.voice.onState((state) => {
+          _renderGameVoiceChatControl(state);
+        });
+        soccerGame.voice.onTranscript((transcript) => {
+          showPlayerTranscriptBubble(transcript);
+        });
+        soccerGame.voice.onError(({ error, source }) => {
+          console.warn(`[SoccerVoiceControl] bridge error | source=${source}:`, error);
+          _renderGameVoiceChatControl({ available: false, reason: 'command_failed' });
+        });
+        _renderGameVoiceChatControl();
+      }
+
+      const _refreshGameVoiceChatLocale = () => setTimeout(() => _renderGameVoiceChatControl(), 0);
+      window.addEventListener('localechange', _refreshGameVoiceChatLocale);
+
+      gameVoiceChatButton?.addEventListener('click', async () => {
+        if (gameVoiceChatButton.disabled || gameVoiceChatCommandPending) return;
+        gameVoiceChatCommandPending = true;
+        _renderGameVoiceChatControl();
+        try {
+          const state = await soccerGame.voice.toggle();
+          _renderGameVoiceChatControl(state);
+          soccerSessionDebugLog('info', 'voice', 'game_voice_control_toggle', '小游戏语音对话开关完成', {
+            active: state.active === true,
+            muted: state.muted === true,
+            reason: state.reason || '',
+            capture_owner: state.capture_owner || '',
+            transcription_mode: state.transcription_mode || '',
+            provider: state.provider || '',
+            ready: state.ready === true,
+            transcription_reason: state.transcription_reason || '',
+          });
+        } catch (error) {
+          console.warn('[SoccerVoiceControl] toggle failed:', error);
+          _renderGameVoiceChatControl({ available: false, reason: 'command_failed' });
+        } finally {
+          gameVoiceChatCommandPending = false;
+          _renderGameVoiceChatControl();
+        }
+      });
+      _initGameVoiceChatControl();
+
+      function _normalizeSoccerVoiceMixPercent(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return DEFAULT_SOCCER_VOICE_MIX_PERCENT;
+        return Math.round(Math.max(0, Math.min(100, numeric)));
+      }
+
+      async function _readSoccerVoiceMixPercent() {
+        if (!soccerGame.capabilities.has('storage')) return DEFAULT_SOCCER_VOICE_MIX_PERCENT;
+        try {
+          const response = await soccerGame.storage.get(SOCCER_VOICE_MIX_STORAGE_KEY);
+          const stored = response.data || {};
+          return !response.ok || stored.found !== true
+            ? DEFAULT_SOCCER_VOICE_MIX_PERCENT
+            : _normalizeSoccerVoiceMixPercent(stored.value);
+        } catch (_) {
+          return DEFAULT_SOCCER_VOICE_MIX_PERCENT;
+        }
+      }
+
+      let soccerVoiceMixPercent = await _readSoccerVoiceMixPercent();
+      let lastNonZeroBgmVolume = 0.45;
+      let lastNonZeroSfxVolume = 0.75;
+      let lastNonZeroVoiceMixPercent = soccerVoiceMixPercent > 0
+        ? soccerVoiceMixPercent
+        : DEFAULT_SOCCER_VOICE_MIX_PERCENT;
+
+      function _setSoccerVoiceMixPercent(value, { persist = true } = {}) {
+        soccerVoiceMixPercent = _normalizeSoccerVoiceMixPercent(value);
+        if (soccerVoiceMixPercent > 0) lastNonZeroVoiceMixPercent = soccerVoiceMixPercent;
+        if (persist && soccerGame.capabilities.has('storage')) {
+          void soccerGame.storage.set(SOCCER_VOICE_MIX_STORAGE_KEY, soccerVoiceMixPercent).catch((error) => {
+            soccerRecoverableLog('[SoccerSettings] 语音混音设置保存失败:', error);
+          });
+        }
+        if (voiceVolumeInput) voiceVolumeInput.value = String(soccerVoiceMixPercent);
+        if (voiceVolumeValue) voiceVolumeValue.textContent = `${soccerVoiceMixPercent}%`;
+        return soccerVoiceMixPercent;
+      }
+
+      function _soccerVoicePlaybackGain() {
+        // 足球滑杆的 50% 是项目语音标准响度；100% 允许提升到 2x（约 +6 dB）。
+        // 主页面仍会在此基础上应用 N.E.K.O 全局扬声器音量。
+        return soccerVoiceMixPercent / DEFAULT_SOCCER_VOICE_MIX_PERCENT;
+      }
+
+      const soccerGameAudio = await (async () => {
         const gameSystem = window.NekoGameSystem || {};
         const audioConfig = gameSystem.soccer?.audioConfig || {};
         const config = {
@@ -1097,30 +1086,28 @@
           sfx: {},
           ...audioConfig,
         };
-        const audio = typeof gameSystem.GameAudioSystem === 'function'
-          ? new gameSystem.GameAudioSystem({
-              config: {
-                audioMix: config.audioMix,
-                bgm: config.bgm,
-                loopedBgm: config.loopedBgm,
-                sfx: config.sfx,
-              },
-              bgmStorageKey: 'neko.soccerGameAudio.bgmVolume',
-              sfxStorageKey: 'neko.soccerGameAudio.sfxVolume',
-              fadeMs: 900,
-              onBgmError: (event, context) => {
-                console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', describeAudioFailure(event, context));
-              },
-              onSfxError: (event, context) => {
-                console.warn('[SoccerAudio] SFX 播放失败:', describeAudioFailure(event, context));
-              },
-            })
-          : null;
+        const audio = await soccerGame.audio.mount({
+          slot: 'main',
+          resources: {
+            audioMix: config.audioMix,
+            bgm: config.bgm,
+            loopedBgm: config.loopedBgm,
+            sfx: config.sfx,
+          },
+          settings: {
+            fadeMs: 900,
+            maxConcurrent: 12,
+            maxPreloadEntries: 128,
+            maxPlaylistHistory: 64,
+            maxEndWaiters: 32,
+          },
+        });
         let currentKey = '';
         let preloadRunId = 0;
         let selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
 
         function describeAudioFailure(event, context) {
+          if (event?.channel) return { ...event };
           const audio = context?.audio || null;
           const mediaError = audio?.error || null;
           return {
@@ -1131,6 +1118,12 @@
             readyState: audio?.readyState,
           };
         }
+        const unsubscribeAudioError = audio.onError((details) => {
+          const message = details.channel === 'sfx'
+            ? '[SoccerAudio] SFX 播放失败:'
+            : '[SoccerAudio] BGM 播放失败，已尝试跳过:';
+          console.warn(message, describeAudioFailure(details));
+        });
 
         function isLoopedBgmConfig(value) {
           return value &&
@@ -1387,7 +1380,8 @@
 
         function destroy() {
           currentKey = '';
-          audio?.destroy();
+          unsubscribeAudioError();
+          audio?.dispose();
         }
 
         return {
@@ -1432,31 +1426,78 @@
         return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
       }
 
+      function _syncChannelMuteButton(button, muted) {
+        if (!button) return;
+        button.setAttribute('aria-pressed', String(!!muted));
+      }
+
       function _syncGameAudioVolumeControls() {
         const bgm = soccerGameAudio.getBgmVolume();
         const sfx = soccerGameAudio.getSfxVolume();
+        if (bgm > 0) lastNonZeroBgmVolume = bgm;
+        if (sfx > 0) lastNonZeroSfxVolume = sfx;
+        if (soccerVoiceMixPercent > 0) lastNonZeroVoiceMixPercent = soccerVoiceMixPercent;
         if (bgmVolumeInput) {
           bgmVolumeInput.disabled = !soccerGameAudio.audio;
           bgmVolumeInput.value = String(Math.round(bgm * 100));
         }
         if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(bgm);
+        _syncChannelMuteButton(bgmMuteButton, bgm <= 0);
         if (sfxVolumeInput) {
           sfxVolumeInput.disabled = !soccerGameAudio.audio;
           sfxVolumeInput.value = String(Math.round(sfx * 100));
         }
         if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(sfx);
+        _syncChannelMuteButton(sfxMuteButton, sfx <= 0);
+        if (voiceVolumeInput) voiceVolumeInput.value = String(soccerVoiceMixPercent);
+        if (voiceVolumeValue) voiceVolumeValue.textContent = `${soccerVoiceMixPercent}%`;
+        _syncChannelMuteButton(voiceMuteButton, soccerVoiceMixPercent <= 0);
       }
 
       bgmVolumeInput?.addEventListener('input', () => {
         const volume = soccerGameAudio.setBgmVolume(Number(bgmVolumeInput.value) / 100);
+        if (volume > 0) lastNonZeroBgmVolume = volume;
         if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(volume);
+        _syncChannelMuteButton(bgmMuteButton, volume <= 0);
       });
       sfxVolumeInput?.addEventListener('input', () => {
         const volume = soccerGameAudio.setSfxVolume(Number(sfxVolumeInput.value) / 100);
+        if (volume > 0) lastNonZeroSfxVolume = volume;
         if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(volume);
+        _syncChannelMuteButton(sfxMuteButton, volume <= 0);
+      });
+      voiceVolumeInput?.addEventListener('input', () => {
+        const percent = _setSoccerVoiceMixPercent(voiceVolumeInput.value, { persist: false });
+        _syncChannelMuteButton(voiceMuteButton, percent <= 0);
+      });
+      voiceVolumeInput?.addEventListener('change', () => {
+        _setSoccerVoiceMixPercent(voiceVolumeInput.value, { persist: true });
+      });
+      bgmMuteButton?.addEventListener('click', () => {
+        const current = soccerGameAudio.getBgmVolume();
+        if (current > 0) lastNonZeroBgmVolume = current;
+        const volume = soccerGameAudio.setBgmVolume(current > 0 ? 0 : lastNonZeroBgmVolume);
+        if (bgmVolumeInput) bgmVolumeInput.value = String(Math.round(volume * 100));
+        if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(volume);
+        _syncChannelMuteButton(bgmMuteButton, volume <= 0);
+      });
+      sfxMuteButton?.addEventListener('click', () => {
+        const current = soccerGameAudio.getSfxVolume();
+        if (current > 0) lastNonZeroSfxVolume = current;
+        const volume = soccerGameAudio.setSfxVolume(current > 0 ? 0 : lastNonZeroSfxVolume);
+        if (sfxVolumeInput) sfxVolumeInput.value = String(Math.round(volume * 100));
+        if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(volume);
+        _syncChannelMuteButton(sfxMuteButton, volume <= 0);
+      });
+      voiceMuteButton?.addEventListener('click', () => {
+        const current = soccerVoiceMixPercent;
+        if (current > 0) lastNonZeroVoiceMixPercent = current;
+        const percent = _setSoccerVoiceMixPercent(current > 0 ? 0 : lastNonZeroVoiceMixPercent);
+        _syncChannelMuteButton(voiceMuteButton, percent <= 0);
       });
       _syncGameAudioVolumeControls();
 
+      const soccerTestEnabled = new URLSearchParams(window.location.search).get('test') === 'true';
       const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
         window.localStorage?.getItem('soccerDebugStt') === '1';
       if (debugSttVisible && voiceControls) {
@@ -1464,7 +1505,8 @@
         voiceControls.setAttribute('aria-hidden', 'false');
         console.log('[SoccerVoice][DebugSTT] 调试控件已显示 | 来源=debug_stt/localStorage');
       }
-      const debugMoodVisible = new URLSearchParams(window.location.search).get('debug_mood') === '1' ||
+      const debugMoodVisible = soccerTestEnabled ||
+        new URLSearchParams(window.location.search).get('debug_mood') === '1' ||
         window.localStorage?.getItem('soccerDebugMood') === '1';
       function readMoodDebugCollapsed() {
         try { return window.localStorage?.getItem('soccerDebugMoodCollapsed') === '1'; }
@@ -1473,6 +1515,7 @@
       const debugMoodCollapsed = readMoodDebugCollapsed();
       let moodDebugMode = debugMoodVisible;
       let moodDebugRotationEnabled = false;
+      if (settingsDebugGroup) settingsDebugGroup.hidden = !(debugSttVisible || debugMoodVisible);
       if (debugMoodVisible && moodDebugPanel) {
         moodDebugPanel.dataset.debugVisible = 'true';
         moodDebugPanel.dataset.collapsed = debugMoodCollapsed ? 'true' : 'false';
@@ -1482,6 +1525,7 @@
       const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
       const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #game-top-controls, #exit-prompt-overlay');
       const _isGameMemoryEnabled = () => gameMemoryToggle ? gameMemoryToggle.checked !== false : true;
+      let singlePlayerMode = false;
 
       const state = {
         player: { x: 0, y: 0, vx: 0, vy: 0 },
@@ -1509,8 +1553,10 @@
         state.player.x = W * 0.22 - CFG.charSize/2;
         state.player.y = H * 0.55 - CFG.charSize/2;
         state.player.vx = state.player.vy = 0;
-        state.ai.x     = W * 0.78 - CFG.charSize/2;
-        state.ai.y     = H * 0.55 - CFG.charSize/2;
+        if (!singlePlayerMode) {
+          state.ai.x = W * 0.78 - CFG.charSize/2;
+          state.ai.y = H * 0.55 - CFG.charSize/2;
+        }
         state.ai.vx = state.ai.vy = 0;
         state.ball.x = W * 0.5;
         state.ball.y = H * 0.55;
@@ -1522,25 +1568,70 @@
       }
       resetPositions();
 
-      window.addEventListener('mousemove', e => {
-        state.mouse.x = e.clientX;
-        state.mouse.y = e.clientY;
-      });
+      function toggleSinglePlayerMode(source = 'manual') {
+        if (!soccerTestEnabled) return false;
+        singlePlayerMode = !singlePlayerMode;
+        state.ai.vx = 0;
+        state.ai.vy = 0;
+        aiWindupRemaining = 0;
+        aiWindupAim = null;
+        aiWindupTotal = 0;
+        aiKickCd = 0.3;
+        aiReactSec = 0;
+        aiRetreatSec = 0;
+        aiRetreatTarget = null;
+        aiFreezeSec = 0;
+        if (singlePlayerMode) openingMovementActive = false;
+        updateMoodDebugPanel();
+        soccerSessionDebugLog(
+          'info',
+          'test_mode',
+          'single_player_mode_changed',
+          singlePlayerMode ? '已进入单人模式' : '已退出单人模式',
+          { enabled: singlePlayerMode, source },
+        );
+        console.log(`[SoccerTest] 单人模式=${singlePlayerMode ? '开启' : '关闭'} | source=${source}`);
+        return singlePlayerMode;
+      }
+
       // 玩家蓄力：按下 = 开始蓄力，松开 = 出脚；冲量 = 1.0 + 0.6*charge（tap=1.0，满蓄=1.6）
+      let playerPointerActive = false;
       let playerCharging = false;
       let playerCharge = 0;
       const CHARGE_MAX_SEC = 1.2;
+
+      function deactivatePlayerPointerControl() {
+        playerPointerActive = false;
+        playerCharging = false;
+        playerCharge = 0;
+      }
+
+      window.addEventListener('mousemove', e => {
+        if (isGameUiTarget(e.target)) {
+          deactivatePlayerPointerControl();
+          return;
+        }
+        playerPointerActive = true;
+        state.mouse.x = e.clientX;
+        state.mouse.y = e.clientY;
+      });
+      document.addEventListener('mouseleave', deactivatePlayerPointerControl);
       window.addEventListener('mousedown', e => {
-        if (isGameUiTarget(e.target)) return;
+        if (isGameUiTarget(e.target)) {
+          deactivatePlayerPointerControl();
+          return;
+        }
         if (!isGameRuntimeReady()) return;
         if (e.button !== 0) return;
+        playerPointerActive = true;
+        state.mouse.x = e.clientX;
+        state.mouse.y = e.clientY;
         playerCharging = true;
         playerCharge = 0;
       });
       window.addEventListener('mouseup', e => {
-        if (isGameUiTarget(e.target)) {
-          playerCharging = false;
-          playerCharge = 0;
+        if (isGameUiTarget(e.target) || !playerPointerActive) {
+          deactivatePlayerPointerControl();
           return;
         }
         if (!isGameRuntimeReady()) return;
@@ -1551,7 +1642,7 @@
         playerCharging = false;
         playerCharge = 0;
       });
-      window.addEventListener('blur', () => { playerCharging = false; playerCharge = 0; });
+      window.addEventListener('blur', deactivatePlayerPointerControl);
       window.addEventListener('contextmenu', e => e.preventDefault());
       window.addEventListener('keydown', e => {
         if (!isGameRuntimeReady()) return;
@@ -1561,22 +1652,31 @@
           enableSoccerSessionDebugLog('keyboard_l');
           return;
         }
-        if (e.key === 'r' || e.key === 'R') resetPositions();
-        // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
-        const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
-        if (difficultyHotkey) {
+        if (soccerTestEnabled && (e.key === '[' || e.code === 'BracketLeft')) {
           e.preventDefault();
-          setDifficulty(difficultyHotkey, 'difficulty-hotkey');
+          toggleSinglePlayerMode('keyboard_bracket_left');
           return;
         }
-        // 1-6 切换 AI 心情（debug）
-        const idx = Number(e.key) - 1;
-        if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx], { manual: true });
+        if (e.key === 'r' || e.key === 'R') resetPositions();
+        // 仅测试 URL 允许人工切换难度与心情。
+        if (soccerTestEnabled) {
+          // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
+          const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
+          if (difficultyHotkey) {
+            e.preventDefault();
+            setDifficulty(difficultyHotkey, 'difficulty-hotkey');
+            return;
+          }
+          // 1-6 切换 AI 心情（debug）
+          const idx = Number(e.key) - 1;
+          if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx], { manual: true });
+        }
       });
 
       // 通用踢球：从 kicker 中心向 (aimX, aimY) 踢；dirX/dirY 为单位向量，球得到一次性大冲量。
       // 返回是否成功（球必须在射门范围内）。
       function kickBall(kicker, dirX, dirY, impulseScale = 1) {
+        if (singlePlayerMode && kicker === state.ai) return false;
         const b = state.ball;
         const cx = kicker.x + CFG.charSize/2, cy = kicker.y + CFG.charSize/2;
         const dx = b.x - cx, dy = b.y - cy;
@@ -1619,6 +1719,12 @@
       let aiWindupTotal = 0;       // 用来画前摇进度
 
       function aiTryKick(dt) {
+        if (singlePlayerMode) {
+          aiWindupRemaining = 0;
+          aiWindupAim = null;
+          aiWindupTotal = 0;
+          return;
+        }
         const diff = DIFFICULTY[difficultyIdx];
         const mood = MOODS[moodKey];
         const kickImpulse = 0.95 * mood.kickImpulseMul;
@@ -1760,6 +1866,7 @@
 
       // 圆 vs 圆碰撞（角色是半径 = charSize/2 的圆，中心 = 物理框中心）
       function resolveCharBall(c) {
+        if (singlePlayerMode && c === state.ai) return;
         if (ballGhostSec > 0) return;
         const b = state.ball;
         const cx = c.x + CFG.charSize/2, cy = c.y + CFG.charSize/2;
@@ -1833,6 +1940,7 @@
       ];
       const DEFAULT_DIFFICULTY_INDEX = DIFFICULTY.findIndex(d => d.name === 'lv2');
       let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
+      let startScreenDifficultyOverridden = false;
       function cycleDifficulty() {
         difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
       }
@@ -1845,7 +1953,18 @@
 
       function setDifficultyInternal(name, opts = {}) {
         const i = DIFFICULTY.findIndex(d => d.name === name);
-        if (i < 0 || i === difficultyIdx) return false;
+        if (i < 0) return false;
+        const source = String(opts.source || '');
+        if (
+          soccerTestEnabled &&
+          !_llm.gameStarted &&
+          (source === 'manual' || source === 'difficulty-hotkey')
+        ) {
+          // A tester's visible start-screen choice wins over a late pre-game
+          // context response for this launch.
+          startScreenDifficultyOverridden = true;
+        }
+        if (i === difficultyIdx) return false;
         const before = DIFFICULTY[difficultyIdx].name;
         difficultyIdx = i;
         try {
@@ -1918,7 +2037,7 @@
         moodKey = name;
         // 同步 AI 头像表情（Live2D / VRM）
         const emotion = MOODS[name].emotion;
-        window.__SoccerSetAiEmotion?.(emotion);
+        window.__SoccerAiAvatarController?.setEmotion?.(emotion);
         return true;
       }
 
@@ -1959,6 +2078,11 @@
       let aiRetreatTarget = null;
 
       function aiDecide(dt) {
+        if (singlePlayerMode) {
+          state.ai.vx = 0;
+          state.ai.vy = 0;
+          return;
+        }
         const mood = MOODS[moodKey];
         // 强制撤退期间锁定目标，不让 aiDecide 把目标改回球
         if (aiRetreatSec > 0) {
@@ -2180,24 +2304,26 @@
           b.vy += (toCenterY / l) * 280;
           // 让球短时穿模，从 AI 身体里直接飞出去，再开启碰撞
           ballGhostSec = 0.5;
-          // 把 AI 往球的反方向推，并锁定撤退目标 1 秒 —— 不让 aiDecide 把它拉回球那儿
-          const ai = state.ai;
-          const acx = ai.x + CFG.charSize/2, acy = ai.y + CFG.charSize/2;
-          const axdir = (acx - b.x) || 1, aydir = (acy - b.y) || 0;
-          const aL = Math.hypot(axdir, aydir) || 1;
-          // 撤退目标 = AI 中心 + 反方向 200px，clamp 在场内
-          const retreatMargin = CFG.charSize/2 + 6;
-          const rtx = Math.max(retreatMargin, Math.min(W - retreatMargin, acx + (axdir / aL) * 200));
-          const rty = Math.max(retreatMargin, Math.min(H - retreatMargin, acy + (aydir / aL) * 200));
-          aiRetreatTarget = { x: rtx, y: rty };
-          // 与 unstickCd 对齐：撤退锁定覆盖整个脱困冷却期，避免 AI 重新冲向同一个墙角
-          aiRetreatSec = 1.8;
-          aiTargetCache = aiRetreatTarget;
-          // 瞬间给 AI 一个反向速度，不然刚解锁撤退目标时它得从零加速
-          ai.vx = (axdir / aL) * 400;
-          ai.vy = (aydir / aL) * 400;
-          aiKickCd = Math.max(aiKickCd, 0.9);
-          aiWindupRemaining = 0; aiWindupAim = null; aiWindupTotal = 0;
+          if (!singlePlayerMode) {
+            // 把 AI 往球的反方向推，并锁定撤退目标 1 秒 —— 不让 aiDecide 把它拉回球那儿
+            const ai = state.ai;
+            const acx = ai.x + CFG.charSize/2, acy = ai.y + CFG.charSize/2;
+            const axdir = (acx - b.x) || 1, aydir = (acy - b.y) || 0;
+            const aL = Math.hypot(axdir, aydir) || 1;
+            // 撤退目标 = AI 中心 + 反方向 200px，clamp 在场内
+            const retreatMargin = CFG.charSize/2 + 6;
+            const rtx = Math.max(retreatMargin, Math.min(W - retreatMargin, acx + (axdir / aL) * 200));
+            const rty = Math.max(retreatMargin, Math.min(H - retreatMargin, acy + (aydir / aL) * 200));
+            aiRetreatTarget = { x: rtx, y: rty };
+            // 与 unstickCd 对齐：撤退锁定覆盖整个脱困冷却期，避免 AI 重新冲向同一个墙角
+            aiRetreatSec = 1.8;
+            aiTargetCache = aiRetreatTarget;
+            // 瞬间给 AI 一个反向速度，不然刚解锁撤退目标时它得从零加速
+            ai.vx = (axdir / aL) * 400;
+            ai.vy = (aydir / aL) * 400;
+            aiKickCd = Math.max(aiKickCd, 0.9);
+            aiWindupRemaining = 0; aiWindupAim = null; aiWindupTotal = 0;
+          }
           unstickCd = 1.8;
           logGameEvent('unstick');
           emitEvent('unstick');
@@ -2221,6 +2347,7 @@
         const payload = { label, meta, time: performance.now() };
         for (const cb of eventListeners) { try { cb(payload); } catch(e) { console.warn('[SoccerDemo] event listener error', e); } }
       }
+      avatarEventEmitter = emitEvent;
 
       // 心情装饰：同一句在不同心情下风味不同
       const MOOD_STYLE = {
@@ -2234,8 +2361,13 @@
 
       // 气泡渲染：默认 DOM 气泡；可通过 setBubbleRenderer 替换
       const bubbleEl = document.getElementById('ai-speech-bubble');
+      const playerBubbleEl = document.getElementById('player-speech-bubble');
       let bubbleEndsAt = 0;
       let bubbleHideTimer = null;
+      let playerBubbleHideTimer = null;
+      let lastPlayerTranscriptKey = '';
+      let lastPlayerTranscriptAt = 0;
+      const PLAYER_TRANSCRIPT_DEDUPE_MS = 3000;
       function defaultBubbleRenderer({ text, mood, durationMs, sourceLabel }) {
         if (!bubbleEl) return;
         bubbleEl.textContent = text;
@@ -2257,15 +2389,59 @@
       let bubbleRenderer = defaultBubbleRenderer;
       let bubbleClearer  = defaultBubbleClear;
 
-      // 每帧同步气泡位置到 AI 头顶（容器 top + 15% 处当作"头")
-      function positionBubble() {
-        if (!bubbleEl || !bubbleEl.classList.contains('show')) return;
-        const r = aiEl.getBoundingClientRect();
+      function showPlayerSpeechBubble(text) {
+        const clean = String(text || '').trim();
+        if (!playerBubbleEl || !clean) return false;
+        playerBubbleEl.textContent = clean;
+        playerBubbleEl.classList.add('show');
+        if (playerBubbleHideTimer) clearTimeout(playerBubbleHideTimer);
+        const durationMs = Math.min(6000, Math.max(2200, 1400 + clean.length * 90));
+        playerBubbleHideTimer = setTimeout(() => {
+          playerBubbleEl.classList.remove('show');
+          playerBubbleHideTimer = null;
+        }, durationMs);
+        return true;
+      }
+
+      function showPlayerTranscriptBubble(transcript, { source = 'voice-input' } = {}) {
+        const text = String(transcript?.text || transcript?.transcript || '').trim();
+        if (!text) return false;
+        const requestId = String(transcript?.requestId || transcript?.request_id || '').trim();
+        const key = requestId ? `request:${requestId}` : `text:${text}`;
+        const now = Date.now();
+        if (key === lastPlayerTranscriptKey && (requestId || now - lastPlayerTranscriptAt < PLAYER_TRANSCRIPT_DEDUPE_MS)) {
+          return false;
+        }
+        lastPlayerTranscriptKey = key;
+        lastPlayerTranscriptAt = now;
+        console.log(`[SoccerVoice][PlayerBubble] 最终转写已显示 | source=${source} request=${requestId || '-'} chars=${text.length}`);
+        return showPlayerSpeechBubble(text);
+      }
+
+      function clearPlayerSpeechBubble() {
+        if (playerBubbleEl) playerBubbleEl.classList.remove('show');
+        if (playerBubbleHideTimer) {
+          clearTimeout(playerBubbleHideTimer);
+          playerBubbleHideTimer = null;
+        }
+        lastPlayerTranscriptKey = '';
+        lastPlayerTranscriptAt = 0;
+      }
+
+      function positionSpeechBubble(element, anchorElement, headRatio = 0.15) {
+        if (!element || !element.classList.contains('show') || !anchorElement) return;
+        const r = anchorElement.getBoundingClientRect();
         if (r.width < 10 || r.left < -5000) return;
         const x = r.left + r.width / 2;
-        const y = r.top + r.height * 0.15;
-        bubbleEl.style.left = x + 'px';
-        bubbleEl.style.top  = y + 'px';
+        const y = r.top + r.height * headRatio;
+        element.style.left = x + 'px';
+        element.style.top  = y + 'px';
+      }
+
+      // 每帧同步两个气泡到各自角色头顶。
+      function positionBubble() {
+        positionSpeechBubble(bubbleEl, aiEl, 0.15);
+        positionSpeechBubble(playerBubbleEl, playerEl, 0.15);
       }
 
       // 冷却管理：全局 + per-key
@@ -2276,10 +2452,9 @@
       const SHOW_BUILTIN_SPEECH = false;
       const DIFFICULTY_AUTOCYCLE_ON_GOAL = false;
       const REQUEST_CONTROL_REASON = true;
-      const SURRENDER_REMINDER_STORAGE_KEY = 'neko.soccer.surrenderReminderEnabled';
+      const SURRENDER_REMINDER_STORAGE_KEY = 'settings/surrender-reminder-enabled';
       const PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000;
       const EXIT_PROMPT_LINE_WAIT_MS = 4200;
-      const PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80;
       const LLM_INTERCEPT_KINDS = new Set([
         'goal-scored', 'goal-conceded',
         'own-goal-by-ai', 'own-goal-by-player',
@@ -2362,6 +2537,7 @@
         return '{' + '{' + name + '}' + '}';
       }
       function debugMoodLabel(mood) {
+        if (singlePlayerMode) return '气跑了';
         const fallback = MOOD_LABELS[mood] || mood || '-';
         return mood ? _i18n(`moods.${mood}`, fallback) : '-';
       }
@@ -2589,27 +2765,21 @@
       async function loadGeneratedQuickLines() {
         try {
           await ensureSoccerCharacterInfo();
-          const routeCharacterName = _soccerConversationCharacterName();
           // quick-lines 在 _startGameRoute 之前就命中 LLM；同时发送显式偏好和
           // render-only 兜底，让首批台词选对模板又不把 UI 语言持久化成角色偏好。
-          const resp = await fetch('/api/game/soccer/quick-lines', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...(routeCharacterName ? { lanlan_name: routeCharacterName } : {}),
-              ..._conversationLanguagePayload(),
-            }),
+          const resp = await soccerGame.dialogue.quickLines({
+            ..._conversationLanguagePayload(),
           });
-          if (!resp.ok) {
+          const data = resp.data || {};
+          if (!resp.ok || data.ok === false) {
             _recordFallbackDiagnostic('快路径台词生成', {
               fallback: '继续使用内建快路径',
-              reason: `HTTP ${resp.status}`,
+              reason: data.reason || data.error || resp.status,
               key: 'quick-lines-http',
             });
             soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
             return;
           }
-          const data = await resp.json();
           if (!data.ok || !data.lines || !Object.keys(data.lines).length) {
             _recordFallbackDiagnostic('快路径台词生成', {
               fallback: '继续使用内建快路径',
@@ -2791,101 +2961,31 @@
       async function setPlayerAvatar({ type, path } = {}) {
         if (type !== 'vrm') throw new Error('player avatar: only vrm supported');
         if (!path) throw new Error('player avatar: path required');
-        const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-        const vrmModule = await import('@pixiv/three-vrm');
-        const loader = new GLTFLoader();
-        loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-        const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
-        const vrm = gltf.userData.vrm;
-        if (!vrm) throw new Error('not a valid VRM: ' + path);
-        applySoccerVrm0FixedCameraFacingFix(gltf, vrm, window.vrmManager);
-        if (window.vrmManager.currentModel?.vrm?.scene) {
-          const oldScene = window.vrmManager.currentModel.vrm.scene;
-          window.vrmManager.scene.remove(oldScene);
-          // 释放旧模型 GPU 资源（geometry / material / texture），避免多次切换泄漏
-          try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
-          catch (e) { console.warn('[setPlayerAvatar] deepDispose failed:', e); }
-          window.vrmManager.currentModel = null;
+        soccerGame.capabilities.require('avatar-renderer');
+        if (window.__SoccerPlayerAvatarController
+            && !window.__SoccerPlayerAvatarController.disposed) {
+          await window.__SoccerPlayerAvatarController.setModel({ type, path });
+          return;
         }
-        window.vrmManager.scene.add(vrm.scene);
-        window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
-        vrm.scene.visible = true;
-        // 重新 fit 相机
-        const THREE = window.THREE;
-        vrm.scene.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(vrm.scene);
-        const mid = new THREE.Vector3(); box.getCenter(mid);
-        vrm.scene.position.x -= mid.x;
-        vrm.scene.position.z -= mid.z;
-        vrm.scene.position.y -= box.min.y;
-        vrm.scene.updateMatrixWorld(true);
-        const box2 = new THREE.Box3().setFromObject(vrm.scene);
-        const h = box2.max.y - box2.min.y;
-        const cam = window.vrmManager.camera;
-        const fovRad = cam.fov * Math.PI / 180;
-        const visibleH = h * 1.15;
-        const dist = visibleH / (2 * Math.tan(fovRad / 2));
-        const lookY = visibleH / 2;
-        syncSoccerVrmCameraTarget(window.vrmManager, lookY, dist);
-        emitEvent('player-avatar-changed', { type, path });
+        window.__SoccerPlayerAvatarController = await soccerGame.avatar.mount(
+          soccerAvatarMountConfig('player', { type, path }),
+        );
       }
 
       async function setAiAvatar({ type, path } = {}) {
         if (!path) throw new Error('ai avatar: path required');
-        if (type === 'vrm') {
-          if (typeof VRMManager === 'undefined') throw new Error('ai avatar: VRMManager class not found');
-          const previousType = window.__SoccerAiAvatar?.type;
-          window.aiVrmManager = window.aiVrmManager || new VRMManager();
-          pauseAiAvatarRenderer('live2d');
-          try {
-            await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, path, {
-              canvasId: 'ai-l2d-canvas',
-              containerId: 'ai-l2d-container',
-              label: 'AI VRM',
-            });
-          } catch (e) {
-            if (previousType === 'live2d') resumeAiAvatarRenderer('live2d');
-            throw e;
-          }
-          window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
-          resumeAiAvatarRenderer('vrm');
-          window.__SoccerAiAvatar = { type: 'vrm', path, ready: true };
-          emitEvent('ai-avatar-changed', { type, path });
+        if (!['live2d', 'vrm'].includes(type)) {
+          throw new Error('ai avatar: only live2d/vrm supported');
+        }
+        soccerGame.capabilities.require('avatar-renderer');
+        if (window.__SoccerAiAvatarController
+            && !window.__SoccerAiAvatarController.disposed) {
+          await window.__SoccerAiAvatarController.setModel({ type, path });
           return;
         }
-        if (type !== 'live2d') throw new Error('ai avatar: only live2d/vrm supported');
-        const previousType = window.__SoccerAiAvatar?.type;
-        pauseAiAvatarRenderer('vrm');
-        try {
-          await ensureAiLive2dReady();
-          // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
-          // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
-          const loadPromise = window.live2dManager.loadModel(path);
-          loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
-          await new Promise((resolve, reject) => {
-            const t0 = Date.now();
-            const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
-            const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
-            const tick = () => {
-              const m = window.live2dManager.currentModel;
-              const curUrl = m?.internalModel?.settings?.url || '';
-              // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
-              const urlMatches = curUrl === path || curUrl.endsWith(path);
-              if (m && m.width > 0 && (urlMatches || startedWithSameModel)) return resolve();
-              if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
-              setTimeout(tick, 150);
-            };
-            tick();
-          });
-        } catch (e) {
-          if (previousType === 'vrm') resumeAiAvatarRenderer('vrm');
-          throw e;
-        }
-        fitAiLive2dModel();
-        window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
-        resumeAiAvatarRenderer('live2d');
-        window.__SoccerAiAvatar = { type: 'live2d', path, ready: true };
-        emitEvent('ai-avatar-changed', { type, path });
+        window.__SoccerAiAvatarController = await soccerGame.avatar.mount(
+          soccerAvatarMountConfig('ai', { type, path }),
+        );
       }
 
       function roundDebugNumber(value) {
@@ -2907,7 +3007,8 @@
         const scoreDiff = Number(state.score.ai || 0) - Number(state.score.player || 0);
         return {
           debugMode: moodDebugMode,
-          mood: moodKey,
+          mood: singlePlayerMode ? '气跑了' : moodKey,
+          singlePlayerMode,
           difficulty: DIFFICULTY[difficultyIdx].name,
           difficultyAutoTarget: targetDifficultyForScoreDiff(scoreDiff),
           scoreDiff,
@@ -3021,24 +3122,13 @@
         // avatar
         setPlayerAvatar,
         setAiAvatar,
-        getPlayerAvatar: () => ({ type: 'vrm', path: window.vrmManager?.currentModel?.url }),
+        getPlayerAvatar: () => {
+          const state = window.__SoccerPlayerAvatarController?.getState?.();
+          return state?.model ? { ...state.model, ready: !!state.ready } : { type: 'none', path: '', ready: false };
+        },
         getAiAvatar:    () => {
-          const state = window.__SoccerAiAvatar || { type: 'none', path: '', ready: false };
-          if (state.type === 'vrm') {
-            return {
-              type: 'vrm',
-              path: window.aiVrmManager?.currentModel?.url || state.path || '',
-              ready: !!state.ready,
-            };
-          }
-          if (state.type === 'live2d') {
-            return {
-              type: 'live2d',
-              path: window.live2dManager?.currentModel?.internalModel?.settings?.url || state.path || '',
-              ready: !!state.ready,
-            };
-          }
-          return { type: 'none', path: state.path || '', ready: false };
+          const state = window.__SoccerAiAvatarController?.getState?.();
+          return state?.model ? { ...state.model, ready: !!state.ready } : { type: 'none', path: '', ready: false };
         },
         // speech
         say,
@@ -3063,6 +3153,7 @@
         _snapshot: () => ({ mood: moodKey, difficulty: DIFFICULTY[difficultyIdx].name,
                             round: state.round,
                             score: { ...state.score }, aiMode, aiFreezeSec, lastTouchSide,
+                            singlePlayerMode,
                             playerKickStartleWindowSec: playerKickStartleWindowRemainingSec(),
                             playerKickWallBounceForStartle,
                             startle: {
@@ -3079,6 +3170,7 @@
         const mood = btn.dataset.debugMood;
         const difficulty = btn.dataset.debugDifficulty;
         const action = btn.dataset.debugAction;
+        if (!soccerTestEnabled && (mood || difficulty || action === 'rotation-toggle')) return;
         if (mood) {
           window.SoccerDemo.setMood(mood, { manual: true });
         } else if (difficulty) {
@@ -3097,6 +3189,10 @@
       }
 
       moodDebugPanel?.querySelectorAll('button').forEach((btn) => {
+        if (btn.dataset.debugMood || btn.dataset.debugDifficulty || btn.dataset.debugAction === 'rotation-toggle') {
+          btn.disabled = !soccerTestEnabled;
+          btn.setAttribute('aria-disabled', String(!soccerTestEnabled));
+        }
         btn.addEventListener('pointerdown', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3117,12 +3213,19 @@
           return setMoodDebugVisible(moodDebugPanel?.dataset.debugVisible !== 'true', persist);
         },
         mood(name) {
+          if (!soccerTestEnabled) return getMoodDebugSnapshot();
           window.SoccerDemo.setMood(name, { manual: true });
           updateMoodDebugPanel();
           return getMoodDebugSnapshot();
         },
-        difficulty(name) { window.SoccerDemo.setDifficulty(name); updateMoodDebugPanel(); return getMoodDebugSnapshot(); },
+        difficulty(name) {
+          if (!soccerTestEnabled) return getMoodDebugSnapshot();
+          window.SoccerDemo.setDifficulty(name);
+          updateMoodDebugPanel();
+          return getMoodDebugSnapshot();
+        },
         rotation(enabled = true) {
+          if (!soccerTestEnabled) return getMoodDebugSnapshot();
           if (enabled) window.SoccerDemo.enableMoodRotation(20, { manual: true });
           else window.SoccerDemo.disableMoodRotation({ manual: true });
           updateMoodDebugPanel();
@@ -3147,8 +3250,6 @@
       //  B：前端将台词显示为气泡，控制指令应用到游戏状态
       // ═══════════════════════════════════════════════════════════════════════════
       const _llm = {
-        sessionId: 'soccer_' + Date.now().toString(36),
-        routeLanlanName: '',
         preGameContext: null,
         preGameContextSource: '',
         preGameContextError: '',
@@ -3169,34 +3270,13 @@
         cooldowns: {},
         cooldownSec: 8,
         // 局中 Realtime 只作 STT；赛后统一注入摘要，避免频繁 session.update 影响 VAD/STT。
-        realtimeContextEnabled: false,
-        realtimeContextLastSentAt: 0,
-        realtimeContextCooldownMs: 1200,
-        routeHeartbeatTimer: null,
-        routeHeartbeatInFlight: false,
-        routeHeartbeatStartedAt: 0,
-        routeHeartbeatController: null,
-        routeVisibilityChangeHandler: null,
-        routeHeartbeatFailures: 0,
         gameStarted: false,
         gameStartedAt: 0,
         gameStartedAtEpochMs: 0,
         gameMemoryTailCount: null,
         soccerGameMemoryEnabled: false,
         loggedExternalInputKeys: new Set(),
-        sessionDebugLogEnabled: false,
-        sessionDebugLogEnableInFlight: false,
-        sessionDebugLogEnablePromise: null,
-        sessionDebugLogEnableGeneration: 0,
-        sessionDebugLogMutationHeaders: null,
-        routeVoiceSttActive: false,
-        routeVoiceSttListening: false,
-        routeVoiceSttStopping: false,
-        routeVoiceSttRecognition: null,
-        routeVoiceSttRestartTimer: null,
         speechPlaybackState: null,
-        speechPlaybackChannel: null,
-        speechPriorityById: new Map(),
         voiceArbiter: {
           pending: null,
           inFlight: null,
@@ -3241,289 +3321,32 @@
         } catch (_) {}
       }
 
-      const _soccerDebugConsole = {
-        warn: console.warn.bind(console),
-        error: console.error.bind(console),
-      };
-      const _soccerDebugLogState = {
-        lastWindowStart: 0,
-        sentInWindow: 0,
-        passiveGuardSentInWindow: 0,
-      };
       const _soccerSpeechPlaybackLogState = {
         lastSignature: '',
         lastLoggedAt: 0,
         lastHeartbeatAt: 0,
       };
-      function _safeSoccerDebugValue(value, depth = 0, preserve = false) {
-        if (preserve) return value;
-        if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
-        if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}...<truncated>` : value;
-        if (depth >= 3) return String(value).slice(0, 240);
-        if (Array.isArray(value)) {
-          const result = value.slice(0, 20).map((item) => _safeSoccerDebugValue(item, depth + 1));
-          if (value.length > 20) result.push({ _truncated: `+${value.length - 20} items` });
-          return result;
-        }
-        if (typeof value === 'object') {
-          const result = {};
-          const keys = Object.keys(value);
-          for (const key of keys.slice(0, 30)) {
-            result[key] = _safeSoccerDebugValue(value[key], depth + 1);
-          }
-          if (keys.length > 30) result._truncated = `+${keys.length - 30} keys`;
-          return result;
-        }
-        return String(value).slice(0, 1200);
-      }
-      function _soccerDebugCsrfTokenFromHeaders(headers = {}) {
-        return headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
-      }
-      function _postSoccerDebugLogPayload(payload, mutationHeaders = {}) {
-        const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
-        const body = JSON.stringify(token ? { ...payload, _csrf_token: token } : payload);
-        try {
-          if (navigator.sendBeacon) {
-            const ok = navigator.sendBeacon('/api/game/logs', new Blob([body], { type: 'application/json' }));
-            if (ok) return;
-          }
-        } catch (_) {}
-        fetch('/api/game/logs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...mutationHeaders },
-          body,
-          keepalive: true,
-        }).catch(() => {});
-      }
-      function _sendSoccerDebugLog(payload) {
-        if (!_llm.sessionDebugLogEnabled) return;
-        const now = Date.now();
-        if (now - _soccerDebugLogState.lastWindowStart > 60000) {
-          _soccerDebugLogState.lastWindowStart = now;
-          _soccerDebugLogState.sentInWindow = 0;
-          _soccerDebugLogState.passiveGuardSentInWindow = 0;
-        }
-        const isPassiveGuardLog = payload?.category === 'passive_guard'
-          || String(payload?.event || '').startsWith('passive_guard_');
-        if (isPassiveGuardLog) {
-          if (_soccerDebugLogState.passiveGuardSentInWindow >= PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW) return;
-          _soccerDebugLogState.passiveGuardSentInWindow += 1;
-        } else {
-          if (_soccerDebugLogState.sentInWindow >= 120) return;
-          _soccerDebugLogState.sentInWindow += 1;
-        }
-        const logPayload = {
-          session_id: _llm.sessionId,
-          game_type: 'soccer',
-          lanlan_name: _llm.routeLanlanName || '',
-          source: 'soccer_demo',
-          ...payload,
-        };
-        const security = window.nekoLocalMutationSecurity;
-        try {
-          if (security && typeof security.peekCachedToken === 'function') {
-            const token = security.peekCachedToken();
-            if (token) {
-              _postSoccerDebugLogPayload(logPayload, { 'X-CSRF-Token': token });
-              return;
-            }
-          }
-        } catch (_) {}
-        if (security && typeof security.getMutationHeaders === 'function') {
-          Promise.resolve(security.getMutationHeaders())
-            .then((headers) => _postSoccerDebugLogPayload(logPayload, headers || {}))
-            .catch(() => _postSoccerDebugLogPayload(logPayload));
-          return;
-        }
-        if (_llm.sessionDebugLogMutationHeaders) {
-          _postSoccerDebugLogPayload(logPayload, _llm.sessionDebugLogMutationHeaders);
-          return;
-        }
-        _postSoccerDebugLogPayload(logPayload);
-      }
-      function _enableSoccerDebugLogWithHeaders(reason, mutationHeaders = {}) {
-        const debugLogMutationHeaders = { ...mutationHeaders };
-        const token = _soccerDebugCsrfTokenFromHeaders(mutationHeaders);
-        const payload = {
-          session_id: _llm.sessionId,
-          game_type: 'soccer',
-          lanlan_name: _llm.routeLanlanName || '',
-          source: 'soccer_demo',
-          reason,
-        };
-        const body = JSON.stringify(token ? { ...payload, _csrf_token: token } : payload);
-        return fetch('/api/game/logs/enable', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...mutationHeaders },
-          body,
-          keepalive: true,
-        }).then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })))
-          .then((result) => {
-            if (result && result.ok) {
-              _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
-            }
-            return result;
-          });
-      }
-      function resetSoccerSessionDebugLogEnableState() {
-        _llm.sessionDebugLogEnableGeneration += 1;
-        _llm.sessionDebugLogEnabled = false;
-        _llm.sessionDebugLogEnableInFlight = false;
-        _llm.sessionDebugLogEnablePromise = null;
-        _llm.sessionDebugLogMutationHeaders = null;
-      }
       const SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS = 3500;
-      function _hasSoccerSessionDebugLogSendCredentials() {
-        const security = window.nekoLocalMutationSecurity;
-        return !!(
-          _llm.sessionDebugLogMutationHeaders ||
-          (security && (
-            typeof security.peekCachedToken === 'function' ||
-            typeof security.getMutationHeaders === 'function'
-          ))
-        );
+      soccerGame.logger.configure({
+        enableTimeoutMs: SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS,
+      });
+
+      function resetSoccerSessionDebugLogEnableState() {
+        soccerGame.logger.reset();
       }
       function _enableSoccerSessionDebugLogAfterRouteStart() {
-        const generation = _llm.sessionDebugLogEnableGeneration;
-        if (_hasSoccerSessionDebugLogSendCredentials()) {
-          _llm.sessionDebugLogEnabled = true;
-          return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
-        }
-        if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
-          return _llm.sessionDebugLogEnablePromise;
-        }
-        _llm.sessionDebugLogEnableInFlight = true;
-        return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
-          .then((headers) => {
-            if (_llm.sessionDebugLogEnableGeneration !== generation) {
-              return { ok: false, reason: 'stale_enable_result' };
-            }
-            const debugLogMutationHeaders = { ...(headers || {}) };
-            if (!_soccerDebugCsrfTokenFromHeaders(debugLogMutationHeaders)) {
-              return { ok: false, reason: 'missing_csrf_token' };
-            }
-            _llm.sessionDebugLogMutationHeaders = debugLogMutationHeaders;
-            return { ok: true, enableReason: 'route_start_send_gate' };
-          }), generation);
-      }
-      function _startSoccerSessionDebugLogEnablePromise(workPromise, generation) {
-        const isCurrentGeneration = () => _llm.sessionDebugLogEnableGeneration === generation;
-        const timeoutPromise = new Promise((resolve) => {
-          setTimeout(() => resolve({ ok: false, reason: 'enable_timeout' }), SOCCER_SESSION_DEBUG_ENABLE_TIMEOUT_MS);
-        });
-        const guardedWork = Promise.resolve(workPromise)
-          .then((result) => {
-            if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
-            const enabledResult = onSoccerSessionDebugLogEnabled(result);
-            return enabledResult;
-          })
-          .catch((error) => {
-            if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_error' };
-            return onSoccerSessionDebugLogEnableFailed(error);
-          });
-        _llm.sessionDebugLogEnablePromise = Promise.race([guardedWork, timeoutPromise])
-          .then((result) => {
-            if (!isCurrentGeneration()) return { ok: false, reason: 'stale_enable_result' };
-            if (result && result.reason === 'enable_timeout') {
-              _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用超时，稍后可重试');
-            }
-            return result;
-          })
-          .finally(() => {
-            if (isCurrentGeneration()) {
-              _llm.sessionDebugLogEnableInFlight = false;
-            }
-          });
-        return _llm.sessionDebugLogEnablePromise;
-      }
-      function onSoccerSessionDebugLogEnabled(result) {
-        if (result && result.ok) {
-          _llm.sessionDebugLogEnabled = true;
-          console.log('[Soccer] [SessionLog] 小游戏场次诊断日志已启用', {
-            sessionId: _llm.sessionId,
-            reason: result.enableReason || result.reason || 'unknown',
-          });
-        } else {
-          _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用失败', result || {});
-        }
-        return result;
-      }
-      function onSoccerSessionDebugLogEnableFailed(error) {
-        _soccerDebugConsole.warn('[Soccer] [SessionLog] 小游戏场次诊断日志启用请求失败', error);
-        return { ok: false, reason: 'request_failed' };
+        return soccerGame.logger.enableAfterRuntimeStart();
       }
       function enableSoccerSessionDebugLog(reason = 'keyboard') {
-        if (_llm.sessionDebugLogEnabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
-        if (_llm.sessionDebugLogEnableInFlight && _llm.sessionDebugLogEnablePromise) {
-          return _llm.sessionDebugLogEnablePromise;
-        }
-        _llm.sessionDebugLogEnableInFlight = true;
-        const generation = _llm.sessionDebugLogEnableGeneration;
-        const security = window.nekoLocalMutationSecurity;
-        const withEnableReason = (result) => ({ ...(result || {}), enableReason: reason });
-        try {
-          if (security && typeof security.peekCachedToken === 'function') {
-            const token = security.peekCachedToken();
-            if (token) {
-              return _startSoccerSessionDebugLogEnablePromise(
-                _enableSoccerDebugLogWithHeaders(reason, { 'X-CSRF-Token': token }).then(withEnableReason),
-                generation
-              );
-            }
-          }
-        } catch (_) {}
-        if (security && typeof security.getMutationHeaders === 'function') {
-          return _startSoccerSessionDebugLogEnablePromise(Promise.resolve(security.getMutationHeaders())
-            .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-            .then(withEnableReason), generation);
-        }
-        return _startSoccerSessionDebugLogEnablePromise(_getLocalMutationHeaders()
-          .then((headers) => _enableSoccerDebugLogWithHeaders(reason, headers || {}))
-          .then(withEnableReason), generation);
+        return soccerGame.logger.enable(reason);
       }
       function soccerSessionDebugLog(level, category, event, message, details = {}, sensitivePossible = false, options = {}) {
         try {
-          const preserveDetails = !!(options.preserveDetails || options.noTruncate);
-          const preserveMessage = !!(options.preserveMessage || options.noTruncate);
-          _sendSoccerDebugLog({
-            level,
-            category,
-            event,
-            message: String(message || ''),
-            details: _safeSoccerDebugValue(details, 0, preserveDetails),
-            sensitive_possible: !!sensitivePossible,
-            preserve_message: preserveMessage,
-            preserve_details: preserveDetails,
-          });
+          soccerGame.logger.log(level, category, event, message, details, sensitivePossible, options);
         } catch (_) {}
       }
       window.SoccerDemoDebugLog = soccerSessionDebugLog;
       window.EnableSoccerSessionDebugLog = enableSoccerSessionDebugLog;
-      window.addEventListener('error', (event) => {
-        soccerSessionDebugLog('error', 'frontend', 'window_error', event.message || '前端脚本错误', {
-          filename: event.filename || '',
-          lineno: event.lineno || 0,
-          colno: event.colno || 0,
-          error: event.error && (event.error.stack || event.error.message || String(event.error)),
-        });
-      });
-      window.addEventListener('unhandledrejection', (event) => {
-        const reason = event.reason;
-        soccerSessionDebugLog('error', 'frontend', 'unhandled_rejection', '前端 Promise 未处理异常', {
-          reason: reason && (reason.stack || reason.message || String(reason)),
-        });
-      });
-      console.warn = function soccerDebugConsoleWarn(...args) {
-        _soccerDebugConsole.warn(...args);
-        soccerSessionDebugLog('warning', 'frontend', 'console_warn', args.map((item) => String(item)).join(' '), { args }, true);
-      };
-      console.error = function soccerDebugConsoleError(...args) {
-        _soccerDebugConsole.error(...args);
-        soccerSessionDebugLog('error', 'frontend', 'console_error', args.map((item) => String(item)).join(' '), { args }, true);
-      };
-
-      const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
-      const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 
       const passiveGuard = {
         surrenderReminderEnabled: true,
@@ -3551,19 +3374,32 @@
         sidecarGeneration: 0,
       };
 
-      function _readSurrenderReminderEnabled() {
+      let surrenderReminderPreference = true;
+
+      async function _loadSurrenderReminderEnabled() {
+        if (!soccerGame.capabilities.has('storage')) return surrenderReminderPreference;
         try {
-          const raw = window.localStorage?.getItem(SURRENDER_REMINDER_STORAGE_KEY);
-          return raw == null ? true : raw !== 'false';
+          const response = await soccerGame.storage.get(SURRENDER_REMINDER_STORAGE_KEY);
+          const stored = response.data || {};
+          if (response.ok && stored.found === true) {
+            surrenderReminderPreference = stored.value !== false;
+          }
         } catch (_) {
-          return true;
+          // Keep the in-memory default when optional storage is unavailable.
         }
+        return surrenderReminderPreference;
+      }
+
+      function _readSurrenderReminderEnabled() {
+        return surrenderReminderPreference;
       }
 
       function _writeSurrenderReminderEnabled(enabled) {
-        try {
-          window.localStorage?.setItem(SURRENDER_REMINDER_STORAGE_KEY, enabled ? 'true' : 'false');
-        } catch (_) { /* noop */ }
+        surrenderReminderPreference = enabled !== false;
+        if (!soccerGame.capabilities.has('storage')) return;
+        void soccerGame.storage.set(SURRENDER_REMINDER_STORAGE_KEY, surrenderReminderPreference).catch((error) => {
+          soccerRecoverableLog('[SoccerSettings] 认输提醒设置保存失败:', error);
+        });
       }
 
       function _setSurrenderReminderEnabled(enabled, { persist = true, source = 'ui' } = {}) {
@@ -3732,7 +3568,7 @@
       }
 
       function _isPassiveGuardSidecarCurrent(sessionId, generation) {
-        return String(sessionId || '') === String(_llm.sessionId || '') &&
+        return String(sessionId || '') === String(_runtimeSessionId() || '') &&
           Number(generation || 0) === Number(passiveGuard.sidecarGeneration || 0);
       }
 
@@ -3877,30 +3713,17 @@
           preGameContext: _llm.preGameContext || null,
           pendingItems: [],
         };
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), EXIT_PROMPT_LINE_WAIT_MS);
-        try {
-          const resp = await fetch('/api/game/soccer/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              session_id: _llm.sessionId,
-              ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              ..._soccerGameMemoryPolicyPayload(),
-              ..._conversationLanguagePayload(),
-              event: {
-                ...eventPayload,
-                ..._soccerGameMemoryPolicyPayload(),
-              },
-            }),
-          });
-          if (!resp.ok) return { line: '', result: { fallback: true, reason: `HTTP ${resp.status}` } };
-          const data = await resp.json().catch(() => ({}));
-          return { line: String(data.line || '').trim(), result: data };
-        } finally {
-          clearTimeout(timeoutId);
-        }
+        const resp = await soccerGame.dialogue.request({
+          ..._soccerGameMemoryPolicyPayload(),
+          ..._conversationLanguagePayload(),
+          event: {
+            ...eventPayload,
+            ..._soccerGameMemoryPolicyPayload(),
+          },
+        }, { timeoutMs: EXIT_PROMPT_LINE_WAIT_MS });
+        if (!resp.ok) return { line: '', result: { fallback: true, reason: `HTTP ${resp.status}` } };
+        const data = resp.data || {};
+        return { line: String(data.line || '').trim(), result: data };
       }
 
       async function _prepareExitPrompt(type, reason = '', { stage = 8 } = {}) {
@@ -4037,11 +3860,11 @@
       }
 
       async function _requestPassiveGuardSidecar(stage, trigger = {}, extra = {}) {
-        const requestSessionId = _llm.sessionId;
+        const requestSessionId = _runtimeSessionId();
         const requestGeneration = passiveGuard.sidecarGeneration;
         const body = {
           session_id: requestSessionId,
-          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          ...(_runtimeCharacterName() ? { lanlan_name: _runtimeCharacterName() } : {}),
           ..._conversationLanguagePayload(),
           currentState: SoccerDemo._snapshot(),
           preGameContext: _llm.preGameContext || null,
@@ -4051,8 +3874,6 @@
           ...extra,
         };
         const started = performance.now();
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS);
         _passiveGuardDebugLog('Sidecar', 'passive_guard_sidecar', '请求 PassiveGuard sidecar', {
           action: 'request',
           stage,
@@ -4066,11 +3887,8 @@
           timeoutMs: PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS,
         });
         try {
-          const resp = await fetch('/api/game/soccer/passive-guard', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: controller.signal,
+          const resp = await soccerHost.evaluatePassiveGuard(body, {
+            timeoutMs: PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS,
           });
           const data = await resp.json().catch(() => ({}));
           if (!_isPassiveGuardSidecarCurrent(requestSessionId, requestGeneration)) {
@@ -4079,12 +3897,12 @@
               stage,
               promptType: extra.promptType || '',
               requestSessionId,
-              currentSessionId: _llm.sessionId,
+              currentSessionId: _runtimeSessionId(),
               requestGeneration,
               currentGeneration: passiveGuard.sidecarGeneration,
               elapsedMs: Math.round(performance.now() - started),
             }, 'warning');
-            console.log(`[Soccer] [PassiveGuard] [Sidecar] 丢弃过期结果 | 阶段=${stage} 请求局=${requestSessionId} 当前局=${_llm.sessionId}`);
+            console.log(`[Soccer] [PassiveGuard] [Sidecar] 丢弃过期结果 | 阶段=${stage} 请求局=${requestSessionId} 当前局=${_runtimeSessionId()}`);
             return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'stale_sidecar_result' };
           }
           if (!resp.ok || data.ok === false) {
@@ -4127,7 +3945,7 @@
               stage,
               promptType: extra.promptType || '',
               requestSessionId,
-              currentSessionId: _llm.sessionId,
+              currentSessionId: _runtimeSessionId(),
               requestGeneration,
               currentGeneration: passiveGuard.sidecarGeneration,
               elapsedMs: Math.round(performance.now() - started),
@@ -4150,8 +3968,6 @@
           }, 'warning');
           console.log(`[Soccer] [PassiveGuard] [Sidecar] 降级 | 阶段=${stage} 原因=${String(e)}`);
           return { recommendedAction: 'observe_more', exitPromptType: 'none', reasonForDebug: 'request_failed' };
-        } finally {
-          clearTimeout(timeoutId);
         }
       }
 
@@ -4433,12 +4249,7 @@
         userReplyGuardMinSeconds: 2.4,
         userReplyGuardMaxSeconds: 10.0,
         userReplySecondsPerChar: 0.18,
-        stalePlaybackStateMs: 3500,
       };
-
-      function _newGameSessionId() {
-        return 'soccer_' + Date.now().toString(36);
-      }
 
       function _resetGameFieldForStartScreen() {
         playerCharging = false;
@@ -4475,6 +4286,7 @@
         GAME_EVENTS.length = 0;
 
         difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
+        startScreenDifficultyOverridden = false;
         __setMoodBase('calm', { force: true });
         _syncMoodRotationPolicy('reset-start-screen');
         for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
@@ -4488,12 +4300,12 @@
           lastFreezeKind: null,
         });
         SoccerDemo.clearBubble();
+        clearPlayerSpeechBubble();
         soccerGameAudio.sync('reset-start-screen');
       }
 
       function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
-        if (newSession) _llm.sessionId = _newGameSessionId();
-        _llm.routeLanlanName = '';
+        soccerGame.runtime.reset({ newSession });
         _llm.preGameContext = null;
         _llm.preGameContextSource = '';
         _llm.preGameContextError = '';
@@ -4504,8 +4316,6 @@
         _llm.pendingItems = [];
         _llm.flushQueued = false;
         _llm.cooldowns = {};
-        _llm.realtimeContextLastSentAt = 0;
-        _llm.routeHeartbeatFailures = 0;
         _llm.gameStarted = false;
         _llm.gameStartedAt = 0;
         _llm.gameStartedAtEpochMs = 0;
@@ -4525,44 +4335,20 @@
           }
       }
 
-      function _normalizeSpeechPlaybackState(raw) {
-        if (!raw || typeof raw !== 'object') return null;
-        const updatedAt = Number(raw.updatedAt || 0);
-        if (!Number.isFinite(updatedAt)) {
-          return null;
-        }
-        const ageMs = Math.max(0, Date.now() - updatedAt);
-        const rawRemainingSeconds = Math.max(0, Number(raw.remainingSeconds || 0));
-        const shouldAdvanceByWallClock = raw.audioContextState !== 'suspended';
-        const remainingSeconds = shouldAdvanceByWallClock
-          ? Math.max(0, rawRemainingSeconds - ageMs / 1000)
-          : rawRemainingSeconds;
-        if (ageMs > GAME_VOICE_ARBITER_DEFAULTS.stalePlaybackStateMs && remainingSeconds <= 0.5) {
-          return null;
-        }
-        return {
-          active: !!raw.active && remainingSeconds > 0.05,
-          speechId: raw.speechId ? String(raw.speechId) : '',
-          turnId: raw.turnId ? String(raw.turnId) : '',
-          remainingSeconds,
-          updatedAt,
-          ageMs,
-          reason: raw.reason || '',
-        };
-      }
-
       function _readSpeechPlaybackState() {
-        const live = _normalizeSpeechPlaybackState(_llm.speechPlaybackState);
-        if (live) return live;
         try {
-          const stored = JSON.parse(localStorage.getItem(SPEECH_PLAYBACK_STATE_KEY) || 'null');
-          const normalized = _normalizeSpeechPlaybackState(stored);
-          if (normalized) {
-            _llm.speechPlaybackState = stored;
-            return normalized;
-          }
-        } catch (_) { /* noop */ }
-        return { active: false, speechId: '', turnId: '', remainingSeconds: 0, updatedAt: 0, reason: 'missing' };
+          return soccerGame.speech.getState();
+        } catch (_) {
+          return {
+            active: false,
+            speechId: '',
+            turnId: '',
+            remainingSeconds: 0,
+            updatedAt: 0,
+            priority: null,
+            reason: 'missing',
+          };
+        }
       }
 
       function _speechPlaybackDebugDetails(raw, bridgeSource = '') {
@@ -4629,39 +4415,24 @@
         );
       }
 
-      function _initSpeechPlaybackStateBridge() {
-        try {
-          if (typeof BroadcastChannel !== 'undefined') {
-            _llm.speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
-            _llm.speechPlaybackChannel.onmessage = (event) => {
-              if (event?.data?.type === 'speech_playback_state') {
-                _llm.speechPlaybackState = event.data;
-                _logSpeechPlaybackState(event.data, 'broadcast_channel');
-              }
-            };
-          }
-        } catch (e) {
-          console.warn('[SoccerVoice][Arbiter] 播放状态 BroadcastChannel 不可用:', e);
-        }
-        window.addEventListener('storage', (event) => {
-          if (event.key !== SPEECH_PLAYBACK_STATE_KEY || !event.newValue) return;
-          try {
-            const data = JSON.parse(event.newValue);
-            if (data?.type === 'speech_playback_state') {
-              _llm.speechPlaybackState = data;
-              _logSpeechPlaybackState(data, 'local_storage');
-            }
-          } catch (_) { /* noop */ }
-        });
-        window.addEventListener('neko-speech-playback-state', (event) => {
-          const data = event?.detail;
-          if (data?.type !== 'speech_playback_state') return;
-          _llm.speechPlaybackState = data;
-          _logSpeechPlaybackState(data, 'window_event');
-        });
-        _readSpeechPlaybackState();
+      const unsubscribeSpeechPlaybackState = soccerGame.speech.onState((data) => {
+        _llm.speechPlaybackState = data;
+        _logSpeechPlaybackState(data, data.transportSource || 'sdk');
+      });
+      const unsubscribeSpeechPlaybackError = soccerGame.speech.onError((error) => {
+        console.warn(
+          `[SoccerVoice][Arbiter] 播放状态桥接不可用 | source=${error.source || 'sdk'} ` +
+          `code=${error.code || 'request_failed'}: ${error.message || ''}`,
+        );
+      });
+      const initialSpeechPlaybackState = _readSpeechPlaybackState();
+      _llm.speechPlaybackState = initialSpeechPlaybackState;
+      if (initialSpeechPlaybackState.updatedAt) {
+        _logSpeechPlaybackState(
+          initialSpeechPlaybackState,
+          initialSpeechPlaybackState.transportSource || 'sdk-initial',
+        );
       }
-      _initSpeechPlaybackStateBridge();
 
       function _gameStartedElapsedMs() {
         if (!_llm.gameStarted || !Number.isFinite(Number(_llm.gameStartedAt)) || Number(_llm.gameStartedAt) <= 0) {
@@ -4686,9 +4457,9 @@
           : DEFAULT_GAME_MEMORY_TAIL_COUNT;
         const soccerGameMemoryEnabled = _isGameMemoryEnabled();
         _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
-        const routeLanlanName = _soccerConversationCharacterName();
-        return JSON.stringify({
-          session_id: _llm.sessionId,
+        const routeLanlanName = _runtimeCharacterName() || _soccerConversationCharacterName();
+        return {
+          session_id: _runtimeSessionId(),
           ...(routeLanlanName ? { lanlan_name: routeLanlanName } : {}),
           currentState: SoccerDemo._snapshot(),
           pageVisible,
@@ -4705,252 +4476,85 @@
           // mgr.user_language，后者仅用于当前请求的模板选择。
           ..._conversationLanguagePayload(),
           ...extra,
-        });
+        };
       }
 
       async function _sendGameRouteHeartbeat(force = false) {
         if (_llm.cleanedUp) return;
-        if (_llm.routeHeartbeatInFlight) {
-          const age = performance.now() - Number(_llm.routeHeartbeatStartedAt || 0);
-          if (force || age > GAME_ROUTE_HEARTBEAT_FETCH_TIMEOUT_MS) {
-            try { _llm.routeHeartbeatController?.abort(); } catch (_) { /* noop */ }
-            const reason = force ? 'visibilitychange' : 'timeout';
-            soccerRecoverableLog(`[SoccerRoute] 上一次心跳已中止后重试 reason=${reason} age=${age.toFixed(0)}ms`);
+        return soccerGame.runtime.pulse(force);
+      }
+
+      soccerGame.events.on('runtime-inactive', ({ payload: data }) => {
+        console.warn('[SoccerRoute] 心跳发现后端路由已结束:', data?.reason || 'inactive');
+        _setVoiceStatus(_i18n('voiceStatus.routeEnded', '游戏路由已结束，刷新页面可重新接管'));
+        _renderGameVoiceChatControl({ available: false, reason: 'route_ended' });
+      });
+
+      soccerGame.events.on('runtime-error', ({ payload = {} }) => {
+        if (payload.operation === 'heartbeat') {
+          if (payload.data) {
+            soccerRecoverableLog('[SoccerRoute] 心跳异常:', payload.data.reason || payload.status);
           } else {
-            return;
+            soccerRecoverableLog('[SoccerRoute] 心跳请求失败:', payload.reason);
           }
+          return;
         }
-        _llm.routeHeartbeatInFlight = true;
-        _llm.routeHeartbeatStartedAt = performance.now();
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          try { controller.abort(); } catch (_) { /* noop */ }
-        }, GAME_ROUTE_HEARTBEAT_FETCH_TIMEOUT_MS);
-        _llm.routeHeartbeatController = controller;
-        try {
-          const resp = await fetch('/api/game/soccer/route/heartbeat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: _gameRoutePayload(),
-            signal: controller.signal,
-          });
-          const data = await resp.json().catch(() => ({}));
-          if (resp.ok && data.ok && data.active) {
-            _llm.routeHeartbeatFailures = 0;
-            return;
-          }
-          if (resp.ok && data.ok && data.active === false) {
-            console.warn('[SoccerRoute] 心跳发现后端路由已结束:', data.reason || 'inactive');
-            _setVoiceStatus(_i18n('voiceStatus.routeEnded', '游戏路由已结束，刷新页面可重新接管'));
-            _stopGameRouteHeartbeat();
-            return;
-          }
-          _llm.routeHeartbeatFailures += 1;
-          soccerRecoverableLog('[SoccerRoute] 心跳异常:', data.reason || resp.status);
-        } catch (e) {
-          _llm.routeHeartbeatFailures += 1;
-          const reason = e?.name === 'AbortError' ? 'timeout' : e;
-          soccerRecoverableLog('[SoccerRoute] 心跳请求失败:', reason);
-        } finally {
-          clearTimeout(timeoutId);
-          if (_llm.routeHeartbeatController === controller) {
-            _llm.routeHeartbeatController = null;
-            _llm.routeHeartbeatInFlight = false;
-            _llm.routeHeartbeatStartedAt = 0;
-          }
+        if (payload.operation === 'drain') {
+          soccerRecoverableLog('[SoccerRoute] 外部输入结果拉取失败:', payload.reason || payload.status || payload.data);
         }
-      }
+      });
 
-      function _startGameRouteHeartbeat() {
-        _stopGameRouteHeartbeat();
-        _llm.routeVisibilityChangeHandler = () => {
-          if (!_llm.cleanedUp) void _sendGameRouteHeartbeat(true);
-        };
-        document.addEventListener('visibilitychange', _llm.routeVisibilityChangeHandler);
-        void _sendGameRouteHeartbeat();
-        _llm.routeHeartbeatTimer = setInterval(_sendGameRouteHeartbeat, 2500);
-      }
-
-      function _stopGameRouteHeartbeat() {
-        if (_llm.routeVisibilityChangeHandler) {
-          document.removeEventListener('visibilitychange', _llm.routeVisibilityChangeHandler);
-          _llm.routeVisibilityChangeHandler = null;
-        }
-        if (_llm.routeHeartbeatController) {
-          try { _llm.routeHeartbeatController.abort(); } catch (_) { /* noop */ }
-          _llm.routeHeartbeatController = null;
-        }
-        _llm.routeHeartbeatInFlight = false;
-        _llm.routeHeartbeatStartedAt = 0;
-        if (_llm.routeHeartbeatTimer) {
-          clearInterval(_llm.routeHeartbeatTimer);
-          _llm.routeHeartbeatTimer = null;
-        }
-      }
-
-        function _routeVoiceRecognitionCtor() {
-          return window.SpeechRecognition || window.webkitSpeechRecognition || null;
-        }
-
-        function _startRouteVoiceSttGate(reason = 'route') {
-          _llm.routeVoiceSttActive = true;
-          if (_llm.routeVoiceSttListening) {
-            console.log(`[SoccerVoice][RouteSTT] 已在运行 | reason=${reason}`);
-            return true;
-          }
-          const SpeechRecognition = _routeVoiceRecognitionCtor();
-          if (!SpeechRecognition) {
-            console.warn('[SoccerVoice][RouteSTT] 当前浏览器不支持 SpeechRecognition，无法接收主语音最终转写');
-            _setVoiceStatus(_i18n('voiceStatus.unsupported', '当前浏览器不支持游戏语音转写，请暂时使用主聊天文本输入'));
-            return false;
-          }
-          if (!_llm.routeVoiceSttRecognition) {
-            const rec = new SpeechRecognition();
-            rec.lang = _resolveSpeechLang();
-            rec.continuous = true;
-            rec.interimResults = false;
-            rec.maxAlternatives = 1;
-            rec.onstart = () => {
-              _llm.routeVoiceSttListening = true;
-              _llm.routeVoiceSttStopping = false;
-              _setVoiceStatus(_i18n('voiceStatus.listening', '游戏语音 STT：正在听玩家说话'));
-              console.log('[SoccerVoice][RouteSTT] 已启动');
-            };
-            rec.onaudiostart = () => console.log('[SoccerVoice][RouteSTT][Diag] audio start');
-            rec.onsoundstart = () => console.log('[SoccerVoice][RouteSTT][Diag] sound start');
-            rec.onspeechstart = () => console.log('[SoccerVoice][RouteSTT][Diag] speech start');
-            rec.onspeechend = () => console.log('[SoccerVoice][RouteSTT][Diag] speech end');
-            rec.onsoundend = () => console.log('[SoccerVoice][RouteSTT][Diag] sound end');
-            rec.onaudioend = () => console.log('[SoccerVoice][RouteSTT][Diag] audio end');
-            rec.onnomatch = (event) => console.warn('[SoccerVoice][RouteSTT][Diag] no match:', event);
-            rec.onresult = (event) => {
-              let finalText = '';
-              const startIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
-              console.log('[SoccerVoice][RouteSTT][Diag] result event:', {
-                resultIndex: startIndex,
-                resultCount: event.results ? event.results.length : 0,
-              });
-              for (let i = startIndex; i < event.results.length; i++) {
-                const result = event.results[i];
-                if (!result || result.isFinal === false) continue;
-                finalText += (result[0] && result[0].transcript) || '';
-              }
-              finalText = finalText.trim();
-              if (!finalText) return;
-              console.log(`[SoccerVoice][RouteSTT] 最终转写 | text="${finalText}"`);
-              void _submitUserSpeech(finalText, 'route-hidden-speech-recognition');
-            };
-            rec.onerror = (event) => {
-              const errorCode = event?.error || 'unknown';
-              console.warn('[SoccerVoice][RouteSTT] 识别错误:', errorCode, event);
-              if (errorCode === 'no-speech') {
-                console.warn('[SoccerVoice][RouteSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
-              }
-              _setVoiceStatus(_i18n('voiceStatus.error', `游戏语音 STT：${errorCode}`, { code: errorCode }));
-              if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
-                _llm.routeVoiceSttActive = false;
-                _llm.routeVoiceSttStopping = true;
-              }
-            };
-            rec.onend = () => {
-              _llm.routeVoiceSttListening = false;
-              if (_llm.routeVoiceSttRestartTimer) {
-                clearTimeout(_llm.routeVoiceSttRestartTimer);
-                _llm.routeVoiceSttRestartTimer = null;
-              }
-              if (_llm.routeVoiceSttActive && !_llm.cleanedUp && !_llm.routeVoiceSttStopping) {
-                _llm.routeVoiceSttRestartTimer = setTimeout(() => _startRouteVoiceSttGate('restart'), 350);
-              }
-              _llm.routeVoiceSttStopping = false;
-            };
-            _llm.routeVoiceSttRecognition = rec;
-          }
-          try {
-            _llm.routeVoiceSttStopping = false;
-            _llm.routeVoiceSttRecognition.start();
-            _llm.routeVoiceSttListening = true;
-            console.log(`[SoccerVoice][RouteSTT] 启动请求 | reason=${reason}`);
-            return true;
-          } catch (e) {
-            if (e && e.name === 'InvalidStateError') {
-              _llm.routeVoiceSttListening = true;
-              console.log('[SoccerVoice][RouteSTT] start ignored: already running');
-              return true;
-            }
-            console.warn('[SoccerVoice][RouteSTT] 启动失败:', e);
-            _setVoiceStatus(_i18n('voiceStatus.startFailed', '游戏语音 STT：启动失败，请暂时使用主聊天文本输入'));
-            _llm.routeVoiceSttListening = false;
-            return false;
-          }
-        }
-
-        function _stopRouteVoiceSttGate() {
-          _llm.routeVoiceSttActive = false;
-          _llm.routeVoiceSttStopping = true;
-          if (_llm.routeVoiceSttRestartTimer) {
-            clearTimeout(_llm.routeVoiceSttRestartTimer);
-            _llm.routeVoiceSttRestartTimer = null;
-          }
-          if (_llm.routeVoiceSttRecognition) {
-            try { _llm.routeVoiceSttRecognition.stop(); } catch (e) {
-              try { _llm.routeVoiceSttRecognition.abort(); } catch (_) { /* noop */ }
-            }
-          }
-          _llm.routeVoiceSttListening = false;
-        }
-
-        function _handleGameVoiceSttGateOutput(output) {
-          _llm.routeVoiceSttActive = true;
-          _setVoiceStatus(_i18n('voiceStatus.handoverInProgress', '游戏语音 STT：主语音入口接管中'));
-          console.log('[SoccerVoice][RouteSTT] 后端要求启动游戏语音 STT，复用主 Realtime 转写:', output);
-        }
+      soccerGame.events.on('page-exit', () => {
+        settingsUiAbortController.abort();
+        window.removeEventListener('localechange', _refreshGameVoiceChatLocale);
+        unsubscribeSpeechPlaybackState();
+        unsubscribeSpeechPlaybackError();
+        soccerGameAudio.destroy();
+        _prepareGameLLMSessionCleanup();
+      });
 
         async function _startGameRoute() {
           try {
             window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
             resetSoccerSessionDebugLogEnableState();
             await ensureSoccerCharacterInfo();
-            const resp = await fetch('/api/game/soccer/route/start', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: _gameRoutePayload(_readGameRouteStartOptions()),
-            });
-            const data = await resp.json().catch(() => ({}));
+            const consent = await soccerGame.memory.configureConsent(_isGameMemoryEnabled());
+            if (!consent.ok || consent.data?.ok === false) throw new Error('memory_consent_failed');
+            const resp = await soccerGame.runtime.start(_gameRoutePayload(_gameRouteStartOptions));
+            const data = resp.data || {};
             if (data.ok) {
-              _enableSoccerSessionDebugLogAfterRouteStart();
-              _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
-              if (_llm.routeLanlanName) {
-                window.__SoccerResolvedLanlanName = _llm.routeLanlanName;
+              await _enableSoccerSessionDebugLogAfterRouteStart();
+              if (_runtimeCharacterName()) {
+                window.__SoccerResolvedLanlanName = _runtimeCharacterName();
               }
               console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
-              _applyPreGameContext(data.state);
-              if (data.state?.game_external_voice_route_active) {
-                _llm.routeVoiceSttActive = true;
-                _setVoiceStatus(_i18n('voiceStatus.waitingForHandover', '游戏语音 STT：等待主语音入口接管'));
-                console.log('[SoccerVoice][RouteSTT] 已进入游戏语音路由，等待主 Realtime 转写接管');
-              }
-              _startGameRouteHeartbeat();
-              _startRouteDrain();
+              const context = await soccerGame.context.read(['pregame-context']);
+              if (!context.ok || context.data?.ok === false) throw new Error('pregame_context_read_failed');
+              _applyPreGameContext({
+                ...data.state,
+                preGameContext: context.data?.scopes?.['pregame-context'],
+                pre_game_context_source: context.data?.scope_metadata?.['pregame-context']?.source,
+                pre_game_context_error: context.data?.scope_metadata?.['pregame-context']?.error,
+              });
               window.__SoccerLoading?.done('route', _i18n('loading.routeDone', '开局上下文准备完成'));
+              return true;
             } else {
               _recordFallbackDiagnostic('开局路由接管', {
-                fallback: '使用本地默认继续游戏',
+                fallback: '取消本次启动，清理 route 后允许重试',
                 reason: data.reason || data.error || 'route_start_failed',
                 key: 'route-start-failed',
               });
               soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
-              _startRouteDrain();
-              window.__SoccerLoading?.done('route', _i18n('loading.routeFallback', '开局上下文使用本地默认'));
+              throw new Error(data.reason || 'route_start_failed');
             }
           } catch (e) {
             _recordFallbackDiagnostic('开局路由接管', {
-              fallback: '继续游戏',
+              fallback: '取消本次启动，清理 route 后允许重试',
               reason: String(e),
               key: 'route-start-request-failed',
             });
             soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
-            _startRouteDrain();
-            window.__SoccerLoading?.done('route', _i18n('loading.routeFailed', '开局上下文请求失败，继续游戏'));
+            throw e;
           }
         }
 
@@ -5028,7 +4632,11 @@
         if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
           SoccerDemo.setMood(ctx.initialMood, { source: 'pregame', force: true });
         }
-        if (ctx?.initialDifficulty && _isValidSoccerDifficulty(ctx.initialDifficulty)) {
+        if (
+          !startScreenDifficultyOverridden &&
+          ctx?.initialDifficulty &&
+          _isValidSoccerDifficulty(ctx.initialDifficulty)
+        ) {
           SoccerDemo.setDifficulty(ctx.initialDifficulty, { source: 'pregame' });
         }
 
@@ -5184,120 +4792,33 @@
         return base;
       }
 
-      function _getLocalMutationHeaders() {
-        const headers = { 'Content-Type': 'application/json' };
-        const security = window.nekoLocalMutationSecurity;
-        if (security && typeof security.getMutationHeaders === 'function') {
-          return Promise.resolve(security.getMutationHeaders()).then((mutationHeaders) => {
-            return Object.assign(headers, mutationHeaders || {});
-          }).catch(() => headers);
-        }
-
-        const lanlanName = window.lanlan_config?.lanlan_name || '';
-        const suffix = lanlanName ? `?lanlan_name=${encodeURIComponent(lanlanName)}` : '';
-        return fetch(`/api/config/page_config${suffix}`, {
-          credentials: 'same-origin',
-          cache: 'no-store',
-        }).then((response) => {
-          if (!response.ok) return headers;
-          return response.json();
-        }).then((config) => {
-          if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
-            headers['X-CSRF-Token'] = config.autostart_csrf_token;
-          }
-          return headers;
-        }).catch(() => headers);
-      }
-
-      function _refreshLocalMutationHeaders() {
-        const security = window.nekoLocalMutationSecurity;
-        if (security && typeof security.refreshToken === 'function') {
-          return Promise.resolve(security.refreshToken()).then(() => {
-            return _getLocalMutationHeaders();
-          }).catch(() => _getLocalMutationHeaders());
-        }
-        return _getLocalMutationHeaders();
-      }
-
-      async function _sendRealtimeGameContext(source, items = []) {
-        if (!_llm.realtimeContextEnabled) return;
-        const now = performance.now();
-        if (now - _llm.realtimeContextLastSentAt < _llm.realtimeContextCooldownMs) return;
-        _llm.realtimeContextLastSentAt = now;
-        const stateNow = SoccerDemo._snapshot();
-        const safeItems = items.slice(-6).map((item) => ({
-          type: item.type,
-          kind: item.kind,
-          textRaw: item.textRaw,
-          round: item.round,
-          snapshot: item.snapshot,
-        }));
-        try {
-          const bodyJson = JSON.stringify({
-            source,
-            ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-            state: stateNow,
-            pendingItems: safeItems,
-            ..._conversationLanguagePayload(),
-          });
-          const postWithHeaders = (headers) => fetch('/api/game/soccer/realtime-context', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers,
-            body: bodyJson,
-          });
-          let resp = await postWithHeaders(await _getLocalMutationHeaders());
-          if (resp.status === 403) {
-            const errorPayload = await resp.clone().json().catch(() => ({}));
-            if (errorPayload && errorPayload.error_code === 'csrf_validation_failed') {
-              resp = await postWithHeaders(await _refreshLocalMutationHeaders());
-            }
-          }
-          const data = await resp.json().catch(() => ({}));
-          if (data.ok) {
-            console.log(`[SoccerRealtime] 注入成功 | 来源=${source} 条目=${safeItems.length} bytes=${data.bytes}`);
-          } else {
-            console.log(`[SoccerRealtime] 跳过 | 来源=${source} 原因=${data.reason || resp.status}`);
-          }
-        } catch (e) {
-          soccerRecoverableLog('[SoccerRealtime] 注入请求失败:', e);
-        }
-      }
-
       async function _mirrorGameAssistantText(line, meta = {}, result = {}) {
         const clean = String(line || '').trim();
         if (!clean || meta?.textAlreadyMirrored) return null;
         const requestId = meta.request_id || result.request_id || `game-llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         const shouldFinalizeTurn = !!(meta.hasUserSpeech || meta.hasUserText || meta.kind === 'user-voice' || meta.kind === 'user-text');
         try {
-          const resp = await fetch('/api/game/soccer/mirror-assistant', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              source: 'game-llm-result',
-              session_id: _llm.sessionId,
-              ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              request_id: requestId,
-              turn_id: `game-mirror-${requestId}`,
-              finalize_turn: shouldFinalizeTurn,
-              line: clean,
-              ..._conversationLanguagePayload(),
-              event: {
-                kind: meta.kind || 'mailbox',
-                round: meta.round,
-                priority: meta.priority || 0,
-                itemCount: meta.itemCount || 1,
-                hasUserSpeech: !!meta.hasUserSpeech,
-                hasUserText: !!meta.hasUserText,
-                // 关闭“本局进入记忆”后，玩家输入、NEKO直接回应、游戏事件回应、赛后归档和续接上下文都不会写入/引用记忆。
-                ..._soccerGameMemoryPolicyPayload(),
-                voiceAlreadyHandled: !!meta.voiceAlreadyHandled,
-                fallback: !!meta.fallback,
-                llmSource: result.llm_source || null,
-              },
-            }),
+          const resp = await soccerGame.speech.mirror({
+            text: clean,
+            source: 'game-llm-result',
+            requestId,
+            turnId: `game-mirror-${requestId}`,
+            finalizeTurn: shouldFinalizeTurn,
+            event: {
+              kind: meta.kind || 'mailbox',
+              round: meta.round,
+              priority: meta.priority || 0,
+              itemCount: meta.itemCount || 1,
+              hasUserSpeech: !!meta.hasUserSpeech,
+              hasUserText: !!meta.hasUserText,
+              // 关闭“本局进入记忆”后，玩家输入、NEKO直接回应、游戏事件回应、赛后归档和续接上下文都不会写入/引用记忆。
+              ..._soccerGameMemoryPolicyPayload(),
+              voiceAlreadyHandled: !!meta.voiceAlreadyHandled,
+              fallback: !!meta.fallback,
+              llmSource: result.llm_source || null,
+            },
           });
-          const data = await resp.json().catch(() => ({}));
+          const data = resp.data || {};
           if (!data.ok) {
             console.log(`[SoccerMirror] 主聊天窗镜像失败 | 原因=${data.reason || resp.status} 台词="${clean}"`);
           } else {
@@ -5331,41 +4852,38 @@
           };
         }
         _llm.lastVoiceFailure = null;
-        const stateNow = SoccerDemo._snapshot();
         const interruptAudio = options.interruptAudio === true;
         const voiceArbiterReason = String(options.reason || '');
+        const languagePayload = _conversationLanguagePayload();
         try {
-          const resp = await fetch('/api/game/soccer/speak', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              source: 'game-llm-result',
-              session_id: _llm.sessionId,
-              ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              request_id: meta.request_id || result.request_id || '',
-              mirror_text: false,
-              emit_turn_end: false,
-              interrupt_audio: interruptAudio,
-              voice_arbiter_reason: voiceArbiterReason,
-              line,
-              state: stateNow,
-              ..._conversationLanguagePayload(),
-              event: {
-                kind: meta.kind || 'mailbox',
-                round: meta.round,
-                priority: meta.priority || 0,
-                itemCount: meta.itemCount || 1,
-                hasUserSpeech: !!meta.hasUserSpeech,
-                hasUserText: !!meta.hasUserText,
-                // 关闭“本局进入记忆”后，TTS turn-end 也会被后端按足球游戏记忆策略处理。
-                ..._soccerGameMemoryPolicyPayload(),
-                voiceArbiterReason,
-                interruptAudio,
-              },
-              control: result.control || {},
-            }),
+          const resp = await soccerGame.speech.speak({
+            text: line,
+            source: 'game-llm-result',
+            requestId: meta.request_id || result.request_id || '',
+            eventKey: meta.kind || 'mailbox',
+            priority: Number.isFinite(Number(meta.priority)) ? Number(meta.priority) : 4,
+            mirrorText: false,
+            emitTurnEnd: false,
+            interruptExisting: interruptAudio,
+            reuseSynthesizedAudio: !_isUserReplyVoiceMeta(meta),
+            relativeGain: _soccerVoicePlaybackGain(),
+            reason: voiceArbiterReason,
+            language: languagePayload.i18n_language || '',
+            renderLanguage: languagePayload.render_language || '',
+            event: {
+              kind: meta.kind || 'mailbox',
+              round: meta.round,
+              priority: meta.priority || 0,
+              itemCount: meta.itemCount || 1,
+              hasUserSpeech: !!meta.hasUserSpeech,
+              hasUserText: !!meta.hasUserText,
+              // 关闭“本局进入记忆”后，TTS turn-end 也会被后端按足球游戏记忆策略处理。
+              ..._soccerGameMemoryPolicyPayload(),
+              voiceArbiterReason,
+              interruptAudio,
+            },
           });
-          const data = await resp.json().catch(() => ({}));
+          const data = resp.data || {};
           if (data.ok) {
             data.voice_source = data.voice_source || {
               provider: 'project_tts',
@@ -5377,6 +4895,7 @@
               `[SoccerVoice] 原流水线输出成功 | 方式=${data.method || 'unknown'} ` +
               `语言=${data.language || '-'} 来源=${_formatSourceLabel(data.voice_source)} ` +
               `speech_id=${data.speech_id || '-'} audio_sent=${!!data.audio_sent} ` +
+              `cache=${data.cache_status || 'disabled'} ` +
               `interrupt_audio=${interruptAudio} ` +
               `audio_committed=${!!data.audio_committed} response_observed=${!!data.response_observed} ` +
               `audio_observed=${!!data.audio_observed} response_done=${!!data.response_done} ` +
@@ -5395,6 +4914,7 @@
                 speech_id: data.speech_id || '',
                 audio_sent: data.audio_sent,
                 audio_queued: data.audio_queued,
+                cache_status: data.cache_status,
                 audio_committed: data.audio_committed,
                 response_observed: data.response_observed,
                 audio_observed: data.audio_observed,
@@ -5438,6 +4958,7 @@
               reason: data.reason || '',
               audio_sent: data.audio_sent,
               audio_queued: data.audio_queued,
+              cache_status: data.cache_status,
               audio_committed: data.audio_committed,
               response_observed: data.response_observed,
               audio_observed: data.audio_observed,
@@ -5550,9 +5071,7 @@
       function _currentPlaybackPriority(playback) {
         if (!playback?.active) return null;
         if (Number.isFinite(playback.priority)) return playback.priority;
-        if (!playback.speechId) return null;
-        const mapped = _llm.speechPriorityById.get(playback.speechId);
-        return Number.isFinite(mapped) ? mapped : 4;
+        return playback.speechId ? 4 : null;
       }
 
       function _shouldInterruptPlayback(priority, playback) {
@@ -5654,7 +5173,6 @@
         const speechId = result?.speech_id ? String(result.speech_id) : '';
         if (speechId) {
           inFlight.speechId = speechId;
-          _llm.speechPriorityById.set(speechId, entry.priority);
         }
           const isUserReply = _isUserReplyVoiceMeta(entry?.meta || {});
           const delivered = !!(result?.audio_sent || result?.audio_queued);
@@ -5857,7 +5375,6 @@
           `[SoccerLLM][Mailbox] 收集 | 回合=${item.round} 类型=${item.type} 事件=${eventLabel(item.kind)}(${item.kind}) ` +
           `队列=${_llm.pendingItems.length} 原文="${item.textRaw || ''}"`
         );
-        _sendRealtimeGameContext(item.type, _llm.pendingItems);
         _scheduleMailboxFlush();
       }
 
@@ -5876,7 +5393,6 @@
         const items = _llm.pendingItems.splice(0, _llm.pendingItems.length);
         const currentState = SoccerDemo._snapshot();
         const eventPayload = _buildMailboxEvent(items, currentState);
-        _sendRealtimeGameContext('mailbox-flush', items);
         const first = items[0] || {};
         const eventTs = first.ts || performance.now();
         const displayMeta = {
@@ -5906,19 +5422,13 @@
             `条目=${displayMeta?.itemCount || 1} 原因=${REQUEST_CONTROL_REASON ? '请求' : '关闭'} ` +
             `分数=${JSON.stringify(score)} 原文="${eventPayload.textRaw || ''}"`
           );
-          const resp = await fetch('/api/game/soccer/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: _llm.sessionId,
-              ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          const resp = await soccerGame.dialogue.request({
+            ..._soccerGameMemoryPolicyPayload(),
+            ..._conversationLanguagePayload(),
+            event: {
+              ...eventPayload,
               ..._soccerGameMemoryPolicyPayload(),
-              ..._conversationLanguagePayload(),
-              event: {
-                ...eventPayload,
-                ..._soccerGameMemoryPolicyPayload(),
-              },
-            }),
+            },
           });
           if (!resp.ok) {
             return {
@@ -5927,7 +5437,7 @@
               fallbackNotice: { title: '游戏 LLM 响应', fallback: '使用内建台词兜底' },
             };
           }
-          const data = await resp.json();
+          const data = resp.data || {};
           if (data.error) {
             console.warn('[SoccerLLM] 错误:', data.error);
             return {
@@ -6100,6 +5610,20 @@
           return String(event.textRaw || meta.inputText || event.userVoiceText || event.userText || '').trim();
         }
 
+        function _showExternalUserVoiceBubble(output) {
+          const event = output.event || {};
+          const meta = output.meta || {};
+          const isUserVoice = event.kind === 'user-voice'
+            || event.type === 'user_voice'
+            || meta.hasUserSpeech === true;
+          if (!isUserVoice) return false;
+          return showPlayerTranscriptBubble({
+            text: _externalGameRouteInputText(output),
+            requestId: output.request_id || meta.request_id || '',
+            timestamp: output.ts || meta.inputTs || Date.now(),
+          }, { source: output.source || 'route-drain' });
+        }
+
         function _logExternalGameRouteInput(output) {
           const event = output.event || {};
           const meta = output.meta || {};
@@ -6123,109 +5647,89 @@
         return performance.now() - Math.max(0, Date.now() - epochMs);
       }
 
-        async function _drainExternalGameRouteOutputs() {
+        async function _handleExternalGameRouteOutput(output) {
           if (_llm.cleanedUp) return;
           try {
-            const resp = await fetch('/api/game/soccer/route/drain', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: _llm.sessionId,
-              ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              ..._conversationLanguagePayload(),
-            }),
-          });
-          if (!resp.ok) return;
-            const data = await resp.json().catch(() => ({}));
-            const outputs = Array.isArray(data.outputs) ? data.outputs : [];
-            for (const output of outputs) {
-              if (output && output.type === 'game_voice_stt_gate') {
-                _handleGameVoiceSttGateOutput(output);
-                continue;
-              }
-              if (output && output.type === 'game_external_input') {
-                _markUserInputForVoiceArbiter(output.source || 'external-route-input');
-                _handlePassiveGuardUserSpeech(
-                  _externalGameRouteInputText(output),
-                  output.source || output.meta?.kind || 'external-route-input',
-                );
-                _logExternalGameRouteInput(output);
-                continue;
-              }
-              if (!output || output.type !== 'game_llm_result') continue;
-              const resultMeta = Object.assign({}, output.meta || { kind: 'external-text', voiceAlreadyHandled: true }, {
-                request_id: output.request_id || output.meta?.request_id || '',
-              });
-              const inputEpochSeconds = resultMeta.inputTs || output.input_ts || output.event?.inputTs || output.ts;
-              await _handleGameLLMResult(
-                output.result || {},
-                resultMeta,
+            if (output && output.type === 'game_voice_stt_gate') return;
+            if (output && output.type === 'game_external_input') {
+              _showExternalUserVoiceBubble(output);
+              _markUserInputForVoiceArbiter(output.source || 'external-route-input');
+              _handlePassiveGuardUserSpeech(
+                _externalGameRouteInputText(output),
+                output.source || output.meta?.kind || 'external-route-input',
+              );
+              _logExternalGameRouteInput(output);
+              return;
+            }
+            if (!output || output.type !== 'game_llm_result') return;
+            const resultMeta = Object.assign({}, output.meta || { kind: 'external-text', voiceAlreadyHandled: true }, {
+              request_id: output.request_id || output.meta?.request_id || '',
+            });
+            const inputEpochSeconds = resultMeta.inputTs || output.input_ts || output.event?.inputTs || output.ts;
+            await _handleGameLLMResult(
+              output.result || {},
+              resultMeta,
               _performanceTimeFromEpochSeconds(inputEpochSeconds)
             );
-          }
-        } catch (e) {
-          soccerRecoverableLog('[SoccerRoute] 外部输入结果拉取失败:', e);
+          } catch (e) {
+            soccerRecoverableLog('[SoccerRoute] 外部输入结果处理失败:', e);
           }
         }
 
-      let _routeDrainTimer = null;
-      function _startRouteDrain() {
-        if (_routeDrainTimer) return;
-        _routeDrainTimer = setInterval(_drainExternalGameRouteOutputs, 700);
-      }
-      function _stopRouteDrain() {
-        if (!_routeDrainTimer) return;
-        clearInterval(_routeDrainTimer);
-        _routeDrainTimer = null;
+      soccerGame.events.on('runtime-output', ({ payload: output }) => (
+        _handleExternalGameRouteOutput(output)
+      ));
+
+      soccerGame.runtime.configure({
+        payload: () => _gameRoutePayload(),
+        heartbeat: {
+          intervalMs: 2500,
+          timeoutMs: GAME_ROUTE_HEARTBEAT_FETCH_TIMEOUT_MS,
+        },
+        outputs: {
+          intervalMs: 700,
+          timeoutMs: 8000,
+          limit: 50,
+        },
+        pageExit: {
+          payload: () => _gameRouteEndPayload(true, { reason: 'pagehide' }),
+        },
+      });
+
+      function _prepareGameLLMSessionCleanup() {
+        if (_llm.cleanedUp) return false;
+        _llm.cleanedUp = true;
+        passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
+        _clearVoiceArbiterPending('cleanup');
+        _clearVoiceArbiterInFlight('cleanup');
+        return true;
       }
 
-      async function _endGameLLMSession(useBeacon = false, options = {}) {
-        if (_llm.cleanedUp) return null;
-          _llm.cleanedUp = true;
-          passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1;
-          _stopRouteDrain();
-          _clearVoiceArbiterPending('cleanup');
-          _clearVoiceArbiterInFlight('cleanup');
-          if (useBeacon && _llm.speechPlaybackChannel) {
-            try { _llm.speechPlaybackChannel.close(); } catch (_) { /* noop */ }
-            _llm.speechPlaybackChannel = null;
-          }
-          _stopGameRouteHeartbeat();
-          _stopRouteVoiceSttGate();
-
-          const originalReason = options.reason || (useBeacon ? 'pagehide' : 'manual');
-          const accidentalExit = options.skipAccidentalEntryCheck !== true && _isAccidentalGameEntryExit();
-          const extraPayload = {
-            reason: accidentalExit ? 'accidental_page_entry' : originalReason,
-            originalReason,
-          };
-          if (accidentalExit) {
-            extraPayload.accidentalGameEntry = true;
-            extraPayload.postgameProactive = false;
-          }
+      function _gameRouteEndPayload(useBeacon = false, options = {}) {
+        const originalReason = options.reason || (useBeacon ? 'pagehide' : 'manual');
+        const accidentalExit = options.skipAccidentalEntryCheck !== true && _isAccidentalGameEntryExit();
+        const extraPayload = {
+          reason: accidentalExit ? 'accidental_page_entry' : originalReason,
+          originalReason,
+        };
+        if (accidentalExit) {
+          extraPayload.accidentalGameEntry = true;
+          extraPayload.postgameProactive = false;
+        }
         if (!accidentalExit && Object.prototype.hasOwnProperty.call(options, 'postgameProactive')) {
           extraPayload.postgameProactive = options.postgameProactive;
         }
-          const payload = _gameRoutePayload(extraPayload);
-        const url = '/api/game/soccer/end';
+        return _gameRoutePayload(extraPayload);
+      }
 
-        if (useBeacon && navigator.sendBeacon) {
-          try {
-            const ok = navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
-            if (ok) return { ok: true, beacon: true };
-          } catch (e) {
-            soccerRecoverableLog('[SoccerLLM] sendBeacon 清理失败:', e);
-          }
-        }
-
+      async function _endGameLLMSession(useBeacon = false, options = {}) {
+        if (!_prepareGameLLMSessionCleanup()) return null;
+        const payload = _gameRouteEndPayload(useBeacon, options);
         try {
-          const resp = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-            keepalive: true,
+          return await soccerGame.runtime.end(payload, {
+            useBeacon,
+            onBeaconError: (error) => soccerRecoverableLog('[SoccerLLM] sendBeacon 清理失败:', error),
           });
-          return await resp.json().catch(() => ({ ok: resp.ok, status: resp.status }));
         } catch (e) {
           soccerRecoverableLog('[SoccerLLM] 清理请求失败:', e);
           return { ok: false, reason: 'request_failed', error: String(e) };
@@ -6233,23 +5737,49 @@
       }
 
       let _prepareStartInFlight = false;
-      async function _prepareGameForStartScreen(text = _i18n('loading.beginStartDefault', '分析开局上下文…')) {
+      let _gameRouteStartOptions = {};
+      async function _prepareGameForStartScreen() {
         if (_prepareStartInFlight) return;
         _prepareStartInFlight = true;
         try {
-          _stopRouteDrain();
-          _stopGameRouteHeartbeat();
-          _stopRouteVoiceSttGate();
+          _renderGameVoiceChatControl({ available: false, reason: 'connecting' });
           _resetGameRouteRuntime({ active: true, newSession: true });
           _resetGameFieldForStartScreen();
-          window.__SoccerLoading?.beginStart?.(text);
-          await _startGameRoute();
+          _gameRouteStartOptions = _readGameRouteStartOptions();
+          if (gameMemoryToggle) gameMemoryToggle.disabled = false;
+          window.__SoccerLoading?.showStart?.();
         } finally {
           _prepareStartInFlight = false;
         }
       }
 
-      function _startGameFromStartScreen() {
+      async function _startGameFromStartScreen() {
+        if (_prepareStartInFlight || _llm.gameStarted || !window.__SoccerLoading?.canStart?.()) return;
+        _prepareStartInFlight = true;
+        if (gameMemoryToggle) gameMemoryToggle.disabled = true;
+        // Unlock browser audio in the user gesture, before network awaits.
+        void soccerGameAudio.unlock();
+        try {
+          await _startGameRoute();
+        } catch (error) {
+          let released = soccerGame.runtime.state === 'idle';
+          if (!released) {
+            try {
+              const result = await soccerGame.runtime.end(_gameRouteEndPayload(false, { reason: 'start_failed' }));
+              released = result.ok && result.data?.ok !== false;
+            } catch (_) { /* keep the unresolved generation for page-exit cleanup */ }
+          }
+          if (released) {
+            soccerGame.runtime.reset({ newSession: true });
+            if (gameMemoryToggle) gameMemoryToggle.disabled = false;
+            window.__SoccerLoading?.showStart?.(_i18n('startScreen.startFailedRetry', '启动失败，请重试'));
+          } else {
+            window.__SoccerLoading?.ended?.();
+          }
+          return;
+        } finally {
+          _prepareStartInFlight = false;
+        }
         const started = window.__SoccerLoading?.startGame?.();
         if (!started) return;
         _resetPassiveGuardForNewGame();
@@ -6377,6 +5907,7 @@
         console.log(`[Soccer] [PassiveGuard] [Modal] 结束/休息 | 类型=${type || '未知'} 处理=复用手动退出`);
         void _endGameAndShowClosePrompt();
       });
+      await _loadSurrenderReminderEnabled();
       _setSurrenderReminderEnabled(_readSurrenderReminderEnabled(), {
         persist: false,
         source: 'init',
@@ -6389,7 +5920,7 @@
         _enqueueLLMItem(_makeMailboxItemFromSpeak(p));
       });
 
-      async function _submitUserSpeech(text, source = 'debug-stt') {
+      function _submitUserSpeech(text, source = 'debug-text') {
         const clean = String(text || '').trim();
         if (!clean) return;
         const item = _makeMailboxItemFromUserSpeech(clean);
@@ -6398,27 +5929,6 @@
         _markUserInputForVoiceArbiter(source);
         console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
         _setVoiceStatus(_i18n('voiceStatus.received', `已收到玩家语音：${item.textRaw}`, { text: item.textRaw }));
-
-        const requestId = `debug-stt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        try {
-          const resp = await fetch('/api/game/soccer/route/voice-transcript', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: _gameRoutePayload({
-              transcript: clean,
-              source,
-              request_id: requestId,
-            }),
-          });
-          const data = await resp.json().catch(() => ({}));
-          if (resp.ok && data.ok && data.handled) {
-            _setVoiceStatus(_i18n('voiceStatus.debugSubmitted', `已提交调试 STT：${clean}`, { text: clean }));
-            return;
-          }
-          soccerRecoverableLog('[SoccerVoice] 调试 STT 后端路由未接收，回退本地队列:', data.reason || resp.status);
-        } catch (e) {
-          soccerRecoverableLog('[SoccerVoice] 调试 STT 提交失败，回退本地队列:', e);
-        }
 
         _enqueueLLMItem(item);
       }
@@ -6434,8 +5944,6 @@
         if (e.key === 'Enter') _submitVoiceTextInput();
       });
 
-      const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      let voiceRecognition = null;
       let voiceListening = false;
 
       function _setVoiceListening(next) {
@@ -6449,82 +5957,37 @@
           : _i18n('voiceStatus.debugIdle', '调试 STT：待机'));
       }
 
-      function _ensureVoiceRecognition() {
-        if (!BrowserSpeechRecognition) {
-          _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
-          console.warn('[SoccerVoice] 浏览器不支持 SpeechRecognition，调试 STT 文本框仍可提交最终转写');
-          return null;
-        }
-        if (voiceRecognition) return voiceRecognition;
-        voiceRecognition = new BrowserSpeechRecognition();
-        voiceRecognition.lang = _resolveSpeechLang();
-        voiceRecognition.continuous = false;
-        voiceRecognition.interimResults = false;
-        voiceRecognition.maxAlternatives = 1;
-        voiceRecognition.onstart = () => console.log('[SoccerVoice][DebugSTT][Diag] recognition start');
-        voiceRecognition.onaudiostart = () => console.log('[SoccerVoice][DebugSTT][Diag] audio start');
-        voiceRecognition.onsoundstart = () => console.log('[SoccerVoice][DebugSTT][Diag] sound start');
-        voiceRecognition.onspeechstart = () => console.log('[SoccerVoice][DebugSTT][Diag] speech start');
-        voiceRecognition.onspeechend = () => console.log('[SoccerVoice][DebugSTT][Diag] speech end');
-        voiceRecognition.onsoundend = () => console.log('[SoccerVoice][DebugSTT][Diag] sound end');
-        voiceRecognition.onaudioend = () => console.log('[SoccerVoice][DebugSTT][Diag] audio end');
-        voiceRecognition.onnomatch = (event) => console.warn('[SoccerVoice][DebugSTT][Diag] no match:', event);
-        voiceRecognition.onresult = (event) => {
-          const results = Array.from(event.results || []);
-          console.log('[SoccerVoice][DebugSTT][Diag] result event:', {
-            resultIndex: event.resultIndex,
-            resultCount: results.length,
-          });
-          const finalText = results
-            .map(r => r?.[0]?.transcript || '')
-            .join('')
-            .trim();
-          if (finalText) void _submitUserSpeech(finalText, 'debug-speech-recognition');
-        };
-        voiceRecognition.onerror = (event) => {
-          console.warn('[SoccerVoice] 识别错误:', event.error || event);
-          if ((event.error || '') === 'no-speech') {
-            console.warn('[SoccerVoice][DebugSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
-          }
-          _setVoiceStatus(_i18n('voiceStatus.recognitionError', `语音识别错误：${event.error || 'unknown'}`, { code: event.error || 'unknown' }));
-        };
-        voiceRecognition.onend = () => _setVoiceListening(false);
-        return voiceRecognition;
-      }
-
-      function _startVoiceRecognition() {
-        const rec = _ensureVoiceRecognition();
-        if (!rec || voiceListening) return;
+      async function _startVoiceRecognition() {
+        if (voiceListening || !soccerGame.capabilities.has('voice-input')) return;
+        _setVoiceListening(true);
         try {
-          rec.start();
-          _setVoiceListening(true);
-        } catch (e) {
-          console.warn('[SoccerVoice] 启动识别失败:', e);
+          const state = await soccerGame.voice.start();
+          _renderGameVoiceChatControl(state);
+          _setVoiceListening(state?.active === true);
+        } catch (error) {
+          console.warn('[SoccerVoice] 官方语音入口启动失败:', error);
           _setVoiceListening(false);
         }
       }
 
-      function _stopVoiceRecognition() {
-        if (!voiceRecognition || !voiceListening) return;
-        try { voiceRecognition.stop(); } catch (e) { console.warn('[SoccerVoice] 停止识别失败:', e); }
+      async function _stopVoiceRecognition() {
+        if (!voiceListening) return;
+        _setVoiceListening(false);
+        try {
+          const state = await soccerGame.voice.stop();
+          _renderGameVoiceChatControl(state);
+        } catch (error) {
+          console.warn('[SoccerVoice] 官方语音入口关闭失败:', error);
+        }
       }
 
       voiceMicButton?.addEventListener('mousedown', _startVoiceRecognition);
       voiceMicButton?.addEventListener('touchstart', (e) => { e.preventDefault(); _startVoiceRecognition(); }, { passive: false });
       window.addEventListener('mouseup', _stopVoiceRecognition);
       window.addEventListener('touchend', _stopVoiceRecognition);
-      if (!BrowserSpeechRecognition) {
-        _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
+      if (!soccerGame.capabilities.has('voice-input')) {
+        _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前宿主未提供语音输入能力，请用调试文本框提交'));
       }
-
-      window.addEventListener('pagehide', () => {
-        soccerGameAudio.destroy();
-        _endGameLLMSession(true);
-      });
-      window.addEventListener('beforeunload', () => {
-        soccerGameAudio.destroy();
-        _endGameLLMSession(true);
-      });
 
       let lastT = performance.now();
       function loop(t) {
@@ -6543,22 +6006,29 @@
         const dt = Math.min(0.033, (t - lastT) / 1000);
         lastT = t;
 
-        stepCharacter(state.player, state.mouse.x, state.mouse.y,
+        const playerControlX = playerPointerActive ? state.mouse.x : state.player.x + CFG.charSize/2;
+        const playerControlY = playerPointerActive ? state.mouse.y : state.player.y + CFG.charSize/2;
+        stepCharacter(state.player, playerControlX, playerControlY,
           CFG.playerMaxSpeed, CFG.playerAccel, dt);
-        aiDecide(dt);
-        aiMoodTick(dt);  // 心情副作用：startle/zoneout 计时
-        const at = aiTarget();
-        const diffCur = DIFFICULTY[difficultyIdx];
-        const moodCur = MOODS[moodKey];
-        // startle/zoneout 冻结期间 AI 原地不动
-        if (aiFreezeSec > 0) {
-          aiFreezeSec -= dt;
-          stepCharacter(state.ai, state.ai.x + CFG.charSize/2, state.ai.y + CFG.charSize/2,
-            1, 1, dt); // 目标就是当前位置 → 阻尼让它停下
+        if (singlePlayerMode) {
+          state.ai.vx = 0;
+          state.ai.vy = 0;
         } else {
-          const speedFactor = diffCur.speedMul * moodCur.speedMul;
-          stepCharacter(state.ai, at.x, at.y,
-            CFG.aiMaxSpeed * speedFactor, CFG.aiAccel * speedFactor, dt);
+          aiDecide(dt);
+          aiMoodTick(dt);  // 心情副作用：startle/zoneout 计时
+          const at = aiTarget();
+          const diffCur = DIFFICULTY[difficultyIdx];
+          const moodCur = MOODS[moodKey];
+          // startle/zoneout 冻结期间 AI 原地不动
+          if (aiFreezeSec > 0) {
+            aiFreezeSec -= dt;
+            stepCharacter(state.ai, state.ai.x + CFG.charSize/2, state.ai.y + CFG.charSize/2,
+              1, 1, dt); // 目标就是当前位置 → 阻尼让它停下
+          } else {
+            const speedFactor = diffCur.speedMul * moodCur.speedMul;
+            stepCharacter(state.ai, at.x, at.y,
+              CFG.aiMaxSpeed * speedFactor, CFG.aiAccel * speedFactor, dt);
+          }
         }
         // 玩家蓄力累积
         if (playerCharging) playerCharge = Math.min(1, playerCharge + dt / CHARGE_MAX_SEC);
@@ -6583,9 +6053,7 @@
         aiEl.style.transform = `translate3d(${acx - CFG.vrmW/2}px, ${aFeetY - CFG.vrmH}px, 0)`;
 
         // AI 盯着球
-        if (typeof window.__focusL2DAt === 'function') {
-          window.__focusL2DAt(state.ball.x, state.ball.y);
-        }
+        window.__SoccerAiAvatarController?.focus?.({ x: state.ball.x, y: state.ball.y });
 
         // 说话子系统：场景轮询 + 气泡同步到 AI 头顶
         speechTick(dt);
@@ -6869,9 +6337,14 @@
 
   };
 
+  const runInitializeSoccerPage = () => {
+    void initializeSoccerPage().catch((error) => {
+      console.error('[soccer_demo] initialization failed:', error);
+    });
+  };
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeSoccerPage, { once: true });
+    document.addEventListener('DOMContentLoaded', runInitializeSoccerPage, { once: true });
   } else {
-    initializeSoccerPage();
+    runInitializeSoccerPage();
   }
 })();

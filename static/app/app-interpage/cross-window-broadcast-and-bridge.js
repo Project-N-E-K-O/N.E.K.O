@@ -463,6 +463,10 @@
     var _pendingIcebreakerBridgeActions = [];
     var _icebreakerBridgeFlushTimer = null;
     var _icebreakerBridgeFlushAttempts = 0;
+    var _icebreakerBridgeAppendBarrier = Promise.resolve({
+        messageId: '',
+        succeeded: false
+    });
     var ICEBREAKER_BRIDGE_FLUSH_MAX_ATTEMPTS = 50;
 
     function scheduleIcebreakerBridgeFlush(delay) {
@@ -512,15 +516,35 @@
             try {
                 if (action.type === 'append' && action.message) {
                     shouldOpenHost = true;
-                    return Promise.resolve(host.appendMessage(action.message)).then(function (result) {
-                        if (!result) return result;
+                    var appendResult;
+                    try {
+                        appendResult = host.appendMessage(action.message);
+                    } catch (error) {
+                        appendResult = Promise.reject(error);
+                    }
+                    var appendPromise = Promise.resolve(appendResult).then(function (result) {
+                        if (!result) return false;
                         return waitForIcebreakerChatHostMounted(host).then(function () {
                             syncIcebreakerAssistantCompactCaption(action.message);
                             finalizeIcebreakerAssistantSubtitleTranslation(action.message);
-                            return result;
+                            return true;
                         });
                     }).catch(function (error) {
                         console.warn('[NewUserIcebreaker] Failed to append bridge message:', error);
+                        return false;
+                    });
+                    // Full Chat lives in an isolated Electron partition. Its final
+                    // handoff signal can arrive while appendMessage is still
+                    // committing the preceding assistant bubble, so retain a
+                    // cross-batch barrier for the semantic handoff below.
+                    _icebreakerBridgeAppendBarrier = Promise.all([
+                        _icebreakerBridgeAppendBarrier,
+                        appendPromise
+                    ]).then(function (results) {
+                        return {
+                            messageId: String(action.message.id || ''),
+                            succeeded: results[1] === true
+                        };
                     });
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
@@ -531,6 +555,18 @@
                         && action.source === 'new_user_icebreaker'
                         && typeof host.clearChoicePromptBySource === 'function') {
                     host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
+                } else if (action.type === 'galgame_handoff' && action.detail) {
+                    (function (handoffDetail) {
+                        Promise.resolve(_icebreakerBridgeAppendBarrier).then(function (appendStatus) {
+                            if (!appendStatus || appendStatus.succeeded !== true) return;
+                            if (appendStatus.messageId !== String(handoffDetail.messageId || '')) return;
+                            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                                detail: handoffDetail
+                            }));
+                        }).catch(function (error) {
+                            console.warn('[NewUserIcebreaker] Failed to dispatch GalGame handoff:', error);
+                        });
+                    })(action.detail);
                 }
             } catch (error) {
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
@@ -567,6 +603,14 @@
             type: 'clear_prompt_source',
             source: String(source || ''),
             reason: String(reason || '')
+        });
+    }
+
+    function dispatchIcebreakerGalgameHandoffFromBroadcast(detail) {
+        if (!I.isStandaloneChatPage()) return;
+        queueIcebreakerBridgeAction({
+            type: 'galgame_handoff',
+            detail: detail && typeof detail === 'object' ? detail : {}
         });
     }
 
@@ -654,6 +698,8 @@
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt_source'
+            || action === 'icebreaker_reset_session_state'
+            || action === 'icebreaker_galgame_handoff'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
     }
@@ -695,6 +741,17 @@
     I.handleIcebreakerBridgeData = function handleIcebreakerBridgeData(data) {
         if (!data || !data.action) return false;
         if (!I.isIcebreakerBridgeAction(data.action)) return false;
+        // Main-process document reloads invalidate Pet's in-memory activeSession.
+        // This reset is intentionally character-agnostic so retained compact/full
+        // chat renderers cannot keep a terminal handoff that the new Pet cannot serve.
+        if (data.action === 'icebreaker_reset_session_state') {
+            if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
+            clearIcebreakerChoicePromptSourceFromBroadcast(
+                'new_user_icebreaker',
+                data.reason || 'icebreaker-session-reset'
+            );
+            return true;
+        }
         if (!data.lanlan_name) return false;
         if (!I.getCurrentLanlanName()) {
             // Full Chat 的 preload 队列会早于异步配置注入排空。身份未知时不能把
@@ -719,6 +776,10 @@
             case 'icebreaker_clear_choice_prompt_source':
                 if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason);
+                return true;
+            case 'icebreaker_galgame_handoff':
+                if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
+                dispatchIcebreakerGalgameHandoffFromBroadcast(data.detail || data);
                 return true;
             case 'icebreaker_choice_selected':
                 if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
@@ -1215,6 +1276,10 @@
     pendingIcebreakerBridgeMessages.forEach(function (message) {
         I.handleIcebreakerBridgeData(message);
     });
+    var desktopIcebreakerBridge = window.nekoElectronIcebreakerBridge;
+    if (desktopIcebreakerBridge && typeof desktopIcebreakerBridge.send === 'function') {
+        desktopIcebreakerBridge.send({ action: 'icebreaker_page_ready' });
+    }
     I.yuiGuideInterpageResources.addEventListener(
         window,
         'neko:config-injected',
