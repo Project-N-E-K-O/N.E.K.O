@@ -9,7 +9,7 @@ def manager(vision=True, disabled=False, supported=True, key='tts-key', provider
     return SimpleNamespace(
         _config_manager=SimpleNamespace(get_model_api_config=lambda kind: {'api_key': 'vision-key' if vision else '', 'model': 'vision-model'}
                                         if kind == 'vision' else {'base_url': base_url}),
-        _resolve_tts_worker_spec=lambda: (None, key, '', provider, disabled, {}),
+        _resolve_tts_worker_spec=lambda: (None, key, '', provider, disabled, {'base_url': base_url}),
         _tts_worker_supports_completion=lambda *args: supported,
     )
 
@@ -48,6 +48,22 @@ def test_keyless_local_speech_still_requires_completion(monkeypatch, provider, s
 def test_gptsovits_invitation_uses_worker_url_validation(monkeypatch, url, available):
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
     assert preparation.is_available(manager(key='', provider='gptsovits', base_url=url)) is available
+
+
+@pytest.mark.parametrize('active_url,unused_url,available', [
+    ('invalid', 'http://127.0.0.1:9881', False),
+    ('http://127.0.0.1:9881', 'invalid', True),
+])
+def test_gptsovits_readiness_uses_resolved_route_config(monkeypatch, active_url, unused_url, available):
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    current = manager(key='', provider='gptsovits', base_url=active_url)
+    def model_config(kind):
+        if kind == 'vision':
+            return {'api_key': 'vision-key', 'model': 'vision-model'}
+        assert kind == 'tts_custom'
+        return {'base_url': unused_url}
+    current._config_manager.get_model_api_config = model_config
+    assert preparation.is_available(current) is available
 
 
 @pytest.mark.parametrize('missing', ['ffmpeg', 'ffprobe', None])
