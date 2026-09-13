@@ -1924,6 +1924,39 @@ async function main() {
   finishCancelledMount({dispose(){mediaDisposed++;}});
   assertCancelled(await lateMount);
   assert(mediaDisposed===2,'late cancelled controller was not disposed');
+  const assertInvalid=(error,message)=>assert(error instanceof window.NekoMiniGame.Error && error.code==='invalid_request',message);
+  mediaTransport.mountMedia=async()=>({dispose(){mediaDisposed++;},play(){},pause(){},interrupt(){}});
+  for(const config of [undefined,null,[],'config']){
+    assertInvalid(await mediaClient.media.mount(config).then(()=>null,error=>error),'invalid media mount config must expose the SDK invalid_request error');
+  }
+  const afterInvalidMount=await mediaClient.media.mount({});afterInvalidMount.dispose();
+  assert(mediaDisposed===3,'invalid media mount config left the media slot busy');
+  assertInvalid(await mediaClient.media.request('history',{text:'中'.repeat(30000)}).then(()=>null,error=>error),'media payload limit must count UTF-8 bytes');
+  const nonJson=await mediaClient.media.request('history',{value:1n}).then(()=>null,error=>error);
+  assertInvalid(nonJson,'non-JSON media payload must expose the SDK invalid_request error');
+  assert(/JSON/.test(nonJson.message),'non-JSON media payload lost its JSON error message');
+  assert(await mediaClient.media.request('history',{text:'a'.repeat(60000)}).then(()=>true,()=>false),'ASCII media payload under the byte limit was rejected');
+  // Evaluate both hostile inputs before asserting so one run shows each result.
+  const hostileFailures=[];
+  const throwingSignal=await mediaClient.media.mount({get signal(){throw Error('signal getter');}}).then(()=>null,error=>error);
+  const afterThrowingSignal=await mediaClient.media.mount({}).then(controller=>{controller.dispose();return null;},error=>error);
+  if(!(throwingSignal instanceof window.NekoMiniGame.Error && throwingSignal.code==='invalid_request')||afterThrowingSignal!==null)hostileFailures.push('a throwing config.signal getter left the media slot busy');
+  // Invariant: a request is either rejected or transports at most the budget,
+  // counted the way the host clones it (enumerable data, toJSON ignored).
+  const rawChars=value=>typeof value==='string'?value.length:(value&&typeof value==='object')?Object.entries(value).reduce((sum,[key,item])=>key==='toJSON'?sum:sum+key.length+rawChars(item),0):0;
+  class DisguisedPayload{constructor(){this.text='a'.repeat(70000);}toJSON(){return {};}}
+  const disguisedPayloads={
+    'prototype toJSON':()=>new DisguisedPayload(),
+    'nested toJSON':()=>({nested:{text:'a'.repeat(70000),toJSON(){return {};}}}),
+  };
+  for(const [label,makePayload] of Object.entries(disguisedPayloads)){
+    let sentMediaPayload=null;
+    mediaTransport.requestMedia=async(_action,payload)=>{sentMediaPayload=payload;return {};};
+    const outcome=await mediaClient.media.request('history',makePayload()).then(()=>null,error=>error);
+    const rejected=outcome instanceof window.NekoMiniGame.Error && outcome.code==='invalid_request';
+    if(!rejected&&!(sentMediaPayload&&rawChars(sentMediaPayload)<=65536))hostileFailures.push(`${label}: media payload limit measured toJSON() instead of the transported fields (sent ${rawChars(sentMediaPayload)} chars)`);
+  }
+  assert(hostileFailures.length===0,hostileFailures.join('; '));
   mediaClient.dispose();
   process.stdout.write('mini-game SDK runtime test passed\n');
 }

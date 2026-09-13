@@ -5901,22 +5901,34 @@
       async request(action, payload = {}) {
         requireCapability('media-timeline', 'media.request');
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
-        try { if (JSON.stringify(payload).length > 65536) fail('invalid_request', 'Media payload too large'); }
-        catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
+        // Serialize once and send the parsed result: toJSON() at any depth is
+        // applied exactly once, so the measured UTF-8 bytes are the transported
+        // data. Host fields are appended afterwards.
+        let body;
+        try { body = JSON.parse(JSON.stringify(payload)); }
+        catch (_) { fail('invalid_request', 'Media payload must be JSON'); }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail('invalid_request', 'Media payload must be an object');
+        if (jsonByteLength(body) > 65536) fail('invalid_request', 'Media payload too large');
         if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
-        try { return await transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId }); }
+        try { return await transport.requestMedia(action, { ...body, sdk_route_instance_id: runtimeRouteInstanceId }); }
         catch(error) { throw normalizeTransportError(error, 'media.request'); }
       },
       async mount(config) {
         requireCapability('media-timeline', 'media.mount');
         requireActiveRuntimeRoute('media.mount');
+        // Validate and read caller input before claiming the pending slot: an
+        // exception past that point would skip the finally below and leave every
+        // later mount busy.
+        if (!config || typeof config !== 'object' || Array.isArray(config)) fail('invalid_request', 'Media mount config must be an object');
+        let callerSignal;
+        try { callerSignal = config.signal; }
+        catch (_) { fail('invalid_request', 'Media mount config signal is unreadable'); }
         if (mediaControllers.size || mediaMountPending) fail('busy', 'A media timeline is already mounted');
         const generation = runtimeRouteInstanceId;
         mediaMountPending = true;
         mediaMountAbort = new AbortControllerImpl();
         const mountAbort = mediaMountAbort;
-        const callerSignal = config.signal;
         const abortFromCaller = () => mountAbort.abort();
         let controller;
         try {
