@@ -1994,7 +1994,7 @@ async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() 
     )
 
     barrier = source.index("async with core_voice_session_lock")
-    close = source.index("await old_main_session.close()")
+    close = source.index("await self._close_owned_session(old_main_session)")
     promote = source.index("self.session = new_session")
     assert barrier < close < promote
 
@@ -7570,6 +7570,7 @@ async def test_old_pipeline_failure_does_not_report_replacement_provider() -> No
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     order: list[str] = []
     manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager._bg_tasks = set()
     manager.lock = asyncio.Lock()
     manager.input_cache_lock = asyncio.Lock()
     manager.is_active = False
@@ -7599,6 +7600,9 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
         async def handle_messages(self) -> None:
             await stop.wait()
 
+        async def close(self) -> None:
+            stop.set()
+
     manager.session = _Session()
 
     await LLMSessionManager._start_session_activate(
@@ -7611,6 +7615,8 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     assert order == ["asr", "started"]
     stop.set()
     await manager.message_handler_task
+    await asyncio.gather(*tuple(manager._bg_tasks))
+    manager._flush_pending_input_data.assert_awaited_once()
 
 
 async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> None:

@@ -147,6 +147,11 @@ class StreamingMixin:
                     dropped_text_for_voice = 0
                     for index, message in enumerate(pending_messages):
                         msg_input_type = message.get("input_type")
+                        # Dispatch can submit to the provider before yielding
+                        # again. Once attempted, cancellation cannot prove the
+                        # current item was uncommitted, so only its untouched
+                        # suffix may be restored to the local queue.
+                        next_unprocessed = index + 1
                         try:
                             if msg_input_type == "audio":
                                 await self._enqueue_audio_stream_data(message)
@@ -242,7 +247,10 @@ class StreamingMixin:
             }
         # 检查session是否就绪
         async with self.input_cache_lock:
-            if getattr(self, "_pending_input_flush_active", False):
+            if (
+                getattr(self, "_pending_input_flush_active", False)
+                or getattr(self, "_pending_input_flush_scheduled", None) is not None
+            ):
                 # Replay owns ordering until its current batch finishes. Queue
                 # live input behind it instead of racing the same offline
                 # session's stream_text/stream_image call.
@@ -394,6 +402,15 @@ class StreamingMixin:
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
+        if input_type == "audio" and any(
+            not retirement.handoff_safe.is_set()
+            for retirement in getattr(self, "_session_retirements", ())
+        ):
+            # A detached old session is inactive before its ASR and output
+            # producers finish. PCM already in flight must not treat that gap
+            # as an auto-start request. After handoff the ordinary startup and
+            # microphone lease guards decide whether new audio is admissible.
+            return
         if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
@@ -408,8 +425,19 @@ class StreamingMixin:
         
         # 如果正在启动session，这不应该发生（因为stream_data已经检查过了）
         if self._starting_session_count > 0:
-            logger.debug("Session正在启动中，跳过...")
-            return
+            operation = self._current_start_request()
+            owns_ready_flush = (
+                operation is not None
+                and operation is getattr(self, "_start_operation", None)
+                and operation.valid
+                and self.session_ready
+                and self.is_active
+                and self.session is not None
+                and getattr(self, "_pending_input_flush_active", False)
+            )
+            if not owns_ready_flush:
+                logger.debug("Session正在启动中，跳过...")
+                return
 
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:

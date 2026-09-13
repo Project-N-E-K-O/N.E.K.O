@@ -694,10 +694,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # expected_session pins the identity for the gap between this check
             # and the fired task actually running. getattr-guarded like the rest
             # of this helper: narrow manager doubles do not carry every field.
-            _fire_task(
-                voice_mgr.end_session(
-                    expected_session=getattr(voice_mgr, "session", None)
-                )
+            voice_mgr.request_end_session(
+                expected_session=getattr(voice_mgr, "session", None)
             )
             return
         if message.get("action") == "voice_input_control":
@@ -1072,11 +1070,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 end_reason = str(message.get("reason") or "").strip().lower()[:64]
                 if bool(message.get("goodbye_active")) or end_reason == "goodbye":
                     session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "voice_input_control":
                 # Any MicLease control message engages voice input for this

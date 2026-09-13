@@ -353,6 +353,9 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
         enqueue=_fake_enqueue,
         resume_dispatch=lambda: None,
         pause_dispatch=lambda: None,
+        begin_turn_preparation=lambda: None,
+        end_turn_preparation=lambda: None,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_ticket=AsyncMock(),
         cancel_current=AsyncMock(),
     )
@@ -417,6 +420,9 @@ async def test_lost_ownership_downgrades_before_the_oversize_check_fails_the_tur
         resume_dispatch=lambda: None,
         pause_dispatch=lambda: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda: None,
+        end_turn_preparation=lambda: None,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
     client._ensure_response_arbiter = lambda: _arbiter
@@ -539,6 +545,9 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
         resume_dispatch=lambda: None,
         pause_dispatch=lambda: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda: None,
+        end_turn_preparation=lambda: None,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
     client._ensure_response_arbiter = lambda: _arbiter
@@ -2017,6 +2026,9 @@ def _fake_arbiter(captured: list, *, sent_cancelled: bool = False):
         resume_dispatch=lambda: None,
         pause_dispatch=lambda: None,
         cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda: None,
+        end_turn_preparation=lambda: None,
+        allow_ticket_while_paused=lambda ticket: None,
         cancel_current=AsyncMock(),
     )
 

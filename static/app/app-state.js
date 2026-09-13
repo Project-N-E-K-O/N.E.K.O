@@ -409,6 +409,20 @@
         return (owner && startRequestIdByOwner.get(owner)) || null;
     };
 
+    // A local retired request is different from another window's live session:
+    // observers must still synchronize the latter, including text-mode mic stop.
+    window.sessionStartNotificationIsRetired = function (response) {
+        var requestId = response && response.request_id;
+        if (typeof requestId !== 'string'
+                || !requestId.startsWith(startRequestIdWindowTag + '-')) return false;
+        return !S.sessionStartedResolver || requestId !== S._pendingSessionStartRequestId;
+    };
+
+    window.sessionStartNotificationAnswersPending = function (response) {
+        return !S.sessionStartedResolver || !S._pendingSessionStartRequestId
+            || response.request_id === S._pendingSessionStartRequestId;
+    };
+
     /**
      * The current claim count, for a flow that must detect takeovers BEFORE it
      * has an owner token of its own -- the automatic restart spends 7.5s in a

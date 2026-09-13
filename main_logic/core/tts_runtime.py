@@ -55,6 +55,9 @@ from queue import Queue
 from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
+from .tts_records import (
+    TTS_FRAME_WRITE_TIMEOUT_SECONDS, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime,
+)
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import
@@ -381,8 +384,11 @@ class TtsRuntimeMixin:
         rotation), the worker went away, or chunks are still waiting to be
         replayed to it.
         """
+        runtime = self._snapshot_tts_runtime()
         await asyncio.sleep(self._tts_soft_flush_idle_seconds())
         async with self.tts_cache_lock:
+            if not self._tts_runtime_is_current(runtime):
+                return
             if self._tts_done_queued_for_turn or self._tts_done_pending_until_ready:
                 return
             if speech_id is None or speech_id != self.current_speech_id:
@@ -462,7 +468,10 @@ class TtsRuntimeMixin:
         if not self.use_tts:
             return "disabled"
 
+        runtime = self._snapshot_tts_runtime()
         async with self.tts_cache_lock:
+            if not self._tts_runtime_is_current(runtime) or not self._tts_output_is_current():
+                return "stale"
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
                     "%s: stale TTS done skipped (expected=%s current=%s)",
@@ -484,6 +493,7 @@ class TtsRuntimeMixin:
         worker_key = getattr(self, "_tts_runtime_key", None)
         return bool(
             self.tts_ready
+            and self._tts_runtime_is_current(self._snapshot_tts_runtime())
             and self.tts_thread is not None
             and self.tts_thread.is_alive()
             and current_key == worker_key
@@ -1040,6 +1050,26 @@ class TtsRuntimeMixin:
         # False 而跳过它们的 done 补发，合成器一直不 flush。所以它留在下面不动。
         # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
         # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
+        runtime = self._snapshot_tts_runtime()
+        request_queue = self.tts_request_queue
+        response_queue = self.tts_response_queue
+        if not self._tts_runtime_is_current(runtime) or not self._tts_output_is_current():
+            return
+
+        def clear_responses():
+            # A cancelled handler still owns its executor's blocking get().
+            # Discard audio, but return its wakeups after draining the queue.
+            wakeups = []
+            while not response_queue.empty():
+                try:
+                    item = response_queue.get_nowait()
+                except Exception:
+                    break
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__handler_exit__":
+                    wakeups.append(item)
+            for item in wakeups:
+                response_queue.put_nowait(item)
+
         self._tts_done_queued_for_turn = False
         # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
         # await 之前同步取消，让它和 __interrupt__ 入队一起落地。
@@ -1048,25 +1078,21 @@ class TtsRuntimeMixin:
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
         if self.tts_thread and self.tts_thread.is_alive():
-            while not self.tts_response_queue.empty():
-                try:
-                    self.tts_response_queue.get_nowait()
-                except Exception:
-                    break
+            clear_responses()
             try:
-                self.tts_request_queue.put(("__interrupt__", None))
+                request_queue.put(("__interrupt__", None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS中断信号失败: {e}")
             self._reset_tts_stream_normalizer()
             # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
             # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
             await asyncio.sleep(0.02)
-            while not self.tts_response_queue.empty():
-                try:
-                    self.tts_response_queue.get_nowait()
-                except Exception:
-                    break
+            clear_responses()
         async with self.tts_cache_lock:
+            if (not self._tts_runtime_is_current(runtime)
+                    or response_queue is not self.tts_response_queue
+                    or not self._tts_output_is_current()):
+                return
             self.tts_pending_chunks.clear()
             # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
             # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
@@ -1105,9 +1131,12 @@ class TtsRuntimeMixin:
                 GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
             handler_task.cancel()
             try:
-                await asyncio.wait_for(handler_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+                await asyncio.wait_for(asyncio.shield(handler_task), timeout=1.0)
+            except asyncio.CancelledError:
+                if not handler_task.done() or asyncio.current_task().cancelling():
+                    raise
+            except asyncio.TimeoutError:
+                raise TimeoutError("TTS response handler did not stop before handoff")
         if self.tts_handler_task is handler_task:
             self.tts_handler_task = None
             if getattr(self, "_tts_handler_response_queue", None) is handler_queue:
@@ -1115,12 +1144,21 @@ class TtsRuntimeMixin:
 
     def _start_tts_response_handler(self):
         """Start one handler and bind its ownership to the captured response queue."""
-        task = asyncio.create_task(self.tts_response_handler())
+        runtime = self._snapshot_tts_runtime()
+        if not self._tts_runtime_is_current(runtime):
+            raise RuntimeError("Cannot start a handler for retired TTS runtime")
+        token = tts_output_runtime.set(runtime)
+        try:
+            task = asyncio.create_task(self.tts_response_handler())
+        finally:
+            tts_output_runtime.reset(token)
         self.tts_handler_task = task
         self._tts_handler_response_queue = self.tts_response_queue
+        if runtime is not None:
+            runtime.handler = task
         return task
 
-    async def ensure_tts_pipeline_alive(self) -> None:
+    async def ensure_tts_pipeline_alive(self, *, deadline=None) -> None:
         """Light TTS startup helper: spawn worker + handler task if not alive.
 
         Does NOT wait for ``__ready__`` — callers that need confirmed-ready
@@ -1129,11 +1167,27 @@ class TtsRuntimeMixin:
         to wait at all (the handler picks up pending chunks once
         ``tts_ready`` flips).
         """
-        if not (self.tts_thread and self.tts_thread.is_alive()):
+        runtime = self._snapshot_tts_runtime()
+        if not (self.tts_thread and self.tts_thread.is_alive()
+                and self._tts_runtime_is_current(runtime)):
             # A live handler can still be blocked on the response queue owned
             # by a worker that was shut down for native Realtime voice. It must
             # not survive across the fresh queues created by _start_tts_thread.
             await self._stop_tts_response_handler()
+            check = getattr(self, "_check_start_operation", None)
+            if check:
+                check()
+            worker = self._resolve_tts_worker_spec()[0] if hasattr(self, "_config_manager") else None
+            await self._wait_tts_capacity(deadline, worker=worker)
+            if check:
+                check()
+            # Another lazy startup may have installed a healthy worker while
+            # this caller was waiting for the handler or a capacity slot.
+            runtime = self._snapshot_tts_runtime()
+            if self.tts_thread and self.tts_thread.is_alive() and self._tts_runtime_is_current(runtime):
+                if self.tts_handler_task is None or self.tts_handler_task.done():
+                    self._start_tts_response_handler()
+                return
             self._start_tts_thread(
                 preserve_provider_exclusions=bool(
                     getattr(self, "_tts_excluded_provider_keys", frozenset())
@@ -1203,6 +1257,16 @@ class TtsRuntimeMixin:
         tts_ready is reset to False around the call; the new worker must send
         __ready__ again.
         """
+        check = getattr(self, "_check_start_operation", None)
+        if check:
+            check()
+        if self._live_tts_runtime_count() >= 2:
+            self._tts_capacity_exhausted = True
+            raise TtsCapacityError("Two TTS worker resources are still alive")
+        old_runtime = self._snapshot_tts_runtime()
+        if old_runtime is not None and not old_runtime.retired:
+            self._retire_tts_runtime(old_runtime)
+        self._tts_capacity_exhausted = False
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
         self._tts_runtime_key = None
@@ -1214,6 +1278,9 @@ class TtsRuntimeMixin:
         tts_worker, api_key, route_voice_id, provider_key, disabled, tts_config = (
             self._resolve_tts_worker_spec()
         )
+        if self._live_tts_runtime_count() >= self._tts_capacity_limit(tts_worker):
+            self._tts_capacity_exhausted = True
+            raise TtsCapacityError("TTS worker requires prior runtime to exit")
         if disabled:
             logger.info("TTS 已被用户禁用, 使用 dummy worker")
         self._tts_completion_supported = self._tts_worker_supports_completion(
@@ -1249,10 +1316,22 @@ class TtsRuntimeMixin:
         )
         self._tts_active_provider_key = provider_key
         self._tts_runtime_key = self._build_tts_runtime_key()
-        self.tts_thread.start()
+        runtime = TtsRuntimeRecord(
+            self.tts_thread, self.tts_request_queue, self.tts_response_queue,
+            supports_runtime_overlap=bool(getattr(tts_worker, "supports_runtime_overlap", True)),
+        )
+        self._tts_runtimes.append(runtime)
+        self._tts_runtime = runtime
+        try:
+            self.tts_thread.start()
+        except BaseException:
+            self._retire_tts_runtime(runtime)
+            raise
 
     def _activate_configured_tts_fallback(self, failure_stage: str) -> bool:
         """Exclude a failed configured provider and restart with existing order."""
+        if not self._tts_output_is_current():
+            return False
         failed_provider = getattr(self, "_tts_active_provider_key", None)
         if not _core_facade.tts_provider_falls_back_on_failure(failed_provider):
             return False
@@ -1260,6 +1339,10 @@ class TtsRuntimeMixin:
         excluded = frozenset(getattr(self, "_tts_excluded_provider_keys", frozenset()))
         if failed_provider in excluded:
             return False
+
+        if self._live_tts_runtime_count() >= 2:
+            self._tts_capacity_exhausted = True
+            raise TtsCapacityError("TTS fallback cannot exceed two live workers")
 
         # The ledger is authoritative after response.done: some realtime paths
         # rotate ``current_speech_id`` before trailing TTS audio has finished.
@@ -1318,11 +1401,11 @@ class TtsRuntimeMixin:
         # 替代 worker 不继承故障 provider 的错误码和提示次数。
         self._last_tts_error_code = ''
         self._tts_retry_notify_count = 0
-        old_request_queue = self.tts_request_queue
-        try:
-            old_request_queue.put(("__shutdown__", None))
-        except Exception:
-            logger.debug("关闭故障 TTS worker 失败，继续启动保底 worker", exc_info=True)
+        old_runtime = self._snapshot_tts_runtime()
+        if old_runtime is not None:
+            self._retire_tts_runtime(old_runtime, stop_handler=False)
+        else:
+            self.tts_request_queue.put(("__shutdown__", None))
 
         logger.warning(
             "自定义 TTS API provider=%s 在%s阶段失败；开始按既有顺序选择保底 provider",
@@ -1371,65 +1454,32 @@ class TtsRuntimeMixin:
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
-        """Tear down TTS handler task, worker thread, and drain queues.
-
-        Operates only on the snapshot references passed in to prevent
-        accidentally killing resources that have been recreated by a
-        concurrent start_session.
-        """
-        if handler_task_ref and not handler_task_ref.done():
-            handler_task_ref.cancel()
-            try:
-                await asyncio.wait_for(handler_task_ref, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancel echo or slow exit of the superseded handler — proceed either way.
-                pass
-            if self.tts_handler_task is handler_task_ref:
-                self.tts_handler_task = None
-                if getattr(self, "_tts_handler_response_queue", None) is resp_queue_ref:
-                    self._tts_handler_response_queue = None
-
-        if thread_ref and thread_ref.is_alive():
-            try:
-                # 使用独立的 shutdown sentinel；(None, None) 在 worker 里是
-                # "本轮 utterance 结束、flush 缓冲区"，并不会让 worker 退出。
-                req_queue_ref.put(("__shutdown__", None))
-                await asyncio.to_thread(thread_ref.join, 2.0)
-            except Exception as e:
-                logger.error(f"💥 关闭TTS线程时出错: {e}")
-
-            if thread_ref.is_alive():
-                logger.warning("⚠️ TTS worker 未在超时内退出，清除引用以允许重建")
-                if self.tts_thread is thread_ref:
-                    self.tts_thread = None
-            else:
-                if self.tts_thread is thread_ref:
-                    self.tts_thread = None
-                # 仅在线程确实已停止后才安全地清空队列
-                try:
-                    while not req_queue_ref.empty():
-                        req_queue_ref.get_nowait()
-                except Exception:
-                    # Queue drained concurrently — nothing left to clear.
-                    pass
-                try:
-                    while not resp_queue_ref.empty():
-                        resp_queue_ref.get_nowait()
-                except Exception:
-                    # Queue drained concurrently — nothing left to clear.
-                    pass
-
-        # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
-        # 避免新 session 已创建新队列/worker 后被旧 teardown 误重置
-        if resp_queue_ref is self.tts_response_queue:
-            self._cancel_tts_soft_flush()
+        """Retire only the captured resources; caller cancellation leaves cleanup owned."""
+        self._init_tts_lifecycle_state()
+        runtime = next((record for record in self._tts_runtimes
+                        if record.thread is thread_ref
+                        and record.request_queue is req_queue_ref
+                        and record.response_queue is resp_queue_ref), None)
+        if runtime is None:
+            runtime = TtsRuntimeRecord(thread_ref, req_queue_ref, resp_queue_ref)
+            runtime.handler = handler_task_ref
+            self._tts_runtimes.append(runtime)
+        elif runtime.handler is None:
+            runtime.handler = handler_task_ref
+        self._retire_tts_runtime(runtime)
+        if (req_queue_ref is getattr(self, "tts_request_queue", None)
+                and resp_queue_ref is getattr(self, "tts_response_queue", None)):
+            # Direct teardown still owns this runtime's game completion slot.
+            # Do this before suspending; a retired runtime's later thread exit
+            # must never clear a replacement's completion or correlation.
             self._cancel_game_speech_completion_wait()
             self._clear_game_speech_correlation()
-            self.cancel_game_speech_preloads()
-            GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
-            async with self.tts_cache_lock:
-                self.tts_ready = False
-                self.tts_pending_chunks.clear()
+        # The timeout bounds this caller, not the owned worker lifetime. A live
+        # timed-out thread stays registered and continues consuming its slot.
+        try:
+            await asyncio.wait_for(asyncio.shield(runtime.cleanup_task), 2.0)
+        except asyncio.TimeoutError:
+            logger.warning("TTS worker cleanup remains registered after timeout")
 
     def _respawn_tts_worker(self):
         """Respawn the TTS worker when its thread is detected dead, without blocking for readiness.
@@ -1441,6 +1491,11 @@ class TtsRuntimeMixin:
         Rate limit: at most one respawn per 12 seconds, avoiding a reconnect
         storm when the service is completely down.
         """
+        if not self._tts_output_is_current() or getattr(self, "_tts_capacity_exhausted", False):
+            return
+        runtime = self._snapshot_tts_runtime()
+        if runtime is not None and runtime.retired:
+            return
         if self.tts_thread and self.tts_thread.is_alive():
             return
 
@@ -1476,7 +1531,13 @@ class TtsRuntimeMixin:
 
     async def _flush_tts_pending_chunks(self):
         """Send the cached TTS text chunks to the TTS queue"""
+        runtime = self._snapshot_tts_runtime()
+        response_queue = getattr(self, "tts_response_queue", None)
         async with self.tts_cache_lock:
+            if (not self._tts_runtime_is_current(runtime)
+                    or not self._tts_output_is_current()
+                    or response_queue is not getattr(self, "tts_response_queue", None)):
+                return
             if self.tts_pending_chunks:
                 chunk_count = len(self.tts_pending_chunks)
                 logger.info(f"TTS就绪，开始处理缓存的 {chunk_count} 个文本chunk...")
@@ -1738,11 +1799,38 @@ class TtsRuntimeMixin:
 
     async def _write_audio_frame(self, websocket, header: dict, tts_audio) -> None:
         """Write one header/payload pair. The caller holds the frame lock."""
-        await websocket.send_json(header)
-        await websocket.send_bytes(tts_audio)
-        # Under the same lock: the monitor mirror consumes this queue in order,
-        # so a frame that is atomic on the wire must not be split here either.
-        self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+        async def write_frame():
+            try:
+                async with asyncio.timeout(TTS_FRAME_WRITE_TIMEOUT_SECONDS):
+                    await websocket.send_json(header)
+                    await websocket.send_bytes(tts_audio)
+            except TimeoutError:
+                # A partial frame must never be followed by another frame on
+                # this socket. Close the captured transport, not a successor.
+                try:
+                    async with asyncio.timeout(1.0):
+                        await websocket.close(code=1011)
+                except Exception:
+                    logger.warning("Failed to close stalled TTS audio transport", exc_info=True)
+                raise WebSocketDisconnect(code=1011) from None
+            self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+
+        writing = asyncio.create_task(write_frame())
+        cancelled = False
+        while not writing.done():
+            try:
+                await asyncio.shield(writing)
+            except asyncio.CancelledError:
+                cancelled = True
+        # Retirement cannot release the frame lock with a header already sent
+        # and the corresponding payload still pending. The handler stays part
+        # of the handoff barrier until this pair finishes, even under repeated
+        # cancellation. The writer itself times out and closes a partial stream.
+        if cancelled:
+            if not writing.cancelled():
+                writing.exception()
+            raise asyncio.CancelledError
+        writing.result()
 
     def _audio_chunk_header(self, effective_speech_id: str) -> dict:
         header = {
@@ -1830,11 +1918,15 @@ class TtsRuntimeMixin:
             # is reassigned by reconnect/teardown, which are not senders and do not
             # take it -- so re-reading the attribute per await could put the header
             # on the retired socket and its payload on the replacement.
+            if not self._tts_output_is_current():
+                return False
             websocket = self.websocket
             if websocket and hasattr(websocket, 'client_state') and websocket.client_state == websocket.client_state.CONNECTED:
                 effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
                 header = self._audio_chunk_header(effective_speech_id)
                 async with self._ensure_audio_frame_send_lock():
+                    if not self._tts_output_is_current():
+                        return False
                     if websocket is not self.websocket:
                         # Reconnect/teardown landed while this call was queued for
                         # the frame lock. The pin above keeps the frame whole; it
@@ -1846,6 +1938,8 @@ class TtsRuntimeMixin:
                         )
                         return False
                     await self._write_audio_frame(websocket, header, tts_audio)
+                if not self._tts_output_is_current():
+                    return False
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
                 self._speech_output_total += 1
                 self._last_speech_output_time = time.time()
@@ -1877,7 +1971,7 @@ class TtsRuntimeMixin:
         ``send_speech`` this is not mirrored to ``sync_message_queue``: no
         monitor/viewer surface consumes audio.
         """
-        if not speech_id:
+        if not speech_id or not self._tts_output_is_current():
             # 无主信号会让前端给错误的一轮收尾，宁可不发。
             return False
         try:
@@ -1894,6 +1988,8 @@ class TtsRuntimeMixin:
                 if correlation_id:
                     message["sdk_speech_correlation_id"] = correlation_id
                 async with self._ensure_audio_frame_send_lock():
+                    if not self._tts_output_is_current():
+                        return False
                     if websocket is not self.websocket:
                         logger.warning(
                             f"⚠️ send_audio_done skipped: websocket replaced while waiting for the frame lock, speech_id={speech_id}"
@@ -1914,11 +2010,16 @@ class TtsRuntimeMixin:
             return False
         finally:
             # The stream lifecycle is over even when the client disconnected.
-            self.release_speech_playback_gain(speech_id)
-            self._clear_game_speech_correlation(speech_id)
+            if self._tts_output_is_current():
+                self.release_speech_playback_gain(speech_id)
+                self._clear_game_speech_correlation(speech_id)
 
     async def tts_response_handler(self):
-        q = self.tts_response_queue
+        runtime = tts_output_runtime.get() or self._snapshot_tts_runtime()
+        q = runtime.response_queue if runtime is not None else self.tts_response_queue
+        if not self._tts_runtime_is_current(runtime):
+            return
+        tts_output_runtime.set(runtime)
         pending_failed_speech_id = ""
         notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
         if notified_error_keys is None:
@@ -1928,12 +2029,20 @@ class TtsRuntimeMixin:
             notified_error_keys = set()
             self._tts_notified_error_keys = notified_error_keys
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
+        pending_get = None
         while True:
+            if not self._tts_runtime_is_current(runtime) or q is not self.tts_response_queue:
+                return
             try:
                 # 阻塞 get 挂在线程池里，无消息时主 event loop 完全沉默；
                 # 取消时 except CancelledError 分支会 push 哨兵唤醒线程池里那个
                 # 仍在 q.get() 上的线程，避免线程泄漏。
-                data = await asyncio.to_thread(q.get)
+                pending_get = asyncio.create_task(asyncio.to_thread(q.get))
+                data = await asyncio.shield(pending_get)
+                pending_get = None
+                if (not self._tts_runtime_is_current(runtime)
+                        or q is not self.tts_response_queue):
+                    return
 
                 # 处理 cancel 时为唤醒泄漏线程而 push 的哨兵。同一个 handler 实例
                 # 不会在 cancel 之后继续运行（CancelledError 已 raise），所以这里
@@ -1972,6 +2081,8 @@ class TtsRuntimeMixin:
                         # 前面，前端提前收尾——正是本信号要解决的问题。
                         speech_id = data[1]
                         done_sent = await self.send_audio_done(speech_id)
+                        if not self._tts_runtime_is_current(runtime):
+                            return
                         if not done_sent:
                             self._mark_game_speech_delivery_failed(speech_id)
                         delivered = self._game_speech_delivery_succeeded(speech_id)
@@ -1996,6 +2107,8 @@ class TtsRuntimeMixin:
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
                         async with self.tts_cache_lock:
+                            if not self._tts_runtime_is_current(runtime) or q is not self.tts_response_queue:
+                                return
                             self.tts_ready = ready_flag
                         if ready_flag:
                             self._last_tts_error_code = ''
@@ -2008,6 +2121,11 @@ class TtsRuntimeMixin:
                             # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
                             if self._activate_configured_tts_fallback("初始化"):
                                 q = self.tts_response_queue
+                                runtime = self._snapshot_tts_runtime()
+                                tts_output_runtime.set(runtime)
+                                if runtime is not None:
+                                    runtime.handler = asyncio.current_task()
+                                self._tts_handler_response_queue = q
                                 continue
                             # 复用 __error__ 分支记录的 code 判断是否重试
                             _last_code = self._last_tts_error_code
@@ -2019,6 +2137,8 @@ class TtsRuntimeMixin:
                                     self._tts_respawn_task = None
                                 # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
                                 async with self.tts_cache_lock:
+                                    if not self._tts_runtime_is_current(runtime):
+                                        return
                                     self.tts_pending_chunks.clear()
                             else:
                                 logger.warning("⚠️ 收到TTS未就绪信号，13秒后尝试重新拉起Worker")
@@ -2030,8 +2150,11 @@ class TtsRuntimeMixin:
                                 _expected_session = self.session
                                 _expected_use_tts = self.use_tts
                                 async def _delayed_respawn(_expected_session=_expected_session,
-                                                           _expected_use_tts=_expected_use_tts):
+                                                           _expected_use_tts=_expected_use_tts,
+                                                           _expected_runtime=runtime):
                                     await asyncio.sleep(13)
+                                    if not self._tts_runtime_is_current(_expected_runtime):
+                                        return
                                     if not self.is_active or self.tts_ready:
                                         return
                                     if self.session is not _expected_session or self.use_tts != _expected_use_tts:
@@ -2043,14 +2166,16 @@ class TtsRuntimeMixin:
                         continue
                     elif data[0] == "__warning__":
                         # TTS worker 发来的提示性消息（如水印检测），直接转发前端
-                        self._fire_task(self.send_status(data[1]))
+                        # Keep the transport write inside the handler lifetime:
+                        # retirement drains this task before allowing handoff.
+                        await self.send_status(data[1])
                         continue
                     elif data[0] == "__reconnecting__":
                         self._tts_retry_notify_count += 1
                         logger.info(f"🌊 TTS 正在自动重连 (retry {self._tts_retry_notify_count})")
                         if self._tts_retry_notify_count >= 3:
                             user_msg = json.dumps({"code": "TTS_RECONNECTING", "level": "info"})
-                            self._fire_task(self.send_status(user_msg))
+                            await self.send_status(user_msg)
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]
@@ -2069,6 +2194,11 @@ class TtsRuntimeMixin:
                         # 自定义 API 运行时出错后，仅切换 provider；现有保底顺序不变。
                         if self._activate_configured_tts_fallback("运行时"):
                             q = self.tts_response_queue
+                            runtime = self._snapshot_tts_runtime()
+                            tts_output_runtime.set(runtime)
+                            if runtime is not None:
+                                runtime.handler = asyncio.current_task()
+                            self._tts_handler_response_queue = q
                             continue
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
@@ -2172,11 +2302,14 @@ class TtsRuntimeMixin:
                             continue
                         if error_speech_id and error_code:
                             notified_error_keys.add(notification_key)
-                        self._fire_task(self.send_status(user_msg))
+                        await self.send_status(user_msg)
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
-                    if await self.send_speech(audio_payload, speech_id=speech_id):
+                    sent = await self.send_speech(audio_payload, speech_id=speech_id)
+                    if not self._tts_runtime_is_current(runtime):
+                        return
+                    if sent:
                         GAME_SPEECH_AUDIO_CACHE.append_capture(self, speech_id, audio_payload)
                         self._tts_replay_audio_emitted = True
                         self._tts_replay_sentence_audio_emitted = True
@@ -2200,7 +2333,10 @@ class TtsRuntimeMixin:
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 implicit_speech_id = str(getattr(self, "current_speech_id", "") or "")
-                if await self.send_speech(data):
+                sent = await self.send_speech(data)
+                if not self._tts_runtime_is_current(runtime):
+                    return
+                if sent:
                     GAME_SPEECH_AUDIO_CACHE.append_unscoped_capture(
                         self, implicit_speech_id, data
                     )
@@ -2210,18 +2346,27 @@ class TtsRuntimeMixin:
                     GAME_SPEECH_AUDIO_CACHE.fail_capture(self, implicit_speech_id)
                     self._mark_game_speech_delivery_failed(implicit_speech_id)
                 self._discard_pending_ai_voice_echo()
+            except TtsCapacityError:
+                self._tts_capacity_exhausted = True
+                if self._tts_runtime_is_current(runtime):
+                    self.tts_ready = False
+                    await self.send_status(json.dumps({"code": "TTS_CONNECTION_FAILED"}))
+                return
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
-                if q is self.tts_response_queue:
+                if q is self.tts_response_queue and self._tts_runtime_is_current(runtime):
                     GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
-                # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
-                # push 哨兵唤醒它返回，避免线程泄漏（线程持有 queue ref，整个 queue
-                # 也会被一起留住）。put_nowait 失败不影响主流程。
-                try:
+                if pending_get is not None and not pending_get.done():
                     q.put_nowait(("__handler_exit__", None))
-                except Exception:
-                    # See note above — the sentinel push is best-effort.
-                    pass
+                    # Do not let runtime cleanup drain this wake-up sentinel
+                    # before the real executor consumer has returned. Shield
+                    # keeps cancellation from hiding a still-blocked q.get().
+                    while not pending_get.done():
+                        try:
+                            await asyncio.shield(pending_get)
+                        except asyncio.CancelledError:
+                            pass
+                    pending_get.result()
                 raise
             except Exception as e:
                 logger.error(f"💥 tts_response_handler error (will retry): {e}")

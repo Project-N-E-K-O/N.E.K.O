@@ -6173,10 +6173,9 @@ def test_session_started_only_settles_the_start_it_answers():
     # the checklist that goes stale. A window with no start pending must treat
     # any ack as its own, or a leaked id silently disables the latch forever.
     assert "!S.sessionStartedResolver" in guard
-    # An ack with no id counts as ours: the internal starts (proactive,
-    # greeting, disconnect recovery) carry no request, and the cross-mode guard
-    # already covers them.
-    assert "!response.request_id" in guard
+    # An anonymous internal start still updates observers but cannot settle a
+    # pending user request, including a same-mode start that completed late.
+    assert "!response.request_id" not in guard
     assert "!S._pendingSessionStartRequestId" in guard
 
     # Settling is what the guard gates -- the timeout clear and the deferred
@@ -7040,5 +7039,4 @@ def test_game_voice_command_commits_its_teardown_before_it_can_yield():
             f"the superseded branch reaches for {teardown}; a command whose route "
             "is gone must not touch the process-global microphone"
         )
-
 

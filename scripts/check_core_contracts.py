@@ -144,6 +144,8 @@ OWNER_SUBMODULES = {
     "game_speech_audio_cache",
     "multimodal_turn",
     "notices",
+    "session_records",
+    "tts_records",
 }
 MIXIN_SUPPORT_CLASSES = {
     "asr_runtime": {

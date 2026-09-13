@@ -179,6 +179,9 @@ class _QueuedResponse:
     cancel_timeout: float = field(compare=False)
     ticket: ResponseTicket = field(compare=False)
     admission_check: Callable[[], bool] | None = field(default=None, compare=False)
+    # A completed external user turn may pass a later speech pause. This is
+    # local to its existing ticket; connection/admission/idle gates still apply.
+    dispatch_while_paused: bool = field(default=False, compare=False)
     # 提交前的最后一次就地改写机会。admission_check 只能答"发不发"，而有些判据
     # （比如视觉所有权）的正确处置是"降级这条 item 再发"，不是整条拒——拒是**提交
     # 之后**才发生的，要付一次未经确认的补偿删除。回调在 _worker_send 之前、
@@ -333,6 +336,9 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
         self._dispatch_allowed.set()
+        self._dispatch_wakeup = asyncio.Event()
+        self._dispatch_wakeup.set()
+        self._turn_preparations = 0
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -426,6 +432,7 @@ class RealtimeResponseArbiter:
         )
         self._queued_by_ticket[id(ticket)] = queued
         await self._queue.put(queued)
+        self._dispatch_wakeup.set()
         self._ensure_worker()
         return ticket
 
@@ -434,11 +441,33 @@ class RealtimeResponseArbiter:
 
         self._dispatch_allowed.clear()
 
+    def allow_ticket_while_paused(self, ticket: ResponseTicket) -> None:
+        """Admit one completed user turn after its caller fixes pause ownership."""
+        queued = self._queued_by_ticket.get(id(ticket))
+        if self._connection_available and queued is not None and not queued.interrupted:
+            queued.dispatch_while_paused = True
+            self._dispatch_wakeup.set()
+
     def resume_dispatch(self) -> None:
         if not self._connection_available:
             return
         self._dispatch_allowed.set()
+        self._dispatch_wakeup.set()
         self._ensure_worker()
+
+    def begin_turn_preparation(self) -> None:
+        """Keep even completed tickets behind in-flight interruption cleanup."""
+        self._turn_preparations += 1
+        self.pause_dispatch()
+
+    def end_turn_preparation(self) -> None:
+        self._turn_preparations -= 1
+        self._dispatch_wakeup.set()
+
+    def _can_dispatch(self, queued: _QueuedResponse) -> bool:
+        return self._turn_preparations == 0 and (
+            self._dispatch_allowed.is_set() or queued.dispatch_while_paused
+        )
 
     async def cancel_current(self, timeout: float = 3.0) -> None:
         """Cancel only the active/pre-created request, never drain the queue."""
@@ -1443,6 +1472,7 @@ class RealtimeResponseArbiter:
         # Wake a worker parked behind the dispatch barrier so it can observe
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
+        self._dispatch_wakeup.set()
         self._server_response_active = False
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
@@ -1479,6 +1509,7 @@ class RealtimeResponseArbiter:
         )
         self._connection_available = True
         self._dispatch_allowed.set()
+        self._dispatch_wakeup.set()
         self._server_response_ids.clear()
         self._idless_server_response_at = None
         self._retired_created_deadline = None
@@ -1964,11 +1995,13 @@ class RealtimeResponseArbiter:
             except asyncio.QueueEmpty:
                 break
 
-        starved = [candidate for candidate in candidates if candidate.bypass_count >= 3]
+        eligible = [candidate for candidate in candidates if self._can_dispatch(candidate)]
+        selectable = eligible or candidates
+        starved = [candidate for candidate in selectable if candidate.bypass_count >= 3]
         if starved:
             selected = min(starved, key=lambda item: item.sequence)
         else:
-            selected = min(candidates, key=lambda item: (item.priority, item.sequence))
+            selected = min(selectable, key=lambda item: (item.priority, item.sequence))
         bypassed = tuple(
             candidate for candidate in candidates if candidate is not selected
         )
@@ -1985,16 +2018,20 @@ class RealtimeResponseArbiter:
 
     async def _run(self) -> None:
         while self._connection_available:
-            await self._dispatch_allowed.wait()
+            await self._dispatch_wakeup.wait()
             if not self._connection_available:
                 return
             queued, bypassed = await self._next_queued()
-            if not self._dispatch_allowed.is_set():
+            if not self._can_dispatch(queued):
                 self._queue.put_nowait(queued)
                 self._queue.task_done()
+                # Selection examined every queued ticket without yielding. A
+                # later enqueue/resume/preparation completion wakes us again.
+                self._dispatch_wakeup.clear()
                 continue
             for candidate in bypassed:
-                candidate.bypass_count += 1
+                if self._can_dispatch(candidate):
+                    candidate.bypass_count += 1
             try:
                 await self._process(queued)
             finally:
@@ -2011,20 +2048,20 @@ class RealtimeResponseArbiter:
         self,
         queued: _QueuedResponse,
     ) -> None:
-        if self._dispatch_allowed.is_set() or queued.interrupt_event.is_set():
-            return
-        dispatch_waiter = asyncio.create_task(self._dispatch_allowed.wait())
-        interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
-        waiters = (dispatch_waiter, interrupt_waiter)
-        try:
-            # Unbounded on purpose — a paused lane waits as long as the pause
-            # lasts — so there is no allowance to report a fraction of.
-            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for waiter in waiters:
-                if not waiter.done():
-                    waiter.cancel()
-            await asyncio.gather(*waiters, return_exceptions=True)
+        while not self._can_dispatch(queued) and not queued.interrupt_event.is_set():
+            self._dispatch_wakeup.clear()
+            dispatch_waiter = asyncio.create_task(self._dispatch_wakeup.wait())
+            interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
+            waiters = (dispatch_waiter, interrupt_waiter)
+            try:
+                # Unbounded on purpose: preparation/cancellation owns this barrier's
+                # lifetime, so there is no timeout allowance to measure.
+                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for waiter in waiters:
+                    if not waiter.done():
+                        waiter.cancel()
+                await asyncio.gather(*waiters, return_exceptions=True)
 
     async def _wait_for_idle_or_interrupt(self, queued: _QueuedResponse) -> None:
         if self._idle.is_set() or queued.interrupt_event.is_set():
@@ -2372,7 +2409,7 @@ class RealtimeResponseArbiter:
             return False
         self._queue.task_done()
         self._queue.put_nowait(candidate)
-        if candidate.priority >= queued.priority:
+        if not self._can_dispatch(candidate) or candidate.priority >= queued.priority:
             return False
         self._queue.put_nowait(queued)
         return True

@@ -330,7 +330,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -675,7 +677,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -985,16 +989,21 @@ class _ResponseMixin:
             # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
             # scope 下跑完；跑完之后这一轮才真正开始。
             self.note_user_turn_started()
+            preparation_arbiter = None
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.pause_dispatch()
+                    arbiter.begin_turn_preparation()
+                    preparation_arbiter = arbiter
                     await arbiter.cancel_current()
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
                 raise
+            finally:
+                if preparation_arbiter is not None:
+                    preparation_arbiter.end_turn_preparation()
         return self._connection_generation != connection_generation
 
     def _consume_cancelled_terminal(self) -> bool:

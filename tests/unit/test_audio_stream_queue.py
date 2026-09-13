@@ -143,7 +143,9 @@ async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert mgr.pending_input_data == [blocked, suffix, live]
+    # Dispatch already began for blocked; cancellation cannot prove that the
+    # provider rejected it. Replaying it could duplicate an accepted turn.
+    assert mgr.pending_input_data == [suffix, live]
     assert mgr._pending_input_flush_active is False
 
 
@@ -606,6 +608,13 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
 
 async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     mgr = _make_routable_audio_manager(True)
+    from tests.unit.test_session_start_guard import _make_active_manager
+    for name, value in vars(_make_active_manager()).items():
+        mgr.__dict__.setdefault(name, value)
+    session = mgr.session
+    session.close = AsyncMock()
+    mgr._memory_error_retry_after = 0
+    mgr.websocket = None
     del mgr._route_microphone_audio
     mgr._init_asr_runtime_state()
     mgr._set_microphone_route("independent")
@@ -626,9 +635,9 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     mgr._asr_runtime._asr_session = _WaitingAsr()
 
     end_task = asyncio.create_task(LLMSessionManager.end_session(mgr))
-    await close_started.wait()
+    await asyncio.wait_for(close_started.wait(), 2.0)
     try:
-        assert mgr.is_active is True
+        assert mgr.is_active is False
         assert mgr.session_ready is True
         assert mgr._asr_route_mode == "blocked"
 
@@ -637,12 +646,14 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
             {"input_type": "audio", "data": [1] * 480},
         )
 
-        mgr.session.stream_audio.assert_not_awaited()
+        session.stream_audio.assert_not_awaited()
         mgr._record_omni_microphone_audio.assert_not_called()
     finally:
         end_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await end_task
+        allow_close.set()
+        await asyncio.wait_for(mgr._session_retirements[-1].task, 2.0)
 
     assert mgr._asr_route_mode == "blocked"
 
@@ -2713,7 +2724,7 @@ def test_start_session_snapshots_resource_optimization_handshake_before_await():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     start_session = functions["start_session"]
-    snapshot_name = "session_resource_optimization_handshake_override"
+    snapshot_name = "session_resource_override"
     snapshot_lines = [
         node.lineno
         for node in ast.walk(start_session)
