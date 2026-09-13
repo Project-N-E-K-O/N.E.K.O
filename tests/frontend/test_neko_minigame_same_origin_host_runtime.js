@@ -193,7 +193,7 @@ async function main() {
     },
   };
   const defaultCapabilities = [
-    'runtime', 'dialogue', 'logging', 'voice-input', 'speech-output',
+    'runtime', 'dialogue', 'logging', 'voice-input', 'speech-output', 'media-timeline',
     'context-read', 'memory', 'storage', 'leaderboard-local', 'quick-lines',
   ];
   const hostLaunchRegistrations = Object.fromEntries(
@@ -431,6 +431,7 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
+    mediaHost: { mount: async () => ({ dispose() {} }) },
     capabilityProviders: {
       quickLines: async () => jsonResponse({ ok: true, lines: ['forged'] }),
     },
@@ -443,7 +444,7 @@ async function main() {
       requiredCapabilities: ['runtime', 'logging'],
       optionalCapabilities: [
         'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
-        'voice-input',
+        'voice-input', 'media-timeline',
       ],
       contracts: {
         commands: {
@@ -457,6 +458,24 @@ async function main() {
   });
   assert(handshake.grantedCapabilities.includes('context-read'),
     'same-origin host did not grant its context adapter');
+  const normalFetch = host._fetchImpl;
+  let pendingMediaSignal;
+  host._fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
+    pendingMediaSignal = init.signal;
+    init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), {name:'AbortError'})));
+  });
+  const mediaAbort = new AbortController();
+  const pendingMedia = host.mountMedia({job:'job', version:'version', signal:mediaAbort.signal});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  mediaAbort.abort();
+  let mediaError;
+  try { await pendingMedia; } catch(error) { mediaError=error; }
+  assert(mediaError?.code === 'cancelled' && pendingMediaSignal.aborted,
+    'media mount did not cancel its pending timeline request');
+  assert(host._pendingRequests.size === 0, 'cancelled timeline request retained its pending slot');
+  host._fetchImpl = async () => jsonResponse({id:'job', version:'version', status:'ready'});
+  await host.mountMedia({job:'job', version:'version'});
+  host._fetchImpl = normalFetch;
   assert(handshake.grantedCapabilities.includes('memory'),
     'same-origin host did not grant its memory adapter');
   assert(handshake.grantedCapabilities.includes('quick-lines'),
@@ -1629,6 +1648,47 @@ async function main() {
   // advertises it, but this method enumerates _post options explicitly (so
   // operation/keepalive/headers cannot be overridden) and used to drop it.
   const endOptionCalls = [];
+  const mediaCalls = [];
+  const realMediaRequest = host._request;
+  host._request = async (url, init, options) => {
+    mediaCalls.push({url, options});
+    return {ok:true, json:async () => ({})};
+  };
+  try {
+    await host.requestMedia('history');
+    await host.requestMedia('load', {job:'job', version:'version'});
+    assert(mediaCalls[0].options.timeoutMs >= 50 * 257 * 10000,
+      'cold history budget does not cover the allowed probe workload');
+    assert(mediaCalls[1].options.timeoutMs >= 257 * 10000,
+      'cold timeline load retains the ordinary API timeout');
+    const controller = new AbortController();
+    await host.requestMedia('history', {}, {signal:controller.signal, timeoutMs:1234});
+    assert(mediaCalls[2].options.signal === controller.signal && mediaCalls[2].options.timeoutMs === 1234,
+      'history must preserve explicit cancellation and timeout options');
+  } finally {
+    host._request = realMediaRequest;
+  }
+  // Retiring soccer's raw host query must preserve the media character path.
+  const previousMediaCharacter = host._session.lanlanName;
+  host._request = async (url, _init, options) => {
+    const target = new URL(url);
+    assert(target.pathname === '/api/game/example-game/character'
+      && target.searchParams.get('lanlan_name') === 'Media Neko'
+      && options.operation === 'character',
+    'media character lookup lost its routed request or requested identity');
+    return jsonResponse({ lanlan_name: 'Canonical Media Neko' });
+  };
+  try {
+    assert(typeof host.getCharacter === 'undefined',
+      'the retired soccer raw-character compatibility entry remains public');
+    const character = await host.requestMedia('character', { name: 'Media Neko' });
+    assert(character.lanlan_name === 'Canonical Media Neko'
+      && host._session.lanlanName === 'Canonical Media Neko',
+    'media character lookup did not retain the response and canonical binding');
+  } finally {
+    host._request = realMediaRequest;
+    host._session.lanlanName = previousMediaCharacter;
+  }
   const realPost = host._post.bind(host);
   host._post = (url, body, options) => {
     endOptionCalls.push({ url: String(url), timeoutMs: options?.timeoutMs });

@@ -1722,6 +1722,7 @@ def test_invite_game_configs_and_i18n_complete():
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
     expected_urls = {
+        'watch-together': '/watch_together',
         'soccer': '/soccer_demo',
         'badminton': '/badminton_demo',
         'drawing_guess': '/drawing_guess_demo',

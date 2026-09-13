@@ -443,6 +443,7 @@
       this._avatarFactoryController = null;
       this._avatarQueries = new Set();
       this._audioHost = options.audioHost || null;
+      this._mediaHost = options.mediaHost || window.NekoMiniGameMediaHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
         : {};
@@ -710,6 +711,7 @@
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
         ...(HOST_AVATAR_PROVIDERS.has(this) ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
+        ...(this._mediaHost ? ['media-timeline'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
       const grantedCapabilities = [...new Set(requested)].filter((name) => (
@@ -1008,6 +1010,34 @@
         });
       }
       return provider.mount(config);
+    }
+
+    async requestMedia(action, payload = {}, options = {}) {
+      this._requireGrantedCapability('media-timeline', 'media.request');
+      let response;
+      // A cold page may validate 50 timelines, each with a video and 256 audio
+      // objects (10 seconds per probe). Keep the request cancellable via options
+      // and host disposal, but do not apply the ordinary 30-second API budget.
+      const mediaValidationTimeoutMs = (257 * 10000 + 30000);
+      if (action === 'history') response = await this._request('/api/watch-together/history?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}), {}, {timeoutMs: 50 * mediaValidationTimeoutMs, ...options});
+      else if (action === 'watches') response = await this._request('/api/watch-together/watches?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}));
+      else if (action === 'character') response = await this._readCharacter(payload.name || '');
+      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});
+      else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || '', exclude: payload.exclude || []}, {timeoutMs: 190000});
+      else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
+      else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`, {}, {timeoutMs: mediaValidationTimeoutMs, ...options});
+      else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
+      else throw this._hostError('invalid_request', 'Unknown media operation');
+      if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
+      return response.json();
+    }
+
+    async mountMedia(config) {
+      this._requireGrantedCapability('media-timeline', 'media.mount');
+      if (this._disposed) throw this._hostError('disposed', 'Host disposed');
+      const timeline = await this.requestMedia('load', { job: config.job, version: config.version }, {signal: config.signal});
+      if (config.signal?.aborted || this._disposed) throw this._hostError('cancelled', 'Media mount cancelled');
+      return this._mediaHost.mount({ ...config, timeline });
     }
 
     mountAudio(config) {
@@ -1568,6 +1598,25 @@
         ))) throw this._hostError('invalid_response', 'Invalid character list');
         return Object.freeze([...new Set(names.map(name => name.trim()))]);
       });
+    }
+
+    async _readCharacter(lanlanName = '') {
+      const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
+      if (lanlanName && lanlanName !== this.source) {
+        url.searchParams.set('lanlan_name', lanlanName);
+      }
+      const response = await this._request(url.toString(), {}, {
+        operation: 'character',
+        timeoutMs: 10000,
+      });
+      if (response.ok) {
+        try {
+          const payload = await response.clone().json();
+          const resolvedName = String(payload?.lanlan_name || '').trim();
+          if (resolvedName) this._session.lanlanName = resolvedName;
+        } catch (_) { /* character metadata remains available to the caller */ }
+      }
+      return response;
     }
 
     getQuickLines(payload, options = {}) {

@@ -366,6 +366,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             agent: rect(cards[6]),
             tts: rect(cards[7]),
             game: rect(cards[8]),
+            image: rect(cards[9]),
         };
     }""")
 
@@ -381,6 +382,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "agent-model-content",
         "tts-model-content",
         "game-model-content",
+        "image-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -392,6 +394,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.agentApiConfigTitle",
         "api.ttsModelConfig",
         "api.gameModelsConfig",
+        "api.imageModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
@@ -414,6 +417,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "omni": "emotion",
         "agent": "tts",
         "tts": "agent",
+        "game": "image",
+        "image": "game",
     }
     assert desktop["conversation"]["top"] == desktop["vision"]["top"]
     assert desktop["conversation"]["left"] < desktop["vision"]["left"]
@@ -424,6 +429,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["emotion"]["top"] == desktop["omni"]["top"]
     assert desktop["agent"]["top"] == desktop["tts"]["top"]
     assert desktop["game"]["top"] > desktop["agent"]["top"]
+    assert desktop["game"]["top"] == desktop["image"]["top"]
+    assert desktop["game"]["left"] < desktop["image"]["left"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)

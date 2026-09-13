@@ -2134,6 +2134,16 @@ ANTI_SLACK_REMINDER_PROMPT: dict[str, str] = {
 # the existing mini-game invite structure.
 # Placeholders: {master} {app} {minutes}
 WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
+    "watch-together": {
+        "zh": "========以下为环境提示========\n{master}已经在{app}专注工作{minutes}分钟了。用符合你性格的方式，简短自然地关心对方，并邀请一起看一个短视频放松一下。只说邀请，不输出思考过程。\n========以上为环境提示========",
+        "zh-TW": "========以下为环境提示========\n{master}已經在{app}專注工作{minutes}分鐘了。用符合你個性的方式，簡短自然地關心對方，並邀請一起看個短影片放鬆一下。只說邀請，不輸出思考過程。\n========以上为环境提示========",
+        "en": "========以下为环境提示========\n{master} has focused on {app} for {minutes} minutes. Briefly and naturally show care in your own character voice and invite them to watch a short video together for a break. Output only the invitation, no reasoning.\n========以上为环境提示========",
+        "ja": "========以下为环境提示========\n{master}は{app}で{minutes}分間集中しています。あなたらしく短く自然に気遣い、休憩に短い動画を一緒に見ようと誘ってください。誘いの言葉だけを出力し、思考過程は出力しないでください。\n========以上为环境提示========",
+        "ko": "========以下为环境提示========\n{master}가 {app}에서 {minutes}분 동안 집중했습니다. 캐릭터답게 짧고 자연스럽게 배려하며, 쉬면서 짧은 영상을 함께 보자고 초대하세요. 생각 과정 없이 초대만 출력하세요。\n========以上为环境提示========",
+        "ru": "========以下为环境提示========\n{master} работает в {app} уже {minutes} минут. Коротко и естественно прояви заботу в стиле своего персонажа и пригласи посмотреть вместе короткое видео на перерыве. Выведи только приглашение, без рассуждений.\n========以上为环境提示========",
+        "es": "========以下为环境提示========\n{master} lleva {minutes} minutos concentrado en {app}. Muestra interés de forma breve y natural con tu personalidad e invítalo a ver juntos un vídeo corto para descansar. Escribe solo la invitación, sin razonamiento.\n========以上为环境提示========",
+        "pt": "========以下为环境提示========\n{master} está concentrado em {app} há {minutes} minutos. Demonstre cuidado de forma breve e natural com sua personalidade e convide para assistir juntos a um vídeo curto durante uma pausa. Escreva só o convite, sem raciocínio.\n========以上为环境提示========",
+    },
     "soccer": {
         "zh": "========以下是环境提示========\n"
         "{master}已经在{app}专注工作{minutes}分钟了。\n"

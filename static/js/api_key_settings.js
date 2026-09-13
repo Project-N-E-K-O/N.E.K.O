@@ -20,6 +20,7 @@ let _coreApiProviders = {};
 // tts_provider_registry，统一驱动下拉过滤 / 端点字段解锁 / 连通性探测，
 // 新增此类 provider 不再需要在本文件多处硬编码 provider key
 let _ttsProviders = {};
+let _imageProviders = {};
 // 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
 let _resolvedProviderUrls = {};
 // 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
@@ -1741,6 +1742,7 @@ async function loadApiProviders() {
             if (data.success) {
                 // Store registry and full provider info
                 _apiKeyRegistry = data.api_key_registry || {};
+                populateImageProviders(data.image_providers || {});
                 _coreApiProviders = data.core_api_providers_full || {};
                 _assistApiProviders = data.assist_api_providers_full || {};
                 _keyBookApiProviders = data.keybook_api_providers_full || {};
@@ -2073,6 +2075,7 @@ async function loadCurrentApiKey() {
             setInputValue('emotionModelId', data.emotionModelId);
             setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
 
+            loadImageSettings(data);
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
             setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
@@ -2563,6 +2566,12 @@ function confirmClearCustomApi() {
         }
     });
 
+    const imageProvider = document.getElementById('imageModelProvider');
+    if (imageProvider) {
+        imageProvider.value = 'disabled';
+        onImageProviderChange();
+    }
+
     // 清空 TTS Voice ID
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
@@ -2844,6 +2853,7 @@ async function save_button_down(e) {
     const payload = {
         apiKey: apiKeyForSave, coreApi, assistApi,
         ...bookPayload,
+        ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
         summaryModelUrl, summaryModelId, summaryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
@@ -3416,6 +3426,8 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     omni: 'emotion',
     agent: 'tts',
     tts: 'agent',
+    game: 'image',
+    image: 'game',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -3539,7 +3551,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -5524,4 +5536,88 @@ function closeSettingsPage() {
             }, 100);
         }
     }
+}
+
+
+// Image generation is configured here but is never probed with a paid request.
+function populateImageProviders(providers) {
+    _imageProviders = providers;
+    const select = document.getElementById('imageModelProvider');
+    if (!select) return;
+    const previous = select.value;
+    select.replaceChildren();
+    appendModelProviderOption(select, 'disabled', 'api.imageDisabled', '未配置');
+    Object.entries(providers).forEach(([key, meta]) => {
+        if (isProviderRestricted(key) && key !== previous) return;
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = meta.name;
+        option.disabled = !!isProviderRestricted(key);
+        select.appendChild(option);
+    });
+    if (previous && previous !== 'disabled' && !Object.hasOwn(providers, previous)) {
+        const option = document.createElement('option');
+        option.value = previous;
+        option.textContent = previous;
+        option.disabled = !!isProviderRestricted(previous);
+        select.appendChild(option);
+    }
+    select.value = previous || 'disabled';
+}
+
+function onImageProviderChange({ loading = false } = {}) {
+    const select = document.getElementById('imageModelProvider');
+    if (!select) return;
+    const meta = _imageProviders[select.value];
+    const url = document.getElementById('imageModelUrl');
+    const model = document.getElementById('imageModelId');
+    const key = document.getElementById('imageModelApiKey');
+    const custom = select.value === 'custom';
+    url.readOnly = !custom;
+    key.disabled = !custom;
+    if (!loading) {
+        url.value = meta?.base_url || '';
+        model.value = meta?.model || '';
+        setSecretInputValue('imageModelApiKey', '');
+    }
+    if (!custom) {
+        url.value = meta?.base_url || '';
+        if (!model.value && meta) model.value = meta.model || '';
+        // Named providers resolve the current Key Book value on the server.
+        setSecretInputValue('imageModelApiKey', '');
+    }
+    syncProviderSelectDropdowns(select);
+}
+
+function loadImageSettings(data) {
+    const select = document.getElementById('imageModelProvider');
+    if (!select) return;
+    const provider = data.imageModelProvider || 'disabled';
+    // Preserve saved restricted selections without making them available to choose.
+    // Also preserve unknown selections when metadata is temporarily missing.
+    if (!Array.from(select.options).some(option => option.value === provider)) {
+        const option = document.createElement('option');
+        option.value = provider;
+        option.textContent = _imageProviders[provider]?.name || provider;
+        option.disabled = !!isProviderRestricted(provider);
+        select.appendChild(option);
+    }
+    select.value = provider;
+    document.getElementById('imageModelUrl').value = data.imageModelUrl || '';
+    document.getElementById('imageModelId').value = data.imageModelId || '';
+    setSecretInputValue('imageModelApiKey', data.imageModelApiKey || '');
+    if (provider === 'disabled' || _imageProviders[provider]) onImageProviderChange({ loading: true });
+}
+
+function imageSettingsPayload() {
+    const select = document.getElementById('imageModelProvider');
+    if (!select) return {};
+    const payload = { imageModelProvider: select.value };
+    const knownProvider = select.value === 'disabled' || Object.hasOwn(_imageProviders, select.value);
+    for (const suffix of ['Url', 'Id', 'ApiKey']) {
+        const input = document.getElementById('imageModel' + suffix);
+        payload['imageModel' + suffix] = suffix === 'ApiKey'
+            ? getRealKey(input) : (knownProvider ? input.value.trim() : input.value);
+    }
+    return payload;
 }

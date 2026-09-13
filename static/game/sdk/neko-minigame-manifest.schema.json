@@ -52,7 +52,8 @@
                 "contains": {
                   "enum": [
                     "memory",
-                    "context-read"
+                    "context-read",
+                    "media-timeline"
                   ]
                 }
               }
@@ -67,7 +68,8 @@
                 "contains": {
                   "enum": [
                     "memory",
-                    "context-read"
+                    "context-read",
+                    "media-timeline"
                   ]
                 }
               }

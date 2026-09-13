@@ -57,6 +57,7 @@ MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = (
     "soccer",
     "badminton",
     "drawing_guess",
+    "watch-together",
 )
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
@@ -81,6 +82,7 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
     'soccer': '/soccer_demo',
     'badminton': '/badminton_demo',
+    'watch-together': '/watch_together',
     'drawing_guess': '/drawing_guess_demo',
 }
 """game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程

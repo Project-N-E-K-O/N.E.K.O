@@ -7288,11 +7288,17 @@ describe('App', () => {
     expect(compactChatStyles).toContain('box-shadow: var(--compact-chat-surface-shadow);');
     expect(steadyFrameRule).not.toContain('clip-path: inset(0 round 999px);');
     expect(compactChatStyles).toMatch(
-      /\.compact-chat-surface-frame::after\s*\{[\s\S]*?radial-gradient\(ellipse at 14% 4%[\s\S]*?inset -2px 0 4px[\s\S]*?animation: compact-chat-liquid-edge 20s ease-in-out infinite;/,
+      /\.compact-chat-surface-frame::after\s*\{[\s\S]*?linear-gradient\(180deg[\s\S]*?inset -2px 0 4px/,
     );
-    expect(compactChatStyles).toContain('@keyframes compact-chat-liquid-edge');
+    for (const color of ['blue', 'violet', 'rose']) {
+      const keyframes = compactChatStyles.match(new RegExp(`@keyframes compact-chat-refraction-${color} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? '';
+      expect(keyframes).toContain('transform: translate(');
+      expect(keyframes).not.toContain('background-position');
+    }
+    expect(compactChatStyles).toContain('animation-duration: 20s;');
+    expect(compactChatStyles).not.toContain('--compact-decoration-play-state');
     expect(compactChatStyles).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.compact-chat-surface-frame::after\s*\{\s*animation: none;/,
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.compact-chat-refraction > span\s*\{\s*animation: none;/,
     );
     expect(compactChatStyles).toContain(
       '--compact-chat-surface-edge-top: rgba(196, 228, 255, calc(0.44 * var(--neko-chat-opacity-factor, 1)));',
