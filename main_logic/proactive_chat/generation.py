@@ -1888,7 +1888,7 @@ async def _guard_phase2_output(
 def _parse_web_screening_result(text: str) -> dict | None:
     """
     Parse the structured result of the Phase 1 web-screening LLM.
-    Expected format (Chinese or English labels):
+    Expected format (localized labels):
       序号：N / No: N
       话题：xxx / Topic: xxx
       来源：xxx / Source: xxx
@@ -1899,9 +1899,9 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)",
-        "source": r"^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)",
-        "number": r"^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)",
+        "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제|\u0422\u0435\u043c\u0430)[ \t]*[：:][ \t]*(.+)",
+        "source": r"^[ \t]*(?:来源|來源|Source|出典|출처|\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a)[ \t]*[：:][ \t]*(.+)",
+        "number": r"^[ \t]*(?:序号|序號|No|番号|번호|\u041d\u043e\u043c\u0435\u0440)\.?[ \t]*[：:][ \t]*(\d+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
@@ -2603,22 +2603,94 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     return text
 
 
-def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
-    """
-    Look up the link matching a Phase 1 output title in all_web_links.
-    Matching logic:
-    - exact match (ignoring case and surrounding whitespace)
-    - partial match (title contains or is contained, ignoring case and surrounding whitespace)
-    """
+def _link_matches_phase1_title(title: str, link: dict) -> bool:
+    """Match a model-returned title against canonical or prompt-safe text."""
+
     title_lower = title.lower().strip()
-    for link in all_links:
-        link_title = link.get("title", "").lower().strip()
-        if not link_title:
-            continue
-        if (
+    if not title_lower:
+        return False
+    for field in ("title", "phase1_title", "phase1_rendered_title"):
+        link_title = str(link.get(field) or "").lower().strip()
+        if link_title and (
             link_title == title_lower
             or link_title in title_lower
             or title_lower in link_title
         ):
-            return link
+            return True
+    return False
+
+
+_NEKO_COMMUNITY_PHASE1_SOURCE_ALIASES = {
+    "喵宇宙社区",
+    "喵宇宙社群",
+    "neko community",
+    "n.e.k.o community",
+    "n.e.k.o \u30b3\u30df\u30e5\u30cb\u30c6\u30a3",
+    "n.e.k.o \ucee4\ubba4\ub2c8\ud2f0",
+    "\u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u043e n.e.k.o",
+    "comunidad n.e.k.o",
+    "comunidade n.e.k.o",
+}
+
+
+def _is_neko_community_phase1_source(source: Any) -> bool:
+    """Recognize the stable community source name and common localized aliases."""
+
+    normalized = " ".join(str(source or "").split()).casefold()
+    return normalized in _NEKO_COMMUNITY_PHASE1_SOURCE_ALIASES
+
+
+def _link_matches_phase1_source(source: str, link: dict[str, Any]) -> bool:
+    """Match the model-returned source without losing community aliases."""
+
+    if link.get("mode") == "community" and _is_neko_community_phase1_source(source):
+        return True
+    return str(link.get("source") or "").strip().casefold() == source.casefold()
+
+
+def _link_has_exact_phase1_title(title: str, link: dict) -> bool:
+    """Return whether a returned title exactly identifies this candidate."""
+
+    title_lower = title.lower().strip()
+    return bool(title_lower) and any(
+        str(link.get(field) or "").lower().strip() == title_lower
+        for field in ("title", "phase1_title", "phase1_rendered_title")
+    )
+
+
+def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
+    """Return a uniquely identified Phase 1 candidate by exact, then partial title."""
+
+    for matcher in (_link_has_exact_phase1_title, _link_matches_phase1_title):
+        matches = [link for link in all_links if matcher(title, link)]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
     return None
+
+
+def _lookup_link_by_phase1_selection(
+    selection: dict[str, Any], all_links: list[dict]
+) -> dict | None:
+    """Resolve a Phase 1 pick by its source-global number before title fallback."""
+
+    source = str(selection.get("source") or "").strip()
+    try:
+        number = int(selection.get("number"))
+    except (TypeError, ValueError):
+        number = 0
+    source_links = [
+        link
+        for link in all_links
+        if str(link.get("title") or "").strip()
+        and source
+        and _link_matches_phase1_source(source, link)
+    ]
+    if number > 0 and number <= len(source_links):
+        candidate = source_links[number - 1]
+        if _link_has_exact_phase1_title(str(selection.get("title") or ""), candidate):
+            return candidate
+    return _lookup_link_by_title(
+        str(selection.get("title") or ""), source_links if source_links else all_links
+    )

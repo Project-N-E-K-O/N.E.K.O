@@ -13,6 +13,53 @@ from config.prompts import prompts_proactive as proactive_prompts
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
+def test_phase1_aggregate_budget_keeps_complete_source_sections():
+    first_header = "--- 第一来源 ---"
+    first_candidate = "1. 完整候选标题"
+    second_header = "--- 第二来源 ---"
+    second_candidate = "1. 不应进入提示词的候选标题"
+    first_part = first_header + "\n" + first_candidate
+    from utils.tokenize import count_tokens
+
+    merged = proactive_service._merge_phase1_parts_within_token_budget(
+        [(first_header, [first_candidate]), (second_header, [second_candidate])],
+        max_tokens=count_tokens(first_part),
+    )
+
+    assert merged == first_part
+
+
+def test_phase1_aggregate_budget_keeps_later_sections_after_overflow():
+    first_header = "--- 第一来源 ---"
+    first_candidate = "1. 第一条完整候选"
+    overflowing_candidate = "2. " + "长" * 1000
+    second_header = "--- 第二来源 ---"
+    second_candidate = "1. 第二来源的较短候选"
+    second_part = second_header + "\n" + second_candidate
+    expected = "\n\n".join([first_header + "\n" + first_candidate, second_part])
+    from utils.tokenize import count_tokens
+
+    merged = proactive_service._merge_phase1_parts_within_token_budget(
+        [
+            (first_header, [first_candidate, overflowing_candidate]),
+            (second_header, [second_candidate]),
+        ],
+        max_tokens=count_tokens(expected),
+    )
+
+    assert merged == expected
+
+
+def test_phase1_fallback_records_keep_multiline_candidate_together():
+    records = proactive_service._phase1_fallback_records(
+        "【B站内容雷达】\n1. 过长标题\n作者 | 推荐依据\n简介: 详情\n2. 第二条标题\n作者二"
+    )
+
+    assert records == [
+        "【B站内容雷达】\n1. 过长标题\n作者 | 推荐依据\n简介: 详情",
+        "2. 第二条标题\n作者二",
+    ]
+
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
     parsed = sr_parsing._parse_unified_phase1_result(
         """
@@ -51,6 +98,197 @@ def test_phase1_web_candidates_are_balanced_across_modes(monkeypatch):
     assert len(selected["personal"]) == 3
     assert len(selected["video"]) == 3
     assert all(link["mode"] == "personal" for link in selected["personal"])
+
+
+def test_parse_web_screening_result_accepts_traditional_chinese_fields():
+    parsed = sr_parsing._parse_web_screening_result(
+        "來源：喵宇宙社群\n序號：2\n話題：繁體社群卡牌"
+    )
+
+    assert parsed == {"source": "喵宇宙社群", "number": "2", "title": "繁體社群卡牌"}
+
+
+def test_phase1_numbered_selection_accepts_rendered_title_prefix():
+    prefix = "相同的截斷標題"
+    first = {
+        "title": prefix + "甲",
+        "phase1_rendered_title": prefix,
+        "source": "喵宇宙社区",
+    }
+    second = {
+        "title": prefix + "乙",
+        "phase1_rendered_title": prefix,
+        "source": "喵宇宙社区",
+    }
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": prefix, "source": "喵宇宙社区", "number": "2"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
+def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
+    first = {
+        "title": "同名社区卡",
+        "source": "喵宇宙社区",
+        "dedupe_key": "neko-community:first",
+    }
+    second = {
+        "title": "同名社区卡",
+        "source": "喵宇宙社区",
+        "dedupe_key": "neko-community:second",
+    }
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "同名社区卡", "source": "喵宇宙社区", "number": "2"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
+def test_phase1_selection_accepts_neko_community_source_alias():
+    link = {
+        "title": "社区卡牌",
+        "source": "喵宇宙社区",
+        "mode": "community",
+    }
+    distractor = {"title": "社区卡牌", "source": "其他来源"}
+
+    for alias in (
+        "N.E.K.O Community",
+        "N.E.K.O \u30b3\u30df\u30e5\u30cb\u30c6\u30a3",
+        "喵宇宙社群",
+    ):
+        assert sr_parsing._is_neko_community_phase1_source(alias)
+        assert proactive_service._is_neko_community_phase1_source(alias)
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "社区卡牌", "source": "N.E.K.O Community", "number": "1"},
+            [distractor, link],
+        )
+        is link
+    )
+
+
+def test_phase1_ambiguous_duplicate_title_does_not_fallback_without_number():
+    links = [
+        {
+            "title": "同名社区卡",
+            "source": "喵宇宙社区",
+            "dedupe_key": "neko-community:first",
+        },
+        {
+            "title": "同名社区卡",
+            "source": "喵宇宙社区",
+            "dedupe_key": "neko-community:second",
+        },
+    ]
+
+    for number in (None, "invalid"):
+        assert (
+            sr_parsing._lookup_link_by_phase1_selection(
+                {"title": "同名社区卡", "source": "喵宇宙社区", "number": number},
+                links,
+            )
+            is None
+        )
+
+
+def test_phase1_candidate_numbers_are_source_local_when_sources_interleave():
+    links = [
+        {"title": "微博一", "source": "微博"},
+        {"title": "社区一", "source": "喵宇宙社区"},
+        {"title": "微博二", "source": "微博"},
+        {"title": "社区二", "source": "喵宇宙社区"},
+    ]
+
+    numbered = candidate_selection._number_phase1_links_by_source(links)
+
+    assert [(number, link["title"]) for number, link in numbered] == [
+        (1, "微博一"),
+        (1, "社区一"),
+        (2, "微博二"),
+        (2, "社区二"),
+    ]
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "社区二", "source": "喵宇宙社区", "number": "2"}, links
+        )
+        is links[3]
+    )
+
+
+def test_phase1_candidate_numbers_continue_across_source_sections():
+    positions: dict[str, int] = {}
+    personal_links = [{"title": "个人动态", "source": "B站"}]
+    video_links = [{"title": "视频推荐", "source": "B站"}]
+
+    first_section = candidate_selection._number_phase1_links_by_source(
+        personal_links, source_positions=positions
+    )
+    second_section = candidate_selection._number_phase1_links_by_source(
+        video_links, source_positions=positions
+    )
+
+    assert [number for number, _ in first_section] == [1]
+    assert [number for number, _ in second_section] == [2]
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "视频推荐", "source": "B站", "number": "2"},
+            personal_links + video_links,
+        )
+        is video_links[0]
+    )
+
+
+def test_phase1_title_fallback_wins_when_numbered_candidate_disagrees():
+    first = {"title": "第一张卡", "source": "喵宇宙社区"}
+    second = {"title": "第二张卡", "source": "喵宇宙社区"}
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "第二张卡", "source": "喵宇宙社区", "number": "1"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
+def test_phase1_numbered_selection_requires_exact_title_match():
+    first = {"title": "A", "source": "喵宇宙社区"}
+    second = {"title": "A|B", "source": "喵宇宙社区"}
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "A|B", "source": "喵宇宙社区", "number": "1"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
+def test_phase1_lookup_maps_escaped_community_title_to_canonical_card():
+    links = candidate_selection._round_robin_phase1_links(
+        ["community"],
+        {
+            "community": {
+                "links": [{"title": "A|B", "source": "喵宇宙社区"}]
+            }
+        },
+        total=1,
+    )["community"]
+
+    assert links[0]["phase1_title"] == r"A\u007cB"
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": r"A\u007cB", "source": "喵宇宙社区", "number": "1"},
+            links,
+        )
+        is links[0]
+    )
+    assert sr_parsing._lookup_link_by_title(r"A\u007cB", links) is links[0]
+    assert links[0]["title"] == "A|B"
 
 
 def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
@@ -248,6 +486,23 @@ Source: Tieba
 
     assert parsed["web"]["title"] == "Steam Deck community setup thread"
     assert parsed["web"]["source"] == "Tieba"
+
+
+def test_parse_unified_phase1_accepts_russian_web_labels():
+    parsed = sr_parsing._parse_unified_phase1_result(
+        """
+[WEB]
+\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a: 喵宇宙社区
+\u041d\u043e\u043c\u0435\u0440: 2
+\u0422\u0435\u043c\u0430: Russian community topic
+"""
+    )
+
+    assert parsed["web"] == {
+        "source": "喵宇宙社区",
+        "number": "2",
+        "title": "Russian community topic",
+    }
 
 
 def test_strip_proactive_screen_tag_leak_removes_screen_source_label():

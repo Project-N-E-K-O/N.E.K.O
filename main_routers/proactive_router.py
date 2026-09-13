@@ -68,6 +68,7 @@ _PROACTIVE_BOOL_FIELDS = (
     "proactiveVisionEnabled",
     "proactiveVisionChatEnabled",
     "proactiveNewsChatEnabled",
+    "proactiveCommunityChatEnabled",
     "proactiveVideoChatEnabled",
     "proactivePersonalChatEnabled",
     "proactiveMusicEnabled",
@@ -92,6 +93,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": False,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
+        "proactiveCommunityChatEnabled": False,
         "proactiveVideoChatEnabled": False,
         "proactivePersonalChatEnabled": False,
         "proactiveMusicEnabled": False,
@@ -102,6 +104,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
+        "proactiveCommunityChatEnabled": True,
         "proactiveVideoChatEnabled": True,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": True,
@@ -116,6 +119,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
+        "proactiveCommunityChatEnabled": False,
         "proactiveVideoChatEnabled": False,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": False,
@@ -129,6 +133,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
+        "proactiveCommunityChatEnabled": True,
         "proactiveVideoChatEnabled": True,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": True,
@@ -197,12 +202,10 @@ async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any
 
 
 def _infer_mode(settings: dict[str, Any]) -> str:
-    """Infer which preset the currently persisted fields correspond to; returns ``custom`` if none match.
+    """Infer the preset matching every currently effective proactive setting."""
 
-    Only fields explicitly listed by a preset are compared; missing fields count as a mismatch.
-    """
     for mode_name, preset in PROACTIVE_PRESETS.items():
-        if all(settings.get(k) == v for k, v in preset.items()):
+        if all(_value_matches(settings.get(k), v) for k, v in preset.items()):
             return mode_name
     return "custom"
 
