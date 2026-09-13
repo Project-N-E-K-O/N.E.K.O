@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ class _Processor:
         self.rnnoise_probability_mean = 0.6
         self.rnnoise_probability_last = 0.2
         self.rnnoise_probability_ema = 0.55
+        self.finalize_calls = 0
 
     def process_chunk(self, pcm16: bytes) -> bytes:
         self.inputs.append(pcm16)
@@ -26,6 +28,10 @@ class _Processor:
 
     def close(self) -> None:
         self.closed = True
+
+    def finalize_stream(self) -> bytes:
+        self.finalize_calls += 1
+        return b"tail"
 
 
 async def test_pipeline_passes_16k_without_creating_rnnoise_processor() -> None:
@@ -139,6 +145,57 @@ async def test_pipeline_close_waits_for_cancelled_processing_thread() -> None:
         await process_task
     await close_task
 
+    assert processor.closed is True
+
+
+async def test_pipeline_finalize_returns_bytes_and_enters_terminal_state() -> None:
+    processor = _Processor()
+    pipeline = VoiceInputAudioPipeline(processor_factory=lambda: processor)
+
+    with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_EMPTY"):
+        await pipeline.finalize_stream()
+    assert processor.finalize_calls == 0
+
+    await pipeline.process(b"1" * 960, sample_rate_hz=48_000)
+    assert await pipeline.finalize_stream() == b"tail"
+
+    assert processor.finalize_calls == 1
+    with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_FINALIZED"):
+        await pipeline.finalize_stream()
+    with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_FINALIZED"):
+        await pipeline.process(b"1" * 960, sample_rate_hz=48_000)
+    await pipeline.close()
+
+
+async def test_cancelled_pipeline_finalize_waits_for_native_completion() -> None:
+    finalize_started = threading.Event()
+    release_finalize = threading.Event()
+
+    class _BlockingFinalizeProcessor(_Processor):
+        def finalize_stream(self) -> bytes:
+            self.finalize_calls += 1
+            finalize_started.set()
+            assert release_finalize.wait(5)
+            return b"tail"
+
+    processor = _BlockingFinalizeProcessor()
+    pipeline = VoiceInputAudioPipeline(processor_factory=lambda: processor)
+    await pipeline.process(b"1" * 960, sample_rate_hz=48_000)
+    finalize_task = asyncio.create_task(pipeline.finalize_stream())
+    assert await asyncio.to_thread(finalize_started.wait, 5)
+
+    finalize_task.cancel()
+    close_task = asyncio.create_task(pipeline.close())
+    await asyncio.sleep(0)
+
+    assert not finalize_task.done()
+    assert not close_task.done()
+    assert processor.closed is False
+    release_finalize.set()
+    with pytest.raises(asyncio.CancelledError):
+        await finalize_task
+    await close_task
+    assert processor.finalize_calls == 1
     assert processor.closed is True
 
 
@@ -295,3 +352,114 @@ async def test_one_manager_failing_does_not_abandon_the_rest_of_the_toggle():
     for name, mgr in managers.items():
         mgr.apply_voice_input_noise_reduction.assert_awaited_once_with(False)
         mgr.session.set_audio_noise_reduction_enabled.assert_awaited_once_with(False)
+
+
+async def test_noise_reduction_setting_revokes_voice_identity_before_dsp_rebuild(
+    monkeypatch,
+) -> None:
+    import main_routers.config_router.preferences as preferences
+
+    events: list[str] = []
+
+    async def snapshot():
+        return SimpleNamespace(
+            revision=1,
+            settings={"noiseReductionEnabled": False},
+        )
+
+    async def prepare(enabled: bool) -> bool:
+        assert enabled is False
+        events.append("revoke")
+        return True
+
+    async def apply(enabled: bool) -> bool:
+        assert enabled is False
+        events.append("dsp")
+        return False
+
+    async def reconcile(enabled: bool, *, runtime_ready: bool) -> None:
+        assert enabled is False
+        assert runtime_ready is True
+        events.append("reconcile")
+
+    monkeypatch.setattr(
+        preferences,
+        "aload_global_conversation_settings_snapshot",
+        snapshot,
+    )
+    monkeypatch.setattr(
+        preferences,
+        "_apply_noise_reduction_to_active_sessions",
+        apply,
+    )
+    preferences.configure_voice_identity_audio_contract_callbacks(
+        prepare=prepare,
+        reconcile=reconcile,
+    )
+    try:
+        await preferences._apply_noise_reduction_if_current(False)
+    finally:
+        preferences.configure_voice_identity_audio_contract_callbacks()
+
+    assert events == ["revoke", "dsp", "reconcile"]
+
+
+async def test_noise_reduction_reconcile_finishes_after_caller_cancellation(
+    monkeypatch,
+) -> None:
+    import main_routers.config_router.preferences as preferences
+
+    apply_entered = asyncio.Event()
+    release_apply = asyncio.Event()
+    reconciled = asyncio.Event()
+
+    async def snapshot():
+        return SimpleNamespace(
+            revision=1,
+            settings={"noiseReductionEnabled": False},
+        )
+
+    async def prepare(_enabled: bool) -> bool:
+        return True
+
+    async def apply(_enabled: bool) -> bool:
+        apply_entered.set()
+        await release_apply.wait()
+        return True
+
+    async def reconcile(_enabled: bool, *, runtime_ready: bool) -> None:
+        assert runtime_ready is True
+        reconciled.set()
+
+    monkeypatch.setattr(
+        preferences,
+        "aload_global_conversation_settings_snapshot",
+        snapshot,
+    )
+    monkeypatch.setattr(
+        preferences,
+        "_apply_noise_reduction_to_active_sessions",
+        apply,
+    )
+    monkeypatch.setattr(preferences, "_NOISE_REDUCTION_APPLY_LOCK", asyncio.Lock())
+    preferences.configure_voice_identity_audio_contract_callbacks(
+        prepare=prepare,
+        reconcile=reconcile,
+    )
+
+    try:
+        operation = asyncio.create_task(
+            preferences._apply_noise_reduction_if_current(False)
+        )
+        await apply_entered.wait()
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done()
+        release_apply.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert reconciled.is_set()
+    finally:
+        release_apply.set()
+        preferences.configure_voice_identity_audio_contract_callbacks()

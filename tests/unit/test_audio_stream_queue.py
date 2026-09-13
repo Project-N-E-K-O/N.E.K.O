@@ -185,11 +185,13 @@ def _hot_swap_frame(
     samples: int = 160,
     speech_probability: float | None = 0.5,
     rnnoise_available: bool = True,
+    received_at: float = 0.0,
     captured_at: float = 0.0,
 ) -> HotSwapAudioFrame:
     return HotSwapAudioFrame(
         pcm16=b"\x01\x00" * samples,
         token=token,
+        received_at=received_at,
         captured_at=captured_at,
         speech_probability=speech_probability,
         rnnoise_available=rnnoise_available,
@@ -362,6 +364,7 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        received_at=frame.received_at,
         captured_at=frame.captured_at,
     )
     assert mgr._audio_stream_dropped_total == 0
@@ -407,6 +410,7 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        received_at=frame.received_at,
         captured_at=frame.captured_at,
     )
 
@@ -559,6 +563,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=ANY,
         captured_at=ANY,
     )
     mgr.session.stream_audio.assert_not_awaited()
@@ -598,6 +603,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=ANY,
         captured_at=ANY,
     )
     mgr.start_session.assert_not_awaited()
@@ -657,6 +663,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
             token,
             speech_probability=0.75,
             rnnoise_available=True,
+            received_at=4321.0,
             captured_at=1234.5,
         )
     )
@@ -671,10 +678,30 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=4321.0,
         captured_at=1234.5,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_voice_activation_drops_pre_swap_audio_instead_of_rebinding_it():
+    mgr = _make_routable_audio_manager(True)
+    old_token = mgr._capture_ingress_token()
+    mgr.is_hot_swap_imminent = True
+    mgr._set_microphone_route("blocked")
+    mgr._set_microphone_route("native")
+    mgr._voice_session_activation_factory = object()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(
+        _hot_swap_frame(old_token, received_at=25.0, captured_at=100.0)
+    )
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_not_awaited()
+    assert mgr._audio_stream_dropped_total == 1
     assert not mgr.hot_swap_audio_cache
 
 
@@ -864,6 +891,50 @@ async def test_hot_swap_queue_full_retry_rebinds_without_silent_drop():
     assert rebound.message == second_message
     assert rebound.token == mgr._capture_ingress_token()
     assert mgr._audio_stream_dropped_total == 0
+
+
+async def test_activation_queue_full_retry_drops_frame_after_route_switch():
+    mgr = _make_routable_audio_manager(True)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=20_000,
+        max_frames=1,
+    )
+    mgr._audio_stream_worker_task = asyncio.current_task()
+    mgr._voice_session_activation_factory = object()
+    old_token = mgr._capture_ingress_token()
+    first_message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [1] * 160,
+    }
+    stale_message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [2] * 160,
+    }
+    mgr._audio_stream_queue.put_nowait(
+        QueuedMicFrame.from_message(first_message, token=old_token)
+    )
+    original_rebind = mgr._rebind_hot_swap_ingress_token
+    mgr._rebind_hot_swap_ingress_token = MagicMock(wraps=original_rebind)
+
+    async def switch_route_and_free_slot() -> None:
+        mgr.is_hot_swap_imminent = True
+        mgr._set_microphone_route("blocked")
+        mgr._set_microphone_route("native")
+        queued = mgr._audio_stream_queue.get_nowait()
+        assert queued.message is first_message
+        mgr._audio_stream_queue.task_done()
+
+    transition = asyncio.create_task(switch_route_and_free_slot())
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, stale_message)
+    await transition
+
+    assert not mgr._ingress_token_matches(old_token)
+    assert mgr._audio_stream_queue.empty()
+    assert mgr._audio_stream_dropped_total == 1
+    assert not mgr._hot_swap_pending_sequences
+    mgr._rebind_hot_swap_ingress_token.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -494,7 +494,18 @@ class TurnMixin:
                     else:
                         _ctx_threshold_met = False
                     if _turn_threshold_met or _ctx_threshold_met:
-                        logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
+                        logger.info(
+                            "[%s] Main Listener: session renewal threshold met "
+                            "(turns=%d/%d turn_threshold=%s context_tokens=%d/%d "
+                            "context_threshold=%s). Marking for new session preparation.",
+                            self.lanlan_name,
+                            self._session_turn_count,
+                            SESSION_TURN_THRESHOLD,
+                            _turn_threshold_met,
+                            _ctx_total if isinstance(self.session, OmniOfflineClient) else 0,
+                            SESSION_ARCHIVE_TRIGGER_TOKENS,
+                            _ctx_threshold_met,
+                        )
                         self.is_preparing_new_session = True
                         self.summary_triggered_time = datetime.now()
                         self.message_cache_for_new_session = []

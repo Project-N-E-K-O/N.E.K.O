@@ -188,11 +188,20 @@ async def test_verifier_detach_failure_still_revokes_old_activation() -> None:
     assert updated is False
     assert runtime._speaker_verifier_factory is None
     assert runtime._speaker_verifier_activation_generation == "revoked-profile"
+    assert runtime._speaker_verifier_degraded is True
     old_factory.close.assert_called_once_with()
     assert not runtime.request_speaker_candidate_rejection(
         _shadow_candidate(),
         activation_generation="old-profile",
     )
+
+    detector.replace_speaker_verifier.side_effect = None
+    assert await runtime.set_speaker_verifier_factory(
+        None,
+        activation_generation="revoked-profile",
+    )
+    assert detector.replace_speaker_verifier.await_count == 2
+    assert runtime._speaker_verifier_degraded is False
 
 
 async def test_candidate_rejection_applies_and_recovers_next_transport() -> None:

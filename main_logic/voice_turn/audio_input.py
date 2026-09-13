@@ -22,6 +22,8 @@ class _AudioProcessorProtocol(Protocol):
 
     def process_chunk(self, audio_bytes: bytes) -> bytes: ...
 
+    def finalize_stream(self) -> bytes: ...
+
     def close(self) -> None: ...
 
 
@@ -52,6 +54,7 @@ class VoiceInputAudioPipeline:
         self._processor: _AudioProcessorProtocol | None = None
         self._lock = asyncio.Lock()
         self._closed = False
+        self._stream_finalized = False
 
     @property
     def nr_enabled(self) -> bool:
@@ -65,8 +68,16 @@ class VoiceInputAudioPipeline:
         processor: _AudioProcessorProtocol,
         pcm16: bytes,
     ) -> bytes:
+        return await self._run_native_cancellation_safe(
+            lambda: processor.process_chunk(pcm16)
+        )
+
+    async def _run_native_cancellation_safe(
+        self,
+        operation: Callable[[], bytes | None],
+    ) -> bytes | None:
         processing_task = asyncio.create_task(
-            asyncio.to_thread(processor.process_chunk, pcm16)
+            asyncio.to_thread(operation)
         )
         cancellation: asyncio.CancelledError | None = None
         while True:
@@ -98,20 +109,19 @@ class VoiceInputAudioPipeline:
             raise ValueError("microphone PCM16 contains an incomplete sample")
         if sample_rate_hz not in (16_000, 48_000):
             raise ValueError("microphone sample rate must be 16000 or 48000")
-        if self._closed:
-            raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
-        if not pcm16:
-            return ProcessedVoiceFrame(
-                b"", 16_000, None, False, RnnoiseEvidence.unavailable()
-            )
-        if sample_rate_hz == 16_000:
-            return ProcessedVoiceFrame(
-                pcm16, 16_000, None, False, RnnoiseEvidence.unavailable()
-            )
-
         async with self._lock:
             if self._closed:
                 raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
+            if self._stream_finalized:
+                raise RuntimeError("VOICE_AUDIO_PIPELINE_FINALIZED")
+            if not pcm16:
+                return ProcessedVoiceFrame(
+                    b"", 16_000, None, False, RnnoiseEvidence.unavailable()
+                )
+            if sample_rate_hz == 16_000:
+                return ProcessedVoiceFrame(
+                    pcm16, 16_000, None, False, RnnoiseEvidence.unavailable()
+                )
             if self._processor is None:
                 self._processor = self._processor_factory()
             processed = await self._process_chunk_cancellation_safe(
@@ -163,6 +173,25 @@ class VoiceInputAudioPipeline:
             evidence,
         )
 
+    async def finalize_stream(self) -> bytes:
+        """Flush the processor EOF tail once without closing native state."""
+
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
+            if self._stream_finalized:
+                raise RuntimeError("VOICE_AUDIO_PIPELINE_FINALIZED")
+            processor = self._processor
+            if processor is None:
+                raise RuntimeError("VOICE_AUDIO_PIPELINE_EMPTY")
+            self._stream_finalized = True
+            result = await self._run_native_cancellation_safe(
+                processor.finalize_stream
+            )
+            if type(result) is not bytes:
+                raise TypeError("audio processor EOF tail must be bytes")
+            return result
+
     async def close(self) -> None:
         async with self._lock:
             if self._closed:
@@ -170,4 +199,4 @@ class VoiceInputAudioPipeline:
             self._closed = True
             processor, self._processor = self._processor, None
             if processor is not None:
-                await asyncio.to_thread(processor.close)
+                await self._run_native_cancellation_safe(processor.close)

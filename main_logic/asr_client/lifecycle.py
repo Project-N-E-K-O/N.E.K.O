@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 from enum import Enum
 
@@ -263,6 +264,47 @@ class AudioDecision:
 class VoiceInputLifecycleController:
     """Keep routing, lifecycle, and audio gating as separate decisions."""
 
+    @property
+    def prefix_protected(self) -> bool:
+        return self._prefix_protected
+
+    @property
+    def prefix_capacity_bytes(self) -> int:
+        return self.config.pending_audio_ms * 32
+
+    @property
+    def prefix_capacity_event(self) -> asyncio.Event:
+        return self._prefix_capacity_event
+
+    def notify_prefix_capacity(self) -> None:
+        self.prefix_capacity_event.set()
+
+    def protect_unsent_prefix(self) -> None:
+        """Protect from the first authorized frame, before detector admission."""
+        payload = self._pre_roll.peek()
+        if payload:
+            if self.pending_connect_bytes + len(payload) > self.prefix_capacity_bytes:
+                raise RuntimeError("ASR_PROTECTED_PREFIX_OVERFLOW")
+        self._prefix_protected = True
+        if payload:
+            self._pending_connect.append(payload)
+            self._pre_roll.clear()
+
+    def has_prefix_capacity(self, byte_count: int) -> bool:
+        if not self._prefix_protected:
+            return True
+        if self._state is VoiceLifecycleState.ACTIVE:
+            # The connection owner must hand off old bytes before a new frame
+            # can bypass them, even when that prefix is below the byte limit.
+            return not self._active_start_audio
+        return (
+            self.pending_connect_bytes + len(self._active_start_audio) + byte_count
+            <= self.prefix_capacity_bytes
+        )
+
+    def peek_active_start_audio(self) -> bytes:
+        return self._active_start_audio if self._state is VoiceLifecycleState.ACTIVE else b""
+
     def __init__(
         self,
         *,
@@ -301,6 +343,8 @@ class VoiceInputLifecycleController:
         )
         self._active_start_audio = b""
         self._independent_asr_fail_open = not bool(resource_optimization_enabled)
+        self._prefix_protected = False
+        self._prefix_capacity_event = asyncio.Event()
 
     @property
     def snapshot(self) -> VoiceLifecycleSnapshot:
@@ -330,7 +374,7 @@ class VoiceInputLifecycleController:
 
     @property
     def pending_connect_bytes(self) -> int:
-        return len(self._pending_connect.peek())
+        return self._pending_connect.byte_count
 
     @property
     def has_pending_turn(self) -> bool:
@@ -370,11 +414,13 @@ class VoiceInputLifecycleController:
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
         elif event is VoiceLifecycleEvent.PREWARM_EXPIRED:
+            self._prefix_protected = False
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
             self._pending_connect.clear()
             self._active_start_audio = b""
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
+            self._prefix_protected = False
             self._turn_id = self._allocate_turn_id()
             self._completed_turn_id = self._turn_id
             self._pre_roll_sent_for_turn = False
@@ -384,6 +430,7 @@ class VoiceInputLifecycleController:
             self._pending_turn_id = None
             self._pending_connect.clear()
             self._active_start_audio = b""
+        self.notify_prefix_capacity()
         return self._state
 
     def accept_audio(self, pcm16: bytes, *, sample_rate_hz: int) -> AudioDecision:
@@ -429,9 +476,11 @@ class VoiceInputLifecycleController:
 
         target = self._target_disposition()
         if target is AudioDisposition.BUFFER:
+            if not self.has_prefix_capacity(len(pcm16)):
+                return AudioDecision(AudioDisposition.BLOCK, backpressure=True)
             target_buffer = (
                 self._pending_connect
-                if self._state
+                if self._prefix_protected or self._state
                 in {
                     VoiceLifecycleState.PREWARMING,
                     VoiceLifecycleState.BACKOFF,
@@ -468,6 +517,8 @@ class VoiceInputLifecycleController:
         if self._state is not VoiceLifecycleState.ACTIVE:
             return b""
         payload, self._active_start_audio = self._active_start_audio, b""
+        self._prefix_protected = False
+        self.notify_prefix_capacity()
         if not payload:
             return b""
         self._pre_roll_sent_for_turn = True
@@ -541,6 +592,7 @@ class VoiceInputLifecycleController:
         return True
 
     def stop(self) -> None:
+        self._prefix_protected = False
         if self._state is not VoiceLifecycleState.OFF:
             self._state = next_lifecycle_state(
                 self._state,
@@ -557,6 +609,7 @@ class VoiceInputLifecycleController:
         self._pending_turn_id = None
         self._pending_connect.clear()
         self._active_start_audio = b""
+        self.notify_prefix_capacity()
 
     def enable_independent_asr_fail_open(self) -> None:
         """Disable throttling while preserving the hard independent route."""
@@ -572,6 +625,7 @@ class VoiceInputLifecycleController:
     def invalidate_audio(self) -> None:
         """Invalidate buffered PCM and turn identity after input suppression."""
 
+        self._prefix_protected = False
         self._turn_id = self._allocate_turn_id()
         self._completed_turn_id = self._turn_id
         self._pre_roll_sent_for_turn = False
@@ -587,6 +641,7 @@ class VoiceInputLifecycleController:
             VoiceLifecycleState.SUSPENDED,
         }:
             self._state = VoiceLifecycleState.LOCAL_LISTEN
+        self.notify_prefix_capacity()
 
     def _allocate_turn_id(self) -> int:
         self._turn_sequence += 1

@@ -15,6 +15,7 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal
 
 from .contracts import (
+    MAX_SPEAKER_BACKEND_PCM_BYTES,
     MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     MAX_SPEAKER_SHADOW_FRAME_PCM_BYTES,
     MAX_SPEAKER_SHADOW_RETAINED_PCM_BYTES,
@@ -127,10 +128,18 @@ class _BackendProcessHost:
         *,
         factory: SpeakerShadowBackendFactory,
         terminate_timeout_seconds: float,
+        max_pcm_bytes: int = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     ) -> None:
+        if (
+            type(max_pcm_bytes) is not int
+            or not 0 < max_pcm_bytes <= MAX_SPEAKER_BACKEND_PCM_BYTES
+            or max_pcm_bytes % 2
+        ):
+            raise ValueError("backend host PCM capacity is invalid")
+        self._max_pcm_bytes = max_pcm_bytes
         context = multiprocessing.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=True)
-        pcm_buffer = context.RawArray("B", MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES)
+        pcm_buffer = context.RawArray("B", max_pcm_bytes)
         process = context.Process(
             target=_backend_host_main,
             args=(factory, child_connection, pcm_buffer),
@@ -156,12 +165,14 @@ class _BackendProcessHost:
         *,
         factory: SpeakerShadowBackendFactory,
         terminate_timeout_seconds: float,
+        max_pcm_bytes: int = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     ) -> _BackendProcessHost:
         """Construct IPC resources and spawn outside the asyncio event loop."""
 
         host = cls(
             factory=factory,
             terminate_timeout_seconds=terminate_timeout_seconds,
+            max_pcm_bytes=max_pcm_bytes,
         )
         host.start()
         return host
@@ -202,7 +213,7 @@ class _BackendProcessHost:
         *,
         timeout_seconds: float,
     ) -> float:
-        if len(pcm16) > MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES:
+        if len(pcm16) > self._max_pcm_bytes:
             raise _BackendHostError("candidate PCM exceeds host buffer")
         if self._pcm_buffer is None:
             raise _BackendHostError("backend host PCM buffer is closed")

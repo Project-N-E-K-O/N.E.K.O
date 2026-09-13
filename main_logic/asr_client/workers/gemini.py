@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from typing import Any, TypeAlias
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ..delivery import begin_transport_write, complete_transport_write
 from ._shared import MAX_SEGMENT_PCM_BYTES, encode_pcm16_wav, is_auth_rejection
 
 
@@ -163,6 +164,7 @@ async def gemini_asr_worker(
     async def _transcribe(key: _UtteranceKey, pcm16: bytes) -> None:
         try:
             wav_audio = encode_pcm16_wav(pcm16)
+            evidence = begin_transport_write(request_queue)
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=_GEMINI_MODEL,
@@ -187,6 +189,10 @@ async def gemini_asr_worker(
                     },
                 ),
                 _REQUEST_TIMEOUT_SECONDS,
+            )
+            complete_transport_write(
+                evidence, len(pcm16), generation=key[0],
+                buffer_epoch=key[1], provider="gemini",
             )
             transcript = _response_transcript(response)
         except asyncio.CancelledError:

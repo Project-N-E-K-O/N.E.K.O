@@ -23,6 +23,7 @@ import asyncio
 import inspect
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -248,6 +249,7 @@ class LifecycleMixin:
         except (json.JSONDecodeError, TypeError):
             _parsed = None
 
+        defer_native_idle_reconnect = False
         async with self.lock:
             is_pending = False
             if expected_session is not None:
@@ -281,10 +283,61 @@ class LifecycleMixin:
             # A pending_session failure must not misclassify the main session as closed.
             if not is_pending:
                 self.session_closed_by_server = True
+
+                # Voice-session activation deliberately keeps microphone PCM
+                # local while waiting. Some native providers retire an otherwise
+                # healthy socket during that quiet interval. Keep the Core voice
+                # lease alive for this one classified condition so the first
+                # owner-authorized output can reconnect the same client before
+                # replaying. Every other provider failure retains the ordinary
+                # fail-closed teardown below.
+                capture_activation_generation = getattr(
+                    self,
+                    "_capture_voice_session_activation_generation",
+                    None,
+                )
+                activation_runtime = getattr(
+                    self,
+                    "_voice_session_activation_runtime",
+                    None,
+                )
+                voice_input_accepts_pcm = getattr(
+                    self,
+                    "_voice_input_accepts_pcm",
+                    None,
+                )
+                defer_native_idle_reconnect = bool(
+                    isinstance(_parsed, dict)
+                    and _parsed.get("code") == "API_IDLE_TIMEOUT"
+                    and expected_session is not None
+                    and getattr(self, "_voice_session_activation_factory", None)
+                    is not None
+                    and activation_runtime is not None
+                    and getattr(self, "_asr_route_mode", "blocked") == "native"
+                    and getattr(self, "_voice_lease_owner", "none") == "core"
+                    and callable(capture_activation_generation)
+                    and activation_runtime.generation
+                    == capture_activation_generation()
+                    and callable(voice_input_accepts_pcm)
+                    and voice_input_accepts_pcm()
+                )
+                if defer_native_idle_reconnect:
+                    self._native_activation_idle_reconnect_identity = (
+                        activation_runtime.generation,
+                        getattr(expected_session, "_connection_generation", None),
+                    )
         
         if is_pending:
             logger.info("⏭️ handle_connection_error: expected_session is pending_session, delegating to pending teardown")
             await self._teardown_pending_session_from_lifecycle_callback(expected_session, message)
+            return
+
+        if defer_native_idle_reconnect:
+            logger.info(
+                "[%s] native provider idled while voice-session activation "
+                "owns the microphone; deferring reconnect until authorized output",
+                self.lanlan_name,
+            )
             return
         
         if message:
@@ -3011,8 +3064,43 @@ class LifecycleMixin:
                 self.is_hot_swap_imminent = False
                 return
 
+        # A normal native swap may only start priming while the current input
+        # connection is between utterances.  This is a read-only preflight; the
+        # authoritative check is repeated by _begin_voice_activation_handoff
+        # after priming and again after its output pause settles.  Deferring at
+        # this point leaves the single warmed pending session and every queue in
+        # place, so a later response-complete event can retry without polling.
+        if (
+            getattr(self, "_voice_session_activation_factory", None) is not None
+            and getattr(self, "_asr_route_mode", "blocked") == "native"
+        ):
+            source_boundary = getattr(
+                getattr(self, "session", None),
+                "can_handoff_voice_input",
+                None,
+            )
+            try:
+                source_boundary_ready = bool(
+                    callable(source_boundary) and source_boundary() is True
+                )
+            except Exception as boundary_error:
+                source_boundary_ready = False
+                logger.warning(
+                    "Final Swap Sequence: native voice handoff boundary check "
+                    "failed: %s",
+                    boundary_error,
+                )
+            if not source_boundary_ready:
+                logger.info(
+                    "Final Swap Sequence: native voice input is not at a safe "
+                    "handoff boundary; deferring to a later turn completion"
+                )
+                self.is_hot_swap_imminent = False
+                return
+
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
+            voice_handoff_ticket = None
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
             # 已注入 pending_session 的 _selected 条目引用（队列原地保留，promote
             # 成功时才移除）；_removed_extras 是 promote 时真正移除掉的子集，仅
@@ -3287,6 +3375,224 @@ class LifecycleMixin:
             logger.info("Final Swap Sequence: Starting actual session swap...")
             old_main_session = self.session
             old_main_message_handler_task = self.message_handler_task
+
+            begin_voice_handoff = getattr(
+                self,
+                "_begin_voice_activation_handoff",
+                None,
+            )
+            if (
+                getattr(self, "_voice_session_activation_factory", None)
+                is not None
+                and callable(begin_voice_handoff)
+            ):
+                voice_handoff_ticket = await begin_voice_handoff(
+                    self.pending_session
+                )
+                if voice_handoff_ticket is False:
+                    # Priming has already changed this pending connection's
+                    # private context.  Retire that one instance rather than
+                    # retrying the prime and duplicating callback/context
+                    # injection.  The Core handoff hook has already applied
+                    # the route-specific failure policy (native may fail-close
+                    # its source); the authoritative queues stay untouched so
+                    # recovery can prepare exactly one replacement and retry.
+                    logger.info(
+                        "Final Swap Sequence: voice activation handoff deferred; "
+                        "retiring the primed pending session for an event-driven retry"
+                    )
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
+
+            def _voice_handoff_is_current(*, allow_promoted: bool = False) -> bool:
+                if voice_handoff_ticket is None:
+                    return True
+                checker = getattr(
+                    self,
+                    "_voice_activation_handoff_is_current",
+                    None,
+                )
+                return bool(
+                    callable(checker)
+                    and checker(
+                        voice_handoff_ticket,
+                        allow_promoted=allow_promoted,
+                    )
+                )
+
+            def _settle_owned_handoff_step(step_task: asyncio.Task) -> None:
+                _ORPHAN_SESSION_REAPER_TASKS.discard(step_task)
+                if step_task.cancelled():
+                    return
+                try:
+                    step_task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            async def _await_voice_handoff_step(
+                awaitable,
+                *,
+                stage: str,
+                allow_promoted: bool = False,
+            ):
+                if voice_handoff_ticket is None:
+                    return await awaitable
+                if not _voice_handoff_is_current(
+                    allow_promoted=allow_promoted
+                ):
+                    if inspect.iscoroutine(awaitable):
+                        awaitable.close()
+                    raise RuntimeError(
+                        f"voice activation handoff became stale before {stage}"
+                    )
+                step_task = asyncio.ensure_future(awaitable)
+                _ORPHAN_SESSION_REAPER_TASKS.add(step_task)
+                step_task.add_done_callback(_settle_owned_handoff_step)
+                remaining = max(
+                    0.0,
+                    voice_handoff_ticket.deadline
+                    - asyncio.get_running_loop().time(),
+                )
+                try:
+                    done, _pending = await asyncio.wait(
+                        {step_task},
+                        timeout=remaining,
+                    )
+                except asyncio.CancelledError:
+                    step_task.cancel()
+                    await asyncio.wait({step_task}, timeout=0.1)
+                    raise
+                if not done:
+                    step_task.cancel()
+                    settled, _pending = await asyncio.wait(
+                        {step_task},
+                        timeout=0.1,
+                    )
+                    if not settled:
+                        step_task.cancel()
+                        logger.warning(
+                            "Final Swap Sequence: %s ignored cancellation; "
+                            "retained in the owned cleanup registry",
+                            stage,
+                        )
+                    raise TimeoutError(
+                        f"voice activation handoff deadline exceeded during {stage}"
+                    )
+                result = step_task.result()
+                if not _voice_handoff_is_current(
+                    allow_promoted=allow_promoted
+                ):
+                    raise RuntimeError(
+                        f"voice activation handoff became stale after {stage}"
+                    )
+                return result
+
+            async def _abort_voice_handoff(reason: str) -> None:
+                if voice_handoff_ticket is None:
+                    return
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason=reason,
+                    )
+
+            # Provider close implementations are not required to cooperate
+            # with cancellation.  Keep each retirement close in an owned task
+            # and wait only inside the handoff's absolute budget; a close that
+            # swallows CancelledError must never pin the swap past five seconds.
+            _replacement_close_tasks: dict[int, asyncio.Task] = {}
+
+            def _settle_owned_replacement_close(close_task: asyncio.Task) -> None:
+                _ORPHAN_SESSION_REAPER_TASKS.discard(close_task)
+                if close_task.cancelled():
+                    return
+                try:
+                    close_task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            async def _retire_replacement_session(
+                session_to_close,
+                *,
+                stage: str,
+            ) -> None:
+                if session_to_close is None:
+                    return
+                close_task = _replacement_close_tasks.get(id(session_to_close))
+                if close_task is None:
+                    close_task = asyncio.create_task(session_to_close.close())
+                    _replacement_close_tasks[id(session_to_close)] = close_task
+                    _ORPHAN_SESSION_REAPER_TASKS.add(close_task)
+                    close_task.add_done_callback(
+                        _settle_owned_replacement_close
+                    )
+                if voice_handoff_ticket is None:
+                    await close_task
+                    return
+                remaining = max(
+                    0.0,
+                    voice_handoff_ticket.deadline
+                    - asyncio.get_running_loop().time(),
+                )
+                # Even after the transaction deadline, give an ordinary close
+                # one scheduler slice before cancellation.  This is bounded
+                # cleanup (10 ms), not an extension of the handoff itself.
+                done, _pending = await asyncio.wait(
+                    {close_task},
+                    timeout=remaining if remaining > 0.0 else 0.01,
+                )
+                if not done:
+                    close_task.cancel()
+                    done, _pending = await asyncio.wait(
+                        {close_task},
+                        timeout=0.1,
+                    )
+                if not done:
+                    # A provider that swallows cancellation cannot be forcibly
+                    # killed by asyncio.  Keep the task in the module registry
+                    # for ownership/diagnostics, issue one final cancellation,
+                    # and let the handoff return on its bounded path.
+                    close_task.cancel()
+                    logger.warning(
+                        "Final Swap Sequence: %s close ignored cancellation; "
+                        "retained in the owned cleanup registry",
+                        stage,
+                    )
+                    return
+                if close_task.cancelled():
+                    return
+                try:
+                    close_task.result()
+                except Exception as close_err:
+                    logger.debug(
+                        "Final Swap Sequence: %s close failed (ignored): %s",
+                        stage,
+                        close_err,
+                    )
+
+            if voice_handoff_ticket is not None:
+                mark_irreversible = getattr(
+                    self,
+                    "_mark_voice_activation_handoff_irreversible",
+                    None,
+                )
+                if not callable(mark_irreversible) or not mark_irreversible(
+                    voice_handoff_ticket
+                ):
+                    await _abort_voice_handoff(
+                        "handoff_irreversible_rejected"
+                    )
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
             # 立即用局部变量持有新 session，并清空 self.pending_session。
             # 必须在任何 await 之前完成：后续 cancel/close 的 await 若触发
             # CancelledError，异常处理器会调 _cleanup_pending_session_resources()，
@@ -3302,17 +3608,44 @@ class LifecycleMixin:
             if old_main_message_handler_task and not old_main_message_handler_task.done():
                 old_main_message_handler_task.cancel()
                 try:
-                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
+                    if voice_handoff_ticket is None:
+                        listener_wait = asyncio.wait_for(
+                            old_main_message_handler_task,
+                            timeout=2.0,
+                        )
+                        await _await_voice_handoff_step(
+                            listener_wait,
+                            stage="old listener stop",
+                        )
+                    else:
+                        listener_timeout = min(
+                            2.0,
+                            max(
+                                0.0,
+                                voice_handoff_ticket.deadline
+                                - asyncio.get_running_loop().time(),
+                            ),
+                        )
+                        done, _pending = await _await_voice_handoff_step(
+                            asyncio.wait(
+                                {old_main_message_handler_task},
+                                timeout=listener_timeout,
+                            ),
+                            stage="old listener stop",
+                        )
+                        if not done:
+                            raise asyncio.TimeoutError
+                        old_main_message_handler_task.result()
                     logger.info("Final Swap Sequence: Old message handler task stopped")
                 except asyncio.TimeoutError:
                     # 旧 task 仍占着 recv()，继续往下 close() 会重演并发 recv 冲突。
                     # 关闭 new_session 防止 ws 泄漏，标记超时后中止 swap。
                     old_listener_cancel_timed_out = True
                     logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
-                    try:
-                        await new_session.close()
-                    except Exception as _e:
-                        logger.debug(f"Final Swap Sequence: 超时中止时关闭 new_session 失败（可忽略）: {_e}")
+                    await _retire_replacement_session(
+                        new_session,
+                        stage="listener-timeout replacement",
+                    )
                     raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
                     # 这里只允许吞"刚被 cancel 的旧 listener 抛回的取消回波"。
@@ -3326,6 +3659,8 @@ class LifecycleMixin:
                     if _swap_task is not None and _swap_task.cancelling() > 0:
                         raise
                 except Exception as e:
+                    if voice_handoff_ticket is not None:
+                        raise
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
             _abort_if_passive_claim_retracted("before old session close")
@@ -3342,16 +3677,44 @@ class LifecycleMixin:
             if core_voice_session_lock is None:
                 core_voice_session_lock = asyncio.Lock()
                 self._core_voice_session_swap_lock = core_voice_session_lock
-            async with core_voice_session_lock:
+
+            @asynccontextmanager
+            async def _hold_core_voice_session_lock():
+                if voice_handoff_ticket is None:
+                    async with core_voice_session_lock:
+                        yield
+                else:
+                    if not _voice_handoff_is_current():
+                        raise RuntimeError(
+                            "voice activation handoff became stale before core "
+                            "voice swap lock acquisition"
+                        )
+                    async with asyncio.timeout_at(
+                        voice_handoff_ticket.deadline
+                    ):
+                        async with core_voice_session_lock:
+                            if not _voice_handoff_is_current():
+                                raise RuntimeError(
+                                    "voice activation handoff became stale after "
+                                    "core voice swap lock acquisition"
+                                )
+                            yield
+
+            async with _hold_core_voice_session_lock():
                 _abort_if_passive_claim_retracted(
                     "while waiting for core voice swap lock"
                 )
                 # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
                 if old_main_session:
                     try:
-                        await old_main_session.close()
+                        await _await_voice_handoff_step(
+                            old_main_session.close(),
+                            stage="old session close",
+                        )
                     except Exception as e:
                         logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+                        if voice_handoff_ticket is not None:
+                            raise
 
                 _abort_if_passive_claim_retracted("before promote")
 
@@ -3367,17 +3730,48 @@ class LifecycleMixin:
                 # ── 步骤 3：promote 新 session ────────────────────────────────────
                 # 镜像启动侧的强 CAS：任何偏离都意味着并发 start/end_session
                 # 已接管会话，此时覆盖 self.session 会孤儿化赢家。
-                async with self.lock:
-                    _abort_if_passive_claim_retracted("while waiting for promote lock")
-                    _promote_allowed = self.session is old_main_session
-                    if _promote_allowed:
-                        self.session = new_session
+                if voice_handoff_ticket is None:
+                    async with self.lock:
+                        _abort_if_passive_claim_retracted(
+                            "while waiting for promote lock"
+                        )
+                        _promote_allowed = self.session is old_main_session
+                        if _promote_allowed:
+                            self.session = new_session
+                else:
+                    if not _voice_handoff_is_current():
+                        raise RuntimeError(
+                            "voice activation handoff became stale before "
+                            "session promote lock acquisition"
+                        )
+                    async with asyncio.timeout_at(
+                        voice_handoff_ticket.deadline
+                    ):
+                        async with self.lock:
+                            if not _voice_handoff_is_current():
+                                raise RuntimeError(
+                                    "voice activation handoff became stale after "
+                                    "session promote lock acquisition"
+                                )
+                            _abort_if_passive_claim_retracted(
+                                "while waiting for promote lock"
+                            )
+                            _promote_allowed = self.session is old_main_session
+                            if _promote_allowed:
+                                self.session = new_session
+                if voice_handoff_ticket is not None and not _voice_handoff_is_current(
+                    allow_promoted=True
+                ):
+                    raise RuntimeError(
+                        "voice activation handoff became stale during session promote"
+                    )
             if not _promote_allowed:
                 logger.warning("⚠️ Final Swap Sequence: promote 时 self.session 已被并发接管，中止 swap 并关闭 new_session")
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: 中止 promote 时关闭 new_session 失败（可忽略）: {_e}")
+                await _abort_voice_handoff("session_promote_rejected")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="rejected promotion replacement",
+                )
                 # 队列没动过：已注入 new_session 的 _selected 仍在队列里，随
                 # 接管方纪元的下一次 hot-swap 照常投递（与 _deferred 一致）。
                 return
@@ -3403,11 +3797,28 @@ class LifecycleMixin:
                     _passive_media_outcome["rejection_observed"].wait()
                 )
                 try:
+                    media_barrier_timeout = (
+                        _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S
+                    )
+                    if voice_handoff_ticket is not None:
+                        media_barrier_timeout = min(
+                            media_barrier_timeout,
+                            max(
+                                0.0,
+                                voice_handoff_ticket.deadline
+                                - asyncio.get_running_loop().time(),
+                            ),
+                        )
                     done, _pending = await asyncio.wait(
                         {session_update_ack, rejection_wait},
-                        timeout=_PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+                        timeout=media_barrier_timeout,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
+                    if not _voice_handoff_is_current(allow_promoted=True):
+                        raise RuntimeError(
+                            "voice activation handoff became stale during passive "
+                            "media readiness barrier"
+                        )
                 finally:
                     _passive_media_outcome["settled"] = True
                     # 屏障已经落地，晚到的图片拒绝回调再没有意义了。它们的闭包
@@ -3433,6 +3844,7 @@ class LifecycleMixin:
                     logger.warning(
                         "Final Swap Sequence: passive native media was rejected or its session-update barrier timed out; retiring promoted replacement before callback ACK"
                     )
+                    await _abort_voice_handoff("passive_media_barrier_failed")
                     # Retire only the listener/session this swap created.  A
                     # concurrent start_session may have replaced both manager
                     # slots while the Provider barrier above was pending; reading
@@ -3449,13 +3861,10 @@ class LifecycleMixin:
                             replacement_listener,
                             return_exceptions=True,
                         )
-                    try:
-                        await new_session.close()
-                    except Exception as close_err:
-                        logger.debug(
-                            "Final Swap Sequence: rejected passive media replacement close failed: %s",
-                            close_err,
-                        )
+                    await _retire_replacement_session(
+                        new_session,
+                        stage="passive-media replacement",
+                    )
                     # Cancellation and close both yield.  Revalidate the complete
                     # ownership pair before touching shared lifecycle state: if a
                     # winner arrived during either await, local retirement above
@@ -3534,11 +3943,19 @@ class LifecycleMixin:
             )
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
-            await self._apply_pending_tts_route_after_swap()
+            await _await_voice_handoff_step(
+                self._apply_pending_tts_route_after_swap(),
+                stage="post-promote TTS route application",
+                allow_promoted=True,
+            )
             # The pending Omni session is now the active session. If its Core
             # provider changed, replace the independent ASR before replaying
             # cached microphone audio so one frame can never cross providers.
-            await self._reconcile_independent_asr_after_core_change()
+            await _await_voice_handoff_step(
+                self._reconcile_independent_asr_after_core_change(),
+                stage="post-promote ASR reconciliation",
+                allow_promoted=True,
+            )
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
@@ -3551,9 +3968,15 @@ class LifecycleMixin:
             # pending_session（已被挪走置 None）也赶不上 self.session
             # （还没赋值），导致 promote 后新 session 缺了那次注册的工具。
             try:
-                await self._sync_tools_to_active_session()
+                await _await_voice_handoff_step(
+                    self._sync_tools_to_active_session(),
+                    stage="post-promote tool reconciliation",
+                    allow_promoted=True,
+                )
             except Exception as _sync_err:
                 logger.warning("⚠️ final swap post-promote tool sync failed: %s", _sync_err)
+                if voice_handoff_ticket is not None:
+                    raise
 
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
             if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
@@ -3564,9 +3987,13 @@ class LifecycleMixin:
                 self.initial_next_session_context_snapshot_len
                 + len(incremental_next_session_context)
             )
-            consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
-                transferred_next_context_count,
-                next_context_count_at_promote,
+            consumed_next_context_count = await _await_voice_handoff_step(
+                self._prime_late_next_session_context_after_swap(
+                    transferred_next_context_count,
+                    next_context_count_at_promote,
+                ),
+                stage="late context reconciliation",
+                allow_promoted=True,
             )
 
             # ── 步骤 4：启动新 listener ───────────────────────────────────────────
@@ -3579,6 +4006,33 @@ class LifecycleMixin:
                 )
             ):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+            # The replacement transport and listener are now installed, and
+            # route reconciliation has completed under the ticket's one shared
+            # deadline.  Only this commit may move the activation writer to the
+            # promoted session and release its ordered output backlog.
+            if voice_handoff_ticket is not None:
+                if not _voice_handoff_is_current(allow_promoted=True):
+                    raise RuntimeError(
+                        "voice activation handoff became stale before commit"
+                    )
+                commit_voice_handoff = getattr(
+                    self,
+                    "_commit_voice_activation_handoff",
+                    None,
+                )
+                if not callable(commit_voice_handoff):
+                    raise RuntimeError(
+                        "voice activation handoff commit hook is unavailable"
+                    )
+                async with asyncio.timeout_at(voice_handoff_ticket.deadline):
+                    handoff_committed = await commit_voice_handoff(
+                        voice_handoff_ticket
+                    )
+                if handoff_committed is not True or self.session is not new_session:
+                    raise RuntimeError(
+                        "voice activation handoff commit was rejected"
+                    )
 
             # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
             # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
@@ -3596,14 +4050,25 @@ class LifecycleMixin:
         except asyncio.CancelledError:
             logger.info("Final Swap Sequence: Task cancelled.")
             self.is_hot_swap_imminent = False
+            if voice_handoff_ticket is not None:
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason="final_swap_cancelled",
+                    )
             # new_session 在 self.pending_session = None 后由局部变量持有。
             # 若 swap 在 promote 之前被取消，_cleanup_pending_session_resources 不再持有它，
             # 必须在此手动关闭，防止 ws 泄漏。
             if new_session is not None and new_session is not self.session:
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="cancelled replacement",
+                )
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             # 镜像 except Exception 的死会话 fail-close：取消若落在旧会话已
@@ -3631,13 +4096,24 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
             self.is_hot_swap_imminent = False
+            if voice_handoff_ticket is not None:
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason="final_swap_failed",
+                    )
             await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
             # 同上：new_session 若未完成 promote，需手动关闭防 ws 泄漏。
             if new_session is not None and new_session is not self.session:
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: 异常路径关闭 new_session 失败（可忽略）: {_e}")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="failed replacement",
+                )
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             if old_listener_cancel_timed_out:

@@ -2312,10 +2312,21 @@
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
-            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+            if (typeof data === 'string' && /start_session|pause_session|end_session/.test(data)) {
                 try {
                     var msg = JSON.parse(data);
                     var handshakeStamped = false;
+                    if (msg && ['start_session', 'pause_session', 'end_session'].indexOf(msg.action) !== -1) {
+                        // Low-frequency diagnostics: send only bundled script names and
+                        // line numbers, never a full stack, URL, or user message.
+                        try {
+                            var sites = String(new Error().stack || '').match(/app-[a-z-]+\.js:\d{1,6}:\d{1,6}/g);
+                            if (sites) {
+                                msg.lifecycle_trace = sites.slice(0, 4).join(';');
+                                handshakeStamped = true;
+                            }
+                        } catch (_) { /* Diagnostics must not prevent sending. */ }
+                    }
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
                         handshakeStamped = true;
@@ -3340,6 +3351,24 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'ASR_INPUT_CONNECTING'
+                        || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
+                        || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
+                        var deliveryMessages = {
+                            ASR_INPUT_CONNECTING: ['microphone.inputConnecting', 'Connecting speech recognition. Your audio is waiting to be sent.'],
+                            ASR_INPUT_DELIVERY_FAILED: ['microphone.inputDeliveryFailed', 'Your speech could not be delivered completely. Restart voice input and say it again.'],
+                            ASR_INPUT_DELIVERY_UNCERTAIN: ['microphone.inputDeliveryUncertain', 'Speech delivery was interrupted. Some audio may have been received; it will not be resent automatically.']
+                        };
+                        var deliveryMessage = deliveryMessages[statusCode];
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t(deliveryMessage[0]) : deliveryMessage[1],
+                                statusCode === 'ASR_INPUT_CONNECTING' ? 3000 : 6000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
@@ -3377,6 +3406,61 @@
                                 if (typeof window.showStatusToast === 'function') {
                                     window.showStatusToast(
                                         window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                        5000
+                                    );
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        var activationState = (statusDetails && statusDetails.state) || '';
+                        var allowedActivationStates = [
+                            'disabled', 'preparing', 'waiting', 'verifying',
+                            'replaying', 'active', 'unavailable', 'closed'
+                        ];
+                        if (allowedActivationStates.indexOf(activationState) !== -1) {
+                            var activationIdentity = [
+                                statusDetails.session_id,
+                                statusDetails.microphone_generation,
+                                statusDetails.route_generation,
+                                statusDetails.profile_revision,
+                                statusDetails.permission_revision
+                            ].join(':');
+                            var activationRevision = Number(statusDetails.revision) || 0;
+                            if (S.voiceSessionActivationIdentity === activationIdentity
+                                && activationRevision <= (S.voiceSessionActivationRevision || 0)) {
+                                return;
+                            }
+                            var previousActivationState = S.voiceSessionActivationState || '';
+                            S.voiceSessionActivationIdentity = activationIdentity;
+                            S.voiceSessionActivationRevision = activationRevision;
+                            S.voiceSessionActivationState = activationState;
+                            document.documentElement.setAttribute(
+                                'data-voice-session-activation-state',
+                                activationState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-session-activation-changed',
+                                { detail: statusDetails }
+                            ));
+                            if (previousActivationState !== activationState
+                                && S.isRecording === true
+                                && typeof window.showStatusToast === 'function') {
+                                if (activationState === 'waiting') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionWaiting') : 'Waiting for your voice to activate the conversation.',
+                                        2500
+                                    );
+                                } else if (activationState === 'active') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionActive') : 'Voice conversation activated.',
+                                        2500
+                                    );
+                                } else if (activationState === 'unavailable') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionUnavailable') : 'Voice activation is unavailable. Standby audio will not be uploaded.',
                                         5000
                                     );
                                 }

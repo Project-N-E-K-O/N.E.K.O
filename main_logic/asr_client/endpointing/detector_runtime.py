@@ -2350,6 +2350,27 @@ class DetectorRuntime:
                 self._throttle_policy.reset_candidate_activity()
             return successor_present
 
+    async def wait_audio_capacity(
+        self, pcm16: bytes, *, sample_rate_hz: int, deadline: float,
+    ) -> bool:
+        """Wait for the bounded audio ingress queue, not semantic evaluation."""
+        if not isinstance(pcm16, bytes) or len(pcm16) % 2:
+            raise ValueError("DetectorRuntime requires complete PCM16 bytes")
+        if sample_rate_hz <= 0:
+            raise ValueError("DetectorRuntime sample rate must be positive")
+        adapter = self._semantic_adapter
+        epoch = self._detector_epoch
+        if self._closed or adapter is None or adapter.failed:
+            return False
+        if not pcm16:
+            return True
+        duration_us = (len(pcm16) // 2 * 1_000_000 + sample_rate_hz - 1) // sample_rate_hz
+        available = await adapter._queue.wait_audio_capacity(duration_us, deadline)
+        return bool(
+            available and not self._closed and not adapter.failed
+            and self._semantic_adapter is adapter and self._detector_epoch == epoch
+        )
+
     async def submit_audio(
         self,
         pcm16: bytes,
@@ -2547,6 +2568,9 @@ class DetectorRuntime:
                         self._smart_turn_readiness = SmartTurnReadiness.FAILED
 
     async def reset(self) -> None:
+        capacity_queue = getattr(self._semantic_adapter, "_queue", None)
+        if capacity_queue is not None:
+            capacity_queue.invalidate_capacity_waiters()
         overflow_reset_task = self._overflow_reset_task
         if (
             overflow_reset_task is not None
@@ -2726,6 +2750,9 @@ class DetectorRuntime:
                     return
                 self._closed = True
                 self._detector_epoch += 1
+                capacity_queue = getattr(self._semantic_adapter, "_queue", None)
+                if capacity_queue is not None:
+                    capacity_queue.invalidate_capacity_waiters()
                 self._reset_speaker_shadow_identity()
                 speaker_shadow = self._speaker_shadow
                 self._candidate_generation = 0
