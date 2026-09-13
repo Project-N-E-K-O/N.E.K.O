@@ -5232,8 +5232,10 @@
       async request(action, payload = {}) {
         requireCapability('media-timeline', 'media.request');
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
-        try { if (JSON.stringify(payload).length > 65536) fail('invalid_request', 'Media payload too large'); }
-        catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
+        // SDK payload budget in UTF-8 bytes; host fields are appended afterwards.
+        const payloadBytes = jsonByteLength(payload);
+        if (payloadBytes === Number.POSITIVE_INFINITY) fail('invalid_request', 'Media payload must be JSON');
+        if (payloadBytes > 65536) fail('invalid_request', 'Media payload too large');
         if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
         try { return await transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId }); }
@@ -5242,6 +5244,9 @@
       async mount(config) {
         requireCapability('media-timeline', 'media.mount');
         requireActiveRuntimeRoute('media.mount');
+        // Validate before claiming the pending slot: a TypeError past this point
+        // would skip the finally below and leave every later mount busy.
+        if (!config || typeof config !== 'object' || Array.isArray(config)) fail('invalid_request', 'Media mount config must be an object');
         if (mediaControllers.size || mediaMountPending) fail('busy', 'A media timeline is already mounted');
         const generation = runtimeRouteInstanceId;
         mediaMountPending = true;
