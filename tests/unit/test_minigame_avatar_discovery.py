@@ -149,6 +149,30 @@ async def test_character_legacy_vrm_and_live2d_paths(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model_type", ["live2d", "", "vrm", "mmd", "pngtuber", "live3d"])
+@pytest.mark.parametrize("global_fallback", [True, False])
+async def test_character_does_not_offer_global_live2d_as_owned_fallback(monkeypatch, model_type, global_fallback):
+    from unittest.mock import AsyncMock
+    from starlette.responses import JSONResponse
+    from main_routers import characters_router
+
+    character = {"_reserved": {"avatar": {"model_type": model_type, "live3d_sub_type": "vrm"}}}
+    data = {"当前猫娘": "Example", "猫娘": {"Example": character}}
+    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(load_characters=lambda: data))
+    monkeypatch.setattr(runtime, "_load_game_character_prompt_locale", AsyncMock(return_value=("en", True)))
+    path = "/static/live2d/example/model.model3.json"
+    canonical = AsyncMock(return_value=JSONResponse({"success": True, "model_info": {
+        "path": path, "is_fallback": global_fallback,
+    }}))
+    monkeypatch.setattr(characters_router, "get_current_live2d_model", canonical)
+    result = await runtime.game_character("sdk-avatar")
+    expected = "" if global_fallback and model_type not in ("", "live2d") else path
+    assert result["live2d_path"] == expected
+    canonical.assert_awaited_once_with("Example")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("nekos, status", [
     ({str(i): {} for i in range(257)}, 413), ({"x" * 129: {}}, 422), ({"🐈" * 129: {}}, 422),
 ])

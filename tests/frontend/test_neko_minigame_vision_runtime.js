@@ -100,6 +100,19 @@ async function captureTests() {
   const previousDraws = env.drawCalls.length;
   await assert.rejects(helper.capture(rectangle, { windowImpl: w }), { code: 'capture_source_mismatch' });
   assert.equal(env.drawCalls.length, previousDraws);
+  for (const displaySurface of ['window', 'monitor']) {
+    env.choose = async () => {
+      const stream = env.makeStream();
+      stream.getVideoTracks()[0].getSettings = () => ({displaySurface, width:2000, height:1000});
+      return stream;
+    };
+    const stops = env.stops;
+    assert.equal(helper.captureAvailable(w), true, 'API presence is not source authorization');
+    await assert.rejects(helper.capture(rectangle, {windowImpl:w}), {code:'capture_source_mismatch'});
+    assert.equal(env.drawCalls.length, previousDraws, 'non-tab source pixels were read');
+    assert.ok(env.stops > stops, 'rejected source was not released');
+    assert.equal(env.timers.size, 0);
+  }
   env.choose = async () => { throw Object.assign(new Error('private cause'), { name: 'NotAllowedError' }); };
   await assert.rejects(helper.capture(rectangle, { windowImpl: w }), { code: 'capture_denied' });
   const late = deferred(); env.choose = () => late.promise;
@@ -321,6 +334,7 @@ async function attachmentTests() {
   };
   assert.equal(helper.available(w),true,'images do not depend on tab capture');
   assert.equal(helper.captureAvailable(w),false);
+  await assert.rejects(helper.capture(rectangle, {windowImpl:w}), {code:'capture_unavailable'});
   const options={windowImpl:w};
   const normalized=await helper.normalizeAttachments([
     {type:'image',source:'/example.png',label:'url'},
