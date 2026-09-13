@@ -707,19 +707,15 @@ svg {
     inset 0 0 calc(12px + 28px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(150, 195, 255, calc(0.32 + 0.45 * var(--focus-glow, 0))),
     inset 0 0 calc(30px + 64px * var(--focus-glow, 0)) calc(3px + 10px * var(--focus-glow, 0)) rgba(130, 180, 255, calc(0.2 + 0.4 * var(--focus-glow, 0)));
 }
-.app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
-  animation: focus-glow-breathe-full 3.4s ease-in-out infinite;
-}
-@keyframes focus-glow-breathe-full {
-  0%, 100% {
+/* Breathing is interpolated from --focus-breath (0 trough .. 1 peak), which
+   useFocusGlow writes at a capped frame rate. A CSS keyframe on box-shadow would
+   repaint at the display refresh rate instead. Reduced motion keeps the steady
+   glow above because these rules only apply with no motion preference. */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
     box-shadow:
-      inset 0 0 calc(20px * var(--focus-glow, 0.6)) calc(2px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.5 * var(--focus-glow, 0.6))),
-      inset 0 0 calc(44px * var(--focus-glow, 0.6)) calc(7px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.38 * var(--focus-glow, 0.6)));
-  }
-  50% {
-    box-shadow:
-      inset 0 0 calc(46px * var(--focus-glow, 0.6)) calc(9px * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc(0.95 * var(--focus-glow, 0.6))),
-      inset 0 0 calc(100px * var(--focus-glow, 0.6)) calc(22px * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc(0.78 * var(--focus-glow, 0.6)));
+      inset 0 0 calc((20px + 26px * var(--focus-breath, 0)) * var(--focus-glow, 0.6)) calc((2px + 7px * var(--focus-breath, 0)) * var(--focus-glow, 0.6)) rgba(150, 195, 255, calc((0.5 + 0.45 * var(--focus-breath, 0)) * var(--focus-glow, 0.6))),
+      inset 0 0 calc((44px + 56px * var(--focus-breath, 0)) * var(--focus-glow, 0.6)) calc((7px + 15px * var(--focus-breath, 0)) * var(--focus-glow, 0.6)) rgba(130, 180, 255, calc((0.38 + 0.4 * var(--focus-breath, 0)) * var(--focus-glow, 0.6)));
   }
 }
 
@@ -733,22 +729,14 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
     inset 0 0 calc(14px + 24px * var(--focus-glow, 0)) calc(2px + 4px * var(--focus-glow, 0)) rgba(165, 205, 255, calc(0.46 + 0.3 * var(--focus-glow, 0))),
     inset 0 0 calc(30px + 56px * var(--focus-glow, 0)) calc(4px + 10px * var(--focus-glow, 0)) rgba(140, 185, 255, calc(0.3 + 0.3 * var(--focus-glow, 0)));
 }
-body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
-  animation: focus-glow-breathe-full-electron 3.4s ease-in-out infinite;
-}
 /* The non-linear jump at 0.6 is intentional but kept SMALL: the breathing band
    only sits a touch above the just-below-0.6 (≈0.59) level and climbs gently to
    the cap — not the old hard ramp to full brightness. */
-@keyframes focus-glow-breathe-full-electron {
-  0%, 100% {
+@media (prefers-reduced-motion: no-preference) {
+  body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay {
     box-shadow:
-      inset 0 0 calc(16px + 14px * var(--focus-glow, 0.6)) calc(2px + 3px * var(--focus-glow, 0.6)) rgba(165, 205, 255, calc(0.45 + 0.12 * var(--focus-glow, 0.6))),
-      inset 0 0 calc(32px + 28px * var(--focus-glow, 0.6)) calc(5px + 7px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.32 + 0.1 * var(--focus-glow, 0.6)));
-  }
-  50% {
-    box-shadow:
-      inset 0 0 calc(26px + 20px * var(--focus-glow, 0.6)) calc(5px + 5px * var(--focus-glow, 0.6)) rgba(175, 210, 255, calc(0.55 + 0.15 * var(--focus-glow, 0.6))),
-      inset 0 0 calc(55px + 30px * var(--focus-glow, 0.6)) calc(12px + 10px * var(--focus-glow, 0.6)) rgba(140, 185, 255, calc(0.4 + 0.12 * var(--focus-glow, 0.6)));
+      inset 0 0 calc(16px + 14px * var(--focus-glow, 0.6) + (10px + 6px * var(--focus-glow, 0.6)) * var(--focus-breath, 0)) calc(2px + 3px * var(--focus-glow, 0.6) + (3px + 2px * var(--focus-glow, 0.6)) * var(--focus-breath, 0)) rgba(calc(165 + 10 * var(--focus-breath, 0)), calc(205 + 5 * var(--focus-breath, 0)), 255, calc(0.45 + 0.12 * var(--focus-glow, 0.6) + (0.1 + 0.03 * var(--focus-glow, 0.6)) * var(--focus-breath, 0))),
+      inset 0 0 calc(32px + 28px * var(--focus-glow, 0.6) + (23px + 2px * var(--focus-glow, 0.6)) * var(--focus-breath, 0)) calc(5px + 7px * var(--focus-glow, 0.6) + (7px + 3px * var(--focus-glow, 0.6)) * var(--focus-breath, 0)) rgba(140, 185, 255, calc(0.32 + 0.1 * var(--focus-glow, 0.6) + (0.08 + 0.02 * var(--focus-glow, 0.6)) * var(--focus-breath, 0)));
   }
 }
 
@@ -759,29 +747,12 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
     0 0 calc(6px + 22px * var(--focus-glow, 0)) calc(1px + 4px * var(--focus-glow, 0)) rgba(120, 170, 255, calc(0.25 + 0.55 * var(--focus-glow, 0))),
     var(--compact-chat-surface-shadow);
 }
-.app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
-  animation: focus-glow-breathe-compact 3.4s ease-in-out infinite;
-}
-@keyframes focus-glow-breathe-compact {
-  0%, 100% {
-    box-shadow:
-      0 0 0 1px rgba(150, 190, 255, calc(0.35 * var(--focus-glow, 0.6))),
-      0 0 calc(8px * var(--focus-glow, 0.6)) 1px rgba(120, 170, 255, calc(0.4 * var(--focus-glow, 0.6))),
-      var(--compact-chat-surface-shadow);
-  }
-  50% {
-    box-shadow:
-      0 0 0 2px rgba(150, 190, 255, calc(0.9 * var(--focus-glow, 0.6))),
-      0 0 calc(30px * var(--focus-glow, 0.6)) calc(6px * var(--focus-glow, 0.6)) rgba(120, 170, 255, calc(0.85 * var(--focus-glow, 0.6))),
-      var(--compact-chat-surface-shadow);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
-  body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus-breathing="true"] .chat-focus-overlay,
+@media (prefers-reduced-motion: no-preference) {
   .app-shell.chat-surface-mode-compact[data-focus-breathing="true"] .compact-chat-surface-frame {
-    animation: none;
+    box-shadow:
+      0 0 0 calc(1px + 1px * var(--focus-breath, 0)) rgba(150, 190, 255, calc((0.35 + 0.55 * var(--focus-breath, 0)) * var(--focus-glow, 0.6))),
+      0 0 calc((8px + 22px * var(--focus-breath, 0)) * var(--focus-glow, 0.6)) calc(1px + (6px * var(--focus-glow, 0.6) - 1px) * var(--focus-breath, 0)) rgba(120, 170, 255, calc((0.4 + 0.45 * var(--focus-breath, 0)) * var(--focus-glow, 0.6))),
+      var(--compact-chat-surface-shadow);
   }
 }
 
@@ -2801,47 +2772,93 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   inset: 0;
   z-index: 1;
   border-radius: inherit;
-  background-image:
-    linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 100%),
-    radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%),
-    radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%),
-    radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
-  background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
-  background-repeat: no-repeat;
-  background-size: 100% 100%, 180% 220%, 190% 220%, 180% 200%;
+  background-image: linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, calc(0.05 * var(--neko-chat-opacity-factor, 1))) 100%);
   box-shadow:
     inset 0 2px 6px var(--compact-chat-highlight-top),
     inset 0 -1px 3px var(--compact-chat-highlight-bottom),
     inset 2px 0 4px var(--compact-chat-highlight-left),
     inset -2px 0 4px var(--compact-chat-highlight-right);
-  animation: compact-chat-liquid-edge 20s ease-in-out infinite;
   pointer-events: none;
-}
-
-@keyframes compact-chat-liquid-edge {
-  0%,
-  100% {
-    background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
-  }
-
-  33% {
-    background-position: 0 0, 58% 18%, 8% 48%, 42% 88%;
-  }
-
-  66% {
-    background-position: 0 0, 92% 72%, 86% 12%, 4% 34%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compact-chat-surface-frame::after {
-    animation: none;
-  }
 }
 
 .compact-chat-surface-frame > * {
   position: relative;
   z-index: 2;
+}
+
+/* Rasterize the three gradients separately, then move their textures on the
+   compositor. Animating background-position repainted the entire glass capsule
+   at display refresh rate, even with Focus disabled and the avatar FPS capped.
+   This clipped layer stays below the static highlights and interactive content. */
+.compact-chat-surface-frame > .compact-chat-refraction {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.compact-chat-refraction > span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation-duration: 20s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.compact-chat-refraction-blue {
+  width: 180%;
+  height: 220%;
+  background: radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%);
+  animation-name: compact-chat-refraction-blue;
+}
+
+.compact-chat-refraction-violet {
+  width: 190%;
+  height: 220%;
+  background: radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%);
+  animation-name: compact-chat-refraction-violet;
+}
+
+.compact-chat-refraction-rose {
+  width: 180%;
+  height: 200%;
+  background: radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
+  animation-name: compact-chat-refraction-rose;
+}
+
+/* Preserve the old background-position path: a position p on an image sized s
+   times its container is a translation of (1 - s) * p / s of the image itself. */
+@keyframes compact-chat-refraction-blue {
+  0%, 100% { transform: translate(0, 0); }
+  33% { transform: translate(-25.777778%, -9.818182%); }
+  66% { transform: translate(-40.888889%, -39.272727%); }
+}
+
+@keyframes compact-chat-refraction-violet {
+  0%, 100% { transform: translate(-26.052632%, -54.545455%); }
+  33% { transform: translate(-3.789474%, -26.181818%); }
+  66% { transform: translate(-40.736842%, -6.545455%); }
+}
+
+@keyframes compact-chat-refraction-rose {
+  0%, 100% { transform: translate(-44.444444%, -5%); }
+  33% { transform: translate(-18.666667%, -44%); }
+  66% { transform: translate(-1.777778%, -17%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-refraction > span {
+    animation: none;
+  }
+  .compact-chat-refraction-violet {
+    transform: translate(-26.052632%, -54.545455%);
+  }
+  .compact-chat-refraction-rose {
+    transform: translate(-44.444444%, -5%);
+  }
 }
 
 .compact-chat-surface-frame .compact-chat-minimize-ball {

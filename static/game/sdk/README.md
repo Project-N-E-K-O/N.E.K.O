@@ -1,5 +1,21 @@
 # N.E.K.O Mini-Game SDK
 
+## Built-in media timelines
+
+The reviewed `media-timeline` capability exposes `game.media.request()` for
+`history`, `load`, `character`, `discover`, `prepare`, `preparation`, and `watch`, and
+`game.media.mount({video, job, version, onEvent, onCue})` for an active runtime.
+The returned controller supports `play`, `pause`, `interrupt`, and `dispose`.
+The trusted host resolves the immutable job/version, owns reaction audio and
+mouth analysis, and uses the video media clock. Pause/buffering stop reaction
+audio; seeks invalidate the current generation; playback rate follows video.
+`audio-started` reports the media element's `playing` event, not HTTP completion.
+Only user interaction starts playback. A same-origin Web Lock prevents two
+timeline scenes owning audio simultaneously. Normal speech or voice transcripts
+interrupt the scene; resuming requires another user action. Runtime end and
+disposal release the media and audio ownership. Library records are independent
+from optional long-term character memory. There is no automatic eviction.
+
 This directory contains the public mini-game runtime and trusted host helpers.
 Game code consumes `NekoMiniGame`; it must not call N.E.K.O REST endpoints,
 microphone bridges, logging endpoints, or Avatar engine managers directly.
@@ -712,3 +728,15 @@ resource disposal for registered slots.
 * `neko-minigame-manifest.schema.json`: runtime manifest and contract schema.
 * `neko-minigame-avatar-host.js` and `neko-minigame-audio-host.js`: trusted
   N.E.K.O host helpers, not APIs exposed to untrusted games.
+
+## Media discovery and confirmation
+
+`media.request('discover', {topic})` selects one qualifying popular video and
+returns `{video, topic}`; `video` is null when no candidate qualifies. An empty
+topic uses the popular feed. The trusted backend checks single-part duration
+under 180 seconds and danmaku density over 100/minute. Prepare automatic picks
+with `source: 'discovery'` so those checks run again before media/model work.
+`media.request('prepare', {url})` can return `{confirmation_required: true, video}`
+for manual videos over 300 seconds. After explicit user confirmation, resubmit
+the canonical URL and `confirmed_duration: video.duration`. Cancelling must not
+resubmit. Other successful preparations return the existing job identifier.

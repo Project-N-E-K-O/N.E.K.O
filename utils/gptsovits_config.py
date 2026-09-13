@@ -42,6 +42,18 @@ def normalize_gsv_api_url(url: str | None, *, default: str = DEFAULT_GSV_API_URL
     return raw.rstrip("/")
 
 
+def resolve_worker_gsv_api_url(config_manager) -> str:
+    """Return the base URL the GPT-SoVITS worker actually connects to.
+
+    The worker always reads the ``tts_custom`` slot, and GPT-SoVITS selection is
+    independent of ``has_custom_voice``. A route config resolved for the session
+    can therefore be ``tts_default``; readiness checks must use this helper so
+    they validate the same URL the worker will use.
+    """
+    tts_config = config_manager.get_model_api_config("tts_custom") or {}
+    return normalize_gsv_api_url(tts_config.get("base_url"))
+
+
 def is_local_http_url(url: str | None) -> bool:
     parsed = urlparse(str(url or "").strip())
     if parsed.scheme not in ("http", "https") or not parsed.hostname:

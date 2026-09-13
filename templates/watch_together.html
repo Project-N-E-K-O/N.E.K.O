@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch together</title>
+<style>
+body{margin:0;background:#101725;color:#edf2ff;font:16px system-ui}main{max-width:1200px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between}button,select,input{font:inherit;padding:10px;border-radius:10px;border:1px solid #657597;background:#202c43;color:inherit}button{cursor:pointer}button:disabled{opacity:.5}video{width:100%;max-height:44vh;background:#05080e;border-radius:18px}#history{display:grid;gap:8px;margin:18px 0}#history button{text-align:left}#status{color:#a8bddf}#bubble{min-height:40px;padding:15px}details{margin:20px 0}#usage{white-space:pre-wrap}nav{display:flex;gap:10px;align-items:center}#events{display:flex;gap:8px;flex-wrap:wrap}a{color:#accfff}
+.stage>section{display:flex;flex-direction:column}.stage nav{order:-1;margin-bottom:12px}.stage{display:grid;grid-template-columns:minmax(0,3fr) minmax(230px,1fr);gap:20px}#avatar{height:320px;min-width:230px;align-self:end}#history{max-height:320px;overflow:auto}#voice-label{color:#a8bddf;font-size:13px}@media(max-width:650px){.stage{grid-template-columns:1fr}#avatar{height:220px;grid-row:1}main{padding:14px}}
+.video-shell{position:relative;min-height:180px}.video-shell video{display:block;min-height:180px}.video-shell #play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:16px 24px;background:#202c43ee;border:2px solid #accfff;box-shadow:0 4px 24px #0008}.video-shell #play::before{content:'▶';margin-right:10px}
+.stage{display:block;position:relative;background:#05080e;border-radius:18px;overflow:hidden}.stage>section{display:block}.stage .video-shell{min-height:240px}.stage video{max-height:none;height:65vh;object-fit:contain}.stage #avatar-placement{position:absolute;right:12px;top:12px;width:clamp(150px,26vw,340px);height:clamp(180px,42vh,400px);min-width:0;pointer-events:auto;touch-action:none;cursor:grab;z-index:3}.stage #bubble{position:absolute;bottom:64px;left:15%;right:15%;text-align:center;min-height:0;padding:8px;pointer-events:none;text-shadow:0 2px 4px #000;z-index:4}.stage #bubble:empty{display:none}.stage nav{position:absolute;left:12px;top:12px;z-index:5;flex-wrap:wrap;background:#101725bb;border-radius:10px;margin:0;padding:6px}.stage nav button,.stage nav select{padding:6px}.stage.expanded,.stage:fullscreen{position:fixed;inset:0;width:100%;height:100%;z-index:1000;border-radius:0}.stage.expanded video,.stage:fullscreen video{height:100vh;height:100dvh}.stage.expanded .video-shell,.stage:fullscreen .video-shell{height:100%}body.watch-expanded{overflow:hidden}#video::-webkit-media-controls-fullscreen-button{display:none}
+.stage #avatar{width:100%;height:100%;min-width:0;pointer-events:none}.stage #avatar-resize{position:absolute;right:0;bottom:0;width:28px;height:28px;padding:0;cursor:nwse-resize;touch-action:none;opacity:.65}.stage #avatar-placement:active{cursor:grabbing}</style></head><body><main>
+<header><h1 data-i18n="watchTogether.title">Watch together</h1><button id="exit" data-i18n="watchTogether.exit">Exit</button></header>
+<p id="status" role="status"></p>
+<form id="prepare" onsubmit="return false"><input id="url" aria-label="Bilibili video URL" required placeholder="https://www.bilibili.com/video/BV…"><button id="prepare-button" data-i18n="watchTogether.prepare">Prepare video</button></form>
+<form id="discover" onsubmit="return false"><label><span data-i18n="watchTogether.topic">Topic (optional)</span> <input id="topic" maxlength="200"></label><button id="discover-button" data-i18n="watchTogether.discover">Let the companion choose</button></form>
+<p data-i18n="watchTogether.discoveryRule">Under 3 minutes and over 100 danmaku/minute. Uses the current video topic when blank, or the popular feed if no video is selected.</p><p id="discovery-result" role="status"></p>
+<section><label><input id="prefetch-enabled" type="checkbox" checked><span data-i18n="watchTogether.prefetchEnabled">Prepare the next video while watching</span></label><p id="next-status" role="status"></p><button id="next-video" disabled data-i18n="watchTogether.nextVideo">Watch next</button></section>
+<details><summary data-i18n="watchTogether.analyses">Analysis history</summary><div id="history"></div><button id="history-previous" disabled data-i18n="watchTogether.previousPage">Previous page</button><button id="history-next" disabled data-i18n="watchTogether.nextPage">Next page</button></details>
+<h2 id="title"></h2><p id="voice-label"></p><div class="stage" id="stage"><section><div class="video-shell"><video id="video" playsinline controlslist="nofullscreen"></video><button id="play" disabled data-i18n="watchTogether.play">Watch together</button></div>
+<div id="bubble" aria-live="polite"></div>
+<nav><label><input id="automatic-enabled" type="checkbox"><span data-i18n="watchTogether.automatic">Automatic watching</span></label><button id="watch-stop" data-i18n="watchTogether.stopWatching">Stop watching</button><button id="stage-size" data-i18n="common.maximize">Maximize</button><button id="stage-fullscreen" data-i18n="live2d.toggleFullscreen">Toggle fullscreen</button><label><span data-i18n="watchTogether.speed">Speed</span> <select id="rate"><option>0.5</option><option selected>1</option><option>1.5</option><option>2</option></select></label></nav>
+</section><aside id="avatar-placement"><div id="avatar"></div><button id="avatar-resize" data-i18n-title="watchTogether.resizeAvatar" aria-label="Resize companion">↘</button></aside></div>
+<p id="warnings"></p><div id="events"></div>
+<details><summary data-i18n="watchTogether.usage">API usage</summary><div id="usage"></div></details>
+<details><summary data-i18n="watchTogether.watches">Actual viewing history</summary><div id="watches"></div><button id="watches-previous" disabled data-i18n="watchTogether.previousPage">Previous page</button><button id="watches-next" disabled data-i18n="watchTogether.nextPage">Next page</button></details>
+</main>
+<script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version }}"></script>
+<script src="/static/libs/live2dcubismcore.min.js"></script>
+<script src="/static/libs/live2d.min.js"></script>
+<script src="/static/libs/pixi.min.js"></script>
+<script src="/static/libs/index.min.js"></script>
+<script src="/static/game/sdk/neko-minigame-avatar-host.js"></script>
+<script type="importmap">{"imports":{"three":"/static/libs/three.module.js","three/addons/":"/static/libs/three/addons/","@pixiv/three-vrm":"/static/libs/three-vrm.module.min.js"}}</script>
+<script id="neko-minigame-host-launch" type="application/json">{"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"watch-together":{"mode":"registered","gameId":"watch-together","publisherId":"project-neko","version":"1.0.0","allowedCapabilities":["logging","runtime","media-timeline","speech-output","voice-input","avatar-renderer"]}}}</script>
+<script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js"></script>
+<script type="module" src="/static/game/games/watch-together/host.mjs"></script>
+</body></html>

@@ -3893,6 +3893,16 @@ PROACTIVE_SOURCE_LABELS = {
 # 对齐），内层是各支持 locale 的句子。新接 mini-game 时往这里加一个新外层
 # key 即可，short-circuit 分发逻辑无须改动。
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    "watch-together": {
+        "zh": "{master_name}，要不要选个视频和我一起看？",
+        "zh-TW": "{master_name}，要不要選個影片和我一起看？",
+        "en": "{master_name}, want to pick a video to watch together?",
+        "ja": "{master_name}、動画を選んで一緒に見ない？",
+        "ko": "{master_name}, 영상을 골라서 같이 볼래?",
+        "ru": "{master_name}, выберем видео и посмотрим вместе?",
+        "es": "{master_name}, ¿elegimos un vídeo para verlo juntos?",
+        "pt": "{master_name}, vamos escolher um vídeo para assistir juntos?",
+    },
     "soccer": {
         "zh": "{master_name}，要不要现在跟我一起踢一会儿足球小游戏？",
         "zh-TW": "{master_name}，要不要現在跟我一起踢一下足球小遊戲？",

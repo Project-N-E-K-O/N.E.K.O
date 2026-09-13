@@ -100,6 +100,10 @@ class GameSpeechAudioCache:
         self._owner_tokens: WeakKeyDictionary = WeakKeyDictionary()
         self._next_owner_token = count(1)
 
+    @property
+    def max_entry_bytes(self) -> int:
+        return self._max_entry_bytes
+
     def _owner_token(self, owner: object) -> int:
         """Return this owner's stable, never-recycled identity.
 
