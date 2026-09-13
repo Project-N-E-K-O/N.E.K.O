@@ -195,17 +195,49 @@ _PHASE1_TOTAL_TOPIC_TARGET = (
 )
 
 
+def _phase1_fallback_records(content_text: str) -> list[str]:
+    """Group numbered fallback records with their continuation lines."""
+
+    records: list[str] = []
+    preamble: list[str] = []
+    current: list[str] = []
+    for raw_line in content_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        prefix, separator, remainder = line.partition(". ")
+        is_record_start = bool(separator and prefix.isdigit() and remainder.strip())
+        is_section_header = line.startswith(("[", "【"))
+        if is_record_start:
+            if current:
+                records.append("\n".join(current))
+            current = [*preamble, line]
+            preamble = []
+        elif is_section_header:
+            if current:
+                records.append("\n".join(current))
+                current = []
+            preamble.append(line)
+        elif current:
+            current.append(line)
+        else:
+            preamble.append(line)
+    if current:
+        records.append("\n".join(current))
+    elif preamble:
+        records.append("\n".join(preamble))
+    return records
+
+
 def _merge_phase1_parts_within_token_budget(
-    parts: list[str], *, max_tokens: int
+    parts: list[tuple[str, list[str]]], *, max_tokens: int
 ) -> str:
     """Keep complete Phase 1 candidates while fitting the aggregate budget."""
 
     from utils.tokenize import truncate_to_tokens
 
     kept_parts: list[str] = []
-    for part in parts:
-        header, separator, candidates_text = part.partition("\n")
-        candidates = candidates_text.splitlines() if separator else []
+    for header, candidates in parts:
         kept_candidates: list[str] = []
         for candidate in candidates:
             section = header + "\n" + "\n".join([*kept_candidates, candidate])
@@ -1699,7 +1731,7 @@ async def handle_proactive_chat(
                             item["phase1_rendered_title"] = rendered_title
                         lines.append(rendered)
                     if lines:
-                        parts.append(f"--- {label} ---\n" + "\n".join(lines))
+                        parts.append((f"--- {label} ---", lines))
                         continue
 
                 # Community cards only enter Phase 1 through selected links:
@@ -1708,12 +1740,8 @@ async def handle_proactive_chat(
                     continue
                 content_text = src.get("formatted_content", "")
                 if content_text and remaining_total > 0:
-                    compact_lines = [
-                        line.strip()
-                        for line in content_text.splitlines()
-                        if line.strip()
-                    ]
-                    if compact_lines:
+                    fallback_records = _phase1_fallback_records(content_text)
+                    if fallback_records:
                         is_reserved_fallback = mode in fallback_modes
                         reserve_for_later = max(
                             0,
@@ -1724,12 +1752,10 @@ async def handle_proactive_chat(
                         if fallback_limit <= 0:
                             continue
                         fallback_lines = [
-                            _ttt(line, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
-                            for line in compact_lines[:fallback_limit]
+                            _ttt(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                            for record in fallback_records[:fallback_limit]
                         ]
-                        parts.append(
-                            f"--- {label} ---\n" + "\n".join(fallback_lines)
-                        )
+                        parts.append((f"--- {label} ---", fallback_lines))
                         remaining_total -= len(fallback_lines)
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1

@@ -14,31 +14,51 @@ from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
 def test_phase1_aggregate_budget_keeps_complete_source_sections():
-    first_part = "--- 第一来源 ---\n1. 完整候选标题"
-    second_part = "--- 第二来源 ---\n1. 不应进入提示词的候选标题"
+    first_header = "--- 第一来源 ---"
+    first_candidate = "1. 完整候选标题"
+    second_header = "--- 第二来源 ---"
+    second_candidate = "1. 不应进入提示词的候选标题"
+    first_part = first_header + "\n" + first_candidate
     from utils.tokenize import count_tokens
 
     merged = proactive_service._merge_phase1_parts_within_token_budget(
-        [first_part, second_part],
+        [(first_header, [first_candidate]), (second_header, [second_candidate])],
         max_tokens=count_tokens(first_part),
     )
 
     assert merged == first_part
 
+
 def test_phase1_aggregate_budget_keeps_later_sections_after_overflow():
     first_header = "--- 第一来源 ---"
     first_candidate = "1. 第一条完整候选"
     overflowing_candidate = "2. " + "长" * 1000
-    second_part = "--- 第二来源 ---\n1. 第二来源的较短候选"
+    second_header = "--- 第二来源 ---"
+    second_candidate = "1. 第二来源的较短候选"
+    second_part = second_header + "\n" + second_candidate
     expected = "\n\n".join([first_header + "\n" + first_candidate, second_part])
     from utils.tokenize import count_tokens
 
     merged = proactive_service._merge_phase1_parts_within_token_budget(
-        [first_header + "\n" + first_candidate + "\n" + overflowing_candidate, second_part],
+        [
+            (first_header, [first_candidate, overflowing_candidate]),
+            (second_header, [second_candidate]),
+        ],
         max_tokens=count_tokens(expected),
     )
 
     assert merged == expected
+
+
+def test_phase1_fallback_records_keep_multiline_candidate_together():
+    records = proactive_service._phase1_fallback_records(
+        "【B站内容雷达】\n1. 过长标题\n作者 | 推荐依据\n简介: 详情\n2. 第二条标题\n作者二"
+    )
+
+    assert records == [
+        "【B站内容雷达】\n1. 过长标题\n作者 | 推荐依据\n简介: 详情",
+        "2. 第二条标题\n作者二",
+    ]
 
 def test_parse_unified_phase1_marks_explicit_music_and_meme_pass():
     parsed = sr_parsing._parse_unified_phase1_result(
