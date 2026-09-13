@@ -414,7 +414,7 @@ export class ShotLane {
     }
     this.collideWithCourt(b, previousY, data => this.onScore(data));
     if (b.y - b.r > this.height || b.life > 5) {
-      if (!b.scored) this.onMiss();
+      if (!b.scored) this.onMiss?.({ owner:b.owner });
       this.resetBall();
     }
   }
@@ -426,7 +426,7 @@ export class ShotLane {
     this.collideWithCourt(b, previousY, data => this.onGuestScore?.(data));
     if (b.y - b.r > this.height || b.life > 5.5) {
       b.expired = true;
-      if (b.nativeShot && !b.scored) this.onMiss();
+      if (b.nativeShot && !b.scored) this.onMiss?.({ owner:b.owner });
     }
   }
 

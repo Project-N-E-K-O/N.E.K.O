@@ -75,6 +75,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "versionedAsset('./assets/neko-basketball.png')" in physics
     assert "ball.vx *= scaleX" in physics
     assert "ball.vy *= scaleY" in physics
+    assert "this.onMiss?.({ owner:b.owner })" in physics
     assert "collideRim" in physics
     assert "getAimTelemetry" in physics
     assert "getHoopPose" in physics
@@ -236,6 +237,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "game.logger.enableAfterRuntimeStart" in sdk_bootstrap
     assert "game.dispose()" in sdk_bootstrap
     assert "window.addEventListener('pagehide', disposeGameSdk" in game
+    assert "window.addEventListener('pageshow'" in game
+    assert "event?.persisted" in game
     assert "/api/" not in game
     assert "/api/" not in avatar
     assert "prewarmNekoVoice(opponentName);" in game
@@ -252,6 +255,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "Math.min(transitBalls, representedTwice)" in game
     assert "nekoBallInventoryReady()" in game
     assert "function nekoPrankInventoryReady()" in game
+    assert "return !nekoLane.ball.flying" in game
+    assert "&& !nekoLane.ball.inTransit" in game
     assert "if (!nekoPrankInventoryReady())" in game
     assert "countActiveBalls({ owner = null, nativeShot = null } = {})" in physics
     assert "guest.nativeShot && !this.ball.flying" in physics
@@ -317,7 +322,15 @@ def test_air_basketball_mvp_interaction_contract():
     assert "function playablePhysicsSeconds(frameSeconds)" in game
     assert "state.remaining - timerAccumulator" in game
     assert "planPhysicsSteps(playablePhysicsSeconds(frameSeconds))" in game
-    assert "if (trackingPlayerNative && !trackedGuestSuspended)" in game
+    assert "trackedCrossTransit?.restart()" in game
+    assert "transit.duration / 1000 * trackedTransit.progress" in game
+    assert "function nativeMissed(laneSide, data)" in game
+    assert "missed(owner)" in game
+    assert "currentMatch !== matchSequence" in game
+    assert ").then(() => {" in game
+    assert "}, 160)" not in game
+    assert "function translatedText(key, params)" in i18n
+    assert "if (value !== null) node.textContent = value" in i18n
     assert "Math.min(.033, (now - lastFrame)" not in game
     assert "if (!nekoAiFrozen && state.nextNekoDecision <= 0)" in game
     assert "pageParams.get('test_mode') === '1'" in game

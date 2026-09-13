@@ -592,6 +592,34 @@ def test_air_basketball_resize_keeps_cross_transit_suspended(
         "window.AirBasketballMVP.getState().trackedGuestSuspended === false",
         timeout=4000,
     )
+    page.wait_for_function(
+        "window.AirBasketballMVP.getState().nekoGuestMotion !== null",
+        timeout=1000,
+    )
+    arrived = page.evaluate("window.AirBasketballMVP.getState().nekoGuestMotion")
+    assert arrived["owner"] == "player"
+    assert -0.1 <= arrived["xRatio"] <= 0.2
+    assert -0.1 <= arrived["yRatio"] <= 1.1
+
+
+@pytest.mark.e2e
+def test_air_basketball_locale_failure_preserves_template_copy(
+    page: Page,
+    running_server: str,
+):
+    _stub_unavailable_air_basketball_avatar(page)
+    page.route("**/static/locales/*.json*", lambda route: route.abort())
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")
+
+    expect(page.locator('.brand [data-i18n="airBasketball.title"]')).to_have_text("空气投篮")
+    expect(page.locator('[data-i18n="airBasketball.start"]')).to_have_text("开始比赛")
+    expect(page.locator("#sound-toggle")).to_have_attribute("aria-label", "关闭音效")
+    page.locator("#sound-toggle").dispatch_event("click")
+    expect(page.locator("#sound-toggle")).to_have_attribute("aria-label", "开启音效")
 
 
 @pytest.mark.e2e

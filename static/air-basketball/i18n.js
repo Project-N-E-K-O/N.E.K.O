@@ -64,10 +64,14 @@ function interpolate(value, params = {}) {
     : value;
 }
 
+function translatedText(key, params) {
+  const value = messages[scopedKey(key)];
+  return typeof value === 'string' ? interpolate(value, params) : null;
+}
+
 export function t(key, params) {
   const normalized = scopedKey(key);
-  const value = messages[normalized];
-  return interpolate(typeof value === 'string' ? value : normalized, params);
+  return translatedText(normalized, params) ?? interpolate(normalized, params);
 }
 
 export function voiceLines(key, params) {
@@ -86,12 +90,15 @@ export function voiceLine(key, params) {
 export function applyTranslations(root = document) {
   document.documentElement.lang = locale;
   root.querySelectorAll('[data-i18n]').forEach(node => {
-    node.textContent = t(node.dataset.i18n);
+    const value = translatedText(node.dataset.i18n);
+    if (value !== null) node.textContent = value;
   });
   root.querySelectorAll('[data-i18n-aria-label]').forEach(node => {
-    node.setAttribute('aria-label', t(node.dataset.i18nAriaLabel));
+    const value = translatedText(node.dataset.i18nAriaLabel);
+    if (value !== null) node.setAttribute('aria-label', value);
   });
   root.querySelectorAll('[data-i18n-label]').forEach(node => {
-    node.dataset.label = t(node.dataset.i18nLabel);
+    const value = translatedText(node.dataset.i18nLabel);
+    if (value !== null) node.dataset.label = value;
   });
 }

@@ -139,7 +139,9 @@ let crossHideFrame = 0;
 let trackedGuestBall = null;
 let trackedGuestLane = null;
 let trackedGuestSuspended = false;
+let trackedCrossTransit = null;
 let nekoAiFrozen = false;
+let matchSequence = 0;
 const auxiliaryTransitBalls = new Set();
 const pointerMemory = { x:window.innerWidth * .5, y:window.innerHeight * .55, seen:false };
 const mouseSteal = { active:false, x:0, y:0, targetX:0, targetY:0, lastX:null, lastY:null, struggle:0, startedAt:0, duration:0, escapeThreshold:500 };
@@ -363,12 +365,13 @@ function syncHud(side) {
   byId(`${side}-fever-fill`).closest('.fever-meter').classList.toggle('is-active', actor.fever > 0);
 }
 
-const playerLane = new ShotLane({ canvas:byId('player-court'), side:'player', onScore:data => nativeScored('player', data), onMiss:() => missed('player') });
-const nekoLane = new ShotLane({ canvas:byId('neko-court'), side:'neko', onScore:data => nativeScored('neko', data), onMiss:() => missed('neko') });
+const playerLane = new ShotLane({ canvas:byId('player-court'), side:'player', onScore:data => nativeScored('player', data), onMiss:data => nativeMissed('player', data) });
+const nekoLane = new ShotLane({ canvas:byId('neko-court'), side:'neko', onScore:data => nativeScored('neko', data), onMiss:data => nativeMissed('neko', data) });
 const laneFor = side => side === 'player' ? playerLane : nekoLane;
 
 function clearTrackedGuestBall() {
   if (trackedGuestBall) trackedGuestBall.pageOverlay = false;
+  trackedCrossTransit = null;
   trackedGuestBall = null;
   trackedGuestLane = null;
   trackedGuestSuspended = false;
@@ -435,7 +438,7 @@ function syncTrackedGuestBall() {
   crossBall.classList.add('is-crossing');
 }
 
-function animateCross(direction, sourceLane, startY, targetLane, endY, duration, radius, motion, onArrive, elapsedSeconds = 0) {
+function animateCross(direction, sourceLane, startY, targetLane, endY, duration, radius, motion, onArrive, elapsedSeconds = 0, onProgress = null) {
   const sourceRect = sourceLane.canvas.getBoundingClientRect();
   const targetRect = targetLane.canvas.getBoundingClientRect();
   const sourceClientY = sourceRect.top + sourceRect.height * clamp(startY / sourceLane.height, 0, 1);
@@ -459,6 +462,7 @@ function animateCross(direction, sourceLane, startY, targetLane, endY, duration,
   const step = now => {
     const elapsed = Math.min((now - startedAt) / 1000, totalSeconds);
     const progress = elapsed / totalSeconds;
+    onProgress?.(progress);
     const x = startClientX + (endClientX - startClientX) * progress;
     const y = sourceClientY + initialVy * elapsed + .5 * verticalAcceleration * elapsed * elapsed;
     const rotation = initialRotation + rotationDelta * progress;
@@ -549,15 +553,16 @@ function crossTransitState(data, sourceLane, targetLane, sourceRect, targetRect,
 
 function transferBall(data, sourceLane, targetLane) {
   const entersFromLeft = data.edge === 'right';
-  const radius = clamp(data.r, 15, 26);
+  let radius = clamp(data.r, 15, 26);
   const sourceRect = sourceLane.canvas.getBoundingClientRect();
   const targetRect = targetLane.canvas.getBoundingClientRect();
-  const transit = crossTransitState(data, sourceLane, targetLane, sourceRect, targetRect, entersFromLeft, radius);
+  let transit = crossTransitState(data, sourceLane, targetLane, sourceRect, targetRect, entersFromLeft, radius);
   const playerTransfer = data.owner === 'player' && sourceLane === playerLane && targetLane === nekoLane;
   if (playerTransfer) state.nekoAttention.crossThreat = NEKO_ATTENTION.CROSS_WINDOW;
   state.crossCount += 1;
   sound(310, .06, 'triangle');
   const arrive = () => {
+    if (playerTransfer) trackedCrossTransit = null;
     if (!state.running) return false;
     const guest = targetLane.receiveGuestBall({
       x:entersFromLeft ? 0 : targetLane.width,
@@ -575,13 +580,54 @@ function transferBall(data, sourceLane, targetLane) {
     return false;
   };
   if (playerTransfer) {
+    const trackedTransit = {
+      progress:clamp((data.stepRemainder || 0) / Math.max(transit.duration / 1000, .001), 0, 1),
+      restart:null
+    };
+    const rememberProgress = progress => {
+      if (trackedCrossTransit === trackedTransit) trackedTransit.progress = progress;
+    };
+    trackedTransit.restart = () => {
+      const sourceBall = sourceLane.ball;
+      const resizedData = {
+        ...data,
+        x:entersFromLeft ? sourceLane.width : 0,
+        y:sourceBall.y,
+        r:sourceBall.r,
+        vx:sourceBall.vx,
+        vy:sourceBall.vy,
+        rotation:sourceBall.rotation || 0,
+        sourceWidth:sourceLane.width,
+        sourceHeight:sourceLane.height,
+        stepRemainder:0
+      };
+      radius = clamp(resizedData.r, 15, 26);
+      transit = crossTransitState(
+        resizedData,
+        sourceLane,
+        targetLane,
+        sourceLane.canvas.getBoundingClientRect(),
+        targetLane.canvas.getBoundingClientRect(),
+        entersFromLeft,
+        radius
+      );
+      animateCross(
+        'right', sourceLane, resizedData.y, targetLane, transit.y, transit.duration, radius,
+        { vy:resizedData.vy, rotation:resizedData.rotation },
+        arrive,
+        transit.duration / 1000 * trackedTransit.progress,
+        rememberProgress
+      );
+    };
+    trackedCrossTransit = trackedTransit;
     trackedGuestSuspended = true;
     syncTrackedGuestInteraction();
     animateCross(
       'right', sourceLane, data.y, targetLane, transit.y, transit.duration, radius,
       { vy:data.vy, rotation:data.rotation || 0 },
       arrive,
-      data.stepRemainder || 0
+      data.stepRemainder || 0,
+      rememberProgress
     );
   } else {
     animateAuxiliaryCross(
@@ -601,6 +647,11 @@ function crossScored(owner, targetSide, data) {
 function nativeScored(laneSide, data) {
   if (data.owner && data.owner !== laneSide) crossScored(data.owner, laneSide, data);
   else scored(laneSide, data);
+}
+
+function nativeMissed(laneSide, data) {
+  const owner = data?.owner === 'player' || data?.owner === 'neko' ? data.owner : laneSide;
+  missed(owner);
 }
 
 function ballClashed(targetSide, data) {
@@ -1199,6 +1250,7 @@ function runtimeEndPayload(reason = 'match-ended') {
 }
 
 function resetMatch() {
+  const currentMatch = ++matchSequence;
   const mode = selectedMode();
   const initialClock = mode === 'timed' ? ROUND_SECONDS : formatElapsed(0);
   clearTimeout(counterTimer);
@@ -1243,13 +1295,12 @@ function resetMatch() {
     game_started:true,
     gameStartedElapsedMs:0,
     currentState:runtimeSnapshot()
+  }).then(() => {
+    if (!state.running || currentMatch !== matchSequence) return;
+    if (opponentName !== 'N.E.K.O') speakNeko('voiceOpening', { kind:'opening-line' });
   }).catch(error => {
     console.warn('[air_basketball] SDK runtime start failed', error);
   });
-  setTimeout(() => {
-    if (!state.running) return;
-    if (opponentName !== 'N.E.K.O') speakNeko('voiceOpening', { kind:'opening-line' });
-  }, 160);
 }
 
 function finishMatch() {
@@ -1316,7 +1367,9 @@ function nekoPrankInventoryReady() {
 }
 
 function nekoShotInventoryReady() {
-  return nekoBallInventoryReady()
+  return !nekoLane.ball.flying
+    && !nekoLane.ball.inTransit
+    && nekoBallInventoryReady()
     && nekoLane.countActiveGuestBalls({ owner:'neko', nativeShot:true }) < NEKO_BALL_POOL.MAX_AIRBORNE;
 }
 
@@ -1569,7 +1622,8 @@ function resize() {
   const trackingPlayerNative = trackedGuestBall === playerLane.ball;
   playerLane.resize();
   nekoLane.resize();
-  if (trackingPlayerNative && !trackedGuestSuspended) trackGuestBall(playerLane.ball, playerLane);
+  if (trackingPlayerNative && trackedGuestSuspended) trackedCrossTransit?.restart();
+  else if (trackingPlayerNative) trackGuestBall(playerLane.ball, playerLane);
   syncTrackedGuestBall();
 }
 window.addEventListener('resize', resize);
@@ -1583,9 +1637,17 @@ document.querySelectorAll('input[name="match-mode"]').forEach(input => {
 soundToggle.addEventListener('click', () => {
   state.sound = !state.sound;
   soundToggle.textContent = state.sound ? '♪' : '×';
-  soundToggle.setAttribute('aria-label', t(state.sound ? 'soundOff' : 'soundOn'));
+  updateSoundToggleLabel();
 });
-soundToggle.setAttribute('aria-label', t('soundOff'));
+
+function updateSoundToggleLabel() {
+  const key = state.sound ? 'soundOff' : 'soundOn';
+  const translated = t(key);
+  const fallback = state.sound ? soundToggle.dataset.soundOffFallback : soundToggle.dataset.soundOnFallback;
+  soundToggle.setAttribute('aria-label', translated === key ? fallback : translated);
+}
+
+updateSoundToggleLabel();
 applyOpponentName(opponentName);
 prewarmNekoVoice(opponentName);
 void configureGameRuntime(
@@ -1594,6 +1656,9 @@ void configureGameRuntime(
 ).then(() => {
   window.addEventListener('pagehide', disposeGameSdk, { once:true });
 }).catch(error => console.warn('[air_basketball] SDK runtime configuration failed', error));
+window.addEventListener('pageshow', event => {
+  if (event?.persisted) window.location.reload();
+});
 void initNekoAvatar(sdkGame, sdkIdentity, identity => {
   applyOpponentName(identity?.name);
   prewarmNekoVoice(identity?.name);
