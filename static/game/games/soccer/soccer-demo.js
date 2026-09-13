@@ -280,6 +280,11 @@
     let soccerCharacterLanguagePreferenceResolved = false;
     let soccerCharacterLanguageRevision = 0;
     let soccerCharacterInfoGeneration = 0;
+    // One bound identity for language reads/events; reset closes the gate until
+    // the current binding succeeds. Page teardown releases this scalar state.
+    let soccerCharacterLanguageBoundName = '';
+    const isSoccerLanguageCharacter = (name) => !soccerGame.disposed
+      && !!soccerCharacterLanguageBoundName && name === soccerCharacterLanguageBoundName;
     // At most two model snapshots survive a runtime reset. Restoration or
     // page exit releases them; never retain a disposed renderer/controller.
     const soccerAvatarRestore = { player: null, ai: null };
@@ -293,6 +298,7 @@
       soccerCharacterInfoPromise = null;
       soccerCharacterExplicitLanguage = '';
       soccerCharacterLanguagePreferenceResolved = false;
+      soccerCharacterLanguageBoundName = '';
       for (const slot of ['player', 'ai']) {
         const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
         const controller = window[key];
@@ -330,6 +336,7 @@
           window.__SoccerResolvedLanlanName = resolvedName;
           if (window.lanlan_config) window.lanlan_config.lanlan_name = resolvedName;
         }
+        soccerCharacterLanguageBoundName = resolvedName;
         return characterInfo;
       })().catch((error) => {
         if (generation === soccerCharacterInfoGeneration) soccerCharacterInfoPromise = null;
@@ -797,6 +804,7 @@
         return '';
       };
       window.SoccerExplicitConversationLang = function (characterName) {
+        if (!isSoccerLanguageCharacter(characterName)) return '';
         if (characterName !== _soccerConversationCharacterName()) return '';
         if (soccerCharacterLanguagePreferenceResolved) {
           return soccerCharacterExplicitLanguage;
@@ -829,9 +837,12 @@
         const eventCharacterName = String(detail.character_name || '').trim();
         const currentCharacterName = _soccerConversationCharacterName();
         if (!currentCharacterName) {
+          // Initial discovery may not know the identity yet. Invalidate its
+          // old preference without accepting an unbound character's value.
           if (eventCharacterName) soccerCharacterLanguageRevision += 1;
           return;
         }
+        if (!isSoccerLanguageCharacter(currentCharacterName)) return;
         if (eventCharacterName !== currentCharacterName) return;
         soccerCharacterLanguageRevision += 1;
         soccerCharacterExplicitLanguage = cleared
@@ -853,6 +864,7 @@
           soccerCharacterLanguageRevision += 1;
           return;
         }
+        if (!isSoccerLanguageCharacter(characterName)) return;
         if (storageKey !== `nekoConversationLanguage:${encodeURIComponent(characterName)}`) return;
         soccerCharacterLanguageRevision += 1;
         soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(event.newValue);

@@ -68,7 +68,65 @@ async function verifyEarlyModuleResults() {
   }
 }
 
+async function verifyLanguageBindingEvents() {
+  for (const eventType of ['neko:conversation-language-changed', 'neko:conversation-language-cleared', 'storage']) {
+    const handlers = new Map();
+    const window = { lanlan_config: { lanlan_name: 'old' },
+      addEventListener(type, handler) { handlers.set(type, handler); } };
+    const game = { disposed: false, runtime: {
+      async bindCharacter(name) { return { name, languagePreference: { resolved: true, locale: 'ja' } }; },
+    } };
+    const context = vm.createContext({ window, soccerGame: game, console });
+    const run = code => vm.runInContext(code, context);
+    run(page.slice(page.indexOf('const normalizeSoccerExplicitLanguage'), page.indexOf('const SOCCER_AVATAR_LAYOUT')));
+    run(page.slice(page.indexOf('window.SoccerCurrentI18nLang ='), page.indexOf("      const canvas = document.getElementById('game')")));
+    const emit = (name, language) => handlers.get(eventType)({
+      detail: { character_name: name, language },
+      key: `nekoConversationLanguage:${encodeURIComponent(name)}`, newValue: language,
+    });
+    await run('ensureSoccerCharacterInfo()');
+    assert.equal(window.SoccerExplicitConversationLang('old'), 'ja');
+    run('resetSoccerCharacterInfo()');
+    for (const phase of ['before-bind', 'pending-bind']) {
+      let release;
+      let pending;
+      if (phase === 'pending-bind') {
+        game.runtime.bindCharacter = () => new Promise(resolve => { release = resolve; });
+        pending = run('ensureSoccerCharacterInfo()');
+      }
+      emit('old', 'ja');
+      assert.equal(run('soccerCharacterLanguagePreferenceResolved'), false, `${eventType}/${phase}: retired event resolved language`);
+      assert.equal(run('soccerCharacterExplicitLanguage'), '', `${eventType}/${phase}: retired event changed language`);
+      window.getExplicitConversationLanguagePreference = () => 'ja';
+      assert.equal(window.SoccerExplicitConversationLang('old'), '', `${phase}: getter read retired language`);
+      delete window.getExplicitConversationLanguagePreference;
+      if (pending) {
+        release({ name: 'new', languagePreference: { resolved: false, locale: '' } });
+        await pending;
+      }
+    }
+    assert.equal(window.SoccerExplicitConversationLang('new'), '');
+    emit('new', 'ko');
+    const expected = eventType.endsWith('-cleared') ? '' : 'ko';
+    assert.equal(window.SoccerExplicitConversationLang('new'), expected, 'new character event was blocked');
+    emit('old', 'ja');
+    assert.equal(window.SoccerExplicitConversationLang('new'), expected, 'old event changed new character');
+    run('resetSoccerCharacterInfo()');
+    game.runtime.bindCharacter = async () => { throw new Error('binding_failed'); };
+    await assert.rejects(run('ensureSoccerCharacterInfo()'), /binding_failed/);
+    emit('new', 'ja');
+    assert.equal(run('soccerCharacterLanguagePreferenceResolved'), false, 'failed bind accepted an event');
+    game.runtime.bindCharacter = async () => ({ name: 'new', languagePreference: { resolved: true, locale: 'en' } });
+    await run('ensureSoccerCharacterInfo()');
+    game.disposed = true;
+    emit('new', 'ja');
+    assert.equal(run('soccerCharacterExplicitLanguage'), 'en', 'disposed game accepted a language event');
+    assert.equal(window.SoccerExplicitConversationLang('new'), '', 'disposed game exposed language');
+  }
+}
+
 async function main() {
+  await verifyLanguageBindingEvents();
   await verifyEarlyModuleResults();
   const calls = [];
   const storage = new Map();
