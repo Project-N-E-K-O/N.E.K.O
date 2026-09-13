@@ -86,6 +86,7 @@ from main_logic.proactive_chat.delivery import (
 )
 from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
+    _number_phase1_links_by_source,
     _phase1_linkless_modes,
     _round_robin_phase1_links,
 )
@@ -95,7 +96,8 @@ from main_logic.proactive_chat.generation import (
     _append_directives_section,
     _decide_phase1_channels,
     _fetch_phase1_followups,
-    _lookup_link_by_title,
+    _is_neko_community_phase1_source,
+    _lookup_link_by_phase1_selection,
     _proactive_llm_retry_error_types,
     _run_phase2_generation,
     _run_unified_phase1,
@@ -192,6 +194,60 @@ _PHASE1_FETCH_PER_SOURCE = (
 _PHASE1_TOTAL_TOPIC_TARGET = (
     PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
 )
+
+
+def _phase1_fallback_records(content_text: str) -> list[str]:
+    """Group numbered fallback records with their continuation lines."""
+
+    records: list[str] = []
+    preamble: list[str] = []
+    current: list[str] = []
+    for raw_line in content_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        prefix, separator, remainder = line.partition(". ")
+        is_record_start = bool(separator and prefix.isdigit() and remainder.strip())
+        is_section_header = line.startswith(("[", "【"))
+        if is_record_start:
+            if current:
+                records.append("\n".join(current))
+            current = [*preamble, line]
+            preamble = []
+        elif is_section_header:
+            if current:
+                records.append("\n".join(current))
+                current = []
+            preamble.append(line)
+        elif current:
+            current.append(line)
+        else:
+            preamble.append(line)
+    if current:
+        records.append("\n".join(current))
+    elif preamble:
+        records.append("\n".join(preamble))
+    return records
+
+
+def _merge_phase1_parts_within_token_budget(
+    parts: list[tuple[str, list[str]]], *, max_tokens: int
+) -> str:
+    """Keep complete Phase 1 candidates while fitting the aggregate budget."""
+
+    from utils.tokenize import truncate_to_tokens
+
+    kept_parts: list[str] = []
+    for header, candidates in parts:
+        kept_candidates: list[str] = []
+        for candidate in candidates:
+            section = header + "\n" + "\n".join([*kept_candidates, candidate])
+            merged = "\n\n".join([*kept_parts, section])
+            if truncate_to_tokens(merged, max_tokens) == merged:
+                kept_candidates.append(candidate)
+        if kept_candidates:
+            kept_parts.append(header + "\n" + "\n".join(kept_candidates))
+    return "\n\n".join(kept_parts)
 
 
 def _open_threads_for_activity_state(
@@ -1650,6 +1706,7 @@ async def handle_proactive_chat(
                 len(items) for items in selected_by_mode.values()
             )
             remaining_fallback_modes = len(fallback_modes)
+            phase1_source_positions: dict[str, int] = {}
             for mode in web_modes:
                 src = sources[mode]
                 label_map = PROACTIVE_SOURCE_LABELS.get(
@@ -1660,26 +1717,32 @@ async def handle_proactive_chat(
 
                 if selected_links:
                     all_web_links.extend(selected_links)
-                    lines = [
-                        _ttt(
+                    lines = []
+                    for index, item in _number_phase1_links_by_source(
+                        selected_links, source_positions=phase1_source_positions
+                    ):
+                        rendered = _ttt(
                             _format_phase1_link_candidate(index, item),
                             PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
                         )
-                        for index, item in enumerate(selected_links, start=1)
-                        if item.get("title", "").strip()
-                    ]
+                        rendered_title = rendered.removeprefix(f"{index}. ").split(
+                            " | ", 1
+                        )[0].strip()
+                        if rendered_title:
+                            item["phase1_rendered_title"] = rendered_title
+                        lines.append(rendered)
                     if lines:
-                        parts.append(f"--- {label} ---\n" + "\n".join(lines))
+                        parts.append((f"--- {label} ---", lines))
                         continue
 
+                # Community cards only enter Phase 1 through selected links:
+                # a formatted fallback would bypass cooldown and data escaping.
+                if mode == "community":
+                    continue
                 content_text = src.get("formatted_content", "")
                 if content_text and remaining_total > 0:
-                    compact_lines = [
-                        line.strip()
-                        for line in content_text.splitlines()
-                        if line.strip()
-                    ]
-                    if compact_lines:
+                    fallback_records = _phase1_fallback_records(content_text)
+                    if fallback_records:
                         is_reserved_fallback = mode in fallback_modes
                         reserve_for_later = max(
                             0,
@@ -1690,19 +1753,18 @@ async def handle_proactive_chat(
                         if fallback_limit <= 0:
                             continue
                         fallback_lines = [
-                            _ttt(line, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
-                            for line in compact_lines[:fallback_limit]
+                            _ttt(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
+                            for record in fallback_records[:fallback_limit]
                         ]
-                        parts.append(
-                            f"--- {label} ---\n" + "\n".join(fallback_lines)
-                        )
+                        parts.append((f"--- {label} ---", fallback_lines))
                         remaining_total -= len(fallback_lines)
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1
 
-            # 兜底总和截断：防止 20 source × 200 token = 4k 超过 2k 总预算
-            merged_web_content = _ttt(
-                "\n\n".join(parts), PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
+            # Keep source sections whole so any rendered title remains exactly
+            # as visible to the Phase 1 model.
+            merged_web_content = _merge_phase1_parts_within_token_budget(
+                parts, max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
             )
 
         # ============================================================
@@ -1744,47 +1806,67 @@ async def handle_proactive_chat(
         # ============================================================
         web_parsed = unified_parsed.get("web")
         if web_parsed and web_parsed.get("title"):
-            matched = _lookup_link_by_title(web_parsed.get("title", ""), all_web_links)
-            topic_key = _source_hash(
-                matched.get("url", "") if matched else "",
-                web_parsed.get("title", ""),
-            )
-            # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
-            # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
-            # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
-            needs_recheck = bool(topic_key) and matched is None
-            if needs_recheck and _should_skip_source(topic_key):
+            matched = _lookup_link_by_phase1_selection(web_parsed, all_web_links)
+            if matched is None and _is_neko_community_phase1_source(
+                web_parsed.get("source")
+            ):
                 print(
-                    f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title', '')[:60]}"
+                    f"[{lanlan_name}] Phase 1 社区卡牌选择未匹配，跳过: "
+                    f"{web_parsed.get('title', '')[:60]}"
                 )
             else:
-                if matched:
-                    selected_web_link = dict(matched)
-                    selected_web_link.update(
-                        {
-                            "title": web_parsed.get(
-                                "title", matched.get("title", "")
-                            ),
-                            "url": matched["url"],
-                            "source": web_parsed.get(
-                                "source", matched.get("source", "")
-                            ),
-                            "mode": matched.get("mode", "web"),
-                        }
-                    )
+                topic_key = _source_hash(
+                    (matched.get("dedupe_key") or matched.get("url", ""))
+                    if matched
+                    else "",
+                    web_parsed.get("title", ""),
+                )
+                # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
+                # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
+                # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
+                needs_recheck = bool(topic_key) and matched is None
+                if needs_recheck and _should_skip_source(topic_key):
                     print(
-                        f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
+                        f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title', '')[:60]}"
                     )
                 else:
-                    print(
-                        f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title', '')[:60]}"
+                    if matched:
+                        selected_web_link = dict(matched)
+                        canonical_title = matched.get("title", "")
+                        selected_title = (
+                            canonical_title
+                            if matched.get("mode") == "community"
+                            else web_parsed.get("title", canonical_title)
+                        )
+                        selected_web_link.update(
+                            {
+                                "title": selected_title,
+                                "url": matched["url"],
+                                "source": (
+                                    matched.get("source", "")
+                                    if matched.get("mode") == "community"
+                                    else web_parsed.get(
+                                        "source", matched.get("source", "")
+                                    )
+                                ),
+                                "mode": matched.get("mode", "web"),
+                            }
+                        )
+                        print(
+                            f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
+                        )
+                    else:
+                        print(
+                            f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title', '')[:60]}"
+                        )
+                    # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
+                    # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
+                    selected_web_topic_key = topic_key
+                    # 用 web_parsed 的 summary 或原始文本作为 topic
+                    web_topic_text = web_parsed.get(
+                        "summary", web_parsed.get("title", "")
                     )
-                # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
-                # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
-                selected_web_topic_key = topic_key
-                # 用 web_parsed 的 summary 或原始文本作为 topic
-                web_topic_text = web_parsed.get("summary", web_parsed.get("title", ""))
-                phase1_topics.append(("web", web_topic_text.strip()))
+                    phase1_topics.append(("web", web_topic_text.strip()))
 
         # ============================================================
         # 并行后置 fetch：music + meme（使用 LLM 生成的关键词）
