@@ -93,6 +93,10 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
       doc.body.style.color = parentStyle.color;
       doc.body.style.fontFamily = parentStyle.fontFamily;
     };
+    // i18n updates the parent lang before dispatching localechange on window.
+    const syncLanguage = () => {
+      if (doc?.documentElement && !disposed) doc.documentElement.lang = document.documentElement.lang;
+    };
     const renderDocument = () => {
       if (!card || !doc?.body || disposed) return;
       if (renderedCss !== card.css) {
@@ -107,7 +111,7 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
         doc.body.innerHTML = card.html;
         renderedHtml = card.html;
       }
-      doc.documentElement.lang = document.documentElement.lang;
+      syncLanguage();
       syncAppearance();
       syncButtons();
       resize();
@@ -193,11 +197,13 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
     };
     updateRef.current = update;
     const unsubscribeTheme = subscribeCardTheme(syncAppearance);
+    window.addEventListener('localechange', syncLanguage);
     frame.addEventListener('load', mount);
     if (frame.contentDocument?.readyState === 'complete') mount();
     return () => {
       disposed = true;
       unsubscribeTheme();
+      window.removeEventListener('localechange', syncLanguage);
       updateRef.current = null;
       frame.removeEventListener('load', mount);
       detach();

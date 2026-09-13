@@ -205,4 +205,27 @@ describe('HTML card buttons', () => {
     unmount();
     expect(signal.aborted).toBe(true);
   });
+
+  it('follows locale changes while mounted and stops listening after unmount', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const root = document.documentElement;
+    const previous = root.lang;
+    root.lang = 'en';
+    const { container, unmount } = render(<HtmlCardBlock block={block} />);
+    try {
+      await buttonIn(container);
+      const doc = container.querySelector('iframe')!.contentDocument!;
+      expect(doc.documentElement.lang).toBe('en');
+      root.lang = 'ja';
+      act(() => { window.dispatchEvent(new Event('localechange')); });
+      expect(doc.documentElement.lang).toBe('ja');
+      unmount();
+      root.lang = 'ko';
+      window.dispatchEvent(new Event('localechange'));
+      expect(doc.documentElement.lang).toBe('ja');
+    } finally {
+      unmount();
+      root.lang = previous;
+    }
+  });
 });
