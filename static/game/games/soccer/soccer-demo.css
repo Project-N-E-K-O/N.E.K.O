@@ -55,6 +55,10 @@
   }
   #player-vrm-container *, #ai-l2d-container * { pointer-events: none !important; }
   #player-vrm-container canvas, #ai-l2d-container canvas { width: 100%; height: 100%; display: block; }
+  .soccer-extended-avatar { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
+  .soccer-extended-avatar[hidden] { display: none !important; }
+  #soccer-pngtuber-container .pngtuber-image,
+  #soccer-pngtuber-container .pngtuber-layered-canvas { width: 100%; height: 100%; object-fit: contain; object-position: center bottom; }
   #hint {
     position: fixed; left: 12px; bottom: 12px; z-index: 20;
     color: rgba(255,255,255,0.7); font: 12px/1.4 sans-serif;

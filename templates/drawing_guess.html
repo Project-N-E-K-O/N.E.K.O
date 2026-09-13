@@ -1476,13 +1476,8 @@
       pointer-events: none;
     }
 
-    .dg-model-stage[data-model-kind="vrm"] #vrm-container,
-    .dg-model-stage[data-model-kind="mmd"] #mmd-container,
-    .dg-model-stage[data-model-kind="pngtuber"] #pngtuber-container {
-      transform: translate(var(--dg-model-offset-x, 0), var(--dg-model-offset-y, 0)) scale(var(--dg-model-scale, 1));
-      transform-origin: center center;
-      transition: transform 160ms ease;
-    }
+    /* SDK renderers apply the view inside their viewport. A second CSS
+       transform would double the portrait zoom and crop off the head. */
 
     .dg-pngtuber-renderer {
       overflow: hidden;
@@ -2175,6 +2170,21 @@
     window.THREE = THREE;
     window.dispatchEvent(new CustomEvent('three-ready'));
   </script>
+  <!-- Shared mixin dependencies required by the engine UI modules. -->
+  <script src="/static/avatar/avatar-popup-common.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/core.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-playground.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/methods-setup.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/methods-return.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js?v={{ static_asset_version }}"></script>
   <script src="/static/vrm/vrm-init.js?v={{ static_asset_version }}"></script>
   <script src="/static/mmd/mmd-init.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/games/drawing_guess/drawing-guess.js?v={{ static_asset_version }}"></script>

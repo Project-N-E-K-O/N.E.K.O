@@ -1832,6 +1832,207 @@ async function main() {
     + `timeouts=${[...activeTimeouts]}, resize=${listeners.get('resize')?.size || 0}, `
     + `display=${listeners.get('electron-display-changed')?.size || 0}`);
 
+  // The soccer adapter must exercise the same real MMD/PNG provider with its
+  // own fixed layers, through SDK playback ownership and lifecycle operations.
+  for (const id of ['ai-l2d-container', 'ai-l2d-canvas', 'soccer-mmd-container', 'soccer-mmd-canvas', 'soccer-pngtuber-container']) {
+    elements[id] = element(200, 300);
+  }
+  context.document = windowMock.document;
+  const soccerPath = path.resolve(__dirname, '../../static/game/games/soccer/soccer-avatar-host.js');
+  vm.runInContext(fs.readFileSync(soccerPath, 'utf8'), context, { filename: soccerPath });
+  for (const [name, kind] of [['MMD Neko', 'mmd'], ['PNG Neko', 'pngtuber']]) {
+    const soccerHost = windowMock.createSoccerAvatarHost({ fetchImpl, characterSource: {
+      getCharacter: async () => ({ name, model: null, languagePreference: { locale: 'ja', resolved: true }, fallbackModels: [] }),
+      listCharacters: async () => [name],
+    } });
+    const descriptor = await soccerHost.getCharacter(name);
+    assert(descriptor.model.type === kind && descriptor.languagePreference.locale === 'ja',
+      `${kind}: soccer lost preferred model or language metadata`);
+    const probe = await soccerHost.mount({ slot: 'ai', characterName: name, model: descriptor.model,
+      viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' },
+      fit: { mode: 'contain', padding: 6 } });
+    if (kind === 'pngtuber') assert(probe.getState().layout.width === 188, 'soccer lost initial image fit');
+    await probe.resize({ width: 300, height: 160 }, { mode: 'height', padding: 6 });
+    const layer = elements[kind === 'mmd' ? 'soccer-mmd-container' : 'soccer-pngtuber-container'];
+    assert(layer.style.width === '300px' && layer.style.height === '160px',
+      `${kind}: soccer acknowledged resize without updating its inner layer`);
+    if (kind === 'pngtuber') {
+      assert(probe.getState().layout.height === 148, 'soccer dropped height fit');
+      await probe.resize({ width: 200, height: 300 }, { autoScale: false });
+      assert(probe.getState().layout.width === 512 && probe.getState().layout.clipped,
+        'soccer manual size must exceed the fixed display rectangle');
+    }
+    probe.dispose();
+    let bridge;
+    let request;
+    const transport = {
+      session: { id: `soccer-${kind}`, characterName: name },
+      logger: { log() {}, info() {}, warn() {}, error() {}, reset() {}, flush() {}, enable() {}, enableAfterRouteStart() {} },
+      connectGame: ({ manifest }) => ({ accepted: true, protocolVersion: '1', hostVersion: '1',
+        registration: { mode: 'development', gameId: manifest.id, version: manifest.version },
+        grantedCapabilities: manifest.requiredCapabilities }),
+      getRuntimeState() { return { sessionId: this.session.id, characterName: this.session.characterName }; },
+      resetRuntime() { return this.getRuntimeState(); },
+      applyRuntimeState() {},
+      start: async () => ({ ok: true, state: { game_route_active: true } }), end: async () => ({ ok: true }),
+      heartbeat: async () => ({ ok: true }), drain: async () => ({ ok: true, outputs: [] }),
+      getAvatarCharacter: async () => vm.runInContext(`(${JSON.stringify(await soccerHost.getCharacter(name))})`, context),
+      bindRuntimeCharacter(value) { this.session.characterName = value; },
+      startSpeechOutputBridge(options) { bridge = options; return true; }, stopSpeechOutputBridge() {},
+      requestSpeechOutput(payload) { request = payload; return Promise.resolve({ ok: true, audio_sent: true, speech_id: 'soccer-speech' }); },
+      preloadSpeechOutput: async () => ({ ok: true }), mirrorSpeechOutput: async () => ({ ok: true }),
+      mountAvatar: config => soccerHost.mount(config), dispose: () => soccerHost.dispose(),
+    };
+    const game = await windowMock.NekoMiniGame.connect({ id: 'soccer', version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'avatar-renderer', 'speech-output'] },
+    { transport, windowImpl: windowMock, documentImpl: windowMock.document });
+    const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
+    const emit = (active = true) => bridge.onState({ type: 'speech_playback_state', active,
+      speechId: 'soccer-speech', correlationId: request.sdk_speech_correlation_id,
+      remainingSeconds: active ? 2 : 0, updatedAt: Date.now(), audioContextState: 'running',
+      mouthFrame: { bins: Array(16).fill(100), rms: 0.2, sampleRate: 12000 },
+    }, 'broadcast_channel');
+    try {
+      await game.runtime.bindCharacter(name);
+      const avatar = await game.avatar.mount({ slot: 'ai', characterName: name, model: descriptor.model,
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+      assert(avatar.getState().model.type === kind, `${kind}: soccer silently fell back`);
+      assert(elements['ai-l2d-canvas'].style.display === 'none', `${kind}: legacy canvas remained visible`);
+      game.runtime.configure({ pageExit: false, heartbeat: false, outputs: false });
+      await game.runtime.start();
+      await game.speech.speak({ text: 'Neutral test' }); await flush();
+      assert(!avatar.getState().speaking, `${kind}: HTTP acceptance opened mouth`);
+      emit(); await flush();
+      assert(avatar.getState().speaking, `${kind}: SDK playback did not reach soccer renderer`);
+      avatar.pause(); await flush();
+      assert(!avatar.getState().speaking, `${kind}: pause retained speech`);
+      await avatar.setModel(descriptor.model); await flush();
+      assert(avatar.getState().paused && !avatar.getState().speaking, `${kind}: paused reload resumed speech`);
+      avatar.resume(); await flush();
+      assert(avatar.getState().speaking, `${kind}: resume lost playback`);
+      emit(false); await flush();
+      assert(!avatar.getState().speaking, `${kind}: stop retained playback`);
+      // The old extended renderer is destroyed before the new path is checked.
+      // A rejected replacement must not leave its descriptor marked ready.
+      const failedReplacement = await rejection(avatar.setModel({ type: kind, path: '/not-configured-model' }));
+      assert(failedReplacement, `${kind}: untrusted replacement unexpectedly loaded`);
+      assert(!avatar.getState().ready && avatar.getState().model === null,
+        `${kind}: destroyed model remained ready after failed replacement`);
+      assert(windowMock.__SoccerAiAvatar.type === 'none' && !windowMock.__SoccerAiAvatar.ready,
+        `${kind}: global avatar status retained the destroyed renderer`);
+      await avatar.setModel(descriptor.model);
+      assert(avatar.getState().ready, `${kind}: failed replacement prevented recovery`);
+      const savedCharacter = characters[name];
+      try {
+        characters[name] = characters[kind === 'mmd' ? 'PNG Neko' : 'MMD Neko'];
+        const replacement = await soccerHost.getCharacter(name);
+        await avatar.setModel(replacement.model);
+        await game.speech.speak({ text: 'Replacement test' });
+        emit(); await flush();
+        assert(avatar.getState().model.type !== kind && avatar.getState().speaking,
+          `${kind}: cross-type replacement did not receive fresh speech`);
+      } finally { characters[name] = savedCharacter; }
+      await game.runtime.end();
+      emit(); await flush();
+      assert(!avatar.getState().speaking, `${kind}: ended playback restarted mouth`);
+    } finally { game.dispose(); await flush(); }
+    assert(soccerHost.activeCount === 0 && soccerHost.pendingCount === 0, `${kind}: soccer retained a controller`);
+    assert(activeTimeouts.size === 0 && activeIntervals.size === 0 && frames.size === 0,
+      `${kind}: soccer lifecycle leaked timers`);
+    // A legacy primary may retain a canonical extended fallback. Exercise the
+    // actual soccer -> shared provider chain, including its private settings.
+    const primaryCharacter = characters[name];
+    const primaryAvatar = primaryCharacter._reserved.avatar;
+    characters[name] = { ...primaryCharacter, _reserved: { avatar: {
+      ...primaryAvatar, model_type: 'live3d', live3d_sub_type: 'vrm',
+      vrm: { model_path: 'missing-primary.vrm' },
+    } } };
+    const fallbackSoccer = windowMock.createSoccerAvatarHost({ fetchImpl, characterSource: {
+      getCharacter: async () => ({ name, model: { type: 'vrm', path: '/missing-primary.vrm' },
+        fallbackModels: [descriptor.model] }),
+    } });
+    try {
+      const fallbackDescriptor = await fallbackSoccer.getCharacter(name);
+      const fallback = await fallbackSoccer.mount({ slot: 'ai', characterName: name,
+        model: fallbackDescriptor.fallbackModels[0],
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+      assert(fallback.getState().ready && fallback.getState().model.type === kind,
+        `${kind}: canonical extended fallback was not mounted`);
+      await fallback.dispose();
+      const arbitrary = await rejection(fallbackSoccer.mount({ slot: 'ai', characterName: name,
+        model: { type: kind, path: '/not-owned-by-this-character' },
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } }));
+      assert(arbitrary?.code === 'model_not_allowed', `${kind}: arbitrary fallback was admitted`);
+    } finally {
+      characters[name] = primaryCharacter;
+      await fallbackSoccer.dispose();
+    }
+    assert(fallbackSoccer.activeCount === 0 && fallbackSoccer.pendingCount === 0
+      && activeTimeouts.size === 0 && activeIntervals.size === 0 && frames.size === 0,
+    `${kind}: fallback chain retained a renderer or timer`);
+    let releaseLookup;
+    let lookupStarted;
+    const lookupGate = new Promise(resolve => { releaseLookup = resolve; });
+    const lookupReady = new Promise(resolve => { lookupStarted = resolve; });
+    const cancelledSoccer = windowMock.createSoccerAvatarHost({ fetchImpl: async (url, options) => {
+      if (url === '/api/characters') { lookupStarted(); await lookupGate; }
+      return fetchImpl(url, options);
+    } });
+    const loadCount = calls.filter(entry => entry[0] === `${kind}-model`).length;
+    const pending = cancelledSoccer.mount({ slot: 'ai', characterName: name, model: descriptor.model,
+      viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+    await lookupReady;
+    cancelledSoccer.dispose();
+    assert((await rejection(pending))?.code === 'disposed', `${kind}: exit failed to cancel pending mount`);
+    releaseLookup(); await new Promise(resolve => setImmediate(resolve));
+    assert(calls.filter(entry => entry[0] === `${kind}-model`).length === loadCount,
+      `${kind}: disposed host loaded a late renderer`);
+    assert(cancelledSoccer.pendingCount === 0 && activeTimeouts.size === 0 && frames.size === 0,
+      `${kind}: cancelled mount retained requests or frames`);
+
+    // Cancellation must cross soccer's metadata adapter into the real shared
+    // provider, not merely discard its eventual descriptor in the outer SDK.
+    let metadataSignal;
+    let metadataStarted;
+    let releaseMetadata;
+    const metadataReady = new Promise(resolve => { metadataStarted = resolve; });
+    const metadataGate = new Promise(resolve => { releaseMetadata = resolve; });
+    const metadataAbort = new AbortController();
+    const metadataSoccer = windowMock.createSoccerAvatarHost({
+      characterSource: { getCharacter: async () => ({ name, model: descriptor.model }) },
+      fetchImpl: async (url, options) => {
+        if (url === '/api/characters') {
+          metadataSignal = options.signal;
+          metadataStarted();
+          let onAbort;
+          try {
+            await Promise.race([metadataGate, new Promise((_, reject) => {
+              onAbort = () => reject(new Error('metadata_aborted'));
+              options.signal.addEventListener('abort', onAbort, { once: true });
+              if (options.signal.aborted) onAbort();
+            })]);
+          } finally { options.signal.removeEventListener('abort', onAbort); }
+        }
+        return fetchImpl(url, options);
+      },
+    });
+    const metadataResult = rejection(metadataSoccer.getCharacter(name,
+      { signal: metadataAbort.signal, timeoutMs: 1234 }));
+    try {
+      await metadataReady;
+      metadataAbort.abort();
+      await new Promise(resolve => setImmediate(resolve));
+      assert(metadataSignal.aborted, `${kind}: soccer metadata cancellation did not reach fetch`);
+      assert(await withTimeout(metadataResult, 'metadata query did not cancel'),
+        `${kind}: cancelled metadata lookup returned success`);
+      assert(activeTimeouts.size === 0, `${kind}: metadata cancellation retained a timer`);
+    } finally {
+      releaseMetadata();
+      await metadataSoccer.dispose();
+      await metadataResult;
+    }
+  }
+
   await verifyConfiguredLive2DIdleReplay();
   process.stdout.write('mini-game Drawing Avatar host runtime test passed\n');
 }

@@ -871,20 +871,13 @@ identity and constructor validation. It returns a fresh synchronous provider wit
 Avatar initialization failure leaves runtime/logging usable; a game requiring
 `avatar-renderer` fails its capability handshake instead.
 
-**New game integrations must use this trusted factory registration and the public
-`game.avatar` discovery methods below.** Legacy injection and internal host
-character reads are transitional compatibility for existing integrations, not
-alternative recommended APIs. The existing soccer integration can continue
-unchanged during this transition and will migrate separately; no removal date
-is set.
-
-Existing trusted same-origin `createNekoMiniGameSameOriginHost({ avatarHost })`
-injection remains supported and takes precedence over a registered factory. No
-factory is called in that case. Successful host construction transfers disposal
-ownership of the injected provider, as before. The legacy host `getCharacter()`
-still returns the original Response and updates its character identity; existing
-adapters do not need to migrate immediately. These mechanisms are not isolation
-from hostile code sharing the same origin.
+**Game integrations use this trusted factory registration and the public
+`game.avatar` discovery methods below.** Soccer now follows this path. The
+transitional `avatarHost` constructor injection and raw host `getCharacter()`
+entry point have been removed. Bind the character with `game.runtime.bindCharacter()`
+before character-dependent gameplay; a discovery read does not implicitly bind
+the runtime. These mechanisms are not isolation from hostile code sharing the
+same origin.
 
 The factory receives `windowImpl`, `documentImpl`, `fetchImpl`, a lifetime
 `signal`, `onCleanup(fn)` and `characterSource`. Register partial allocations with

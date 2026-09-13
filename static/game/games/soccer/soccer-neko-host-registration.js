@@ -12,6 +12,9 @@
 
   const providers = Object.freeze({
     soccer: Object.freeze({
+      avatarHostFactory(options) {
+        return window.createSoccerAvatarHost(options);
+      },
       quickLines(payload, options = {}) {
         return window.fetch('/api/game/soccer/quick-lines', {
           method: 'POST',

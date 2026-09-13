@@ -7,12 +7,9 @@ function assert(condition, message) {
 }
 
 function response(status, payload) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return payload; },
-    clone() { return response(status, payload); },
-  };
+  return new Response(JSON.stringify(payload), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 async function main() {
@@ -170,6 +167,9 @@ async function main() {
     };
   }
 
+  const defaultAvatarFactory = () => ({ async mount() { return { dispose() {} }; }, dispose() {} });
+  let avatarFactory = defaultAvatarFactory;
+  windowMock.createSoccerAvatarHost = (options) => avatarFactory(options);
   const hostPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-same-origin-host.js');
   const launchNode = {
     textContent: JSON.stringify({
@@ -272,15 +272,14 @@ async function main() {
 
   let avatarHostDisposed = 0;
   let avatarMountConfig = null;
-  const avatarAdapter = await window.createSoccerNekoAdapter({
-    avatarHost: {
+  avatarFactory = () => ({
       async mount(config) {
         avatarMountConfig = config;
         return { dispose() {} };
       },
       dispose() { avatarHostDisposed += 1; },
-    },
   });
+  const avatarAdapter = await window.createSoccerNekoAdapter();
   avatarAdapter.connectGame({
     protocolVersions: ['1'],
     manifest: {
@@ -300,6 +299,7 @@ async function main() {
   assert(avatarHostDisposed === 1, 'avatar host was not released by adapter disposal');
   avatarAdapter.dispose();
   assert(avatarHostDisposed === 1, 'repeated adapter disposal released the avatar host twice');
+  avatarFactory = defaultAvatarFactory;
 
   let audioHostDisposed = 0;
   let audioMountConfig = null;
@@ -331,10 +331,6 @@ async function main() {
     logQueueLimit: 8,
     logConcurrency: 2,
     logPumpIntervalMs: 1,
-    avatarHost: {
-      async mount() { return { dispose() {} }; },
-      dispose() {},
-    },
   });
   const handshake = adapter.connectGame({
     sdkVersion: '0.1.0',
@@ -360,8 +356,12 @@ async function main() {
   });
   assert(unknownHandshake.code === 'game_unregistered',
     'unknown game identity was not rejected by the trusted host');
-  const characterResponse = await adapter.getCharacter();
-  assert(characterResponse.ok, 'character bootstrap request failed');
+  assert(typeof adapter.getCharacter === 'undefined', 'raw soccer character compatibility remains');
+  const characterInfo = await adapter.getAvatarCharacter();
+  assert(characterInfo.name === 'resolved-runtime-neko', 'public character discovery failed');
+  assert(adapter.getRuntimeState().characterName !== characterInfo.name,
+    'character discovery implicitly changed runtime identity');
+  adapter.bindRuntimeCharacter(characterInfo.name);
   assert(adapter.getRuntimeState().characterName === 'resolved-runtime-neko',
     'resolved character identity was not synchronized into the SDK runtime state');
   const quickLinesResponse = await adapter.getQuickLines({ i18n_language: 'zh-CN' });

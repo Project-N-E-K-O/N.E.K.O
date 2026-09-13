@@ -29,21 +29,22 @@ def test_soccer_vrm0_fixed_camera_facing_fix_uses_bone_and_head_evidence():
 def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
     source = SOCCER_AVATAR_HOST_PATH.read_text(encoding="utf-8")
 
-    assert "function syncVrmCameraTarget(manager, lookY, distance)" in source
-    assert "manager.controls.target.copy(target);" in source
+    assert "manager.controls?.target?.copy?.(manager._cameraTarget);" in source
 
     fit_section = source.split("function fitVrmManagerCamera", 1)[1].split(
         "function isVrm0",
         1,
     )[0]
-    assert "syncVrmCameraTarget(manager, visibleHeight / 2, distance);" in fit_section
+    assert "window.NekoMiniGameAvatarHost.fitPerspectiveModel(" in fit_section
+    assert "THREE, model, manager.camera, size, fit," in fit_section
 
     helper_section = source.split(
         "async function loadVrmIntoManager",
         1,
     )[1].split("return manager.currentModel;", 1)[0]
-    assert "applyVrm0FixedCameraFacingFix(gltf, vrm, manager);" in helper_section
-    assert "fitVrmManagerCamera(manager, containerId, label, viewport);" in helper_section
+    assert "applyVrm0FixedCameraFacingFix(gltf, vrm, staged);" in helper_section
+    assert "fitVrmManagerCamera(staged, containerId, label, viewport, fit);" in helper_section
+    assert "manager.__soccerFixedCameraNormalizeYaw = staged.__soccerFixedCameraNormalizeYaw;" in helper_section
 
     controller_section = source.split("function createController", 1)[1]
     assert "canvasId: 'player-vrm-canvas'" in controller_section
