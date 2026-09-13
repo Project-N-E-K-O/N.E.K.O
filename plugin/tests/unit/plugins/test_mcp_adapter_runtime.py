@@ -348,6 +348,8 @@ async def test_mcp_tool_register_uses_extended_dynamic_entry_timeout() -> None:
         "[fetch] fetch",
         "Fetch URL",
         {"type": "object"},
+        "fetch",
+        "fetch",
     )
 
     assert ok is True
@@ -381,6 +383,8 @@ async def test_mcp_tool_register_handler_returns_finish_envelope_with_summary() 
         "[fetch] fetch",
         "Fetch URL",
         {"type": "object"},
+        "fetch",
+        "fetch",
     )
 
     assert ok is True
@@ -804,6 +808,7 @@ async def test_mcp_add_server_persists_via_runtime_config_update() -> None:
             "fetch": {
                 "transport": "streamable-http",
                 "enabled": True,
+                "inject_to_chat": False,
                 "url": "https://example.com/mcp",
             }
         }

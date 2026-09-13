@@ -16,8 +16,8 @@ from plugin.sdk.adapter.gateway_models import (
 if TYPE_CHECKING:
     from plugin.plugins.mcp_adapter import MCPClient
 
-# 工具注册回调类型
-ToolRegisterCallback = Callable[[str, str, str, Optional[dict]], Awaitable[bool]]
+# 工具注册回调类型：(tool_id, display_name, description, schema, server_name, tool_name)
+ToolRegisterCallback = Callable[[str, str, str, Optional[dict], str, str], Awaitable[bool]]
 ToolUnregisterCallback = Callable[[str], Awaitable[bool]]
 
 
@@ -121,6 +121,8 @@ class MCPRouteEngine:
                         f"[{server_name}] {tool.name}",
                         tool.description or f"MCP tool from {server_name}",
                         tool.input_schema,
+                        server_name,
+                        tool.name,
                     )
                     callback_ok = callback_result is not False
                 except Exception:
