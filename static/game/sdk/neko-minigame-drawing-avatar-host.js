@@ -386,13 +386,16 @@
       return cleanString(payload?.current_catgirl, NAME_LIMIT);
     }
 
-    async function resolveLive2DPath(name, fallback, requestOptions) {
+    async function resolveLive2DPath(name, fallback, requestOptions, primary) {
       if (!name) return fallback;
       try {
         const payload = await json(
           `/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(name)}`,
           requestOptions,
         );
+        // The global default belongs to the primary Live2D policy, not to a
+        // different renderer's character-owned alternatives.
+        if (!primary && payload?.model_info?.is_fallback === true) return '';
         const resolved = payload?.success ? cleanString(payload?.model_info?.path) : '';
         return resolved || fallback;
       } catch (cause) {
@@ -481,7 +484,8 @@
         // An optional fallback is only advertised when canonical resolution
         // succeeds. Preserve the existing primary Live2D compatibility path.
         const path = await resolveLive2DPath(requested,
-          configured.type === 'live2d' ? configured.paths.live2d : '', requestOptions);
+          configured.type === 'live2d' ? configured.paths.live2d : '', requestOptions,
+          configured.type === 'live2d');
         configured.paths = Object.freeze({ ...configured.paths, live2d: path });
         if (configured.type === 'live2d') configured.path = path;
       }

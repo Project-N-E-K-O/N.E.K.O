@@ -4878,8 +4878,7 @@ async def game_character(game_type: str, request: Request = None):
             # including malformed/missing reserved Live2D subobjects.
             if isinstance(neko_data, dict):
                 # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。
-                # 始终复用主角色接口的规范解析结果；即使保存路径为空，主页面也可能
-                # 已经选定回退模型，小游戏不能再自行选择另一只默认角色。
+                # 主Live2D保留规范默认模型；其他主型的备用不能冒用全局默认角色。
                 from ..characters_router import get_current_live2d_model
 
                 try:
@@ -4888,7 +4887,10 @@ async def game_character(game_type: str, request: Request = None):
                     if response_body:
                         model_payload = json.loads(response_body.decode('utf-8'))
                         model_info = model_payload.get('model_info') or {}
-                        live2d_path = model_info.get('path', '')
+                        if not (model_info.get('is_fallback') is True and model_type in (
+                            'vrm', 'mmd', 'pngtuber', 'live3d',
+                        )):
+                            live2d_path = model_info.get('path', '')
                 except Exception as exc:
                     logger.warning("🎮 Live2D 模型路径解析失败: %s", type(exc).__name__)
 

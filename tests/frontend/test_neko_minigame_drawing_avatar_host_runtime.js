@@ -622,6 +622,8 @@ async function main() {
       if (canonicalFailure === 'network') throw new Error('canonical unavailable');
       if (canonicalFailure === 'json') return new Response('{');
       if (canonicalFailure === 'not-found') return jsonResponse({success:false});
+      if (canonicalFailure === 'global-default') return jsonResponse({success:true,
+        model_info:{path:'/resolved/live.model3.json',is_fallback:true}});
       return jsonResponse({ success: true, model_info: { path: '/resolved/live.model3.json' } });
     }
     if (target.startsWith('/api/game/sdk-avatar/character?')) {
@@ -1254,7 +1256,7 @@ async function main() {
   }))))?.code === 'model_not_allowed', 'raw Live2D fallback alias remained authorized');
   calls.splice(liveFallbackCallsStart);
 
-  for (const failure of ['not-found', 'network', 'json']) {
+  for (const failure of ['not-found', 'network', 'json', 'global-default']) {
     canonicalFailure = failure;
     const unavailable = await host.getCharacter('Live2D Fallback Example');
     assert(unavailable.model.type === 'pngtuber', `${failure}: optional failure removed the primary`);
@@ -1264,6 +1266,8 @@ async function main() {
       type:'live2d',path:'example/example.model3.json',
     }))))?.code === 'model_not_allowed', `${failure}: unresolved fallback was authorized`);
   }
+  assert((await host.getCharacter('Live Neko')).model.path === '/resolved/live.model3.json',
+    'global canonical default must remain available to primary Live2D');
   canonicalFailure = '';
   assert((await host.getCharacter('Live2D Fallback Example')).fallbackModels.some(model =>
     model.type === 'live2d' && model.path === '/resolved/live.model3.json'), 'canonical lookup did not recover');

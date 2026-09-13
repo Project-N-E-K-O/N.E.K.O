@@ -809,6 +809,14 @@ IPC adapter may implement the same public contract. The helper temporarily owns
 the game document's Capture Handle configuration; do not concurrently replace it
 from another capture integration.
 
+Granting `vision` means image analysis is available, not that every image source
+can be acquired. A trusted same-origin host integration can check
+`NekoMiniGameVisionHost.captureAvailable(window)` before offering the optional
+region picker. This API-presence check is not authorization or a guarantee that
+the picker offers a compatible tab: a window/screen-only Electron picker is
+still rejected with `capture_source_mismatch`. Games must handle these capture
+errors; already supplied attachments do not require a screen-sharing source.
+
 For the capture overload, only the cropped JPEG is uploaded to the project backend and configured model
 provider (normal provider cost/data policies apply). The shared stream stops
 immediately after capture, **before** model inference. The SDK does not persist
