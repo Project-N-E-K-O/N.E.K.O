@@ -1548,10 +1548,16 @@ function planPhysicsSteps(frameSeconds) {
   return { steps, stepSeconds:simulatedSeconds / steps };
 }
 
+function playablePhysicsSeconds(frameSeconds) {
+  const safeFrameSeconds = Number.isFinite(frameSeconds) ? Math.max(0, frameSeconds) : 0;
+  if (!state.running || state.mode !== 'timed') return safeFrameSeconds;
+  return Math.min(safeFrameSeconds, Math.max(0, state.remaining - timerAccumulator));
+}
+
 function frame(now) {
   const frameSeconds = lastFrame ? (now - lastFrame) / 1000 : 0;
   lastFrame = now;
-  const plan = planPhysicsSteps(frameSeconds);
+  const plan = planPhysicsSteps(playablePhysicsSeconds(frameSeconds));
   for (let step = 0; step < plan.steps; step += 1) update(plan.stepSeconds);
   advanceMatchClock(frameSeconds);
   playerLane.draw();
@@ -1621,6 +1627,7 @@ const testControls = pageParams.get('test_mode') === '1'
       setTrackedGuestForTest,
       advanceMatchClock,
       planPhysicsSteps,
+      playablePhysicsSeconds,
       runtimeSnapshot,
       planNekoIntent,
       nekoAttentionContext

@@ -512,10 +512,17 @@ def test_air_basketball_runtime_start_snapshot_and_wall_clock_contract(
           window.AirBasketballMVP.test.advanceMatchClock(.5);
           window.AirBasketballMVP.test.advanceMatchClock(2);
           const after = window.AirBasketballMVP.getState();
+          window.AirBasketballMVP.test.advanceMatchClock(57.4);
+          const nearDeadline = window.AirBasketballMVP.getState();
+          const deadlinePhysics = window.AirBasketballMVP.test.planPhysicsSteps(
+            window.AirBasketballMVP.test.playablePhysicsSeconds(.25)
+          );
           return {
             before,
             after,
             physics,
+            nearDeadline,
+            deadlinePhysics,
             snapshot:window.AirBasketballMVP.test.runtimeSnapshot()
           };
         }
@@ -538,6 +545,13 @@ def test_air_basketball_runtime_start_snapshot_and_wall_clock_contract(
     assert result["physics"]["stepSeconds"] * result["physics"]["steps"] == pytest.approx(.25)
     assert result["after"]["elapsed"] - result["before"]["elapsed"] == 2
     assert result["before"]["remaining"] - result["after"]["remaining"] == 2
+    assert result["nearDeadline"]["remaining"] == 1
+    assert result["deadlinePhysics"]["steps"] == 4
+    assert (
+        result["deadlinePhysics"]["stepSeconds"]
+        * result["deadlinePhysics"]["steps"]
+        == pytest.approx(.1)
+    )
     assert result["snapshot"]["score"] == {"player": 0, "ai": 0}
 
 

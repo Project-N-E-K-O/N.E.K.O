@@ -314,7 +314,9 @@ def test_air_basketball_mvp_interaction_contract():
     assert "function advanceMatchClock(frameSeconds)" in game
     assert "timerAccumulator += realSeconds" in game
     assert "timerAccumulator += dt" not in game
-    assert game.index("step < plan.steps; step += 1) update(plan.stepSeconds)") < game.index("  advanceMatchClock(frameSeconds);")
+    assert "function playablePhysicsSeconds(frameSeconds)" in game
+    assert "state.remaining - timerAccumulator" in game
+    assert "planPhysicsSteps(playablePhysicsSeconds(frameSeconds))" in game
     assert "if (trackingPlayerNative && !trackedGuestSuspended)" in game
     assert "Math.min(.033, (now - lastFrame)" not in game
     assert "if (!nekoAiFrozen && state.nextNekoDecision <= 0)" in game
