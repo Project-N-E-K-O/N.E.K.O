@@ -5232,27 +5232,35 @@
       async request(action, payload = {}) {
         requireCapability('media-timeline', 'media.request');
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
-        // SDK payload budget in UTF-8 bytes; host fields are appended afterwards.
-        const payloadBytes = jsonByteLength(payload);
+        // Measure and send one plain snapshot: spreading drops a prototype
+        // toJSON() and an own toJSON is removed, so the UTF-8 budget covers the
+        // transported fields. Host fields are appended afterwards.
+        let body;
+        try { const { toJSON: _toJSON, ...fields } = payload; body = fields; }
+        catch (_) { fail('invalid_request', 'Media payload must be JSON'); }
+        const payloadBytes = jsonByteLength(body);
         if (payloadBytes === Number.POSITIVE_INFINITY) fail('invalid_request', 'Media payload must be JSON');
         if (payloadBytes > 65536) fail('invalid_request', 'Media payload too large');
         if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
-        try { return await transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId }); }
+        try { return await transport.requestMedia(action, { ...body, sdk_route_instance_id: runtimeRouteInstanceId }); }
         catch(error) { throw normalizeTransportError(error, 'media.request'); }
       },
       async mount(config) {
         requireCapability('media-timeline', 'media.mount');
         requireActiveRuntimeRoute('media.mount');
-        // Validate before claiming the pending slot: a TypeError past this point
-        // would skip the finally below and leave every later mount busy.
+        // Validate and read caller input before claiming the pending slot: an
+        // exception past that point would skip the finally below and leave every
+        // later mount busy.
         if (!config || typeof config !== 'object' || Array.isArray(config)) fail('invalid_request', 'Media mount config must be an object');
+        let callerSignal;
+        try { callerSignal = config.signal; }
+        catch (_) { fail('invalid_request', 'Media mount config signal is unreadable'); }
         if (mediaControllers.size || mediaMountPending) fail('busy', 'A media timeline is already mounted');
         const generation = runtimeRouteInstanceId;
         mediaMountPending = true;
         mediaMountAbort = new AbortControllerImpl();
         const mountAbort = mediaMountAbort;
-        const callerSignal = config.signal;
         const abortFromCaller = () => mountAbort.abort();
         let controller;
         try {
