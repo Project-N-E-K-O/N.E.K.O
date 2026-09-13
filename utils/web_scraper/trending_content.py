@@ -1955,6 +1955,18 @@ def _community_identifier(value: Any) -> str:
     return _community_text(value, max_chars=NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS)
 
 
+def _is_community_placeholder_url(url: str, discover_url: str) -> bool:
+    """Return whether a same-origin URL is only a generic community landing page."""
+
+    try:
+        parsed_url = urlparse(url)
+        parsed_discover = urlparse(discover_url)
+    except ValueError:
+        return True
+    path = parsed_url.path.rstrip("/")
+    discover_path = parsed_discover.path.rstrip("/")
+    return not path or (path == discover_path and not parsed_url.query)
+
 def _community_card_url(
     raw: dict[str, Any], *, discover_fallback: bool = True
 ) -> str:
@@ -1989,6 +2001,7 @@ def _community_card_url(
         if (
             len(resolved_url) <= NEKO_COMMUNITY_URL_MAX_CHARS
             and _same_community_origin(resolved_url, discover_url)
+            and not _is_community_placeholder_url(resolved_url, discover_url)
         ):
             return resolved_url
     # The feed API does not need to expose a post permalink for a card to stay

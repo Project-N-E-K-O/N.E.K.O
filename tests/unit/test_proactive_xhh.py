@@ -262,6 +262,23 @@ def test_normalize_neko_community_feed_rejects_overlong_card_url():
     assert len(posts[0]["url"]) <= trending_content.NEKO_COMMUNITY_URL_MAX_CHARS
 
 
+def test_normalize_neko_community_feed_skips_placeholder_links_for_permalink():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "title": "稳定卡牌",
+                    "url": "/discover",
+                    "href": "#",
+                    "permalink": "/posts/stable-card",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["url"] == "https://community.project-neko.cn/posts/stable-card"
+    assert posts[0]["dedupe_key"] == posts[0]["url"]
+
 def test_normalize_neko_community_feed_uses_permalink_for_idless_deduplication():
     posts = normalize_neko_community_feed(
         {
