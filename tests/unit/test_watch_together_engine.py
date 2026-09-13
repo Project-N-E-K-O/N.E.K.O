@@ -95,6 +95,8 @@ async def test_synthesis_byte_budget_counts_shared_laugh_once(tmp_path, monkeypa
     assert [(cue['at'], cue['audio'].rsplit('/', 1)[1]) for cue in job['events']] == [
         (5, 'comment-0.wav'), (15, 'laugh.wav'), (35, 'laugh.wav')]
     assert job['skipped_cues'] == [{'index': 2, 'reason': 'audio_budget_exceeded'}]
+    # Staging is imported wholesale; rejected audio must not be persisted.
+    assert sorted(path.name for path in (tmp_path / 'job').glob('*.wav')) == ['comment-0.wav', 'laugh.wav']
 
 
 @pytest.mark.asyncio
@@ -112,6 +114,7 @@ async def test_synthesis_file_budget_skips_before_synthesizing(tmp_path, monkeyp
     assert job['skipped_cues'] == [{'index': 1, 'reason': 'audio_budget_exceeded'},
                                    {'index': 2, 'reason': 'audio_budget_exceeded'}]
     assert 'late' not in synthesized
+    assert sorted(path.name for path in (tmp_path / 'job').glob('*.wav')) == ['comment-0.wav']
 
 
 @pytest.mark.asyncio
