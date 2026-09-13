@@ -74,7 +74,6 @@ async function main() {
   const storage = new Map();
   const renderers = [];
   const mountAttempts = [];
-  let modelGate = null;
   let mountGate = null;
   let mountGatePath = null;
   const unavailableModels = new Set();
@@ -103,7 +102,10 @@ async function main() {
       if (config.model.path === '/broken.pmx') throw new Error('asset_failed');
       const renderer = { config, model: config.model, disposed: false, paused: false,
         async setModel(model) {
-          if (modelGate) await modelGate;
+          if (['mmd', 'pngtuber'].includes(this.model?.type) || ['mmd', 'pngtuber'].includes(model.type)) {
+            this.model = null;
+          }
+          if (unavailableModels.has(model.path)) throw new Error('asset_missing');
           if (model.path === '/broken.pmx') throw new Error('asset_failed');
           this.model = model;
         },
@@ -230,6 +232,11 @@ async function main() {
       [{ type: 'live2d', path: '/old.model3.json' }, { type: 'vrm', path: '/missing.vrm' }],
       [{ type: 'vrm', path: '/old.vrm' }, { type: 'live2d', path: '/missing.model3.json' }],
       [{ type: 'pngtuber', path: '/image.png' }, { type: 'mmd', path: '/broken.pmx' }],
+      [{ type: 'vrm', path: '/old.vrm' }, { type: 'mmd', path: '/broken.pmx' }],
+      [{ type: 'live2d', path: '/old.model3.json' }, { type: 'pngtuber', path: '/next.png' }],
+      [{ type: 'mmd', path: '/first.pmx' }, { type: 'mmd', path: '/broken.pmx' }],
+      [{ type: 'mmd', path: '/first.pmx' }, { type: 'vrm', path: '/missing.vrm' }],
+      [{ type: 'pngtuber', path: '/image.png' }, { type: 'live2d', path: '/missing.model3.json' }],
     ]) {
       await sandbox.setAiAvatar(oldModel);
       await window.__SoccerAiAvatarController.pause();
@@ -241,6 +248,7 @@ async function main() {
       const restored = window.__SoccerAiAvatarController;
       assert(restored && !restored.disposed, 'cross-fit failure left the AI blank');
       assert.deepEqual(restored.getState().model, oldModel);
+      assert.deepEqual(renderers.at(-1).model, oldModel, 'recovery only retained stale SDK metadata');
       assert.equal(restored.getState().paused, true, 'cross-fit recovery lost pause');
       assert.equal(restored.config.fit.mode, ['vrm', 'mmd'].includes(oldModel.type) ? 'height' : 'contain');
       assert.equal(mountAttempts.length - attemptCount, 2, 'recovery must attempt the previous model once');
@@ -273,12 +281,14 @@ async function main() {
     assert.equal(renderers.at(-1).config.fit.mode, 'contain');
     assert.equal(renderers.at(-1).paused, true, 'replacement lost the paused state');
     let releaseModel;
-    modelGate = new Promise(resolve => { releaseModel = resolve; });
+    mountGate = new Promise(resolve => { releaseModel = resolve; });
+    mountGatePath = '/next.png';
     const changing = sandbox.setAiAvatar({ type: 'pngtuber', path: '/next.png' });
     await assert.rejects(sandbox.setAiAvatar({ type: 'vrm', path: '/competing.vrm' }), /busy/);
     releaseModel();
     await changing;
-    modelGate = null;
+    mountGate = null;
+    mountGatePath = null;
     await assert.rejects(sandbox.setAiAvatar({ type: 'mmd', path: '/broken.pmx' }), /asset_failed/);
     await sandbox.setAiAvatar({ type: 'vrm', path: '/recovered.vrm' });
     assert.equal(renderers.at(-1).config.fit.mode, 'height', 'failed mount retained the operation lock');

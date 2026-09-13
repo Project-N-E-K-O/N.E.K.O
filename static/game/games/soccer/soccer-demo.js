@@ -434,13 +434,18 @@
           }
         }
         const previous = window[key];
+        const oldState = previous && !previous.disposed ? previous.getState() : null;
+        // Extended renderers retire their old instance before loading. Use
+        // the bounded remount recovery even when both models share a fit.
+        const needsRemount = slot === 'ai' && [oldState?.model?.type, model.type]
+          .some(type => ['mmd', 'pngtuber'].includes(type));
         if (previous && !previous.disposed
+            && !needsRemount
             && previous.config.fit.mode === soccerAvatarFit(model).mode) {
           await previous.setModel(model);
           if (previous.disposed || soccerGame.disposed) throw new Error('avatar_change_cancelled');
           return previous;
         }
-        const oldState = previous && !previous.disposed ? previous.getState() : null;
         const paused = oldState?.paused === true;
         if (isSoccerAvatarModel(oldState?.model, slot)) {
           restore = { model: { ...oldState.model }, paused };
