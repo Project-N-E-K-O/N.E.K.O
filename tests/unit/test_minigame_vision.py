@@ -241,11 +241,14 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
 async def test_cancel_ignoring_provider_retains_capacity(monkeypatch, scenario):
     payload, _, _ = scenario
     finish = asyncio.Event()
+    all_entered = asyncio.Event()
     entered = 0
 
     async def analyze(*args):
         nonlocal entered
         entered += 1
+        if entered == 4:
+            all_entered.set()
         try:
             await finish.wait()
         except asyncio.CancelledError:
@@ -255,10 +258,9 @@ async def test_cancel_ignoring_provider_retains_capacity(monkeypatch, scenario):
     monkeypatch.setattr(vision, "_analyze", analyze)
     tasks = [asyncio.create_task(vision.game_sdk_vision_analyze("example-game", Request(payload))) for _ in range(4)]
     try:
-        for _ in range(100):
-            if entered == 4:
-                break
-            await asyncio.sleep(0)
+        # Requests reach the provider only after image preprocessing finishes on
+        # a worker thread, so wait for all four instead of a fixed tick budget.
+        await asyncio.wait_for(all_entered.wait(), 10)
         assert entered == 4
         assert (await vision.game_sdk_vision_analyze("example-game", Request(payload)))["reason"] == "busy"
         for task in tasks:
