@@ -15,6 +15,219 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
     FORCE: 3
 });
 
+// The bundled Cubism renderer uses 36 slots for a single render texture and
+// 32 slots per texture when multiple textures are used. Keep a product-level
+// ceiling so unsupported models fail before any mask framebuffer is rendered.
+const LIVE2D_MAX_MASK_RENDER_TEXTURES = 8;
+const LIVE2D_MIN_MASK_RENDER_TEXTURES = 3;
+const LIVE2D_SINGLE_MASK_TEXTURE_CAPACITY = 36;
+const LIVE2D_MULTI_MASK_TEXTURE_CAPACITY = 32;
+
+function getLive2DMaskRenderTextureCount(clippingContextCount) {
+    if (!Number.isSafeInteger(clippingContextCount) || clippingContextCount < 0) {
+        throw new TypeError(`Invalid Live2D clipping context count: ${clippingContextCount}`);
+    }
+    // Preserve the existing three-texture budget to avoid reducing mask
+    // resolution for smaller models. Add textures only when capacity requires it.
+    const renderTextureCount = Math.max(
+        LIVE2D_MIN_MASK_RENDER_TEXTURES,
+        Math.ceil(clippingContextCount / LIVE2D_MULTI_MASK_TEXTURE_CAPACITY)
+    );
+    if (renderTextureCount > LIVE2D_MAX_MASK_RENDER_TEXTURES) {
+        const error = new RangeError(
+            `Live2D model requires ${clippingContextCount} clipping contexts; `
+            + `the supported maximum is ${LIVE2D_MAX_MASK_RENDER_TEXTURES
+                * LIVE2D_MULTI_MASK_TEXTURE_CAPACITY}.`
+        );
+        error.name = 'Live2DMaskCapacityError';
+        throw error;
+    }
+    return renderTextureCount;
+}
+
+function setLive2DMaskLayout(context, bufferIndex, channelNo, index, count) {
+    let columns;
+    let rows;
+    if (count === 1) {
+        columns = 1;
+        rows = 1;
+    } else if (count === 2) {
+        columns = 2;
+        rows = 1;
+    } else if (count <= 4) {
+        columns = 2;
+        rows = 2;
+    } else if (count <= 9) {
+        columns = 3;
+        rows = 3;
+    } else {
+        throw new RangeError(`Unsupported Live2D masks per channel: ${count}`);
+    }
+
+    context._bufferIndex = bufferIndex;
+    context._layoutChannelNo = channelNo;
+    context._layoutBounds.x = (index % columns) / columns;
+    context._layoutBounds.y = Math.floor(index / columns) / rows;
+    context._layoutBounds.width = 1 / columns;
+    context._layoutBounds.height = 1 / rows;
+}
+
+// Correct the bundled SDK's remainder distribution, which leaves contexts
+// unassigned at counts such as 94 and 95 with three textures.
+function setupLive2DMaskLayoutBounds(usingClipCount) {
+    const contexts = this._clippingContextListForMask;
+    const renderTextureCount = this._renderTextureCount;
+    if (!Array.isArray(contexts) || !Number.isSafeInteger(renderTextureCount)
+        || renderTextureCount < 1) {
+        throw new Error('Live2D clipping manager is not initialized.');
+    }
+
+    if (usingClipCount === 0) {
+        // The SDK passes zero for high-precision mode, where masks are drawn
+        // individually and may reuse the full texture. An entirely inactive
+        // frame returns from setupClippingContext before calling this method.
+        contexts.forEach((context) => setLive2DMaskLayout(context, 0, 0, 0, 1));
+        this.__nekoActiveClippingContextCount = 0;
+        return;
+    }
+
+    const capacity = renderTextureCount === 1
+        ? LIVE2D_SINGLE_MASK_TEXTURE_CAPACITY
+        : LIVE2D_MULTI_MASK_TEXTURE_CAPACITY * renderTextureCount;
+    if (!Number.isSafeInteger(usingClipCount) || usingClipCount < 0
+        || usingClipCount > capacity || usingClipCount > contexts.length) {
+        throw new RangeError(
+            `Unsupported active Live2D clipping context count: ${usingClipCount} `
+            + `(capacity: ${capacity}, available: ${contexts.length}).`
+        );
+    }
+
+    // setupClippingContext counts active contexts, but its drawing loop visits
+    // the entire list, including inactive entries. Reserve a stable slot for
+    // every context so inactive entries cannot alias active masks or move their
+    // slots when bounds disappear and return. Texture capacity is also sized
+    // from this full list in configureLive2DClipping.
+    const layoutCount = contexts.length;
+    if (layoutCount > capacity) {
+        throw new RangeError(`Live2D clipping context count exceeds capacity: ${layoutCount}`);
+    }
+    const countPerTexture = Math.ceil(layoutCount / renderTextureCount);
+    const texturesWithOneLess = countPerTexture * renderTextureCount - layoutCount;
+    let contextIndex = 0;
+
+    for (let bufferIndex = 0; bufferIndex < renderTextureCount; bufferIndex++) {
+        const countForTexture = countPerTexture
+            - (bufferIndex >= renderTextureCount - texturesWithOneLess ? 1 : 0);
+        const countPerChannel = Math.floor(countForTexture / 4);
+        const channelsWithOneMore = countForTexture % 4;
+
+        for (let channelNo = 0; channelNo < 4; channelNo++) {
+            const countForChannel = countPerChannel
+                + (channelNo < channelsWithOneMore ? 1 : 0);
+            for (let slotIndex = 0; slotIndex < countForChannel; slotIndex++) {
+                setLive2DMaskLayout(
+                    contexts[contextIndex++],
+                    bufferIndex,
+                    channelNo,
+                    slotIndex,
+                    countForChannel
+                );
+            }
+        }
+    }
+
+    if (contextIndex !== layoutCount) {
+        throw new Error(
+            `Live2D clipping layout assigned ${contextIndex} of ${layoutCount} contexts.`
+        );
+    }
+    this.__nekoActiveClippingContextCount = usingClipCount;
+}
+
+// Number.MIN_VALUE is positive. Recalculate bounds with negative infinity so
+// drawables whose vertices are entirely in negative model space remain tight.
+function calculateLive2DClippedDrawBounds(model, clippingContext) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const drawableIndex of clippingContext._clippedDrawableIndexList) {
+        const vertexCount = model.getDrawableVertexCount(drawableIndex);
+        const vertices = model.getDrawableVertices(drawableIndex);
+        for (let vertexIndex = 0; vertexIndex < vertexCount * 2; vertexIndex += 2) {
+            const x = vertices[vertexIndex];
+            const y = vertices[vertexIndex + 1];
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+    }
+
+    if (minX === Infinity) {
+        clippingContext._allClippedDrawRect.x = 0;
+        clippingContext._allClippedDrawRect.y = 0;
+        clippingContext._allClippedDrawRect.width = 0;
+        clippingContext._allClippedDrawRect.height = 0;
+        clippingContext._isUsing = false;
+        return;
+    }
+
+    clippingContext._allClippedDrawRect.x = minX;
+    clippingContext._allClippedDrawRect.y = minY;
+    clippingContext._allClippedDrawRect.width = maxX - minX;
+    clippingContext._allClippedDrawRect.height = maxY - minY;
+    clippingContext._isUsing = true;
+}
+
+function patchLive2DRendererProfile(renderer) {
+    const profile = renderer?._rendererProfile;
+    if (!profile || profile.__nekoBufferBindingFixApplied
+        || typeof profile.save !== 'function') return;
+
+    const originalSave = profile.save;
+    const originalSaveSource = Function.prototype.toString.call(originalSave);
+    const hasBundledBindingBug = /_lastArrayBufferBinding\s*=\s*this\.gl\.getParameter\(\s*this\.gl\.ELEMENT_ARRAY_BUFFER_BINDING\s*\)/
+        .test(originalSaveSource);
+    if (!hasBundledBindingBug) return;
+
+    profile.save = function() {
+        const gl = this.gl;
+        const arrayBufferBinding = gl
+            ? gl.getParameter(gl.ARRAY_BUFFER_BINDING)
+            : undefined;
+        originalSave.call(this);
+        if (gl) {
+            // The bundled save() leaves the element binding in the array field.
+            this._lastElementArrayBufferBinding = this._lastArrayBufferBinding;
+            this._lastArrayBufferBinding = arrayBufferBinding;
+        }
+    };
+    profile.__nekoBufferBindingFixApplied = true;
+}
+
+function configureLive2DClipping(renderer) {
+    const manager = renderer?._clippingManager;
+    if (!manager) return;
+
+    const contextCount = typeof manager.getClippingMaskCount === 'function'
+        ? manager.getClippingMaskCount()
+        : manager._clippingContextListForMask?.length;
+    const renderTextureCount = getLive2DMaskRenderTextureCount(contextCount);
+
+    if (manager._maskTexture?.textures) {
+        throw new Error('Cannot reconfigure Live2D clipping after mask texture allocation.');
+    }
+
+    manager._renderTextureCount = renderTextureCount;
+    manager.setupLayoutBounds = setupLive2DMaskLayoutBounds;
+    manager.calcClippedDrawTotalBounds = calculateLive2DClippedDrawBounds;
+    manager.__nekoClippingFixApplied = true;
+    patchLive2DRendererProfile(renderer);
+}
+
 Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
     if (
         model === this.currentModel
@@ -682,6 +895,15 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         return model;
     } catch (error) {
         if (error && error.name === 'LoadSuperseded') {
+            throw error;
+        }
+        if (error && error.name === 'Live2DMaskCapacityError') {
+            console.error('Live2D 模型遮罩数量超过支持上限:', error);
+            const failedModel = this.currentModel;
+            this.currentModel = null;
+            try {
+                failedModel?.destroy?.({ children: true });
+            } catch (_) {}
             throw error;
         }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {
@@ -1928,12 +2150,14 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.modelName = null;
     }
 
-    // 模型尚未加入舞台，蒙版纹理也尚未创建；此时调整数量即可让首帧
-    // 按三个缓冲区分配。不要再次 initialize()，该方法会向现有的
-    // ClippingContext/Drawable 映射追加数据，导致每次调用都产生重复项。
-    if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
-        model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-        console.log('渲染纹理数量已设置为3');
+    // 在模型加入舞台、mask framebuffer 延迟创建之前校正 vendor clipping。
+    // 不可再次调用 initialize()：该版本会向已有映射追加重复项。
+    if (model.internalModel?.renderer?._clippingManager) {
+        configureLive2DClipping(model.internalModel.renderer);
+        console.log(
+            'Live2D 遮罩缓冲区已配置:',
+            model.internalModel.renderer._clippingManager.getRenderTextureCount()
+        );
     }
 
     // 根据画质设置调整渲染分辨率，不改动 Live2D 图集贴图。
