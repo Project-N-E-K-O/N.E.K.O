@@ -1,4 +1,5 @@
 """Display-only HTML routing. Keep updates on the original character."""
+import asyncio
 from collections import OrderedDict
 import logging
 from typing import Any
@@ -15,9 +16,30 @@ _targets: OrderedDict[tuple[str, str], str] = OrderedDict()
 # Both indexes contain only these active pages; replacement/close are O(1).
 _view_targets: dict[tuple[str, str], str] = {}
 _active_views: dict[tuple[str, str], str] = {}
+# The agent event bus runs every message as its own task, so an untargeted
+# update/close could read routing before the create it follows has finished
+# sending. Operations on one card wait here in arrival order; an entry is
+# dropped as soon as no delivery holds or awaits it.
+_card_locks: dict[tuple[str, str, str], list] = {}
 
 
 async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_target: str | None) -> bool:
+    part = event.get("card")
+    key = (event.get("plugin_id"), part.get("card_id"), part.get("presentation", "chat")) if isinstance(part, dict) else None
+    if key is None or not all(isinstance(value, str) for value in key):
+        return await _deliver_plugin_card(event, managers, default_target)
+    entry = _card_locks.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            return await _deliver_plugin_card(event, managers, default_target)
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            _card_locks.pop(key, None)
+
+
+async def _deliver_plugin_card(event: dict, managers: dict[str, Any], default_target: str | None) -> bool:
     plugin_id = event.get("plugin_id")
     part = event.get("card")
     if not isinstance(plugin_id, str) or not plugin_id or not isinstance(part, dict):

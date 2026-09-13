@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from starlette.websockets import WebSocketState
 
-from main_logic.plugin_cards import _active_views, _targets, _view_targets, deliver_plugin_card
+from main_logic.plugin_cards import _active_views, _card_locks, _targets, _view_targets, deliver_plugin_card
 
 
 class Socket:
@@ -169,6 +169,32 @@ def test_view_replacement_reclaims_routes_and_stale_handles_do_not_regrow_them()
         assert _active_views == {("demo", "Bob"): "bob-view"}
 
     asyncio.run(run())
+
+
+def test_untargeted_update_and_close_wait_for_an_in_flight_create():
+    # The event bus schedules each message as its own task; operations that
+    # follow a create must not read routing before its send has finished.
+    alice = Manager()
+    managers = {"Alice": alice}
+
+    async def run():
+        release = asyncio.Event()
+        send = alice.websocket.send_json
+
+        async def slow_send(frame):
+            await release.wait()
+            await send(frame)
+
+        alice.websocket.send_json = slow_send
+        tasks = [asyncio.create_task(deliver_plugin_card(payload, managers, "Alice")) for payload in (
+            event("create", title="Job", html="Ready"), event("update", html="Done"), event("close"))]
+        await asyncio.sleep(0)
+        release.set()
+        assert await asyncio.gather(*tasks) == [True, True, True]
+
+    asyncio.run(run())
+    assert [frame["view"]["operation"] for frame in alice.websocket.frames] == ["create", "update", "close"]
+    assert not _view_targets and not _active_views and not _card_locks
 
 
 def test_failed_replacement_and_close_preserve_the_previous_route_for_retry():
