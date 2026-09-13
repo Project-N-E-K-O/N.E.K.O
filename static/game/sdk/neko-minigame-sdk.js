@@ -5232,15 +5232,14 @@
       async request(action, payload = {}) {
         requireCapability('media-timeline', 'media.request');
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
-        // Measure and send one plain snapshot: spreading drops a prototype
-        // toJSON() and an own toJSON is removed, so the UTF-8 budget covers the
-        // transported fields. Host fields are appended afterwards.
+        // Serialize once and send the parsed result: toJSON() at any depth is
+        // applied exactly once, so the measured UTF-8 bytes are the transported
+        // data. Host fields are appended afterwards.
         let body;
-        try { const { toJSON: _toJSON, ...fields } = payload; body = fields; }
+        try { body = JSON.parse(JSON.stringify(payload)); }
         catch (_) { fail('invalid_request', 'Media payload must be JSON'); }
-        const payloadBytes = jsonByteLength(body);
-        if (payloadBytes === Number.POSITIVE_INFINITY) fail('invalid_request', 'Media payload must be JSON');
-        if (payloadBytes > 65536) fail('invalid_request', 'Media payload too large');
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail('invalid_request', 'Media payload must be an object');
+        if (jsonByteLength(body) > 65536) fail('invalid_request', 'Media payload too large');
         if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
         try { return await transport.requestMedia(action, { ...body, sdk_route_instance_id: runtimeRouteInstanceId }); }

@@ -1503,11 +1503,21 @@ async function main() {
   const throwingSignal=await mediaClient.media.mount({get signal(){throw Error('signal getter');}}).then(()=>null,error=>error);
   const afterThrowingSignal=await mediaClient.media.mount({}).then(controller=>{controller.dispose();return null;},error=>error);
   if(!(throwingSignal instanceof window.NekoMiniGame.Error && throwingSignal.code==='invalid_request')||afterThrowingSignal!==null)hostileFailures.push('a throwing config.signal getter left the media slot busy');
+  // Invariant: a request is either rejected or transports at most the budget,
+  // counted the way the host clones it (enumerable data, toJSON ignored).
+  const rawChars=value=>typeof value==='string'?value.length:(value&&typeof value==='object')?Object.entries(value).reduce((sum,[key,item])=>key==='toJSON'?sum:sum+key.length+rawChars(item),0):0;
   class DisguisedPayload{constructor(){this.text='a'.repeat(70000);}toJSON(){return {};}}
-  let sentMediaPayload=null;
-  mediaTransport.requestMedia=async(_action,payload)=>{sentMediaPayload=payload;return {};};
-  const disguised=await mediaClient.media.request('history',new DisguisedPayload()).then(()=>null,error=>error);
-  if(!(disguised instanceof window.NekoMiniGame.Error && disguised.code==='invalid_request'))hostileFailures.push(`media payload limit measured toJSON() instead of the transported fields (sent ${sentMediaPayload?JSON.stringify(sentMediaPayload).length:0} chars)`);
+  const disguisedPayloads={
+    'prototype toJSON':()=>new DisguisedPayload(),
+    'nested toJSON':()=>({nested:{text:'a'.repeat(70000),toJSON(){return {};}}}),
+  };
+  for(const [label,makePayload] of Object.entries(disguisedPayloads)){
+    let sentMediaPayload=null;
+    mediaTransport.requestMedia=async(_action,payload)=>{sentMediaPayload=payload;return {};};
+    const outcome=await mediaClient.media.request('history',makePayload()).then(()=>null,error=>error);
+    const rejected=outcome instanceof window.NekoMiniGame.Error && outcome.code==='invalid_request';
+    if(!rejected&&!(sentMediaPayload&&rawChars(sentMediaPayload)<=65536))hostileFailures.push(`${label}: media payload limit measured toJSON() instead of the transported fields (sent ${rawChars(sentMediaPayload)} chars)`);
+  }
   assert(hostileFailures.length===0,hostileFailures.join('; '));
   mediaClient.dispose();
   process.stdout.write('mini-game SDK runtime test passed\n');
