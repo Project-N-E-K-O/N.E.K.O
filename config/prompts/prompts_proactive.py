@@ -4189,6 +4189,56 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+# ---------- Mini-game 斜杠快捷指令 ----------
+# 用户在文本框里整条只发 ``/<别名>``（半角 / 或全角 ／，大小写与多余空白不敏感）
+# → 直接打开对应小游戏页面：不走 LLM，不经过邀请状态机，也不计入邀请冷却。
+# 匹配在 main_logic.core.turn._normalize_mini_game_magic_command，页面 URL 取
+# config.MINI_GAME_LAUNCH_URL_BY_GAME，外层 key 必须是其中存在的 game_type。
+# 与 MINI_GAME_INVITE_KEYWORDS 同理，所有 locale 的别名一起参与匹配（用户可能
+# 切了界面语言仍用中文打字）。别名一律写成小写、单空格，匹配时不再二次归一化。
+MINI_GAME_MAGIC_COMMANDS: dict[str, dict[str, list[str]]] = {
+    "watch-together": {
+        "zh": ["一起看", "一起看视频"],
+        "zh-TW": ["一起看", "一起看影片"],
+        "en": ["watch", "watch together", "watch-together"],
+        "ja": ["一緒に見る", "いっしょに見る"],
+        "ko": ["같이 보기", "같이보기"],
+        "ru": ["смотреть вместе"],
+        "es": ["ver juntos"],
+        "pt": ["assistir juntos"],
+    },
+    "soccer": {
+        "zh": ["踢球", "足球"],
+        "zh-TW": ["踢球", "足球"],
+        "en": ["soccer", "football"],
+        "ja": ["サッカー"],
+        "ko": ["축구"],
+        "ru": ["футбол"],
+        "es": ["fútbol", "futbol"],
+        "pt": ["futebol"],
+    },
+    "badminton": {
+        "zh": ["羽毛球"],
+        "zh-TW": ["羽毛球", "羽球"],
+        "en": ["badminton"],
+        "ja": ["バドミントン"],
+        "ko": ["배드민턴"],
+        "ru": ["бадминтон"],
+        "es": ["bádminton"],
+        "pt": ["badminton"],
+    },
+    "drawing_guess": {
+        "zh": ["你画我猜"],
+        "zh-TW": ["你畫我猜"],
+        "en": ["draw and guess", "drawing guess"],
+        "ja": ["お絵かきクイズ"],
+        "ko": ["그림 맞히기"],
+        "ru": ["угадай рисунок"],
+        "es": ["dibuja y adivina"],
+        "pt": ["desenhe e adivinhe"],
+    },
+}
+
 # ---------- 音乐搜索结果格式化 ----------
 MUSIC_SEARCH_RESULT_TEXTS = {
     "zh": {

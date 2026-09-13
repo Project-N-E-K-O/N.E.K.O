@@ -1090,6 +1090,74 @@ class TurnMixin:
             return "/daemon approve"
         return None
 
+    @staticmethod
+    def _normalize_mini_game_magic_command(text: str) -> Optional[str]:
+        """Return the game_type for a whole-message ``/<alias>`` mini-game command.
+
+        The message must be exactly one slash (ASCII or full-width) followed by
+        an alias from ``MINI_GAME_MAGIC_COMMANDS``; case and repeated whitespace
+        are ignored. Anything else returns None so ordinary chat never opens a
+        game implicitly.
+        """
+        raw = str(text or "").strip()
+        if len(raw) < 2 or raw[0] not in ("/", "／"):
+            return None
+        command = " ".join(raw[1:].lower().split())
+        if not command:
+            return None
+        from config import MINI_GAME_LAUNCH_URL_BY_GAME
+        from config.prompts.prompts_proactive import MINI_GAME_MAGIC_COMMANDS
+
+        for game_type, aliases_by_locale in MINI_GAME_MAGIC_COMMANDS.items():
+            if game_type not in MINI_GAME_LAUNCH_URL_BY_GAME:
+                continue
+            if any(command in aliases for aliases in aliases_by_locale.values()):
+                return game_type
+        return None
+
+    async def _push_mini_game_magic_command_launch(self, game_type: str) -> bool:
+        """Ask the frontend to open ``game_type`` through the invite launch event.
+
+        Reuses ``mini_game_invite_resolved`` with ``action='open_game'`` so all
+        chat surfaces keep one launch handler (the pet/single-window leader
+        opens, chat.html followers skip). The fresh session_id never matches a
+        pending ChoicePrompt, and the invite state machine is not touched.
+        """
+        from urllib.parse import urlencode
+        from config import MINI_GAME_LAUNCH_URL_BY_GAME
+
+        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+        if not url_template:
+            return False
+        session_id = str(uuid4())
+        separator = "&" if "?" in url_template else "?"
+        query = urlencode({"lanlan_name": self.lanlan_name, "session_id": session_id})
+        payload = {
+            "type": "mini_game_invite_resolved",
+            "session_id": session_id,
+            "action": "open_game",
+            "game_url": f"{url_template}{separator}{query}",
+            "game_type": game_type,
+        }
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, "send_json"):
+                ws_state = getattr(ws, "client_state", None)
+                if ws_state is None or ws_state == ws_state.CONNECTED:
+                    await ws.send_json(payload)
+                    return True
+        except Exception as exc:
+            logger.warning(
+                "[%s] mini-game magic command launch push failed (game=%s): %s",
+                self.lanlan_name, game_type, exc,
+            )
+            return False
+        logger.warning(
+            "[%s] mini-game magic command launch skipped: websocket not connected (game=%s)",
+            self.lanlan_name, game_type,
+        )
+        return False
+
     def _clear_text_pending_images(self) -> None:
         if not isinstance(self.session, OmniOfflineClient):
             return

@@ -3146,6 +3146,90 @@ async def test_explicit_openclaw_magic_command_emits_websocket_turn_end(monkeypa
 
 
 @pytest.mark.unit
+def test_mini_game_magic_command_matches_whole_slash_aliases_only():
+    normalize = core_module.LLMSessionManager._normalize_mini_game_magic_command
+
+    assert normalize("/一起看") == "watch-together"
+    assert normalize("  ／一起看视频 ") == "watch-together"
+    assert normalize("/Watch   Together") == "watch-together"
+    assert normalize("/足球") == "soccer"
+    assert normalize("/羽毛球") == "badminton"
+    assert normalize("/你画我猜") == "drawing_guess"
+    assert normalize("一起看") is None
+    assert normalize("/一起看吧") is None
+    assert normalize("我们 /一起看") is None
+    assert normalize("/openclaw stop") is None
+    assert normalize("/") is None
+    assert normalize("") is None
+
+
+@pytest.mark.unit
+def test_mini_game_magic_command_table_is_matchable_and_launchable():
+    from config import MINI_GAME_LAUNCH_URL_BY_GAME
+    from config.prompts.prompts_proactive import MINI_GAME_MAGIC_COMMANDS
+
+    locales = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    owner_by_alias = {}
+    for game_type, aliases_by_locale in MINI_GAME_MAGIC_COMMANDS.items():
+        assert game_type in MINI_GAME_LAUNCH_URL_BY_GAME
+        assert set(aliases_by_locale) == locales
+        for aliases in aliases_by_locale.values():
+            assert aliases
+            for alias in aliases:
+                # The matcher compares against the table verbatim.
+                assert alias == " ".join(alias.lower().split())
+                assert owner_by_alias.setdefault(alias, game_type) == game_type
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mini_game_magic_command_launches_game_without_text_stream(monkeypatch):
+    """A slash mini-game alias opens the game via the launch event and skips the LLM."""
+    from urllib.parse import parse_qs, urlsplit
+
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    mgr.session.stream_text.assert_not_called()
+    mgr._fire_task.assert_not_called()
+    assert mgr.sync_message_queue.messages[0]["data"]["metadata"] == {
+        "source": "mini_game",
+        "kind": "magic_command",
+        "command": "watch-together",
+    }
+    turn_end, launch = mgr.websocket.sent
+    assert turn_end == {
+        "type": "system",
+        "data": "turn end agent_callback",
+        "request_id": "req-watch",
+    }
+    assert launch["type"] == "mini_game_invite_resolved"
+    assert launch["action"] == "open_game"
+    assert launch["game_type"] == "watch-together"
+    parsed = urlsplit(launch["game_url"])
+    assert parsed.path == "/watch_together"
+    assert parse_qs(parsed.query) == {
+        "lanlan_name": ["Lan"],
+        "session_id": [launch["session_id"]],
+    }
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_openclaw_magic_command_publish_failure_reports_status(monkeypatch):
     """Manual OpenClaw command dispatch failures must be visible to users."""
