@@ -23,8 +23,14 @@ class _FakeRequest:
 @pytest.mark.asyncio
 async def test_air_basketball_page_renders_game_shell(monkeypatch):
     monkeypatch.setattr(pages_router, "get_templates", lambda: _FakeTemplates())
+    monkeypatch.setattr(
+        pages_router,
+        "_static_assets_ctx",
+        lambda: {"static_asset_version": "test-version"},
+    )
     result = await pages_router.air_basketball(_FakeRequest())
     assert result["template_name"] == "templates/air_basketball.html"
+    assert result["context"]["static_asset_version"] == "test-version"
 
 
 @pytest.mark.unit
@@ -57,6 +63,10 @@ def test_air_basketball_mvp_interaction_contract():
     assert "import(`./avatar.js${assetVersion}`)" in game
     assert "import(`./sdk-bootstrap.js${assetVersion}`)" in game
     assert "if (lane === nekoLane && ball.owner === 'player' && !ball.scored) missed('player')" in game
+    assert "score:{ player:state.player.score, ai:state.neko.score }" in game
+    assert "gameStarted:true" in game
+    assert "game_started:true" in game
+    assert "gameStartedElapsedMs:0" in game
     assert "* lane.width / Math.max(1, rect.width)" in game
     assert "const requestedCost = Math.hypot(dx, dy) * ACTION_BALANCE.JAM_DRAG_SCALE" in game
     assert game.index("spendFocus('player', cost)") < game.index("lane.interfere(appliedDx, appliedDy, appliedPoint)")
@@ -301,6 +311,11 @@ def test_air_basketball_mvp_interaction_contract():
     assert "function planPhysicsSteps(frameSeconds)" in game
     assert "Math.ceil(simulatedSeconds / MAX_PHYSICS_STEP_SECONDS)" in game
     assert "step < plan.steps; step += 1) update(plan.stepSeconds)" in game
+    assert "function advanceMatchClock(frameSeconds)" in game
+    assert "timerAccumulator += realSeconds" in game
+    assert "timerAccumulator += dt" not in game
+    assert game.index("step < plan.steps; step += 1) update(plan.stepSeconds)") < game.index("  advanceMatchClock(frameSeconds);")
+    assert "if (trackingPlayerNative && !trackedGuestSuspended)" in game
     assert "Math.min(.033, (now - lastFrame)" not in game
     assert "if (!nekoAiFrozen && state.nextNekoDecision <= 0)" in game
     assert "pageParams.get('test_mode') === '1'" in game
@@ -341,10 +356,14 @@ def test_air_basketball_mvp_interaction_contract():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("fps", "expected_steps"),
-    ((60, 1), (30, 2), (20, 2), (15, 3)),
+    ("fps", "expected_steps", "expect_clamped"),
+    ((60, 1, False), (30, 2, False), (20, 2, False), (15, 3, False), (2, 8, True)),
 )
-def test_air_basketball_physics_substeps_preserve_frame_time(fps, expected_steps):
+def test_air_basketball_physics_substeps_preserve_frame_time(
+    fps,
+    expected_steps,
+    expect_clamped,
+):
     frame_seconds = 1 / fps
     simulated_seconds = min(frame_seconds, 0.25)
     steps = min(8, math.ceil(simulated_seconds / 0.033))
@@ -352,4 +371,5 @@ def test_air_basketball_physics_substeps_preserve_frame_time(fps, expected_steps
 
     assert steps == expected_steps
     assert step_seconds <= 0.033
-    assert step_seconds * steps == pytest.approx(frame_seconds)
+    assert step_seconds * steps == pytest.approx(simulated_seconds)
+    assert (simulated_seconds < frame_seconds) is expect_clamped

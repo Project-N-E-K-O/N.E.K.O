@@ -1183,7 +1183,7 @@ function runtimeSnapshot() {
     running:state.running,
     elapsed:state.elapsed,
     remaining:state.remaining,
-    score:{ player:state.player.score, neko:state.neko.score },
+    score:{ player:state.player.score, ai:state.neko.score },
     attempts:{ player:state.player.attempts, neko:state.neko.attempts },
     makes:{ player:state.player.makes, neko:state.neko.makes }
   };
@@ -1237,7 +1237,13 @@ function resetMatch() {
   syncFocus('player');
   syncFocus('neko');
   syncAimTelemetry();
-  void startGameRuntime({ mode, currentState:runtimeSnapshot() }).catch(error => {
+  void startGameRuntime({
+    mode,
+    gameStarted:true,
+    game_started:true,
+    gameStartedElapsedMs:0,
+    currentState:runtimeSnapshot()
+  }).catch(error => {
     console.warn('[air_basketball] SDK runtime start failed', error);
   });
   setTimeout(() => {
@@ -1506,7 +1512,12 @@ function update(dt) {
     mouseSteal.y += (mouseSteal.targetY - mouseSteal.y) * pull;
     syncMouseStealVisual();
   }
-  timerAccumulator += dt;
+}
+
+function advanceMatchClock(frameSeconds) {
+  if (!state.running) return;
+  const realSeconds = Number.isFinite(frameSeconds) ? Math.max(0, frameSeconds) : 0;
+  timerAccumulator += realSeconds;
   if (timerAccumulator >= 1) {
     const elapsed = Math.floor(timerAccumulator);
     timerAccumulator -= elapsed;
@@ -1542,6 +1553,7 @@ function frame(now) {
   lastFrame = now;
   const plan = planPhysicsSteps(frameSeconds);
   for (let step = 0; step < plan.steps; step += 1) update(plan.stepSeconds);
+  advanceMatchClock(frameSeconds);
   playerLane.draw();
   nekoLane.draw();
   requestAnimationFrame(frame);
@@ -1551,7 +1563,7 @@ function resize() {
   const trackingPlayerNative = trackedGuestBall === playerLane.ball;
   playerLane.resize();
   nekoLane.resize();
-  if (trackingPlayerNative) trackGuestBall(playerLane.ball, playerLane);
+  if (trackingPlayerNative && !trackedGuestSuspended) trackGuestBall(playerLane.ball, playerLane);
   syncTrackedGuestBall();
 }
 window.addEventListener('resize', resize);
@@ -1607,6 +1619,9 @@ const testControls = pageParams.get('test_mode') === '1'
   ? Object.freeze({
       prepareIsolatedCrossTest,
       setTrackedGuestForTest,
+      advanceMatchClock,
+      planPhysicsSteps,
+      runtimeSnapshot,
       planNekoIntent,
       nekoAttentionContext
     })
@@ -1643,6 +1658,7 @@ window.AirBasketballMVP = Object.freeze({
     actionBalance:{ ...ACTION_BALANCE },
     nekoAccuracy:nekoShotAccuracy(),
     avatarReady:avatarIsReady(),
+    trackedGuestSuspended,
     crossBallInteractive:crossBall.classList.contains('is-interactive'),
     playerGuestMotion:playerLane.getGuestMotion('neko') || playerLane.getGuestMotion(),
     nekoGuestMotion:nekoLane.getGuestMotion('player') || nekoLane.getGuestMotion()

@@ -4,6 +4,24 @@ import pytest
 from playwright.sync_api import Page, expect
 
 
+WATCHED_SCRIPT_PATHS = ("/static/air-basketball/", "/static/game/sdk/", "/air_basketball")
+
+
+def _stub_unavailable_air_basketball_avatar(page: Page):
+    page.route(
+        "**/api/game/air-basketball/character*",
+        lambda route: route.fulfill(
+            json={
+                "lanlan_name": "SDK Test Neko",
+                "model_type": "unavailable",
+                "live3d_sub_type": "",
+                "live2d_path": "",
+                "vrm_path": "",
+            }
+        ),
+    )
+
+
 @pytest.mark.e2e
 def test_air_basketball_neko_ball_budget(page: Page, running_server: str):
     page.goto(
@@ -219,7 +237,10 @@ def test_air_basketball_dual_arcade_match(page: Page, running_server: str):
             f"{message.text} @ {message.location.get('url', 'unknown')}"
         )
         if message.type == "error"
-        and "/static/air-basketball/" in message.location.get("url", "")
+        and any(
+            path in message.location.get("url", "")
+            for path in WATCHED_SCRIPT_PATHS
+        )
         else None,
     )
     page.on("pageerror", lambda error: runtime_errors.append(str(error)))
@@ -462,6 +483,104 @@ def test_air_basketball_narrow_canvas_input_uses_lane_coordinates(
 
 
 @pytest.mark.e2e
+def test_air_basketball_runtime_start_snapshot_and_wall_clock_contract(
+    page: Page,
+    running_server: str,
+):
+    start_payloads = []
+
+    def capture_start(request):
+        if request.url.endswith("/api/game/air-basketball/route/start"):
+            start_payloads.append(request.post_data_json)
+
+    _stub_unavailable_air_basketball_avatar(page)
+    page.on("request", capture_start)
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function(
+        "() => Boolean(window.AirBasketballMVP?.test?.advanceMatchClock)"
+    )
+
+    result = page.evaluate(
+        """
+        () => {
+          window.AirBasketballMVP.start();
+          const before = window.AirBasketballMVP.getState();
+          const physics = window.AirBasketballMVP.test.planPhysicsSteps(.5);
+          window.AirBasketballMVP.test.advanceMatchClock(.5);
+          window.AirBasketballMVP.test.advanceMatchClock(2);
+          const after = window.AirBasketballMVP.getState();
+          return {
+            before,
+            after,
+            physics,
+            snapshot:window.AirBasketballMVP.test.runtimeSnapshot()
+          };
+        }
+        """
+    )
+    for _ in range(40):
+        if start_payloads:
+            break
+        page.wait_for_timeout(50)
+
+    assert start_payloads
+    start_payload = start_payloads[-1]
+    assert start_payload["gameStarted"] is True
+    assert start_payload["game_started"] is True
+    assert start_payload["gameStartedElapsedMs"] == 0
+    assert start_payload["currentState"]["score"] == {"player": 0, "ai": 0}
+    assert "neko" not in start_payload["currentState"]["score"]
+
+    assert result["physics"]["steps"] == 8
+    assert result["physics"]["stepSeconds"] * result["physics"]["steps"] == pytest.approx(.25)
+    assert result["after"]["elapsed"] - result["before"]["elapsed"] == 2
+    assert result["before"]["remaining"] - result["after"]["remaining"] == 2
+    assert result["snapshot"]["score"] == {"player": 0, "ai": 0}
+
+
+@pytest.mark.e2e
+def test_air_basketball_resize_keeps_cross_transit_suspended(
+    page: Page,
+    running_server: str,
+):
+    _stub_unavailable_air_basketball_avatar(page)
+    page.set_viewport_size({"width": 1280, "height": 720})
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function(
+        "() => Boolean(window.AirBasketballMVP?.test?.prepareIsolatedCrossTest)"
+    )
+    page.evaluate(
+        """
+        () => {
+          document.querySelector('.arcade-floor').style.gap = '260px';
+          window.AirBasketballMVP.test.prepareIsolatedCrossTest();
+        }
+        """
+    )
+    assert page.evaluate("window.AirBasketballMVP.shootPlayer(900, -180)") is True
+    page.wait_for_function(
+        "window.AirBasketballMVP.getState().trackedGuestSuspended === true",
+        timeout=3000,
+    )
+
+    page.set_viewport_size({"width": 1180, "height": 700})
+    suspended = page.evaluate("window.AirBasketballMVP.getState()")
+    assert suspended["trackedGuestSuspended"] is True
+    expect(page.locator("#cross-ball")).to_have_class(re.compile(r"\bis-crossing\b"))
+
+    page.wait_for_function(
+        "window.AirBasketballMVP.getState().trackedGuestSuspended === false",
+        timeout=4000,
+    )
+
+
+@pytest.mark.e2e
 def test_air_basketball_new_session_restores_character_identity(
     page: Page,
     running_server: str,
@@ -613,6 +732,7 @@ def test_air_basketball_cross_shot_has_no_wall_above_neko(
         wait_until="domcontentloaded",
     )
     page.wait_for_function("window.AirBasketballMVP && window.AirBasketballMVP.getState")
+    page.wait_for_selector("#air-neko-avatar.is-ready", timeout=20000)
     page.evaluate("window.AirBasketballMVP.test.prepareIsolatedCrossTest()")
 
     # A deliberately high diagnostic shot clears both the hoop and the avatar.
@@ -763,7 +883,11 @@ def test_air_basketball_cross_boundary_state_is_frame_rate_independent(
     page: Page,
     running_server: str,
 ):
-    page.goto(f"{running_server}/air_basketball", wait_until="domcontentloaded")
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.AirBasketballMVP?.test?.planPhysicsSteps")
     boundaries = page.evaluate(
         """
         async () => {
@@ -789,11 +913,10 @@ def test_air_basketball_cross_boundary_state_is_frame_rate_independent(
             });
             lane.shoot(900, -180);
             const frameSeconds = 1 / fps;
-            const steps = Math.min(8, Math.ceil(frameSeconds / .033));
-            const stepSeconds = frameSeconds / steps;
+            const plan = window.AirBasketballMVP.test.planPhysicsSteps(frameSeconds);
             for (let frame = 0; frame < fps * 2 && !crossed; frame += 1) {
-              for (let step = 0; step < steps && !crossed; step += 1) {
-                lane.update(stepSeconds, true);
+              for (let step = 0; step < plan.steps && !crossed; step += 1) {
+                lane.update(plan.stepSeconds, true);
               }
             }
             canvas.remove();
@@ -824,7 +947,11 @@ def test_air_basketball_neko_auto_shot_has_stable_scoring_window(
     page: Page,
     running_server: str,
 ):
-    page.goto(f"{running_server}/air_basketball", wait_until="domcontentloaded")
+    page.goto(
+        f"{running_server}/air_basketball?test_mode=1",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.AirBasketballMVP?.test?.planPhysicsSteps")
     results = page.evaluate(
         """
         async () => {
@@ -872,10 +999,9 @@ def test_air_basketball_neko_auto_shot_has_stable_scoring_window(
                 lane.clearGuests();
                 lane.releaseAutoShot(Math.min(.88, .76 + aimMissStreak * .04));
                 const frameSeconds = 1 / fps;
-                const steps = Math.min(8, Math.ceil(frameSeconds / .033));
-                const stepSeconds = frameSeconds / steps;
+                const plan = window.AirBasketballMVP.test.planPhysicsSteps(frameSeconds);
                 for (let frame = 0; frame < fps * 6 && lane.guests.length; frame += 1) {
-                  for (let step = 0; step < steps; step += 1) lane.update(stepSeconds, true);
+                  for (let step = 0; step < plan.steps; step += 1) lane.update(plan.stepSeconds, true);
                 }
               }
               canvas.remove();
