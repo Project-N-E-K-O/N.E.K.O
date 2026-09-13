@@ -70,6 +70,7 @@ NEKO_COMMUNITY_TEXT_MAX_DEPTH = 8
 NEKO_COMMUNITY_TEXT_MAX_NODES = 128
 NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS = 200
 NEKO_COMMUNITY_URL_MAX_CHARS = 2048
+NEKO_COMMUNITY_RESPONSE_MAX_BYTES = 1_000_000
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -2133,6 +2134,29 @@ def format_neko_community_feed(posts: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+async def _fetch_neko_community_payload(
+    client: httpx.AsyncClient,
+    feed_api: str,
+    *,
+    params: dict[str, int],
+    headers: dict[str, str],
+) -> tuple[int, Any | None]:
+    """Read one bounded community feed response before JSON decoding."""
+
+    body = bytearray()
+    async with client.stream(
+        "GET", feed_api, params=params, headers=headers, timeout=10.0
+    ) as response:
+        if response.status_code in {401, 403}:
+            return response.status_code, None
+        response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if len(body) + len(chunk) > NEKO_COMMUNITY_RESPONSE_MAX_BYTES:
+                raise ValueError("喵宇宙社区 feed 响应超过大小限制")
+            body.extend(chunk)
+    return response.status_code, json.loads(body)
+
+
 async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
     """Fetch community cards with the validated desktop OAuth session when available."""
 
@@ -2157,26 +2181,20 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                 trust_env=True,
                 follow_redirects=False,
             ) as client:
-                response = await client.get(feed_api, params=params, headers=headers)
+                status_code, payload = await _fetch_neko_community_payload(
+                    client, feed_api, params=params, headers=headers
+                )
             # A permission/scope mismatch must not suppress the public discovery feed.
-            if response.status_code in {401, 403}:
+            if status_code in {401, 403}:
                 authenticated = False
                 headers.pop("Authorization", None)
-                response = await get_external_http_client().get(
-                    feed_api,
-                    params=params,
-                    headers=headers,
-                    timeout=10.0,
+                _, payload = await _fetch_neko_community_payload(
+                    get_external_http_client(), feed_api, params=params, headers=headers
                 )
         else:
-            response = await get_external_http_client().get(
-                feed_api,
-                params=params,
-                headers=headers,
-                timeout=10.0,
+            _, payload = await _fetch_neko_community_payload(
+                get_external_http_client(), feed_api, params=params, headers=headers
             )
-        response.raise_for_status()
-        payload = response.json()
         posts = normalize_neko_community_feed(payload, limit=limit)
         if not posts:
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")

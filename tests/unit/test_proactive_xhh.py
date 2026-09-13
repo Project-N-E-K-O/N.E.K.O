@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -656,6 +657,17 @@ class _FakeClient:
         return _FakeResponse()
 
 
+class _FakeCommunityStream:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
 @pytest.mark.asyncio
 async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     client = _FakeClient()
@@ -680,15 +692,38 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_neko_community_feed_response_size_is_bounded():
+    class OversizedResponse(_FakeResponse):
+        status_code = 200
+
+        async def aiter_bytes(self):
+            yield b"[" + b" " * trending_content.NEKO_COMMUNITY_RESPONSE_MAX_BYTES
+
+    class OversizedClient:
+        def stream(self, method, url, **kwargs):
+            return _FakeCommunityStream(OversizedResponse())
+
+    with pytest.raises(ValueError, match="响应超过大小限制"):
+        await trending_content._fetch_neko_community_payload(
+            OversizedClient(),
+            "https://community.example.test/api/feed",
+            params={"offset": 0, "limit": 60},
+            headers={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     class CommunityResponse(_FakeResponse):
-        def json(self):
-            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+        status_code = 200
+
+        async def aiter_bytes(self):
+            yield json.dumps(SAMPLE_NEKO_COMMUNITY_PAYLOAD).encode()
 
     class CommunityClient(_FakeClient):
-        async def get(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             self.call = (url, kwargs)
-            return CommunityResponse()
+            return _FakeCommunityStream(CommunityResponse())
 
     client = CommunityClient()
     with patch(
@@ -715,13 +750,15 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
 @pytest.mark.asyncio
 async def test_fetch_neko_community_feed_does_not_read_oauth_for_http():
     class CommunityResponse(_FakeResponse):
-        def json(self):
-            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+        status_code = 200
+
+        async def aiter_bytes(self):
+            yield json.dumps(SAMPLE_NEKO_COMMUNITY_PAYLOAD).encode()
 
     class CommunityClient(_FakeClient):
-        async def get(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             self.call = (url, kwargs)
-            return CommunityResponse()
+            return _FakeCommunityStream(CommunityResponse())
 
     client = CommunityClient()
     access_token = AsyncMock(return_value="desktop-access-token")
@@ -749,8 +786,8 @@ async def test_fetch_neko_community_feed_uses_oauth_for_loopback_http():
     class CommunityResponse(_FakeResponse):
         status_code = 200
 
-        def json(self):
-            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+        async def aiter_bytes(self):
+            yield json.dumps(SAMPLE_NEKO_COMMUNITY_PAYLOAD).encode()
 
     class AuthenticatedClient:
         async def __aenter__(self):
@@ -759,9 +796,9 @@ async def test_fetch_neko_community_feed_uses_oauth_for_loopback_http():
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
-        async def get(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             self.call = (url, kwargs)
-            return CommunityResponse()
+            return _FakeCommunityStream(CommunityResponse())
 
     auth_client = AuthenticatedClient()
     access_token = AsyncMock(return_value="desktop-access-token")
@@ -906,8 +943,8 @@ async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
     class CommunityResponse(_FakeResponse):
         status_code = 200
 
-        def json(self):
-            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+        async def aiter_bytes(self):
+            yield json.dumps(SAMPLE_NEKO_COMMUNITY_PAYLOAD).encode()
 
     class AuthenticatedClient:
         def __init__(self):
@@ -919,9 +956,9 @@ async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
-        async def get(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             self.call = (url, kwargs)
-            return CommunityResponse()
+            return _FakeCommunityStream(CommunityResponse())
 
     auth_client = AuthenticatedClient()
     shared_client = _FakeClient()
