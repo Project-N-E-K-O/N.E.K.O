@@ -23,6 +23,10 @@ from functools import lru_cache
 from threading import Lock
 
 JOB_ID = re.compile(r"[a-f0-9]{32}")
+# Playback preload budget for distinct reaction audio files; the preparation
+# engine enforces the same limits before it marks a job ready.
+MAX_REACTION_AUDIO_FILES = 256
+MAX_REACTION_AUDIO_BYTES = 64 * 1024 * 1024
 
 
 _library_lock = Lock()
@@ -322,7 +326,7 @@ class Library:
             for url in audio_urls:
                 name = unquote(url[len(prefix):]) if url.startswith(prefix) else None
                 audio_bytes += manifest.get(name, {}).get('bytes', 0)
-            if len(audio_urls) > 256 or audio_bytes > 64 * 1024 * 1024:
+            if len(audio_urls) > MAX_REACTION_AUDIO_FILES or audio_bytes > MAX_REACTION_AUDIO_BYTES:
                 timeline['status'] = 'incomplete'
                 return timeline
             references = [(timeline.get('video'), {'.mp4', '.webm'})]

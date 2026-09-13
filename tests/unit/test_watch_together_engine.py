@@ -49,6 +49,71 @@ async def test_synthesis_skips_only_oversized_cues(tmp_path, monkeypatch, failur
     assert (tmp_path / 'job' / 'planning.json').exists()
 
 
+def _budget_engine(tmp_path, monkeypatch, events):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from main_logic.watch_together import engine
+
+    video = SimpleNamespace(
+        get_info=AsyncMock(return_value={'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101}}),
+        get_subtitle=AsyncMock(return_value={'subtitles': []}),
+        get_danmakus=AsyncMock(return_value=[]),
+        get_download_url=AsyncMock(return_value={'durl': [{'url': 'https://example.com/video'}]}),
+    )
+    monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(Credential=lambda: None, video=SimpleNamespace(Video=lambda **kw: video)))
+    monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
+    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    async def download(client, stream, path, **kwargs):
+        path.write_bytes(b'video')
+    monkeypatch.setattr(engine, 'download_stream', download)
+    monkeypatch.setattr(engine, 'run_media_async', AsyncMock())
+    monkeypatch.setattr(engine, 'duration_async', AsyncMock(side_effect=lambda path: 60 if path.name == 'video.mp4' else 1))
+    synthesized = []
+    async def synthesize(text, path):
+        synthesized.append(text)
+        path.write_bytes(b'wave')
+    instance = engine.Engine(tmp_path, synthesize, 'cat')
+    monkeypatch.setattr(instance, 'vision_config', AsyncMock())
+    monkeypatch.setattr(instance, 'llm', AsyncMock(return_value={'events': []}))
+    monkeypatch.setattr(engine, 'normalize_events', lambda *args: [dict(event) for event in events])
+    return engine, instance, synthesized
+
+
+@pytest.mark.asyncio
+async def test_synthesis_byte_budget_counts_shared_laugh_once(tmp_path, monkeypatch):
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [
+        {'at': 5, 'kind': 'comment', 'text': 'first'},
+        {'at': 15, 'kind': 'laugh', 'text': ''},
+        {'at': 25, 'kind': 'comment', 'text': 'over'},
+        {'at': 35, 'kind': 'laugh', 'text': ''},
+    ])
+    monkeypatch.setattr(engine, 'MAX_REACTION_AUDIO_BYTES', 10)
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert job['status'] == 'ready'
+    assert [(cue['at'], cue['audio'].rsplit('/', 1)[1]) for cue in job['events']] == [
+        (5, 'comment-0.wav'), (15, 'laugh.wav'), (35, 'laugh.wav')]
+    assert job['skipped_cues'] == [{'index': 2, 'reason': 'audio_budget_exceeded'}]
+
+
+@pytest.mark.asyncio
+async def test_synthesis_file_budget_skips_before_synthesizing(tmp_path, monkeypatch):
+    engine, instance, synthesized = _budget_engine(tmp_path, monkeypatch, [
+        {'at': 5, 'kind': 'comment', 'text': 'first'},
+        {'at': 15, 'kind': 'laugh', 'text': ''},
+        {'at': 25, 'kind': 'comment', 'text': 'late'},
+    ])
+    monkeypatch.setattr(engine, 'MAX_REACTION_AUDIO_FILES', 1)
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert job['status'] == 'ready'
+    assert [cue['audio'].rsplit('/', 1)[1] for cue in job['events']] == ['comment-0.wav']
+    assert job['skipped_cues'] == [{'index': 1, 'reason': 'audio_budget_exceeded'},
+                                   {'index': 2, 'reason': 'audio_budget_exceeded'}]
+    assert 'late' not in synthesized
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model', [None, '', '   ', 123])
 async def test_missing_vision_model_blocks_preflight_and_invitation(tmp_path, monkeypatch, model):

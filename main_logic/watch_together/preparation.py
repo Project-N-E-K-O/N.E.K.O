@@ -28,8 +28,9 @@ def is_available(manager) -> bool:
         if worker is configured_tts_unavailable_worker:
             return False
         if provider == 'gptsovits':
-            from utils.gptsovits_config import is_valid_http_url, normalize_gsv_api_url
-            if not is_valid_http_url(normalize_gsv_api_url(config.get('base_url'))):
+            # The worker reads tts_custom even when the resolved route config is tts_default.
+            from utils.gptsovits_config import is_valid_http_url, resolve_worker_gsv_api_url
+            if not is_valid_http_url(resolve_worker_gsv_api_url(manager._config_manager)):
                 return False
         credentials_available = bool(key) or provider in ('custom', 'vllm_omni', 'local_cosyvoice', 'gptsovits')
         return bool(not disabled and credentials_available and manager._tts_worker_supports_completion(worker, provider, config))

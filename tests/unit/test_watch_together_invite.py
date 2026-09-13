@@ -50,20 +50,24 @@ def test_gptsovits_invitation_uses_worker_url_validation(monkeypatch, url, avail
     assert preparation.is_available(manager(key='', provider='gptsovits', base_url=url)) is available
 
 
-@pytest.mark.parametrize('active_url,unused_url,available', [
-    ('invalid', 'http://127.0.0.1:9881', False),
-    ('http://127.0.0.1:9881', 'invalid', True),
+@pytest.mark.parametrize('route_url,worker_url,available', [
+    ('invalid', 'http://127.0.0.1:9881', True),
+    ('http://127.0.0.1:9881', 'invalid', False),
 ])
-def test_gptsovits_readiness_uses_resolved_route_config(monkeypatch, active_url, unused_url, available):
+def test_gptsovits_readiness_uses_worker_tts_custom_url(monkeypatch, route_url, worker_url, available):
+    # A native or disabled-prefix voice resolves the route config from tts_default,
+    # while the selected GPT-SoVITS worker still connects to tts_custom.base_url.
     monkeypatch.setattr(engine, 'media_binary', lambda name: name)
-    current = manager(key='', provider='gptsovits', base_url=active_url)
+    current = manager(key='', provider='gptsovits', base_url=route_url)
+    requested = []
     def model_config(kind):
+        requested.append(kind)
         if kind == 'vision':
             return {'api_key': 'vision-key', 'model': 'vision-model'}
-        assert kind == 'tts_custom'
-        return {'base_url': unused_url}
+        return {'base_url': worker_url}
     current._config_manager.get_model_api_config = model_config
     assert preparation.is_available(current) is available
+    assert requested == ['vision', 'tts_custom']
 
 
 @pytest.mark.parametrize('missing', ['ffmpeg', 'ffprobe', None])
