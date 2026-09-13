@@ -949,7 +949,7 @@ async def handle_proactive_chat(
                 import random as _random
 
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type(lanlan_name)
+                    chosen_game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,

@@ -38,6 +38,16 @@ TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 # 的 tts_response_handler 消费。
 TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
 
+# 软 flush 哨兵：core 通过 request_queue.put((TTS_SOFT_FLUSH_SENTINEL, speech_id))
+# 告诉 worker「这一轮的文本停了一会儿，先把手上攒着的合成出来」。它不是收尾：
+# 不发 audio_done、不动 core 的 done 记账，之后同一 speech_id 还可能继续来文本，
+# worker 要能接着说。只发给 TTS_PROVIDER_REGISTRY 里 soft_flush=True 的 provider——
+# 不认识它的 worker 会把陌生 sid 当成新一轮，所以 core 侧按能力位过滤，不广播。
+# 背景：realtime 语音 + 自定义 TTS 时，core 只在 provider 的 response.done 才发
+# (None, None)，而某些 provider（lanlan.app 的 Gemini 代理）要把自己那份没人用的
+# 音频推完才发 done，尾句因此被 CosyVoice 一直扣着，落到用户下一轮才出声。
+TTS_SOFT_FLUSH_SENTINEL = "__soft_flush__"
+
 
 class AudioDoneEmitter:
     """One-shot per-speech "audio stream closed" signal for the frontend.

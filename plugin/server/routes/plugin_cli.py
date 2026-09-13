@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+import asyncio
+
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -27,12 +29,19 @@ class PluginCliPluginRefResponse(PluginCliPluginRef):
     label: str = ""
 
 
+class PluginCliDevelopmentRef(BaseModel):
+    registration_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+
+
 class PluginCliBuildRequest(BaseModel):
     mode: str = Field(default="selected", pattern="^(selected|single|bundle|all)$")
     plugin: str | None = None
     plugins: list[str] = Field(default_factory=list)
     plugin_ref: PluginCliPluginRef | None = None
     plugin_refs: list[PluginCliPluginRef] = Field(default_factory=list)
+    development_ref: PluginCliDevelopmentRef | None = None
+    development_refs: list[PluginCliDevelopmentRef] = Field(default_factory=list)
     out: str | None = None
     target_dir: str | None = None
     keep_staging: bool = False
@@ -43,10 +52,16 @@ class PluginCliBuildRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mode_payload(self) -> "PluginCliBuildRequest":
-        if self.mode == "single" and not (self.plugin_ref or self.plugin):
+        if self.mode == "single" and not (self.plugin_ref or self.plugin or self.development_ref):
             raise ValueError("plugin_ref or plugin is required when mode=single")
-        if self.mode in {"selected", "bundle"} and not (self.plugin_refs or self.plugins):
+        if self.mode in {"selected", "bundle"} and not (self.plugin_refs or self.plugins or self.development_refs):
             raise ValueError("plugin_refs or plugins is required when mode=selected or mode=bundle")
+        if self.development_ref and self.mode != "single":
+            raise ValueError("development_ref requires mode=single")
+        if self.development_refs and self.mode not in {"selected", "bundle"}:
+            raise ValueError("development_refs requires mode=selected or mode=bundle")
+        if self.development_ref and (self.plugin or self.plugin_ref):
+            raise ValueError("A single build accepts exactly one source")
         return self
 
 
@@ -276,15 +291,35 @@ async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
 @router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
 async def plugin_cli_build(
     payload: PluginCliBuildRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.build(
+        from plugin.server.application.plugin_cli.development_build import resolve_development_sources
+        from plugin.server.infrastructure.development_access import require_development_access
+
+        allow_development = bool(payload.development_ref or payload.development_refs)
+        development_unavailable = False
+        if payload.mode == "all":
+            try:
+                allow_development = bool(await asyncio.to_thread(resolve_development_sources, "all", None, []))
+            except ServerDomainError as error:
+                if error.code != "DEVELOPMENT_STORE_INVALID":
+                    raise
+                # Keep this dispatch confined to managed roots, even if the
+                # optional store is repaired before the worker starts.
+                development_unavailable = True
+        if allow_development:
+            require_development_access(request)
+        result = await service.build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
             plugin_ref=payload.plugin_ref.model_dump() if payload.plugin_ref else None,
             plugin_refs=[item.model_dump() for item in payload.plugin_refs],
+            development_ref=payload.development_ref.model_dump() if payload.development_ref else None,
+            development_refs=[item.model_dump() for item in payload.development_refs],
+            allow_development=allow_development,
             out=payload.out,
             target_dir=payload.target_dir,
             keep_staging=payload.keep_staging,
@@ -293,6 +328,13 @@ async def plugin_cli_build(
             package_description=payload.package_description,
             version=payload.version,
         )
+        if development_unavailable:
+            failed = [*result["failed"], {
+                "plugin": "development",
+                "error": "Development registrations are unavailable; development sources were skipped",
+            }]
+            result = {**result, "failed": failed, "failed_count": len(failed), "ok": False}
+        return result
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -461,10 +503,11 @@ async def plugin_cli_download(
 @router.post("/plugin-cli/pack", include_in_schema=False)
 async def plugin_cli_pack_legacy(
     payload: PluginCliBuildRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     """Legacy alias for /plugin-cli/build. Translates response keys."""
-    result = await plugin_cli_build(payload, _)
+    result = await plugin_cli_build(payload, request, _)
     # Translate new keys to legacy keys expected by frontend
     if isinstance(result, dict):
         translated = dict(result)

@@ -170,6 +170,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         _compactToolWheelRotateRequestSeq: 0,
         _compactToolWheelIndexRequestSeq: 0,
         _galgameRequestSeq: 0,
+        pendingIcebreakerGalgameHandoffMessageId: '',
         // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
         // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
         // shape: { source, sessionId, gameType, options: [{choice,label}] } | null

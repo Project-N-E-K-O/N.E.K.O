@@ -3890,9 +3890,19 @@ PROACTIVE_SOURCE_LABELS = {
 # cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
 #
 # 多游戏接口契约：外层 key 是 game_type（与 config.MINI_GAME_INVITE_AVAILABLE_GAMES
-# 对齐），内层是 5 native locale 的句子。新接 mini-game 时往这里加一个新外层
+# 对齐），内层是各支持 locale 的句子。新接 mini-game 时往这里加一个新外层
 # key 即可，short-circuit 分发逻辑无须改动。
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    "watch-together": {
+        "zh": "{master_name}，要不要选个视频和我一起看？",
+        "zh-TW": "{master_name}，要不要選個影片和我一起看？",
+        "en": "{master_name}, want to pick a video to watch together?",
+        "ja": "{master_name}、動画を選んで一緒に見ない？",
+        "ko": "{master_name}, 영상을 골라서 같이 볼래?",
+        "ru": "{master_name}, выберем видео и посмотрим вместе?",
+        "es": "{master_name}, ¿elegimos un vídeo para verlo juntos?",
+        "pt": "{master_name}, vamos escolher um vídeo para assistir juntos?",
+    },
     "soccer": {
         "zh": "{master_name}，要不要现在跟我一起踢一会儿足球小游戏？",
         "zh-TW": "{master_name}，要不要現在跟我一起踢一下足球小遊戲？",
@@ -3913,6 +3923,16 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
         "ru": "{master_name}, не хочешь пройти со мной быстрый челлендж по бадминтону?",
         "es": "{master_name}, ¿quieres probar un reto rápido de bádminton conmigo?",
         "pt": "{master_name}, quer tentar um desafio rápido de badminton comigo?",
+    },
+    "drawing_guess": {
+        "zh": "{master_name}，要不要现在来一局你画我猜？",
+        "zh-TW": "{master_name}，要不要現在跟我一起玩一局你畫我猜？",
+        "en": "{master_name}, want to play a quick round of drawing guess with me?",
+        "ja": "{master_name}、今ちょっとお絵描き当てゲームを一緒にやらない？",
+        "ko": "{master_name}, 지금 같이 그림 맞히기 한 판 어때?",
+        "ru": "{master_name}, не хочешь сыграть со мной быстрый раунд в угадай рисунок?",
+        "es": "{master_name}, ¿quieres jugar una ronda rápida de dibujo y adivinanzas conmigo?",
+        "pt": "{master_name}, quer jogar uma rodada rápida de desenho e adivinhação comigo?",
     },
 }
 

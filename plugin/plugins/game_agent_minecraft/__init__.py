@@ -40,7 +40,11 @@ from plugin.sdk.plugin import (
 )
 
 from . import prompts
-from .service import GameAgentService, text_signals_blocked
+from .service import (
+    GameAgentService,
+    task_looks_like_identifier,
+    text_signals_blocked,
+)
 
 # JSON Schema reused by the @llm_tool decorator below. Pulled into a
 # module-level constant so the plugin's introspection (status entry,
@@ -121,8 +125,9 @@ MINECRAFT_TASK_DESCRIPTION = (
     "something new and that request has not already been dispatched, or when a "
     "keep-going turn identifies a genuinely obvious new action from current game "
     "state. Do NOT dispatch merely because a task finished or new awareness "
-    "context arrived. Do NOT use it for chat, status "
-    "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
+    "context arrived. Do NOT use it for chat, status questions, abstract intent, "
+    "or inventory checks — the inventory is reported to you separately, never "
+    "dispatch a lookup as a task.\n\n"
     "Parameters:\n"
     "  task (string, required): master's exact original new instruction when "
     "master-directed; otherwise one genuinely new autonomous action based on "
@@ -361,6 +366,15 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 "summary": prompts.t("TASK_SCHEMA_ERROR", lang=self._lang),
             }
         task_text = task.strip()
+        # Bare identifier (``mine_block``, ``query_inventory``,
+        # ``goToCoordinates(...)``) instead of a sentence — refuse with a
+        # structured hint so the token never reaches mc-agent nor the
+        # in-progress cue that would echo it back (see
+        # ``service.task_looks_like_identifier``).
+        if task_looks_like_identifier(task_text):
+            return {
+                "summary": prompts.t("TASK_IDENTIFIER_ERROR", lang=self._lang),
+            }
         # Some LLMs pass ``"true"`` / ``"1"`` / ``1`` as overwrite. Strict
         # ``is True`` keeps the destructive interrupt path off-by-default;
         # anything other than the canonical Python bool ``True`` is treated

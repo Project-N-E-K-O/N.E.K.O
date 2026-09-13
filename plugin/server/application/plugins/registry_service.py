@@ -41,11 +41,17 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
+from plugin.server.application.plugins.development import (
+    development_registry_lock, list_registration_records_sync,
+    registration_for_plugin_sync, registration_view_sync, _store_path as development_store_path,
+)
 
 logger = get_logger("server.application.plugins.registry")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _MANAGED_META_KEYS = {
+    "development_ref",
+    "source_dir",
     "id",
     "name",
     "type",
@@ -546,12 +552,57 @@ def _discover_registry_snapshot_sync(
             failures.append(failure)
 
     effective_records, shadowed = _select_effective_records(records, roots)
+    installed_ids = {item.plugin_id for item in effective_records}
+    try:
+        registrations = list_registration_records_sync()
+    except ServerDomainError as exc:
+        if exc.code != "DEVELOPMENT_STORE_INVALID":
+            raise
+        failures.append(PluginDiscoveryFailure(None, development_store_path(), exc.message))
+        registrations = []
+    for registration in registrations:
+        if registration.plugin_id in installed_ids:
+            # Never rename or replace another source to make development fit.
+            failures.append(PluginDiscoveryFailure(registration.plugin_id,
+                registration.source_dir / "plugin.toml", "Development plugin ID conflicts with an installed source"))
+            continue
+        effective_records.append(_development_discovery_record_sync(registration))
     return PluginDiscoverySnapshot(
         records=effective_records,
         failures=failures,
         config_paths={_resolve_config_path(record.config_path) for record in effective_records},
         shadowed=shadowed,
     )
+
+
+def _development_discovery_record_sync(registration) -> PluginDiscoveryRecord:
+    view = registration_view_sync(registration)
+    config_path = registration.source_dir / "plugin.toml"
+    error = view.get("error")
+    record = None
+    if not error:
+        ctx = _parse_single_plugin_config(config_path, set(), logger)
+        if ctx is not None and ctx.pid == registration.plugin_id:
+            record = _build_discovery_record_from_context(ctx)
+        elif ctx is not None:
+            error = "Development plugin ID changed; register the source again"
+        else:
+            error = "Development plugin configuration could not be parsed or validated"
+    if record is None:
+        record = PluginDiscoveryRecord(registration.plugin_id, registration.plugin_id,
+            config_path, str(view.get("entry", "")), "plugin", True, False,
+            {"id": registration.plugin_id, "name": view.get("name", registration.plugin_id),
+             "version": view.get("version", ""), "config_path": str(config_path),
+             "entry_point": view.get("entry", ""), "entries_preview": []})
+    record.auto_start = False
+    record.meta_payload.update(source="development", effective_source="development",
+        source_dir=str(registration.source_dir), runtime_auto_start=False,
+        development_ref={"registration_id": registration.registration_id, "revision": registration.revision})
+    if error:
+        record.meta_payload.update(runtime_load_state="failed", runtime_load_error_type="DevelopmentSourceInvalid",
+            runtime_load_error_phase="development_validation", runtime_load_error_message=str(error),
+            runtime_source_missing=not config_path.is_file())
+    return record
 
 
 def _normalize_entry_input_schema(entry: Mapping[str, object]) -> dict[str, object]:
@@ -839,6 +890,11 @@ def _apply_discovery_record_sync(
         )
     )
 
+    if record.meta_payload.get("source") == "development":
+        if existing_target_path is not None and existing_target_path != _resolve_config_path(record.config_path):
+            if not isinstance(existing_target_meta, dict) or existing_target_meta.get("development_ref", {}).get("registration_id") != record.meta_payload["development_ref"]["registration_id"]:
+                raise ServerDomainError(code="DEVELOPMENT_CONFLICT", message="Plugin ID belongs to another source", status_code=409)
+            source_replacement = True
     runtime_plugin_id = target_plugin_id if source_replacement else _resolve_plugin_id_conflict(
         target_plugin_id,
         logger,
@@ -846,7 +902,7 @@ def _apply_discovery_record_sync(
         entry_point=record.entry_point,
         plugin_data=record.meta_payload,
         purpose="register",
-        enable_rename=True,
+        enable_rename=record.meta_payload.get("source") != "development",
     )
     if runtime_plugin_id is None:
         raise ServerDomainError(
@@ -919,6 +975,14 @@ def _apply_discovery_record_sync(
     with state.acquire_plugins_write_lock():
         current_meta = state.plugins.get(resolved_id)
         merged = dict(current_meta) if isinstance(current_meta, dict) else {}
+        if (
+            record.meta_payload.get("source") == "development"
+            and isinstance(existing_target_meta, dict)
+            and existing_target_meta.get("development_ref") == record.meta_payload.get("development_ref")
+        ):
+            for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
+                if runtime_key in existing_target_meta:
+                    merged[runtime_key] = existing_target_meta[runtime_key]
         for key in _MANAGED_META_KEYS:
             if key in payload:
                 merged[key] = payload[key]
@@ -1059,6 +1123,8 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
         for plugin_id, raw_meta in state.plugins.items():
             if not isinstance(plugin_id, str) or not isinstance(raw_meta, dict):
                 continue
+            if raw_meta.get("source") == "development":
+                continue
             if raw_meta.get("runtime_enabled") is False:
                 continue
             if raw_meta.get("runtime_auto_start") is False:
@@ -1122,7 +1188,7 @@ class PluginRegistryService:
         # 刷新可以各自在锁外读到同一份旧快照，然后先后进锁，后进的那次拿着过时的
         # existing_snapshot 做增删对账，把前一次刚写进去的记录当成"多出来的"删掉
         # （codex）。读盘现在只有毫秒级，圈进锁里不需要付什么代价。
-        with _REGISTRY_REFRESH_LOCK:
+        with development_registry_lock, _REGISTRY_REFRESH_LOCK:
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             running_ids = _list_running_plugin_ids_sync()
             snapshot = _discover_registry_snapshot_sync(roots)
@@ -1223,13 +1289,16 @@ class PluginRegistryService:
         # 有一次全量刷新发布完成，这份快照就已经过时（coderabbit / codex）。而
         # start_plugin 调 refresh_plugin、reload_all_plugins 调 refresh_registry，
         # 两条路同时发生并不罕见。
-        with _REGISTRY_REFRESH_LOCK:
+        with development_registry_lock, _REGISTRY_REFRESH_LOCK:
             roots = tuple(PLUGIN_CONFIG_ROOTS)
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             _prepare_plugin_import_roots(roots, logger)
             existing_config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
             record: PluginDiscoveryRecord | None = None
-            if (
+            registration = registration_for_plugin_sync(normalized_plugin_id)
+            if registration is not None:
+                record = _development_discovery_record_sync(registration)
+            elif (
                 existing_config_path is not None
                 and existing_config_path.exists()
                 and not _config_path_belongs_to_roots(existing_config_path, roots)

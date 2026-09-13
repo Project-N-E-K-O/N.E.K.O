@@ -699,6 +699,44 @@ async function main() {
   assert(listenerLimitError?.code === 'busy', 'listener growth was not bounded');
   stateListeners.forEach((unsubscribe) => unsubscribe());
 
+  const originalPublishProtocol = transport.publishGameProtocol;
+  let settleProtocolBody;
+  const protocolBody = new Promise(resolve => { settleProtocolBody = resolve; });
+  const bodySignals = [];
+  transport.publishGameProtocol = (_kind, _payload, options) => {
+    bodySignals.push(options.signal);
+    return { ok: false, status: 409, json: () => protocolBody };
+  };
+  const bodyAbort = new AbortController();
+  const bodyProtocolCalls = Array.from({ length: 8 }, (_, index) => game.events.emit(
+    'round-started', { round: index + 1 }, { signal: bodyAbort.signal, timeoutMs: 250 },
+  ).then(() => 'success', error => error.code));
+  await new Promise(resolve => setImmediate(resolve));
+  let bodyBusy;
+  void game.events.emit('round-started', { round: 9 }).then(
+    () => { bodyBusy = { code: 'unexpected_success' }; }, error => { bodyBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyBusy?.code === 'busy', 'protocol headers retired the slot before the JSON body');
+  bodyAbort.abort();
+  assert((await Promise.all(bodyProtocolCalls)).every(code => code === 'cancelled'),
+    'protocol body ignored cancellation after response headers');
+  assert(bodySignals.every(signal => signal.aborted), 'protocol cancellation lost the transport signal');
+  let bodyStillBusy;
+  void game.events.emit('round-started', { round: 10 }).then(
+    () => { bodyStillBusy = { code: 'unexpected_success' }; }, error => { bodyStillBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyStillBusy?.code === 'busy',
+    'a cancelled protocol request freed its slot before the abandoned body settled');
+  settleProtocolBody({ detail: 'late conflict' });
+  await new Promise(resolve => setImmediate(resolve));
+  transport.publishGameProtocol = originalPublishProtocol;
+
+  const recoveredProtocol = await game.events.emit('round-started', { round: 11 });
+  assert(recoveredProtocol.ok === true && recoveredProtocol.data.accepted === true,
+    'protocol request did not succeed after abandoned response bodies settled');
+
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })
@@ -1420,6 +1458,35 @@ async function main() {
   'memory stopped being granted even when runtime was');
   grantedRuntimeClient.dispose();
 
+  let mountedSignal,abortObserved=false,mediaDisposed=0;
+  const mediaTransport={...transport,requestMedia:async()=>({}),mountMedia:config=>{
+    mountedSignal=config.signal;
+    return new Promise((_resolve,reject)=>config.signal.addEventListener('abort',()=>{abortObserved=true;reject(Error('cancelled'));},{once:true}));
+  }};
+  const mediaClient=await window.NekoMiniGame.connect({id:'media-cancellation',version:'1.0.0',requiredCapabilities:['logging','runtime','media-timeline']},{transport:mediaTransport});
+  await mediaClient.runtime.start({});
+  const callerAbort=new AbortController();
+  const assertCancelled=error=>assert(error instanceof window.NekoMiniGame.Error && error.code==='cancelled','mount cancellation must expose the SDK cancelled error');
+  const pendingMount=mediaClient.media.mount({signal:callerAbort.signal}).then(()=>null,error=>error);
+  callerAbort.abort();
+  assertCancelled(await pendingMount);
+  assert(abortObserved && mountedSignal.aborted,'caller abort did not reach transport');
+  assert(mediaClient.runtime.state==='running','mount cancellation ended the route');
+  mediaTransport.mountMedia=async()=>({dispose(){mediaDisposed++;},play(){},pause(){},interrupt(){}});
+  const replacementMedia=await mediaClient.media.mount({});replacementMedia.dispose();
+  assert(mediaDisposed===1,'cancelled mount did not free replacement slot');
+  const alreadyAborted=new AbortController();alreadyAborted.abort();
+  const rejected=await mediaClient.media.mount({signal:alreadyAborted.signal}).then(()=>null,error=>error);
+  assertCancelled(rejected);
+  let finishCancelledMount;
+  mediaTransport.mountMedia=()=>new Promise(resolve=>{finishCancelledMount=resolve;});
+  const lateAbort=new AbortController();
+  const lateMount=mediaClient.media.mount({signal:lateAbort.signal}).then(()=>null,error=>error);
+  lateAbort.abort();
+  finishCancelledMount({dispose(){mediaDisposed++;}});
+  assertCancelled(await lateMount);
+  assert(mediaDisposed===2,'late cancelled controller was not disposed');
+  mediaClient.dispose();
   process.stdout.write('mini-game SDK runtime test passed\n');
 }
 

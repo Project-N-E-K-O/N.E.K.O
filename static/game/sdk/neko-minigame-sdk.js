@@ -15,6 +15,7 @@
   const MIN_CONNECT_TIMEOUT_MS = 250;
   const MAX_CONNECT_TIMEOUT_MS = 30000;
   const MAX_REQUEST_TIMEOUT_MS = 120000;
+  const DEFAULT_VOICE_STATE_TIMEOUT_MS = 15000;
   const MAX_CAPABILITIES = 32;
   const MAX_LISTENERS_PER_EVENT = 32;
   const MAX_CONTRACTS_PER_KIND = 64;
@@ -41,6 +42,7 @@
   const MAX_BUBBLE_PRESENTATIONS = 8;
   const MAX_CONSENT_PRESENTATIONS = 4;
   const MAX_AVATAR_RENDERERS = 8;
+  const MAX_AVATAR_QUERIES = 4;
   const MAX_AUDIO_CONTROLLERS = 4;
   const MAX_AUDIO_RESOURCE_NODES = 2048;
   const MAX_AUDIO_RESOURCE_CHARS = 512 * 1024;
@@ -88,7 +90,7 @@
   // the post-negotiation check below have to mean exactly the same set.
   // `speech-output` is deliberately absent: speech.speak() is accepted pre-route.
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
-    'memory', 'context-read', 'leaderboard-server', 'voice-input',
+    'memory', 'context-read', 'leaderboard-server', 'voice-input', 'media-timeline',
   ]);
   const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
@@ -114,6 +116,7 @@
     'bottom-left', 'bottom-center', 'bottom-right',
   ]);
   const SUPPORTED_CAPABILITIES = Object.freeze([
+    'media-timeline',
     'runtime',
     'dialogue',
     'quick-lines',
@@ -133,6 +136,7 @@
     'invalid_manifest',
     'invalid_handshake',
     'invalid_contract',
+    'invalid_response',
     'incompatible_version',
     'game_unregistered',
     'game_disabled',
@@ -1329,6 +1333,8 @@
 
   function supportedByTransport(transport, capability) {
     switch (capability) {
+      case 'media-timeline':
+        return typeof transport.requestMedia === 'function' && typeof transport.mountMedia === 'function';
       case 'runtime':
         return [
           'start', 'end', 'heartbeat', 'drain',
@@ -1998,12 +2004,21 @@
     const grantedSet = new Set(usableGranted);
     const listeners = new Map();
     const avatarRenderers = new Set();
+    const avatarQueryRequests = new Set();
+    const avatarQueriesInFlight = new Set();
+    let avatarQueryGeneration = {};
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
     let disposed = false;
     let disposing = false;
     let voiceBridgeStarted = false;
+    // One verified snapshot and one bounded query per client, retired with the route.
+    let voiceStateSnapshot = null;
+    let voiceStateRevision = 0;
+    let voiceStateSync = null;
+    let voiceStateGeneration = {};
+    const voiceStatePendingRequests = new Set();
     let speechBridgeStarted = false;
     let speechPlaybackRawState = null;
     let speechPlaybackTransportSource = '';
@@ -2013,6 +2028,10 @@
     const speechPendingRequests = new Set();
     const speechPreloadPendingRequests = new Set();
     const protocolPendingRequests = new Set();
+    // Fixed SDK request groups only; each raw group shares its public limit.
+    // Ignoring abort cannot free capacity for unlimited abandoned body reads.
+    const managedHostInFlight = new Map();
+    const protocolInFlight = new Set();
     const contextPendingRequests = new Set();
     const dialoguePendingRequests = new Set();
     const memoryPendingRequests = new Set();
@@ -2052,10 +2071,74 @@
     }
 
     function voicePayloadMatchesActiveRoute(payload) {
+      if (disposed || disposing) return false;
       if (!runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)) return false;
       const expected = String(runtimeRouteInstanceId || '').trim();
       const actual = String(payload?.sdk_route_instance_id || '').trim();
       return !expected || actual === expected;
+    }
+
+    function publishVoiceState(state) {
+      if (!voicePayloadMatchesActiveRoute(state)) return;
+      voiceStateSnapshot = Object.freeze({ ...(state || {}) });
+      voiceStateRevision += 1;
+      emit('voice-state', voiceStateSnapshot);
+    }
+
+    function clearVoiceState() {
+      voiceStateSnapshot = null;
+      voiceStateGeneration = {};
+      voiceStateSync = null;
+      abortManagedRequests(voiceStatePendingRequests, disposing ? 'disposed' : 'cancelled');
+    }
+
+    function synchronizeVoiceState() {
+      if (disposed || disposing || !voiceBridgeStarted || !grantedSet.has('voice-input')
+          || !runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)
+          || voiceStateSync || voiceStatePendingRequests.size
+          || managedHostInFlight.get(voiceStatePendingRequests)?.size) return;
+      const sync = {
+        routeInstanceId: runtimeRouteInstanceId,
+        revision: voiceStateRevision,
+        generation: voiceStateGeneration,
+      };
+      voiceStateSync = sync;
+      const isCurrent = () => voiceStateSync === sync && !disposed && !disposing
+        && runtimeRouteEstablished && runtimeRouteInstanceId === sync.routeInstanceId;
+      // Do not await this from runtime.start(): an absent voice host must not hold
+      // up the game. Managed cancellation also bounds transports that ignore abort.
+      void performManagedHostRequest({
+        operation: 'voice.query',
+        pendingSet: voiceStatePendingRequests,
+        limit: 1,
+        timeoutMs: DEFAULT_VOICE_STATE_TIMEOUT_MS,
+        invoke: (requestOptions) => transport.requestVoiceControl('query', {
+          ...requestOptions,
+          sdkRouteInstanceId: sync.routeInstanceId,
+        }),
+        onRawSettled: () => {
+          // A cancelled waiter can finish long before an uncooperative transport.
+          // Recover a replaced route only when its predecessor releases capacity;
+          // an ordinary timeout or failure never retries itself.
+          if (sync.generation !== voiceStateGeneration) synchronizeVoiceState();
+        },
+      }).then((state) => {
+        // Same-origin transports deliver the reply through the bridge as well.
+        // Do not duplicate it or overwrite a newer unsolicited state with a reply.
+        if (isCurrent() && voiceStateRevision === sync.revision) publishVoiceState(state);
+      }).catch((error) => {
+        if (isCurrent() && voiceStateRevision === sync.revision) {
+          emit('voice-error', Object.freeze({ error, source: 'state-sync' }));
+        }
+      }).finally(() => {
+        if (voiceStateSync === sync) {
+          voiceStateSync = null;
+        } else if (!voiceStateSync) {
+          // Raw settlement may precede public cancellation cleanup, including a
+          // synchronous end failure. Both slots must be free before recovery.
+          synchronizeVoiceState();
+        }
+      });
     }
     const heartbeatLifecycle = {
       timer: null,
@@ -2303,11 +2386,22 @@
       if (runtimePhase === normalized) return;
       const previous = runtimePhase;
       runtimePhase = normalized;
+      if (['ending', 'ended', 'inactive', 'disposed'].includes(normalized)) {
+        cancelAvatarQueries(normalized === 'disposed' ? 'disposed' : 'cancelled');
+        const reason = normalized === 'disposed' ? 'disposed' : 'cancelled';
+        for (const pending of [contextPendingRequests, memoryPendingRequests, dialoguePendingRequests, protocolPendingRequests]) {
+          abortManagedRequests(pending, reason);
+        }
+      }
+      if (!runtimeRouteEstablished || !['running', 'degraded'].includes(normalized)) {
+        clearVoiceState();
+      }
       void publishRuntimeEvent('runtime-state', Object.freeze({
         previous,
         current: normalized,
         reason: String(reason || ''),
       }));
+      synchronizeVoiceState();
     }
 
     function boundedRuntimeNumber(value, fallback, maximum = MAX_RUNTIME_INTERVAL_MS) {
@@ -2329,24 +2423,49 @@
     }
 
     function requireBoundedRuntimeLifecyclePayload(payload, operation) {
-      // Every other SDK egress path is bounded; the runtime lifecycle payload
-      // was not, in the one dimension that costs anything. Same 256 KiB the
-      // trusted host now enforces, so the two cannot disagree about an honest
-      // payload.
-      const bytes = jsonByteLength(payload ?? {});
+      if (!plainObject(payload)) {
+        fail('invalid_request', 'The runtime lifecycle payload must be an object', { operation });
+      }
+      // Dispatch the measured snapshot: toJSON/getters must not make validation
+      // observe different data from the later lifecycle transport call.
+      // Materialize the same own fields as the route envelope before JSON
+      // serialization, so a non-enumerable toJSON cannot hide an outgoing getter.
+      let serialized;
+      try { serialized = JSON.stringify({ ...payload }); }
+      catch (_) { fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation }); }
+      if (serialized === undefined) {
+        fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation });
+      }
+      const TextEncoderImpl = globalThis.TextEncoder;
+      const bytes = typeof TextEncoderImpl === 'function'
+        ? new TextEncoderImpl().encode(serialized).byteLength
+        : unescape(encodeURIComponent(serialized)).length;
       if (bytes > MAX_RUNTIME_EVENT_BYTES) {
         fail('invalid_request', 'The runtime lifecycle payload exceeds its size limit', {
-          operation,
-          bytes,
-          limit: MAX_RUNTIME_EVENT_BYTES,
+          operation, bytes, limit: MAX_RUNTIME_EVENT_BYTES,
         });
       }
+      const normalized = JSON.parse(serialized);
+      if (!plainObject(normalized)) {
+        fail('invalid_request', 'The runtime lifecycle payload must serialize to an object', { operation });
+      }
+      // The temporary work list is bounded by the parsed 256 KiB snapshot and
+      // drained here; nested caller objects are neither retained nor forwarded.
+      const remaining = [normalized];
+      while (remaining.length) {
+        const value = remaining.pop();
+        Object.freeze(value);
+        for (const child of Object.values(value)) {
+          if (child && typeof child === 'object') remaining.push(child);
+        }
+      }
+      return normalized;
     }
 
     function runtimePayload() {
       if (!runtimeConfig || typeof runtimeConfig.payload !== 'function') return {};
       const payload = runtimeConfig.payload();
-      return payload == null ? {} : payload;
+      return requireBoundedRuntimeLifecyclePayload(payload, 'runtime.payload');
     }
 
     function runtimeRouteInstanceEntropy() {
@@ -2403,11 +2522,12 @@
     }
 
     function runtimeRoutePayload(payload, routeInstanceId = runtimeRouteInstanceId) {
+      const normalized = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.route');
       const candidateIds = runtimeRouteInstanceIds.length
         ? Array.from(runtimeRouteInstanceIds)
         : (routeInstanceId ? [routeInstanceId] : []);
       return Object.freeze({
-        ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
+        ...normalized,
         ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         ...(candidateIds.length ? { sdk_route_instance_ids: Object.freeze(candidateIds) } : {}),
       });
@@ -2722,6 +2842,7 @@
       pageExitHandler = (event = {}) => {
         if (disposed || pageExitDispatched) return;
         pageExitDispatched = true;
+        cancelAvatarQueries('cancelled');
         const type = String(event.type || 'page-exit');
         const exitContext = Object.freeze({
           type,
@@ -2736,7 +2857,11 @@
           payload = runtimeConfig.pageExit.payload
             ? runtimeConfig.pageExit.payload(exitContext)
             : runtimePayload();
+          payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.page-exit');
         } catch (error) {
+          // Still release the owned generation on unload, without forwarding
+          // malformed application data or claiming that it was accepted.
+          payload = {};
           void publishRuntimeEvent('runtime-error', {
             operation: 'page-exit',
             reason: 'payload_failed',
@@ -2883,9 +3008,13 @@
       maximumTimeoutMs = MAX_REQUEST_TIMEOUT_MS,
       requestOptions = {},
       invoke,
+      consume = null,
+      onRawSettled = null,
     }) {
       ensureActive(operation);
       if (pendingSet.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
+      const inFlight = managedHostInFlight.get(pendingSet) || new Set();
+      if (inFlight.size >= limit) fail('busy', `${operation} request limit reached`, { limit });
       const externalSignal = requestOptions.signal || null;
       if (externalSignal?.aborted) fail('cancelled', 'The host request was cancelled', { operation });
       const normalizedTimeoutMs = normalizedRequestTimeout(
@@ -2919,6 +3048,8 @@
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       pendingSet.add(entry);
+      inFlight.add(entry);
+      managedHostInFlight.set(pendingSet, inFlight);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -2942,6 +3073,10 @@
               signal: controller.signal,
               timeoutMs: normalizedTimeoutMs,
             });
+          }).then(value => consume ? consume(value) : value).finally(() => {
+            inFlight.delete(entry);
+            if (!inFlight.size) managedHostInFlight.delete(pendingSet);
+            onRawSettled?.();
           }),
           timeoutPromise,
           cancellationPromise,
@@ -3008,7 +3143,8 @@
       if (typeof transport.publishGameProtocol !== 'function') {
         fail('transport_unavailable', 'The host game protocol transport is unavailable', { operation });
       }
-      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS) {
+      if (protocolPendingRequests.size >= MAX_CONTRACT_PENDING_REQUESTS
+        || protocolInFlight.size >= MAX_CONTRACT_PENDING_REQUESTS) {
         fail('busy', 'Game protocol request limit reached', {
           operation,
           limit: MAX_CONTRACT_PENDING_REQUESTS,
@@ -3060,6 +3196,7 @@
         payload,
       });
       protocolPendingRequests.add(entry);
+      protocolInFlight.add(entry);
       const setTimer = windowImpl.setTimeout?.bind(windowImpl) || globalThis.setTimeout;
       const clearTimer = windowImpl.clearTimeout?.bind(windowImpl) || globalThis.clearTimeout;
       const timeoutPromise = new Promise((_, reject) => {
@@ -3074,7 +3211,7 @@
           kind,
           envelope,
           { signal: controller.signal, timeoutMs },
-        ));
+        )).then(normalizeTransportResponse).finally(() => protocolInFlight.delete(entry));
         const response = await Promise.race([transportPromise, timeoutPromise, cancellationPromise]);
         if (controller.signal.aborted) {
           fail(entry.reason === 'disposed' ? 'disposed' : (entry.reason || 'cancelled'),
@@ -3083,7 +3220,7 @@
               : 'The game protocol request was cancelled',
             { operation });
         }
-        return normalizeTransportResponse(response);
+        return response;
       } catch (error) {
         if (entry.reason === 'timeout') {
           fail('timeout', 'The game protocol request timed out', { operation });
@@ -3216,11 +3353,7 @@
     if (grantedSet.has('voice-input')) {
       try {
         voiceBridgeStarted = transport.startVoiceControlBridge({
-          onState: (state) => {
-            if (voicePayloadMatchesActiveRoute(state)) {
-              emit('voice-state', Object.freeze({ ...(state || {}) }));
-            }
-          },
+          onState: publishVoiceState,
           onTranscript: (payload) => {
             if (!voicePayloadMatchesActiveRoute(payload)) return;
             const transcript = normalizeTranscript(payload);
@@ -3377,6 +3510,7 @@
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
+        cancelAvatarQueries('cancelled');
         abortManagedRequests(dialoguePendingRequests, 'cancelled');
         abortManagedRequests(memoryPendingRequests, 'cancelled');
         abortManagedRequests(serverLeaderboardPendingRequests, 'cancelled');
@@ -3434,7 +3568,7 @@
         // the browser, so letting it take that path would burn one of the four
         // candidate slots per attempt and wedge start() on `busy` after four
         // tries with the same mistake.
-        requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
         memoryConsentLocked = true;
         runtimeRouteEstablished = false;
         const routeInstanceId = nextRuntimeRouteInstanceId();
@@ -3503,6 +3637,7 @@
       },
       async end(payload = {}, requestOptions = {}) {
         requireCapability('runtime', 'runtime.end');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.end');
         let endRequestOptions = requestOptions;
         if (runtimePhase === 'starting' && runtimeStartSettlement) {
           if (runtimeEndWaitingForStart) {
@@ -3642,7 +3777,8 @@
         requireCapability('context-read', 'context.read');
         const scopes = normalizeContextScopes(scopesInput);
         const session = runtimeSession();
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'context.read',
           pendingSet: contextPendingRequests,
           limit: MAX_CONTEXT_PENDING_REQUESTS,
@@ -3653,7 +3789,6 @@
             session_id: session.id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'context response'),
@@ -3680,7 +3815,8 @@
         if (typeof enabledInput !== 'boolean') {
           fail('invalid_request', 'Memory consent must be a boolean');
         }
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.configureConsent',
           pendingSet: memoryPendingRequests,
           limit: 1,
@@ -3691,7 +3827,6 @@
             session_id: runtimeSession().id,
           }), options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         if (response.ok && response.data?.ok !== false) {
           memoryConsentEnabled = enabledInput;
           memoryConsentConfigured = true;
@@ -3717,7 +3852,8 @@
           });
         }
         const submission = normalizeMemorySubmission(value);
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'memory.submit',
           pendingSet: memoryPendingRequests,
           limit: MAX_MEMORY_PENDING_REQUESTS,
@@ -3728,13 +3864,14 @@
             submission,
           }), options),
         });
-        return normalizeTransportResponse(rawResponse);
+        return response;
       },
     });
 
     async function requestStorage(operation, payload, requestOptions = {}) {
       requireCapability('storage', `storage.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `storage.${operation}`,
         pendingSet: storagePendingRequests,
         limit: MAX_STORAGE_PENDING_REQUESTS,
@@ -3745,7 +3882,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'storage response', MAX_STORAGE_VALUE_BYTES),
@@ -3787,7 +3923,8 @@
 
     async function requestLocalLeaderboardStorage(operation, boardId, payload, requestOptions = {}) {
       requireCapability('leaderboard-local', `leaderboard.local.${operation}`);
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.local.${operation}`,
         pendingSet: localLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -3799,7 +3936,6 @@
           session_id: runtimeSession().id,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedEnvelope(response.data, 'local leaderboard response', MAX_LEADERBOARD_STATE_BYTES),
@@ -4019,7 +4155,8 @@
       const method = operation === 'submit'
         ? 'submitServerLeaderboard'
         : (operation === 'list' ? 'listServerLeaderboard' : 'getServerLeaderboardBest');
-      const rawResponse = await performManagedHostRequest({
+      const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: `leaderboard.server.${operation}`,
         pendingSet: serverLeaderboardPendingRequests,
         limit: MAX_LEADERBOARD_PENDING_REQUESTS,
@@ -4032,7 +4169,6 @@
           ...payload,
         }), options),
       });
-      const response = await normalizeTransportResponse(rawResponse);
       return Object.freeze({
         ...response,
         data: normalizeBoundedJson(response.data, 'server leaderboard response'),
@@ -4410,7 +4546,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.quickLines',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4418,7 +4555,6 @@
           requestOptions,
           invoke: (options) => transport.getQuickLines(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         return Object.freeze({
           ...response,
           data: normalizeBoundedJson(response.data, 'quick lines response'),
@@ -4443,7 +4579,8 @@
           session_id: session.id,
           ...(session.characterName ? { lanlan_name: session.characterName } : {}),
         });
-        const rawResponse = await performManagedHostRequest({
+        const response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'dialogue.request',
           pendingSet: dialoguePendingRequests,
           limit: MAX_DIALOGUE_PENDING_REQUESTS,
@@ -4451,7 +4588,6 @@
           requestOptions,
           invoke: (options) => transport.requestDialogue(trustedPayload, options),
         });
-        const response = await normalizeTransportResponse(rawResponse);
         let responseData = normalizeBoundedJson(response.data, 'dialogue response');
         if (plainObject(responseData) && responseData.control !== undefined) {
           if (!plainObject(responseData.control)) {
@@ -4552,7 +4688,12 @@
       toggle(requestOptions) { return requestVoice('toggle', requestOptions); },
       onState(handler) {
         requireCapability('voice-input', 'voice.onState');
-        return subscribe('voice-state', handler);
+        const unsubscribe = subscribe('voice-state', handler);
+        if (voiceStateSnapshot && voicePayloadMatchesActiveRoute(voiceStateSnapshot)) {
+          try { handler(voiceStateSnapshot); }
+          catch (error) { global.console?.error?.('[NekoMiniGame] voice-state listener failed', error); }
+        } else synchronizeVoiceState();
+        return unsubscribe;
       },
       onTranscript(handler) {
         requireCapability('voice-input', 'voice.onTranscript');
@@ -4584,6 +4725,7 @@
         ...(request.renderLanguage ? { render_language: request.renderLanguage } : {}),
       });
       const response = await performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.preload',
         pendingSet: speechPreloadPendingRequests,
         limit: MAX_SPEECH_PRELOAD_PENDING_REQUESTS,
@@ -4592,7 +4734,7 @@
         requestOptions: options,
         invoke: (requestOptions) => transport.preloadSpeechOutput(payload, requestOptions),
       });
-      return normalizeTransportResponse(response);
+      return response;
     }
 
     async function requestSpeechOutput(requestInput, requestOptions = {}) {
@@ -4634,7 +4776,8 @@
       });
       let response;
       try {
-        response = await normalizeTransportResponse(await performManagedHostRequest({
+        response = await performManagedHostRequest({
+          consume: normalizeTransportResponse,
           operation: 'speech.speak',
           pendingSet: speechPendingRequests,
           limit: MAX_SPEECH_PENDING_REQUESTS,
@@ -4647,7 +4790,7 @@
               sdk_speech_correlation_id: correlationId,
             }), options);
           },
-        }));
+        });
       } catch (error) {
         speechCorrelationMetadata.delete(correlationId);
         throw error;
@@ -4693,14 +4836,15 @@
         ...(request.finalizeTurn !== undefined ? { finalize_turn: request.finalizeTurn } : {}),
         event: request.event,
       });
-      return normalizeTransportResponse(await performManagedHostRequest({
+      return performManagedHostRequest({
+        consume: normalizeTransportResponse,
         operation: 'speech.mirror',
         pendingSet: speechPendingRequests,
         limit: MAX_SPEECH_PENDING_REQUESTS,
         timeoutMs: DEFAULT_SPEECH_REQUEST_TIMEOUT_MS,
         requestOptions,
         invoke: (options) => transport.mirrorSpeechOutput(payload, options),
-      }));
+      });
     }
 
     const speech = Object.freeze({
@@ -4914,8 +5058,84 @@
       }
     }
 
+    function avatarCharacterName(value, errorCode = 'invalid_request') {
+      if (typeof value !== 'string' || !value.trim()
+        || value.length > 256 || Array.from(value).length > 128) {
+        fail(errorCode, 'Avatar character name must contain 1 to 128 characters');
+      }
+      return value.trim();
+    }
+
+    function avatarCharacterDescriptor(value) {
+      if (value == null) return null;
+      if (!plainObject(value)) fail('invalid_response', 'Invalid avatar character descriptor');
+      const name = avatarCharacterName(value.name, 'invalid_response');
+      let model = null;
+      if (value.model != null) {
+        const raw = value.model;
+        if (!plainObject(raw) || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(raw.type)
+          || typeof raw.path !== 'string' || !raw.path.trim() || raw.path.length > 2048) {
+          fail('invalid_response', 'Invalid avatar character model');
+        }
+        model = Object.freeze({ type: raw.type, path: raw.path.trim() });
+      }
+      return Object.freeze({ name, model, rendererAvailable: Boolean(model && value.rendererAvailable === true) });
+    }
+
+    function cancelAvatarQueries(reason) {
+      avatarQueryGeneration = {};
+      abortManagedRequests(avatarQueryRequests, reason);
+    }
+
+    async function queryAvatar(operation, method, args, options, normalize) {
+      requireCapability('avatar-renderer', operation);
+      if (['ending', 'ended', 'inactive'].includes(runtimePhase) || pageExitDispatched) {
+        fail('invalid_state', 'Avatar queries are unavailable after route exit', { operation });
+      }
+      if (typeof transport[method] !== 'function') fail('transport_unavailable', 'Avatar query transport unavailable');
+      if (avatarQueriesInFlight.size >= MAX_AVATAR_QUERIES) fail('busy', 'Avatar query limit reached');
+      const slot = {};
+      const generation = avatarQueryGeneration;
+      avatarQueriesInFlight.add(slot);
+      let invoked = false;
+      try {
+        const value = await performManagedHostRequest({
+          operation, pendingSet: avatarQueryRequests, limit: MAX_AVATAR_QUERIES,
+          timeoutMs: 10000, maximumTimeoutMs: 30000, requestOptions: options,
+          invoke: (managed) => {
+            invoked = true;
+            // A transport that ignores abort retains its slot until settlement.
+            return Promise.resolve().then(() => transport[method](...args, managed))
+              .then(normalize).finally(() => avatarQueriesInFlight.delete(slot));
+          },
+        });
+        ensureActive(operation);
+        if (generation !== avatarQueryGeneration) fail('cancelled', 'Avatar query belongs to an exited lifecycle');
+        return value;
+      } finally {
+        if (!invoked) avatarQueriesInFlight.delete(slot);
+      }
+    }
+
     const avatar = Object.freeze({
       get activeCount() { return avatarRenderers.size; },
+      get pendingQueryCount() { return avatarQueriesInFlight.size; },
+      getCurrentCharacter(options = {}) {
+        return queryAvatar('avatar.getCurrentCharacter', 'getAvatarCharacter', [''], options, avatarCharacterDescriptor);
+      },
+      async getCharacter(name, options = {}) {
+        const requested = avatarCharacterName(name);
+        return queryAvatar('avatar.getCharacter', 'getAvatarCharacter', [requested], options, value => {
+          const descriptor = avatarCharacterDescriptor(value);
+          return descriptor?.name === requested ? descriptor : null;
+        });
+      },
+      listCharacters(options = {}) {
+        return queryAvatar('avatar.listCharacters', 'listAvatarCharacters', [], options, value => {
+          if (!Array.isArray(value) || value.length > 256) fail('invalid_response', 'Invalid character list');
+          return Object.freeze([...new Set(value.map(name => avatarCharacterName(name, 'invalid_response')))]);
+        });
+      },
       async mount(configInput) {
         requireCapability('avatar-renderer', 'avatar.mount');
         if (avatarRenderers.size + avatarMountsPending >= MAX_AVATAR_RENDERERS) {
@@ -5005,6 +5225,61 @@
       },
     });
 
+    const mediaControllers = new Set();
+    let mediaMountPending = false;
+    let mediaMountAbort = null;
+    const media = Object.freeze({
+      async request(action, payload = {}) {
+        requireCapability('media-timeline', 'media.request');
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
+        try { if (JSON.stringify(payload).length > 65536) fail('invalid_request', 'Media payload too large'); }
+        catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
+        if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
+        if (action === 'watch') requireActiveRuntimeRoute('media.watch');
+        try { return await transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId }); }
+        catch(error) { throw normalizeTransportError(error, 'media.request'); }
+      },
+      async mount(config) {
+        requireCapability('media-timeline', 'media.mount');
+        requireActiveRuntimeRoute('media.mount');
+        if (mediaControllers.size || mediaMountPending) fail('busy', 'A media timeline is already mounted');
+        const generation = runtimeRouteInstanceId;
+        mediaMountPending = true;
+        mediaMountAbort = new AbortControllerImpl();
+        const mountAbort = mediaMountAbort;
+        const callerSignal = config.signal;
+        const abortFromCaller = () => mountAbort.abort();
+        let controller;
+        try {
+          if(callerSignal?.aborted)mountAbort.abort();
+          else callerSignal?.addEventListener('abort',abortFromCaller,{once:true});
+          if(mountAbort.signal.aborted)fail('cancelled','Media mount cancelled');
+          controller = await transport.mountMedia({ ...config, signal:mountAbort.signal });
+        }
+        catch(error) {
+          if(mountAbort.signal.aborted)fail('cancelled','Media mount cancelled');
+          throw normalizeTransportError(error, 'media.mount');
+        }
+        finally { callerSignal?.removeEventListener('abort',abortFromCaller);mediaMountPending = false; mediaMountAbort = null; }
+        if (mountAbort.signal.aborted || disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
+          controller.dispose(); fail('cancelled', 'Media route changed while loading');
+        }
+        mediaControllers.add(controller);
+        return Object.freeze({
+          play: () => { requireActiveRuntimeRoute('media.play'); return controller.play(); },
+          pause: () => controller.pause(),
+          interrupt: () => controller.interrupt(),
+          dispose: () => { controller.dispose(); mediaControllers.delete(controller); },
+        });
+      },
+    });
+    subscribe('runtime-event:runtime-state', ({ payload }) => {
+      if (['ending', 'ended', 'inactive', 'disposed'].includes(payload?.current)) {
+        mediaMountAbort?.abort();
+        for (const controller of mediaControllers) controller.dispose();
+        mediaControllers.clear();
+      }
+    });
     const client = {
       manifest,
       host: Object.freeze({
@@ -5029,10 +5304,14 @@
       speech,
       audio,
       avatar,
+      media,
       get disposed() { return disposed || disposing; },
       dispose(disposeOptions = {}) {
         if (disposed || disposing) return;
         disposing = true;
+        mediaMountAbort?.abort();
+        for (const controller of mediaControllers) controller.dispose();
+        mediaControllers.clear();
         runtimeRouteEstablished = false;
         clearRuntimeRouteInstanceIds();
         stopRuntimeMonitoring();
@@ -5040,6 +5319,10 @@
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
+        cancelAvatarQueries('disposed');
+        avatarQueriesInFlight.clear();
+        managedHostInFlight.clear();
+        protocolInFlight.clear();
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');
         abortManagedRequests(storagePendingRequests, 'disposed');

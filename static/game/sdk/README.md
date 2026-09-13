@@ -1,5 +1,21 @@
 # N.E.K.O Mini-Game SDK
 
+## Built-in media timelines
+
+The reviewed `media-timeline` capability exposes `game.media.request()` for
+`history`, `load`, `character`, `discover`, `prepare`, `preparation`, and `watch`, and
+`game.media.mount({video, job, version, onEvent, onCue})` for an active runtime.
+The returned controller supports `play`, `pause`, `interrupt`, and `dispose`.
+The trusted host resolves the immutable job/version, owns reaction audio and
+mouth analysis, and uses the video media clock. Pause/buffering stop reaction
+audio; seeks invalidate the current generation; playback rate follows video.
+`audio-started` reports the media element's `playing` event, not HTTP completion.
+Only user interaction starts playback. A same-origin Web Lock prevents two
+timeline scenes owning audio simultaneously. Normal speech or voice transcripts
+interrupt the scene; resuming requires another user action. Runtime end and
+disposal release the media and audio ownership. Library records are independent
+from optional long-term character memory. There is no automatic eviction.
+
 This directory contains the public mini-game runtime and trusted host helpers.
 Game code consumes `NekoMiniGame`; it must not call N.E.K.O REST endpoints,
 microphone bridges, logging endpoints, or Avatar engine managers directly.
@@ -580,6 +596,64 @@ character voice, language and exact text automatically reuses the host cache.
 
 ## Avatar renderer
 
+The trusted launch node can register `nekoCapabilityProviders[gameId].avatarHostFactory`
+before the same-origin bootstrap consumes it. The factory runs only after host
+identity and constructor validation. It returns a fresh synchronous provider with
+`mount(config)` and `dispose()`; each host owns exactly one provider. Optional
+Avatar initialization failure leaves runtime/logging usable; a game requiring
+`avatar-renderer` fails its capability handshake instead.
+
+**New game integrations must use this trusted factory registration and the public
+`game.avatar` discovery methods below.** Legacy injection and internal host
+character reads are transitional compatibility for existing integrations, not
+alternative recommended APIs. The existing soccer integration can continue
+unchanged during this transition and will migrate separately; no removal date
+is set.
+
+Existing trusted same-origin `createNekoMiniGameSameOriginHost({ avatarHost })`
+injection remains supported and takes precedence over a registered factory. No
+factory is called in that case. Successful host construction transfers disposal
+ownership of the injected provider, as before. The legacy host `getCharacter()`
+still returns the original Response and updates its character identity; existing
+adapters do not need to migrate immediately. These mechanisms are not isolation
+from hostile code sharing the same origin.
+
+The factory receives `windowImpl`, `documentImpl`, `fetchImpl`, a lifetime
+`signal`, `onCleanup(fn)` and `characterSource`. Register partial allocations with
+`onCleanup` immediately (at most 16 callbacks). They run on failure or disposal,
+after signal cancellation. Use these callbacks for resources not already owned
+by the returned provider, whose `dispose()` runs once. Factories must not share
+provider instances between hosts. Async factories are unsupported; an accidentally
+returned promise is observed and its eventual provider is disposed.
+
+Public display-only role discovery uses the same `avatar-renderer` capability:
+
+```js
+const current = await game.avatar.getCurrentCharacter({ timeoutMs: 10000 });
+const selected = await game.avatar.getCharacter('Neko', { signal });
+const names = await game.avatar.listCharacters({ signal });
+```
+
+Descriptors contain only `{ name, model: { type, path } | null, rendererAvailable }`.
+Names are limited to 128 Unicode code points, paths to 2048, and lists to 256 names. Unknown
+explicit names return `null`, not the current character. The standard host reads
+the existing role registry and canonical model-path endpoints; it keeps no role
+data copy and exposes no persona, memory, credentials or raw response fields.
+MMD metadata may be returned with `rendererAvailable: false`; discovery does not
+add an MMD/PNGtuber renderer to the current Live2D/VRM mount implementation.
+
+A trusted provider may optionally implement `getCurrentCharacter(options)`,
+`getCharacter(name, options)` and `listCharacters(options)`. Missing methods use
+the built-in source; factory `characterSource` exposes that same source to
+adapters. Forward supplied query options when using it. Each SDK client and host
+limits underlying queries to four, with a 10-second default deadline and 30-second
+maximum covering the full provider/body read. Cancellation, reset, route exit,
+page exit and disposal settle waiting SDK promises and discard late results.
+Timers and signal listeners are released; a provider ignoring abort retains its
+bounded slot until it settles, preventing retries from accumulating abandoned
+work. `pendingQueryCount` includes those still-settling transport calls. Discovery
+is available before start, and after exit requires a new/reset lifecycle.
+
 The public game mounts an Avatar through `game.avatar`:
 
 ```js
@@ -624,6 +698,16 @@ engine controllers, and model resources.
 
 ## Ownership and disposal
 
+Managed context, memory, storage, leaderboard, dialogue, speech and protocol
+requests include response JSON consumption in their deadlines and cancellation
+scope. Pending waiters do not retire when only response headers arrive. The
+same-origin REST host buffers complete responses under its fetch signal/deadline
+and returns readable Response objects, preserving legacy HTTP status and clone
+behavior. A timed-out/cancelled waiter settles immediately; an underlying transport
+that ignores abort still occupies a bounded raw-work slot until settlement.
+This also prevents repeated retries from accumulating abandoned body readers.
+The host's streaming speech bridge is separate and is not buffered by this path.
+
 Games should dispose individual controllers when a slot is permanently removed
 and call `game.dispose()` when leaving the page. `game.dispose()` stops managed
 runtime monitoring; aborts in-flight lifecycle, protocol, context, dialogue,
@@ -644,3 +728,15 @@ resource disposal for registered slots.
 * `neko-minigame-manifest.schema.json`: runtime manifest and contract schema.
 * `neko-minigame-avatar-host.js` and `neko-minigame-audio-host.js`: trusted
   N.E.K.O host helpers, not APIs exposed to untrusted games.
+
+## Media discovery and confirmation
+
+`media.request('discover', {topic})` selects one qualifying popular video and
+returns `{video, topic}`; `video` is null when no candidate qualifies. An empty
+topic uses the popular feed. The trusted backend checks single-part duration
+under 180 seconds and danmaku density over 100/minute. Prepare automatic picks
+with `source: 'discovery'` so those checks run again before media/model work.
+`media.request('prepare', {url})` can return `{confirmation_required: true, video}`
+for manual videos over 300 seconds. After explicit user confirmation, resubmit
+the canonical URL and `confirmed_duration: video.duration`. Cancelling must not
+resubmit. Other successful preparations return the existing job identifier.
