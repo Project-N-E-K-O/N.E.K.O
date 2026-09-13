@@ -3183,30 +3183,45 @@ def test_mini_game_magic_command_table_is_matchable_and_launchable():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_mini_game_magic_command_launches_game_without_text_stream(monkeypatch):
-    """A slash mini-game alias opens the game via the launch event and skips the LLM."""
+@pytest.mark.parametrize("session_state", ["no_session", "starting", "realtime", "offline"])
+async def test_mini_game_magic_command_launches_before_session_lifecycle(session_state):
+    """A slash mini-game alias needs no LLM session: no start, no handoff, no stream."""
     from urllib.parse import parse_qs, urlsplit
 
     mgr = _make_transcript_manager()
     mgr.websocket = _FakeConnectedWebSocket()
-    mgr.session = object.__new__(core_module.OmniOfflineClient)
-    mgr.session._pending_images = []
-    mgr.session.update_max_response_length = Mock()
-    mgr.session.stream_text = AsyncMock()
+    mgr.start_session = AsyncMock()
+    mgr.end_session = AsyncMock()
+    mgr._process_stream_data_internal = AsyncMock()
+    mgr.pending_input_data = []
+    mgr.session_ready = True
     mgr.is_active = True
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
-    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
-    mgr._fire_task = Mock()
-    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+    if session_state == "no_session":
+        mgr.session = None
+        mgr.is_active = False
+        mgr.session_ready = False
+    elif session_state == "starting":
+        mgr.session = None
+        mgr.session_ready = False
+        mgr._starting_session_count = 1
+    elif session_state == "realtime":
+        mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    else:
+        mgr.session = object.__new__(core_module.OmniOfflineClient)
+        mgr.session._pending_images = []
+        mgr.session.stream_text = AsyncMock()
 
-    await core_module.LLMSessionManager._process_stream_data_internal(
+    await core_module.LLMSessionManager._stream_data_now(
         mgr,
         {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
     )
 
-    mgr.session.stream_text.assert_not_called()
-    mgr._fire_task.assert_not_called()
+    mgr.start_session.assert_not_awaited()
+    mgr.end_session.assert_not_awaited()
+    mgr._process_stream_data_internal.assert_not_awaited()
+    assert mgr.pending_input_data == []
     assert mgr.sync_message_queue.messages[0]["data"]["metadata"] == {
         "source": "mini_game",
         "kind": "magic_command",

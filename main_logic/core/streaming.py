@@ -240,6 +240,11 @@ class StreamingMixin:
                     else time.monotonic()
                 ),
             }
+        # 斜杠小游戏快捷指令（/一起看、/足球 …）不需要 LLM 会话：放在会话就绪
+        # 检查、自动建会话和 realtime→offline handoff 之前处理。否则建会话失败
+        # 时指令直接失效，语音会话里打一句 /一起看 也会先把语音会话拆掉。
+        if input_type == "text" and await self._maybe_handle_mini_game_magic_command(message):
+            return
         # 检查session是否就绪
         async with self.input_cache_lock:
             if getattr(self, "_pending_input_flush_active", False):
@@ -627,33 +632,6 @@ class StreamingMixin:
                     await self._dispatch_mini_game_invite_keyword(
                         record_data,
                     )
-
-                    # 斜杠快捷指令（/一起看、/足球 …）：整条消息只有指令时直接
-                    # 让前端打开小游戏，本轮不走 LLM。与下面 openclaw magic
-                    # command 同一套收尾：镜像原话（不进 chat_history）+ 发
-                    # turn end 清掉前端 pending request。
-                    mini_game_magic_command = self._normalize_mini_game_magic_command(data)
-                    if mini_game_magic_command:
-                        self._session_turn_count += 1
-                        self._clear_text_pending_images()
-                        self._mark_magic_command_image_drop_request(message.get("request_id"))
-                        await self.mirror_user_input(
-                            data,
-                            metadata={
-                                "source": "mini_game",
-                                "kind": "magic_command",
-                                "command": mini_game_magic_command,
-                            },
-                            request_id=message.get("request_id"),
-                        )
-                        await self._emit_agent_callback_turn_end(message.get("request_id"))
-                        await self._push_mini_game_magic_command_launch(mini_game_magic_command)
-                        logger.info(
-                            "[%s] text input sent mini-game magic command: %s",
-                            self.lanlan_name,
-                            mini_game_magic_command,
-                        )
-                        return
 
                     openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
                     if (

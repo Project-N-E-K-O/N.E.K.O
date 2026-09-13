@@ -1115,6 +1115,42 @@ class TurnMixin:
                 return game_type
         return None
 
+    async def _maybe_handle_mini_game_magic_command(self, message: dict) -> bool:
+        """Consume a text message that is a slash mini-game command.
+
+        Runs before any session readiness check, auto-start, or realtime ->
+        offline handoff: opening a game needs no LLM session, so a failed
+        session start must not swallow the command and typing one during a
+        voice session must not tear that session down. Returns True when the
+        message was consumed.
+        """
+        data = message.get("data")
+        if not isinstance(data, str):
+            return False
+        game_type = self._normalize_mini_game_magic_command(data)
+        if not game_type:
+            return False
+        request_id = message.get("request_id")
+        self._clear_text_pending_images()
+        self._mark_magic_command_image_drop_request(request_id)
+        await self.mirror_user_input(
+            data,
+            metadata={
+                "source": "mini_game",
+                "kind": "magic_command",
+                "command": game_type,
+            },
+            request_id=request_id,
+        )
+        await self._emit_agent_callback_turn_end(request_id)
+        await self._push_mini_game_magic_command_launch(game_type)
+        logger.info(
+            "[%s] text input sent mini-game magic command: %s",
+            self.lanlan_name,
+            game_type,
+        )
+        return True
+
     async def _push_mini_game_magic_command_launch(self, game_type: str) -> bool:
         """Ask the frontend to open ``game_type`` through the invite launch event.
 
