@@ -102,7 +102,7 @@ async function main() {
       if (config.model.path === '/broken.pmx') throw new Error('asset_failed');
       const renderer = { config, model: config.model, disposed: false, paused: false,
         async setModel(model) {
-          if (['mmd', 'pngtuber'].includes(this.model?.type) || ['mmd', 'pngtuber'].includes(model.type)) {
+          if (['mmd', 'pngtuber'].includes(this.model?.type) || ['live2d', 'mmd', 'pngtuber'].includes(model.type)) {
             this.model = null;
           }
           if (unavailableModels.has(model.path)) throw new Error('asset_missing');
@@ -229,6 +229,7 @@ async function main() {
       ],
     });
     for (const [oldModel, failedModel] of [
+      [{ type: 'live2d', path: '/old.model3.json' }, { type: 'live2d', path: '/missing.model3.json' }],
       [{ type: 'live2d', path: '/old.model3.json' }, { type: 'vrm', path: '/missing.vrm' }],
       [{ type: 'vrm', path: '/old.vrm' }, { type: 'live2d', path: '/missing.model3.json' }],
       [{ type: 'pngtuber', path: '/image.png' }, { type: 'mmd', path: '/broken.pmx' }],

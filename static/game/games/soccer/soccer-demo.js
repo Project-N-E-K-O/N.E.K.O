@@ -435,10 +435,10 @@
         }
         const previous = window[key];
         const oldState = previous && !previous.disposed ? previous.getState() : null;
-        // Extended renderers retire their old instance before loading. Use
-        // the bounded remount recovery even when both models share a fit.
+        // Live2D and extended renderers retire their old instance before loading.
+        // Only VRM-to-VRM replacements preserve the old scene during preparation.
         const needsRemount = slot === 'ai' && [oldState?.model?.type, model.type]
-          .some(type => ['mmd', 'pngtuber'].includes(type));
+          .some(type => ['live2d', 'mmd', 'pngtuber'].includes(type));
         if (previous && !previous.disposed
             && !needsRemount
             && previous.config.fit.mode === soccerAvatarFit(model).mode) {
@@ -591,7 +591,7 @@
      *     SoccerDemo.getPlayerAvatar()      // { type, path }
      *     SoccerDemo.getAiAvatar()
      *
-     *     注意：目前 player 只支持 vrm、AI 支持 live2d / vrm；MMD 暂不接入。
+     *     注意：player 只支持 vrm；AI 支持 live2d / vrm / mmd / pngtuber。
      *
      *  ── 说话（气泡 + LLM 钩子）
      *     SoccerDemo.say(text, opts?)       // 直接说一句任意文本，返回 bool（是否成功播出）
