@@ -3924,6 +3924,16 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
         "es": "{master_name}, ¿quieres probar un reto rápido de bádminton conmigo?",
         "pt": "{master_name}, quer tentar um desafio rápido de badminton comigo?",
     },
+    "air_basketball": {
+        "zh": "{master_name}，要不要跟我来一局空气投篮？还可以互相捣乱哦。",
+        "zh-TW": "{master_name}，要不要跟我來一局空氣投籃？還可以互相搗亂喔。",
+        "en": "{master_name}, want to play air basketball with me? We can even mess with each other's shots.",
+        "ja": "{master_name}、エアバスケで勝負しない？お互いのシュートも邪魔できるよ。",
+        "ko": "{master_name}, 나랑 에어 농구 한 판 어때? 서로 슛도 방해할 수 있어.",
+        "ru": "{master_name}, сыграем в воздушный баскетбол? Можно даже мешать броскам друг друга.",
+        "es": "{master_name}, ¿jugamos al baloncesto aéreo? Incluso podemos estorbarnos los tiros.",
+        "pt": "{master_name}, vamos jogar basquete aéreo? Podemos até atrapalhar os arremessos um do outro.",
+    },
     "drawing_guess": {
         "zh": "{master_name}，要不要现在来一局你画我猜？",
         "zh-TW": "{master_name}，要不要現在跟我一起玩一局你畫我猜？",
