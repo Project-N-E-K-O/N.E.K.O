@@ -197,6 +197,40 @@ def test_untargeted_update_and_close_wait_for_an_in_flight_create():
     assert not _view_targets and not _active_views and not _card_locks
 
 
+def test_concurrent_replacements_keep_the_latest_view_active():
+    # Different card IDs share one AgentHUD slot, so a replacement that arrives
+    # while the previous create is still sending must not be overwritten by it.
+    alice = Manager()
+    managers = {"Alice": alice}
+
+    async def run():
+        release = asyncio.Event()
+        send = alice.websocket.send_json
+
+        async def gated_send(frame):
+            if frame["view"]["cardId"] == "old":
+                await release.wait()
+            await send(frame)
+
+        alice.websocket.send_json = gated_send
+        payloads = []
+        for card_id in ("old", "new"):
+            payload = event("create", title=card_id, html="Ready")
+            payload["card"]["card_id"] = card_id
+            payloads.append(payload)
+        tasks = [asyncio.create_task(deliver_plugin_card(payload, managers, "Alice")) for payload in payloads]
+        for _ in range(5):
+            await asyncio.sleep(0)
+        release.set()
+        assert await asyncio.gather(*tasks) == [True, True]
+
+    asyncio.run(run())
+    assert [frame["view"]["cardId"] for frame in alice.websocket.frames] == ["old", "new"]
+    assert _active_views == {("demo", "Alice"): "new"}
+    assert _view_targets == {("demo", "new"): "Alice"}
+    assert not _card_locks
+
+
 def test_failed_replacement_and_close_preserve_the_previous_route_for_retry():
     alice = Manager()
     managers = {"Alice": alice}

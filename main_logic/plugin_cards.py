@@ -18,16 +18,20 @@ _view_targets: dict[tuple[str, str], str] = {}
 _active_views: dict[tuple[str, str], str] = {}
 # The agent event bus runs every message as its own task, so an untargeted
 # update/close could read routing before the create it follows has finished
-# sending. Operations on one card wait here in arrival order; an entry is
-# dropped as soon as no delivery holds or awaits it.
+# sending. Deliveries wait here in arrival order; an entry is dropped as soon
+# as no delivery holds or awaits it. Chat cards queue per card. AgentHUD
+# replacement state is shared per (plugin, character) and an update's character
+# is only known from routing, so all views of one plugin share a single queue.
 _card_locks: dict[tuple[str, str, str], list] = {}
 
 
 async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_target: str | None) -> bool:
     part = event.get("card")
-    key = (event.get("plugin_id"), part.get("card_id"), part.get("presentation", "chat")) if isinstance(part, dict) else None
-    if key is None or not all(isinstance(value, str) for value in key):
+    fields = (event.get("plugin_id"), part.get("card_id"), part.get("presentation", "chat")) if isinstance(part, dict) else None
+    if fields is None or not all(isinstance(value, str) for value in fields):
         return await _deliver_plugin_card(event, managers, default_target)
+    plugin_id, card_id, presentation = fields
+    key = (plugin_id, "" if presentation == "agent" else card_id, presentation)
     entry = _card_locks.setdefault(key, [asyncio.Lock(), 0])
     entry[1] += 1
     try:
