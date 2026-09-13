@@ -291,6 +291,8 @@
     function resetSoccerCharacterInfo() {
       soccerCharacterInfoGeneration += 1;
       soccerCharacterInfoPromise = null;
+      soccerCharacterExplicitLanguage = '';
+      soccerCharacterLanguagePreferenceResolved = false;
       for (const slot of ['player', 'ai']) {
         const key = slot === 'player' ? '__SoccerPlayerAvatarController' : '__SoccerAiAvatarController';
         const controller = window[key];

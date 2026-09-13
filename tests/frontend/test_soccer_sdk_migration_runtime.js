@@ -417,7 +417,25 @@ async function main() {
     assert.equal(vm.runInThisContext('soccerCharacterLanguagePreferenceResolved'), true);
     assert.deepEqual(cleared.fallbackModels, [], 'missing fallback invented a default model');
     host.getAvatarCharacter = originalCharacterQuery;
+    for (const languagePreference of [undefined, { resolved: false, locale: '' }]) {
+      game.runtime.reset({ newSession: true });
+      sandbox.resetSoccerCharacterInfo();
+      window.__SoccerResolvedLanlanName = 'test-character';
+      host.getAvatarCharacter = originalCharacterQuery;
+      await vm.runInThisContext('ensureSoccerCharacterInfo()');
+      assert.equal(vm.runInThisContext('soccerCharacterExplicitLanguage'), 'ja');
+      game.runtime.reset({ newSession: true });
+      sandbox.resetSoccerCharacterInfo();
+      window.__SoccerResolvedLanlanName = 'next-character';
+      host.getAvatarCharacter = async () => ({ name: 'next-character', model: null,
+        languagePreference, fallbackModels: [] });
+      await vm.runInThisContext('ensureSoccerCharacterInfo()');
+      assert.equal(vm.runInThisContext('soccerCharacterExplicitLanguage'), '', 'new character inherited ja');
+      assert.equal(vm.runInThisContext('soccerCharacterLanguagePreferenceResolved'), false);
+    }
+    host.getAvatarCharacter = originalCharacterQuery;
     // Run the actual asset loader and startup sequence with storage held open.
+    window.__SoccerResolvedLanlanName = 'test-character';
     // The real SDK must not have its first character bind cancelled by reset.
     game.runtime.reset({ newSession: true });
     sandbox.resetSoccerCharacterInfo();
