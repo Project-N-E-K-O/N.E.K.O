@@ -75,6 +75,7 @@ from utils.character_memory import (
     rollback_character_recent_rename,
 )
 from utils.config_manager import (
+    ensure_catgirl_character_id,
     flatten_reserved,
     get_reserved,
     set_reserved,
@@ -93,6 +94,15 @@ from utils.cloudsave_runtime import (
     is_cloudsave_disabled,
     is_cloudsave_disabled_due_to_local_state_unavailable,
 )
+from services.theater.numeric_v2_store import (
+    delete_numeric_v2_sessions,
+    list_numeric_v2_public_archives,
+    list_numeric_v2_sessions,
+    update_numeric_v2_character_bindings,
+)
+from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
+from services.theater.paths import theater_root
 
 
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
@@ -768,9 +778,46 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     )
 
     characters_snapshot = copy.deepcopy(characters)
+    renamed_character_id = str(
+        get_reserved(
+            characters["猫娘"][old_name],
+            "character_id",
+            default="",
+        )
+        or ""
+    ).strip()
+    numeric_theater_root = theater_root(_config_manager)
+    numeric_session_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_sessions(
+            numeric_theater_root,
+            character_id=renamed_character_id,
+            legacy_catgirl_name=old_name,
+        )
+    ]
+    numeric_session_index_path = (
+        numeric_theater_root / "numeric_v2" / "story_sessions.json"
+    )
+    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+    numeric_public_archive_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=renamed_character_id,
+            legacy_catgirl_name=old_name,
+        )
+    ]
+    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
+        character_id=renamed_character_id,
+        legacy_catgirl_name=old_name,
+    )
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    memory_targets.extend(numeric_session_targets)
+    memory_targets.extend(numeric_public_archive_targets)
+    memory_targets.extend(numeric_receipt_targets)
+    memory_targets.append(numeric_session_index_path)
     # 卡面文件纳入 snapshot，使迁移失败也能回滚
     old_face = _config_manager.card_faces_dir / f"{old_name}.png"
     new_face = _config_manager.card_faces_dir / f"{new_name}.png"
@@ -884,6 +931,24 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                 characters['当前猫娘'] = new_name
             await _await_thread_mutation(
                 _config_manager.save_characters, characters,
+            )
+
+            await update_numeric_v2_character_bindings(
+                numeric_theater_root,
+                character_id=renamed_character_id,
+                legacy_catgirl_name=old_name,
+                catgirl_binding=numeric_v2_catgirl_binding(
+                    _config_manager,
+                    new_name,
+                ),
+            )
+            # 旧版冷档案和结束回执可能没有 character_id；必须与 Session 一起迁移，
+            # 否则改名后既无法列出档案，也无法消费尚未处理的结束回执。
+            await asyncio.to_thread(
+                numeric_archive_store.update_character_binding,
+                character_id=renamed_character_id,
+                legacy_catgirl_name=old_name,
+                catgirl_name=new_name,
             )
 
             # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
@@ -1101,8 +1166,18 @@ async def set_current_catgirl(request: Request):
                     'success': False,
                     'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
                 }, status_code=400)
-    characters['当前猫娘'] = catgirl_name
-    await _config_manager.asave_characters(characters)
+    async def _publish_current_catgirl() -> None:
+        """只发布当前猫娘配置；小剧场事务负责决定它与旧演出的原子顺序。"""  # noqa: DOCSTRING_CJK
+        # 等待小剧场角色锁期间配置可能被其他请求更新；发布前重读，避免旧快照覆盖并发新增或修改。
+        latest_characters = await _config_manager.aload_characters()
+        latest_characters['当前猫娘'] = catgirl_name
+        await _config_manager.asave_characters(latest_characters)
+
+    # Numeric v2 以不可变 character_id 独立恢复；切换角色只发布当前配置，
+    # 不结束或删除其他角色的剧本进度。
+    # 当前角色发布与剧场提交共享角色生命周期锁，保证提交前复验结果不会被切换请求穿透。
+    async with character_config_mutation_lock:
+        await _publish_current_catgirl()
     # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
@@ -1327,6 +1402,7 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
         characters['猫娘'][key] = catgirl_data
+        ensure_catgirl_character_id(catgirl_data)
         _sync_catgirl_field_order(catgirl_data, requested_field_order)
         # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
         # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
@@ -1406,57 +1482,59 @@ async def update_catgirl(name: str, request: Request):
     data = _filter_mutable_catgirl_fields(raw_data)
     requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
-    if name not in characters.get('猫娘', {}):
-        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
+    # Serialize profile persistence with the theater final binding check.
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+        previous_catgirl_data = copy.deepcopy(characters['猫娘'][name])
 
-    old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
-    voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
-    if voice_id_will_change:
-        session_manager = get_session_manager()
-        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
-            return _voice_session_starting_response()
+        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+        voice_id_will_change = voice_id_in_payload and old_voice_id != requested_voice_id
+        if voice_id_will_change:
+            session_manager = get_session_manager()
+            if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+                return _voice_session_starting_response()
 
-    if voice_id_in_payload and requested_voice_id:
-        # 验证 voice_id 是否在 voice_storage 中
-        if not _config_manager.validate_voice_id(requested_voice_id):
-            voices = _config_manager.get_voices_for_current_api()
-            available_voices = list(voices.keys())
-            return JSONResponse({
-                'success': False,
-                'error': f'voice_id "{requested_voice_id}" 在当前API的音色库中不存在',
-                'available_voices': available_voices
-            }, status_code=400)
+        if voice_id_in_payload and requested_voice_id:
+            # 验证 voice_id 是否在 voice_storage 中
+            if not _config_manager.validate_voice_id(requested_voice_id):
+                voices = _config_manager.get_voices_for_current_api()
+                available_voices = list(voices.keys())
+                return JSONResponse({
+                    'success': False,
+                    'error': f'voice_id "{requested_voice_id}" 在当前API的音色库中不存在',
+                    'available_voices': available_voices
+                }, status_code=400)
 
-    # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
-    removed_fields = []
-    for k in characters['猫娘'][name]:
-        if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
-            removed_fields.append(k)
-    for k in removed_fields:
-        characters['猫娘'][name].pop(k)
+        # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
+        removed_fields = []
+        for k in characters['猫娘'][name]:
+            if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
+                removed_fields.append(k)
+        for k in removed_fields:
+            characters['猫娘'][name].pop(k)
 
-    # 更新普通字段
-    for k, v in data.items():
-        if k != '档案名' and v:
-            characters['猫娘'][name][k] = v
+        # 更新普通字段
+        for k, v in data.items():
+            if k != '档案名' and v:
+                characters['猫娘'][name][k] = v
 
-    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
-    if voice_id_in_payload:
-        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
+        # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
+        if voice_id_in_payload:
+            set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
-    # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
-    if model_type_in_payload and requested_model_type:
-        set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+        # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
+        if model_type_in_payload and requested_model_type:
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
-    _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
+        _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
 
-    await _config_manager.asave_characters(characters)
+        await _config_manager.asave_characters(characters)
 
-    new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
-    voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
-    prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
+        new_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+        voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
+        prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(
@@ -1578,43 +1656,114 @@ async def _delete_catgirl_by_name_serialized(name: str):
         operation="delete",
         target=f"characters/{name}",
     )
+    numeric_theater_root = theater_root(_config_manager)
+    deleted_character_id = str(
+        get_reserved(
+            characters["猫娘"][name],
+            "character_id",
+            default="",
+        )
+        or ""
+    ).strip()
+    numeric_session_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_sessions(
+            numeric_theater_root,
+            character_id=deleted_character_id,
+            legacy_catgirl_name=name,
+            raise_on_io_error=True,
+        )
+    ]
+    numeric_session_index_path = (
+        numeric_theater_root / "numeric_v2" / "story_sessions.json"
+    )
+    numeric_archive_store = NumericV2ArchiveStore(numeric_theater_root)
+    numeric_public_archive_targets = [
+        Path(item["path"])
+        for item in list_numeric_v2_public_archives(
+            numeric_theater_root,
+            character_id=deleted_character_id,
+            legacy_catgirl_name=name,
+            raise_on_io_error=True,
+        )
+    ]
+    numeric_receipt_targets = numeric_archive_store.receipt_paths_for_scope(
+        character_id=deleted_character_id,
+        legacy_catgirl_name=name,
+    )
+    # Forget intents outlive deleted packages, but not their owning character.
+    # Collect them under the same character mutation lock used by /memory/forget.
+    numeric_forget_targets = await asyncio.to_thread(
+        numeric_archive_store.forget_paths_for_character, deleted_character_id,
+    )
 
     if not safe_path_name:
         logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
         characters_snapshot = copy.deepcopy(characters)
-        try:
-            del characters['猫娘'][name]
-            await _config_manager.asave_characters(characters)
+        unsafe_targets = [
+            *numeric_session_targets,
+            *numeric_public_archive_targets,
+            *numeric_receipt_targets,
+            *numeric_forget_targets,
+            numeric_session_index_path,
+        ]
+        with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
+            memory_snapshot_records = await asyncio.to_thread(
+                _snapshot_existing_paths,
+                unsafe_targets,
+                Path(temp_dir),
+            )
+            try:
+                await delete_numeric_v2_sessions(
+                    numeric_theater_root,
+                    character_id=deleted_character_id,
+                    legacy_catgirl_name=name,
+                )
+                await asyncio.to_thread(
+                    numeric_archive_store.delete_receipts,
+                    character_id=deleted_character_id,
+                    legacy_catgirl_name=name,
+                )
+                # 非法名称救援仍要删除按角色归属的剧场冷档案；这些文件已进入上方事务快照。
+                await asyncio.to_thread(
+                    numeric_archive_store.delete_public_archives,
+                    story_id="",
+                    character_id=deleted_character_id,
+                    legacy_catgirl_name=name,
+                )
+                for intent_path in numeric_forget_targets:
+                    await _await_thread_mutation(intent_path.unlink, missing_ok=True)
+                del characters['猫娘'][name]
+                await _config_manager.asave_characters(characters)
 
-            remove_one_catgirl = get_remove_one_catgirl()
-            await remove_one_catgirl(name)
+                remove_one_catgirl = get_remove_one_catgirl()
+                await remove_one_catgirl(name)
 
-            memory_server_reloaded = await notify_memory_server_reload(reason=f"救援删除非法角色名: {name}")
-            if not memory_server_reloaded:
+                memory_server_reloaded = await notify_memory_server_reload(reason=f"救援删除非法角色名: {name}")
+                if not memory_server_reloaded:
+                    raise RuntimeError("notify_memory_server_reload returned False")
+            except MaintenanceModeError as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
                     characters_snapshot=characters_snapshot,
-                    memory_snapshot_records=[],
+                    memory_snapshot_records=memory_snapshot_records,
+                    reason=f"维护模式：救援删除非法角色名回滚 {name}",
+                )
+                if rollback_error:
+                    raise exc from RuntimeError(rollback_error)
+                raise
+            except Exception as exc:
+                rollback_error = await _rollback_character_operation(
+                    _config_manager,
+                    characters_snapshot=characters_snapshot,
+                    memory_snapshot_records=memory_snapshot_records,
                     reason=f"救援删除非法角色名回滚: {name}",
                 )
-                error_message = "救援删除非法角色名失败: notify_memory_server_reload returned False"
+                logger.exception("救援删除非法角色名失败，已尝试回滚: %s", name)
+                error_message = f"救援删除非法角色名失败: {exc}"
                 if rollback_error:
                     error_message = f"{error_message}; 回滚失败: {rollback_error}"
                 return JSONResponse({"success": False, "error": error_message}, status_code=500)
-        except MaintenanceModeError:
-            raise
-        except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=[],
-                reason=f"救援删除非法角色名回滚: {name}",
-            )
-            logger.exception("救援删除非法角色名失败，已尝试回滚: %s", name)
-            error_message = f"救援删除非法角色名失败: {exc}"
-            if rollback_error:
-                error_message = f"{error_message}; 回滚失败: {rollback_error}"
-            return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
         # Every other end-of-identity path retires the sidecar stores; this
         # branch returned without doing so, and a snapshot staged while the
@@ -1641,6 +1790,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
+    memory_targets.extend(numeric_session_targets)
+    memory_targets.extend(numeric_public_archive_targets)
+    memory_targets.extend(numeric_receipt_targets)
+    memory_targets.extend(numeric_forget_targets)
+    memory_targets.append(numeric_session_index_path)
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
     memory_targets.append(face_path)
@@ -1761,6 +1915,27 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 await _await_thread_mutation(face_path.unlink)
             if meta_path.exists():
                 await _await_thread_mutation(meta_path.unlink)
+
+            # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
+            await delete_numeric_v2_sessions(
+                numeric_theater_root,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+            )
+            await asyncio.to_thread(
+                numeric_archive_store.delete_receipts,
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+            )
+            # 完整公开演绎属于角色数据，必须与 Session、回执在同一删除事务内级联清理。
+            await asyncio.to_thread(
+                numeric_archive_store.delete_public_archives,
+                story_id="",
+                character_id=deleted_character_id,
+                legacy_catgirl_name=name,
+            )
+            for intent_path in numeric_forget_targets:
+                await _await_thread_mutation(intent_path.unlink, missing_ok=True)
 
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 await _await_thread_mutation(

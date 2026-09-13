@@ -24,11 +24,16 @@ _TYPE_TO_ROLE = {"human": "user", "ai": "assistant", "system": "system"}
 
 _ROLE_TO_TYPE = {"user": "human", "assistant": "ai", "system": "system"}
 
+THEATER_MEMORY_SOURCE = "theater_numeric_v2"
+
 @dataclass
 class BaseMessage:
     content: Any
     type: str = ""
     additional_kwargs: dict[str, Any] = field(default_factory=dict)
+    # 只在 N.E.K.O 内部持久化和路由，发送给模型供应商时由 to_openai 主动剥离。
+    # 这样剧场来源等程序语义不用伪装成正文标签，也不会污染普通模型协议。
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def role(self) -> str:
@@ -48,6 +53,105 @@ class HumanMessage(BaseMessage):
 @dataclass
 class AIMessage(BaseMessage):
     type: str = field(default="ai", init=False)
+
+
+def message_metadata(message: Any) -> dict[str, Any]:
+    """读取内存消息、OpenAI 消息或落盘消息携带的内部元数据。"""  # noqa: DOCSTRING_CJK
+
+    if isinstance(message, BaseMessage):
+        return message.metadata if isinstance(message.metadata, dict) else {}
+    if not isinstance(message, dict):
+        return {}
+    direct = message.get("metadata")
+    if isinstance(direct, dict):
+        return direct
+    data = message.get("data")
+    if isinstance(data, dict) and isinstance(data.get("metadata"), dict):
+        return data["metadata"]
+    return {}
+
+
+def is_theater_memory_message(message: Any) -> bool:
+    return message_metadata(message).get("source") == THEATER_MEMORY_SOURCE
+
+
+def theater_memory_episode_key(message: Any) -> tuple[str, str]:
+    """同一剧本 Session 的分段归档属于同一次演绎。"""  # noqa: DOCSTRING_CJK
+
+    metadata = message_metadata(message)
+    return (
+        str(metadata.get("story_id") or ""),
+        str(metadata.get("session_id") or ""),
+    )
+
+
+def is_theater_episode_summary(message: Any) -> bool:
+    """判断消息是否为剧场写入日常记忆的单集摘要胶囊。"""  # noqa: DOCSTRING_CJK
+
+    metadata = message_metadata(message)
+    return (
+        metadata.get("source") == THEATER_MEMORY_SOURCE
+        and metadata.get("memory_tier") == "episode_summary"
+    )
+
+
+def _message_text_content(message: Any) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return str(content or "").strip()
+    return "\n".join(
+        str(part.get("text") or "").strip()
+        for part in content
+        if isinstance(part, dict)
+        and part.get("type") == "text"
+        and str(part.get("text") or "").strip()
+    )
+
+
+def render_theater_memory_message_lines(
+    message: Any,
+    *,
+    player_name: str,
+    catgirl_name: str,
+) -> list[str]:
+    """按结构化片段渲染剧场记忆；正文中不注入旁白或转场标签。"""  # noqa: DOCSTRING_CJK
+
+    # 单集摘要已经由可信元数据渲染成剧场记忆上下文，不能再伪装成玩家或猫娘对白。
+    if is_theater_episode_summary(message):
+        return []
+
+    if getattr(message, "type", "") == "human":
+        text = _message_text_content(message)
+        return [f"{player_name} | {text}"] if text else []
+    metadata = message_metadata(message)
+    raw_parts = metadata.get("parts")
+    if not isinstance(raw_parts, list):
+        text = _message_text_content(message)
+        return [f"{catgirl_name} | {text}"] if text else []
+    lines: list[str] = []
+    performance_parts: list[str] = []
+
+    def flush_performance() -> None:
+        text = "".join(performance_parts).strip()
+        performance_parts.clear()
+        if text:
+            lines.append(f"{catgirl_name} | {text}")
+
+    for raw_part in raw_parts:
+        if not isinstance(raw_part, dict):
+            continue
+        text = str(raw_part.get("text") or "").strip()
+        if not text:
+            continue
+        if raw_part.get("kind") == "scene_narration":
+            flush_performance()
+            lines.append(text)
+        else:
+            performance_parts.append(text)
+    flush_performance()
+    return lines
 
 _TYPE_CLS: dict[str, type[BaseMessage]] = {
     "human": HumanMessage,
@@ -76,13 +180,20 @@ def messages_to_dict(messages: list) -> list[dict]:
             data = {"content": msg.content}
             if msg.additional_kwargs:
                 data["additional_kwargs"] = dict(msg.additional_kwargs)
+            if msg.metadata:
+                data["metadata"] = dict(msg.metadata)
             result.append({"type": msg.type, "data": data})
         elif isinstance(msg, dict):
             if "type" in msg and "data" in msg:
                 result.append(msg)
             elif "role" in msg:
                 t = _ROLE_TO_TYPE.get(msg["role"], msg["role"])
-                result.append({"type": t, "data": {"content": msg.get("content", "")}})
+                data = {"content": msg.get("content", "")}
+                if isinstance(msg.get("additional_kwargs"), dict) and msg["additional_kwargs"]:
+                    data["additional_kwargs"] = dict(msg["additional_kwargs"])
+                if isinstance(msg.get("metadata"), dict) and msg["metadata"]:
+                    data["metadata"] = dict(msg["metadata"])
+                result.append({"type": t, "data": data})
             else:
                 result.append(msg)
         else:
@@ -103,13 +214,21 @@ def messages_from_dict(dicts: list[dict]) -> list[BaseMessage]:
             data = d["data"]
             content = data.get("content", "") if isinstance(data, dict) else data
             additional_kwargs = data.get("additional_kwargs", {}) if isinstance(data, dict) else {}
+            metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
             result.append(cls(
                 content=content,
                 additional_kwargs=(dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}),
+                metadata=dict(metadata) if isinstance(metadata, dict) else {},
             ))
         elif "role" in d and "content" in d:
             cls = _ROLE_CLS.get(d["role"], HumanMessage)
-            result.append(cls(content=d["content"]))
+            additional_kwargs = d.get("additional_kwargs", {})
+            metadata = d.get("metadata", {})
+            result.append(cls(
+                content=d["content"],
+                additional_kwargs=(dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}),
+                metadata=dict(metadata) if isinstance(metadata, dict) else {},
+            ))
         else:
             result.append(HumanMessage(content=str(d)))
     return result
@@ -196,7 +315,8 @@ def _normalize_messages(messages: Any) -> list[dict]:
     for msg in messages:
         if isinstance(msg, dict):
             if "role" in msg:
-                out.append(msg)
+                # metadata 仅供 N.E.K.O 内部持久化和路由，不属于供应商消息协议。
+                out.append({key: value for key, value in msg.items() if key != "metadata"})
             elif "type" in msg and "data" in msg:
                 role = _TYPE_TO_ROLE.get(msg["type"], msg["type"])
                 content = msg["data"].get("content", "") if isinstance(msg["data"], dict) else msg["data"]

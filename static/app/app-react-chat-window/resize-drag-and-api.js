@@ -962,6 +962,17 @@
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnTheaterSubmit: function (handler) {
+            I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterSuggestedInputSelect: function (handler) {
+            I.state.onTheaterSuggestedInputSelect = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterEnd: function (handler) {
+            I.state.onTheaterEnd = typeof handler === 'function' ? handler : null;
+        },
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {
             I.state.onAvatarInteraction = typeof handler === 'function' ? handler : null;

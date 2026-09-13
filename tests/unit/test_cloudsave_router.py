@@ -124,7 +124,7 @@ def _make_config_manager(tmp_root: Path):
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
-    from utils.config_manager import set_reserved
+    from utils.config_manager import ensure_catgirl_character_id, set_reserved
 
     characters = cm.get_default_characters()
     characters["猫娘"] = {
@@ -135,6 +135,8 @@ def _write_runtime_state(cm, *, character_name="小满"):
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source", "steam_workshop")
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source_id", "123456")
     set_reserved(characters["猫娘"][character_name], "avatar", "live2d", "model_path", "example/example.model3.json")
+    # 测试夹具模拟正常保存链路，先持久化稳定身份，避免读取迁移产生随机比较噪声。
+    ensure_catgirl_character_id(characters["猫娘"][character_name])
     cm.save_characters(characters, bypass_write_fence=True)
 
     character_memory_dir = Path(cm.memory_dir) / character_name

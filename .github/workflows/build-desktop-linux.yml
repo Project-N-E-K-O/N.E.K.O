@@ -311,6 +311,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
@@ -384,6 +385,9 @@ jobs:
             --destination-dir dist/Xiao8/plugin/plugins
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
+
+      - name: Smoke test frozen theater workshop SDK
+        run: .venv/bin/python scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
 
       # --- Verify bundled embedding + tiktoken assets ---
       # memory/embeddings.py treats every onnx_data sidecar plus both fp32

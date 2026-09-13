@@ -20,6 +20,7 @@ with its flush loop.
 """
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta
@@ -43,6 +44,7 @@ from config.prompts.prompts_memory import (
     MEMORY_UNAVAILABLE_NOTICE,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
+    get_theater_memory_context,
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
@@ -52,7 +54,14 @@ from utils.language_utils import (
     language_context,
     normalize_language_code,
 )
-from utils.llm_client import convert_to_messages
+from utils.llm_client import (
+    convert_to_messages,
+    is_theater_episode_summary,
+    is_theater_memory_message,
+    message_metadata,
+    messages_to_dict,
+    theater_memory_episode_key,
+)
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
@@ -76,12 +85,81 @@ class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
     render_language: str | None = None
+    idempotency_key: str | None = None
 
 
 class PromptLocalePreferenceRequest(BaseModel):
     language: str
 
 
+class TheaterMemoryForgetRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+
+
+def _cache_event_id(lanlan_name: str, idempotency_key: str) -> str:
+    """把外部幂等键投影成固定长度的 time-indexed 事件 ID。"""  # noqa: DOCSTRING_CJK
+
+    digest = hashlib.sha256(
+        f"{lanlan_name}\x1f{idempotency_key}".encode("utf-8")
+    ).hexdigest()
+    return f"cache-idempotent-{digest}"
+
+
+def _theater_story_event_id(lanlan_name: str, message) -> str:
+    """同一剧本在时间索引中始终使用同一个有界事件 ID。"""  # noqa: DOCSTRING_CJK
+
+    story_id, _ = theater_memory_episode_key(message)
+    digest = hashlib.sha256(
+        f"{lanlan_name}\x1f{story_id}".encode("utf-8")
+    ).hexdigest()
+    return f"theater-story-{digest}"
+
+
+def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[str, list]]:
+    """把 recent 中所有剧场记忆组成按剧本聚合的时间索引事件。"""  # noqa: DOCSTRING_CJK
+
+    grouped: dict[str, list] = {}
+    for message in messages:
+        # 忘记单个剧本时，其他剧本尚未迁移的旧正文仍在 recent；重建索引必须原样保留。
+        if not is_theater_memory_message(message):
+            continue
+        story_id, _ = theater_memory_episode_key(message)
+        if story_id:
+            grouped.setdefault(story_id, []).append(message)
+    return {
+        story_id: (
+            _theater_story_event_id(lanlan_name, story_messages[-1]),
+            story_messages,
+        )
+        for story_id, story_messages in grouped.items()
+    }
+
+
+def _theater_memory_render_state(history: list):
+    """选出每个 Session 最新状态，以及每个 Story 最新周目。"""  # noqa: DOCSTRING_CJK
+
+    latest_by_episode = {
+        theater_memory_episode_key(message): message_metadata(message)
+        for message in history
+        if is_theater_memory_message(message)
+    }
+    latest_episode_by_story: dict[str, tuple[str, str]] = {}
+    latest_rank_by_story: dict[str, tuple[int, int]] = {}
+    for position, (episode_key, metadata) in enumerate(latest_by_episode.items()):
+        story_id = episode_key[0]
+        raw_run_index = metadata.get("run_index")
+        run_index = (
+            raw_run_index
+            if isinstance(raw_run_index, int)
+            and not isinstance(raw_run_index, bool)
+            and raw_run_index > 0
+            else 0
+        )
+        rank = (run_index, position)
+        if rank >= latest_rank_by_story.get(story_id, (-1, -1)):
+            latest_rank_by_story[story_id] = rank
+            latest_episode_by_story[story_id] = episode_key
+    return latest_by_episode, latest_episode_by_story
 class RepetitionInsightsRequest(BaseModel):
     language: Literal["en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"]
     assistant_message_limit: int = Field(default=100, ge=3, le=100)
@@ -246,8 +324,6 @@ async def repetition_insights(lanlan_name: str, req: RepetitionInsightsRequest):
         # normal case rather than an edge case.
         payload["_anti_repeat_response_ids"] = scoped_ids
     return payload
-
-
 def _activate_request_language(language: str | None) -> str:
     """Resolve the locale for this request without changing the process default.
 
@@ -965,15 +1041,92 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             input_history = convert_to_messages(json.loads(request.input_history))
             if not input_history:
                 return {"status": "cached", "count": 0}
+            theater_episode_batch = (
+                len(input_history) == 1
+                and is_theater_episode_summary(input_history[0])
+            )
+            idempotency_key = str(request.idempotency_key or "").strip()
+            if len(idempotency_key) > 160:
+                return {"status": "error", "message": "idempotency_key_too_long"}
+            stable_event_id = (
+                _cache_event_id(lanlan_name, idempotency_key)
+                if idempotency_key
+                else ""
+            )
+            if (
+                stable_event_id
+                and not theater_episode_batch
+                and await runtime.time_manager.ahas_conversation_event(
+                    stable_event_id,
+                    lanlan_name,
+                )
+            ):
+                return {"status": "already_cached", "count": len(input_history)}
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
-            uid = str(uuid4())
+            uid = stable_event_id or str(uuid4())
+            duplicate_request = False
+            theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-                # store_conversation 必须在 lock 内、与 update_history 串行：和
-                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                # 锁内再次检查才能收住两个相同请求同时通过首轮检查的竞争窗口。
+                if (
+                    stable_event_id
+                    and not theater_episode_batch
+                    and await runtime.time_manager.ahas_conversation_event(
+                        stable_event_id,
+                        lanlan_name,
+                    )
+                ):
+                    duplicate_request = True
+                else:
+                    if theater_episode_batch:
+                        # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
+                        # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
+                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                            input_history[0],
+                            lanlan_name,
+                        )
+                        input_history = [stored_episode]
+                        theater_index_events = _theater_index_events(
+                            lanlan_name,
+                            await runtime.recent_history_manager.aget_recent_history(
+                                lanlan_name
+                            ),
+                        )
+                    elif stable_event_id:
+                        for message in input_history:
+                            message.metadata["cache_event_id"] = stable_event_id
+                        # The file lock owns deduplication and retry of pending
+                        # batches; only a durable write permits the index receipt.
+                        await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            compress=False,
+                            cache_event_id=stable_event_id,
+                        )
+                    else:
+                        await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            compress=False,
+                        )
+                    if theater_episode_batch:
+                        # 以 recent 为唯一热记忆基线重建剧场时间索引：
+                        # 这会同时淘汰超限周目和升级前遗留的完整正文行。
+                        await runtime.time_manager.areconcile_theater_conversations(
+                            theater_index_events,
+                            lanlan_name,
+                        )
+                    else:
+                        # 稳定 event_id 是本批公开记忆的提交标记；写成后重试直接短路。
+                        await runtime.time_manager.astore_conversation(
+                            uid,
+                            input_history,
+                            lanlan_name,
+                        )
+            if duplicate_request:
+                return {"status": "already_cached", "count": len(input_history)}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
@@ -985,6 +1138,71 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         except Exception as e:
             logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
+
+
+@app.get("/internal/memory/{lanlan_name}/theater/stories")
+async def list_theater_memory_stories(lanlan_name: str):
+    """Expose saved public summaries for management after a package is deleted."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    characters = await runtime._config_manager.aload_characters()
+    if lanlan_name not in characters.get("猫娘", {}):
+        raise HTTPException(status_code=404, detail="character_not_found")
+    async with runtime._get_settle_lock(lanlan_name):
+        history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+        latest, _ = _theater_memory_render_state(history)
+    stories = {}
+    for (story_id, _), metadata in latest.items():
+        if not story_id:
+            continue
+        story = stories.setdefault(story_id, {"story_id": story_id, "title": "", "memory_summaries": []})
+        story["title"] = str(metadata.get("story_title") or story["title"] or story_id)
+        summary = str(metadata.get("episode_summary") or metadata.get("ending_summary") or "").strip()
+        if summary:
+            story["memory_summaries"].append(summary)
+    return {"ok": True, "stories": list(stories.values())}
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/forget")
+async def forget_theater_memory(
+    lanlan_name: str,
+    request: TheaterMemoryForgetRequest,
+):
+    """幂等删除指定剧本的热记忆和时间索引。"""  # noqa: DOCSTRING_CJK
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    if not story_id:
+        raise HTTPException(status_code=422, detail="story_id_required")
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            removed_recent = await runtime.recent_history_manager.forget_theater_story(
+                story_id,
+                lanlan_name,
+            )
+            remaining = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, remaining),
+                lanlan_name,
+            )
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] 删除 %s 的剧本 %s 记忆失败: %s",
+            lanlan_name,
+            story_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_forget_failed",
+        ) from exc
 
 
 @app.post("/process/{lanlan_name}")
@@ -1181,10 +1399,56 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         return _loc(NO_RECENT_HISTORY, _lang)
 
     history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
+    master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
+    latest_theater_metadata, latest_episode_by_story = _theater_memory_render_state(
+        history
+    )
+    rendered_theater_episodes: set[tuple[str, str]] = set()
     for i in history:
+        if is_theater_memory_message(i):
+            episode_key = theater_memory_episode_key(i)
+            if episode_key in rendered_theater_episodes:
+                continue
+            metadata = latest_theater_metadata[episode_key]
+            is_latest_story_run = (
+                latest_episode_by_story.get(episode_key[0]) == episode_key
+            )
+            result += get_theater_memory_context(
+                _lang,
+                name=lanlan_name,
+                master=master_name,
+                title=str(metadata.get("story_title") or ""),
+                status=str(metadata.get("episode_status") or "paused"),
+                ending=str(metadata.get("ending_title") or ""),
+                summary=str(
+                    metadata.get("episode_summary")
+                    or metadata.get("ending_summary")
+                    or ""
+                ),
+                run_index=(
+                    metadata.get("run_index")
+                    if isinstance(metadata.get("run_index"), int)
+                    and not isinstance(metadata.get("run_index"), bool)
+                    else 0
+                ),
+                story_run_count=(
+                    metadata.get("story_run_count")
+                    if is_latest_story_run
+                    and isinstance(metadata.get("story_run_count"), int)
+                    and not isinstance(metadata.get("story_run_count"), bool)
+                    else 0
+                ),
+                ending_titles=(
+                    metadata.get("ending_titles_seen")
+                    if is_latest_story_run
+                    and isinstance(metadata.get("ending_titles_seen"), list)
+                    else []
+                ),
+            ) + "\n"
+            rendered_theater_episodes.add(episode_key)
+            continue
         if isinstance(i.content, str):
             content = i.content
         else:
@@ -3907,7 +4171,54 @@ async def _new_dialog(
             time=get_timestamp(),
         )
 
-        for i in await runtime.recent_history_manager.aget_recent_history(lanlan_name):
+        recent_history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+        latest_theater_metadata, latest_episode_by_story = _theater_memory_render_state(
+            recent_history
+        )
+        rendered_theater_episodes: set[tuple[str, str]] = set()
+        for i in recent_history:
+            if is_theater_memory_message(i):
+                episode_key = theater_memory_episode_key(i)
+                if episode_key in rendered_theater_episodes:
+                    continue
+                metadata = latest_theater_metadata[episode_key]
+                is_latest_story_run = (
+                    latest_episode_by_story.get(episode_key[0]) == episode_key
+                )
+                result += get_theater_memory_context(
+                    _lang,
+                    name=lanlan_name,
+                    master=master_name,
+                    title=str(metadata.get("story_title") or ""),
+                    status=str(metadata.get("episode_status") or "paused"),
+                    ending=str(metadata.get("ending_title") or ""),
+                    summary=str(
+                        metadata.get("episode_summary")
+                        or metadata.get("ending_summary")
+                        or ""
+                    ),
+                    run_index=(
+                        metadata.get("run_index")
+                        if isinstance(metadata.get("run_index"), int)
+                        and not isinstance(metadata.get("run_index"), bool)
+                        else 0
+                    ),
+                    story_run_count=(
+                        metadata.get("story_run_count")
+                        if is_latest_story_run
+                        and isinstance(metadata.get("story_run_count"), int)
+                        and not isinstance(metadata.get("story_run_count"), bool)
+                        else 0
+                    ),
+                    ending_titles=(
+                        metadata.get("ending_titles_seen")
+                        if is_latest_story_run
+                        and isinstance(metadata.get("ending_titles_seen"), list)
+                        else []
+                    ),
+                ) + "\n"
+                rendered_theater_episodes.add(episode_key)
+                continue
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"

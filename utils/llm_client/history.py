@@ -76,6 +76,9 @@ class SQLChatMessageHistory:
             persisted_kwargs = _persisted_additional_kwargs(message)
             if persisted_kwargs:
                 data["additional_kwargs"] = persisted_kwargs
+            # 剧场结构等内部元数据必须进入时间索引，但不会发给模型供应商。
+            if message.metadata:
+                data["metadata"] = dict(message.metadata)
             return _json.dumps({"type": message.type, "data": data}, ensure_ascii=False)
         if isinstance(message, dict):
             return _json.dumps(message, ensure_ascii=False)
@@ -104,3 +107,22 @@ class SQLChatMessageHistory:
             with self._engine.connect() as conn:
                 conn.execute(insert(self._table), rows)
                 conn.commit()
+
+    def replace_messages(self, messages: list) -> None:
+        """按 session_id 原子替换整批消息。"""  # noqa: DOCSTRING_CJK
+
+        from sqlalchemy import delete, insert
+
+        if not messages:
+            raise ValueError("empty_conversation_replacement")
+        rows = [
+            {"session_id": self.session_id, "message": self._serialize(message)}
+            for message in messages
+        ]
+        # 删除与重写必须处于同一事务，避免读取方看到同一剧场周目的半更新状态。
+        with self._engine.begin() as conn:
+            conn.execute(
+                delete(self._table).where(self._table.c.session_id == self.session_id)
+            )
+            if rows:
+                conn.execute(insert(self._table), rows)

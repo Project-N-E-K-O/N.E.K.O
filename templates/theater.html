@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="theater.title">小剧场 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/theater_selector.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <!-- 共享传输协议必须先于选择页业务脚本加载。 -->
+    <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <main class="theater-selector-shell" data-theater-selector-app>
+        <header class="theater-title-bar page-title-bar">
+            <div class="theater-title-copy">
+                <h2 data-i18n="theater.title">小剧场</h2>
+                <span class="theater-mode-badge" data-i18n="theater.scriptMode">剧本模式</span>
+                <div class="theater-status" id="theater-selector-status" role="status" aria-live="polite" data-i18n="theater.loading">正在准备舞台...</div>
+            </div>
+            <div class="neko-window-controls theater-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化"><span class="neko-window-minimize-icon"></span></button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化"><span class="neko-window-maximize-icon"></span></button>
+                <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"><span class="theater-close-icon" aria-hidden="true"></span></button>
+            </div>
+        </header>
+        <div class="theater-selector-layout">
+            <aside class="theater-story-library" aria-labelledby="theater-library-title">
+                <div class="theater-library-heading">
+                    <div><p data-i18n="theater.selectorKicker">STORY LIBRARY</p><h1 id="theater-library-title" data-i18n="theater.selectorTitle">选择一个剧本</h1></div>
+                    <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    <input id="theater-import-input" type="file" accept="application/json,.json" hidden>
+                </div>
+                <div class="theater-story-list" id="theater-story-list" role="listbox" aria-label="选择小剧场故事" data-i18n-aria="theater.storyListAria"></div>
+                <div class="theater-empty-state" id="theater-empty-state" hidden>
+                    <strong data-i18n="theater.noStories">暂无可用剧本</strong>
+                    <p data-i18n="theater.noStoriesHint">导入一个 Numeric v2 剧本后即可开始。</p>
+                    <button type="button" class="theater-primary" id="theater-empty-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                </div>
+            </aside>
+            <section class="theater-story-detail" aria-labelledby="theater-detail-title">
+                <div class="theater-detail-placeholder" id="theater-detail-placeholder"><p data-i18n="theater.selectStoryHint">从左侧选择剧本，查看前情与角色身份。</p></div>
+                <div class="theater-detail-content" id="theater-detail-content" hidden>
+                    <div class="theater-detail-heading"><div><p id="theater-detail-meta"></p><h1 id="theater-detail-title"></h1></div><span class="theater-session-badge" id="theater-session-badge"></span></div>
+                    <div class="theater-detail-actions" aria-label="剧本操作" data-i18n-aria="theater.storyActionsAria">
+                        <p class="theater-session-hint" id="theater-session-hint" role="status" aria-live="polite"></p>
+                        <!-- 演绎统一使用固定预算，旧存档兼容由后端处理。 -->
+                        <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始</button>
+                        <button type="button" class="theater-primary" id="theater-continue-btn" data-i18n="theater.continueSession">继续</button>
+                        <button type="button" class="theater-secondary theater-danger" id="theater-end-btn" data-i18n="theater.endPerformance" hidden>结束演绎</button>
+                        <button type="button" class="theater-secondary theater-danger" id="theater-delete-btn" data-i18n="theater.deleteStory">删除剧本</button>
+                    </div>
+                    <div class="theater-inline-feedback" id="theater-inline-feedback" role="status" aria-live="polite" hidden></div>
+                    <article class="theater-intro-card theater-intro-background"><h2 data-i18n="theater.storyIntroKicker">故事前情</h2><p id="theater-detail-background"></p></article>
+                    <div class="theater-role-grid">
+                        <article class="theater-intro-card"><h2 data-i18n="theater.playerRoleLabel">你的剧情身份</h2><p id="theater-detail-player"></p></article>
+                        <article class="theater-intro-card"><h2 data-i18n="theater.catgirlRoleLabel">猫娘剧情身份</h2><p id="theater-detail-catgirl"></p></article>
+                    </div>
+                    <article class="theater-intro-card theater-memory-card">
+                        <div class="theater-memory-heading">
+                            <div><h2 data-i18n="theater.savedPerformances">已保存的演绎</h2><p data-i18n="theater.savedPerformancesHint">默认保留最近 5 份完整记录，收藏的记录不会自动清理。</p></div>
+                            <button type="button" class="theater-secondary theater-danger" id="theater-forget-memory-btn" data-i18n="theater.forgetStoryMemory">忘记该剧本</button>
+                        </div>
+                        <div class="theater-memory-list" id="theater-memory-list"></div>
+                        <p class="theater-memory-empty" id="theater-memory-empty" data-i18n="theater.noSavedPerformances">暂无已保存的演绎记录。</p>
+                    </article>
+                </div>
+            </section>
+        </div>
+    </main>
+    <div class="theater-modal-backdrop" id="theater-modal" hidden>
+        <section class="theater-modal" role="dialog" aria-modal="true" aria-labelledby="theater-modal-title" aria-describedby="theater-modal-body" tabindex="-1">
+            <h2 id="theater-modal-title"></h2><p id="theater-modal-body"></p><div class="theater-modal-error" id="theater-modal-error" role="alert" hidden></div>
+            <div class="theater-modal-actions"><button type="button" class="theater-secondary" id="theater-modal-cancel"></button><button type="button" class="theater-primary" id="theater-modal-confirm"></button></div>
+        </section>
+    </div>
+</body>
+</html>

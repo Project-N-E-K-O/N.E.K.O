@@ -39,6 +39,10 @@ def timeindex_module():
 
     llm_client.SQLChatMessageHistory = _History
     llm_client.SystemMessage = object
+    llm_client.THEATER_MEMORY_SOURCE = "theater_numeric_v2"
+    llm_client.is_theater_memory_message = lambda _message: False
+    llm_client.messages_from_dict = lambda _messages: []
+    llm_client.messages_to_dict = lambda messages: list(messages)
     stubs["utils.llm_client"] = llm_client
 
     cloudsave = types.ModuleType("utils.cloudsave_runtime")

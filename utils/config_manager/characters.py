@@ -31,7 +31,11 @@ from .persona_payload import (
     _build_effective_character_payload,
     _resolve_effective_character_prompt,
 )
-from .reserved_schema import migrate_catgirl_reserved, validate_reserved_schema
+from .reserved_schema import (
+    ensure_catgirl_character_id,
+    migrate_catgirl_reserved,
+    validate_reserved_schema,
+)
 
 
 class CharactersMixin:
@@ -44,8 +48,8 @@ class CharactersMixin:
         from config import get_localized_default_characters
         return get_localized_default_characters()
 
-    def load_characters(self, character_json_path=None):
-        """Load character configs"""
+    def load_characters(self, character_json_path=None, *, require_authoritative=False):
+        """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
         use_default_path = character_json_path is None
         if character_json_path is None:
             character_json_path = str(self.get_config_path('characters.json'))
@@ -54,12 +58,17 @@ class CharactersMixin:
             cache = self._characters_cache
             cache_path = self._characters_cache_path
             cache_mtime = self._characters_cache_mtime
+            cache_dirty = self._characters_dirty
         if cache is not None and cache_path == character_json_path:
             try:
                 current_mtime = os.path.getmtime(character_json_path)
             except OSError:
                 current_mtime = None
-            if current_mtime is not None and current_mtime == cache_mtime:
+            if (
+                not cache_dirty
+                and current_mtime is not None
+                and current_mtime == cache_mtime
+            ):
                 return deepcopy(cache)
 
         # 慢路径：独占锁，防止多个线程同时读文件、重复触发迁移和校验警告。
@@ -69,14 +78,55 @@ class CharactersMixin:
                 cache = self._characters_cache
                 cache_path = self._characters_cache_path
                 cache_mtime = self._characters_cache_mtime
+                cache_dirty = self._characters_dirty
             if cache is not None and cache_path == character_json_path:
+                source_missing = False
                 try:
                     current_mtime = os.path.getmtime(character_json_path)
+                except FileNotFoundError:
+                    current_mtime = None
+                    source_missing = True
                 except OSError:
                     current_mtime = None
-                if current_mtime is not None and current_mtime == cache_mtime:
+                if cache_dirty and current_mtime is None and not (
+                    source_missing and cache_mtime is None
+                ):
+                    # An unreadable source cannot supersede an unpersisted identity.
+                    # Only a never-persisted default may retry creating a missing file.
+                    if require_authoritative:
+                        raise ValueError("character_config_not_authoritative")
                     return deepcopy(cache)
+                if current_mtime == cache_mtime and (
+                    current_mtime is not None or cache_dirty
+                ):
+                    if not cache_dirty:
+                        return deepcopy(cache)
+                    # 上次迁移已生成稳定角色 ID，但被维护栅栏或暂时性 I/O 阻止写回；
+                    # 每次恢复可写后都先重试持久化，再把该身份交给后续持久化业务使用。
+                    dirty_cache = deepcopy(cache)
+                    try:
+                        self.save_characters(
+                            dirty_cache,
+                            character_json_path=character_json_path,
+                        )
+                        logger.info("已补写此前未持久化的角色保留字段迁移。")
+                    except Exception as persist_err:
+                        if require_authoritative:
+                            raise
+                        try:
+                            from utils.cloudsave_runtime import MaintenanceModeError
+                        except Exception:
+                            MaintenanceModeError = None
+                        if MaintenanceModeError is not None and isinstance(
+                            persist_err,
+                            MaintenanceModeError,
+                        ):
+                            logger.debug("角色保留字段迁移仍处于只读阶段: %s", persist_err)
+                        else:
+                            logger.warning("重试写回角色保留字段迁移失败: %s", persist_err)
+                    return dirty_cache
 
+            migration_persistence_allowed = True
             try:
                 with open(character_json_path, 'r', encoding='utf-8') as f:
                     character_data = json.load(f)
@@ -85,37 +135,74 @@ class CharactersMixin:
                 except OSError:
                     loaded_mtime = None
             except FileNotFoundError:
+                if require_authoritative:
+                    raise
+                if cache_dirty and cache is not None and cache_path == character_json_path:
+                    return deepcopy(cache)
                 logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
                 character_data = self.get_default_characters()
                 loaded_mtime = None
             except Exception as e:
+                if require_authoritative:
+                    raise
+                if cache_dirty and cache is not None and cache_path == character_json_path:
+                    # Preserve the dirty flag and original mtime for a later retry.
+                    return deepcopy(cache)
                 logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
-                character_data = self.get_default_characters()
+                # 故障回退不是磁盘文件的权威内容，后续迁移只能在内存中使用，绝不能反写覆盖原文件。
+                character_data = (
+                    deepcopy(cache)
+                    if cache is not None
+                    and cache_path == character_json_path
+                    and not cache_dirty
+                    else self.get_default_characters()
+                )
                 loaded_mtime = None
+                migration_persistence_allowed = False
 
             migrated = False
             if not isinstance(character_data, dict):
+                if require_authoritative:
+                    raise ValueError("character_config_not_authoritative")
                 logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
                 character_data = self.get_default_characters()
+                loaded_mtime = None
+                migration_persistence_allowed = False
             catgirl_map = character_data.get("猫娘")
             if isinstance(catgirl_map, dict):
                 all_schema_errors: list[str] = []
+                used_character_ids: set[str] = set()
                 for name, catgirl_data in catgirl_map.items():
                     if not isinstance(catgirl_data, dict):
                         logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
                         continue
                     if migrate_catgirl_reserved(catgirl_data):
                         migrated = True
+                    _, character_id_changed = ensure_catgirl_character_id(
+                        catgirl_data,
+                        used_ids=used_character_ids,
+                    )
+                    migrated |= character_id_changed
                     reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
                     for err in reserved_errors:
                         all_schema_errors.append(f"{name}: {err}")
                 if all_schema_errors:
                     logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(all_schema_errors))
-            if migrated:
+            if migrated and migration_persistence_allowed:
                 try:
                     self.save_characters(character_data, character_json_path=character_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
                 except Exception as migrate_err:
+                    # character_id 即使在临时只读阶段也必须在本进程内保持稳定；
+                    # 否则每次 load 都会为同一张旧卡生成不同身份。后续正常写入会
+                    # 连同其它迁移结果一起持久化。
+                    with self._characters_cache_lock:
+                        self._characters_cache = deepcopy(character_data)
+                        self._characters_cache_mtime = loaded_mtime
+                        self._characters_cache_path = character_json_path
+                        self._characters_dirty = True
+                    if require_authoritative:
+                        raise
                     # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
                     try:
                         from utils.cloudsave_runtime import MaintenanceModeError
@@ -126,6 +213,8 @@ class CharactersMixin:
                     else:
                         logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
             else:
+                if migrated and not migration_persistence_allowed:
+                    logger.warning("角色配置读取失败，保留原文件并仅在内存中应用保留字段迁移。")
                 with self._characters_cache_lock:
                     self._characters_cache = deepcopy(character_data)
                     self._characters_cache_mtime = loaded_mtime

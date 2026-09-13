@@ -1941,6 +1941,12 @@
     }
 
     async function startMicCapture() {
+        // 小剧场使用独立文本输入与 TTS 队列，活跃期间不能重新打开普通聊天麦克风。
+        if (window.nekoTheaterRuntime
+                && typeof window.nekoTheaterRuntime.getState === 'function'
+                && window.nekoTheaterRuntime.getState().active === true) {
+            return false;
+        }
         // Refuse to open the hardware microphone onto a route the backend has
         // already fail-closed. This is THE guard that closes the startup-failure
         // hole: on a cold voice start the mic is opened only AFTER

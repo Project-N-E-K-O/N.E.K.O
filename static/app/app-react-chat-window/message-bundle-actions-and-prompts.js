@@ -502,6 +502,22 @@
         }
     };
 
+    I.handleTheaterSuggestedInputSelect = function handleTheaterSuggestedInputSelect(text) {
+        if (typeof I.state.onTheaterSuggestedInputSelect === 'function') {
+            I.state.onTheaterSuggestedInputSelect(String(text || ''));
+        }
+    };
+
+    I.handleTheaterSubmit = function handleTheaterSubmit(text) {
+        if (typeof I.state.onTheaterSubmit === 'function') {
+            I.state.onTheaterSubmit(String(text || ''));
+        }
+    };
+
+    I.handleTheaterEnd = function handleTheaterEnd() {
+        if (typeof I.state.onTheaterEnd === 'function') I.state.onTheaterEnd();
+    };
+
     I.handleAvatarInteraction = function handleAvatarInteraction(payload) {
         var detail = payload || {};
 

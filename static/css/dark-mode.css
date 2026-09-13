@@ -485,6 +485,57 @@ html #chat-container {
   color: #fff;
 }
 
+/* 小剧场结束确认框始终复用选剧页蓝白面板，不被通用暗色弹窗改成深灰或红色。 */
+[data-theme="dark"] .modal-overlay.modal-overlay-theater {
+  background: transparent !important;
+}
+
+[data-theme="dark"] .modal-dialog.modal-dialog-theater {
+  color: #24445a;
+  border-color: rgba(23, 167, 255, 0.22);
+  background: #ffffff;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-header,
+[data-theme="dark"] .modal-dialog-theater .modal-footer {
+  border-color: rgba(23, 167, 255, 0.22);
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-header {
+  background: transparent;
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-title {
+  color: #24445a;
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-body {
+  color: #24445a;
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-btn-secondary {
+  color: #24445a;
+  border: none;
+  background: #f4fbff;
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-btn-secondary:hover {
+  border-color: transparent;
+  background: rgba(23, 167, 255, 0.1);
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-btn-danger {
+  color: #fff;
+  border-color: #17a7ff;
+  background: linear-gradient(135deg, #17a7ff, #008ee6);
+  box-shadow: 0 6px 14px rgba(23, 167, 255, 0.18);
+}
+
+[data-theme="dark"] .modal-dialog-theater .modal-btn-danger:hover {
+  background: linear-gradient(135deg, #17a7ff, #008ee6);
+}
+
 [data-theme="dark"] .modal-btn-danger:hover {
   background: #e53935;
 }

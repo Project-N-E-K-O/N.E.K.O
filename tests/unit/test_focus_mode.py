@@ -460,7 +460,7 @@ def test_focus_stream_overrides_decision():
     assert _C._focus_stream_overrides(True, "claude-opus-4-7") == {
         "extra_body": {"thinking": {"type": "disabled"}}
     }
-    # free server (model 名固定 free-model) shares the thinking.type dialect
+    # 免费版沿用 thinking.type 方言，Focus 会把关闭状态翻转为启用状态。
     assert _C._focus_stream_overrides(True, "free-model") == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
@@ -510,10 +510,9 @@ def test_focus_extra_body_provider_dialects():
     )
     from config.providers import EXTRA_BODY_MINIMAX  # not re-exported via config/__init__
 
-    # free server (model 名固定 free-model): regular turn sends thinking DISABLED…
+    # 免费版默认下发 thinking.disabled，Focus 翻转为 thinking.enabled。
     assert get_extra_body("free-model") == {"thinking": {"type": "disabled"}}
     assert get_extra_body("free-model") == EXTRA_BODY_CLAUDE
-    # …凝神 flips it to enabled (thinking.type dialect)
     assert focus_extra_body("free-model") == {"thinking": {"type": "enabled"}}
 
     # per-dialect enabled forms

@@ -878,6 +878,38 @@ def test_read_includes_pending_after_failed_persist(tmp_path, monkeypatch, seed_
     assert [message.content for message in mgr._pending_batches(name)] == ["pending"]
 
 
+def test_theater_episode_write_failure_is_not_reported_as_persisted(
+    tmp_path,
+    monkeypatch,
+):
+    """剧场摘要只进入内存 pending 时必须让归档回执保持可重试。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name, path = _make_manager(tmp_path)
+    incoming = SystemMessage(
+        content="这一周目仍在继续。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story-persist-failure",
+            "session_id": "session-persist-failure",
+        },
+    )
+    monkeypatch.setattr(
+        recent_file,
+        "write_recent_payload_unlocked",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(RuntimeError, match="theater_episode_persist_failed"):
+        asyncio.run(mgr.upsert_theater_episode(incoming, name))
+
+    assert not Path(path).exists()
+    assert [message.content for message in mgr._pending_batches(name)] == [
+        "这一周目仍在继续。",
+    ]
+
+
 def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
     """A user replacement must not resurrect an older failed append."""
     mgr, name, path = _make_manager(tmp_path)
@@ -1360,6 +1392,41 @@ def _review_corrected() -> list[dict]:
         {"role": "Master", "content": "hi 2"},
         {"role": "Xiaoba", "content": "ai 2"},
     ]
+
+
+@pytest.mark.parametrize('explicit_snapshot', [False, True])
+@pytest.mark.parametrize('placement', ['head', 'middle', 'only'])
+def test_review_entry_preserves_theater_messages(tmp_path, monkeypatch, explicit_snapshot, placement):
+    mgr, name, path = _make_manager(tmp_path)
+    capsule = SystemMessage(content='theater-only-private-fiction', metadata={
+        'source': 'theater_numeric_v2', 'memory_tier': 'episode_summary',
+        'story_id': 'story', 'session_id': 'session', 'episode_status': 'completed',
+    })
+    history = [] if placement == 'only' else _review_snapshot()
+    history.insert(2 if placement == 'middle' else 0, capsule)
+    _write_disk(path, history)
+    prompts = []
+    llm = _ReviewLLM(_review_corrected())
+    invoke = llm.ainvoke
+
+    async def record_prompt(prompt):
+        prompts.append(prompt)
+        return await invoke(prompt)
+
+    monkeypatch.setattr(llm, 'ainvoke', record_prompt)
+    monkeypatch.setattr(mgr, '_get_review_llm', lambda: llm)
+    result = asyncio.run(mgr.review_history(name, snapshot=list(history) if explicit_snapshot else None))
+    persisted = _read_disk(path)
+    if placement == 'only':
+        assert result == ('failed', None)
+        assert prompts == []
+    else:
+        assert result[0] == 'patched'
+        assert len(prompts) == 1
+        assert capsule.content not in prompts[0]
+        assert any(message.content == 'hi 1 fixed' for message in persisted)
+    remaining = [message for message in persisted if message.metadata.get('source') == 'theater_numeric_v2']
+    assert messages_to_dict(remaining) == messages_to_dict([capsule])
 
 
 def test_review_persist_failure_returns_failed_exactly(tmp_path, monkeypatch):

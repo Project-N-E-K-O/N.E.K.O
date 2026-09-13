@@ -43,6 +43,12 @@ if __name__ == "__main__":
 
         _worker_main()
         raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == "--theater-workshop-smoke":
+        # Explicit release verification uses only disposable author/package
+        # roots and fixed responses; it does not launch the normal server.
+        from theater_workshop.release_smoke import main as _workshop_release_smoke
+
+        raise SystemExit(_workshop_release_smoke(sys.argv[2]))
     if os.environ.get("NEKO_VOICE_IDENTITY_RELEASE_SMOKE") == "1":
         # Frozen multiprocessing children re-enter this file.  Let Python
         # consume its private child-process arguments before dispatching the

@@ -25,7 +25,7 @@ other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')
 etc. See ``main_routers/characters_router.py`` docstring or
 ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 import re
 import time
@@ -194,6 +194,9 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/voice_identity.css",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
+    _PROJECT_ROOT / "static/css/theater_selector.css",
+    _PROJECT_ROOT / "static/js/theater_selector.js",
+    _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
@@ -206,6 +209,7 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app/app-buttons.js",
+    _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cat1-chat-angry.gif",
     *sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png")),
     *sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3")),
@@ -293,6 +297,16 @@ async def get_l2d_manager(request: Request):
 async def get_model_manager(request: Request):
     """Render the model manager page."""
     return _render_model_manager(request)
+
+
+@router.get("/theater", response_class=HTMLResponse)
+async def get_theater(request: Request):
+    """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
+    templates = get_templates()
+    return templates.TemplateResponse("templates/theater.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)

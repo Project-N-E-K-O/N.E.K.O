@@ -43,6 +43,7 @@ from .gates import (
     REVIEW_MIN_INTERVAL,
     REVIEW_SKIP_HISTORY_LEN,
 )
+from utils.llm_client import is_theater_memory_message
 from utils.recent_file import capture_recent_generation
 
 
@@ -374,6 +375,12 @@ async def maybe_spawn_review(name: str) -> None:
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
             return
+        # 剧场胶囊不进入通用 review，但其前后的普通聊天仍属于同一条可复盘时间线。
+        history = [
+            message
+            for message in history
+            if not is_theater_memory_message(message)
+        ]
         # Gate 3: history 长度
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
@@ -789,9 +796,25 @@ async def _run_backup_compress(
 ):
     """Run best-effort background compression and merge the result under lock."""
     try:
-        # 1) 压缩（锁外）。compress_history 内部按输入大小自动分段，避免输入过大超时。
+        # 1) 压缩（锁外）。剧场胶囊不进入普通摘要模型，但仍随完整快照参与提交定位。
+        preserved_theater = [
+            message
+            for message in snapshot
+            if is_theater_memory_message(message)
+        ]
+        compression_input = [
+            message
+            for message in snapshot
+            if not is_theater_memory_message(message)
+        ]
+        if not compression_input:
+            return
         try:
-            result = await runtime.recent_history_manager.compress_history(snapshot, lanlan_name, detailed)
+            result = await runtime.recent_history_manager.compress_history(
+                compression_input,
+                lanlan_name,
+                detailed,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -817,11 +840,14 @@ async def _run_backup_compress(
         # 2) 合并写回（锁内，快）。merge_backup_memo 用 fingerprint 对齐，积压已被
         #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
         async with runtime._get_settle_lock(lanlan_name):
+            merge_kwargs = {"expected_generation": admission_generation}
+            if preserved_theater:
+                merge_kwargs["preserved_messages"] = preserved_theater
             status = await runtime.recent_history_manager.merge_backup_memo(
                 lanlan_name,
                 snapshot,
                 result[0],
-                expected_generation=admission_generation,
+                **merge_kwargs,
             )
         if status == 'failed':
             # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。

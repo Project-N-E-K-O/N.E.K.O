@@ -64,6 +64,11 @@ type CompactExportPreviewState =
 
 type CompactExportHistoryPanelProps = {
   messages: ChatMessage[];
+  mode?: 'chat' | 'theater';
+  theaterTitle?: string;
+  theaterEnded?: boolean;
+  theaterError?: string;
+  onTheaterEnd?: () => void;
   selectedIds: Set<string>;
   selectedCount: number;
   selectableCount: number;
@@ -219,6 +224,11 @@ function getCompactHistoryBubbleTone(
 
 export default function CompactExportHistoryPanel({
   messages: allMessages,
+  mode = 'chat',
+  theaterTitle = '',
+  theaterEnded = false,
+  theaterError = '',
+  onTheaterEnd,
   selectedIds,
   selectedCount,
   selectableCount,
@@ -293,7 +303,7 @@ export default function CompactExportHistoryPanel({
   const exportBusy = pendingAction !== null;
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
-  const selectionControlsInteractive = historyInteractive && controlsOpen;
+  const selectionControlsInteractive = mode === 'chat' && historyInteractive && controlsOpen;
   const historyHasContent = messages.length > 0 || thinking;
   const scrollbarHitVisible = scrollbarVisible
     && !!scrollRef.current
@@ -948,6 +958,7 @@ export default function CompactExportHistoryPanel({
         'under-choice-prompt': choiceLayerAbove,
         'has-preview': previewOpen,
         'controls-collapsed': !previewOpen && !controlsOpen,
+        'is-theater-history': mode === 'theater',
       })}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="history"
@@ -959,13 +970,40 @@ export default function CompactExportHistoryPanel({
       data-compact-export-history-content-locked={historyResizeContentLocked ? 'true' : 'false'}
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
-      aria-label={i18n('chat.exportConversation', 'Export Conversation')}
+      aria-label={mode === 'theater'
+        ? i18n('theater.performanceHistory', 'Theater performance history')
+        : i18n('chat.exportConversation', 'Export Conversation')}
       onPointerDown={(event) => event.stopPropagation()}
       onPointerMove={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
       <div className="compact-export-history-panel">
+      {mode === 'theater' && !previewOpen ? (
+        <div className="compact-theater-history-header">
+          <div className="compact-theater-history-header-row">
+            <span>{i18n('theater.inProgress', 'In theater')} · {theaterTitle}</span>
+            {/* 历史面板只允许声明过的子元素接收鼠标事件；结束按钮必须单独登记，
+                否则透明桌面窗口会把点击穿透到下层窗口。 */}
+            <button
+              type="button"
+              data-compact-hit-region={historyInteractive ? 'true' : undefined}
+              data-compact-hit-region-id={historyInteractive ? 'history:theater-end' : undefined}
+              data-compact-hit-region-kind={historyInteractive ? 'theater-end' : undefined}
+              data-compact-no-drag="true"
+              disabled={!historyInteractive}
+              onClick={() => {
+                if (historyInteractive) onTheaterEnd?.();
+              }}
+            >
+              {theaterEnded
+                ? i18n('theater.returnToStories', 'Return to stories')
+                : i18n('theater.endPerformance', 'End performance')}
+            </button>
+          </div>
+          {theaterError ? <div className="compact-theater-history-error" role="alert">{theaterError}</div> : null}
+        </div>
+      ) : null}
       {previewOpen ? previewNode : (
         <>
           {/* 堆砌区顶部的高度 resize bar：平时透明，hover / 拖动中半透明显现（is-active）。
@@ -987,7 +1025,9 @@ export default function CompactExportHistoryPanel({
             ref={scrollRef}
             className="compact-export-history-scroll"
             role="list"
-            aria-label={i18n('chat.messageListAriaLabel', 'Chat messages')}
+            aria-label={mode === 'theater'
+              ? i18n('theater.performanceHistory', 'Theater performance history')
+              : i18n('chat.messageListAriaLabel', 'Chat messages')}
             data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}
             data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:scroll' : undefined}
             data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'scroll' : undefined}
@@ -1093,7 +1133,7 @@ export default function CompactExportHistoryPanel({
               onLostPointerCapture={finishScrollbarPointerDrag}
             />
           ) : null}
-          {controlsOpen ? (
+          {mode === 'chat' && controlsOpen ? (
             <div
               className="compact-export-history-controls"
               role="group"

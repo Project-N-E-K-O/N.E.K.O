@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import copy
 import importlib
 import inspect
 import json
@@ -109,6 +110,184 @@ def _make_config_manager(tmp_root: Path):
 def reload_module(module_name: str):
     module = importlib.import_module(module_name)
     return importlib.reload(module)
+
+
+@pytest.mark.unit
+def test_catgirl_character_ids_are_persisted_and_duplicate_ids_are_repaired(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    duplicate_id = "character_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    cm.save_characters(
+        {
+            "当前猫娘": "A",
+            "猫娘": {
+                "A": {"_reserved": {"character_id": duplicate_id}},
+                "B": {"_reserved": {"character_id": duplicate_id}},
+                "C": {},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    migrated = cm.load_characters()
+    character_ids = [
+        migrated["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ]
+
+    assert character_ids[0] == duplicate_id
+    assert len(set(character_ids)) == 3
+    assert all(value.startswith("character_") and len(value) == 42 for value in character_ids)
+    assert [
+        cm.load_characters()["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ] == character_ids
+
+
+@pytest.mark.unit
+def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_blocked(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters(
+        {
+            "当前猫娘": "Legacy",
+            "猫娘": {"Legacy": {}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        second = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert first == second
+    # 写入恢复后，缓存快路径必须先补写同一个 ID；清空缓存重读仍应保持一致。
+    persisted = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    with cm._characters_cache_lock:
+        assert cm._characters_dirty is False
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+    reloaded = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert persisted == first
+    assert reloaded == first
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["mtime", "stat_missing", "read", "missing"])
+def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_path, failure):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+    assert cm._characters_dirty
+    if failure in {"mtime", "stat_missing"}:
+        error = FileNotFoundError("missing") if failure == "stat_missing" else OSError("unreadable")
+        with patch("utils.config_manager.characters.os.path.getmtime", side_effect=error), \
+             patch.object(cm, "save_characters") as save:
+            loaded = cm.load_characters()
+            save.assert_not_called()
+    else:
+        error = FileNotFoundError("missing") if failure == "missing" else OSError("unreadable")
+        with patch("utils.config_manager.characters.os.path.getmtime", return_value=-1), \
+             patch("builtins.open", side_effect=error):
+            loaded = cm.load_characters()
+    assert loaded == first
+    assert cm._characters_dirty
+    assert cm.load_characters() == first
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
+    """损坏的角色文件只能触发内存回退，不能被默认角色覆盖。"""  # noqa: DOCSTRING_CJK
+
+    cm = _make_config_manager(tmp_path)
+    characters_path = cm.config_dir / "characters.json"
+    characters_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed_payload = '{"猫娘":'
+    characters_path.write_text(malformed_payload, encoding="utf-8")
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    loaded = cm.load_characters()
+    loaded_again = cm.load_characters()
+
+    assert loaded == cm._characters_cache
+    assert loaded_again == loaded
+    assert all(
+        catgirl.get("_reserved", {}).get("character_id", "").startswith("character_")
+        for catgirl in loaded.get("猫娘", {}).values()
+    )
+    assert characters_path.read_text(encoding="utf-8") == malformed_payload
+    assert cm._characters_dirty is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_character_audit_rejects_unpersisted_ids_and_reuses_them_after_retry(tmp_path, warm_cache):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        if warm_cache:
+            cm.load_characters()
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm._characters_dirty
+        cached_id = cm._characters_cache["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        # Normal chat retains the existing in-memory fallback behavior.
+        assert cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"] == cached_id
+    assert numeric_v2_character_ids(cm) == {"Legacy": cached_id}
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("authoritative", [False, True])
+def test_missing_character_file_retries_dirty_identity_after_write_recovers(tmp_path, authoritative):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    assert not path.exists()
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+        assert cm._characters_dirty and cm._characters_cache_mtime is None
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm.load_characters() == first
+    # A stat permission failure does not establish that the source is absent.
+    with patch("utils.config_manager.characters.os.path.getmtime", side_effect=PermissionError("unreadable")), \
+         patch.object(cm, "save_characters") as save:
+        assert cm.load_characters() == first
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        save.assert_not_called()
+    assert cm.load_characters(require_authoritative=authoritative) == first
+    assert not cm._characters_dirty
+    assert json.loads(path.read_text(encoding="utf-8")) == first
+    assert numeric_v2_character_ids(cm) == {
+        name: profile["_reserved"]["character_id"] for name, profile in first["猫娘"].items()
+    }
 
 
 @pytest.mark.unit
@@ -1315,7 +1494,7 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 def test_profile_rename_event_master_is_person_neutral():
     """主人改名记录进的是猫娘 persona 的 master section，读者是猫娘、
     改名的是用户。第一人称会让猫娘误以为是自己改名，所以这里去掉人称、
-    用中性陈述，既不能出现「我」也不带「你」。"""
+    用中性陈述，既不能出现「我」也不带「你」。"""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD_MASTER,
         PROFILE_RENAME_EVENT_TEXT_MASTER,
@@ -1466,11 +1645,22 @@ async def test_character_management_and_recent_save_regression():
             assert add_result["success"] is True
             assert "测试角色" in cm.load_characters().get("猫娘", {})
 
-            switch_result = await characters_router_module.set_current_catgirl(
-                _DummyRequest({"catgirl_name": "测试角色"})
-            )
+            switch_lock_states = []
+            original_save_characters = cm.asave_characters
+
+            async def _tracked_save_characters(payload):
+                switch_lock_states.append(
+                    characters_router_module.character_config_mutation_lock.locked()
+                )
+                return await original_save_characters(payload)
+
+            with patch.object(cm, "asave_characters", _tracked_save_characters):
+                switch_result = await characters_router_module.set_current_catgirl(
+                    _DummyRequest({"catgirl_name": "测试角色"})
+                )
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == "测试角色"
+            assert switch_lock_states == [True]
 
             from utils.recent_file import write_recent_payload
 
@@ -1492,17 +1682,89 @@ async def test_character_management_and_recent_save_regression():
             assert save_recent_result["success"] is True
             assert recent_path.is_file()
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
+            from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+            numeric_runtime = NumericV2Runtime(
+                NumericV2Engine.from_mapping(numeric_v2_story()),
+                Path(cm.app_docs_dir) / "theater",
+            )
+            numeric_session = await numeric_runtime.start_session(
+                session_id="character_delete_numeric_session",
+                catgirl_binding={
+                    "character_id": cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_id": "catgirl:" + cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_name": "测试角色",
+                    "player_address": "哥哥",
+                    "profile_revision": "characters:test",
+                    "profile_hash": "sha256:test",
+                },
+                opening_performance={
+                    "narration": "开场。",
+                    "dialogue": [{"speaker_id": "active_catgirl", "text": "你好。"}],
+                    "suggested_inputs": [],
+                },
+            )
+            numeric_session_path = (
+                Path(cm.app_docs_dir)
+                / "theater"
+                / "numeric_v2"
+                / "sessions"
+                / f"{numeric_session.session.session_id}.json"
+            )
+            assert numeric_session_path.is_file()
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_archive_store.write_public_archive(
+                title="角色删除档案",
+                session=numeric_session.session,
+                ending=None,
+            )
+            numeric_public_archive_path = (
+                numeric_archive_store._public_archive_path(
+                    numeric_session.session.session_id
+                )
+            )
+            assert numeric_public_archive_path.is_file()
+
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})
             )
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
 
+            from services.theater.numeric_v2_store import NumericV2StoreError
+
+            original_session = numeric_session_path.read_bytes()
+            original_characters = cm.load_characters()
+            original_recent = recent_path.read_bytes()
+            delete_character_id = original_characters['猫娘']['测试角色']['_reserved']['character_id']
+            for story_id in ('numeric_v2_contract', 'already_deleted_story'):
+                numeric_archive_store.prepare_forget(story_id=story_id, character_id=delete_character_id,
+                    legacy_catgirl_name='测试角色')
+            numeric_archive_store.prepare_forget(story_id='already_deleted_story', character_id='other-character',
+                legacy_catgirl_name='另一角色')
+            for corrupt_bytes in (b"{broken-json", b"\xff"):
+                numeric_session_path.write_bytes(corrupt_bytes)
+                with pytest.raises(NumericV2StoreError, match="numeric_session_read_failed"):
+                    await characters_router_module.delete_catgirl("测试角色")
+                assert cm.load_characters() == original_characters
+                assert numeric_session_path.read_bytes() == corrupt_bytes
+                assert numeric_public_archive_path.is_file()
+                assert recent_path.read_bytes() == original_recent
+            numeric_session_path.write_bytes(original_session)
+
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
             assert not (Path(cm.memory_dir) / "测试角色").exists()
+            assert not numeric_session_path.exists()
+            assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids(delete_character_id) == []
+            assert numeric_archive_store.pending_forget_story_ids('other-character') == ['already_deleted_story']
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
 
@@ -1584,7 +1846,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["正常角色"] = {"昵称": "正常角色"}
-            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色"}
+            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色", "_reserved": {"character_id": "unsafe-delete-id"}}
             characters["当前猫娘"] = "正常角色"
             cm.save_characters(characters, bypass_write_fence=True)
 
@@ -1592,6 +1854,25 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.parent.mkdir(parents=True, exist_ok=True)
             sentinel.write_text("keep", encoding="utf-8")
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "unsafe_name_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "unsafe_name_story",
+                "session_id": "unsafe_name_archive",
+                "character_id": "",
+                "catgirl_name": ".",
+            })
+            assert numeric_public_archive_path.is_file()
+
+            numeric_archive_store.prepare_forget(story_id='unsafe_name_story', character_id='unsafe-delete-id',
+                legacy_catgirl_name='.')
             characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
@@ -1606,6 +1887,8 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             mock_notify_reload.assert_awaited_once()
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
+            assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids('unsafe-delete-id') == []
             mock_delete_memory.assert_not_called()
 
 
@@ -1853,6 +2136,10 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 )
             assert add_result["success"] is True
 
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "旧角色"
+            cm.save_characters(characters)
+
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)
             (Path(cm.project_memory_dir)).mkdir(parents=True, exist_ok=True)
@@ -1874,6 +2161,33 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             (Path(cm.project_memory_dir) / "facts_旧角色.json").write_text(
                 '[{"id":"fact-1","text":"旧记忆"}]',
                 encoding="utf-8",
+            )
+            # 构造升级前没有 character_id 的剧场档案和结束回执，验证它们进入同一改名事务。
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.paths import theater_root
+
+            numeric_archive_store = NumericV2ArchiveStore(theater_root(cm))
+            legacy_receipt_id = "theater_end_" + "b" * 40
+            numeric_archive_store._write(
+                numeric_archive_store._public_archive_path("legacy_rename_session"),
+                {
+                    "schema": "neko.theater.numeric.v2.public-archive",
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
+            )
+            numeric_archive_store._write(
+                numeric_archive_store._receipt_path(legacy_receipt_id),
+                {
+                    "schema": "neko.theater.numeric.v2.end-receipt",
+                    "receipt_id": legacy_receipt_id,
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
             )
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
@@ -1911,6 +2225,17 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert not (Path(cm.memory_dir) / "旧角色").exists()
             assert (Path(cm.memory_dir) / "新角色" / "persona.json").is_file()
             assert (Path(cm.memory_dir) / "新角色" / "facts.json").is_file()
+            renamed_character_id = saved_profile["_reserved"]["character_id"]
+            renamed_archive = numeric_archive_store._read(
+                numeric_archive_store._public_archive_path("legacy_rename_session")
+            )
+            renamed_receipt = numeric_archive_store._read(
+                numeric_archive_store._receipt_path(legacy_receipt_id)
+            )
+            assert renamed_archive["character_id"] == renamed_character_id
+            assert renamed_archive["catgirl_name"] == "新角色"
+            assert renamed_receipt["character_id"] == renamed_character_id
+            assert renamed_receipt["catgirl_name"] == "新角色"
 
             recent_payload = json.loads(
                 (Path(cm.memory_dir) / "新角色" / "recent.json").read_text(encoding="utf-8")
@@ -4310,7 +4635,8 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
-            characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
+            characters.setdefault("猫娘", {})["删除回滚角色"] = {
+                "昵称": "删除回滚角色", "_reserved": {"character_id": "rollback-delete-id"}}
             cm.save_characters(characters, bypass_write_fence=True)
 
             memory_dir = Path(cm.memory_dir) / "删除回滚角色"
@@ -4319,6 +4645,27 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 json.dumps([{"speaker": "删除回滚角色", "content": "你好"}], ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "character_delete_rollback_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "character_delete_rollback_story",
+                "session_id": "character_delete_rollback_archive",
+                "character_id": "",
+                "catgirl_name": "删除回滚角色",
+            })
+            numeric_archive_store.prepare_forget(story_id='deleted_story', character_id='rollback-delete-id',
+                legacy_catgirl_name='删除回滚角色')
+            forget_path = numeric_archive_store._forget_path('deleted_story', 'rollback-delete-id')
+            forget_before = forget_path.read_bytes()
+            deleted_before_config_save = []
 
             fake_response = type(
                 "Resp",
@@ -4334,6 +4681,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
             def _fail_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
                 if not bypass_write_fence and "删除回滚角色" not in (data.get("猫娘") or {}):
+                    deleted_before_config_save.append(not forget_path.exists())
                     raise OSError("disk full")
                 return original_save_characters(
                     data,
@@ -4355,6 +4703,9 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             assert payload["memory_server_released"] is True
             assert "删除回滚角色" in cm.load_characters().get("猫娘", {})
             assert (memory_dir / "recent.json").is_file()
+            assert numeric_public_archive_path.is_file()
+            assert deleted_before_config_save == [True]
+            assert forget_path.read_bytes() == forget_before
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
 
@@ -4871,7 +5222,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
 
     本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
     后会 dispose 旧 engine + 用 expected 路径重建。
-    """
+    """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:

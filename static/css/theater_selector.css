@@ -1,0 +1,520 @@
+/* 选剧页直接持有自身需要的蓝白主题，不再依赖已退役演绎页的整套样式。 */
+:root{
+--theater-bg:#e1f4ff;
+--theater-ink:#24445a;
+--theater-muted:#668296;
+--theater-panel:#fff;
+--theater-panel-soft:#f4fbff;
+--theater-line:rgba(23,167,255,.22);
+--theater-accent:#17a7ff;
+--theater-accent-strong:#008ee6;
+--theater-accent-soft:rgba(23,167,255,.1);
+--theater-accent-ink:#fff;
+--theater-warm:#d65f6d;
+--theater-shadow:0 12px 30px rgba(26,137,196,.12)}
+
+html[data-theme=dark],html.dark{
+--theater-bg:#132331;
+--theater-ink:#e6f5ff;
+--theater-muted:#a7c0d1;
+--theater-panel:#1c3040;
+--theater-panel-soft:#213949;
+--theater-line:rgba(96,197,255,.24);
+--theater-accent:#40c5f1;
+--theater-accent-strong:#179fe0;
+--theater-accent-soft:rgba(64,197,241,.13);
+--theater-warm:#ff8c98;
+--theater-shadow:0 14px 34px rgba(0,0,0,.28)}
+
+body{
+height:100vh;
+min-height:100vh;
+margin:0;
+overflow:hidden;
+color:var(--theater-ink);
+background:var(--theater-bg);
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+
+/* 标题栏保留 Electron 拖拽区，窗口按钮单独恢复点击。 */
+.theater-title-bar{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:12px;
+padding:0 16px 0 24px;
+color:#fff;
+background:linear-gradient(to right,#4bd4fd,#17a7ff);
+border-bottom:1px solid rgba(255,255,255,.12);
+-webkit-app-region:drag;
+user-select:none}
+
+.theater-title-copy{
+display:flex;
+align-items:baseline;
+gap:10px;
+min-width:0}
+
+.theater-title-copy h2{
+margin:0;
+font-family:"Comic Neue","Source Han Sans CN","Noto Sans SC",sans-serif;
+font-size:1rem;
+font-weight:650;
+letter-spacing:.04em;
+text-shadow:0 1px 2px rgba(0,112,181,.28)}
+
+.theater-window-controls{
+-webkit-app-region:no-drag}
+
+.theater-window-controls .neko-window-control-btn{
+width:32px;
+height:32px;
+min-height:32px;
+padding:0;
+border:0;
+border-radius:4px;
+color:rgba(255,255,255,.9);
+background:transparent;
+line-height:1;
+transition:background .2s,transform .1s ease,opacity .2s ease}
+
+.theater-window-controls .neko-window-control-btn:hover{
+background:rgba(255,255,255,.2);
+transform:translateY(-1px)}
+
+.theater-window-controls .neko-window-control-btn:active{
+background:rgba(255,255,255,.3);
+transform:translateY(1px) scale(.95);
+opacity:.9}
+
+.theater-close-icon{
+position:relative;
+display:block;
+width:14px;
+height:14px}
+
+.theater-close-icon::before,.theater-close-icon::after{
+content:"";
+position:absolute;
+top:0;
+left:6px;
+width:2px;
+height:14px;
+border-radius:2px;
+background:currentcolor}
+
+.theater-close-icon::before{transform:rotate(45deg)}
+.theater-close-icon::after{transform:rotate(-45deg)}
+
+.theater-mode-badge{
+padding:5px 9px;
+border:1px solid var(--theater-line);
+border-radius:8px;
+color:var(--theater-warm);
+background:var(--theater-panel-soft);
+font-size:.78rem;
+white-space:nowrap}
+
+button,input{
+min-height:40px;
+border-radius:10px;
+font:inherit}
+
+button{
+padding:0 14px;
+cursor:pointer;
+border:1px solid var(--theater-line);
+color:var(--theater-ink);
+background:var(--theater-panel);
+transition:border-color 160ms ease,box-shadow 160ms ease,transform 160ms ease}
+
+button:not(:disabled):hover{
+border-color:rgba(23,167,255,.5);
+box-shadow:0 5px 14px rgba(23,167,255,.12)}
+
+button:disabled,input:disabled{
+cursor:not-allowed;
+opacity:.55}
+
+.theater-primary{
+border-color:var(--theater-accent);
+color:var(--theater-accent-ink);
+background:linear-gradient(135deg,var(--theater-accent),var(--theater-accent-strong));
+box-shadow:0 6px 14px rgba(23,167,255,.18)}
+
+.theater-secondary{color:var(--theater-warm)}
+.theater-danger{color:#c45151}
+
+/* 选剧页整体框架与标题栏。 */
+.theater-selector-shell{
+height:100vh;
+min-height:0;
+display:grid;
+grid-template-rows:56px minmax(0,1fr);
+background:radial-gradient(circle at 8% 12%,rgba(75,212,253,.2),transparent 30%),linear-gradient(145deg,var(--theater-bg),var(--theater-panel-soft))}
+
+.theater-selector-shell [hidden]{
+display:none!important}
+
+.theater-selector-shell>.theater-title-bar{
+padding-left:20px}
+
+.theater-selector-shell .theater-status{
+padding:4px 10px;
+border:1px solid rgba(255,255,255,.34);
+border-radius:999px;
+color:rgba(255,255,255,.94);
+background:rgba(7,82,137,.2);
+font-size:.74rem}
+
+.theater-selector-layout{
+min-height:0;
+display:grid;
+grid-template-columns:minmax(280px,34%) minmax(0,1fr);
+gap:16px;
+padding:16px}
+
+/* 左侧剧本库与右侧详情共用的面板外观。 */
+.theater-story-library,.theater-story-detail{
+min-height:0;
+overflow:hidden;
+border:1px solid var(--theater-line);
+border-radius:24px;
+background:color-mix(in srgb,var(--theater-panel) 94%,transparent);
+box-shadow:var(--theater-shadow)}
+
+.theater-story-library{
+display:flex;
+flex-direction:column}
+
+.theater-library-heading{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:12px;
+padding:22px;
+border-bottom:1px solid var(--theater-line)}
+
+.theater-library-heading p,.theater-detail-heading p{
+margin:0 0 6px;
+color:var(--theater-muted);
+font-size:.72rem;
+letter-spacing:.12em}
+
+.theater-library-heading h1,.theater-detail-heading h1{
+margin:0;
+font-size:clamp(1.25rem,2vw,1.8rem);
+line-height:1.25}
+
+.theater-icon-action{
+min-height:44px;
+padding:0 14px;
+white-space:nowrap}
+
+.theater-story-list{
+min-height:0;
+padding:12px;
+overflow:auto}
+
+/* 剧本卡片保留明确的悬停、选中和键盘焦点状态。 */
+.theater-story-card{
+width:100%;
+min-height:76px;
+margin:0 0 8px;
+padding:13px 14px;
+display:grid;
+gap:7px;
+text-align:left;
+cursor:pointer;
+border:1px solid transparent;
+border-radius:16px;
+color:var(--theater-ink);
+background:var(--theater-panel-soft);
+transition:border-color 180ms ease,transform 180ms ease,background 180ms ease}
+
+.theater-story-card:hover{
+transform:translateY(-1px);
+border-color:var(--theater-line)}
+
+.theater-story-card[aria-selected=true]{
+border-color:var(--theater-accent);
+background:var(--theater-accent-soft)}
+
+.theater-story-card:focus-visible,.theater-detail-actions button:focus-visible,.theater-modal button:focus-visible,.theater-icon-action:focus-visible{
+outline:3px solid color-mix(in srgb,var(--theater-accent) 55%,transparent);
+outline-offset:2px}
+
+.theater-story-card strong{
+font-size:.96rem}
+
+.theater-story-card span{
+color:var(--theater-muted);
+font-size:.78rem}
+
+.theater-empty-state{
+min-height:220px;
+padding:28px;
+display:grid;
+place-content:center;
+gap:12px;
+text-align:center;
+color:var(--theater-muted)}
+
+.theater-detail-placeholder{
+min-height:96px;
+padding:18px 24px;
+display:grid;
+place-content:center;
+text-align:center;
+color:var(--theater-muted)}
+
+.theater-detail-placeholder p{
+margin:0}
+
+/* 详情区域承载开始/继续操作、前情和身份。 */
+.theater-story-detail{
+overflow:auto}
+
+.theater-detail-content{
+padding:clamp(22px,4vw,42px)}
+
+.theater-detail-heading{
+display:flex;
+justify-content:space-between;
+align-items:flex-start;
+gap:18px;
+margin-bottom:22px}
+
+.theater-session-badge{
+flex:0 0 auto;
+padding:6px 10px;
+border-radius:999px;
+color:var(--theater-accent-strong);
+background:var(--theater-accent-soft);
+font-size:.78rem}
+
+.theater-intro-card{
+padding:18px;
+border:1px solid var(--theater-line);
+border-radius:18px;
+background:var(--theater-panel-soft)}
+
+.theater-intro-card h2{
+margin:0 0 10px;
+color:var(--theater-muted);
+font-size:.76rem;
+letter-spacing:.08em}
+
+.theater-intro-card p{
+margin:0;
+line-height:1.75;
+white-space:pre-line}
+
+.theater-intro-background{
+margin:14px 0}
+
+.theater-role-grid{
+display:grid;
+grid-template-columns:repeat(2,minmax(0,1fr));
+gap:14px}
+
+.theater-memory-card{
+margin-top:14px}
+
+.theater-memory-heading{
+display:flex;
+align-items:flex-start;
+justify-content:space-between;
+gap:14px}
+
+.theater-memory-heading p{
+color:var(--theater-muted);
+font-size:.82rem}
+
+.theater-memory-heading button{
+flex:0 0 auto}
+
+.theater-memory-list{
+display:grid;
+gap:8px;
+margin-top:14px}
+
+.theater-memory-row{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:12px;
+padding:10px 12px;
+border:1px solid var(--theater-line);
+border-radius:12px;
+background:var(--theater-panel)}
+
+.theater-memory-row>div{
+display:grid;
+gap:3px}
+
+.theater-memory-row span,.theater-memory-empty{
+color:var(--theater-muted);
+font-size:.78rem}
+
+.theater-memory-empty{
+margin:14px 0 0!important}
+
+.theater-memory-actions{
+display:flex!important;
+grid-auto-flow:column;
+gap:8px!important}
+
+.theater-memory-pin,.theater-memory-view{
+min-height:34px}
+
+.theater-detail-actions{
+display:grid;
+grid-template-columns:repeat(4,minmax(0,1fr));
+gap:10px;
+margin-bottom:14px}
+
+.theater-session-hint{
+grid-column:1/-1;
+margin:0;
+color:var(--theater-muted);
+font-size:.82rem;
+line-height:1.5}
+
+.theater-detail-actions button{
+min-height:46px;
+border-radius:14px}
+
+.theater-inline-feedback{
+margin-top:16px;
+padding:11px 13px;
+border-radius:12px;
+color:var(--theater-ink);
+background:var(--theater-accent-soft)}
+
+/* 删除、结束后再次开始和记忆询问复用同一模态层。 */
+.theater-modal-backdrop{
+position:fixed;
+inset:0;
+z-index:200;
+display:grid;
+place-items:center;
+padding:20px;
+background:rgba(5,24,38,.55);
+backdrop-filter:blur(8px)}
+
+.theater-modal-backdrop[hidden]{
+display:none}
+
+.theater-modal{
+width:min(460px,100%);
+padding:24px;
+border:1px solid var(--theater-line);
+border-radius:22px;
+color:var(--theater-ink);
+background:var(--theater-panel);
+box-shadow:0 28px 70px rgba(0,0,0,.24)}
+
+.theater-modal:focus{
+outline:none}
+
+.theater-modal h2{
+margin:0 0 12px}
+
+.theater-modal p{
+margin:0;
+line-height:1.7;
+white-space:pre-line}
+
+/* 完整演绎正文使用更宽的只读滚动区，避免长周目撑出窗口。 */
+.theater-modal.theater-transcript-modal{
+width:min(720px,100%)}
+
+.theater-transcript-modal #theater-modal-body{
+max-height:min(60vh,560px);
+overflow:auto;
+padding-right:8px;
+white-space:pre-wrap}
+
+.theater-modal-actions{
+display:flex;
+justify-content:flex-end;
+gap:10px;
+margin-top:22px}
+
+.theater-modal-actions button{
+min-width:112px;
+min-height:44px}
+
+.theater-modal-actions .theater-secondary{
+border:none;
+color:var(--theater-ink);
+background:var(--theater-panel-soft)}
+
+.theater-modal-actions .theater-secondary:not(:disabled):hover{
+border-color:transparent}
+
+/* danger 表示操作语义，不允许覆盖主按钮的白色文字。 */
+.theater-modal-actions .theater-primary.theater-danger{
+color:var(--theater-accent-ink)}
+
+.theater-modal-error{
+margin-top:12px;
+color:var(--theater-warm)}
+
+/* 窄屏时上下排列，保证剧本列表和详情都能独立滚动。 */
+@media(max-width:760px){
+.theater-selector-layout{
+grid-template-columns:1fr;
+grid-template-rows:minmax(220px,40%) minmax(0,1fr)}
+
+.theater-role-grid,.theater-detail-actions{
+grid-template-columns:1fr 1fr}
+
+}
+
+@media(max-width:480px){
+.theater-selector-shell>.theater-title-bar{
+padding:0 8px 0 12px}
+
+.theater-title-copy{
+gap:6px}
+
+.theater-title-copy h2{
+flex:0 0 auto;
+white-space:nowrap}
+
+.theater-mode-badge{
+display:none}
+
+.theater-selector-shell .theater-status{
+max-width:72px;
+overflow:hidden;
+text-overflow:ellipsis;
+white-space:nowrap}
+
+.theater-selector-layout{
+padding:8px;
+gap:8px}
+
+.theater-story-library,.theater-story-detail{
+border-radius:18px}
+
+.theater-role-grid,.theater-detail-actions{
+grid-template-columns:1fr}
+
+.theater-memory-heading{
+display:grid}
+
+.theater-memory-heading button{
+width:100%}
+
+}
+
+@media(prefers-reduced-motion:reduce){
+.theater-story-card{
+transition:none}
+
+.theater-story-card:hover{
+transform:none}
+
+}

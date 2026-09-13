@@ -61,7 +61,10 @@ from ..shared_state import (
     get_init_one_catgirl,
 )
 from utils.config_manager import (
+    delete_reserved,
+    ensure_catgirl_character_id,
     get_reserved,
+    set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
@@ -248,6 +251,17 @@ async def _save_character_card_serialized(data: dict):
             if k != '档案名' and k != 'name':
                 if v:  # 只保存非空字段
                     catgirl_data[k] = v
+
+        # 更新同名卡时必须保留系统身份；新卡不接受导入包携带的身份。
+        previous_character_id = get_reserved(
+            previous_catgirl_data,
+            "character_id",
+            default="",
+        )
+        if previous_character_id:
+            set_reserved(catgirl_data, "character_id", previous_character_id)
+        else:
+            ensure_catgirl_character_id(catgirl_data)
 
         # 更新或创建猫娘数据
         characters['猫娘'][chara_name] = catgirl_data
@@ -1027,6 +1041,8 @@ async def import_character_card(
 
             # 移除档案名键（因为已经用作字典键）
             chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+            delete_reserved(chara_data_to_save, "character_id")
+            ensure_catgirl_character_id(chara_data_to_save)
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件

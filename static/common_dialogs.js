@@ -915,6 +915,14 @@
         }
     }
 
+    function refreshCompactInteractionGeometry() {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        } catch (_) {
+            // 非紧凑窗口不提供几何桥，普通网页弹窗无需额外处理。
+        }
+    }
+
     function temporarilyHideReactChatOverlayForModal(modalConfig) {
         if (!modalConfig || modalConfig.skin !== 'autostart-retention') {
             return function noop() {};
@@ -950,6 +958,7 @@
         return new Promise((resolve) => {
             const modalConfig = config || {};
             const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
+            const isTheaterSkin = modalConfig.skin === 'theater';
             const isDecisionPrompt = modalConfig.type === 'decision';
             const restoreObscuredUi = temporarilyHideReactChatOverlayForModal(modalConfig);
             let settled = false;
@@ -964,6 +973,8 @@
             overlay.className = 'modal-overlay';
             if (isAutostartRetentionSkin) {
                 overlay.classList.add('modal-overlay-autostart-retention');
+            } else if (isTheaterSkin) {
+                overlay.classList.add('modal-overlay-theater');
             }
 
             // 创建对话框
@@ -971,6 +982,13 @@
             dialog.className = 'modal-dialog';
             if (isAutostartRetentionSkin) {
                 dialog.classList.add('modal-dialog-autostart-retention');
+            } else if (isTheaterSkin) {
+                dialog.classList.add('modal-dialog-theater');
+                // 公共弹窗位于 React 根节点之外，必须单独登记为透明桌面窗口的原生命中岛。
+                dialog.setAttribute('data-compact-geometry-owner', 'surface');
+                dialog.setAttribute('data-compact-geometry-item', 'theaterModal');
+                // 弹窗打开时先聚焦容器，避免程序焦点让第一个按钮误显示成已选择状态。
+                dialog.tabIndex = -1;
             }
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
@@ -1150,6 +1168,7 @@
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
+                    if (isTheaterSkin) refreshCompactInteractionGeometry();
                     if (isDecisionPrompt) {
                         emitDecisionPromptLifecycleEvent('neko:decision-prompt-closed', {
                             skin: modalConfig.skin || '',
@@ -1315,6 +1334,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
+            if (isTheaterSkin) {
+                refreshCompactInteractionGeometry();
+                // 弹入动画使用 transform；动画结束后再上报一次最终命中区域，避免透明窗口沿用起始位置。
+                dialog.addEventListener('animationend', refreshCompactInteractionGeometry, { once: true });
+                window.setTimeout(refreshCompactInteractionGeometry, 320);
+            }
             if (isDecisionPrompt) {
                 emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
                     skin: modalConfig.skin || '',
@@ -1348,6 +1373,8 @@
                 if (input) {
                     input.focus();
                     input.select();
+                } else if (isTheaterSkin) {
+                    dialog.focus();
                 } else {
                     const primaryBtn = footer.querySelector('.modal-btn-primary');
                     const firstBtn = footer.querySelector('.modal-btn');
@@ -1398,6 +1425,8 @@
             okText: options.okText,
             cancelText: options.cancelText,
             danger: options.danger || false,
+            skin: options.skin,
+            onResolve: options.onResolve,
         });
         console.log('[showConfirm] 返回 Promise:', promise);
         return promise;

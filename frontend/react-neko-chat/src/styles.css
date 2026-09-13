@@ -1215,6 +1215,65 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   font-synthesis: weight;
 }
 
+.compact-export-history-anchor.is-theater-history .compact-export-history-check {
+  display: none;
+}
+
+.compact-theater-history-header {
+  min-height: 38px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(66, 154, 202, 0.16);
+  color: var(--neko-text-muted, #6f8796);
+  font-size: 12px;
+}
+
+.compact-theater-history-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.compact-theater-history-header-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-theater-history-header button {
+  min-height: 30px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid rgba(214, 95, 109, 0.24);
+  border-radius: 999px;
+  color: #bd5360;
+  background: rgba(214, 95, 109, 0.08);
+  cursor: pointer;
+  /* 父级历史面板默认不接收鼠标，按钮需要显式恢复点击并退出桌面窗口拖拽区。 */
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.compact-theater-history-header button:focus-visible {
+  outline: 2px solid rgba(23, 167, 255, 0.62);
+  outline-offset: 2px;
+}
+
+.compact-theater-history-error {
+  margin-top: 6px;
+  color: #bd5360;
+  line-height: 1.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theater-active="true"] *,
+  .app-shell[data-theater-active="true"] *::before,
+  .app-shell[data-theater-active="true"] *::after {
+    scroll-behavior: auto;
+  }
+}
+
 .message-block-markdown {
   min-width: 0;
   font-size: 0.94rem;
@@ -3073,6 +3132,28 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     calc(var(--compact-desktop-workarea-height, 900px) * 0.78)
   );
   max-height: var(--compact-export-preview-max-height);
+}
+
+.compact-export-history-anchor.is-theater-history,
+body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-theater-history {
+  /* 小剧场比普通历史面板多一行标题操作区，因此单独扣除标题栏与间距；
+     同时只约束剧场面板中心，避免 Live2D 靠近边缘时结束按钮落出视口。 */
+  left: clamp(
+    calc(var(--compact-export-history-inline-size) / 2),
+    calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50%)) + (var(--compact-export-surface-width) / 2)),
+    calc(100% - (var(--compact-export-history-inline-size) / 2))
+  );
+  --compact-export-controls-collapse-delta: 0px;
+  --compact-export-history-region-height: min(
+    var(
+      --compact-history-slot-height,
+      calc(var(--compact-export-surface-width) * 1.18)
+    ),
+    max(
+      120px,
+      calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 612px)) - 76px)
+    )
+  );
 }
 
 .compact-export-history-panel {
