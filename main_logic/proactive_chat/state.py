@@ -377,10 +377,10 @@ _proactive_chat_history: dict[str, deque] = {}
 
 # --- 主动搭话"素材标识"近期去重暂存区（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）---
 # {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
-# 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
-# MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
-# 雷同才回落到台词判定。进程内、重启清零——短期复读保护，与 _proactive_chat_
-# history / _mini_game_invite_state 同样是内存态即可。
+# 豁免台词级复读判定的素材 channel 在这里保存近期素材标识；当前仅 MUSIC
+# 使用该豁免。MEME 配文始终走文字去重，仍保留关键词标识供既有记录与兼容调用
+# 使用。进程内、重启清零——短期复读保护，与 _proactive_chat_history /
+# _mini_game_invite_state 同样是内存态即可。
 _proactive_material_history: dict[str, dict[str, deque]] = {}
 
 

@@ -607,6 +607,54 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     corpus.record_output.assert_not_called()
 
 
+async def test_finish_records_meme_caption_but_exempts_music(monkeypatch):
+    """MEME captions enter the corpus; only MUSIC keeps the template exemption."""
+    import memory.anti_repeat as anti_repeat
+
+    corpus = MagicMock()
+    corpus.stage_output = MagicMock(return_value=("Test", {"window": []}, 1))
+    corpus.flush_staged_detached = MagicMock()
+    monkeypatch.setattr(
+        anti_repeat,
+        "get_anti_repeat_corpus",
+        lambda: corpus,
+    )
+
+    meme_mgr = _make_mgr()
+    meme_mgr.current_speech_id = "meme-sid"
+    result = await LLMSessionManager.finish_proactive_delivery(
+        meme_mgr,
+        "快看这个，真的笑死我了。",
+        expected_speech_id="meme-sid",
+        source_tag="MEME",
+    )
+
+    assert result is True
+    corpus.stage_output.assert_called_once_with(
+        "Test",
+        "快看这个，真的笑死我了。",
+        is_proactive=True,
+        now=None,
+    )
+    corpus.flush_staged_detached.assert_called_once_with(
+        corpus.stage_output.return_value
+    )
+
+    corpus.reset_mock()
+    music_mgr = _make_mgr()
+    music_mgr.current_speech_id = "music-sid"
+    result = await LLMSessionManager.finish_proactive_delivery(
+        music_mgr,
+        "这首歌很适合现在听。",
+        expected_speech_id="music-sid",
+        source_tag="MUSIC",
+    )
+
+    assert result is True
+    corpus.stage_output.assert_not_called()
+    corpus.flush_staged_detached.assert_not_called()
+
+
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
     """关键：Phase 2 结束→finish 之间用户打断，finish 内所有副作用必须跳过，且返回 False。
 

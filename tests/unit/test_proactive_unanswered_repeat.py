@@ -777,6 +777,58 @@ async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fresh_meme_caption_still_runs_text_dedup(monkeypatch):
+    """A new meme/keyword must not exempt a repeated caption from text dedup."""
+    literal_guard = MagicMock(return_value=(True, 1.0))
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._is_similar_to_recent_proactive_chat",
+        literal_guard,
+    )
+
+    mgr = SimpleNamespace(
+        current_speech_id="sid",
+        state=_NeverPreemptedState(),
+        handle_new_message=AsyncMock(),
+    )
+
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="fresh-meme-caption-dedup-test",
+        response_text="快看这个，真的笑死我了。",
+        full_text="快看这个，真的笑死我了。",
+        source_tag="MEME",
+        active_channels=["meme"],
+        selected_music_link=None,
+        selected_meme_link={"title": "新表情包", "url": "https://example.test/new.png"},
+        music_content=None,
+        meme_content={"keyword": "全新关键词"},
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=AsyncMock(),
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    literal_guard.assert_called_once_with(
+        "fresh-meme-caption-dedup-test",
+        "快看这个，真的笑死我了。",
+    )
+    mgr.handle_new_message.assert_awaited_once()
+    assert output.result is not None
+    assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_DUPLICATE
+
+
+@pytest.mark.asyncio
 async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatch):
     """A bare MUSIC tag cannot exempt a rewrite that has no selected track."""
     initial_signal = anti_repeat_module.UnansweredProactiveRepeatSignal(

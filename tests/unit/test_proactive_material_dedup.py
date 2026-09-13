@@ -1,8 +1,7 @@
-"""Material-level dedup contract for proactive chat (ANTI_REPEAT_EXEMPT_SOURCE_TAGS).
+"""Material-key helper contract for proactive chat.
 
-Material-push channels (MUSIC/MEME) are exempt from caption-level repeat checks and
-deduped on the material itself: MUSIC keys on the track, MEME on the search keyword
-(not the image). Coverage:
+MUSIC uses its material key for the text-dedup exemption. MEME keeps a keyword key
+for compatibility/history, but its caption is always text-deduped. Coverage:
 
 1. _proactive_material_key: MUSIC -> track, MEME -> search keyword, non-material
    channel / empty material -> empty key; normalized (lowercase + collapsed space).
