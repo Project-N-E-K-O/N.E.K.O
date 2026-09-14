@@ -47,7 +47,7 @@ describe('AvatarToolStandaloneEditor', () => {
     expect(screen.getByRole('region', { name: 'Interaction flow' })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: 'Tool editor' })).toBeInTheDocument();
     const privacy = screen.getByText(
-      'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
+      'Images and sounds stay on this device; during interactions, the current image or surprise prompt is sent to the model.',
     );
     expect(privacy.closest('.avatar-tool-workspace-settings-heading')).not.toBeNull();
     expect(document.querySelector('.avatar-tool-create-fields .avatar-tool-workspace-content-note')).toBeNull();
@@ -91,7 +91,7 @@ describe('AvatarToolStandaloneEditor', () => {
       'chat.avatarToolWorkspaceCanvasTitle': '互动流程',
       'chat.avatarToolWorkspaceEditorTitle': '道具编辑',
       'chat.avatarToolWorkspaceSettingsTitle': '道具设置',
-      'chat.avatarToolCreatePrivacy': '图片和音效仅存本机；互动时，名称和对应描述会发送给模型。',
+      'chat.avatarToolCreatePrivacy': '图片和音效仅存本机；互动时，当前图片或彩蛋的提示词会发送给模型。',
       'chat.avatarToolCreateName': '道具名称',
       'chat.avatarToolWorkspaceControls': '画布控件',
       'chat.avatarToolWorkspaceZoomIn': '放大',
@@ -121,7 +121,7 @@ describe('AvatarToolStandaloneEditor', () => {
     expect(screen.getByRole('region', { name: '互动流程' })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: '道具编辑' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '道具设置' })).toBeInTheDocument();
-    expect(screen.getByText('图片和音效仅存本机；互动时，名称和对应描述会发送给模型。')
+    expect(screen.getByText('图片和音效仅存本机；互动时，当前图片或彩蛋的提示词会发送给模型。')
       .closest('.avatar-tool-workspace-settings-heading')).not.toBeNull();
     expect(screen.getByRole('textbox', { name: '道具名称' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '放大' })).toBeInTheDocument();

@@ -876,7 +876,7 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
   });
 
-  it('runs a v3 graph through press, release and delay without sending phase-6 model feedback', () => {
+  it('sends the pressed A image while a v3 graph locally advances through B, C and delay', () => {
     vi.useFakeTimers();
     const onInteraction = vi.fn();
     const view = render(
@@ -895,7 +895,13 @@ describe('useAvatarToolRuntime press lifecycle', () => {
       expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
       fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
       expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
-      expect(onInteraction).not.toHaveBeenCalled();
+      expect(onInteraction).toHaveBeenCalledTimes(1);
+      expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: LOCAL_TOOL_ID,
+        toolRevision: '3-1',
+        imageId: 'img-a',
+      }));
+      expect(onInteraction.mock.calls[0][0]).not.toHaveProperty('changeIndex');
       expect(audioInstances.some(audio => audio.play.mock.calls.length === 1)).toBe(true);
 
       act(() => vi.advanceTimersByTime(799));
@@ -906,6 +912,52 @@ describe('useAvatarToolRuntime press lifecycle', () => {
       view.unmount();
       vi.useRealTimers();
     }
+  });
+
+  it('keeps v3 empty B local-only and sends one C fact when C has a description', () => {
+    for (const [initialImageId, shouldSend] of [['img-b', false], ['img-c', true]] as const) {
+      const dto = localGraphToolDto(1);
+      dto.runtime.initialImageId = initialImageId;
+      dto.initialImageUrl = dto.runtime.images.find(image => image.id === initialImageId)!.url;
+      const onInteraction = vi.fn();
+      const view = render(
+        <Harness onInteraction={onInteraction} providers={createProviders()}
+          toolId={LOCAL_TOOL_ID} registry={createAvatarToolRegistrySnapshot([
+            buildLocalAvatarToolDefinition(dto),
+          ])} />,
+      );
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      expect(onInteraction).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
+      if (shouldSend) expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({ imageId: 'img-c' }));
+      view.unmount();
+    }
+  });
+
+  it('sends only a special fact when a v3 special always triggers', () => {
+    const dto = localGraphToolDto(1);
+    dto.runtime.special = {
+      probability: 1,
+      imageUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/special.png?v=1`,
+      hasMeaning: true,
+    };
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness onInteraction={onInteraction} providers={createProviders()}
+        toolId={LOCAL_TOOL_ID} registry={createAvatarToolRegistrySnapshot([
+          buildLocalAvatarToolDefinition(dto),
+        ])} />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    expect(onInteraction).toHaveBeenCalledTimes(1);
+    expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      imageId: 'img-a', specialTriggered: true,
+    }));
+    view.unmount();
   });
 
   it('restores a v3 graph press on moved release and clears its pending delay on revision reset', async () => {

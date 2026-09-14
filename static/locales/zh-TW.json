@@ -951,7 +951,7 @@
         "avatarToolCreateSpecialImage": "彩蛋圖片",
         "avatarToolCreateSpecialMeaningPlaceholder": "例如：「{{user}}」用貓爪輕輕碰「{{character}}」時掉出了獎勵。",
         "avatarToolCreateSpecialSound": "彩蛋音效（可選）",
-        "avatarToolCreatePrivacy": "圖片和音效僅存本機；僅道具名稱和目前圖片描述會傳送給模型。",
+        "avatarToolCreatePrivacy": "圖片和音效僅存本機；互動時，目前圖片或彩蛋的提示詞會傳送給模型。",
         "avatarToolCreateName": "道具名稱",
         "avatarToolCreateNamePlaceholder": "1–{{count}} 個字元，可使用文字、數字、空格、「-」和「_」",
         "avatarToolCreateDefaultImage": "預設圖片",

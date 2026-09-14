@@ -951,7 +951,7 @@
         "avatarToolCreateSpecialImage": "Surprise image",
         "avatarToolCreateSpecialMeaningPlaceholder": "For example: “{{user}}” lightly taps “{{character}}” with a cat paw and a reward drops.",
         "avatarToolCreateSpecialSound": "Surprise sound (optional)",
-        "avatarToolCreatePrivacy": "Images and sounds stay on this device; only the tool name and current image description are sent to the model.",
+        "avatarToolCreatePrivacy": "Images and sounds stay on this device; during interactions, the current image or surprise prompt is sent to the model.",
         "avatarToolCreateName": "Tool name",
         "avatarToolCreateNamePlaceholder": "1–{{count}} characters; use letters, numbers, spaces, “-”, or “_”",
         "avatarToolCreateDefaultImage": "Default image",

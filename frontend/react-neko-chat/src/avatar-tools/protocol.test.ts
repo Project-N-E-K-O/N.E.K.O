@@ -221,11 +221,30 @@ describe('avatar interaction payload contract', () => {
     expectTypeOf<RpsPayload['roundResult']>().toEqualTypeOf<'user_win' | 'avatar_win' | 'draw'>();
     expectTypeOf<LocalPayload['actionId']>().toEqualTypeOf<'interact'>();
     expectTypeOf<LocalPayload['toolRevision']>().toEqualTypeOf<string>();
-    expectTypeOf<LocalPayload['changeIndex']>().toEqualTypeOf<number>();
+    expectTypeOf<LocalPayload['changeIndex']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<LocalPayload['imageId']>().toEqualTypeOf<`img-${string}` | undefined>();
     expectTypeOf<LocalPayload['specialTriggered']>().toEqualTypeOf<boolean | undefined>();
   });
 });
 describe('avatar tool payload builders', () => {
+  it('keeps v2 changeIndex and v3 imageId mutually exclusive on the shared wire', () => {
+    const local = 'local-12345678-1234-4123-8123-123456789abc';
+    const facts = {
+      ...BASE_PAYLOAD,
+      toolId: local,
+      actionId: 'interact',
+      intensity: 'normal',
+      touchZone: 'head',
+    };
+    const v2 = { ...facts, toolRevision: '2-1', changeIndex: 0 };
+    const v3 = { ...facts, toolRevision: '3-1', imageId: 'img-a' };
+    expect(avatarInteractionPayloadSchema.safeParse(v2).success).toBe(true);
+    expect(avatarInteractionPayloadSchema.safeParse(v3).success).toBe(true);
+    expect(avatarInteractionPayloadSchema.safeParse({ ...v3, changeIndex: 0 }).success).toBe(false);
+    expect(avatarInteractionPayloadSchema.safeParse({ ...v2, imageId: 'img-a' }).success).toBe(false);
+    expect(avatarInteractionPayloadSchema.safeParse({ ...v3, imageId: 'img-INVALID' }).success).toBe(false);
+  });
+
   it('keeps tool-specific facts on their owning payload', () => {
     const fist = buildAvatarInteractionPayload({
       toolId: 'fist', actionId: 'poke', intensity: 'normal', clientX: 1, clientY: 2,

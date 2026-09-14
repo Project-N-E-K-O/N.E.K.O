@@ -951,7 +951,7 @@
         "avatarToolCreateSpecialImage": "Изображение сюрприза",
         "avatarToolCreateSpecialMeaningPlaceholder": "Например: «{{user}}» легко касается «{{character}}» кошачьей лапкой, и выпадает награда.",
         "avatarToolCreateSpecialSound": "Звук сюрприза (необязательно)",
-        "avatarToolCreatePrivacy": "Изображения и звуки хранятся на устройстве; модели отправляются только название предмета и описание текущего изображения.",
+        "avatarToolCreatePrivacy": "Изображения и звуки остаются на устройстве; при взаимодействии модели отправляется текст для текущего изображения или сюрприза.",
         "avatarToolCreateName": "Название предмета",
         "avatarToolCreateNamePlaceholder": "От 1 до {{count}} символов; можно использовать буквы, цифры, пробелы, «-» и «_»",
         "avatarToolCreateDefaultImage": "Обычное изображение",

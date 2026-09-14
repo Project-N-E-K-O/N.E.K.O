@@ -1,6 +1,6 @@
 # Avatar 自定义道具设计与维护规范
 
-本文是本地自定义 Avatar 道具的长期设计与维护入口。当前同时存在两种受支持记录：旧 `recordVersion: 2` 继续完整运行；新 `recordVersion: 3` 保存通用图片交互图并支持管理和再次编辑，但尚未接入 Web／NEKO-PC 运行时。
+本文是本地自定义 Avatar 道具的长期设计与维护入口。当前同时存在两种受支持记录：旧 `recordVersion: 2` 继续运行固定切图；`recordVersion: 3` 保存通用图片交互图，并已接入 Web／NEKO-PC 的装备、图片运行与反馈代码。四端画面和真实模型反馈的人工留证、修改删除与旧道具跨端闭环仍按实施文档后续阶段验收，不能仅凭代码接入视为全部通过。
 
 本文只描述当前已经实现并需要长期保持的产品语义、代码边界和维护规则，不记录实施阶段、临时调试过程或未来设想。若本文与当前代码、测试或可复现运行结果冲突，以可复现证据和当前代码为准，并同步修正文档。
 
@@ -20,15 +20,15 @@
 - 可选普通互动 MP3。
 - 可选概率彩蛋：概率、彩蛋图片、彩蛋互动描述和可选彩蛋 MP3。
 - v3 创建成功后进入现有道具库，不自动装备；可以再次打开、完整恢复并修改。
+- 有效 v2/v3 均从同一道具库装备；v3 由初始图片进入完整交互图，在 Web/PC 使用同一按下前图片反馈语义。
 - 修改继续使用原本地 ID；v2 只有在用户打开并明确保存时才转换为 v3。
 - 删除入口只位于修改页，删除后清理该道具的记录、资源、当前使用态和当前 surface 槽位。
 - Full 与 Compact 加载同一权威本地目录，并分别保存自己的三槽选择。
-- v2 道具继续由 Web 与 Electron Pet 使用同一 definition v2 运行；Host/Python 继续根据权威 v2 记录选择描述。
+- v2/v3 分别由 Web 与 Electron Pet 使用对应 definition/profile 运行；Host/Python 根据 revision 和权威记录选择对应描述。
 - 本地目录随应用存储根迁移，但不进入云存档。
 
 ### 明确不支持
 
-- v3 道具装备或运行。当前管理目录会显示 v3 卡片并允许修改，但装备入口明确禁用；已装备 v2 保存成 v3 时保留槽位 ID，不继续使用旧 v2 投影运行。
 - 自动保存、可恢复草稿、音效试听或音量设置。
 - 复制、版本历史、导入包、导出包、分享、市场、云同步或跨设备同步。
 - Full／Compact 活动槽位同步。
@@ -50,7 +50,7 @@
 5. 用户添加完整图片交互、配置图片动作和延时，并在画布上连接流程。
 6. 用户可以选择普通互动 MP3，也可以开启并填写完整彩蛋配置。
 7. 保存时检查内容、引用、可达性和同一等待位置的触发歧义。保存失败保留全部编辑内容，并把可定位错误带回对应字段或交互。
-8. 保存成功后刷新同一管理目录并返回；新 v3 道具不自动装备，当前也不能新装备。
+8. 保存成功后刷新同一管理目录并返回；新 v3 道具不自动装备，用户可从道具库自行装备。
 
 创建页字段顺序保持为：
 
@@ -65,7 +65,7 @@
 
 ### 修改与删除
 
-- 自定义道具卡片只有一个修改入口；可运行 v2 卡片主体继续负责装备，v3 卡片主体显示当前不可装备状态。
+- 自定义道具卡片只有一个修改入口；有效 v2/v3 卡片主体负责装备。
 - 修改入口必须阻止卡片装备和拖拽事件。
 - 修改页复用创建表单，不复制第二套字段、校验或布局。
 - 修改页完整带入当前名称、图片、初始图片、图片名称与描述、交互名称、节点位置、连接及选边、普通音效和彩蛋。
@@ -76,7 +76,7 @@
 
 ### Full／Compact
 
-- 两个 surface 都读取同一个后端本地目录。管理目录保留 v2/v3 全部有效条目；运行 registry 只从当前可运行的 v2 条目构建。
+- 两个 surface 都读取同一个后端本地目录。管理目录保留 v2/v3 全部有效条目；运行 registry 从当前有效的 v2/v3 运行投影构建。
 - 两个 surface 分别保存最多三个活动槽位。桌面 Full 使用 `persist:neko-full-chat` partition，Compact 使用默认 partition；相同 storage key 不代表共享选择。
 - 创建、修改或删除不会主动覆盖另一 surface 的槽位。
 - 隐藏 surface 在重新获得 lease 或刷新权威目录时，按当前 ID 和资源版本保留、刷新或清理自己的状态。
@@ -100,7 +100,7 @@
 - 图片名和完整交互名允许留空；留空时按当前类型和顺序显示默认序号名。图片名称在同一道具内不得重复，交互名称也不得重复，两组名称分开判断。
 - 每张图片的互动描述可选，去除首尾空白后最长 `100` 个字符；空描述表示将来运行时只执行本地图片交互，不调用模型。
 - 彩蛋开启时，彩蛋互动描述必填并使用相同长度与控制字符规则。
-- 互动描述允许正常标点和换行；它是模型理解本次互动的数据，不是脚本或指令。
+- 互动描述允许正常标点和换行；它不是可执行脚本。正常点击后选中的用户原文就是本次新增给角色的即时提示词，不能被道具名称、图片外观或固定模板改写。
 - 前端只负责即时提示，后端始终执行最终权威校验。
 
 ### 图片与音频
@@ -224,7 +224,7 @@ v2 和 v3 都使用精确键集合、资源白名单与目录闭包。未知 `re
 
 ### API 与 DTO 边界
 
-- `GET /api/avatar-tools`：返回全部有效 v2/v3 记录的最小管理投影和 limits；单条坏记录只记录日志并跳过。v2 投影同时满足现有运行消费者，v3 投影当前只供管理目录使用。
+- `GET /api/avatar-tools`：返回全部有效 v2/v3 记录的管理与运行所需最小公开投影和 limits；单条坏记录只记录日志并跳过。v3 运行投影直接由同一权威 record 派生，不另建可分叉的目录或详情请求链。
 - `GET /api/avatar-tools/{tool_id}`：为共用修改页返回该 ID 的完整可编辑详情、受管理资源标识和 limits。
 - `POST /api/avatar-tools`：创建一个新道具。v3 multipart 只允许 `record_version=3`、`manifest` 和重复 `uploads`；manifest 中的每个上传索引必须恰好引用一次。
 - `PUT /api/avatar-tools/{tool_id}`：以详情 revision 为基线完整更新，保持同一 ID。
@@ -235,7 +235,7 @@ v2 和 v3 都使用精确键集合、资源白名单与目录闭包。未知 `re
   - 公开路径判定涉及 symlink／resolve／stat 等同步文件系统调用，必须放在事件循环之外执行。
   - 存储根**自身**是软链接不构成拒绝理由：用软链接把存储挪到别的盘是正当操作，而写入侧从不拒绝这种根，服务侧单方面拒绝只会让道具建得出来、图却全是 404。穿越由 `resolve()` 归一后与根比较挡住；根**里面**的道具目录和资源文件仍然必须是实体，那才是能指到根外面去的一类。
 
-公开列表 DTO 必须带实际 `recordVersion`、`id`、内容 `revision` 和 `name`。v2 继续返回 `changeMode`、`defaultUrl`、有序 `changeUrls` 及可选音效/彩蛋运行投影；v3 当前只增加管理卡片需要的 `initialImageUrl`，不公开交互图、描述、音效或彩蛋资源。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
+公开列表 DTO 必须带实际 `recordVersion`、`id`、内容 `revision` 和 `name`。v2 继续返回 `changeMode`、`defaultUrl`、有序 `changeUrls` 及可选音效/彩蛋运行投影；v3 返回管理卡片的 `initialImageUrl`，以及运行所需的有序稳定图片 ID 与 URL、每张图片的 `hasMeaning`、初始图片、完整交互的触发与图片动作、初始/后继连接、可选普通音效及彩蛋概率、图片和音效 URL、彩蛋 `hasMeaning`。画布位置、连接选边、交互名称和描述正文不进入运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述正文不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
 
 v3 `POST`／`PUT` 共用一份 JSON manifest 与 `uploads` 字段；`PUT` 另外必须带 `base_revision`。保留媒体只允许引用该道具当前 record 的受管理资源，v2/v3 字段不得混用。Router 仍在读取文件前完成权限和聚合上限检查，并在成功或失败路径关闭所有上传对象。
 
@@ -289,14 +289,14 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 - `LocalAvatarToolId` 严格匹配本地 UUID 格式。
 - `AvatarToolId` 是两者的联合；本地 ID 不加入内置静态 tuple。
 - 内置道具使用 i18n label，本地道具使用 literal label；用户名称不能伪装成 i18n key。
-- 管理目录保留全部有效 v2/v3 条目；每个 surface 的运行 registry 只用“内置 registration + 当前可运行的 v2 definition”生成不可变 snapshot。不能因为 v3 暂不可运行就把它从管理目录、修改入口或创建/更新确认中丢掉。
+- 管理目录保留全部有效 v2/v3 条目；每个 surface 的运行 registry 用“内置 registration + 当前有效的 v2/v3 definition”生成不可变 snapshot。无效运行投影不能作为可装备定义，也不能让旧 revision 的 session 继续使用新记录。
 - 资源查询必须以 `(toolId, resourceId)` 为作用域，多个本地道具可以复用内部 sound/effect ID 而不串用资源。
 
 本地列表首次权威加载完成前，不能把保存槽位中的 `local-*` 当作未知 ID 清除。首次加载失败保留已保存槽位；已有 snapshot 刷新失败继续使用上一份 snapshot。创建、修改和删除后的请求代次必须使旧 GET 失效，迟到响应不能覆盖较新的权威结果。当前选择的本地 ID 若在新的权威 registry 中消失，当前 surface 必须安全停用该道具，不能在过渡渲染中继续读取已经不存在的 registration。
 
 ### definition v2
 
-四个内置道具继续使用 definition v1。当前只有 record v2 自定义道具构建 definition v2；record v3 在运行解释器接入前不得降级投影成 definition v2：
+四个内置道具继续使用 definition v1。record v2 自定义道具构建 definition v2；record v3 构建 definition v3 / `custom-graph`，不得降级投影成 definition v2。以下固定切图规则仅属于 v2：
 
 - 帧 `0` 是默认图片；帧 `1..N` 对应 record 变化项 `0..N-1`。
 - `press-swap` 恰好一个变化帧；`click-advance` 至少一个变化帧。
@@ -322,18 +322,26 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 7. 取消选择、切换道具、强制停用、surface handoff、页面重建或应用重启会结束选择 session；重新选择从默认帧开始。
 8. 连续记录按当前 tool session 隔离，图片索引不参与 normal/rapid 判断。
 
-Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事件事实，不得增加按具体 `local-*` ID 的行为分支。
+Web 和 PC 必须按同一 v2 profile 计算图片索引、声音、效果和事件事实，不得增加按具体 `local-*` ID 的行为分支。
+
+### definition v3 与图运行
+
+- 运行投影中的稳定图片 ID 映射到渲染帧；初始图片是唯一真实入口，初始连接给出第一组等待候选，不生成额外“初始操作”。
+- 完整鼠标点击先冻结按下前显示的图片，再执行按下动作；正常松开执行松开动作、沿后继连接继续，并依据冻结图片和彩蛋事实决定一次本地反馈输出。无效或取消点击恢复按下前图片，不执行松开动作、不推进该点击、不提交模型事实。
+- 延时切换在进入等待位置时启动；时间到达执行“图片不变／显示图片”动作并继续连接。按下中的点击占有等待位置，同级延时不得插入该次点击；旧等待位置或旧 session 的计时器不能改变新图。
+- 无后继时保持当前图片；自连接、回连和不同触发走向使用相同连接规则。范围变化只改变显示尺寸，不改变当前稳定图片 ID。
+- 普通音效与彩蛋使用原有本地表现链；彩蛋命中替代普通反馈。冻结图片描述为空且未命中彩蛋时，本地图片和声音照常执行，不向 Host 提交模型反馈事件。
 
 ## 跨端、提示词与隐私
 
 ### desktopContract 与 NEKO-PC
 
-- Web projector 把 definition v2 投影为严格 descriptor；用户互动描述不进入 descriptor。
-- definition v2、desktop descriptor 和本地互动 payload 必须携带公开目录对应的内容 revision；Python 只按完全相同的当前 record revision 解释图片索引和彩蛋事实，过期互动直接拒绝，不能用新记录解释旧画面。
-- PC consumer 严格校验有序帧、两种图片变化规则、可选声音、chance、effect 和资源闭包。
-- PC 只保存当前选择 session 的图片索引，不保存本地 record 或互动描述。
+- Web projector 把 definition v2/v3 投影为严格 descriptor；用户互动描述正文不进入 descriptor。
+- definition、desktop descriptor 和本地互动 payload 必须携带公开目录对应的内容 revision；Python 只按完全相同的当前 record revision 解释 v2 图片索引或 v3 稳定图片 ID 及彩蛋事实，过期互动直接拒绝，不能用新记录解释旧画面。服务端拒绝不会倒回已经正常完成的本地切图；旧 revision 的刷新和跨端交接需按后续闭环验收。
+- PC consumer 严格校验 v2 两种固定切图或 v3 完整交互图，以及各自的有序帧、可选声音、chance、effect 和资源闭包。
+- PC 只保存当前选择 session 的图片索引或稳定图片 ID、等待位置与计时器，不保存本地 record 或互动描述正文。
 - deactivate、dispose、renderer reload 和 surface handoff 必须清理未完成 press、timer、effect、sound 和旧 generation。
-- surface lease 下发布本地 descriptor 前，要向权威公开列表核对 ID、有序版本化资源 URL、切图方式、可选音效和彩蛋概率/资源语义；无论 lease 与页面状态谁先到，首次发布和重发都不能绕过校验。已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能发送旧 descriptor；同一 lease 下较新的页面状态必须替代尚未完成的旧校验。
+- surface lease 下发布本地 descriptor 前，要向权威公开列表核对 ID、revision、版本化资源 URL、v2 切图方式或 v3 图结构，以及可选音效和彩蛋概率/资源语义；无论 lease 与页面状态谁先到，首次发布和重发都不能绕过校验。已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能发送旧 descriptor；同一 lease 下较新的页面状态必须替代尚未完成的旧校验。
 - 列表暂时请求失败不能解释为删除，也不能回流未经确认的旧本地 descriptor；显式目录失效事件若撞上在途 GET，必须废弃其快照并在结束后再发起一次新 GET。
 
 ### Host 与 Python
@@ -345,30 +353,31 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 - `target = avatar`
 - `intensity = normal | rapid`
 - `touchZone = ear | head | face | body`
-- `changeIndex = 非负安全整数`
+- v2：`changeIndex = 非负安全整数`；v3：`imageId = 按下前冻结的稳定图片 ID`，两者互斥
 - `specialTriggered = 明确布尔值`，仅在该 definition 声明彩蛋时存在
 
-Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不持有本地记录。Python 在消耗互动冷却前通过同进程 store 读取权威 record，复验 ID、索引和彩蛋字段：
+Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不持有本地记录。Python 在消耗互动冷却前通过同进程 store 读取权威 record，复验 revision、v2 索引或 v3 图片 ID、彩蛋字段：
 
 - 重复或仍在冷却期的事件只做 record/revision/索引轻量校验；冷却判断、可能进入提示词的事件逐字节核验资源摘要、冷却提交必须由同一会话门串行化，核验失败不消耗冷却；提示词只能使用这次严格核验得到的 record；
 - 会话门里只允许出现判定与去重登记，**任何回执都必须出门之后再发**。冷却是连击时的高频分支，而回执走 WebSocket，把这次 `await` 关在门内会让下行一有背压就把后续每一次互动堵在门口，包括冷却窗口结束后第一个本该被接受的互动。同理，延迟恢复期间权威读取抛出的维护态错误必须被互动链路吸收，不能穿透到上层；
 
-- 未命中彩蛋时只选择当前 `changeIndex` 对应的互动描述；
+- 未命中彩蛋时，v2 只选择 `changeIndex` 对应的变化图片描述；v3 只选择按下前 `imageId` 对应的图片描述；
 - 命中彩蛋时只选择彩蛋互动描述；
-- 记录缺失、损坏、索引越界或彩蛋事实不一致时返回 `invalid_payload`；
+- 选中描述为空时不调用模型，也不消耗互动冷却；
+- 记录缺失、损坏、索引越界、图片 ID 不属于该记录或彩蛋事实不一致时返回 `invalid_payload`；
 - 不能回退到猫爪、第一张图片、普通点击或其它描述。
 
-提示词必须把名称和互动描述作为有边界的不可信 JSON 数据，而不是可执行指令。固定模板保留当前角色身份、关系和语言。memory note 只保存安全显示名称和系统事实，不直接保存用户互动描述；去重 key 使用稳定本地 ID。
+本地道具即时提示词只使用权威记录中本次选中的用户互动描述原文，不拼名称、事件字段或固定回答模板；角色身份、关系和语言仍由现有会话提供。memory note 与已有道具一致，面向角色使用第二人称事件记法，只保存用户称呼和安全显示名称，不写强度、触点、彩蛋状态或用户互动描述；去重 key 使用稳定本地 ID，rank 固定为 `1`。
 
-图片和音频不发送给模型。道具名称和命中的互动描述会进入当次模型反馈；使用远程模型时会随请求发送，创建页必须明确告知。
+图片和音频不发送给模型。命中的图片或彩蛋提示词会作为本次互动新增文本发送给模型；使用远程模型时会随请求发送，创建页必须明确告知。
 
 ## 生命周期与故障语义
 
 | 场景 | 必须保持的结果 |
 | --- | --- |
-| 创建成功 | 当前管理目录立即加入新 ID，随后 GET 校准；不自动装备，不改任一 surface 槽位。v3 只进入管理目录，不进入运行 registry。 |
+| 创建成功 | 当前管理目录立即加入新 ID，随后 GET 校准；不自动装备，不改任一 surface 槽位。有效 v3 同时可进入运行 registry，等待用户自行装备。 |
 | 创建响应不确定 | 用本次创建会话的稳定 ID 刷新权威列表；该 ID 已存在时，必须由同 ID、同完整内容的幂等 POST 明确确认才按原提交创建成功收口，不能只凭 ID 存在关闭表单。无法确认则保留表单，用户再次保存仍复用同一 ID；再次保存的内容若已变化，后端必须与已存在记录判定冲突，不能静默丢弃新内容。 |
-| 修改成功 | 同 ID 管理条目被替换并刷新。v2 保存成 v3 时保留槽位 ID，但立即从运行 registry 移除，不继续执行旧 v2 内容；槽位顺序不变。 |
+| 修改成功 | 同 ID 管理条目被替换并刷新。v2 保存成 v3 时保留槽位 ID，以新 v3 definition/revision 替换旧 v2 内容并重建选择 session；槽位顺序不变。 |
 | 修改响应不确定 | 读取同 ID 详情和列表，以 revision 与提交内容判断原提交是否成功；最终 registry 必须保留最后一次成功列表刷新得到的更新版本，不能再用较早读取的详情覆盖；不能盲目重试产生分叉。 |
 | 修改 revision 冲突 | 保持修改页打开，载入并显示最新权威详情与 revision，明确提示内容已变化；不把过期草稿或文件猜测合并到新版本。 |
 | 创建或修改暂存清理失败 | 保留原操作失败结果并将存储标记为待恢复；后续变更必须先清理 `.uploading` / `.updating`，清理仍失败时不得继续写入或绕过总量限制。 |
@@ -391,7 +400,7 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 1. N.E.K.O record 是本地自定义道具的唯一业务事实源。
 2. 后端保存业务数据和受管理资源，不保存 AvatarToolDefinition 或 desktopContract。
-3. Web catalog 负责把管理条目与可运行 definition 分开派生；registry/runtime 只执行当前支持的 v2 definition；页面组件只负责表单和接线。
+3. Web catalog 负责把管理条目与可运行 definition 分开派生；registry/runtime 只执行经校验的 v2/v3 definition；页面组件只负责表单和接线。
 4. PC 只消费 descriptor 和同源资源 URL，不读 record、不保存互动描述、不按本地 ID 写分支。
 5. Host 只校验 wire，Python 才读取 record 并选择互动描述。
 6. Full／Compact 共享目录内容但不共享槽位，不能增加隐式同步。
@@ -434,25 +443,26 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 ### 自动化
 
-- Web：v2/v3 DTO 与详情严格解码、v3 manifest、保存后重开同构、管理目录/运行 registry 分离、字段错误定位、资源保留/替换/移除、冲突处理，以及 v2 runtime、Full catalog 和 desktopContract 回归。
+- Web：v2/v3 DTO 与详情严格解码、v3 manifest、保存后重开同构、管理目录与 v2/v3 运行 registry 派生、字段错误定位、资源保留/替换/移除、冲突处理，以及 v2 固定切图、v3 图解释器、Full catalog 和 desktopContract 回归。
 - 后端：v2/v3 严格结构、稳定 ID、引用、选边、坐标、可达性、触发歧义、数量/延时限制、图片/音频、multipart 字段与上传引用、资源闭包、路径穿越、CSRF、详情隔离、同 ID POST 重试、同 ID PUT、revision 冲突、原子失败恢复、删除、维护态写围栏、总容量和坏记录隔离。
-- Host/Python：local ID、`changeIndex`、`specialTriggered`、权威描述选择、缺失/损坏记录、八语言 prompt、prompt injection 边界、cooldown、ack 和 memory 去重。
-- PC：v1 回归、v2 strict decode、两种切图、Web/PC 索引一致、声音、chance、坏资源、deactivate/dispose、surface lease、删除，以及 URL 相同但切图方式或彩蛋概率已经变化的过期 descriptor。
-- 跨仓：同一 v2 fixture 必须同时通过 Web projector 与 PC consumer，并产生一致的帧和 payload 结果。
+- Host/Python：local ID、v2 `changeIndex` 与 v3 `imageId` 互斥、`specialTriggered`、权威描述选择与空描述抑制、缺失/损坏记录、八语言 memory、用户原文提示词边界、cooldown 和 ack。
+- PC：v1 回归、v2/v3 strict decode、固定切图与完整图运行、Web/PC 冻结图片 ID 一致、声音、chance、坏资源、deactivate/dispose、surface lease、删除和过期 descriptor。
+- 跨仓：同一 v2/v3 权威输出必须通过 Web projector 与 PC consumer，并产生对应版本一致的画面和 payload 结果。
 - i18n：`en/es/ja/ko/pt/ru/zh-CN/zh-TW` JSON 可解析、key 集合一致、代码引用存在。
 
 ### 实际运行
 
 每次改变用户流程、资源、runtime、desktopContract 或生命周期时，按影响范围实际验证：
 
-1. Compact／Full 创建 v3、保存失败保留、返回管理目录和再次打开同构；确认 v3 不自动装备且装备入口不可用。
+1. Compact／Full 创建 v3、保存失败保留、返回管理目录、再次打开同构及自行装备；确认创建不自动装备。
 2. v2 `press-swap` 按下、松开、cancel 和范围缩放。
 3. v2 `click-advance` 多图排序、有效/无效点击、末张不循环和重新选择复位。
-4. 普通声音，以及彩蛋命中/未命中、独立音效/普通音效回退/静默。
-5. 同 ID 修改、资源保留/替换/移除和当前 session 清理。
-6. 删除当前或隐藏 surface 使用的道具，多道具之间不互相污染。
-7. Compact → Full → Compact、Pet reload 和应用重启。
-8. 单条坏 record、资源 404、目录请求失败和存储维护态。
+4. v3 初始图片、点击按下/松开、延时、自连接/回连、同级竞争与取消；按下前图片有描述时只选该描述，空描述不请求模型，彩蛋只替代一次反馈。
+5. 普通声音，以及彩蛋命中/未命中、独立音效/普通音效回退/静默。
+6. 同 ID 修改、资源保留/替换/移除和当前 session 清理。
+7. 删除当前或隐藏 surface 使用的道具，多道具之间不互相污染。
+8. Compact → Full → Compact、Pet reload 和应用重启。
+9. 单条坏 record、资源 404、目录请求失败和存储维护态。
 
 仅验证 schema 或 mock DTO 不能代替真实页面、实际构建产物和 Electron/Pet 链路。
 
@@ -470,7 +480,8 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 - `utils/config_manager/storage_roots.py`、`utils/storage/migration.py`、`utils/cloudsave_runtime/`、`main_routers/storage_location_router.py`：存储根、迁移、写围栏和诊断。
 - `frontend/react-neko-chat/src/AvatarToolItemManager.tsx`：道具库、三槽、Compact/Full 创建修改入口，以及管理条目与可装备条目的边界。
 - `frontend/react-neko-chat/src/AvatarToolCreatePage.tsx`：创建/修改共用表单。
-- `frontend/react-neko-chat/src/avatar-tools/localTools.ts`：v2/v3 公开/详情 DTO、v3 manifest API client 和固定 v2 runtime builder。
+- `frontend/react-neko-chat/src/avatar-tools/localTools.ts`：v2/v3 公开/详情 DTO、v3 manifest API client 和两版本 runtime definition builder。
+- `frontend/react-neko-chat/src/avatar-tools/customGraphRuntime.ts`：Web 的 v3 图状态与计时核心。
 - `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts`：动态目录请求、请求代次和 snapshot 校准。
 - `frontend/react-neko-chat/src/avatar-tools/catalog.ts`、`registry.ts`、`profileInterpreter.ts`、`runtime.ts`、`presentation.tsx`、`desktopContract.ts`、`protocol.ts`：通用定义、执行、表现和桌面投影。
 - `frontend/react-neko-chat/src/App.tsx`、`FullChatSurface.tsx`、`avatarTools.ts`：Compact/Full 页面接线、槽位和菜单投影。
@@ -480,7 +491,8 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 ### N.E.K.O-PC
 
-- `src/desktop-avatar-tools/contract.js`：v1/v2 descriptor 严格 consumer。
+- `src/desktop-avatar-tools/contract.js`：v1/v2/v3 descriptor 严格 consumer。
+- `src/desktop-avatar-tools/custom-graph-runtime.js`：PC 的 v3 图状态与计时核心。
 - `src/desktop-avatar-tools/runtime.js`、`interaction-output.js`：桌面输入、帧、声音、效果和 Host payload。
 - `src/desktop-avatar-tools/surface-lifecycle.js`：descriptor ownership、handoff 和 renderer guard。
 - `src/preload/bridges/chat-avatar-tool-bridge.js`：Full/Compact descriptor 发布、ID/资源版本校验和刷新。

@@ -951,7 +951,7 @@
         "avatarToolCreateSpecialImage": "Imagen sorpresa",
         "avatarToolCreateSpecialMeaningPlaceholder": "Por ejemplo: «{{user}}» toca suavemente a «{{character}}» con una pata de gato y cae una recompensa.",
         "avatarToolCreateSpecialSound": "Sonido sorpresa (opcional)",
-        "avatarToolCreatePrivacy": "Las imágenes y los sonidos quedan en este dispositivo; solo se envían al modelo el nombre de la herramienta y la descripción de la imagen actual.",
+        "avatarToolCreatePrivacy": "Las imágenes y los sonidos quedan en este dispositivo; al interactuar, se envía al modelo el texto de la imagen actual o de la sorpresa.",
         "avatarToolCreateName": "Nombre de la herramienta",
         "avatarToolCreateNamePlaceholder": "De 1 a {{count}} caracteres; usa letras, números, espacios, «-» o «_»",
         "avatarToolCreateDefaultImage": "Imagen predeterminada",

@@ -1222,7 +1222,7 @@ export default function AvatarToolEditorWorkspace({
               <h3>{i18n('chat.avatarToolWorkspaceEditorTitle', 'Tool editor')}</h3>
               <p className="avatar-tool-workspace-content-note">{i18n(
                 'chat.avatarToolCreatePrivacy',
-                'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
+                'Images and sounds stay on this device; during interactions, the current image or surprise prompt is sent to the model.',
               )}</p>
             </div>
             <div className="avatar-tool-workspace-settings-body">

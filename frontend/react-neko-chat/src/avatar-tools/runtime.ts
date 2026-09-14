@@ -1249,10 +1249,25 @@ export function useAvatarToolRuntime({
       );
       const profile = registry.getRegistration(session.toolId).definition.interaction;
       if (profile.kind === 'custom-graph') {
-        if (validCommit && session.customGraph?.completeClick()) {
-          recordBurst(profile.burst.key, profile.burst.windowMs);
+        const completion = validCommit ? session.customGraph?.completeClick() : null;
+        if (completion && commitHit) {
+          const tapCount = recordBurst(profile.burst.key, profile.burst.windowMs);
           const feedback = resolveCustomGraphLocalFeedback(profile, random);
+          const capturedImage = profile.images.find(image => image.id === completion.capturedImageId);
           applyCommand({
+            ...((feedback.specialTriggered || capturedImage?.hasMeaning) ? { commit: {
+              toolId: session.toolId as `local-${string}`,
+              toolRevision: profile.revision,
+              actionId: 'interact' as const,
+              intensity: tapCount >= profile.burst.rapidThreshold
+                ? profile.burst.rapidIntensity
+                : profile.burst.normalIntensity,
+              touchZone: commitHit.touchZone,
+              imageId: completion.capturedImageId,
+              ...(profile.chance ? { specialTriggered: feedback.specialTriggered } : {}),
+              clientX: event.clientX,
+              clientY: event.clientY,
+            } } : {}),
             ...(feedback.sound ? { sound: feedback.sound } : {}),
             ...(feedback.effect ? { effect: feedback.effect } : {}),
           }, event.clientX, event.clientY);
