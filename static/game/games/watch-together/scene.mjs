@@ -150,9 +150,15 @@ export async function run(game, character) {
       // The backend runs one generation per route; retry once after a slow interjection settles.
       if (result?.busy && liveFlight) { await liveFlight; result = await request(); }
       const [summary, ...replies] = result?.lines || [];
-      for (const line of [summary, ...takeHeldLines(), ...replies].filter(Boolean)) {
+      const queue = [summary, ...takeHeldLines(), ...replies].filter(Boolean);
+      for (let index = 0; index < queue.length; index++) {
         if (current !== media || !automatic.enabled) break;
-        await current.say(line);
+        if (await current.say(queue[index]) === 'skipped') {
+          // Stop rather than wait out each remaining line; replies still wait for a gap in
+          // the next video, while the summary belongs to this video only.
+          holdLines(queue.slice(index).filter(line => line !== summary));
+          break;
+        }
       }
     })().catch(error => warn('watch-together intermission failed', error)).finally(() => { intermission = null; });
   }

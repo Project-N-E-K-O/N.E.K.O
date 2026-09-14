@@ -222,4 +222,19 @@ const disposedLine=speaking.say(liveLine);
 await new Promise(resolve=>setTimeout(resolve,0));
 speaking.dispose();
 assert.equal(await disposedLine,'interrupted','disposal settles a playing live line');
+const stalledHost=await mount({video:new Media(),timeline:{status:'ready',id:'job',version:'version',video:'/video',events:[]}});
+await stalledHost.play();
+let downloadSignal=null;
+globalThis.fetch=(_url,options={})=>new Promise((_resolve,reject)=>{
+  downloadSignal=options.signal;
+  options.signal?.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')));
+});
+const stalledLine=stalledHost.say(liveLine);
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.ok(downloadSignal,'live audio downloads are cancellable');
+stalledHost.dispose();
+// Race a short timer: the 10-second download deadline must not be what settles it.
+const stalledOutcome=await Promise.race([stalledLine,new Promise(resolve=>setTimeout(()=>resolve('still pending'),200))]);
+assert.equal(stalledOutcome,'skipped','disposal abandons a stalled download at once and reports it as never started');
+globalThis.fetch=async()=>new Response('speech');
 console.log('watch-together live speech: lock, registration, gap playback and preemption passed');

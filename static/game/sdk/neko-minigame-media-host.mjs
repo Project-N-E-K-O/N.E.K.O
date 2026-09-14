@@ -84,6 +84,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   let outputStopped = true, ducked = false;
   // A live line (not on the timeline) borrowing the reaction output between cues.
   let speech = null;
+  const liveDownloads = new Set();
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
@@ -228,9 +229,22 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       const busy = () => disposed || speech || (active?.audio && !outputStopped);
       if (busy()) return 'skipped';
       const attemptGeneration = generation;
-      const response = await fetch(url);
-      if (!response.ok) throw Error('Live speech unavailable');
-      const blob = await response.blob();
+      // A stalled download must not hold the intermission (and automatic mode) forever.
+      const download = new AbortController();
+      const deadline = setTimeout(() => download.abort(), 10000);
+      liveDownloads.add(download);
+      let blob;
+      try {
+        const response = await fetch(url, { signal: download.signal });
+        if (!response.ok) throw Error('Live speech unavailable');
+        blob = await response.blob();
+      } catch (error) {
+        if (download.signal.aborted) return 'skipped';
+        throw error;
+      } finally {
+        clearTimeout(deadline);
+        liveDownloads.delete(download);
+      }
       if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
       // Playback may have paused or started buffering during the fetch; an ended
       // video is still a valid moment (the automatic-mode intermission).
@@ -250,6 +264,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     dispose() {
       if (disposed) return;
       video.pause(); stop(true); disposed = true; generation++;
+      for (const download of liveDownloads) download.abort();
       cancelAnimationFrame(frame); listeners.forEach(remove => remove());
       video.removeAttribute('src'); video.load(); audio.load(); release?.(); release = null;
       voiceNodes.forEach(node=>node.disconnect());
