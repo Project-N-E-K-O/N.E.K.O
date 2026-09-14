@@ -419,6 +419,51 @@ class TurnMixin:
         request_id_str = str(request_id or "")
         return bool(request_id_str and request_id_str in self._magic_command_image_drop_request_ids)
 
+    def _record_request_staged_image(self, request_id: object, image: object) -> None:
+        """Remember which request staged ``image`` into the offline attachment queue.
+
+        ``_pending_images`` carries no request identity, so a consumed slash
+        command needs this ledger to remove only its own already-staged
+        attachments. Entries whose image has already left the queue are pruned
+        on every record, so the ledger never keeps a consumed frame alive.
+        """
+        request_id_str = str(request_id or "")
+        if not request_id_str:
+            return
+        ledger = getattr(self, "_request_staged_images", None)
+        if ledger is None:
+            ledger = deque()
+            self._request_staged_images = ledger
+        pending = getattr(self.session, "_pending_images", None)
+        if isinstance(pending, list):
+            live = [
+                (rid, staged) for rid, staged in ledger
+                if any(queued is staged for queued in pending)
+            ]
+            ledger.clear()
+            ledger.extend(live)
+        ledger.append((request_id_str, image))
+
+    def _discard_request_staged_images(self, request_id: object) -> None:
+        """Remove attachments this request already staged; other requests' images stay."""
+        request_id_str = str(request_id or "")
+        ledger = getattr(self, "_request_staged_images", None)
+        if not request_id_str or not ledger:
+            return
+        pending = getattr(self.session, "_pending_images", None)
+        remaining = []
+        for rid, staged in ledger:
+            if rid != request_id_str:
+                remaining.append((rid, staged))
+                continue
+            if isinstance(pending, list):
+                for index, queued in enumerate(pending):
+                    if queued is staged:
+                        del pending[index]
+                        break
+        ledger.clear()
+        ledger.extend(remaining)
+
     async def handle_response_complete(self):
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
         if self._takeover_active:
@@ -1131,11 +1176,19 @@ class TurnMixin:
         if not game_type:
             return False
         request_id = message.get("request_id")
-        # Only drop this command's own attachments (by request id, as they
-        # arrive). ``_pending_images`` is a session-wide list with no request
-        # identity, so clearing it could strip an earlier message's image whose
-        # text task has not reached ``stream_text`` yet.
+        # Drop only this command's own attachments: those it already staged (the
+        # composer sends images before the text) and any arriving later.
+        # ``_pending_images`` is session-wide with no request identity, so
+        # clearing it would strip an earlier message's image whose text task
+        # has not reached ``stream_text`` yet.
+        self._discard_request_staged_images(request_id)
         self._mark_magic_command_image_drop_request(request_id)
+        if isinstance(self.session, OmniOfflineClient):
+            # The command never reaches stream_text, so a staged proactive
+            # screenshot would otherwise leak into the next unrelated message.
+            clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+            if callable(clear_shot):
+                clear_shot(None)
         # The turn end below seals the frontend's current assistant bubble, so
         # stop an in-flight reply first, the same way a new text message does,
         # without tearing the session down. Only the offline producer is

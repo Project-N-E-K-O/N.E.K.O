@@ -3211,10 +3211,22 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
         mgr.session = object.__new__(core_module.OmniRealtimeClient)
     else:
         mgr.session = object.__new__(core_module.OmniOfflineClient)
-        # An earlier message's attachment whose text has not been streamed yet.
-        mgr.session._pending_images = ["earlier-image"]
+        mgr.session._pending_images = []
         mgr.session.stream_text = AsyncMock()
         mgr.session.handle_interruption = AsyncMock()
+        mgr.session.set_proactive_screenshot = Mock()
+        # An earlier message's attachment whose text has not been streamed yet,
+        # then the command's own attachment (the composer sends images first).
+        earlier_image = "earlier-image-" + "x" * 64
+        own_image = "own-image-" + "y" * 64
+        for staged_request_id, image in (
+            ("req-earlier", earlier_image),
+            ("req-watch", own_image),
+        ):
+            mgr.session._pending_images.append(image)
+            core_module.LLMSessionManager._record_request_staged_image(
+                mgr, staged_request_id, image,
+            )
 
     await core_module.LLMSessionManager._stream_data_now(
         mgr,
@@ -3228,7 +3240,8 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
     mgr._clear_tts_pipeline.assert_awaited_once()
     if session_state == "offline":
         mgr.session.handle_interruption.assert_awaited_once()
-        assert mgr.session._pending_images == ["earlier-image"]
+        assert mgr.session._pending_images == [earlier_image]
+        mgr.session.set_proactive_screenshot.assert_called_once_with(None)
     assert mgr.sync_message_queue.messages[0]["data"]["metadata"] == {
         "source": "mini_game",
         "kind": "magic_command",
@@ -3250,6 +3263,50 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
         "lanlan_name": ["Lan"],
         "session_id": [launch["session_id"]],
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mini_game_magic_command_removes_only_its_own_staged_attachment(monkeypatch):
+    """The composer sends a shortcut's image before its text; only that image is dropped."""
+    mgr = _make_transcript_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+
+    async def _stage(image_b64):
+        mgr.session._pending_images.append(image_b64)
+
+    mgr.session.stream_image = AsyncMock(side_effect=_stage)
+    mgr.session.handle_interruption = AsyncMock()
+    mgr.session.set_proactive_screenshot = Mock()
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr.pending_input_data = []
+    validated_images = iter(["earlier-image-" + "x" * 64, "own-image-" + "y" * 64])
+
+    async def _validate(_data):
+        return next(validated_images)
+
+    monkeypatch.setattr(core_module, "process_screen_data", _validate)
+
+    for request_id in ("req-earlier", "req-watch"):
+        await core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "user_image", "data": "raw-image", "request_id": request_id},
+        )
+    earlier_image, _own_image = mgr.session._pending_images
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/一起看", "request_id": "req-watch"},
+    )
+
+    assert mgr.session._pending_images == [earlier_image]
 
 
 @pytest.mark.unit

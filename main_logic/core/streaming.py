@@ -941,6 +941,11 @@ class StreamingMixin:
                             if not self.is_active or self.session is not target_session:
                                 return
                             image_accepted = True
+                            # 记下这张附件属于哪个 request：随后到达的斜杠快捷指令
+                            # 只删自己这条请求已暂存的附件，不碰更早消息的图。
+                            self._record_request_staged_image(
+                                message.get("request_id"), image_b64
+                            )
                             image_data = (
                                 ""
                                 if input_type in {"avatar_drop_image", "user_image"}
