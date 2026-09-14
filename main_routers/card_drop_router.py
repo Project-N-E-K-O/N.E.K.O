@@ -19,9 +19,11 @@ import json
 import logging
 import os
 import secrets
+import stat
+import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -31,6 +33,16 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from utils.file_utils import fsync_directory_best_effort, publish_without_replacing
+from utils.storage.community_private_state import (
+    COMMUNITY_AUTH_FILENAME as _AUTH_FILENAME,
+    COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
+    COMMUNITY_STEAM_PENDING_FILENAME as _STEAM_PENDING_FILENAME,
+    SOCIAL_SESSION_FILENAME as _SOCIAL_SESSION_FILENAME,
+    probe_retained_community_state,
+    retained_community_snapshot_matches,
+)
+from utils.storage_policy import path_chain_has_symlink, paths_equal
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -38,9 +50,7 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
-_SOCIAL_SESSION_FILENAME = "social_session.json"
 _SOCIAL_SESSION_LOCK_SUFFIX = ".lock"
-_SOCIAL_SESSION_LOCK_STALE_SEC = 30.0
 _SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
 _SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
@@ -479,21 +489,293 @@ def _credit_cors_headers(request: Request) -> dict[str, str] | None:
 
 
 # ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
-_AUTH_FILENAME = "community_auth.json"
+_OAUTH_PENDING_TTL_SEC = 600
 
 
-def _auth_path() -> Path | None:
+def _oauth_pending_record_has_shape(data: dict) -> bool:
+    if not (
+        str(data.get("state") or "").strip()
+        and str(data.get("code_verifier") or "").strip()
+    ):
+        return False
     try:
-        from utils.config_manager import get_config_manager
-        return Path(get_config_manager().memory_dir).parent / _AUTH_FILENAME
+        return float(data.get("expires_at") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _oauth_pending_record_is_fresh(data: dict) -> bool:
+    return _oauth_pending_record_has_shape(data) and float(data["expires_at"]) > time.time()
+
+
+def _steam_pending_record_has_shape(data: dict) -> bool:
+    if not str(data.get("state") or "").strip():
+        return False
+    try:
+        return float(data.get("ts") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _steam_pending_record_is_fresh(data: dict) -> bool:
+    if not _steam_pending_record_has_shape(data):
+        return False
+    timestamp = float(data["ts"])
+    return bool(timestamp) and (time.time() - timestamp) <= _STEAM_PENDING_TTL_SEC
+
+
+def _community_state_dir(config_manager=None) -> Path | None:
+    """Return the fixed-anchor directory for private community state."""
+    try:
+        if config_manager is None:
+            from utils.config_manager import get_config_manager
+
+            config_manager = get_config_manager()
+        state_dir = Path(config_manager.local_state_dir)
+        if path_chain_has_symlink(state_dir):
+            logger.warning("card_drop: community state directory is unsafe")
+            return None
+        return state_dir
     except Exception as exc:  # noqa: BLE001
-        logger.debug("card_drop: auth path resolve failed: %s", exc)
+        logger.debug("card_drop: community state path resolve failed: %s", exc)
         return None
 
 
+def _community_state_path(filename: str, *, config_manager=None) -> Path | None:
+    state_dir = _community_state_dir(config_manager)
+    return state_dir / filename if state_dir is not None else None
+
+
+def _legacy_root_candidates(
+    config_manager=None,
+    *,
+    include_cleanup_in_progress: bool = False,
+) -> tuple[list[Path], list[Path]]:
+    """Return ``(import_roots, conflict_witness_roots)`` for legacy state.
+
+    The completed migration checkpoint is the authority for a retained source;
+    its target may prove a conflict but can never supply a missing retained
+    record. Arbitrary root_state strings are deliberately not followed.
+    """
+    try:
+        from utils.storage_migration import load_storage_migration
+
+        if config_manager is None:
+            from utils.config_manager import get_config_manager
+
+            config_manager = get_config_manager()
+        current_root = Path(config_manager.memory_dir).parent
+        committed_root = Path(
+            getattr(config_manager, "committed_selected_root", current_root)
+        ).expanduser()
+        import_roots: list[Path] = []
+        witness_roots: list[Path] = []
+        try:
+            migration = load_storage_migration(config_manager)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("card_drop: cannot inspect retained credential source: %s", exc)
+            # A corrupt or unreadable checkpoint destroys the authority needed
+            # to decide whether ``current_root`` is the old source, committed
+            # target, or an anchor fallback. Never guess with credentials.
+            return [], []
+        if (
+            isinstance(migration, dict)
+            and str(migration.get("status") or "").strip() == "completed"
+            and str(migration.get("target_root") or "").strip()
+            and paths_equal(migration["target_root"], committed_root)
+        ):
+            retained_mode = str(migration.get("retained_source_mode") or "").strip()
+            if retained_mode == "cleaned" or (
+                retained_mode == "cleanup_in_progress"
+                and not include_cleanup_in_progress
+            ):
+                return [], []
+            retained = str(
+                migration.get("retained_source_root")
+                or migration.get("backup_root")
+                or migration.get("source_root")
+                or ""
+            ).strip()
+            if retained:
+                retained_root = Path(retained).expanduser()
+                if retained_root.is_absolute() and not path_chain_has_symlink(retained_root):
+                    import_roots.append(retained_root)
+                    witness_roots.append(retained_root)
+                    retained_inventory = probe_retained_community_state(retained_root)
+                    # A retained directory with no managed private state may be
+                    # the residue of a cleanup whose two metadata writes both
+                    # failed. Do not use its stale checkpoint to revive target
+                    # credentials; a fresh login is safer than account rollback.
+                    if (
+                        (
+                            retained_inventory.has_managed_content
+                            or (
+                                include_cleanup_in_progress
+                                and retained_mode == "cleanup_in_progress"
+                            )
+                        )
+                        and not bool(
+                            getattr(
+                                config_manager,
+                                "recovery_committed_root_unavailable",
+                                False,
+                            )
+                        )
+                    ):
+                        witness_roots.append(committed_root)
+        else:
+            import_roots.append(current_root)
+            witness_roots.append(current_root)
+
+        def _dedupe(roots: list[Path]) -> list[Path]:
+            unique: list[Path] = []
+            for root in roots:
+                if path_chain_has_symlink(root):
+                    continue
+                if not any(paths_equal(root, existing) for existing in unique):
+                    unique.append(root)
+            return unique
+
+        return _dedupe(import_roots), _dedupe(witness_roots)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card_drop: legacy community paths unavailable: %s", exc)
+        return [], []
+
+
+def _legacy_selected_roots(
+    config_manager=None,
+    *,
+    include_cleanup_in_progress: bool = False,
+) -> list[Path]:
+    return _legacy_root_candidates(
+        config_manager,
+        include_cleanup_in_progress=include_cleanup_in_progress,
+    )[0]
+
+
+def _legacy_conflict_witness_roots(
+    config_manager=None,
+    *,
+    include_cleanup_in_progress: bool = False,
+) -> list[Path]:
+    return _legacy_root_candidates(
+        config_manager,
+        include_cleanup_in_progress=include_cleanup_in_progress,
+    )[1]
+
+
+def _legacy_private_file_paths(filename: str) -> list[Path]:
+    canonical_dir = _community_state_dir()
+    paths: list[Path] = []
+    for root in _legacy_selected_roots():
+        if canonical_dir is not None and paths_equal(root, canonical_dir):
+            continue
+        paths.append(root / filename)
+    return paths
+
+
+def _legacy_private_conflict_paths(filename: str) -> list[Path]:
+    canonical_dir = _community_state_dir()
+    return [
+        root / filename
+        for root in _legacy_conflict_witness_roots()
+        if canonical_dir is None or not paths_equal(root, canonical_dir)
+    ]
+
+
+def _logout_private_file_paths(filename: str) -> list[Path]:
+    """Return exact app-owned legacy files that logout must invalidate.
+
+    A cleaned checkpoint never contributes its old source. The active effective
+    and committed selected roots are included independently so a target that was
+    only a conflict witness cannot retain a live secret after logout.
+    """
+    # An in-progress retained source is excluded: after a completed physical
+    # cleanup and failed final metadata writes, that path may be reused by an
+    # unrelated future installation. Current/committed target roots are added
+    # below and remain safe exact app-owned logout targets.
+    roots = _legacy_conflict_witness_roots()
+    try:
+        from utils.config_manager import get_config_manager
+
+        config_manager = get_config_manager()
+        roots.extend(
+            [
+                Path(config_manager.memory_dir).parent,
+                Path(
+                    getattr(
+                        config_manager,
+                        "committed_selected_root",
+                        Path(config_manager.memory_dir).parent,
+                    )
+                ).expanduser(),
+            ]
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card_drop: logout legacy paths unavailable: %s", exc)
+
+    paths: list[Path] = []
+    for root in roots:
+        if not root.is_absolute() or path_chain_has_symlink(root):
+            continue
+        candidate = root / filename
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _logout_storage_ready() -> bool:
+    """Prove the committed selected root is reachable before deleting any secret."""
+    try:
+        from utils.config_manager import get_config_manager
+
+        config_manager = get_config_manager()
+        if bool(getattr(config_manager, "recovery_committed_root_unavailable", False)):
+            return False
+        committed_root = Path(
+            getattr(
+                config_manager,
+                "committed_selected_root",
+                Path(config_manager.memory_dir).parent,
+            )
+        ).expanduser()
+        metadata = committed_root.lstat()
+        return bool(
+            stat.S_ISDIR(metadata.st_mode)
+            and not path_chain_has_symlink(committed_root)
+            and os.access(committed_root, os.R_OK | os.W_OK | os.X_OK)
+        )
+    except (AttributeError, OSError):
+        return False
+
+
+def _auth_path() -> Path | None:
+    return _community_state_path(_AUTH_FILENAME)
+
+
+def _legacy_auth_path() -> Path | None:
+    paths = _legacy_private_file_paths(_AUTH_FILENAME)
+    return paths[0] if paths else None
+
+
+def _auth_paths() -> list[Path]:
+    paths: list[Path] = []
+    for candidate in ([_auth_path()] + _legacy_private_file_paths(_AUTH_FILENAME)):
+        if candidate is not None and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
 def _legacy_social_session_path() -> Path | None:
-    p = _auth_path()
-    return (p.parent / _SOCIAL_SESSION_FILENAME) if p else None
+    # Preserve the historical coupling for embedders/tests that supply an auth
+    # path directly, while normal runtime resolution continues to use the
+    # selected/retained-root inventory below.
+    auth_path = _auth_path()
+    canonical_auth = _community_state_path(_AUTH_FILENAME)
+    if auth_path is not None and auth_path != canonical_auth:
+        return auth_path.parent / _SOCIAL_SESSION_FILENAME
+    paths = _legacy_private_file_paths(_SOCIAL_SESSION_FILENAME)
+    return paths[0] if paths else None
 
 
 def _social_session_path() -> Path | None:
@@ -504,15 +786,596 @@ def _social_session_path() -> Path | None:
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME
         logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")
-    return _legacy_social_session_path()
+    return _community_state_path(_SOCIAL_SESSION_FILENAME)
 
 
 def _social_session_paths() -> list[Path]:
     paths: list[Path] = []
-    for candidate in (_social_session_path(), _legacy_social_session_path()):
+    canonical_state_session = _community_state_path(_SOCIAL_SESSION_FILENAME)
+    candidates = [
+        _social_session_path(),
+        canonical_state_session,
+        _legacy_social_session_path(),
+        *_legacy_private_file_paths(_SOCIAL_SESSION_FILENAME),
+    ]
+    for candidate in candidates:
         if candidate is not None and candidate not in paths:
             paths.append(candidate)
     return paths
+
+
+def _social_lock_fingerprint(raw: bytes) -> str:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError):
+        payload = None
+    token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
+    if token:
+        return f"token:{token}"
+    # A digest lets the creating process clean up a malformed partial write.
+    # Existing locks are never taken over based on their age.
+    return f"digest:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _social_lock_metadata_equal(left, right) -> bool:
+    return bool(
+        os.path.samestat(left, right)
+        and int(left.st_size) == int(right.st_size)
+        and int(left.st_mtime_ns) == int(right.st_mtime_ns)
+    )
+
+
+def _open_social_lock_snapshot(
+    lock_path: Path | str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[int, object, str]:
+    """Open a lock without following it and prove the name still names that inode."""
+    before = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("unsafe social session lock")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, dir_fd=dir_fd)
+    try:
+        opened = os.fstat(fd)
+        if not _social_lock_metadata_equal(before, opened):
+            raise OSError("social session lock changed while opening")
+        chunks: list[bytes] = []
+        remaining = 4097
+        while remaining:
+            chunk = os.read(fd, min(remaining, 4096))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(fd)
+        if len(raw) > 4096 or not _social_lock_metadata_equal(opened, after):
+            raise OSError("social session lock changed while reading")
+        named = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
+        if not _social_lock_metadata_equal(after, named):
+            raise OSError("social session lock was replaced while reading")
+        return fd, after, _social_lock_fingerprint(raw)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_social_lock_snapshot(
+    lock_path: Path | str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[object, str]:
+    fd, metadata, fingerprint = _open_social_lock_snapshot(
+        lock_path,
+        dir_fd=dir_fd,
+    )
+    os.close(fd)
+    return metadata, fingerprint
+
+
+def _unlink_social_lock_if_unchanged(
+    lock_path: Path | str,
+    expected_metadata,
+    expected_fingerprint: str,
+    *,
+    dir_fd: int | None = None,
+) -> bool:
+    """Release a lock owned by this process; never use this for stale takeover."""
+    try:
+        fd, current_metadata, current_fingerprint = _open_social_lock_snapshot(
+            lock_path,
+            dir_fd=dir_fd,
+        )
+    except FileNotFoundError:
+        return False
+    try:
+        if (
+            not _social_lock_metadata_equal(expected_metadata, current_metadata)
+            or current_fingerprint != expected_fingerprint
+        ):
+            return False
+        # Keep the verified inode open through unlink. The cooperative O_EXCL
+        # protocol prevents a second owner while this name still exists.
+        os.unlink(lock_path, dir_fd=dir_fd)
+        return True
+    finally:
+        os.close(fd)
+
+
+def _legacy_social_path_ready(path: Path) -> bool:
+    """Reject every legacy lock; age alone cannot prove that its owner is gone."""
+    lock_path = Path(f"{path}{_SOCIAL_SESSION_LOCK_SUFFIX}")
+    try:
+        _read_social_lock_snapshot(lock_path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _read_private_json_state(path: Path) -> tuple[str, dict | None]:
+    """Distinguish absence from corrupt/unreadable credential authority."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "unreadable", None
+    if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path):
+        return "unsafe", None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(data, dict):
+        return "invalid", None
+    return "valid", data
+
+
+def _read_private_json_state_at(dir_fd: int, filename: str) -> tuple[str, dict | None]:
+    """Read one retained-root file through an already verified directory handle."""
+    try:
+        before = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "unreadable", None
+    if not stat.S_ISREG(before.st_mode):
+        return "unsafe", None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(filename, flags, dir_fd=dir_fd)
+        try:
+            after = os.fstat(fd)
+            if not os.path.samestat(before, after):
+                return "unsafe", None
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                fd = -1
+                data = json.load(handle)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    except (OSError, ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(data, dict):
+        return "invalid", None
+    return "valid", data
+
+
+def _write_private_json_no_replace(path: Path, data: dict) -> bool:
+    """Atomically publish a private JSON file without replacing a race winner."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path_chain_has_symlink(path.parent):
+        raise OSError("unsafe private state directory")
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            publish_without_replacing(tmp, path)
+        except FileExistsError:
+            return False
+        fsync_directory_best_effort(path.parent)
+        return True
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_or_migrate_private_json(
+    canonical_path: Path | None,
+    legacy_paths: list[Path],
+    *,
+    validator,
+    conflict_paths: list[Path] | None = None,
+) -> dict | None:
+    """Load canonical state or copy one valid legacy record exactly once.
+
+    Existing canonical data, including malformed/unreadable data, is never
+    replaced or bypassed with a stale legacy token.  A destination write failure
+    leaves the legacy file intact and usable for this read, so migration is
+    retried without logging the user out or destroying evidence.
+    """
+    if canonical_path is None:
+        return None
+    canonical_state, canonical_data = _read_private_json_state(canonical_path)
+    if canonical_state != "absent":
+        if canonical_state == "valid" and validator(canonical_data or {}):
+            return canonical_data
+        logger.warning("card_drop: canonical %s is not usable", canonical_path.name)
+        return None
+
+    inspected_candidates: dict[Path, dict] = {}
+    unusable_candidate = False
+    paths_to_inspect = conflict_paths if conflict_paths is not None else legacy_paths
+    for legacy_path in paths_to_inspect:
+        if legacy_path == canonical_path:
+            continue
+        legacy_state, legacy_data = _read_private_json_state(legacy_path)
+        if legacy_state == "absent":
+            continue
+        if legacy_state != "valid" or not validator(legacy_data or {}):
+            logger.warning("card_drop: legacy %s is not usable", legacy_path.name)
+            unusable_candidate = True
+            continue
+        inspected_candidates[legacy_path] = legacy_data or {}
+
+    if unusable_candidate:
+        return None
+    witness_payloads = list(inspected_candidates.values())
+    if witness_payloads and any(
+        candidate_data != witness_payloads[0]
+        for candidate_data in witness_payloads[1:]
+    ):
+        logger.warning("card_drop: conflicting legacy %s records", canonical_path.name)
+        return None
+    usable_candidates = [
+        (legacy_path, inspected_candidates[legacy_path])
+        for legacy_path in legacy_paths
+        if legacy_path in inspected_candidates
+    ]
+    if not usable_candidates:
+        return None
+    legacy_path, legacy_data = usable_candidates[0]
+
+    try:
+        published = _write_private_json_no_replace(canonical_path, legacy_data)
+    except OSError as exc:
+        logger.warning("card_drop: private state migration failed for %s: %s", canonical_path.name, exc)
+        return legacy_data
+    if not published:
+        winner_state, winner_data = _read_private_json_state(canonical_path)
+        return (
+            winner_data
+            if winner_state == "valid" and validator(winner_data or {})
+            else None
+        )
+
+    winner_state, winner_data = _read_private_json_state(canonical_path)
+    if winner_state != "valid" or not validator(winner_data or {}):
+        return None
+    # Delete only the exact record copied. A concurrent refresh must remain.
+    latest_state, latest_data = _read_private_json_state(legacy_path)
+    if latest_state == "valid" and latest_data == legacy_data:
+        try:
+            legacy_path.unlink()
+            fsync_directory_best_effort(legacy_path.parent)
+        except OSError as exc:
+            logger.warning("card_drop: legacy %s cleanup failed: %s", legacy_path.name, exc)
+    return winner_data
+
+
+def _legacy_credential_sources_conflict(
+    config_manager=None,
+    *,
+    include_cleanup_in_progress: bool = False,
+    retained_root: Path | None = None,
+    retained_dir_fd: int | None = None,
+) -> bool:
+    """Return True unless multiple credential roots prove the same identity."""
+    source_records: list[tuple[set[str], set[str]]] = []
+    sources: list[tuple[tuple[Path, str], ...]] = []
+    state_dir = _community_state_dir(config_manager)
+    if state_dir is not None:
+        sources.append(
+            (
+                (state_dir / _AUTH_FILENAME, "access_token"),
+                (state_dir / _SOCIAL_SESSION_FILENAME, "token"),
+            )
+        )
+    social_override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if social_override and Path(social_override).expanduser().is_absolute():
+        sources.append(
+            ((Path(social_override).expanduser() / _SOCIAL_SESSION_FILENAME, "token"),)
+        )
+    for root in _legacy_conflict_witness_roots(
+        config_manager,
+        include_cleanup_in_progress=include_cleanup_in_progress,
+    ):
+        sources.append(
+            (
+                (root / _AUTH_FILENAME, "access_token"),
+                (root / _SOCIAL_SESSION_FILENAME, "token"),
+            )
+        )
+
+    for source in sources:
+        users: set[str] = set()
+        tokens: set[str] = set()
+        has_record = False
+        for path, token_field in source:
+            if (
+                retained_dir_fd is not None
+                and retained_root is not None
+                and paths_equal(path.parent, retained_root)
+            ):
+                state, data = _read_private_json_state_at(retained_dir_fd, path.name)
+            else:
+                state, data = _read_private_json_state(path)
+            if state == "absent":
+                continue
+            if state != "valid":
+                return True
+            token = str((data or {}).get(token_field) or "").strip()
+            if not token:
+                return True
+            has_record = True
+            tokens.add(token)
+            user_id = _normalize_local_user_id((data or {}).get("local_user_id"))
+            if user_id:
+                users.add(user_id)
+        if has_record:
+            if len(users) > 1 or len(tokens) > 1:
+                return True
+            source_records.append((users, tokens))
+
+    for index, (left_users, left_tokens) in enumerate(source_records):
+        for right_users, right_tokens in source_records[index + 1 :]:
+            if left_users and right_users:
+                if left_users.isdisjoint(right_users):
+                    return True
+            if not left_tokens or not right_tokens or left_tokens.isdisjoint(right_tokens):
+                return True
+    return False
+
+
+def _existing_safe_parent(path: Path) -> bool:
+    try:
+        return path.parent.is_dir() and not path_chain_has_symlink(path.parent)
+    except OSError:
+        return False
+
+
+def prepare_retained_community_state_cleanup(
+    retained_root: Path | str,
+    *,
+    config_manager=None,
+    expected_snapshot: dict[str, str] | None = None,
+    retained_dir_fd: int | None = None,
+) -> None:
+    """Lock the social mirror for the full retained-state cleanup transaction."""
+    root = Path(retained_root).expanduser()
+    if not root.is_absolute() or path_chain_has_symlink(root):
+        raise OSError("unsafe retained community state root")
+    social_override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if social_override and Path(social_override).expanduser().is_absolute():
+        canonical_social = Path(social_override).expanduser() / _SOCIAL_SESSION_FILENAME
+    else:
+        canonical_social = _community_state_path(
+            _SOCIAL_SESSION_FILENAME,
+            config_manager=config_manager,
+        )
+    legacy_social = root / _SOCIAL_SESSION_FILENAME
+    lock_paths = [canonical_social] if canonical_social is not None else []
+    for legacy_root in _legacy_conflict_witness_roots(
+        config_manager,
+        include_cleanup_in_progress=True,
+    ):
+        candidate = legacy_root / _SOCIAL_SESSION_FILENAME
+        if retained_dir_fd is not None and paths_equal(legacy_root, root):
+            continue
+        if _existing_safe_parent(candidate):
+            lock_paths.append(candidate)
+    if (
+        retained_dir_fd is None
+        and _existing_safe_parent(legacy_social)
+        and legacy_social not in lock_paths
+    ):
+        lock_paths.append(legacy_social)
+    with _social_session_locks(lock_paths, retained_dir_fd=retained_dir_fd):
+        if expected_snapshot is not None and not retained_community_snapshot_matches(
+            root,
+            expected_snapshot,
+            dir_fd=retained_dir_fd,
+        ):
+            raise OSError("retained community state changed after cleanup intent")
+        _prepare_retained_community_state_cleanup_locked(
+            root,
+            config_manager=config_manager,
+            retained_dir_fd=retained_dir_fd,
+        )
+
+
+def _prepare_retained_community_state_cleanup_locked(
+    retained_root: Path | str,
+    *,
+    config_manager=None,
+    retained_dir_fd: int | None = None,
+) -> None:
+    """Make recognized legacy private files safe to remove with an old root.
+
+    This is intentionally separate from the runtime-entry inventory: credentials
+    belong to fixed local state, while PKCE records are local ephemeral state.
+    A cleanup request may remove an old copy only after an identical usable
+    canonical record exists. No lock file is migrated.
+    """
+    root = Path(retained_root).expanduser()
+    if not root.is_absolute() or path_chain_has_symlink(root):
+        raise OSError("unsafe retained community state root")
+
+    state_auth_path = _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
+    social_override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if social_override and Path(social_override).expanduser().is_absolute():
+        state_social_path = Path(social_override).expanduser() / _SOCIAL_SESSION_FILENAME
+    else:
+        state_social_path = _community_state_path(
+            _SOCIAL_SESSION_FILENAME,
+            config_manager=config_manager,
+        )
+    specs = (
+        (
+            _AUTH_FILENAME,
+            state_auth_path,
+            lambda data: bool(str(data.get("access_token") or "").strip()),
+            False,
+        ),
+        (
+            _SOCIAL_SESSION_FILENAME,
+            state_social_path,
+            lambda data: bool(str(data.get("token") or "").strip()),
+            False,
+        ),
+        (
+            _OAUTH_PENDING_FILENAME,
+            _community_state_path(_OAUTH_PENDING_FILENAME, config_manager=config_manager),
+            _oauth_pending_record_is_fresh,
+            True,
+        ),
+        (
+            _STEAM_PENDING_FILENAME,
+            _community_state_path(_STEAM_PENDING_FILENAME, config_manager=config_manager),
+            _steam_pending_record_is_fresh,
+            True,
+        ),
+    )
+    if _legacy_credential_sources_conflict(
+        config_manager,
+        include_cleanup_in_progress=True,
+        retained_root=root,
+        retained_dir_fd=retained_dir_fd,
+    ):
+        raise OSError("conflicting legacy credential roots")
+    legacy_roots = _legacy_conflict_witness_roots(
+        config_manager,
+        include_cleanup_in_progress=True,
+    )
+
+    def _read_retained(filename: str) -> tuple[str, dict | None]:
+        if retained_dir_fd is not None:
+            return _read_private_json_state_at(retained_dir_fd, filename)
+        return _read_private_json_state(root / filename)
+
+    # Preflight every candidate before publishing the first canonical record.
+    # A second valid-but-different target/source file is recovery evidence, not
+    # permission to guess which account or PKCE flow should win.
+    for filename, _canonical_path, _validator, _ephemeral in specs:
+        retained_state, retained_data = _read_retained(filename)
+        if retained_state == "absent":
+            continue
+        for candidate_root in legacy_roots:
+            candidate = candidate_root / filename
+            if paths_equal(candidate_root, root):
+                continue
+            candidate_state, candidate_data = _read_private_json_state(candidate)
+            if candidate_state == "absent":
+                continue
+            if (
+                candidate_state != "valid"
+                or retained_state != "valid"
+                or candidate_data != retained_data
+            ):
+                raise OSError(f"conflicting legacy {filename} records")
+    verified: list[tuple[Path, dict, Path | None, object | None]] = []
+    for filename, canonical_path, validator, ephemeral in specs:
+        legacy_path = root / filename
+        legacy_state, legacy_data = _read_retained(filename)
+        if legacy_state == "absent":
+            continue
+        if legacy_state != "valid":
+            if ephemeral:
+                # Pending filenames are owned, one-shot local state. Corrupt
+                # records cannot authenticate a callback and are safe to discard
+                # during an explicit old-root cleanup; never promote them.
+                verified.append((legacy_path, {}, None, None))
+                continue
+            raise OSError(f"legacy {filename} is unreadable or malformed")
+        if not validator(legacy_data or {}):
+            well_formed_expired = (
+                filename == _OAUTH_PENDING_FILENAME
+                and _oauth_pending_record_has_shape(legacy_data or {})
+            ) or (
+                filename == _STEAM_PENDING_FILENAME
+                and _steam_pending_record_has_shape(legacy_data or {})
+            )
+            if ephemeral and well_formed_expired:
+                # Expired well-formed PKCE state has no recovery value and must
+                # not be promoted into fixed state during explicit old-root cleanup.
+                verified.append((legacy_path, legacy_data or {}, None, None))
+                continue
+            raise OSError(f"legacy {filename} is unreadable or malformed")
+        if canonical_path is None or canonical_path == legacy_path:
+            raise OSError(f"canonical {filename} is unavailable")
+
+        canonical_state, canonical_data = _read_private_json_state(canonical_path)
+        if canonical_state == "absent":
+            if not _write_private_json_no_replace(canonical_path, legacy_data or {}):
+                canonical_state, canonical_data = _read_private_json_state(canonical_path)
+            else:
+                canonical_state, canonical_data = _read_private_json_state(canonical_path)
+        if (
+            canonical_state != "valid"
+            or not validator(canonical_data or {})
+            or canonical_data != legacy_data
+        ):
+            raise OSError(f"canonical {filename} is unreadable or malformed")
+        verified.append((legacy_path, legacy_data or {}, canonical_path, validator))
+
+    # Validate every source and destination again before deleting the first old
+    # record. This prevents a concurrent refresh from turning a safe cleanup into
+    # deletion of the newest/only credentials.
+    for legacy_path, expected_legacy, canonical_path, validator in verified:
+        if canonical_path is None and validator is None and not expected_legacy:
+            try:
+                metadata = legacy_path.lstat()
+            except OSError as exc:
+                raise OSError(f"legacy {legacy_path.name} changed during cleanup") from exc
+            if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(legacy_path):
+                raise OSError(f"legacy {legacy_path.name} changed during cleanup")
+            continue
+        legacy_state, legacy_data = _read_retained(legacy_path.name)
+        if legacy_state != "valid" or legacy_data != expected_legacy:
+            raise OSError(f"legacy {legacy_path.name} changed during cleanup")
+        if canonical_path is None or validator is None:
+            continue
+        canonical_state, canonical_data = _read_private_json_state(canonical_path)
+        if (
+            canonical_state != "valid"
+            or not validator(canonical_data or {})
+            or canonical_data != expected_legacy
+        ):
+            raise OSError(f"canonical {canonical_path.name} changed during cleanup")
+
+    for legacy_path, _expected_legacy, _canonical_path, _validator in verified:
+        if retained_dir_fd is None:
+            legacy_path.unlink()
+            fsync_directory_best_effort(legacy_path.parent)
+        else:
+            os.unlink(legacy_path.name, dir_fd=retained_dir_fd)
+            try:
+                os.fsync(retained_dir_fd)
+            except OSError:
+                pass
 
 
 def _read_json_dict(path: Path | None) -> dict | None:
@@ -526,16 +1389,50 @@ def _read_json_dict(path: Path | None) -> dict | None:
 
 
 def _load_auth() -> dict | None:
-    return _read_json_dict(_auth_path())
+    canonical = _auth_path()
+    canonical_state = (
+        _read_private_json_state(canonical)[0]
+        if canonical is not None
+        else "unavailable"
+    )
+    if canonical_state == "absent" and _legacy_credential_sources_conflict():
+        logger.warning("card_drop: conflicting legacy credential roots")
+        return None
+    return _load_or_migrate_private_json(
+        canonical,
+        _legacy_private_file_paths(_AUTH_FILENAME),
+        validator=lambda data: bool(str(data.get("access_token") or "").strip()),
+        conflict_paths=_legacy_private_conflict_paths(_AUTH_FILENAME),
+    )
 
 
 def _load_social_session() -> dict | None:
     """Load the authoritative Electron session, with the legacy path as fallback."""
-    for path in _social_session_paths():
-        data = _read_json_dict(path)
-        if data and isinstance(data.get("token"), str) and data["token"].strip():
-            return data
-    return None
+    canonical = _social_session_path()
+    legacy_paths = [
+        path
+        for path in _social_session_paths()
+        if path != canonical
+    ]
+    conflict_paths = _legacy_private_conflict_paths(_SOCIAL_SESSION_FILENAME)
+    conflict_paths = list(dict.fromkeys([*legacy_paths, *conflict_paths]))
+    canonical_state = (
+        _read_private_json_state(canonical)[0]
+        if canonical is not None
+        else "unavailable"
+    )
+    lock_paths = [canonical] if canonical is not None else []
+    lock_paths.extend(path for path in conflict_paths if _existing_safe_parent(path))
+    with _social_session_locks(lock_paths):
+        if canonical_state == "absent" and _legacy_credential_sources_conflict():
+            logger.warning("card_drop: conflicting legacy credential roots")
+            return None
+        return _load_or_migrate_private_json(
+            canonical,
+            legacy_paths,
+            validator=lambda data: bool(str(data.get("token") or "").strip()),
+            conflict_paths=conflict_paths,
+        )
 
 
 def _normalize_local_user_id(value: object) -> str:
@@ -554,6 +1451,9 @@ def _normalize_auth_source(value: object) -> str:
 
 def _desktop_session_snapshot() -> dict | None:
     """Normalize the desktop session while preferring Electron's refreshed token."""
+    # Migrate the mirror first so a legacy social record can be checked against
+    # the same account instead of combining credentials from different roots.
+    auth = _load_auth()
     social = _load_social_session()
     if social is not None:
         return {
@@ -568,7 +1468,6 @@ def _desktop_session_snapshot() -> dict | None:
             "client_id": str(social.get("client_id") or "").strip(),
         }
 
-    auth = _load_auth()
     if auth is None:
         return None
     access = auth.get("access_token")
@@ -611,33 +1510,40 @@ def _social_session_lock(path: Path):
     """Serialize social-session CAS writes with the Electron main process."""
     lock_path = Path(f"{path}{_SOCIAL_SESSION_LOCK_SUFFIX}")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if path_chain_has_symlink(lock_path.parent):
+        raise OSError("unsafe social session lock directory")
     token = f"{os.getpid()}:{secrets.token_hex(16)}"
+    token_fingerprint = f"token:{token}"
+    owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             try:
-                stale = (
-                    time.time() - lock_path.stat().st_mtime
-                ) > _SOCIAL_SESSION_LOCK_STALE_SEC
-                if stale:
-                    lock_path.unlink(missing_ok=True)
-                    continue
+                _read_social_lock_snapshot(lock_path)
             except FileNotFoundError:
                 continue
             if time.monotonic() >= deadline:
                 raise TimeoutError("social session lock is busy")
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
+        created_metadata = os.fstat(fd)
         try:
-            os.write(
-                fd,
-                json.dumps({"token": token, "created_at": time.time()}).encode("utf-8"),
-            )
+            encoded = json.dumps({"token": token, "created_at": time.time()}).encode("utf-8")
+            if os.write(fd, encoded) != len(encoded):
+                raise OSError("short social session lock write")
+            owned_metadata = os.fstat(fd)
         except OSError:
             os.close(fd)
-            lock_path.unlink(missing_ok=True)
+            with suppress(OSError):
+                current_metadata, current_fingerprint = _read_social_lock_snapshot(lock_path)
+                if os.path.samestat(created_metadata, current_metadata):
+                    _unlink_social_lock_if_unchanged(
+                        lock_path,
+                        current_metadata,
+                        current_fingerprint,
+                    )
             raise
         else:
             os.close(fd)
@@ -646,12 +1552,121 @@ def _social_session_lock(path: Path):
     try:
         yield
     finally:
+        if owned_metadata is not None:
+            with suppress(OSError):
+                _unlink_social_lock_if_unchanged(
+                    lock_path,
+                    owned_metadata,
+                    token_fingerprint,
+                )
+
+
+@contextmanager
+def _social_session_lock_at(dir_fd: int):
+    """Acquire the legacy social lock relative to a pinned retained-root handle."""
+    lock_name = f"{_SOCIAL_SESSION_FILENAME}{_SOCIAL_SESSION_LOCK_SUFFIX}"
+    token = f"{os.getpid()}:{secrets.token_hex(16)}"
+    token_fingerprint = f"token:{token}"
+    owned_metadata = None
+    deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
+    while True:
         try:
-            current = json.loads(lock_path.read_text(encoding="utf-8"))
-            if isinstance(current, dict) and current.get("token") == token:
-                lock_path.unlink(missing_ok=True)
-        except (OSError, ValueError):
-            pass
+            fd = os.open(
+                lock_name,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            try:
+                _read_social_lock_snapshot(
+                    lock_name,
+                    dir_fd=dir_fd,
+                )
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError("social session lock is busy")
+            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+            continue
+        created_metadata = os.fstat(fd)
+        try:
+            encoded = json.dumps({"token": token, "created_at": time.time()}).encode("utf-8")
+            if os.write(fd, encoded) != len(encoded):
+                raise OSError("short social session lock write")
+            owned_metadata = os.fstat(fd)
+        except OSError:
+            os.close(fd)
+            with suppress(OSError):
+                current_metadata, current_fingerprint = _read_social_lock_snapshot(
+                    lock_name,
+                    dir_fd=dir_fd,
+                )
+                if os.path.samestat(created_metadata, current_metadata):
+                    _unlink_social_lock_if_unchanged(
+                        lock_name,
+                        current_metadata,
+                        current_fingerprint,
+                        dir_fd=dir_fd,
+                    )
+            raise
+        else:
+            os.close(fd)
+            break
+
+    try:
+        yield
+    finally:
+        if owned_metadata is not None:
+            with suppress(OSError):
+                _unlink_social_lock_if_unchanged(
+                    lock_name,
+                    owned_metadata,
+                    token_fingerprint,
+                    dir_fd=dir_fd,
+                )
+
+
+@contextmanager
+def _social_session_locks(paths: list[Path], *, retained_dir_fd: int | None = None):
+    """Acquire path and pinned-fd social locks in one physical stable order."""
+    requests: dict[tuple[object, ...], tuple[str, object]] = {}
+    for path in paths:
+        expanded = path.expanduser()
+        try:
+            parent_metadata = expanded.parent.stat()
+            # One physical parent plus the exact app-owned leaf is one lock,
+            # even through APFS case aliases that have different spellings.
+            key = (
+                "inode",
+                int(parent_metadata.st_dev),
+                int(parent_metadata.st_ino),
+                expanded.name,
+            )
+        except OSError:
+            key = (
+                "path",
+                os.path.normcase(str(expanded.resolve(strict=False))),
+            )
+        requests.setdefault(key, ("path", path))
+    if retained_dir_fd is not None:
+        retained_metadata = os.fstat(retained_dir_fd)
+        retained_key = (
+            "inode",
+            int(retained_metadata.st_dev),
+            int(retained_metadata.st_ino),
+            _SOCIAL_SESSION_FILENAME,
+        )
+        # The pinned handle wins when a public alias names this same root.
+        requests[retained_key] = ("fd", retained_dir_fd)
+    with ExitStack() as stack:
+        for key in sorted(requests, key=repr):
+            request_kind, value = requests[key]
+            if request_kind == "fd":
+                stack.enter_context(_social_session_lock_at(int(value)))
+            else:
+                stack.enter_context(_social_session_lock(value))
+        yield
 
 
 def _write_social_session_record(path: Path, data: dict) -> None:
@@ -819,36 +1834,85 @@ def _persist_session_identity_metadata(
 
 
 def _clear_auth() -> bool:
+    if not _logout_storage_ready():
+        logger.warning(
+            "card_drop: committed storage root is unavailable; credential clear deferred"
+        )
+        return False
     auth_path = _auth_path()
-    paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
-    paths = list(dict.fromkeys(paths))
+    authoritative_paths = (
+        [auth_path, _social_session_path(), _community_state_path(_SOCIAL_SESSION_FILENAME)]
+        + [_community_state_path(_OAUTH_PENDING_FILENAME)]
+        + [_community_state_path(_STEAM_PENDING_FILENAME)]
+    )
+    authoritative_paths = [path for path in authoritative_paths if path is not None]
+    authoritative_paths = list(dict.fromkeys(authoritative_paths))
+    legacy_paths = (
+        _legacy_private_file_paths(_AUTH_FILENAME)
+        + [_legacy_social_session_path()]
+        + _legacy_private_file_paths(_SOCIAL_SESSION_FILENAME)
+        + _logout_private_file_paths(_AUTH_FILENAME)
+        + _logout_private_file_paths(_SOCIAL_SESSION_FILENAME)
+        + _logout_private_file_paths(_OAUTH_PENDING_FILENAME)
+        + _logout_private_file_paths(_STEAM_PENDING_FILENAME)
+    )
+    legacy_paths = [
+        path
+        for path in dict.fromkeys(legacy_paths)
+        if path is not None and path not in authoritative_paths
+    ]
+    paths = [*legacy_paths, *authoritative_paths]
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
-    success = auth_path is not None
+
+    # Preflight every exact app-owned file before deleting the first one. In
+    # particular, failure to reach or mutate target must leave canonical/host
+    # credentials intact so logout remains visibly retryable.
+    for path in paths:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("card_drop: cannot inspect credential before clear for %s: %s", path, exc)
+            return False
+        if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path.parent):
+            logger.warning("card_drop: unsafe credential path while clearing: %s", path)
+            return False
+        if not os.access(path.parent, os.W_OK | os.X_OK):
+            logger.warning("card_drop: credential directory is not writable: %s", path.parent)
+            return False
+
     for path in paths:
         try:
             if path.name == _SOCIAL_SESSION_FILENAME:
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    # Do not create/acquire a lock for a session path that has
+                    # never existed (notably the anchor fallback when Electron
+                    # owns the canonical social session).
+                    continue
                 with _social_session_lock(path):
                     path.unlink(missing_ok=True)
             else:
                 path.unlink(missing_ok=True)
         except OSError as exc:
-            success = False
             logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
+            return False
     for path in paths:
         try:
             path.lstat()
         except FileNotFoundError:
             continue
         except OSError as exc:
-            success = False
             logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+            return False
         else:
-            success = False
             logger.warning("card_drop: credential still exists after clear: %s", path)
-    if success:
-        _clear_native_delegates()
-    return success
+            return False
+    _clear_native_delegates()
+    return auth_path is not None
 
 
 def _access_token() -> str | None:
@@ -1069,13 +2133,20 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
 # CSRF/会话固定防护：/steam-callback 用 access_token query 参数落地，是个本机端点，恶意网页
 # 可能跨源 GET 它塞入攻击者 token（把用户游客卡 bind 到攻击者账号）。用一次性 pending 标记
 # 把回调限定在「用户刚点过 Steam 登录」的短窗口内，挡掉无端调用。
-_STEAM_PENDING_FILENAME = "community_steam_pending.json"
 _STEAM_PENDING_TTL_SEC = 600  # 点登录后 10 分钟内必须完成回调
 
 
 def _steam_pending_path() -> Path | None:
-    p = _auth_path()
-    return (p.parent / _STEAM_PENDING_FILENAME) if p else None
+    return _community_state_path(_STEAM_PENDING_FILENAME)
+
+
+def _steam_pending_paths() -> list[Path]:
+    canonical = _steam_pending_path()
+    paths = [canonical] if canonical is not None else []
+    for candidate in _legacy_private_file_paths(_STEAM_PENDING_FILENAME):
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -1130,13 +2201,14 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
     delete fails, return ``(False, None)`` to preserve one-shot semantics.
     """
     p = _steam_pending_path()
-    if not p or not p.exists():
+    if not p:
         return False, None
-    data: object = {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        data = {}
+    data: object = _load_or_migrate_private_json(
+        p,
+        [candidate for candidate in _steam_pending_paths() if candidate != p],
+        validator=_steam_pending_record_is_fresh,
+        conflict_paths=_legacy_private_conflict_paths(_STEAM_PENDING_FILENAME),
+    ) or {}
 
     def _drop() -> None:
         try:

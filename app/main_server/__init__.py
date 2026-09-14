@@ -120,6 +120,7 @@ from utils.cloudsave_runtime import (
 from utils.config_manager import get_config_manager, get_reserved  # noqa
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.storage.layout import get_storage_recovery_mode
 
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging  # noqa: E402
@@ -1165,6 +1166,15 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+        if blocking_reason:
+            _enable_main_storage_limited_mode(blocking_reason)
+            logger.info(
+                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
+                blocking_reason,
+            )
+            return
+
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1216,15 +1226,6 @@ async def on_startup():
         except Exception as _e:
             logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
-        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
-        if blocking_reason:
-            _enable_main_storage_limited_mode(blocking_reason)
-            logger.info(
-                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
-                blocking_reason,
-            )
-            return
-
         await _ensure_main_server_runtime_initialized(reason="startup")
         _start_neko_servers_integration_workers()
 
@@ -1234,6 +1235,9 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        if get_storage_recovery_mode():
+            logger.info("存储恢复会话关闭：跳过运行态持久化、角色释放和云存档导出")
+            return
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 

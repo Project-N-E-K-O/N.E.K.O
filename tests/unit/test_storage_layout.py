@@ -9,11 +9,13 @@ import pytest
 from utils.storage_layout import (
     NEKO_STORAGE_ANCHOR_ROOT_ENV,
     NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
     NEKO_STORAGE_SELECTED_ROOT_ENV,
+    clear_storage_layout_env,
     export_storage_layout_to_env,
     resolve_storage_layout,
 )
-from utils.storage_policy import save_storage_policy
+from utils.storage_policy import StoragePolicyError, save_storage_policy
 from utils.file_utils import atomic_write_json
 
 
@@ -81,6 +83,72 @@ def test_export_storage_layout_to_env_clears_empty_values(tmp_path):
 
 
 @pytest.mark.unit
+def test_clear_storage_layout_env_also_clears_recovery_generation_marker():
+    environ = {
+        NEKO_STORAGE_SELECTED_ROOT_ENV: "/selected",
+        NEKO_STORAGE_ANCHOR_ROOT_ENV: "/anchor",
+        NEKO_STORAGE_CLOUDSAVE_ROOT_ENV: "/anchor/cloudsave",
+        NEKO_STORAGE_RECOVERY_MODE_ENV: "storage_status_unavailable",
+        "UNRELATED": "kept",
+    }
+
+    clear_storage_layout_env(environ=environ)
+
+    assert environ == {"UNRELATED": "kept"}
+
+
+@pytest.mark.unit
+def test_config_manager_recovery_generation_skips_all_automatic_migrations(monkeypatch):
+    from utils import config_manager as config_manager_module
+
+    manager = object()
+    migrated = []
+    monkeypatch.setattr(config_manager_module, "_config_manager", manager)
+    monkeypatch.setattr(config_manager_module, "_config_manager_migrated", False)
+    monkeypatch.setattr(
+        config_manager_module,
+        "_ensure_config_manager_migrated",
+        lambda: migrated.append(True),
+    )
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, "storage_status_unavailable")
+
+    assert config_manager_module.get_config_manager() is manager
+    assert migrated == []
+
+
+@pytest.mark.unit
+def test_config_manager_policy_recovery_generation_can_import_with_malformed_policy(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.config_manager import ConfigManager
+
+    anchor_root = (tmp_path / "anchor-base" / "N.E.K.O").resolve()
+    policy_path = anchor_root / "state" / "storage_policy.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed = '{"selected_root":'
+    policy_path.write_text(malformed, encoding="utf-8")
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, "storage_policy_unavailable")
+    monkeypatch.setenv(NEKO_STORAGE_SELECTED_ROOT_ENV, str(anchor_root))
+    monkeypatch.setenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, str(anchor_root))
+
+    with patch.object(
+        ConfigManager,
+        "_get_documents_directory",
+        return_value=tmp_path / "runtime-parent",
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_path / "anchor-base"],
+    ):
+        config_manager = ConfigManager("N.E.K.O")
+
+    assert config_manager.app_docs_dir == anchor_root
+    assert config_manager.anchor_root == anchor_root
+    assert policy_path.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.unit
 def test_config_manager_uses_committed_storage_policy_for_selected_and_anchor_roots(tmp_path, monkeypatch):
     monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
     monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
@@ -117,6 +185,20 @@ def test_config_manager_keeps_fixed_anchor_when_policy_load_fails(tmp_path, monk
 
 
 @pytest.mark.unit
+def test_config_manager_does_not_route_around_an_untrusted_storage_policy(tmp_path, monkeypatch):
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+
+    with patch(
+        "utils.storage_policy.load_storage_policy",
+        side_effect=StoragePolicyError("malformed"),
+    ), pytest.raises(StoragePolicyError) as caught:
+        _make_config_manager(tmp_path)
+
+    assert caught.value.reason == "malformed"
+
+
+@pytest.mark.unit
 def test_config_manager_env_overrides_committed_layout(tmp_path, monkeypatch):
     override_selected_root = (tmp_path / "override-selected" / "N.E.K.O").resolve()
     override_anchor_root = (tmp_path / "override-anchor" / "N.E.K.O").resolve()
@@ -142,9 +224,10 @@ def test_config_manager_env_anchor_takes_precedence_over_policy_anchor(tmp_path,
             "version": 1,
             "anchor_root": str(stale_policy_anchor),
             "selected_root": str(override_selected_root),
-            "selection_source": "custom",
+            "selection_source": "user_selected",
             "cloudsave_strategy": "fixed_anchor",
             "first_run_completed": True,
+            "updated_at": "2026-09-11T00:00:00Z",
         },
         ensure_ascii=False,
         indent=2,
@@ -225,9 +308,10 @@ def test_config_manager_uses_env_anchor_when_policy_selected_root_is_unavailable
             "version": 1,
             "anchor_root": str(stale_policy_anchor),
             "selected_root": str(unavailable_selected_root),
-            "selection_source": "custom",
+            "selection_source": "user_selected",
             "cloudsave_strategy": "fixed_anchor",
             "first_run_completed": True,
+            "updated_at": "2026-09-11T00:00:00Z",
         },
         ensure_ascii=False,
         indent=2,

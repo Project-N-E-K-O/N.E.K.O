@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.storage.entries import RUNTIME_STORAGE_RELATIVE_PATHS
 
 
 # Keep the historical logger name of the pre-split monolithic module so
@@ -144,16 +145,7 @@ MANAGED_CLOUDSAVE_PREFIXES = (
 
 
 LEGACY_RUNTIME_DIR_NAMES = (
-    "config",
-    "memory",
-    "plugins",
-    "live2d",
-    "vrm",
-    "mmd",
-    "workshop",
-    "character_cards",
-    "card_faces",
-    "avatar_tools",
+    *RUNTIME_STORAGE_RELATIVE_PATHS,
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",
@@ -205,15 +197,8 @@ ROOT_CONFIG_MERGE_FILES = (
 )
 
 
-RUNTIME_ASSET_DIR_NAMES = (
-    "plugins",
-    "live2d",
-    "vrm",
-    "mmd",
-    "workshop",
-    "character_cards",
-    "card_faces",
-    "avatar_tools",
+RUNTIME_ASSET_DIR_NAMES = tuple(
+    name for name in RUNTIME_STORAGE_RELATIVE_PATHS if name not in {"config", "memory"}
 )
 
 

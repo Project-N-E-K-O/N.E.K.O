@@ -358,6 +358,33 @@ def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_avatar_tools
 
 
 @pytest.mark.unit
+def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_game_scores(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_score = legacy_root / "state" / "game_scores" / "badminton_scores.db"
+    legacy_score.parent.mkdir(parents=True)
+    legacy_score.write_bytes(b"legacy-score")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    atomic_write_json(
+        Path(cm.get_config_path("user_preferences.json")),
+        [{"model_path": "/custom.model3.json"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "missing_state/game_scores"
+    assert (Path(cm.app_docs_dir) / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"legacy-score"
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance
@@ -824,6 +851,63 @@ def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_l
 
     with patch("utils.storage_migration.load_storage_migration", side_effect=OSError("unreadable")):
         assert cloudsave_runtime_module._should_preserve_write_blocking_mode(cm, root_state) is True
+
+
+@pytest.mark.unit
+def test_bootstrap_does_not_self_heal_maintenance_mode_for_malformed_migration_checkpoint(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+    from utils.storage_migration import get_storage_migration_path
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+    checkpoint_path = get_storage_migration_path(cm)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('{"status":', encoding="utf-8")
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert cm.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+
+
+@pytest.mark.unit
+def test_bootstrap_does_not_self_heal_maintenance_mode_for_checkpoint_read_error(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+
+    with patch(
+        "utils.storage.migration.read_json",
+        side_effect=PermissionError("checkpoint permission denied"),
+    ):
+        result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert cm.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
 
 
 @pytest.mark.unit

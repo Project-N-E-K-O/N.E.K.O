@@ -23,6 +23,21 @@ from .policy import compute_anchor_root, load_storage_policy, normalize_runtime_
 NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
 NEKO_STORAGE_ANCHOR_ROOT_ENV = "NEKO_STORAGE_ANCHOR_ROOT"
 NEKO_STORAGE_CLOUDSAVE_ROOT_ENV = "NEKO_STORAGE_CLOUDSAVE_ROOT"
+NEKO_STORAGE_RECOVERY_MODE_ENV = "NEKO_STORAGE_RECOVERY_MODE"
+STORAGE_RECOVERY_MODES = frozenset(
+    {
+        "migration_pending",
+        "recovery_required",
+        "storage_policy_unavailable",
+        "storage_status_unavailable",
+    }
+)
+
+
+def get_storage_recovery_mode(*, environ: dict[str, str] | None = None) -> str:
+    target_env = environ if environ is not None else os.environ
+    value = str(target_env.get(NEKO_STORAGE_RECOVERY_MODE_ENV) or "").strip()
+    return value if value in STORAGE_RECOVERY_MODES else ""
 
 
 def _set_or_clear_env(target_env: dict[str, str], key: str, value: Any) -> None:
@@ -67,6 +82,7 @@ def clear_storage_layout_env(*, environ: dict[str, str] | None = None) -> dict[s
         NEKO_STORAGE_SELECTED_ROOT_ENV,
         NEKO_STORAGE_ANCHOR_ROOT_ENV,
         NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+        NEKO_STORAGE_RECOVERY_MODE_ENV,
     ):
         target_env.pop(key, None)
     return target_env

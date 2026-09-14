@@ -1469,6 +1469,7 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     legacy_auth = tmp_path / "documents" / "N.E.K.O" / "community_auth.json"
     electron_root = tmp_path / "electron-user-data"
     monkeypatch.setattr(C, "_auth_path", lambda: legacy_auth)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
 
     assert C._save_auth({"access_token": "token-a"})
@@ -1580,6 +1581,7 @@ def test_sync_session_clear_is_origin_restricted_and_private_network_aware(
     monkeypatch.setattr(C, "_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_access_token", lambda: "token-a")
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     denied = client.post(
         "/api/card-drop/sync-session",

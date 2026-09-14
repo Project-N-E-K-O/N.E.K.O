@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import stat
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +43,21 @@ class StorageSelectionValidationError(ValueError):
         self.message = message
 
 
+class StoragePolicyError(RuntimeError):
+    """A persisted storage policy cannot be trusted as routing authority."""
+
+    error_code = "storage_policy_unavailable"
+
+    def __init__(self, reason: str, message: str = "无法安全读取存储位置策略。"):
+        super().__init__(message)
+        self.reason = str(reason or "invalid").strip() or "invalid"
+        self.message = str(message or "无法安全读取存储位置策略。").strip()
+
+
+class PathIdentityUnavailable(OSError):
+    """A path exists or may exist, but its physical identity is uninspectable."""
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -52,22 +69,92 @@ def _normalize_compare_string(path: Path) -> str:
     return value
 
 
-def paths_equal(left: Path | str, right: Path | str) -> bool:
-    normalized_left = normalize_runtime_root(left)
-    normalized_right = normalize_runtime_root(right)
-    return _normalize_compare_string(normalized_left) == _normalize_compare_string(normalized_right)
+def _existing_path_identity(path: Path) -> tuple[int, int] | None:
+    """Return a followed filesystem identity, or ``None`` only when absent."""
+
+    try:
+        result = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise PathIdentityUnavailable(str(path)) from exc
+    return (int(result.st_dev), int(result.st_ino))
 
 
-def _paths_equal(left: Path, right: Path) -> bool:
+def _lexical_paths_equal(left: Path, right: Path) -> bool:
     return _normalize_compare_string(left) == _normalize_compare_string(right)
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
+def _existing_paths_equal(
+    left: Path,
+    right: Path,
+    left_identity: tuple[int, int],
+    right_identity: tuple[int, int],
+) -> bool:
     try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
+        return os.path.samefile(left, right)
+    except (AttributeError, NotImplementedError):
+        return left_identity == right_identity
+    except OSError as exc:
+        raise PathIdentityUnavailable(f"{left} <-> {right}") from exc
+
+
+def paths_equal(left: Path | str, right: Path | str) -> bool:
+    normalized_left = normalize_runtime_root(left)
+    normalized_right = normalize_runtime_root(right)
+    left_identity = _existing_path_identity(normalized_left)
+    right_identity = _existing_path_identity(normalized_right)
+    if left_identity is not None and right_identity is not None:
+        return _existing_paths_equal(
+            normalized_left,
+            normalized_right,
+            left_identity,
+            right_identity,
+        )
+    return _lexical_paths_equal(normalized_left, normalized_right)
+
+
+def path_is_within(path: Path | str, parent: Path | str) -> bool:
+    """Return whether ``path`` is equal to or physically below ``parent``.
+
+    Existing ancestors are compared by device/inode so case aliases on default
+    APFS and equivalent Windows names cannot bypass containment checks.  When
+    the parent does not exist there is no physical identity to consult, so the
+    normalized platform lexical relationship remains authoritative.
+    """
+
+    normalized_path = normalize_runtime_root(path)
+    normalized_parent = normalize_runtime_root(parent)
+    parent_identity = _existing_path_identity(normalized_parent)
+    if parent_identity is None:
+        try:
+            normalized_path.relative_to(normalized_parent)
+            return True
+        except ValueError:
+            return False
+
+    candidate = normalized_path
+    while True:
+        candidate_identity = _existing_path_identity(candidate)
+        if candidate_identity is not None and _existing_paths_equal(
+            candidate,
+            normalized_parent,
+            candidate_identity,
+            parent_identity,
+        ):
+            return True
+        candidate_parent = candidate.parent
+        if candidate_parent == candidate:
+            return False
+        candidate = candidate_parent
+
+
+def _paths_equal(left: Path, right: Path) -> bool:
+    return paths_equal(left, right)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    return path_is_within(path, parent)
 
 
 def normalize_runtime_root(value: Path | str) -> Path:
@@ -77,7 +164,7 @@ def normalize_runtime_root(value: Path | str) -> Path:
 def is_runtime_root_available(value: Path | str) -> bool:
     path = normalize_runtime_root(value)
     try:
-        return path.exists() and path.is_dir() and os.access(str(path), os.R_OK | os.X_OK)
+        return _can_write_existing_directory(path)
     except OSError:
         return False
 
@@ -85,9 +172,15 @@ def is_runtime_root_available(value: Path | str) -> bool:
 def _path_name_matches_app_name(path: Path, app_name: str) -> bool:
     if not app_name:
         return False
+    if path.name == app_name:
+        return True
     if os.name == "nt":
         return os.path.normcase(path.name) == os.path.normcase(app_name)
-    return path.name == app_name
+    # A default APFS volume is case-insensitive but preserves the spelling the
+    # caller supplied.  Only treat a differently-cased name as the app folder
+    # when both spellings resolve to the same existing filesystem object; this
+    # keeps case-sensitive APFS/Linux behavior lexical for missing/distinct dirs.
+    return paths_equal(path, path.with_name(app_name))
 
 
 def normalize_selected_root(
@@ -140,6 +233,135 @@ def get_storage_policy_path(config_manager, *, anchor_root: Path | None = None) 
     return normalized_anchor_root / "state" / "storage_policy.json"
 
 
+def _raise_invalid_storage_policy(reason: str) -> None:
+    raise StoragePolicyError(reason)
+
+
+def _normalize_policy_path(value: Any, *, field: str) -> tuple[Path, Path]:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        _raise_invalid_storage_policy(f"{field}_missing")
+    raw_path = Path(raw_value).expanduser()
+    if not raw_path.is_absolute():
+        _raise_invalid_storage_policy(f"{field}_not_absolute")
+    try:
+        normalized_path = normalize_runtime_root(raw_path)
+    except Exception as exc:
+        raise StoragePolicyError(f"{field}_invalid") from exc
+    return raw_path, normalized_path
+
+
+def _path_chain_redirect_status(value: Path | str) -> bool:
+    """Inspect links/reparse points while preserving metadata errors for callers."""
+
+    candidate = Path(value).expanduser()
+    while True:
+        try:
+            stat_result = candidate.lstat()
+            is_reparse_point = bool(
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                & getattr(stat_result, "st_file_attributes", 0)
+            )
+            if stat.S_ISLNK(stat_result.st_mode) or is_reparse_point:
+                return True
+        except FileNotFoundError:
+            pass
+        parent = candidate.parent
+        if parent == candidate:
+            return False
+        candidate = parent
+
+
+def _validate_storage_policy_payload(
+    config_manager,
+    payload: dict[str, Any],
+    *,
+    anchor_root: Path,
+) -> dict[str, Any]:
+    version = payload.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != STORAGE_POLICY_VERSION:
+        _raise_invalid_storage_policy("version_invalid")
+    if payload.get("cloudsave_strategy") != CLOUDSAVE_STRATEGY_FIXED_ANCHOR:
+        _raise_invalid_storage_policy("cloudsave_strategy_invalid")
+    if payload.get("first_run_completed") is not True:
+        _raise_invalid_storage_policy("first_run_completed_invalid")
+    if str(payload.get("selection_source") or "").strip() not in {
+        POLICY_SELECTION_SOURCE_DEFAULT,
+        POLICY_SELECTION_SOURCE_USER_SELECTED,
+        POLICY_SELECTION_SOURCE_RECOVERED,
+    }:
+        _raise_invalid_storage_policy("selection_source_invalid")
+    if not isinstance(payload.get("updated_at"), str) or not payload["updated_at"].strip():
+        _raise_invalid_storage_policy("updated_at_invalid")
+
+    raw_anchor_root, _stored_anchor_root = _normalize_policy_path(
+        payload.get("anchor_root"),
+        field="anchor_root",
+    )
+    try:
+        if _path_chain_redirect_status(raw_anchor_root):
+            _raise_invalid_storage_policy("anchor_root_redirect")
+    except OSError as exc:
+        raise StoragePolicyError("anchor_root_uninspectable") from exc
+
+    raw_selected_root, selected_root = _normalize_policy_path(
+        payload.get("selected_root"),
+        field="selected_root",
+    )
+    try:
+        selected_root_redirects = _path_chain_redirect_status(raw_selected_root)
+    except OSError:
+        # A committed external volume can be temporarily inaccessible.  Keep
+        # the reference valid so ConfigManager's existing unavailable-root
+        # recovery path can route the session to the anchor without forgetting
+        # where the user's data lives.
+        selected_root_redirects = False
+    if selected_root_redirects:
+        _raise_invalid_storage_policy("selected_root_redirect")
+    if selected_root == selected_root.parent:
+        _raise_invalid_storage_policy("selected_root_filesystem_root")
+
+    normalized_anchor_root = normalize_runtime_root(anchor_root)
+    project_root = normalize_runtime_root(Path(__file__).resolve().parents[2])
+    try:
+        if _paths_equal(selected_root, project_root) or _is_relative_to(selected_root, project_root):
+            _raise_invalid_storage_policy("selected_root_inside_project")
+
+        reserved_roots = (
+            normalized_anchor_root / "cloudsave",
+            normalized_anchor_root / "state",
+            normalized_anchor_root / ".cloudsave_staging",
+            normalized_anchor_root / "cloudsave_backups",
+        )
+        if any(
+            _paths_equal(selected_root, reserved_root)
+            or _is_relative_to(selected_root, reserved_root)
+            for reserved_root in reserved_roots
+        ):
+            _raise_invalid_storage_policy("selected_root_inside_reserved_root")
+        if _is_relative_to(selected_root, normalized_anchor_root) and not _paths_equal(
+            selected_root,
+            normalized_anchor_root,
+        ):
+            _raise_invalid_storage_policy("selected_root_inside_anchor_root")
+    except PathIdentityUnavailable as exc:
+        raise StoragePolicyError("selected_root_identity_uninspectable") from exc
+
+    try:
+        if selected_root.exists() and (
+            selected_root.is_file() or not selected_root.is_dir()
+        ):
+            _raise_invalid_storage_policy("selected_root_not_directory")
+    except OSError:
+        # As above, accessibility is runtime recovery state, not schema damage.
+        pass
+
+    # The stored anchor remains audit data and may be stale when an explicit
+    # NEKO_STORAGE_ANCHOR_ROOT override moved the fixed anchor.  It still must
+    # be a structurally safe absolute path, but the caller owns precedence.
+    return payload
+
+
 def load_storage_policy(
     config_manager,
     *,
@@ -151,15 +373,28 @@ def load_storage_policy(
         payload = read_json(policy_path)
     except FileNotFoundError:
         return default
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("Malformed storage_policy at %s: %s", policy_path, exc)
+        raise StoragePolicyError("malformed") from exc
     except Exception as exc:
-        logger.warning("Failed to read storage_policy: %s", exc)
-        return default
+        logger.warning("Unreadable storage_policy at %s: %s", policy_path, exc)
+        raise StoragePolicyError("unreadable") from exc
 
     if not isinstance(payload, dict):
         logger.warning("storage_policy payload is not a dict: %s", policy_path)
-        return default
+        raise StoragePolicyError("not_object")
 
-    return payload
+    try:
+        return _validate_storage_policy_payload(
+            config_manager,
+            payload,
+            anchor_root=normalize_runtime_root(
+                anchor_root or compute_anchor_root(config_manager)
+            ),
+        )
+    except StoragePolicyError as exc:
+        logger.warning("Invalid storage_policy at %s: %s", policy_path, exc.reason)
+        raise
 
 
 def _coerce_policy_selection_source(
@@ -172,8 +407,11 @@ def _coerce_policy_selection_source(
     if source == POLICY_SELECTION_SOURCE_RECOVERED:
         return POLICY_SELECTION_SOURCE_RECOVERED
 
-    if _paths_equal(selected_root, recommended_root):
-        return POLICY_SELECTION_SOURCE_DEFAULT
+    try:
+        if _paths_equal(selected_root, recommended_root):
+            return POLICY_SELECTION_SOURCE_DEFAULT
+    except PathIdentityUnavailable as exc:
+        raise StoragePolicyError("selected_root_identity_uninspectable") from exc
 
     return POLICY_SELECTION_SOURCE_USER_SELECTED
 
@@ -188,6 +426,12 @@ def save_storage_policy(
     normalized_anchor_root = normalize_runtime_root(
         anchor_root or compute_anchor_root(config_manager)
     )
+    raw_selected_root = Path(str(selected_root or "")).expanduser()
+    try:
+        if _path_chain_redirect_status(raw_selected_root):
+            raise StoragePolicyError("selected_root_redirect")
+    except OSError as exc:
+        raise StoragePolicyError("selected_root_uninspectable") from exc
     normalized_selected_root = normalize_runtime_root(selected_root)
     policy_payload = {
         "version": STORAGE_POLICY_VERSION,
@@ -204,6 +448,22 @@ def save_storage_policy(
     }
 
     policy_path = get_storage_policy_path(config_manager, anchor_root=normalized_anchor_root)
+    try:
+        policy_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise StoragePolicyError("existing_policy_uninspectable") from exc
+    else:
+        # Never use a normal selection/migration write as an implicit repair for
+        # corrupted authority.  Recovery must preserve the original evidence.
+        load_storage_policy(config_manager, anchor_root=normalized_anchor_root)
+
+    _validate_storage_policy_payload(
+        config_manager,
+        policy_payload,
+        anchor_root=normalized_anchor_root,
+    )
     atomic_write_json(policy_path, policy_payload, ensure_ascii=False, indent=2)
     return policy_payload
 
@@ -219,11 +479,7 @@ def should_require_storage_selection(
         anchor_root or compute_anchor_root(config_manager, current_root=normalized_current_root)
     )
 
-    try:
-        policy = load_storage_policy(config_manager, anchor_root=normalized_anchor_root)
-    except Exception as exc:
-        logger.warning("Failed to load storage_policy; fallback to requiring selection: %s", exc)
-        return True
+    policy = load_storage_policy(config_manager, anchor_root=normalized_anchor_root)
 
     if not isinstance(policy, dict):
         return True
@@ -240,7 +496,10 @@ def should_require_storage_selection(
     except Exception:
         return True
 
-    return not _paths_equal(normalized_selected_root, normalized_current_root)
+    try:
+        return not _paths_equal(normalized_selected_root, normalized_current_root)
+    except PathIdentityUnavailable:
+        return True
 
 
 def _find_existing_parent(path: Path) -> Path | None:
@@ -269,6 +528,21 @@ def _can_write_existing_directory(directory: Path) -> bool:
         return False
 
 
+def path_chain_has_symlink(value: Path | str) -> bool:
+    """Return whether a lexical path or parent redirects through a link.
+
+    Missing descendants are allowed because a selected root may not exist yet.
+    Windows reparse points (including junctions) are links for this safety
+    boundary too. Other metadata failures are treated as unsafe instead of
+    silently following an uninspectable path during a destructive operation.
+    """
+
+    try:
+        return _path_chain_redirect_status(value)
+    except OSError:
+        return True
+
+
 def validate_selected_root(
     config_manager,
     selected_root: Path | str,
@@ -277,53 +551,95 @@ def validate_selected_root(
     anchor_root: Path | None = None,
     selection_source: str = "",
 ) -> Path:
+    raw_selected_root = str(selected_root or "").strip()
+    expanded_selected_root = Path(raw_selected_root).expanduser()
+    try:
+        if (
+            expanded_selected_root.is_absolute()
+            and str(selection_source or "").strip().lower() == "custom"
+            and str(getattr(config_manager, "app_name", "") or "")
+            and not _path_name_matches_app_name(
+                expanded_selected_root,
+                str(getattr(config_manager, "app_name", "") or ""),
+            )
+        ):
+            expanded_selected_root /= str(getattr(config_manager, "app_name", "") or "")
+    except PathIdentityUnavailable as exc:
+        raise StorageSelectionValidationError(
+            "selected_root_identity_uninspectable",
+            "无法确认目标路径的物理身份。",
+        ) from exc
+    if expanded_selected_root.is_absolute() and path_chain_has_symlink(expanded_selected_root):
+        raise StorageSelectionValidationError(
+            "selected_root_symlink_unsupported",
+            "目标路径及其父路径不能包含符号链接或重解析点。",
+        )
+
     normalized_current_root = normalize_runtime_root(current_root or config_manager.app_docs_dir)
     normalized_anchor_root = normalize_runtime_root(
         anchor_root or compute_anchor_root(config_manager, current_root=normalized_current_root)
     )
-    normalized_target_root = normalize_selected_root(
-        selected_root,
-        app_name=str(getattr(config_manager, "app_name", "") or ""),
-        selection_source=selection_source,
-    )
-
-    if _paths_equal(normalized_target_root, normalized_current_root):
-        return normalized_current_root
-
-    project_root = normalize_runtime_root(Path(__file__).resolve().parents[2])
-    if _paths_equal(normalized_target_root, project_root) or _is_relative_to(
-        normalized_target_root,
-        project_root,
-    ):
+    try:
+        normalized_target_root = normalize_selected_root(
+            selected_root,
+            app_name=str(getattr(config_manager, "app_name", "") or ""),
+            selection_source=selection_source,
+        )
+    except PathIdentityUnavailable as exc:
         raise StorageSelectionValidationError(
-            "selected_root_inside_project",
-            "目标路径不能位于项目目录内。",
+            "selected_root_identity_uninspectable",
+            "无法确认目标路径的物理身份。",
+        ) from exc
+
+    if normalized_target_root == normalized_target_root.parent:
+        raise StorageSelectionValidationError(
+            "selected_root_filesystem_root",
+            "目标路径不能是文件系统根目录。",
         )
 
-    reserved_roots = (
-        (normalized_anchor_root / "cloudsave", "selected_root_inside_cloudsave"),
-        (normalized_anchor_root / "state", "selected_root_inside_state"),
-        (normalized_anchor_root / ".cloudsave_staging", "selected_root_inside_staging"),
-        (normalized_anchor_root / "cloudsave_backups", "selected_root_inside_backups"),
-    )
-    for reserved_root, error_code in reserved_roots:
-        if _paths_equal(normalized_target_root, reserved_root) or _is_relative_to(
+    try:
+        if _paths_equal(normalized_target_root, normalized_current_root):
+            return normalized_current_root
+
+        project_root = normalize_runtime_root(Path(__file__).resolve().parents[2])
+        if _paths_equal(normalized_target_root, project_root) or _is_relative_to(
             normalized_target_root,
-            reserved_root,
+            project_root,
         ):
             raise StorageSelectionValidationError(
-                error_code,
-                "目标路径不能位于锚点目录保留区域内。",
+                "selected_root_inside_project",
+                "目标路径不能位于项目目录内。",
             )
 
-    if _is_relative_to(normalized_target_root, normalized_anchor_root) and not _paths_equal(
-        normalized_target_root,
-        normalized_anchor_root,
-    ):
-        raise StorageSelectionValidationError(
-            "selected_root_inside_anchor_root",
-            "目标路径不能是锚点目录的子目录，除非它与锚点目录本身完全相同。",
+        reserved_roots = (
+            (normalized_anchor_root / "cloudsave", "selected_root_inside_cloudsave"),
+            (normalized_anchor_root / "state", "selected_root_inside_state"),
+            (normalized_anchor_root / ".cloudsave_staging", "selected_root_inside_staging"),
+            (normalized_anchor_root / "cloudsave_backups", "selected_root_inside_backups"),
         )
+        for reserved_root, error_code in reserved_roots:
+            if _paths_equal(normalized_target_root, reserved_root) or _is_relative_to(
+                normalized_target_root,
+                reserved_root,
+            ):
+                raise StorageSelectionValidationError(
+                    error_code,
+                    "目标路径不能位于锚点目录保留区域内。",
+                )
+
+        if _is_relative_to(normalized_target_root, normalized_anchor_root) and not _paths_equal(
+            normalized_target_root,
+            normalized_anchor_root,
+        ):
+            raise StorageSelectionValidationError(
+                "selected_root_inside_anchor_root",
+                "目标路径不能是锚点目录的子目录，除非它与锚点目录本身完全相同。",
+            )
+    except PathIdentityUnavailable as exc:
+        raise StorageSelectionValidationError(
+            "selected_root_identity_uninspectable",
+            "无法确认目标路径与受保护目录的物理关系。",
+        ) from exc
 
     if normalized_target_root.exists():
         if normalized_target_root.is_file():

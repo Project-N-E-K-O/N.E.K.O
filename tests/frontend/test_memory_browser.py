@@ -10,6 +10,8 @@ from playwright.sync_api import BrowserContext, Page, expect
 from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
 
+STORAGE_CSRF_TOKEN = "memory-storage-test-token"
+
 
 def _request_json(route):
     post_data_json = route.request.post_data_json
@@ -254,6 +256,7 @@ def _install_ready_memory_browser_routes(
             status=200,
             content_type="application/json",
             json={
+                "autostart_csrf_token": STORAGE_CSRF_TOKEN,
                 "current_root": str(app_root),
                 "recommended_root": str(app_root),
                 "legacy_sources": [],
@@ -5246,6 +5249,7 @@ def test_memory_browser_open_current_root_uses_backend_without_host_bridge(mock_
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
 
     def handle_open_current(route):
+        assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
         requested_paths.append("/api/storage/location/open-current")
         route.fulfill(
             status=200,
@@ -5323,6 +5327,7 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
     )
 
     def handle_preflight(route):
+        assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
         requests.append(("preflight", _request_json(route)))
         route.fulfill(
             status=200,
@@ -5347,6 +5352,7 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
         )
 
     def handle_restart(route):
+        assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
         requests.append(("restart", _request_json(route)))
         route.fulfill(
             status=200,
@@ -5405,6 +5411,49 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
         },
     )
     mock_page.wait_for_function("window.__storageRestartClosed === true", timeout=5000)
+
+
+@pytest.mark.frontend
+def test_memory_browser_unknown_restart_result_enters_fail_closed_maintenance(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+
+    mock_page.route(
+        "**/api/storage/location/preflight",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "restart_mode": "migrate_after_shutdown",
+                "selected_root": "/tmp/unknown-result/N.E.K.O",
+                "target_root": "/tmp/unknown-result/N.E.K.O",
+                "permission_ok": True,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+                "selection_source": "custom",
+            },
+        ),
+    )
+    mock_page.route("**/api/storage/location/restart", lambda route: route.abort("connectionreset"))
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    _open_auxiliary_panel(mock_page, "settings")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#storage-location-manage-btn").click()
+    mock_page.locator("#storage-target-root-input").fill("/tmp/unknown-result")
+    mock_page.locator("#storage-location-restart-btn").click()
+
+    expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    expect(mock_page.locator("#storage-location-overlay")).to_be_visible()
+    expect(mock_page.locator("#storage-target-root-input")).to_be_disabled()
 
 
 @pytest.mark.frontend

@@ -41,6 +41,17 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    const STORAGE_MUTATION_REQUEST_TIMEOUT_MS = 15000;
+
+    function storageLocationMutationHeaders(headers) {
+        const result = Object.assign({}, headers || {});
+        const token = String(
+            storageLocationState?.bootstrap?.autostart_csrf_token || ''
+        ).trim();
+        if (token) result['X-CSRF-Token'] = token;
+        return result;
+    }
+
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -2149,6 +2160,51 @@
         }
     }
 
+    function storageRequestTimeoutError() {
+        const error = new Error('storage request timed out');
+        error.name = 'TimeoutError';
+        return error;
+    }
+
+    function waitForStorageRequestDeadline(promise, deadline, controller) {
+        const remainingMs = deadline - Date.now();
+        if (!(remainingMs > 0)) {
+            if (controller) controller.abort();
+            return Promise.reject(storageRequestTimeoutError());
+        }
+        let timer = null;
+        const timeoutPromise = new Promise((_, reject) => {
+            timer = window.setTimeout(() => {
+                if (controller) controller.abort();
+                reject(storageRequestTimeoutError());
+            }, remainingMs);
+        });
+        return Promise.race([promise, timeoutPromise]).finally(() => {
+            if (timer !== null) window.clearTimeout(timer);
+        });
+    }
+
+    async function storageFetchWithTimeout(url, options, timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const requestOptions = Object.assign({}, options || {});
+        if (controller) requestOptions.signal = controller.signal;
+        const response = await waitForStorageRequestDeadline(
+            fetch(url, requestOptions),
+            deadline,
+            controller
+        );
+        if (response && typeof response.json === 'function') {
+            const parseJson = response.json.bind(response);
+            response.json = () => waitForStorageRequestDeadline(
+                parseJson(),
+                deadline,
+                controller
+            );
+        }
+        return response;
+    }
+
     function storageErrorMessage(payload, fallback) {
         if (!payload || typeof payload !== 'object') {
             return fallback;
@@ -2560,11 +2616,11 @@
                 }
             }
             if (!payload) {
-                const resp = await fetch('/api/storage/location/pick-directory', {
+                const resp = await storageFetchWithTimeout('/api/storage/location/pick-directory', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ start_path: startPath })
-                });
+                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
                 payload = await readJsonResponse(resp);
                 if (!resp.ok || !payload || payload.ok !== true) {
                     throw new Error(storageErrorMessage(payload, translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径')));
@@ -2624,14 +2680,14 @@
         setStoragePreflightBusy(true);
         setStoragePreflightResult(translate('memory.storagePreflightRunning', '正在预检...'), 'success');
         try {
-            const resp = await fetch('/api/storage/location/preflight', {
+            const resp = await storageFetchWithTimeout('/api/storage/location/preflight', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     selected_root: selectedRoot,
                     selection_source: 'custom'
                 })
-            });
+            }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
             const payload = await readJsonResponse(resp);
             if (!resp.ok || !payload || payload.ok !== true) {
                 throw new Error(storageErrorMessage(payload, translate('memory.storagePreflightFailed', '预检失败')));
@@ -2682,19 +2738,34 @@
             restartBtn.disabled = true;
         }
         let restartAccepted = false;
+        let restartOutcomeUnknown = false;
         setStoragePreflightBusy(true);
         setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
         try {
-            const resp = await fetch('/api/storage/location/restart', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    selected_root: selectedRoot,
-                    selection_source: storagePreflightState.selection_source || 'custom',
-                    confirm_existing_target_content: confirmExistingTargetContent
-                })
-            });
+            let resp;
+            try {
+                resp = await storageFetchWithTimeout('/api/storage/location/restart', {
+                    method: 'POST',
+                    headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({
+                        selected_root: selectedRoot,
+                        selection_source: storagePreflightState.selection_source || 'custom',
+                        confirm_existing_target_content: confirmExistingTargetContent
+                    })
+                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+            } catch (requestError) {
+                restartOutcomeUnknown = true;
+                throw requestError;
+            }
             const payload = await readJsonResponse(resp);
+            if (resp.ok && (!payload || payload.ok !== true)) {
+                restartOutcomeUnknown = true;
+            }
+            if (!resp.ok && ['restart_schedule_rollback_failed', 'restart_outcome_unknown'].includes(
+                String(payload && payload.error_code || '').trim()
+            )) {
+                restartOutcomeUnknown = true;
+            }
             if (!resp.ok || !payload || payload.ok !== true) {
                 throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '重启请求失败')));
             }
@@ -2711,6 +2782,26 @@
             return true;
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
+            if (restartOutcomeUnknown) {
+                restartAccepted = true;
+                const unknownPayload = {
+                    result: 'restart_outcome_unknown',
+                    selected_root: selectedRoot,
+                    target_root: selectedRoot,
+                    migration: { status: 'pending' }
+                };
+                setStoragePreflightResult(
+                    translate('storage.restartOutcomeUnknown', '无法确认受控重启结果，正在重新读取实际存储状态。'),
+                    'success'
+                );
+                notifyStorageRestartInitiated(unknownPayload, selectedRoot);
+                storagePreflightState = null;
+                const input = document.getElementById('storage-target-root-input');
+                if (input) input.disabled = true;
+                renderStorageRestartButton();
+                await showStandaloneStorageMaintenanceOverlay(unknownPayload);
+                return true;
+            }
             setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '重启请求失败')), 'error');
             renderStorageRestartButton();
             return false;
@@ -2921,10 +3012,10 @@
                     console.warn('[MemoryBrowser] host openPath failed, falling back to backend:', hostError);
                 }
             }
-            const resp = await fetch('/api/storage/location/open-current', {
+            const resp = await storageFetchWithTimeout('/api/storage/location/open-current', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
+                headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' })
+            }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
             const payload = await readJsonResponse(resp);
             if (resp.ok && payload && payload.ok === true) {
                 setElementText('storage-location-status', '');

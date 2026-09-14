@@ -868,6 +868,17 @@ body.storage-location-modal-open #storage-location-overlay * {
     background: #dff0ff;
 }
 
+.storage-location-maintenance-fallback {
+    display: grid;
+    gap: 12px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(215, 90, 90, 0.22);
+}
+
+.storage-location-maintenance-fallback[hidden] {
+    display: none !important;
+}
+
 .storage-location-completion-card {
     box-sizing: border-box;
     position: fixed;

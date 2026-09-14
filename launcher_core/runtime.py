@@ -82,9 +82,21 @@ from utils.cloudsave_runtime import (
 )
 from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager, reset_config_manager_cache
-from utils.storage_layout import clear_storage_layout_env, export_storage_layout_to_env, resolve_storage_layout
-from utils.storage_migration import run_pending_storage_migration
-from utils.storage_policy import paths_equal
+from utils.storage_layout import (
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
+    build_storage_layout,
+    clear_storage_layout_env,
+    export_storage_layout_to_env,
+    get_storage_recovery_mode,
+    resolve_storage_layout,
+)
+from utils.storage_migration import (
+    is_storage_migration_rollback_required,
+    is_storage_migration_pending,
+    load_storage_migration,
+    run_pending_storage_migration,
+)
+from utils.storage_policy import StoragePolicyError, compute_anchor_root, paths_equal
 
 
 def _configure_multiprocessing_executable(project_dir: str) -> None:
@@ -387,10 +399,98 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
     print(f"NEKO_EVENT {json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))}", flush=True)
 
 
+def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:
+    """Build an anchor-only HTTP recovery generation without trusting policy."""
+    # Fail closed without failing dead: a corrupt routing authority must not be
+    # guessed over, but the limited-mode HTTP surface still has to start so the
+    # desktop owner can show diagnostics and offer a safe exit.  Keep this in a
+    # helper because policy is re-read at multiple startup boundaries and may
+    # become invalid after the first successful read.
+    os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_policy_unavailable"
+    reset_config_manager_cache()
+    recovery_manager = get_config_manager(APP_NAME, migrate=False)
+    anchor_root = compute_anchor_root(
+        recovery_manager,
+        current_root=Path(recovery_manager.app_docs_dir),
+    )
+    layout = build_storage_layout(
+        selected_root=anchor_root,
+        anchor_root=anchor_root,
+        source="storage_policy_unavailable_recovery",
+    )
+    export_storage_layout_to_env(layout)
+    reset_config_manager_cache()
+    emit_frontend_event(
+        "storage_migration_failed",
+        {
+            "error_code": "storage_policy_unavailable",
+            "error_message": "无法安全读取存储位置策略。",
+        },
+    )
+    return {
+        "layout": layout,
+        "migration_result": {
+            "attempted": False,
+            "completed": False,
+            "error_code": "storage_policy_unavailable",
+            "error_message": str(getattr(exc, "message", "") or exc),
+        },
+        "startup_blocked": True,
+        "startup_limited": True,
+        "limited_mode_reason": "storage_policy_unavailable",
+    }
+
+
 def _resolve_storage_layout_for_launch() -> dict:
     clear_storage_layout_env()
     reset_config_manager_cache()
-    config_manager = get_config_manager(APP_NAME, migrate=False)
+    try:
+        config_manager = get_config_manager(APP_NAME, migrate=False)
+    except StoragePolicyError as exc:
+        return _policy_unavailable_recovery_bootstrap(exc)
+
+    try:
+        pending_migration = load_storage_migration(config_manager)
+    except Exception as exc:
+        # Missing is represented by None; reaching here means the checkpoint is
+        # malformed or unreadable.  Keep the committed policy layout but do not
+        # run any data/config bootstrap in this generation.
+        os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
+        try:
+            layout = resolve_storage_layout(config_manager)
+        except StoragePolicyError as policy_exc:
+            return _policy_unavailable_recovery_bootstrap(policy_exc)
+        export_storage_layout_to_env(layout)
+        reset_config_manager_cache()
+        emit_frontend_event(
+            "storage_migration_failed",
+            {
+                "error_code": str(getattr(exc, "error_code", "") or "storage_status_unavailable"),
+                "error_message": "无法安全读取存储迁移状态。",
+            },
+        )
+        return {
+            "layout": layout,
+            "migration_result": {
+                "attempted": False,
+                "completed": False,
+                "error_code": str(getattr(exc, "error_code", "") or "storage_status_unavailable"),
+                "error_message": str(exc),
+            },
+            "startup_blocked": True,
+            "startup_limited": True,
+            "limited_mode_reason": "storage_status_unavailable",
+        }
+    migration_was_pending = is_storage_migration_pending(pending_migration)
+    if migration_was_pending:
+        emit_frontend_event(
+            "storage_migration_processing",
+            {
+                "status": str((pending_migration or {}).get("status") or "pending"),
+                "source_root": str((pending_migration or {}).get("source_root") or ""),
+                "target_root": str((pending_migration or {}).get("target_root") or ""),
+            },
+        )
 
     try:
         migration_result = run_pending_storage_migration(config_manager)
@@ -401,15 +501,77 @@ def _resolve_storage_layout_for_launch() -> dict:
             "completed": False,
             "error_message": str(exc),
         }
+    if migration_was_pending:
+        if bool(migration_result.get("completed")):
+            emit_frontend_event(
+                "storage_migration_completed",
+                {
+                    "source_root": str(migration_result.get("source_root") or ""),
+                    "target_root": str(migration_result.get("target_root") or ""),
+                },
+            )
+        else:
+            emit_frontend_event(
+                "storage_migration_failed",
+                {
+                    "error_code": str(migration_result.get("error_code") or "storage_migration_failed"),
+                    "error_message": str(migration_result.get("error_message") or "存储位置迁移失败。"),
+                },
+            )
+
+    recovery_payload = (
+        migration_result.get("payload")
+        if isinstance(migration_result.get("payload"), dict)
+        else pending_migration if isinstance(pending_migration, dict) else {}
+    )
+    force_recovery_layout = bool(migration_result.get("force_recovery_layout")) or bool(
+        recovery_payload.get("recovery_metadata_degraded")
+    )
+    migration_incomplete = migration_was_pending and not bool(migration_result.get("completed"))
 
     reset_config_manager_cache()
-    resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
-    layout = resolve_storage_layout(resolved_config_manager)
+    try:
+        resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
+    except StoragePolicyError as exc:
+        return _policy_unavailable_recovery_bootstrap(exc)
+    if force_recovery_layout:
+        recovery_source_root = str(
+            migration_result.get("source_root")
+            or recovery_payload.get("source_root")
+            or recovery_payload.get("backup_root")
+            or ""
+        ).strip()
+        if not recovery_source_root:
+            raise RuntimeError("storage migration recovery source is unavailable")
+        layout = build_storage_layout(
+            selected_root=recovery_source_root,
+            anchor_root=compute_anchor_root(resolved_config_manager),
+            source="migration_failure_recovery",
+        )
+    else:
+        try:
+            layout = resolve_storage_layout(resolved_config_manager)
+        except StoragePolicyError as exc:
+            return _policy_unavailable_recovery_bootstrap(exc)
+    limited_mode_reason = ""
+    if force_recovery_layout:
+        limited_mode_reason = "recovery_required"
+    elif migration_incomplete:
+        limited_mode_reason = "migration_pending"
+    if limited_mode_reason:
+        os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = limited_mode_reason
     export_storage_layout_to_env(layout)
     reset_config_manager_cache()
     return {
         "layout": layout,
         "migration_result": migration_result,
+        # A valid failed checkpoint is allowed one owner handoff so the next
+        # generation can expose its recovery UI.  Degraded recovery metadata
+        # must additionally suppress relaunch to avoid a loop.  Both cases keep
+        # normal runtime initialization behind the limited-mode gate.
+        "startup_blocked": force_recovery_layout,
+        "startup_limited": bool(limited_mode_reason),
+        "limited_mode_reason": limited_mode_reason,
     }
 
 
@@ -597,6 +759,9 @@ def _maybe_schedule_storage_restart() -> bool:
         return False
 
     pre_restart_root_state: dict[str, object] = {}
+    pre_restart_migration: dict | None = None
+    pre_restart_migration_known = False
+    config_manager = None
     try:
         config_manager = get_config_manager(APP_NAME, migrate=False)
         load_root_state = getattr(config_manager, "load_root_state", None)
@@ -607,21 +772,65 @@ def _maybe_schedule_storage_restart() -> bool:
     except Exception as exc:
         print(f"[Launcher] Warning: failed to inspect root_state before restart scheduling: {exc}", flush=True)
 
+    if config_manager is not None:
+        try:
+            pre_restart_migration = load_storage_migration(config_manager)
+            pre_restart_migration_known = True
+        except Exception as exc:
+            # Unknown is not equivalent to absent.  If resolution later reports
+            # rollback_required we must fail closed instead of assuming this was
+            # the first handoff and starting an unbounded relaunch sequence.
+            print(
+                f"[Launcher] Warning: failed to inspect storage checkpoint before restart scheduling: {exc}",
+                flush=True,
+            )
+
     storage_bootstrap = _resolve_storage_layout_for_launch()
     migration_result = storage_bootstrap.get("migration_result") or {}
+    if bool(storage_bootstrap.get("startup_blocked")):
+        print(
+            "[Launcher] Storage recovery metadata is incomplete; "
+            "leaving recovery evidence intact without relaunching",
+            flush=True,
+        )
+        return False
     restart_reason = ""
+    pre_restart_root_mode = str(pre_restart_root_state.get("mode") or "").strip()
 
     if bool(migration_result.get("attempted")):
+        migration_payload = (
+            migration_result.get("payload")
+            if isinstance(migration_result.get("payload"), dict)
+            else {}
+        )
+        if (
+            is_storage_migration_rollback_required(migration_payload)
+            and (
+                not pre_restart_migration_known
+                or is_storage_migration_rollback_required(pre_restart_migration)
+            )
+        ):
+            # A fresh user request enters with pending/preflight/etc. and is
+            # allowed one handoff so the replacement can expose the recovery UI.
+            # Entering this shutdown with rollback_required means a previous
+            # generation already used that handoff.  Relaunching again would retry
+            # forever and make "exit" impossible.  The checkpoint status is the
+            # authority here; root_state may itself be unwritable and stale.
+            print(
+                "[Launcher] Storage rollback is still incomplete; "
+                "leaving the recovery checkpoint intact without relaunching",
+                flush=True,
+            )
+            return False
         restart_reason = "migration"
     else:
-        root_mode = str(pre_restart_root_state.get("mode") or "").strip()
         last_migration_result = str(pre_restart_root_state.get("last_migration_result") or "").strip()
         last_migration_source = str(pre_restart_root_state.get("last_migration_source") or "").strip()
         previous_current_root = str(pre_restart_root_state.get("current_root") or "").strip()
         layout = storage_bootstrap.get("layout") if isinstance(storage_bootstrap.get("layout"), dict) else {}
         resolved_selected_root = str(layout.get("selected_root") or "").strip()
         if (
-            root_mode == ROOT_MODE_MAINTENANCE_READONLY
+            pre_restart_root_mode == ROOT_MODE_MAINTENANCE_READONLY
             and last_migration_result.startswith("restart_rebind:")
         ):
             restart_reason = "rebind_only"
@@ -1348,11 +1557,12 @@ def run_merged_servers() -> int:
                 print(f"[Merged] All servers ready "
                       f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
                       flush=True)
-                try:
-                    _config_manager = get_config_manager(APP_NAME)
-                    _persist_post_startup_root_state(_config_manager)
-                except Exception as e:
-                    print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
+                if not get_storage_recovery_mode():
+                    try:
+                        _config_manager = get_config_manager(APP_NAME)
+                        _persist_post_startup_root_state(_config_manager)
+                    except Exception as e:
+                        print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
                 _publish_ready_runtime_record("merged")
                 emit_frontend_event("startup_ready", {
                     "instance_id": INSTANCE_ID,
@@ -2978,32 +3188,57 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
-        _resolve_storage_layout_for_launch()
-
-        try:
-            _prepare_cloudsave_runtime_for_launch()
-        except Exception as e:
-            if not _is_local_state_directory_error(e):
-                try:
-                    _config_manager = get_config_manager(APP_NAME)
-                    set_root_mode(
-                        _config_manager,
-                        ROOT_MODE_MAINTENANCE_READONLY,
-                        last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
-                    )
-                except Exception:
-                    pass
-                report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
-                return 1
-            os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+        storage_bootstrap = _resolve_storage_layout_for_launch()
+        storage_limited_mode = bool(
+            storage_bootstrap.get("startup_limited")
+            or storage_bootstrap.get("startup_blocked")
+        )
+        if storage_limited_mode:
             print(
-                "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
-                f"{e}",
+                "[Launcher] Storage normal startup is blocked; starting the read-only recovery surface "
+                f"(reason={storage_bootstrap.get('limited_mode_reason') or 'recovery_required'})",
                 flush=True,
             )
+        else:
+            try:
+                _prepare_cloudsave_runtime_for_launch()
+            except Exception as e:
+                if not _is_local_state_directory_error(e):
+                    # Phase-0 touches the same root-state/cloudsave authority
+                    # that failed.  Do not try to rewrite maintenance metadata
+                    # through that broken path, and do not fail before the
+                    # recovery HTTP surface can bind.  Child services inherit
+                    # this marker and skip all automatic persistence.
+                    os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
+                    storage_limited_mode = True
+                    emit_frontend_event(
+                        "storage_migration_failed",
+                        {
+                            "error_code": str(
+                                getattr(e, "error_code", "")
+                                or "storage_status_unavailable"
+                            ),
+                            "error_message": "存储启动状态无法安全初始化。",
+                        },
+                    )
+                    print(
+                        "[Launcher] Storage phase-0 failed; starting the read-only recovery surface: "
+                        f"{e}",
+                        flush=True,
+                    )
+                    reset_config_manager_cache()
+                else:
+                    os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+                    print(
+                        "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
+                        f"{e}",
+                        flush=True,
+                    )
 
-        # 自动安装 Playwright Chromium（browser-use 依赖）
-        _ensure_playwright_browsers()
+        # Recovery does not start browser-use.  An installer/network timeout
+        # here would delay the only safe-exit surface by up to five minutes.
+        if not storage_limited_mode:
+            _ensure_playwright_browsers()
 
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)
@@ -3100,11 +3335,12 @@ def main():
             return 1
 
         # 3. 服务器已启动，通知前端
-        try:
-            _config_manager = get_config_manager(APP_NAME)
-            _persist_post_startup_root_state(_config_manager)
-        except Exception as e:
-            print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
+        if not storage_limited_mode:
+            try:
+                _config_manager = get_config_manager(APP_NAME)
+                _persist_post_startup_root_state(_config_manager)
+            except Exception as e:
+                print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
 
         _publish_ready_runtime_record("multi")
         emit_frontend_event("startup_ready", {

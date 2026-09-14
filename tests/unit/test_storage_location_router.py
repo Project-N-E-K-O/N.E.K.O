@@ -1,10 +1,12 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI, Response
+from starlette.requests import Request
 from fastapi.testclient import TestClient
 
 from main_routers import storage_location_router as storage_location_router_module
@@ -22,6 +24,7 @@ from utils.storage_migration import (
 )
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
 from utils.file_utils import atomic_write_json
+from config import AUTOSTART_CSRF_TOKEN
 
 
 class _DummyConfigManager:
@@ -114,7 +117,31 @@ def _build_client(config_manager, *, request_app_shutdown=None, release_storage_
     )
     app = FastAPI()
     app.include_router(storage_location_router_module.router)
-    return TestClient(app)
+    return TestClient(
+        app,
+        base_url="http://localhost",
+        headers={
+            "Origin": "http://localhost",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    )
+
+
+def _build_mutation_request() -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("localhost", 80),
+            "client": ("127.0.0.1", 12345),
+            "path": "/api/storage/location/test",
+            "headers": [
+                (b"origin", b"http://localhost"),
+                (b"x-csrf-token", AUTOSTART_CSRF_TOKEN.encode("utf-8")),
+            ],
+        }
+    )
 
 
 @pytest.mark.unit
@@ -212,16 +239,25 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         side_effect=fake_cleanup,
     ):
         select_task = asyncio.create_task(
-            storage_location_router_module.post_storage_location_select(payload, Response())
+            storage_location_router_module.post_storage_location_select(
+                payload,
+                _build_mutation_request(),
+                Response(),
+            )
         )
         await asyncio.wait_for(first_call_entered.wait(), timeout=1.0)
 
         restart_task = asyncio.create_task(
-            storage_location_router_module.post_storage_location_restart(payload, Response())
+            storage_location_router_module.post_storage_location_restart(
+                payload,
+                _build_mutation_request(),
+                Response(),
+            )
         )
         cleanup_task = asyncio.create_task(
             storage_location_router_module.post_storage_location_retained_source_cleanup(
                 storage_location_router_module.StorageLocationCleanupRequest(),
+                _build_mutation_request(),
                 Response(),
             )
         )
@@ -236,6 +272,62 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
     assert restart_result == {"route": "restart"}
     assert cleanup_result == {"route": "cleanup"}
     assert max_active_calls == 1
+
+
+@pytest.mark.unit
+def test_storage_location_restart_rejects_cross_origin_request_before_writes(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            headers={
+                "Origin": "https://attacker.example",
+                "X-CSRF-Token": "wrong-token",
+            },
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
+    assert shutdown_calls == []
+    assert not get_storage_migration_path(config_manager).exists()
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_rejects_cross_origin_before_write_probe(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    probe_calls = []
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_build_restart_preflight",
+        lambda *_args, **_kwargs: probe_calls.append("probe"),
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            headers={
+                "Origin": "https://attacker.example",
+                "X-CSRF-Token": "wrong-token",
+            },
+            json={
+                "selected_root": str(tmp_path / "target" / "N.E.K.O"),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
+    assert probe_calls == []
 
 
 @pytest.mark.unit
@@ -409,11 +501,11 @@ def test_storage_location_mutation_routes_reject_cloudsave_disabled_without_root
     shutdown_calls = []
 
     with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        exit_response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
         responses = [
-            client.post(
-                "/api/storage/location/exit",
-                headers={"X-Neko-Storage-Action": "exit"},
-            ),
             client.post(
                 "/api/storage/location/select",
                 json={
@@ -445,7 +537,101 @@ def test_storage_location_mutation_routes_reject_cloudsave_disabled_without_root
         assert payload["error_code"] == "cloudsave_local_state_unavailable"
         assert payload["cloudsave_disabled"] is True
         assert payload["cloudsave_disabled_reason"] == "local_state_unavailable"
-    assert shutdown_calls == []
+    assert exit_response.status_code == 200
+    assert exit_response.json()["result"] == "shutdown_initiated"
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
+def test_storage_location_malformed_migration_checkpoint_allows_safe_exit_without_rewrite(
+    tmp_path,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    migration_path = get_storage_migration_path(config_manager)
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed = '{"status":'
+    migration_path.write_text(malformed, encoding="utf-8")
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        bootstrap_response = client.get("/api/storage/location/bootstrap")
+        status_response = client.get("/api/storage/location/status")
+        response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    bootstrap_payload = bootstrap_response.json()
+    status_payload = status_response.json()
+    assert bootstrap_response.status_code == 200
+    assert bootstrap_payload["lifecycle_state"] == "storage_status_unavailable"
+    assert bootstrap_payload["error_code"] == "migration_checkpoint_malformed"
+    assert status_response.status_code == 200
+    assert status_payload["lifecycle_state"] == "storage_status_unavailable"
+    assert status_payload["error_code"] == "migration_checkpoint_malformed"
+    assert status_payload["autostart_csrf_token"]
+    assert response.status_code == 200
+    assert response.json()["result"] == "shutdown_initiated"
+    assert shutdown_calls == ["shutdown"]
+    assert migration_path.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "recovery_mode",
+    ["storage_status_unavailable", "storage_policy_unavailable"],
+)
+def test_launcher_unavailable_generation_reports_blocked_and_allows_safe_exit_without_state_reads(
+    monkeypatch,
+    tmp_path,
+    recovery_mode,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager.load_root_state = lambda: (_ for _ in ()).throw(
+        AssertionError("unavailable generation must not re-read persisted root state")
+    )
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", recovery_mode)
+    shutdown_calls = []
+    target_root = tmp_path / "replacement" / "N.E.K.O"
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        bootstrap_response = client.get("/api/storage/location/bootstrap")
+        status_response = client.get("/api/storage/location/status")
+        mutation_responses = [
+            client.post(
+                f"/api/storage/location/{route}",
+                json={"selected_root": str(target_root), "selection_source": "custom"},
+            )
+            for route in ("select", "preflight", "restart")
+        ]
+        mutation_responses.append(
+            client.post("/api/storage/location/retained-source/cleanup", json={})
+        )
+        exit_response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    bootstrap_payload = bootstrap_response.json()
+    status_payload = status_response.json()
+    assert bootstrap_response.status_code == 200
+    assert bootstrap_payload["blocking_reason"] == recovery_mode
+    assert bootstrap_payload["recovery_action"] == "safe_exit"
+    assert status_response.status_code == 200
+    assert status_payload["ready"] is False
+    assert status_payload["blocking_reason"] == recovery_mode
+    assert status_payload["recovery_action"] == "safe_exit"
+    assert all(response.status_code == 503 for response in mutation_responses)
+    assert all(response.json()["error_code"] == recovery_mode for response in mutation_responses)
+    assert exit_response.status_code == 200
+    assert exit_response.json()["result"] == "shutdown_initiated"
+    assert shutdown_calls == ["shutdown"]
 
 
 @pytest.mark.unit
@@ -533,6 +719,47 @@ def test_storage_location_select_different_path_requires_restart_without_committ
     assert payload["blocking_error_message"] == ""
 
     assert not get_storage_policy_path(config_manager).exists()
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_requires_safety_margin(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    estimated_bytes = 1024
+    monkeypatch.setattr(
+        storage_location_router_module.shutil,
+        "disk_usage",
+        lambda _path: type("DiskUsage", (), {"free": estimated_bytes})(),
+    )
+
+    payload = storage_location_router_module._build_restart_preflight(
+        config_manager.app_docs_dir,
+        tmp_path / "target" / "N.E.K.O",
+        config_manager=config_manager,
+        estimated_required_bytes=estimated_bytes,
+    )
+
+    assert payload["safety_margin_bytes"] == 64 * 1024 * 1024
+    assert payload["estimated_required_with_margin_bytes"] == estimated_bytes + 64 * 1024 * 1024
+    assert payload["blocking_error_code"] == "insufficient_space"
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_blocks_when_free_space_cannot_be_read(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_disk_usage(_path):
+        raise OSError("volume unavailable")
+
+    monkeypatch.setattr(storage_location_router_module.shutil, "disk_usage", fail_disk_usage)
+    payload = storage_location_router_module._build_restart_preflight(
+        config_manager.app_docs_dir,
+        tmp_path / "target" / "N.E.K.O",
+        config_manager=config_manager,
+        estimated_required_bytes=1,
+    )
+
+    assert payload["disk_space_available"] is False
+    assert payload["blocking_error_code"] == "disk_space_unavailable"
 
 
 @pytest.mark.unit
@@ -788,7 +1015,7 @@ def test_storage_location_preflight_rejects_maintenance_readonly_state(tmp_path,
     config_manager.save_root_state({
         "mode": ROOT_MODE_MAINTENANCE_READONLY,
         "last_known_good_root": str(config_manager.app_docs_dir),
-        "last_migration_result": "restart_pending:test",
+        "last_migration_result": "maintenance:test",
         "last_migration_source": str(config_manager.app_docs_dir),
     })
     previous_root_state = config_manager.load_root_state()
@@ -983,6 +1210,7 @@ def test_storage_location_bootstrap_falls_back_to_runtime_config_manager_when_sh
     payload = response.json()
     assert payload["current_root"] == str(config_manager.app_docs_dir)
     assert payload["blocking_reason"] == "selection_required"
+    assert payload["autostart_csrf_token"] == AUTOSTART_CSRF_TOKEN
 
 
 @pytest.mark.unit
@@ -1008,6 +1236,15 @@ def test_storage_location_diagnostics_reports_runtime_entries_under_effective_ro
     assert payload["runtime_entries"]["avatar_tools"]["write_root"] == str(
         config_manager.avatar_tools_dir.resolve()
     )
+    assert {
+        "pngtuber",
+        "card_faces",
+        "jukebox",
+        "game_scores",
+        "embedding_models",
+        "runtimes",
+        "plugin_runtime",
+    }.issubset(payload["runtime_entries"])
 
 
 @pytest.mark.unit
@@ -1181,8 +1418,49 @@ def test_storage_location_restart_persists_checkpoint_and_requests_shutdown(tmp_
 
     checkpoint_path = get_storage_migration_path(config_manager)
     assert checkpoint_path.is_file()
-
     migration_payload = load_storage_migration(config_manager)
+    assert migration_payload["source_root"] == str(config_manager.app_docs_dir)
+    assert migration_payload["target_root"] == str(target_root.resolve())
+    root_state = config_manager.load_root_state()
+    assert root_state["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert root_state["last_migration_source"] == str(config_manager.app_docs_dir)
+    assert "restart_pending:" in root_state["last_migration_result"]
+
+
+@pytest.mark.unit
+def test_storage_location_restart_uses_configured_anchor_instead_of_platform_default(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    configured_anchor_root = tmp_path / "owner-exported-anchor" / "N.E.K.O"
+    configured_anchor_root.mkdir(parents=True)
+    config_manager.anchor_root = configured_anchor_root
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+
+    with _build_client(config_manager, request_app_shutdown=lambda: None) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 200
+    configured_checkpoint = get_storage_migration_path(
+        config_manager,
+        anchor_root=configured_anchor_root,
+    )
+    platform_default_checkpoint = (
+        config_manager._standard_root
+        / config_manager.app_name
+        / "state"
+        / "storage_migration.json"
+    )
+    assert configured_checkpoint.is_file()
+    assert not platform_default_checkpoint.exists()
+    migration_payload = load_storage_migration(
+        config_manager,
+        anchor_root=configured_anchor_root,
+    )
     assert migration_payload["source_root"] == str(config_manager.app_docs_dir)
     assert migration_payload["target_root"] == str(target_root.resolve())
     root_state = config_manager.load_root_state()
@@ -1213,6 +1491,122 @@ def test_storage_location_restart_awaits_async_shutdown_callback(tmp_path):
     assert response.status_code == 200
     assert response.json()["result"] == "restart_initiated"
     assert shutdown_calls["count"] == 1
+
+
+@pytest.mark.unit
+def test_storage_location_status_marks_accepted_but_still_online_restart_as_awaiting_shutdown(
+    tmp_path,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+
+    with _build_client(config_manager, request_app_shutdown=lambda: None) as client:
+        restart_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+        status_response = client.get("/api/storage/location/status")
+
+    assert restart_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["ready"] is False
+    assert status_payload["lifecycle_state"] == "maintenance"
+    assert status_payload["migration_phase"] == "awaiting_shutdown"
+    assert status_payload["shutdown_retry_allowed"] is True
+    assert status_payload["recovery_action"] == "retry_safe_exit"
+    assert status_payload["storage"]["migration_pending"] is True
+
+
+@pytest.mark.unit
+def test_restart_shutdown_and_checkpoint_restore_failure_keeps_recoverable_pending_intent(
+    tmp_path,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+
+    def request_app_shutdown():
+        raise RuntimeError("shutdown failed")
+
+    with patch.object(
+        storage_location_router_module,
+        "delete_storage_migration",
+        side_effect=OSError("checkpoint restore failed"),
+    ):
+        with _build_client(config_manager, request_app_shutdown=request_app_shutdown) as client:
+            restart_response = client.post(
+                "/api/storage/location/restart",
+                json={
+                    "selected_root": str(target_root),
+                    "selection_source": "recommended",
+                },
+            )
+            status_response = client.get("/api/storage/location/status")
+
+    assert restart_response.status_code == 500
+    restart_payload = restart_response.json()
+    assert restart_payload["result"] == "result_unknown"
+    assert restart_payload["error_code"] == "restart_schedule_rollback_failed"
+    assert restart_payload["migration_phase"] == "awaiting_shutdown"
+    assert restart_payload["shutdown_retry_allowed"] is True
+    pending = load_storage_migration(config_manager)
+    assert pending["status"] == "pending"
+    assert pending["target_root"] == str(target_root.resolve())
+    assert config_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    status_payload = status_response.json()
+    assert status_payload["migration_phase"] == "awaiting_shutdown"
+    assert status_payload["shutdown_retry_allowed"] is True
+
+
+@pytest.mark.unit
+def test_restart_double_restore_failure_never_flips_online_status_back_to_ready(
+    tmp_path,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    real_save_root_state = config_manager.save_root_state
+    root_state_write_count = 0
+
+    def fail_root_state_restore(data):
+        nonlocal root_state_write_count
+        root_state_write_count += 1
+        if root_state_write_count == 1:
+            return real_save_root_state(data)
+        raise OSError("root state restore failed")
+
+    config_manager.save_root_state = fail_root_state_restore
+
+    with patch.object(
+        storage_location_router_module,
+        "save_storage_migration",
+        side_effect=OSError("recovery checkpoint save failed"),
+    ):
+        with _build_client(
+            config_manager,
+            request_app_shutdown=lambda: (_ for _ in ()).throw(RuntimeError("shutdown failed")),
+        ) as client:
+            restart_response = client.post(
+                "/api/storage/location/restart",
+                json={
+                    "selected_root": str(target_root),
+                    "selection_source": "recommended",
+                },
+            )
+            status_response = client.get("/api/storage/location/status")
+
+    assert restart_response.status_code == 500
+    assert restart_response.json()["error_code"] == "restart_schedule_rollback_failed"
+    assert load_storage_migration(config_manager) is None
+    assert config_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert config_manager.load_root_state()["last_migration_result"].startswith("restart_pending:")
+    status_payload = status_response.json()
+    assert status_payload["ready"] is False
+    assert status_payload["lifecycle_state"] == "maintenance"
+    assert status_payload["migration_phase"] == "awaiting_shutdown"
+    assert status_payload["shutdown_retry_allowed"] is True
+    assert status_payload["recovery_action"] == "retry_safe_exit"
 
 
 @pytest.mark.unit
@@ -1353,6 +1747,7 @@ def test_storage_location_restart_rejects_existing_pending_migration(tmp_path):
 @pytest.mark.unit
 def test_storage_location_status_reports_pending_checkpoint_as_maintenance(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setattr(storage_location_router_module.config_module, "INSTANCE_ID", "storage-generation")
     create_pending_storage_migration(
         config_manager,
         source_root=config_manager.app_docs_dir,
@@ -1371,12 +1766,138 @@ def test_storage_location_status_reports_pending_checkpoint_as_maintenance(tmp_p
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
+    assert payload["instance_id"] == "storage-generation"
+    assert payload["autostart_csrf_token"] == AUTOSTART_CSRF_TOKEN
     assert payload["ready"] is False
     assert payload["lifecycle_state"] == "maintenance"
     assert payload["blocking_reason"] == "migration_pending"
     assert payload["migration_stage"] == "pending"
     assert payload["poll_interval_ms"] == 1200
     assert payload["storage"]["migration_pending"] is True
+
+
+@pytest.mark.unit
+def test_storage_location_rollback_required_is_explicit_and_cannot_be_replaced(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "unfinished-target" / "N.E.K.O"
+    replacement_root = tmp_path / "replacement-target" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    checkpoint = load_storage_migration(config_manager)
+    save_storage_migration(
+        config_manager,
+        {
+            **checkpoint,
+            "status": "rollback_required",
+            "error_code": "rollback_failed",
+            "error_message": "mock rollback failure",
+        },
+    )
+    config_manager.save_root_state(
+        {
+            "mode": "deferred_init",
+            "current_root": str(config_manager.app_docs_dir),
+            "last_known_good_root": str(config_manager.app_docs_dir),
+            "last_migration_result": "failed:rollback_failed",
+            "last_migration_source": str(config_manager.app_docs_dir),
+        }
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        status_response = client.get("/api/storage/location/status")
+        select_response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(replacement_root),
+                "selection_source": "custom",
+            },
+        )
+        restart_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(replacement_root),
+                "selection_source": "custom",
+            },
+        )
+
+    status_payload = status_response.json()
+    assert status_payload["ready"] is False
+    assert status_payload["lifecycle_state"] == "rollback_required"
+    assert status_payload["migration_stage"] == "rollback_required"
+    assert status_payload["storage"]["rollback_required"] is True
+    assert status_payload["storage"]["migration_pending"] is True
+    assert select_response.status_code == 409
+    assert select_response.json()["error_code"] == "storage_rollback_required"
+    assert restart_response.status_code == 409
+    assert restart_response.json()["error_code"] == "storage_rollback_required"
+    assert shutdown_calls == []
+    assert load_storage_migration(config_manager)["status"] == "rollback_required"
+
+
+@pytest.mark.unit
+def test_storage_location_malformed_policy_blocks_mutations_but_allows_safe_exit(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text('{"selected_root":', encoding="utf-8")
+    shutdown_calls = []
+    monkeypatch.setattr(storage_location_router_module.config_module, "INSTANCE_ID", "policy-generation")
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        status_response = client.get("/api/storage/location/status")
+        select_response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(tmp_path / "replacement" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+        restart_response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(tmp_path / "replacement" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+        exit_response = client.post(
+            "/api/storage/location/exit",
+            headers={"X-Neko-Storage-Action": "exit"},
+        )
+
+    status_payload = status_response.json()
+    assert status_response.status_code == 200
+    assert status_payload["instance_id"] == "policy-generation"
+    assert status_payload["ready"] is False
+    assert status_payload["lifecycle_state"] == "storage_policy_unavailable"
+    assert status_payload["error_code"] == "storage_policy_unavailable"
+    assert select_response.status_code == 503
+    assert select_response.json()["error_code"] == "storage_policy_unavailable"
+    assert restart_response.status_code == 503
+    assert restart_response.json()["error_code"] == "storage_policy_unavailable"
+    assert exit_response.status_code == 200
+    assert exit_response.json()["result"] == "shutdown_initiated"
+    assert shutdown_calls == ["shutdown"]
+    assert policy_path.read_text(encoding="utf-8") == '{"selected_root":'
+    assert not get_storage_migration_path(config_manager).exists()
 
 
 @pytest.mark.unit
@@ -1720,6 +2241,760 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_moves_legacy_community_state_before_removing_root(
+    tmp_path,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    auth_payload = {"access_token": "legacy-token"}
+    social_payload = {"token": "legacy-token"}
+    oauth_pending = {
+        "state": "oauth-state",
+        "code_verifier": "oauth-verifier",
+        "expires_at": time.time() + 300,
+    }
+    steam_pending = {"state": "steam-state", "ts": 1}
+    for filename, value in {
+        "community_auth.json": auth_payload,
+        "social_session.json": social_payload,
+        "community_oauth_pending.json": oauth_pending,
+        "community_steam_pending.json": steam_pending,
+    }.items():
+        (source_root / filename).write_text(json.dumps(value), encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["metadata_persisted"] is True
+    assert not source_root.exists()
+    state_dir = reloaded_manager.local_state_dir
+    assert json.loads((state_dir / "community_auth.json").read_text(encoding="utf-8")) == auth_payload
+    assert json.loads((state_dir / "social_session.json").read_text(encoding="utf-8")) == social_payload
+    assert json.loads((state_dir / "community_oauth_pending.json").read_text(encoding="utf-8")) == oauth_pending
+    assert not (state_dir / "community_steam_pending.json").exists(), "expired PKCE state is discarded, not migrated"
+
+
+@pytest.mark.unit
+def test_storage_location_private_only_retained_root_remains_visible_and_cleanupable(
+    tmp_path,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_config = source_root / "config"
+    source_config.mkdir(parents=True)
+    (source_config / "characters.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    (source_config / "characters.json").unlink()
+    source_config.rmdir()
+    legacy_auth = {"access_token": "private-only"}
+    (source_root / "community_auth.json").write_text(
+        json.dumps(legacy_auth),
+        encoding="utf-8",
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with _build_client(reloaded_manager) as client:
+        before = client.get("/api/storage/location/status")
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+        after = client.get("/api/storage/location/status")
+
+    assert before.status_code == 200
+    assert before.json()["storage"]["legacy_cleanup_pending"] is True
+    assert before.json()["completion_notice"]["completed"] is True
+    assert before.json()["completion_notice"]["cleanup_available"] is True
+    assert cleanup.status_code == 200
+    assert cleanup.json()["metadata_persisted"] is True
+    assert not source_root.exists()
+    assert json.loads(
+        (reloaded_manager.local_state_dir / "community_auth.json").read_text(encoding="utf-8")
+    ) == legacy_auth
+    assert after.json()["storage"]["legacy_cleanup_pending"] is False
+    assert after.json()["completion_notice"]["completed"] is False
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_checkpoint_write_failure_reconciles_from_filesystem(
+    tmp_path,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    save_calls = 0
+
+    def _fail_finalize(*args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 1:
+            return save_storage_migration(*args, **kwargs)
+        raise OSError("checkpoint denied")
+
+    with patch.object(
+        storage_location_router_module,
+        "save_storage_migration",
+        side_effect=_fail_finalize,
+    ):
+        with _build_client(reloaded_manager) as client:
+            cleanup_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+            status_response = client.get("/api/storage/location/status")
+            retry_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+
+    assert cleanup_response.status_code == 200
+    assert cleanup_response.json()["metadata_persisted"] is False
+    assert not source_root.exists()
+    status_payload = status_response.json()
+    assert status_payload["storage"]["legacy_cleanup_pending"] is False
+    assert status_payload["completion_notice"]["completed"] is False
+    assert retry_response.status_code == 404
+    stale_checkpoint = load_storage_migration(reloaded_manager)
+    assert stale_checkpoint["retained_source_mode"] == "cleanup_in_progress"
+
+
+@pytest.mark.unit
+def test_storage_location_unknown_only_root_converges_after_both_metadata_writes_fail(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    unknown = source_root / "personal-notes.txt"
+    unknown.write_text("keep", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    save_calls = 0
+
+    def _fail_finalize(*args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 1:
+            return save_storage_migration(*args, **kwargs)
+        raise OSError("checkpoint denied")
+
+    with (
+        patch.object(
+            storage_location_router_module,
+            "save_storage_migration",
+            side_effect=_fail_finalize,
+        ),
+        patch.object(
+            reloaded_manager,
+            "save_root_state",
+            side_effect=OSError("root state denied"),
+        ),
+    ):
+        with _build_client(reloaded_manager) as client:
+            cleanup = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+            status = client.get("/api/storage/location/status")
+            retry = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+
+    assert cleanup.status_code == 200
+    assert cleanup.json()["metadata_persisted"] is False
+    assert unknown.read_text(encoding="utf-8") == "keep"
+    assert not (source_root / "config").exists()
+    assert status.json()["storage"]["legacy_cleanup_pending"] is False
+    assert status.json()["completion_notice"]["completed"] is False
+    assert retry.status_code == 404
+    stale_checkpoint = load_storage_migration(reloaded_manager)
+    assert stale_checkpoint["retained_source_mode"] == "cleanup_in_progress"
+
+    # Reusing the same path after cleanup must not turn unrelated future state
+    # into a legacy credential merely because final metadata writes both failed.
+    recreated_auth = source_root / "community_auth.json"
+    recreated_auth.write_text(json.dumps({"access_token": "future-account"}), encoding="utf-8")
+    import main_routers.card_drop_router as card_drop_router_module
+    from utils import config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module,
+        "get_config_manager",
+        lambda *_args, **_kwargs: reloaded_manager,
+    )
+    assert card_drop_router_module._legacy_selected_roots() == []
+    assert card_drop_router_module._load_auth() is None
+    assert recreated_auth.exists()
+    assert card_drop_router_module._clear_auth() is True
+    assert recreated_auth.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_premark_failure_deletes_nothing(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    runtime_file = source_root / "config" / "characters.json"
+    runtime_file.write_text("{}", encoding="utf-8")
+    legacy_auth = source_root / "community_auth.json"
+    legacy_auth.write_text(json.dumps({"access_token": "only-copy"}), encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with patch.object(
+        storage_location_router_module,
+        "save_storage_migration",
+        side_effect=OSError("premark denied"),
+    ):
+        with _build_client(reloaded_manager) as client:
+            response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "retained_source_cleanup_intent_failed"
+    assert runtime_file.exists()
+    assert legacy_auth.exists()
+    assert not (reloaded_manager.local_state_dir / "community_auth.json").exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_storage_location_direct_cleanup_preserves_conflicting_target_and_source_credentials(
+    tmp_path,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    runtime_file = source_root / "config" / "characters.json"
+    runtime_file.write_text("{}", encoding="utf-8")
+    source_auth = source_root / "community_auth.json"
+    source_auth.write_text(json.dumps({"access_token": "source-current"}), encoding="utf-8")
+    target_root.mkdir(parents=True)
+    target_auth = target_root / "community_auth.json"
+    target_auth.write_text(json.dumps({"access_token": "target-stale"}), encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "retained_source_cleanup_failed"
+    assert runtime_file.exists()
+    assert json.loads(source_auth.read_text(encoding="utf-8"))["access_token"] == "source-current"
+    assert json.loads(target_auth.read_text(encoding="utf-8"))["access_token"] == "target-stale"
+    assert not (reloaded_manager.local_state_dir / "community_auth.json").exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleanup_in_progress"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_in_progress_is_safely_retryable_after_crash(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    runtime_file = source_root / "config" / "characters.json"
+    runtime_file.write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with patch.object(
+        storage_location_router_module,
+        "_cleanup_retained_runtime_root",
+        side_effect=OSError("simulated crash before deletion"),
+    ):
+        with _build_client(reloaded_manager) as client:
+            interrupted = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+
+    assert interrupted.status_code == 500
+    assert runtime_file.exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleanup_in_progress"
+
+    with _build_client(reloaded_manager) as client:
+        retry = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert retry.status_code == 200
+    assert not source_root.exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_completed_cleanup_then_logout_removes_target_witness_but_not_reused_source(
+    tmp_path,
+    monkeypatch,
+):
+    import main_routers.card_drop_router as card_drop_router_module
+    from utils import config_manager as config_manager_module
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    source_root.mkdir(parents=True, exist_ok=True)
+    target_root.mkdir(parents=True, exist_ok=True)
+    auth = {"access_token": "same-token"}
+    social = {"token": "same-token"}
+    for root in (source_root, target_root):
+        (root / "community_auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        (root / "social_session.json").write_text(json.dumps(social), encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+
+    with _build_client(reloaded_manager) as client:
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup.status_code == 200
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert (target_root / "community_auth.json").exists()
+    assert (target_root / "social_session.json").exists()
+
+    # A later directory at the old source path is unrelated once the checkpoint
+    # is cleaned; logout must not follow it, but must clear current target secrets.
+    source_root.mkdir(parents=True)
+    reused_source_auth = source_root / "community_auth.json"
+    reused_source_auth.write_text(json.dumps({"access_token": "unrelated"}), encoding="utf-8")
+    monkeypatch.setattr(
+        config_manager_module,
+        "get_config_manager",
+        lambda *_args, **_kwargs: reloaded_manager,
+    )
+    assert card_drop_router_module._clear_auth() is True
+    assert not (reloaded_manager.local_state_dir / "community_auth.json").exists()
+    assert not (reloaded_manager.local_state_dir / "social_session.json").exists()
+    assert not (target_root / "community_auth.json").exists()
+    assert not (target_root / "social_session.json").exists()
+    assert reused_source_auth.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_preserves_everything_when_credential_anchor_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import main_routers.card_drop_router as card_drop_router_module
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    legacy_auth = source_root / "community_auth.json"
+    legacy_auth.write_text(json.dumps({"access_token": "only-copy"}), encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    monkeypatch.setattr(
+        card_drop_router_module,
+        "_write_private_json_no_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("anchor denied")),
+    )
+
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 500
+    assert legacy_auth.exists()
+    assert (source_root / "config" / "characters.json").exists()
+    assert not (reloaded_manager.local_state_dir / "community_auth.json").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_preserves_unknown_files_in_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    unknown_file = source_root / "personal-notes.txt"
+    unknown_file.write_text("keep", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 200
+    assert not (source_root / "config").exists()
+    assert unknown_file.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rejects_retained_root_replaced_by_symlink(tmp_path):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    external_root = tmp_path / "external"
+    retained_root.parent.mkdir(parents=True)
+    external_config = external_root / "config"
+    external_config.mkdir(parents=True)
+    external_file = external_config / "characters.json"
+    external_file.write_text("KEEP", encoding="utf-8")
+    try:
+        retained_root.symlink_to(external_root, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with pytest.raises(ValueError, match="符号链接"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            retained_root,
+            current_root=tmp_path / "current" / "N.E.K.O",
+            anchor_root=tmp_path / "anchor" / "N.E.K.O",
+        )
+
+    assert external_file.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_dirfd_does_not_follow_public_root_swap(
+    tmp_path,
+    monkeypatch,
+):
+    if not storage_location_router_module.shutil.rmtree.avoids_symlink_attacks:
+        pytest.skip("stdlib does not provide symlink-safe dirfd rmtree")
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    moved_root = tmp_path / "retained" / "moved-original"
+    original_file = retained_root / "config" / "characters.json"
+    original_file.parent.mkdir(parents=True)
+    original_file.write_text("ORIGINAL", encoding="utf-8")
+    external_root = tmp_path / "external"
+    external_file = external_root / "config" / "characters.json"
+    external_file.parent.mkdir(parents=True)
+    external_file.write_text("KEEP", encoding="utf-8")
+    original_remove = storage_location_router_module._secure_remove_runtime_entry
+    swapped = False
+
+    def _swap_then_remove(root_fd, entry):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            retained_root.rename(moved_root)
+            retained_root.symlink_to(external_root, target_is_directory=True)
+        return original_remove(root_fd, entry)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_secure_remove_runtime_entry",
+        _swap_then_remove,
+    )
+    with pytest.raises(ValueError, match="替换"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            retained_root,
+            current_root=tmp_path / "current" / "N.E.K.O",
+            anchor_root=tmp_path / "anchor" / "N.E.K.O",
+        )
+
+    assert external_file.read_text(encoding="utf-8") == "KEEP"
+    assert retained_root.is_symlink()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_dirfd_does_not_follow_swapped_ancestor(
+    tmp_path,
+    monkeypatch,
+):
+    if not storage_location_router_module.shutil.rmtree.avoids_symlink_attacks:
+        pytest.skip("stdlib does not provide symlink-safe dirfd rmtree")
+    retained_parent = tmp_path / "mounted"
+    retained_root = retained_parent / "N.E.K.O"
+    moved_parent = tmp_path / "moved-mounted"
+    original_file = retained_root / "config" / "characters.json"
+    original_file.parent.mkdir(parents=True)
+    original_file.write_text("ORIGINAL", encoding="utf-8")
+    external_parent = tmp_path / "external-mounted"
+    external_file = external_parent / "N.E.K.O" / "config" / "characters.json"
+    external_file.parent.mkdir(parents=True)
+    external_file.write_text("KEEP", encoding="utf-8")
+    original_remove = storage_location_router_module._secure_remove_runtime_entry
+    swapped = False
+
+    def _swap_ancestor_then_remove(root_fd, entry):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            retained_parent.rename(moved_parent)
+            retained_parent.symlink_to(external_parent, target_is_directory=True)
+        return original_remove(root_fd, entry)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_secure_remove_runtime_entry",
+        _swap_ancestor_then_remove,
+    )
+    storage_location_router_module._cleanup_retained_runtime_root(
+        retained_root,
+        current_root=tmp_path / "current" / "N.E.K.O",
+        anchor_root=tmp_path / "anchor" / "N.E.K.O",
+    )
+
+    assert external_file.read_text(encoding="utf-8") == "KEEP"
+    assert retained_parent.is_symlink()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rejects_real_directory_replacement_after_premark(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    moved_root = tmp_path / "legacy-runtime" / "original"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    original_file = source_root / "config" / "characters.json"
+    original_file.write_text("ORIGINAL", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    original_cleanup = storage_location_router_module._cleanup_retained_runtime_root
+
+    def _replace_before_cleanup(*args, **kwargs):
+        source_root.rename(moved_root)
+        replacement_file = source_root / "config" / "characters.json"
+        replacement_file.parent.mkdir(parents=True)
+        replacement_file.write_text("REPLACEMENT", encoding="utf-8")
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_cleanup_retained_runtime_root",
+        _replace_before_cleanup,
+    )
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "retained_source_cleanup_failed"
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "REPLACEMENT"
+    assert (moved_root / "config" / "characters.json").read_text(encoding="utf-8") == "ORIGINAL"
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert checkpoint["retained_source_mode"] == "cleanup_in_progress"
+    assert checkpoint["cleanup_root_identity"]["inode"] == moved_root.stat().st_ino
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_is_unavailable_without_safe_dirfd_rmtree(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    runtime_file = source_root / "config" / "characters.json"
+    runtime_file.write_text("KEEP", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    monkeypatch.setattr(
+        storage_location_router_module.shutil.rmtree,
+        "avoids_symlink_attacks",
+        False,
+    )
+
+    with _build_client(reloaded_manager) as client:
+        status = client.get("/api/storage/location/status")
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert status.json()["completion_notice"]["cleanup_available"] is False
+    assert cleanup.status_code == 404
+    assert runtime_file.read_text(encoding="utf-8") == "KEEP"
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert checkpoint["retained_source_mode"] == "manual_retention"
+    assert "cleanup_root_identity" not in checkpoint
+    with pytest.raises(ValueError, match="手动清理"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            source_root,
+            current_root=target_root,
+            anchor_root=reloaded_manager.anchor_root,
+        )
+
+
+@pytest.mark.unit
+def test_storage_location_api_refuses_retained_root_nested_under_current_target(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    nested_retained = target_root / "nested-retained"
+    (nested_retained / "config").mkdir(parents=True)
+    nested_file = nested_retained / "config" / "characters.json"
+    nested_file.write_text("KEEP", encoding="utf-8")
+    checkpoint = load_storage_migration(reloaded_manager)
+    checkpoint["retained_source_root"] = str(nested_retained)
+    checkpoint["backup_root"] = str(nested_retained)
+    checkpoint["retained_source_mode"] = "manual_retention"
+    save_storage_migration(reloaded_manager, checkpoint)
+
+    with _build_client(reloaded_manager) as client:
+        status = client.get("/api/storage/location/status")
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(nested_retained)},
+        )
+
+    assert status.status_code == 200
+    assert status.json()["completion_notice"]["completed"] is True
+    assert status.json()["completion_notice"]["cleanup_available"] is False
+    assert cleanup.status_code == 404
+    assert nested_file.read_text(encoding="utf-8") == "KEEP"
+    unchanged = load_storage_migration(reloaded_manager)
+    assert unchanged["retained_source_mode"] == "manual_retention"
+    assert "cleanup_root_identity" not in unchanged
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rejects_nested_state_symlink_without_deleting_external_or_local_data(
+    tmp_path,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_config = retained_root / "config" / "characters.json"
+    retained_config.parent.mkdir(parents=True)
+    retained_config.write_text("LOCAL", encoding="utf-8")
+    external_state = tmp_path / "external-state"
+    external_score = external_state / "game_scores" / "score.db"
+    external_score.parent.mkdir(parents=True)
+    external_score.write_bytes(b"KEEP")
+    try:
+        (retained_root / "state").symlink_to(external_state, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with pytest.raises(ValueError, match="安全边界"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            retained_root,
+            current_root=tmp_path / "current" / "N.E.K.O",
+            anchor_root=tmp_path / "anchor" / "N.E.K.O",
+        )
+
+    assert retained_config.read_text(encoding="utf-8") == "LOCAL"
+    assert external_score.read_bytes() == b"KEEP"
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_only(tmp_path):
     config_manager = _make_anchor_root_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -1729,8 +3004,13 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
     (source_root / "memory" / "A").mkdir(parents=True, exist_ok=True)
     (source_root / "memory" / "A" / "recent.json").write_text("[]", encoding="utf-8")
-    (source_root / "state").mkdir(parents=True, exist_ok=True)
-    (source_root / "state" / "storage_policy.json").write_text("{}", encoding="utf-8")
+    save_storage_policy(
+        config_manager,
+        selected_root=source_root,
+        selection_source="current",
+    )
+    (source_root / "state" / "game_scores").mkdir(parents=True, exist_ok=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"score")
     (source_root / "cloudsave").mkdir(parents=True, exist_ok=True)
     (source_root / "cloudsave" / "manifest.json").write_text("{}", encoding="utf-8")
 
@@ -1741,6 +3021,7 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
         selection_source="recommended",
     )
     run_pending_storage_migration(config_manager)
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"score"
 
     reloaded_manager = _make_anchor_root_config_manager(tmp_path)
     with _build_client(reloaded_manager) as client:
@@ -1764,6 +3045,7 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     assert source_root.exists()
     assert not (source_root / "config").exists()
     assert not (source_root / "memory").exists()
+    assert not (source_root / "state" / "game_scores").exists()
     assert (source_root / "state" / "storage_migration.json").exists()
     assert (source_root / "cloudsave" / "manifest.json").read_text(encoding="utf-8") == "{}"
 

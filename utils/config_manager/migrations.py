@@ -225,22 +225,47 @@ def _force_rmtree(path):
     """
     def _clear_read_only(_func, target, _exc):
         try:
+            # POSIX unlink/rmdir permission belongs to the parent directory,
+            # not to the leaf.  A copied read-only directory therefore has to
+            # be made writable/traversable before retrying removal of a child.
+            # shutil only reports the child that failed; waiting for a later
+            # callback on the parent leaves that first child stranded.
+            target_parent = os.path.dirname(os.fspath(target))
+            if target_parent:
+                try:
+                    parent_mode = os.stat(target_parent, follow_symlinks=False).st_mode
+                    os.chmod(
+                        target_parent,
+                        parent_mode | stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC,
+                        follow_symlinks=False,
+                    )
+                except (OSError, NotImplementedError):
+                    pass
             # ADD the write bit; do not replace the mode with it. Setting
             # S_IWRITE alone is 0o200, which on POSIX takes read and execute
             # off a directory and leaves it untraversable -- so the retry
             # cannot unlink what is inside and the tree stays. Windows only
             # reads the write bit here, so keeping the rest costs nothing
             # there.
-            try:
-                current = os.stat(target).st_mode
-            except OSError:
-                current = 0
-            os.chmod(target, current | stat.S_IWRITE | stat.S_IREAD)
-            if os.path.isdir(target):
-                # Traversal, which is what an unwritable parent was blocking.
-                os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC)
+            if not os.path.islink(target):
+                try:
+                    current = os.stat(target, follow_symlinks=False).st_mode
+                except OSError:
+                    current = 0
+                os.chmod(
+                    target,
+                    current | stat.S_IWRITE | stat.S_IREAD,
+                    follow_symlinks=False,
+                )
+                if os.path.isdir(target):
+                    # Traversal, which is what an unwritable directory blocks.
+                    os.chmod(
+                        target,
+                        os.stat(target, follow_symlinks=False).st_mode | stat.S_IEXEC,
+                        follow_symlinks=False,
+                    )
             _func(target)
-        except OSError:
+        except (OSError, NotImplementedError):
             # The caller checks whether the tree actually went; a
             # cleanup that raises would replace the real failure.
             pass

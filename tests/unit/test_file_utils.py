@@ -87,6 +87,20 @@ def test_atomic_write_json_roundtrips_unicode_without_escaping(tmp_path):
     assert read_json(target) == {"名字": "妮可", "n": 1}
 
 
+def test_atomic_write_json_flushes_published_parent_directory(tmp_path, monkeypatch):
+    target = tmp_path / "state" / "storage_policy.json"
+    flushed = []
+    monkeypatch.setattr(
+        file_utils,
+        "fsync_directory_best_effort",
+        lambda path: flushed.append(Path(path)),
+    )
+
+    atomic_write_json(target, {"version": 1})
+
+    assert flushed == [target.parent]
+
+
 def test_atomic_write_json_forwards_dumps_options(tmp_path):
     target = tmp_path / "state.json"
 

@@ -63,6 +63,7 @@ from utils.cloudsave_runtime import (
 from utils.config_manager import get_config_manager
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.storage.layout import get_storage_recovery_mode
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
 
@@ -1232,6 +1233,9 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
+    if get_storage_recovery_mode():
+        logger.info("[Memory] 存储恢复会话关闭：跳过运行态持久化")
+        return
     try:
         from utils.token_tracker import TokenTracker
         TokenTracker.get_instance().save()

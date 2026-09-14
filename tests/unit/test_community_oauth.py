@@ -599,6 +599,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
         return None
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", record(True))
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -612,7 +613,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     result = await O.oauth_logout_endpoint(object())
 
     assert result == {"ok": True}
-    assert len(worker_threads) == 3
+    assert len(worker_threads) == 4
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
@@ -654,6 +655,7 @@ async def test_oauth_logout_revokes_against_saved_issuer(
         revoked.append(kwargs)
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -736,6 +738,7 @@ def test_oauth_logout_reports_local_credential_clear_failure(oauth_app, monkeypa
         return None
 
     monkeypatch.setattr(O, "_revoke_tokens_best_effort", no_revoke)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
     response = client.post("/api/card-drop/oauth/logout")

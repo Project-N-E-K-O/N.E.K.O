@@ -146,6 +146,24 @@ from .api_shared import (  # noqa: F401
     timezone,
     uuid,
 )
+from utils.storage.layout import get_storage_recovery_mode
+
+
+@app.middleware("http")
+async def storage_recovery_mode_guard(request, call_next):
+    recovery_mode = get_storage_recovery_mode()
+    if not recovery_mode or request.url.path == "/health":
+        return await call_next(request)
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": recovery_mode,
+            "limited_mode": True,
+            "error": "Agent server 正处于存储受限启动状态。",
+        },
+    )
 
 class ToolCorrectionPayload(BaseModel):
     correct_tool: str = Field(min_length=1)
@@ -679,6 +697,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
 
 @app.on_event("startup")
 async def startup():
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode:
+        logger.info(
+            "[Agent] Storage recovery generation; runtime initialization skipped: %s",
+            recovery_mode,
+        )
+        return
+
     # Install token tracking hooks for this process
     try:
         from utils.token_tracker import TokenTracker, install_hooks
@@ -856,6 +882,10 @@ async def startup():
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+
+    if get_storage_recovery_mode():
+        logger.info("[Agent] Recovery generation shutdown completed without runtime persistence")
+        return
 
     try:
         from utils.token_tracker import TokenTracker

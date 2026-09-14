@@ -4,7 +4,11 @@ import pytest
 
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
-from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV
+from utils.storage_layout import (
+    NEKO_STORAGE_ANCHOR_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
+    NEKO_STORAGE_SELECTED_ROOT_ENV,
+)
 from utils.storage_location_bootstrap import (
     build_storage_location_bootstrap_payload,
     get_storage_startup_blocking_reason,
@@ -13,6 +17,7 @@ from utils.storage_location_bootstrap import (
 from utils.storage_migration import (
     create_pending_storage_migration,
     delete_storage_migration,
+    get_storage_migration_path,
     run_pending_storage_migration,
 )
 from utils.storage_policy import save_storage_policy
@@ -107,6 +112,44 @@ def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_
     config_manager.save_root_state = fail_root_state_write
 
     assert get_storage_startup_blocking_reason(config_manager) == "selection_required"
+    assert is_storage_startup_blocked(config_manager) is True
+
+
+@pytest.mark.unit
+def test_storage_startup_gate_keeps_http_fallback_alive_for_malformed_checkpoint(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    migration_path = get_storage_migration_path(config_manager)
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed = '{"status":'
+    migration_path.write_text(malformed, encoding="utf-8")
+
+    assert get_storage_startup_blocking_reason(config_manager) == "storage_status_unavailable"
+    assert is_storage_startup_blocked(config_manager) is True
+    assert migration_path.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "migration_pending",
+        "recovery_required",
+        "storage_policy_unavailable",
+        "storage_status_unavailable",
+    ],
+)
+def test_storage_startup_gate_honors_launcher_recovery_generation_without_disk_reads(
+    monkeypatch,
+    tmp_path,
+    reason,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager.load_root_state = lambda: (_ for _ in ()).throw(
+        AssertionError("recovery generation gate must not read mutable storage state")
+    )
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, reason)
+
+    assert get_storage_startup_blocking_reason(config_manager) == reason
     assert is_storage_startup_blocked(config_manager) is True
 
 

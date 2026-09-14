@@ -24,6 +24,52 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
+# Storage recovery generation: health-only and side-effect free
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_recovery_generation_skips_runtime_startup(monkeypatch: pytest.MonkeyPatch):
+    from app.agent_server import api_runtime as srv
+
+    start_plugin = AsyncMock(side_effect=AssertionError("plugin host must stay stopped"))
+    monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "storage_status_unavailable")
+    monkeypatch.setattr(srv, "_start_embedded_user_plugin_server", start_plugin)
+
+    await srv.startup()
+
+    start_plugin.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_recovery_generation_allows_only_health(monkeypatch: pytest.MonkeyPatch):
+    from app.agent_server import api_runtime as srv
+
+    monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "storage_policy_unavailable")
+
+    async def _must_not_run(_request):
+        raise AssertionError("blocked request reached a runtime route")
+
+    blocked = await srv.storage_recovery_mode_guard(
+        SimpleNamespace(url=SimpleNamespace(path="/plugin/execute")),
+        _must_not_run,
+    )
+    assert blocked.status_code == 409
+    assert b'"blocking_reason":"storage_policy_unavailable"' in blocked.body
+
+    health_response = object()
+
+    async def _health(_request):
+        return health_response
+
+    allowed = await srv.storage_recovery_mode_guard(
+        SimpleNamespace(url=SimpleNamespace(path="/health")),
+        _health,
+    )
+    assert allowed is health_response
+
+
+# ---------------------------------------------------------------------------
 # 1. plugin_execute_direct: parse failure must not strand status="running"
 # ---------------------------------------------------------------------------
 
