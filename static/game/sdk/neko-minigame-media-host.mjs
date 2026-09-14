@@ -44,7 +44,7 @@ export function unlock(video) {
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {}, keepPlayingWhenHidden = () => false }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
   const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
-  const liveAudioPrefix = '/api/watch-together/live-audio/';
+  const liveAudioPrefix = '/api/watch-together/live-audio';
   const resources = new Map();
   const cues=timeline.events || [];
   if(cues.length>1000)throw Error('Reaction preload budget exceeded');
@@ -220,7 +220,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     async say(line) {
       if (disposed) throw Error('Media controller disposed');
       const url = line?.audio;
-      if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix)) throw Error('Unregistered live speech');
+      if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix + '/')) throw Error('Unregistered live speech');
       if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
       const busy = () => disposed || speech || (active?.audio && !outputStopped);
       if (busy()) return false;
