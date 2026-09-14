@@ -147,6 +147,37 @@
         return scheme + '//' + window.location.host + '/api/vmc/ws';
     }
 
+    // The Electron Pet preload overwrites window.WebSocket and registers the
+    // most recently constructed socket as the desktop chat IPC proxy target,
+    // without discriminating by URL. A VMC socket built from that wrapper
+    // therefore steals the chat channel, and desktop chat messages get sent
+    // into /api/vmc/ws where the router drops every non-frame message.
+    // Borrowing the constructor from a same-origin child frame avoids the
+    // wrapper entirely: the preload only installs into the top frame. The
+    // probe frame must stay attached, because a detached frame's WebSocket
+    // cannot open connections. Falls back to window.WebSocket, which merely
+    // restores the previous behaviour rather than breaking the browser path
+    // (no preload there, so window.WebSocket is already native).
+    function nativeWebSocketCtor() {
+        if (window.__nekoNativeWebSocket) return window.__nekoNativeWebSocket;
+        let ctor = window.WebSocket;
+        try {
+            const probe = document.createElement('iframe');
+            probe.style.display = 'none';
+            probe.setAttribute('aria-hidden', 'true');
+            (document.body || document.documentElement).appendChild(probe);
+            const borrowed = probe.contentWindow && probe.contentWindow.WebSocket;
+            if (typeof borrowed === 'function') {
+                ctor = borrowed;
+                window.__nekoNativeWebSocketProbe = probe;
+            } else {
+                probe.remove();
+            }
+        } catch (_) { /* keep window.WebSocket */ }
+        window.__nekoNativeWebSocket = ctor;
+        return ctor;
+    }
+
     function closeWebSocket() {
         state.wsReady = false;
         for (const waiter of state.ackWaiters.values()) {
@@ -323,7 +354,7 @@
             }
             return new Promise(function (resolve) {
                 let settled = false;
-                const socket = new WebSocket(websocketUrl());
+                const socket = new (nativeWebSocketCtor())(websocketUrl());
                 state.ws = socket;
                 state.wsReady = false;
 
