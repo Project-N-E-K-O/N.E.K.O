@@ -480,14 +480,31 @@ class Engine:
                 job["warning_keys"].append("noDanmaku")
             cover = None
             try:
-                response = await client.get(info["pic"])
+                # Bilibili covers reach ~5000x3000 / 1MB and, sent with a window of
+                # frames, get rejected as unsupported. Only a low-resolution JPEG is
+                # ever needed, matching the 640px frames: ask the CDN for a thumbnail.
+                pic = info["pic"]
+                parsed_pic = urlparse(pic)
+                addresses = [pic]
+                if (parsed_pic.hostname or "").endswith(".hdslb.com") and "@" not in parsed_pic.path:
+                    addresses.insert(0, pic + "@640w.jpg")
+                for address in addresses:
+                    response = await client.get(address)
+                    if response.is_success:
+                        break
                 response.raise_for_status()
-                # Bilibili covers reach ~5000x3000; with a window of frames that
-                # oversized image is rejected as unsupported, so send the model profile.
-                from utils.screenshot_utils import normalize_image_for_model
-                encoded = await asyncio.to_thread(normalize_image_for_model, base64.b64encode(response.content).decode())
-                cover = "data:image/jpeg;base64," + encoded
-                (folder / "cover.jpg").write_bytes(response.content)
+
+                def low_resolution_jpeg(data):
+                    from io import BytesIO
+                    from PIL import Image, ImageOps
+                    from utils.screenshot_utils import compress_screenshot
+                    with Image.open(BytesIO(data)) as image:
+                        image = (ImageOps.exif_transpose(image) or image).convert("RGB")
+                        return compress_screenshot(image, target_h=360, max_w=640)
+
+                jpeg = await asyncio.to_thread(low_resolution_jpeg, response.content)
+                cover = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+                (folder / "cover.jpg").write_bytes(jpeg)
             except Exception:
                 job["warning_keys"].append("noCover")
             progress("downloading", 16)

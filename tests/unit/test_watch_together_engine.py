@@ -81,7 +81,13 @@ def _budget_engine(tmp_path, monkeypatch, events):
 
 
 @pytest.mark.asyncio
-async def test_oversized_cover_is_normalized_for_model_but_kept_on_disk(tmp_path, monkeypatch):
+@pytest.mark.parametrize('pic,thumbnail_status,expected_urls', [
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 200, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg']),
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 404, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg',
+                                                         'https://i0.hdslb.com/bfs/archive/cover.png']),
+    ('https://covers.test/cover.png', None, ['https://covers.test/cover.png']),
+])
+async def test_cover_is_stored_and_sent_only_as_low_resolution_jpeg(tmp_path, monkeypatch, pic, thumbnail_status, expected_urls):
     import base64
     import io
     import sys
@@ -89,25 +95,32 @@ async def test_oversized_cover_is_normalized_for_model_but_kept_on_disk(tmp_path
     from PIL import Image
     engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
     buffer = io.BytesIO()
-    Image.new('RGB', (4919, 3025), (200, 120, 80)).save(buffer, 'JPEG')
+    # PNG source proves the stored/sent cover is re-encoded, not merely relabelled.
+    Image.new('RGB', (4919, 3025), (200, 120, 80)).save(buffer, 'PNG')
     original = buffer.getvalue()
     sys.modules['bilibili_api'].video.Video().get_info.return_value = {
-        'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101},
-        'pic': 'https://covers.test/cover.jpg'}
+        'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101}, 'pic': pic}
+    requested = []
+    def respond(request):
+        requested.append(str(request.url))
+        if str(request.url).endswith('@640w.jpg') and thumbnail_status != 200:
+            return httpx.Response(thumbnail_status)
+        return httpx.Response(200, content=original)
     client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=original))
+    transport = httpx.MockTransport(respond)
     monkeypatch.setattr(engine.httpx, 'AsyncClient', lambda **kwargs: client_type(transport=transport, **kwargs))
     job = {'id': 'job'}
     await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
     assert job['status'] == 'ready'
+    assert 'noCover' not in job['warning_keys']
+    assert requested == expected_urls
+    stored = (tmp_path / 'job' / 'cover.jpg').read_bytes()
+    with Image.open(io.BytesIO(stored)) as image:
+        assert image.format == 'JPEG'
+        assert image.width <= 640 and image.height <= 360
     blocks = instance.llm.await_args_list[0].args[0]
     covers = [block['image_url']['url'] for block in blocks if block.get('type') == 'image_url']
-    assert len(covers) == 1
-    sent = base64.b64decode(covers[0].removeprefix('data:image/jpeg;base64,'))
-    with Image.open(io.BytesIO(sent)) as image:
-        assert image.format == 'JPEG'
-        assert image.width <= 1280 and image.height <= 720
-    assert (tmp_path / 'job' / 'cover.jpg').read_bytes() == original
+    assert covers == ['data:image/jpeg;base64,' + base64.b64encode(stored).decode()]
 
 
 @pytest.mark.asyncio
