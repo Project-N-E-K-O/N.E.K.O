@@ -64,6 +64,8 @@ class LiveInbox:
         # cues are ordinary proactive speech and stay behind the takeover gate.
         if self._closed or not isinstance(callback, dict) or callback.get("source_kind") != "plugin":
             return False
+        # Expired cues must not occupy capacity that would shed a live one.
+        self._prune()
         key = str(callback.get("coalesce_key") or "").strip()
         if key:
             self._discard([item for item in self._items

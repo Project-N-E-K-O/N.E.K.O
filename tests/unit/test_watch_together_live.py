@@ -45,6 +45,20 @@ async def test_inbox_orders_coalesces_and_sheds_like_proactive_delivery():
 
 
 @pytest.mark.asyncio
+async def test_expired_cues_do_not_shed_a_live_one():
+    inbox = live.LiveInbox(limit=2)
+    expired = [_cue(f'expired {index}', priority=9) for index in range(2)]
+    for cue in expired:
+        inbox.accept(cue)
+        cue[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+    fresh = _cue('fresh')
+    accepted = inbox.accept(fresh)
+    assert accepted and _ack(fresh) is None
+    assert all(_ack(cue) is False for cue in expired)
+    assert inbox.take(8) == [fresh]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('source_kind', ['topic', 'cu', 'browser', 'system', None])
 async def test_inbox_leaves_non_plugin_proactive_cues_behind_the_gate(source_kind):
     inbox = live.LiveInbox()
