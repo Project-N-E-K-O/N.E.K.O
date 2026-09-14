@@ -63,6 +63,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-12-watch-together-image-generation",
         "2026-09-12-watch-together-automatic",
         "2026-09-12-core-image-generation",
         "2026-09-12-watch-together-history-pages",
@@ -147,8 +148,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-soccer-sdk",
         "2026-09-11-watch-together",
         "2026-09-11-watch-together-discovery",
-        "2026-09-12-watch-together-image-generation",
         "2026-09-13-plugin-html-content-main-merge",
+        "2026-09-13-plugin-html-content-proactive-community",
+        "2026-09-14-proactive-community-chat",
     }
 )
 
