@@ -271,7 +271,10 @@ async def test_primary_without_fallback_keeps_the_whole_budget():
         return {"ok": True}
 
     executor = ModelExecutor(Gateway(complete=execute), Recorder())
-    assert await executor.complete(call(slot(timeout_seconds=0.6)), body()) == {"ok": True}
+    try:
+        assert await executor.complete(call(slot(timeout_seconds=0.6)), body()) == {"ok": True}
+    finally:
+        await executor.aclose()
 
 
 async def test_stream_primary_budget_only_limits_time_to_first_chunk():
@@ -282,9 +285,13 @@ async def test_stream_primary_budget_only_limits_time_to_first_chunk():
         yield DONE
 
     gateway = Gateway(stream=execute)
-    stream = ModelExecutor(gateway, Recorder()).stream(call(slot(timeout_seconds=0.6), slot("backup")), body(stream=True))
-    assert [chunk async for chunk in stream] == [b"first", DONE]
-    assert gateway.calls == ["primary"]
+    executor = ModelExecutor(gateway, Recorder())
+    try:
+        stream = executor.stream(call(slot(timeout_seconds=0.6), slot("backup")), body(stream=True))
+        assert [chunk async for chunk in stream] == [b"first", DONE]
+        assert gateway.calls == ["primary"]
+    finally:
+        await executor.aclose()
 
 
 async def test_stream_stalled_before_first_chunk_falls_back():
@@ -295,9 +302,13 @@ async def test_stream_stalled_before_first_chunk_falls_back():
         yield DONE
 
     gateway = Gateway(stream=execute)
-    stream = ModelExecutor(gateway, Recorder()).stream(call(slot(timeout_seconds=0.3), slot("backup")), body(stream=True))
-    assert [chunk async for chunk in stream] == [b"backup", DONE]
-    assert gateway.calls == ["primary", "backup"]
+    executor = ModelExecutor(gateway, Recorder())
+    try:
+        stream = executor.stream(call(slot(timeout_seconds=0.3), slot("backup")), body(stream=True))
+        assert [chunk async for chunk in stream] == [b"backup", DONE]
+        assert gateway.calls == ["primary", "backup"]
+    finally:
+        await executor.aclose()
 
 
 async def test_queue_timeout_and_capacity_rejection_have_no_attempts():
