@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -55,6 +56,32 @@ class _StreamState:
         self.terminal = None
         while not self.queue.empty():
             self.queue.get_nowait()
+
+
+def _is_role_only_chunk(chunk: bytes) -> bool:
+    """A role-only opener carries no response content, so fallback may still follow it.
+
+    Usage, finish_reason, logprobs and anything unparseable count as delivered:
+    replaying those from a fallback would duplicate what the caller already saw.
+    """
+    if not chunk.startswith(b"data: "):
+        return False
+    try:
+        data = json.loads(chunk[len(b"data: "):])
+    except ValueError:
+        return False
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices or data.get("usage"):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict) or choice.get("finish_reason") is not None or choice.get("logprobs"):
+            return False
+        delta = choice.get("delta")
+        if not isinstance(delta, dict) or any(
+            key != "role" and value not in (None, "", []) for key, value in delta.items()
+        ):
+            return False
+    return True
 
 
 def _timeout_error() -> ModelGatewayError:
@@ -228,7 +255,8 @@ class ModelExecutor:
                 # fallback, even when route prefetch and ASGI use different tasks.
                 if not state.queue.empty():
                     chunk = state.queue.get_nowait()
-                    state.delivered = True
+                    if not _is_role_only_chunk(chunk):
+                        state.delivered = True
                     yield chunk
                 elif task.done():
                     await asyncio.shield(task)

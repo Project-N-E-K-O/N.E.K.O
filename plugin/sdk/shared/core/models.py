@@ -20,14 +20,26 @@ class _TrackedStream(httpx.AsyncByteStream):
     def __init__(self, stream: httpx.AsyncByteStream, client: _GatewayHttpClient):
         self._stream = stream
         self._client = client
+        self._iterator = None
 
-    async def __aiter__(self):
+    def __aiter__(self):
+        self._iterator = self._iterate()
+        return self._iterator
+
+    async def _iterate(self):
         with self._client._request_scope():
             async for chunk in self._stream:
                 yield chunk
 
     async def aclose(self) -> None:
-        await self._stream.aclose()
+        iterator, self._iterator = self._iterator, None
+        try:
+            if iterator is not None:
+                # An early exit leaves the generator suspended; close it so the
+                # request scope is released now rather than at garbage collection.
+                await iterator.aclose()
+        finally:
+            await self._stream.aclose()
 
 
 class _GatewayHttpClient(httpx.AsyncClient):

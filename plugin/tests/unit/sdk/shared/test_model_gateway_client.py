@@ -182,6 +182,25 @@ async def test_cleanup_cancels_active_stream_read() -> None:
 
 
 @pytest.mark.asyncio
+async def test_early_stream_exit_releases_request_tracking() -> None:
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"first"
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+    client = _GatewayHttpClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Stream()))
+    )
+    async with client.stream("GET", "http://gateway.test/chat") as response:
+        async for _ in response.aiter_bytes():
+            break
+    # Otherwise closing the client would cancel this still-running task.
+    assert not client._requests
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_request_cancellation_can_close_models_again(monkeypatch) -> None:
     entered = asyncio.Event()
 
