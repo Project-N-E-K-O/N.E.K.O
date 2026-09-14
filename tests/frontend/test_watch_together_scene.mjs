@@ -783,11 +783,14 @@ try {
   staleTicks.at(-1)();
   await waitFor(()=>finishStale);
   stale.handlers['runtime-inactive']();
-  finishStale({lines:[{text:'old session line',audio:'/old',duration:2}]});
-  await pause(20);
   await stale.elements.get('play').onclick();
   staleVideo.currentTime=10;staleTicks.at(-1)();
-  await waitFor(()=>staleRequests.length===2);
+  await waitFor(()=>staleRequests.length===2,()=>'the old in-flight request still blocks the new session');
+  await pause(20);
+  finishStale({lines:[{text:'old session line',audio:'/old',duration:2}]});
+  await pause(20);
+  staleTicks.at(-1)();
+  await waitFor(()=>staleRequests.length===3);
   await pause(20);
   assert.deepEqual(staleSpoken,[],'a line generated for the torn-down playback is never replayed');
   stale.handlers['runtime-inactive']();

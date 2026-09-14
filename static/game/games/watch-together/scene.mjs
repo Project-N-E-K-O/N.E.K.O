@@ -126,7 +126,7 @@ export async function run(game, character) {
     if (liveFlight || intermission || !current || !row || video.paused || video.ended || game.runtime.state !== 'running') return;
     const position = video.currentTime, gap = reactionGap(position);
     if (!(gap >= 5)) return;
-    liveFlight = (async () => {
+    const flight = (async () => {
       let entries = takeHeldLines();
       if (!entries.length) entries = freshEntries((await game.media.request('live', {action:'interject', job:row.id, version:row.version, position, gap:Math.min(gap,600), render_language:renderLanguage()}))?.lines || []);
       for (let index = 0; index < entries.length; index++) {
@@ -141,14 +141,15 @@ export async function run(game, character) {
           return;
         }
       }
-    })().catch(error => warn('watch-together live line failed', error)).finally(() => { liveFlight = null; });
+    })().catch(error => warn('watch-together live line failed', error)).finally(() => { if (liveFlight === flight) liveFlight = null; });
+    liveFlight = flight;
   }
   // Automatic mode: a one-line summary plus replies to held messages between videos.
   function startIntermission() {
     const current = media, row = selected, epoch = heldEpoch;
     if (!current || !row || intermission) return;
     const request = () => game.media.request('live', {action:'intermission', job:row.id, version:row.version, render_language:renderLanguage()});
-    intermission = (async () => {
+    const task = (async () => {
       if (liveFlight) await Promise.race([liveFlight, new Promise(resolve => setTimeout(resolve, 20000))]);
       // Capture before asking: the interjection may settle (and clear liveFlight) while it answers busy.
       const pendingFlight = liveFlight;
@@ -166,7 +167,8 @@ export async function run(game, character) {
           break;
         }
       }
-    })().catch(error => warn('watch-together intermission failed', error)).finally(() => { intermission = null; });
+    })().catch(error => warn('watch-together intermission failed', error)).finally(() => { if (intermission === task) intermission = null; });
+    intermission = task;
   }
   function renderUsage(stats) {
     if (!stats) { $('usage').textContent=t('unrecorded');return; }
@@ -224,7 +226,8 @@ export async function run(game, character) {
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
-    if (!keepRoute) { heldLines = []; heldEpoch++; }
+    // A torn-down session also forgets its in-flight live work, so the next one is not blocked by it.
+    if (!keepRoute) { heldLines = []; heldEpoch++; liveFlight = null; intermission = null; }
     if (!keepRoute && !['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row,keepRoute=false) {
@@ -320,7 +323,7 @@ export async function run(game, character) {
   };
   $('play').onclick=()=>play().catch(error=>status(error.message));
   // The active scene owns speech. Ordinary/chat/plugin speech must not pause reactions.
-  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);clearInterval(liveTimer);liveTimer=null;heldLines=[];heldEpoch++;nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);clearInterval(liveTimer);liveTimer=null;heldLines=[];heldEpoch++;liveFlight=null;intermission=null;nextQueue.clear();queuedFor=null;});
   $('automatic-enabled').onchange=()=>{
     if($('automatic-enabled').checked){automaticPending=!!media;automatic.start();}
     else void stopAutomatic().catch(error=>status(error.message));
