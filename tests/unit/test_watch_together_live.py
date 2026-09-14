@@ -87,6 +87,9 @@ async def test_inbox_drops_expired_and_aged_cues_and_close_hands_back_recent_one
     now[0] = 395
     assert inbox.close() == [recent], 'only cues recent enough for ordinary delivery are handed back'
     assert _ack(older) is False and _ack(recent) is None
+    remaining = recent[CALLBACK_EXPIRES_AT_KEY] - time.monotonic()
+    assert live.HANDOFF_MAX_AGE_SECONDS - 5 - 2 < remaining <= live.HANDOFF_MAX_AGE_SECONDS - 5, \
+        'the handed-back cue keeps its remaining delivery window'
     assert not inbox.accept(_cue('after close'))
     assert inbox.pending == 0
 
@@ -296,6 +299,22 @@ async def test_compose_interject_wraps_untrusted_context_once(model):
     assert '======以下为刚收到的插件消息======' in text and '4秒' in text
     assert 'persona {title}' in model.captured['system'] and 'Master' in model.captured['system']
     assert sum(block['type'] == 'image_url' for block in model.captured['content']) == live.MAX_IMAGES
+
+
+@pytest.mark.asyncio
+async def test_compose_keeps_images_within_the_turn_byte_budget(model):
+    from main_logic.proactive_delivery import TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+    model.reply['value'] = {'line': 'hi'}
+    manager = SimpleNamespace(lanlan_name='Lan', master_name='Master', lanlan_prompt='')
+    large = 'A' * (TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES * 3 // 4 // 3 * 4)
+    callbacks = []
+    for text in ('first', 'second'):
+        cue = _cue(text)
+        cue['media_images'] = [large]
+        callbacks.append(cue)
+    await live.compose(manager, mode='interject', callbacks=callbacks, language='en', cm=object(),
+                       video={'title': 'Cats', 'duration': 60, 'description': '', 'events': []})
+    assert sum(block['type'] == 'image_url' for block in model.captured['content']) == 1
 
 
 @pytest.mark.asyncio

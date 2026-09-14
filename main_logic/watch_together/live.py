@@ -21,10 +21,12 @@ from collections import OrderedDict
 from pathlib import Path
 
 from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
     callback_is_expired,
     effective_priority,
     resolve_callback_delivery_ack,
+    trim_images_to_turn_budget,
 )
 
 INBOX_LIMIT = 12
@@ -97,6 +99,13 @@ class LiveInbox:
         kept = {id(item) for item in handoff}
         self._discard([item for item in self._items if id(item) not in kept])
         self._items = []
+        for _priority, _seq, received, callback in handoff:
+            # Carry the remaining window: resubmission must not restart the 90-second clock.
+            deadline = time.monotonic() + max(0.0, handoff_age - (now - received))
+            existing = callback.get(CALLBACK_EXPIRES_AT_KEY)
+            if isinstance(existing, (int, float)) and not isinstance(existing, bool) and math.isfinite(existing):
+                deadline = min(deadline, float(existing))
+            callback[CALLBACK_EXPIRES_AT_KEY] = deadline
         return [item[3] for item in handoff]
 
     def _prune(self) -> None:
@@ -243,7 +252,9 @@ async def compose(manager, *, mode: str, callbacks, video: dict, language: str,
     content = [{"type": "text", "text": _fill(watch_live_template(template, language), **values)}]
     images = [image for callback in callbacks for image in (callback.get("media_images") or [])
               if isinstance(image, str) and image]
-    for image in images[:MAX_IMAGES]:
+    # Several callbacks may each carry a full image budget; apply the ordinary per-turn byte cap.
+    images, _dropped = trim_images_to_turn_budget(images[:MAX_IMAGES])
+    for image in images:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}})
     if cm is None:
         from utils.config_manager import get_config_manager

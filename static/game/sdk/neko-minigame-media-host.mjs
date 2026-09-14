@@ -226,7 +226,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       const url = line?.audio;
       if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix + '/')) throw Error('Unregistered live speech');
       if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
-      const busy = () => disposed || speech || (active?.audio && !outputStopped);
+      // Any active timeline cue, including a silent text reaction on screen, owns the moment.
+      const busy = () => disposed || speech || active;
       if (busy()) return 'skipped';
       const attemptGeneration = generation;
       // A stalled download must not hold the intermission (and automatic mode) forever.

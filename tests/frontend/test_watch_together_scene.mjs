@@ -620,7 +620,7 @@ const realInterval=globalThis.setInterval,realTimer=globalThis.setTimeout,liveTi
 const pause=ms=>new Promise(resolve=>realTimer(resolve,ms));
 globalThis.setInterval=(fn,delay,...args)=>delay===2500?(liveTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
 try {
-  const spoken=[],liveRequests=[],skipOnce=new Set(['skipped line']);let livePlays=0,releaseSummary=null,interjectReply=null,intermissionReplies=[];
+  const spoken=[],liveRequests=[],skipOnce=new Set(['skipped line']),skipAlways=new Set(),attempts={};let livePlays=0,releaseSummary=null,interjectReply=null,intermissionReplies=[];
   const liveScene=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
   const liveBase=liveScene.game.media.request;
   const liveVideo=liveScene.elements.get('video');
@@ -631,7 +631,8 @@ try {
     liveScene.emit=options.onEvent;
     return {play:async()=>{livePlays++;liveVideo.ended=false;liveVideo.paused=false;},say:spokenLine=>new Promise(resolve=>{
       // The first attempt at these lines is reported as never started (e.g. paused during the fetch).
-      if(skipOnce.delete(spokenLine.text)){resolve('skipped');return;}
+      attempts[spokenLine.text]=(attempts[spokenLine.text] || 0)+1;
+      if(skipOnce.delete(spokenLine.text) || skipAlways.has(spokenLine.text)){resolve('skipped');return;}
       spoken.push([spokenLine.text,livePlays]);
       if(spokenLine.text==='summary')releaseSummary=()=>resolve('completed');
       else resolve('completed');
@@ -643,7 +644,10 @@ try {
     if(action==='history')return {analyses:[{job:'next-job',version:'v',status:'ready'}]};
     if(action==='live') {
       liveRequests.push(payload);
-      if(payload.action==='intermission')return intermissionReplies.shift();
+      if(payload.action==='intermission') {
+        const reply=intermissionReplies.shift();
+        return typeof reply==='function'?reply():reply;
+      }
       return typeof interjectReply==='function'?interjectReply():interjectReply;
     }
     return liveBase(action,payload);
@@ -716,8 +720,16 @@ try {
   // An intermission line that never starts ends the intermission; the unstarted replies wait for
   // a gap in the next video and the summary of the finished video is dropped.
   await waitFor(()=>!liveScene.elements.get('next-video').disabled);
+  // The running interjection settles while the intermission is answered busy: it must still retry.
+  let finishRacing=null;
+  interjectReply=()=>new Promise(resolve=>{finishRacing=resolve;});
+  liveVideo.currentTime=10;liveTicks.at(-1)();
+  await waitFor(()=>finishRacing);
   const spokenBefore=spoken.length,interjectionsBefore=interjections();
-  intermissionReplies=[{lines:[line('summary 2',1),line('skip reply',1),line('reply 2',1)]}];
+  intermissionReplies=[
+    ()=>{finishRacing({lines:[]});return new Promise(resolve=>realTimer(()=>resolve({lines:[],busy:true}),20));},
+    {lines:[line('summary 2',1),line('skip reply',1),line('reply 2',1)]},
+  ];
   skipOnce.add('skip reply');
   liveVideo.ended=true;liveScene.emit({type:'ended'});
   await waitFor(()=>livePlays===3,()=>JSON.stringify({spoken,livePlays}));
@@ -728,6 +740,27 @@ try {
   assert.deepEqual(spoken.slice(spokenBefore+1).map(([text])=>text),['skip reply','reply 2']);
   assert.ok(spoken.slice(spokenBefore+1).every(([,plays])=>plays===3),'held replies are spoken in the next video');
   assert.equal(interjections(),interjectionsBefore,'held replies need no new generation');
+  // A held line that keeps being skipped still expires 60 seconds after it was generated.
+  const realNow=Date.now;let clockOffset=0;
+  Date.now=()=>realNow()+clockOffset;
+  try {
+    skipAlways.add('stale line');
+    interjectReply={lines:[line('stale line',2)]};
+    const staleBefore=interjections();
+    liveTicks.at(-1)();
+    await waitFor(()=>attempts['stale line']===1);
+    await pause(20);
+    clockOffset+=40000;liveTicks.at(-1)();
+    await waitFor(()=>attempts['stale line']===2);
+    await pause(20);
+    assert.equal(interjections(),staleBefore+1,'a held line is retried before generating a new one');
+    clockOffset+=30000;interjectReply={lines:[]};liveTicks.at(-1)();
+    await waitFor(()=>interjections()===staleBefore+2);
+    await pause(20);
+    assert.equal(attempts['stale line'],2,'retrying does not extend the 60-second life of a held line');
+  } finally {
+    Date.now=realNow;
+  }
   await liveScene.elements.get('watch-stop').onclick();
 } finally {
   globalThis.setInterval=realInterval;globalThis.setTimeout=realTimer;

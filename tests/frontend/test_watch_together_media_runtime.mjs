@@ -237,4 +237,8 @@ stalledHost.dispose();
 const stalledOutcome=await Promise.race([stalledLine,new Promise(resolve=>setTimeout(()=>resolve('still pending'),200))]);
 assert.equal(stalledOutcome,'skipped','disposal abandons a stalled download at once and reports it as never started');
 globalThis.fetch=async()=>new Response('speech');
+const textHost=await mount({video:new Media(),timeline:{status:'ready',id:'job',version:'version',video:'/video',events:[{at:0,audio:null,text:'silent reaction'}]}});
+await textHost.play();nextFrame();
+assert.equal(await textHost.say(liveLine),'skipped','a silent text reaction on screen keeps a live line from starting');
+textHost.dispose();
 console.log('watch-together live speech: lock, registration, gap playback and preemption passed');

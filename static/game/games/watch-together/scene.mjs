@@ -107,14 +107,16 @@ export async function run(game, character) {
   }
   // Generated lines that never started (the gap closed, playback paused or ended)
   // wait for the next gap or the intermission; the backend already consumed their cues.
-  function holdLines(lines) {
+  // Entries keep the time the line was generated, so retries never extend its 60-second life.
+  const freshEntries = lines => lines.map(line => ({line, at: Date.now()}));
+  function holdLines(entries) {
     const now = Date.now();
-    heldLines = [...heldLines.filter(held => now - held.at < 60000), ...lines.map(line => ({line, at: now}))].slice(-3);
+    heldLines = [...heldLines, ...entries].filter(entry => now - entry.at < 60000).slice(-3);
   }
   function takeHeldLines() {
-    const now = Date.now(), lines = heldLines.filter(held => now - held.at < 60000).map(held => held.line);
+    const now = Date.now(), entries = heldLines.filter(entry => now - entry.at < 60000);
     heldLines = [];
-    return lines;
+    return entries;
   }
   // Plugin responses held by the scene route are spoken only in reaction gaps.
   function pollLive() {
@@ -123,17 +125,17 @@ export async function run(game, character) {
     const position = video.currentTime, gap = reactionGap(position);
     if (!(gap >= 5)) return;
     liveFlight = (async () => {
-      let lines = takeHeldLines();
-      if (!lines.length) lines = (await game.media.request('live', {action:'interject', job:row.id, version:row.version, position, gap:Math.min(gap,600), render_language:renderLanguage()}))?.lines || [];
-      for (let index = 0; index < lines.length; index++) {
+      let entries = takeHeldLines();
+      if (!entries.length) entries = freshEntries((await game.media.request('live', {action:'interject', job:row.id, version:row.version, position, gap:Math.min(gap,600), render_language:renderLanguage()}))?.lines || []);
+      for (let index = 0; index < entries.length; index++) {
         if (current !== media || generation !== playbackGeneration || video.paused || video.ended
-            || reactionGap(video.currentTime) < (Number(lines[index].duration) || 0) + 0.5) {
-          holdLines(lines.slice(index));
+            || reactionGap(video.currentTime) < (Number(entries[index].line.duration) || 0) + 0.5) {
+          holdLines(entries.slice(index));
           return;
         }
         // A line cut off after it started is not replayed; one that never started is kept.
-        if (await current.say(lines[index]) === 'skipped') {
-          holdLines(lines.slice(index));
+        if (await current.say(entries[index].line) === 'skipped') {
+          holdLines(entries.slice(index));
           return;
         }
       }
@@ -146,17 +148,19 @@ export async function run(game, character) {
     const request = () => game.media.request('live', {action:'intermission', job:row.id, version:row.version, render_language:renderLanguage()});
     intermission = (async () => {
       if (liveFlight) await Promise.race([liveFlight, new Promise(resolve => setTimeout(resolve, 20000))]);
+      // Capture before asking: the interjection may settle (and clear liveFlight) while it answers busy.
+      const pendingFlight = liveFlight;
       let result = await request();
       // The backend runs one generation per route; retry once after a slow interjection settles.
-      if (result?.busy && liveFlight) { await liveFlight; result = await request(); }
+      if (result?.busy) { await pendingFlight; result = await request(); }
       const [summary, ...replies] = result?.lines || [];
-      const queue = [summary, ...takeHeldLines(), ...replies].filter(Boolean);
+      const queue = [...freshEntries(summary ? [summary] : []), ...takeHeldLines(), ...freshEntries(replies)];
       for (let index = 0; index < queue.length; index++) {
         if (current !== media || !automatic.enabled) break;
-        if (await current.say(queue[index]) === 'skipped') {
+        if (await current.say(queue[index].line) === 'skipped') {
           // Stop rather than wait out each remaining line; replies still wait for a gap in
           // the next video, while the summary belongs to this video only.
-          holdLines(queue.slice(index).filter(line => line !== summary));
+          holdLines(queue.slice(index).filter(entry => entry.line !== summary));
           break;
         }
       }
