@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -336,11 +339,11 @@ def test_frontend_status_and_expression_state_have_race_guards():
     assert "window.vrmVmcSender.releaseVrm" in manager_source
     assert "state.currentVrm !== vrm" in source
     assert "state.retiringExpressionNames" in source
-    assert "if (state.exprBuf.length >= 256) break" in source
+    assert "if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break" in source
     assert "state.retiringExpressionNames.delete(name)" in source
     assert "message.type === 'frame_ack'" in source
     assert "messageType: 'release'" in source
-    assert "Math.ceil(expressionNames.length / 256)" in source
+    assert "Math.ceil(expressionNames.length / MAX_EXPRESSIONS_PER_FRAME)" in source
     assert "if (!await result.ackPromise) return false" in source
     assert "source_released: index === expressionChunks.length - 1" in source
     assert "else if (!state.enabled || !state.releaseInProgress) closeWebSocket()" in source
@@ -1183,3 +1186,191 @@ async def test_enable_broadcast_swallows_transport_failures(monkeypatch):
     )
 
     await vmc_router._broadcast_vmc_enabled(True)
+
+
+@pytest.mark.unit
+def test_model_info_sent_once_per_model():
+    """``/VMC/Ext/VRM`` announces the model on change, not on every frame."""
+    sender, client = _enabled_sender()
+
+    frame_a = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame_a)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    client.messages.clear()
+    assert sender.send_frame(frame_a)
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+    frame_b = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/bob.vrm", "title": "Bob"},
+    }
+    client.messages.clear()
+    assert sender.send_frame(frame_b)
+    assert ("/VMC/Ext/VRM", ["/models/bob.vrm", "Bob"]) in client.messages
+
+    client.messages.clear()
+    assert sender.send_frame(frame_b)
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+
+@pytest.mark.unit
+def test_model_info_is_truncated():
+    """Oversized paths/titles cannot bloat the UDP datagram."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame(
+        {
+            "bones": [],
+            "expressions": [],
+            "model": {"path": "x" * 600, "title": "t" * 300},
+        }
+    )
+    sent = [values for address, values in client.messages if address == "/VMC/Ext/VRM"]
+    assert len(sent) == 1
+    assert len(sent[0][0]) == 512
+    assert len(sent[0][1]) == 256
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model",
+    [None, {}, {"path": "/a.vrm"}, {"path": 123, "title": "Alice"}],
+)
+def test_model_info_ignores_malformed_payloads(model):
+    """A frame without usable model metadata sends no /VMC/Ext/VRM."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame({"bones": [], "expressions": [], "model": model})
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+
+@pytest.mark.unit
+def test_expression_name_map_covers_vrm_presets():
+    """VRM 1.0 preset names must reach receivers as VRM 0.x blendshape names."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame(
+        {
+            "bones": [],
+            "expressions": [
+                {"name": "neutral", "value": 1.0},
+                {"name": "surprised", "value": 0.5},
+                {"name": "lookUp", "value": 0.25},
+            ],
+        }
+    )
+    assert ("/VMC/Ext/Blend/Val", ["Neutral", 1.0]) in client.messages
+    assert ("/VMC/Ext/Blend/Val", ["Surprised", 0.5]) in client.messages
+    assert ("/VMC/Ext/Blend/Val", ["LookUp", 0.25]) in client.messages
+
+
+@contextlib.contextmanager
+def _captured_warnings():
+    """Collect vmc_sender warnings.
+
+    N.E.K.O. 的 logger 不向 root 传播，caplog 的 handler 挂在 root 上收不到记录，
+    所以直接把 handler 挂到模块 logger 本身。
+    """
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collector(level=logging.WARNING)
+    logger = vmc_sender_module.logger
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.mark.unit
+def test_bone_overflow_warns_once():
+    """Dropping bones must be audible in the log, but only on the first frame."""
+    sender, client = _enabled_sender()
+    cap = vmc_sender_module._MAX_BONES_PER_FRAME
+    frame = {
+        "bones": [
+            {
+                "name": "hips",
+                "px": 0.0, "py": 0.0, "pz": 0.0,
+                "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+            }
+        ]
+        * (cap + 5),
+        "expressions": [],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+        assert sender.send_frame(frame)
+
+    warnings = [r for r in records if "bones" in r.getMessage()]
+    assert len(warnings) == 1
+    assert str(cap) in warnings[0].getMessage()
+    assert len([a for a, _ in client.messages if a == "/VMC/Ext/Bone/Pos"]) == cap * 2
+
+
+@pytest.mark.unit
+def test_expression_overflow_warns_once():
+    """A VRM with hundreds of custom expressions must not silently lose them."""
+    sender, client = _enabled_sender()
+    cap = vmc_sender_module._MAX_EXPRESSIONS_PER_FRAME
+    frame = {
+        "bones": [],
+        "expressions": [{"name": f"custom{i}", "value": 0.0} for i in range(cap + 5)],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+        assert sender.send_frame(frame)
+
+    warnings = [r for r in records if "expressions" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len([a for a, _ in client.messages if a == "/VMC/Ext/Blend/Val"]) == cap * 2
+
+
+@pytest.mark.unit
+def test_no_overflow_warning_for_normal_frames():
+    """A full humanoid rig is well under the cap and must stay quiet."""
+    sender, _client = _enabled_sender()
+    frame = {
+        "bones": [
+            {
+                "name": name,
+                "px": 0.0, "py": 0.0, "pz": 0.0,
+                "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+            }
+            for name in vmc_sender_module._VRM_BONE_NAMES
+        ],
+        "expressions": [{"name": "happy", "value": 1.0}],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+
+    assert not [r for r in records if "only the first" in r.getMessage()]
+    # 完整人形骨架有 55 根，必须全部送出，不能被 cap 削掉。
+    sent = [a for a, _ in _client.messages if a == "/VMC/Ext/Bone/Pos"]
+    assert len(sent) == len(vmc_sender_module._VRM_BONE_NAMES)
+
+
+@pytest.mark.unit
+def test_expression_cap_matches_between_sampler_and_sender():
+    """采样器先截断,后端只是信任边界上的第二道闸。
+
+    两边各写各的常量时,只调后端那个不会有任何效果——帧在前端就已经被
+    静默截断了。把「保持同步」的注释变成可执行的断言。
+    """
+    source = Path("static/vrm/vrm-vmc-sender.js").read_text(encoding="utf-8")
+    match = re.search(r"const MAX_EXPRESSIONS_PER_FRAME = (\d+);", source)
+    assert match is not None, "sampler lost its named expression cap"
+    assert int(match.group(1)) == vmc_sender_module._MAX_EXPRESSIONS_PER_FRAME

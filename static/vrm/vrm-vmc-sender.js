@@ -41,6 +41,10 @@
     const SOURCE_IDLE_TIMEOUT_MS = 3000;
     const FRAME_ACK_TIMEOUT_MS = 1500;
     const MAX_BUFFERED_BYTES = 256 * 1024;
+    // Must stay in sync with _MAX_EXPRESSIONS_PER_FRAME in main_logic/vmc_sender.py.
+    // The backend re-applies this cap at its trust boundary, so raising it there
+    // alone changes nothing: frames are truncated here first, and silently.
+    const MAX_EXPRESSIONS_PER_FRAME = 256;
     const CSRF_HEADER_NAME = 'X-CSRF-Token';
     // VMC owns its coordinate origin. vrm.scene is also moved/scaled/rotated
     // by webpage layout and drag controls, so it must never be used as the
@@ -74,6 +78,7 @@
         bonesBuf: [],
         exprBuf: [],
         currentVrm: null,
+        currentModelInfo: null,
         knownExpressionNames: new Set(),
         retiringExpressionNames: new Set(),
         tPoseDeadline: 0,
@@ -188,8 +193,11 @@
         if (state.wsReady && releaseSocket) {
             const expressionChunks = expressionNames.length > 0
                 ? Array.from(
-                    { length: Math.ceil(expressionNames.length / 256) },
-                    (_, index) => expressionNames.slice(index * 256, (index + 1) * 256)
+                    { length: Math.ceil(expressionNames.length / MAX_EXPRESSIONS_PER_FRAME) },
+                    (_, index) => expressionNames.slice(
+                        index * MAX_EXPRESSIONS_PER_FRAME,
+                        (index + 1) * MAX_EXPRESSIONS_PER_FRAME
+                    )
                 )
                 : [[]];
             // Send sequentially so a large custom expression set cannot trip
@@ -558,6 +566,16 @@
         };
     }
 
+    function readModelInfo(vrm) {
+        // VRM 0.x exposes meta.title; VRM 1.0 renamed it to meta.name.
+        const meta = vrm && vrm.meta;
+        const title = (meta && (meta.name || meta.title)) || '';
+        const model = window.vrmManager && window.vrmManager.currentModel;
+        const path = (model && model.vrm === vrm && model.url) || '';
+        if (!path && !title) return null;
+        return { path: String(path), title: String(title) };
+    }
+
     function sample(vrm) {
         if (state.samplingSuspended) return;
         if (!vrm || !vrm.humanoid) return;
@@ -580,13 +598,16 @@
         if (state.currentVrm !== vrm) {
             // Preserve old names only until one zero-value retirement frame is
             // accepted. Current-model expressions are always queued first so
-            // the backend's 256-expression safety cap cannot starve them.
+            // MAX_EXPRESSIONS_PER_FRAME cannot starve them; retirements are the
+            // side that yields. Release chunks instead of truncating, so a
+            // model switch still zeroes everything eventually.
             state.retiringExpressionNames = new Set([
                 ...state.retiringExpressionNames,
                 ...state.knownExpressionNames,
             ]);
             state.knownExpressionNames.clear();
             state.currentVrm = vrm;
+            state.currentModelInfo = readModelInfo(vrm);
         }
 
         state.bonesBuf.length = 0;
@@ -611,7 +632,7 @@
         }
         state.exprBuf.length = 0;
         for (const name of state.knownExpressionNames) {
-            if (state.exprBuf.length >= 256) break;
+            if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break;
             state.exprBuf.push({
                 name,
                 value: currentExpressions.has(name) ? currentExpressions.get(name) : 0,
@@ -619,7 +640,10 @@
         }
         const retiringNamesInFrame = [];
         for (const name of state.retiringExpressionNames) {
-            if (state.exprBuf.length >= 256) break;
+            // Retirements queue behind live expressions: a model at the cap
+            // cannot emit its zero frames, so those weights stay stuck in the
+            // receiver until the model is released.
+            if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break;
             if (state.knownExpressionNames.has(name)) continue;
             state.exprBuf.push({ name, value: 0 });
             retiringNamesInFrame.push(name);
@@ -631,6 +655,7 @@
             expressions: state.exprBuf,
             t_pose: isTPose,
             t_pose_generation: state.tPoseGeneration,
+            model: state.currentModelInfo,
             ts: Date.now(),
         }, {
             requireAck: retiringNamesInFrame.length > 0,

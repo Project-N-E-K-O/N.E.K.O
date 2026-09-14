@@ -31,6 +31,14 @@ _CONFIG_FILENAME = "vmc_config.json"
 _CONFIG_VERSION = 2
 _LOCAL_ROOT_TRANSFORM = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 
+# Per-frame caps. A humanoid rig has 55 bones, so 64 leaves headroom without
+# letting a malformed payload turn one frame into an unbounded UDP burst.
+# The first-party sampler caps expressions at the same number before sending
+# (MAX_EXPRESSIONS_PER_FRAME in static/vrm/vrm-vmc-sender.js); raising the
+# value here alone has no effect on browser publishers.
+_MAX_BONES_PER_FRAME = 64
+_MAX_EXPRESSIONS_PER_FRAME = 256
+
 _VRM_BONE_NAMES = (
     "hips", "spine", "chest", "upperChest", "neck", "head",
     "leftEye", "rightEye", "jaw",
@@ -81,6 +89,12 @@ _EXPRESSION_NAME_MAP = {
     "blink": "Blink",
     "blinkLeft": "Blink_L",
     "blinkRight": "Blink_R",
+    "neutral": "Neutral",
+    "surprised": "Surprised",
+    "lookUp": "LookUp",
+    "lookDown": "LookDown",
+    "lookLeft": "LookLeft",
+    "lookRight": "LookRight",
 }
 
 
@@ -115,6 +129,10 @@ class VmcSender:
         self._active_expression_names: set[str] = set()
         self._publisher_generation = 0
         self._on_enabled_callback = on_enabled_callback
+        self._model_info: tuple[str, str] | None = None
+        self._model_info_sent = False
+        self._bone_overflow_warned = False
+        self._expression_overflow_warned = False
 
     @property
     def enabled(self) -> bool:
@@ -436,6 +454,7 @@ class VmcSender:
         try:
             self._client.send_message("/VMC/Ext/OK", [1])
             self._client.send_message("/VMC/Ext/T", [float(now - self._started_at)])
+            self._send_model_info(payload)
             if bool(payload.get("t_pose")):
                 payload_generation = payload.get("t_pose_generation")
                 if (
@@ -450,11 +469,30 @@ class VmcSender:
             self._send_root()
             bones = payload.get("bones")
             if isinstance(bones, list):
-                for bone in bones[:64]:
+                # Warn once per sender: this runs at the configured send rate,
+                # so an unconditional log would flood at 60 Hz.
+                if len(bones) > _MAX_BONES_PER_FRAME and not self._bone_overflow_warned:
+                    self._bone_overflow_warned = True
+                    logger.warning(
+                        "VMC frame carried %d bones; only the first %d are sent",
+                        len(bones),
+                        _MAX_BONES_PER_FRAME,
+                    )
+                for bone in bones[:_MAX_BONES_PER_FRAME]:
                     self._send_bone(bone)
             expressions = payload.get("expressions")
             if isinstance(expressions, list):
-                for expression in expressions[:256]:
+                if (
+                    len(expressions) > _MAX_EXPRESSIONS_PER_FRAME
+                    and not self._expression_overflow_warned
+                ):
+                    self._expression_overflow_warned = True
+                    logger.warning(
+                        "VMC frame carried %d expressions; only the first %d are sent",
+                        len(expressions),
+                        _MAX_EXPRESSIONS_PER_FRAME,
+                    )
+                for expression in expressions[:_MAX_EXPRESSIONS_PER_FRAME]:
                     sent_expression = self._send_blend_val(expression)
                     if sent_expression is not None:
                         name, value = sent_expression
@@ -470,6 +508,27 @@ class VmcSender:
         except Exception as exc:
             logger.warning("VMC frame send failed: %s", exc)
             return False
+
+    def _send_model_info(self, payload: dict[str, Any]) -> None:
+        """Announce the loaded VRM once per model, not once per frame.
+
+        ``/VMC/Ext/VRM`` is a low-frequency message: receivers use it to label
+        the incoming stream, so re-sending it at 60 Hz would be pure noise.
+        """
+        model = payload.get("model")
+        info: tuple[str, str] | None = None
+        if isinstance(model, dict):
+            path = model.get("path")
+            title = model.get("title")
+            if isinstance(path, str) and isinstance(title, str):
+                info = (path[:512], title[:256])
+        if info is None:
+            return
+        if self._model_info_sent and info == self._model_info:
+            return
+        self._client.send_message("/VMC/Ext/VRM", [info[0], info[1]])
+        self._model_info = info
+        self._model_info_sent = True
 
     def _send_root(self) -> None:
         self._client.send_message(
