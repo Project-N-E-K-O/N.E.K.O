@@ -526,6 +526,10 @@ class VRMCore {
         // the torso is still visible. Start wider and let the interaction module
         // expand further only when the animated bounds actually need it.
         this.manager.camera = new THREE.PerspectiveCamera(34, width / height, 0.05, 2000);
+        // Embedded renderers let their host own framing (including clipping).
+        // Reset on every camera initialization; never inherit a previous host's
+        // policy when a manager is reused for the desktop renderer.
+        this.manager._externalCameraFraming = embed;
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 

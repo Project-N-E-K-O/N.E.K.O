@@ -7,7 +7,7 @@ const root = process.env.NEKO_AVATAR_REFERENCE_DIR || path.resolve(__dirname, '.
 const read = (name) => fs.readFileSync(path.join(root, 'static/game/sdk', name), 'utf8');
 const tick = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
+const response = (data) => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
 const descriptor = { name: 'Neko', model: { type: 'vrm', path: '/models/neko.vrm' }, rendererAvailable: true };
 
 async function environment(factory, fetchImpl) {
@@ -35,7 +35,7 @@ async function environment(factory, fetchImpl) {
   const launch = {
     textContent: JSON.stringify({ registrations: { 'example-game': {
       mode: 'registered', gameId: 'example-game', version: '1.0.0',
-      allowedCapabilities: ['runtime', 'logging', 'avatar-renderer'],
+      allowedCapabilities: ['runtime', 'logging', 'avatar-renderer', 'speech-output'],
     } } }),
     nekoCapabilityProviders: { 'example-game': { avatarHostFactory: factory } }, remove() {},
   };
@@ -55,9 +55,9 @@ async function environment(factory, fetchImpl) {
   return {
     w, timers, listeners,
     host: (extra = {}) => w.createNekoMiniGameSameOriginHost({ gameType: 'example-game', ...extra }),
-    async game(host, required = true) {
+    async game(host, required = true, extra = []) {
       const game = await w.NekoMiniGame.connect({ id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging', ...(required ? ['avatar-renderer'] : [])],
+        requiredCapabilities: ['runtime', 'logging', ...(required ? ['avatar-renderer'] : []), ...extra],
         optionalCapabilities: required ? [] : ['avatar-renderer'],
       }, { transport: host, windowImpl: w, documentImpl: w.document });
       game.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
@@ -88,27 +88,20 @@ async function factories() {
   assert.equal(released, 3);
   const absent = await environment(null);
   let legacyDisposed = 0; let mounted = 0;
-  let controllerDisposed = 0;
-  // Same lazy proxy shape used by the existing soccer page; no new query hooks.
-  const backing = { mount() { mounted++; return { dispose() { controllerDisposed++; } }; }, dispose() { legacyDisposed++; } };
-  const legacy = { mount(config) { return backing.mount(config); }, dispose() { backing.dispose(); } };
+  const legacy = { mount() { mounted++; }, dispose() { legacyDisposed++; } };
   const legacyHost = absent.host({ avatarHost: legacy });
-  const legacyGame = await absent.game(legacyHost);
-  assert.equal(legacyGame.capabilities.has('avatar-renderer'), true);
-  const oldResponse = await legacyHost.getCharacter();
-  const oldData = await oldResponse.json();
-  assert.equal(oldData.vrm_path, '/models/neko.vrm');
-  assert.equal(oldData.language, 'ja');
-  assert.equal(oldData.language_preference_resolved, true);
-  assert.equal(legacyHost.routeLanlanName, 'Neko');
-  await legacyGame.avatar.mount({ slot: 'opponent', model: descriptor.model,
-    viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
-  assert.equal(mounted, 1);
+  const legacyGame = await absent.game(legacyHost, false);
+  assert.equal(legacyGame.capabilities.has('avatar-renderer'), false,
+    'removed soccer injection still granted an Avatar capability');
+  assert.equal(typeof legacyHost.getCharacter, 'undefined', 'raw character compatibility entry remains');
+  await assert.rejects(legacyGame.avatar.mount({ slot: 'opponent', model: descriptor.model,
+    viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } }),
+  { code: 'capability_unavailable' });
+  assert.equal(mounted, 0);
   legacyGame.dispose(); legacyHost.dispose();
-  assert.equal(legacyDisposed, 1);
-  assert.equal(controllerDisposed, 1);
+  assert.equal(legacyDisposed, 0, 'ignored caller provider ownership was transferred');
   const preferred = env.host({ avatarHost: legacy });
-  assert.equal(created, 1, 'legacy injection unnecessarily created a registered provider');
+  assert.equal(created, 2, 'removed injection overrode the registered factory');
   preferred._initializeAvatar(() => { throw new Error('must only initialize once'); });
   preferred.dispose();
   const noAvatar = await absent.game(absent.host({ trustedAvatarHost: legacy }), false);
@@ -173,6 +166,105 @@ async function factories() {
 }
 
 async function queries() {
+  for (const method of ['getCharacter', 'listCharacters']) {
+    for (const [body, status] of [['', 200], ['{', 200], ['<html>proxy error</html>', 200], [null, 204], ['{', 503]]) {
+      const env = await environment(() => ({ mount() {}, dispose() {} }), async () => new Response(body, {status}));
+      const game = await env.game(env.host());
+      try {
+        await assert.rejects(method === 'getCharacter' ? game.avatar.getCharacter('Neko') : game.avatar.listCharacters(),
+          {code: status === 503 ? 'request_failed' : 'invalid_response'});
+      } finally { game.dispose(); }
+      assert.equal(env.timers.size, 0, 'malformed discovery retained a deadline');
+    }
+  }
+  for (const action of ['abort', 'dispose']) {
+    const env = await environment(() => ({ mount() {}, dispose() {} }));
+    const host = env.host(); const game = await env.game(host); const owner = new AbortController();
+    host._bufferResponse = async () => ({ok:true, json: async () => {
+      if (action === 'abort') owner.abort(); else host.dispose();
+      throw new SyntaxError('late malformed JSON');
+    }});
+    try {
+      await assert.rejects(host._readAvatarJson('character', 'Neko', {signal:owner.signal}),
+        {code:action === 'abort' ? 'cancelled' : 'disposed'});
+    } finally { game.dispose(); }
+  }
+  for (const method of ['getAvatarCharacter', 'listAvatarCharacters']) {
+    for (const mode of ['overflow', 'exact', 'header', 'abort', 'timeout', 'dispose', 'json-only']) {
+      const limit = 16 * 1024 * 1024;
+      const payload = JSON.stringify(method === 'listAvatarCharacters' ? { names: ['Neko'] } : {
+        lanlan_name: 'Neko', model_type: 'pngtuber', pngtuber_path: '/avatar.png',
+      });
+      let cancelled = 0; let emitted = 0;
+      let body; let readerStarted;
+      const started = new Promise(resolve => { readerStarted = resolve; });
+      const env = await environment(() => ({ mount() {}, dispose() {} }), async () => {
+        if (mode === 'json-only') return { ok: true, json: async () => { throw new Error('unbounded parse'); } };
+        body = new ReadableStream({
+          pull(controller) {
+            readerStarted();
+            if (['abort', 'timeout', 'dispose'].includes(mode)) return;
+            if (!emitted) {
+              controller.enqueue(new TextEncoder().encode(payload)); emitted += payload.length; return;
+            }
+            const total = limit + (mode === 'overflow' ? 1 : 0);
+            const size = Math.min(1024 * 1024, total - emitted);
+            if (!size) { controller.close(); return; }
+            controller.enqueue(new Uint8Array(size).fill(32)); emitted += size;
+          },
+          cancel() { cancelled++; },
+        }, { highWaterMark: 0 });
+        return new Response(body, mode === 'header' ? { headers: { 'content-length': String(limit + 1) } } : {});
+      });
+      const host = env.host();
+      const game = await env.game(host);
+      const abort = new AbortController();
+      try {
+        const options = { signal: abort.signal, timeoutMs: 30000 };
+        const pending = (method === 'getAvatarCharacter' ? host[method]('Neko', options) : host[method](options))
+          .catch(error => error);
+        if (['abort', 'timeout', 'dispose'].includes(mode)) {
+          await started;
+          assert.equal(env.timers.size, 1, 'HTTP fallback duplicated the query deadline');
+          if (mode === 'abort') abort.abort();
+          if (mode === 'timeout') for (const timer of [...env.timers.values()]) timer.fn();
+          if (mode === 'dispose') host.dispose();
+        }
+        const value = await pending;
+        if (mode === 'exact') assert.equal(method === 'getAvatarCharacter' ? value.name : value[0], 'Neko');
+        else assert.equal(value?.code, ['abort', 'timeout', 'dispose'].includes(mode)
+          ? { abort: 'cancelled', timeout: 'timeout', dispose: 'disposed' }[mode] : 'invalid_response', `${method}: ${mode}`);
+        await tick();
+        assert.equal(host._avatarQueries.size, 0, 'fallback response retained raw query capacity');
+        assert.equal(env.timers.size, 0);
+        if (body) assert.equal(body.locked, false);
+        if (!['exact', 'json-only'].includes(mode)) assert.equal(cancelled, 1);
+        if (mode === 'header') assert.equal(emitted, 0);
+      } finally { abort.abort(); game.dispose(); }
+    }
+  }
+  const png = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
+    lanlan_name: 'Example PNG', model_type: 'pngtuber', pngtuber_path: '/user_pngtuber/example/idle.png',
+    mmd_path: '/static/mmd/example.pmx',
+  }));
+  const pngGame = await png.game(png.host());
+  try {
+    const character = await pngGame.avatar.getCurrentCharacter();
+    assert.deepEqual(character.model, { type: 'pngtuber', path: '/user_pngtuber/example/idle.png' });
+    assert.equal(character.rendererAvailable, true);
+    assert.deepEqual(character.fallbackModels, [{ type: 'mmd', path: '/static/mmd/example.pmx' }]);
+  } finally { pngGame.dispose(); }
+  assert.equal(png.timers.size, 0);
+  const mmd = await environment(() => ({ mount() {}, dispose() {} }), async () => response({
+    lanlan_name: 'Example MMD', model_type: 'live3d', live3d_sub_type: 'mmd', mmd_path: '/models/example.pmx',
+  }));
+  const mmdGame = await mmd.game(mmd.host());
+  try {
+    const character = await mmdGame.avatar.getCurrentCharacter();
+    assert.deepEqual(character.model, { type: 'mmd', path: '/models/example.pmx' });
+    assert.equal(character.rendererAvailable, true, 'valid MMD HTTP descriptor was marked unavailable');
+  } finally { mmdGame.dispose(); }
+  assert.equal(mmd.timers.size, 0);
   for (const length of [65, 128, 129]) {
     const name = '🐈'.repeat(length);
     const value = { ...descriptor, name };
@@ -192,8 +284,9 @@ async function queries() {
       try {
         if (length <= 128) {
           assert.deepEqual(await game.avatar.listCharacters(), [name]);
-          assert.deepEqual(await game.avatar.getCurrentCharacter(), value);
-          assert.deepEqual(await game.avatar.getCharacter(name), value);
+          const expected = customTransport ? value : { ...value, languagePreference: { locale: '', resolved: false }, fallbackModels: [] };
+          assert.deepEqual(await game.avatar.getCurrentCharacter(), expected);
+          assert.deepEqual(await game.avatar.getCharacter(name), expected);
         } else {
           await assert.rejects(game.avatar.listCharacters(), { code: 'invalid_response' });
           await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
@@ -231,7 +324,8 @@ async function queries() {
   }
   const env = await environment(() => ({ mount() {}, dispose() {} }));
   const game = await env.game(env.host());
-  assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor);
+  assert.deepEqual(await game.avatar.getCurrentCharacter(), { ...descriptor,
+    languagePreference: { locale: 'ja', resolved: true }, fallbackModels: [] });
   assert.equal(await game.avatar.getCharacter('Missing'), null, 'unknown name fell back to current character');
   assert.deepEqual(await game.avatar.listCharacters(), ['Neko', 'Other']);
   assert.equal(Object.isFrozen(await game.avatar.getCurrentCharacter()), true);
@@ -255,7 +349,20 @@ async function queries() {
     }
     let actual = e;
     if (action === 'body') actual = await environment(() => ({ mount() {}, dispose() {} }), async () => ({
-      ok: true, status: 200, json: () => { entered++; return gate.promise; },
+      ok: true, status: 200, headers: new Headers(),
+      arrayBuffer() { throw new Error('must use bounded reader'); },
+      body: { getReader() {
+        let emitted = false;
+        return {
+          async read() {
+            if (emitted) return { done: true };
+            emitted = true; entered++;
+            await gate.promise; // Deliberately non-cooperative source.
+            return { done: false, value: new TextEncoder().encode('{"lanlan_name":"Neko"}') };
+          },
+          cancel() {}, releaseLock() {},
+        };
+      } },
     }));
     const client = await actual.game(h || actual.host());
     if (['end', 'page-exit'].includes(action)) await client.runtime.start();
@@ -293,6 +400,213 @@ async function queries() {
     }
     client.dispose();
     assert.equal(actual.timers.size, 0);
+  }
+}
+
+async function characterBinding() {
+  const requests = [];
+  const data = { lanlan_name: 'Selected', model_type: 'live3d', live3d_sub_type: 'vrm',
+    vrm_path: '/user_vrm/selected.vrm', live2d_path: '/workshop/canonical/model.model3.json',
+    language: 'zh-TW', language_preference_resolved: true, api_key: 'private' };
+  const env = await environment(() => ({ mount() {}, dispose() {} }), async (url, options) => {
+    requests.push({ url: String(url), body: options?.body });
+    return response(String(url).includes('/character') ? data : { ok: true, active: true });
+  });
+  const host = env.host(); const game = await env.game(host);
+  try {
+    const found = await game.avatar.getCurrentCharacter();
+    assert.deepEqual(found.languagePreference, { locale: 'zh-TW', resolved: true });
+    assert.deepEqual(found.fallbackModels, [{ type: 'live2d', path: data.live2d_path }]);
+    assert.equal(found.api_key, undefined);
+    assert.equal(host.routeLanlanName, '', 'read-only discovery changed the selected character');
+    const bound = await game.runtime.bindCharacter();
+    assert.equal(bound.name, 'Selected');
+    assert.equal(game.runtime.state, 'idle');
+    assert.equal(game.runtime.session.characterName, 'Selected');
+    assert.equal(requests.some(request => request.body), false, 'binding started a backend route');
+    assert.equal(await game.runtime.bindCharacter('Missing'), null);
+    assert.equal(game.runtime.session.characterName, 'Selected');
+    await game.runtime.start();
+    const payload = JSON.parse(requests.find(request => request.url.endsWith('/route/start')).body);
+    assert.equal(payload.lanlan_name, 'Selected');
+    await assert.rejects(game.runtime.bindCharacter('Selected'), { code: 'invalid_state' });
+  } finally { game.dispose(); }
+  assert.equal(env.timers.size, 0);
+
+  // Once a character-scoped request has been constructed, even a completed
+  // preload may have server-side work. Selection requires a reset, not rebinding.
+  const lockedEnv = await environment(() => ({ mount() {}, dispose() {} }));
+  const lockedHost = lockedEnv.host(); const lockedGame = await lockedEnv.game(lockedHost);
+  lockedHost._trustedRuntimePayload({});
+  await assert.rejects(lockedGame.runtime.bindCharacter(), { code: 'invalid_state' });
+  assert.equal(lockedHost.routeLanlanName, '');
+  lockedGame.runtime.reset();
+  assert.equal((await lockedGame.runtime.bindCharacter('Neko')).name, 'Neko');
+  lockedGame.dispose(); assert.equal(lockedEnv.timers.size, 0);
+
+  const outputEnv = await environment(() => ({ mount() {}, dispose() {} }));
+  const outputHost = outputEnv.host();
+  // Use a custom transport output implementation to exercise the SDK lock as
+  // well as the standard host lock above. No real TTS request is made.
+  outputHost.startSpeechOutputBridge = () => true;
+  outputHost.preloadSpeechOutput = async () => response({ ok: true });
+  const outputGame = await outputEnv.game(outputHost, true, ['speech-output']);
+  await outputGame.runtime.bindCharacter();
+  await outputGame.speech.preload(['Example line']);
+  await assert.rejects(outputGame.runtime.bindCharacter(), { code: 'invalid_state' });
+  outputGame.runtime.reset();
+  assert.equal((await outputGame.runtime.bindCharacter()).name, 'Neko');
+  outputGame.dispose(); assert.equal(outputEnv.timers.size, 0);
+
+  for (const order of ['mounted', 'mount-pending', 'bind-pending', 'mount-failed']) {
+    const mountGate = deferred(); const bindGate = deferred();
+    const other = {...descriptor, name:'Other'};
+    let mounted = 0;
+    const e = await environment(() => ({
+      async mount() {
+        mounted++;
+        if (order === 'mount-pending') await mountGate.promise;
+        if (order === 'mount-failed') throw new Error('mount failed');
+        return {dispose() {}};
+      },
+      getCharacter: () => order === 'bind-pending' ? bindGate.promise : other,
+      dispose() {},
+    }));
+    const h = e.host(); const client = await e.game(h);
+    const config = {slot:'opponent', characterName:'Neko', model:descriptor.model,
+      viewport:{mode:'fixed',width:200,height:300}, resize:{mode:'fixed'}};
+    try {
+      if (order === 'bind-pending') {
+        const binding = client.runtime.bindCharacter('Other'); await tick();
+        await assert.rejects(client.avatar.mount(config), {code:'busy'});
+        assert.equal(mounted, 0, 'mount reached provider during character binding');
+        bindGate.resolve(other); await binding;
+      } else if (order === 'mount-failed') {
+        await assert.rejects(client.avatar.mount(config));
+        assert.equal((await client.runtime.bindCharacter('Other')).name, 'Other');
+      } else {
+        const mounting = client.avatar.mount(config); await tick();
+        if (order === 'mounted') await mounting;
+        await assert.rejects(client.runtime.bindCharacter('Other'), {code:'invalid_state'});
+        client.runtime.reset();
+        await assert.rejects(client.runtime.bindCharacter('Other'), {code:'invalid_state'},
+          'reset must not erase an actual renderer or raw mount owner');
+        assert.equal(h.routeLanlanName, '', 'mount race rebound the host');
+        mountGate.resolve(); const controller = await mounting;
+        controller.dispose();
+        assert.equal((await client.runtime.bindCharacter('Other')).name, 'Other');
+      }
+    } finally { mountGate.resolve(); bindGate.resolve(other); client.dispose(); }
+    assert.equal(e.timers.size, 0);
+  }
+
+  const capacityEnv = await environment(() => ({getCharacter: () => ({...descriptor,name:'Other'}), mount() {}, dispose() {}}));
+  const capacityHost = capacityEnv.host();
+  const held = [];
+  capacityHost.mountAvatar = () => new Promise((resolve, reject) => { held.push({resolve,reject}); });
+  const capacityClient = await capacityEnv.game(capacityHost);
+  const config = {slot:'opponent',characterName:'Neko',model:descriptor.model,
+    viewport:{mode:'fixed',width:200,height:300},resize:{mode:'fixed'}};
+  const pendingMounts = [];
+  try {
+    for (let i=0;i<8;i++) {
+      pendingMounts.push(capacityClient.avatar.mount({...config,slot:`slot-${i}`}).catch(error => error));
+      capacityClient.runtime.reset();
+    }
+    await assert.rejects(capacityClient.avatar.mount(config), {code:'busy'});
+    await assert.rejects(capacityClient.runtime.bindCharacter('Other'), {code:'invalid_state'});
+    assert.equal(held.length,8,'reset bypassed the hard raw mount bound');
+    for (const item of held) item.reject(new Error('provider recovered'));
+    await Promise.all(pendingMounts);
+    assert.equal((await capacityClient.runtime.bindCharacter('Other')).name,'Other');
+  } finally {
+    for (const item of held) item.reject(new Error('test cleanup'));
+    await Promise.all(pendingMounts); capacityClient.dispose();
+  }
+  assert.equal(capacityEnv.timers.size,0);
+
+  for (const action of ['reset', 'abort', 'timeout', 'dispose']) {
+    const gate = deferred();
+    const e = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: () => gate.promise }));
+    const h = e.host(); const client = await e.game(h); const abort = new AbortController();
+    const pending = client.runtime.bindCharacter(undefined, { signal: abort.signal, timeoutMs: 250 })
+      .then(() => 'unexpected', error => error.code);
+    await tick();
+    await assert.rejects(client.runtime.start(), { code: 'busy' });
+    await assert.rejects(client.runtime.bindCharacter(), { code: 'busy' });
+    if (action === 'reset') client.runtime.reset();
+    else if (action === 'abort') abort.abort();
+    else if (action === 'dispose') client.dispose();
+    else for (const timer of [...e.timers.values()]) timer.fn();
+    assert.equal(await pending, action === 'dispose' ? 'disposed' : action === 'timeout' ? 'timeout' : 'cancelled');
+    gate.resolve(descriptor); await tick();
+    assert.equal(h.routeLanlanName, '', `${action}: late query rebound the character`);
+    client.dispose(); assert.equal(e.timers.size, 0);
+  }
+}
+
+async function characterMetadata() {
+  for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const env = await environment(({characterSource}) => ({
+      mount() {}, dispose() {},
+      async getCharacter(name, options) {
+        const value = await characterSource.getCharacter(name, options);
+        return value && {...value, rendererAvailable: ['live2d','vrm'].includes(value.model?.type)};
+      },
+    }), async () => response({lanlan_name:'Neko', model_type:type, [`${type}_path`]:'/model'}));
+    const host = env.host(); const game = await env.game(host);
+    try {
+      for (const value of [await game.avatar.getCharacter('Neko'), await game.avatar.getCurrentCharacter()]) {
+        assert.equal(value.model.type, type);
+        assert.equal(value.rendererAvailable, ['live2d','vrm'].includes(type),
+          'provider discovery availability was overwritten by HTTP fallback');
+      }
+    } finally { game.dispose(); }
+    assert.equal(env.timers.size, 0);
+  }
+  for (const customTransport of [false, true]) {
+    let value;
+    const env = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: async () => value }));
+    const host = env.host();
+    if (customTransport) host.getAvatarCharacter = async () => value;
+    const game = await env.game(host);
+    try {
+      for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+        value = { ...descriptor, languagePreference: { locale: 'zh-TW', resolved: true, secret: 'hidden' },
+          fallbackModels: [{ type, path: '/canonical/model', api_key: 'hidden' }], persona: 'hidden' };
+        const result = await game.avatar.getCurrentCharacter();
+        assert.deepEqual(result.languagePreference, { locale: 'zh-TW', resolved: true });
+        assert.deepEqual(result.fallbackModels, [{ type, path: '/canonical/model' }]);
+        assert.equal(result.persona, undefined);
+        assert(Object.isFrozen(result.languagePreference) && Object.isFrozen(result.fallbackModels)
+          && Object.isFrozen(result.fallbackModels[0]));
+      }
+      for (const resolved of [false, true]) {
+        value = { ...descriptor, languagePreference: { locale: '', resolved }, fallbackModels: [] };
+        assert.deepEqual((await game.avatar.getCurrentCharacter()).languagePreference, { locale: '', resolved });
+      }
+      value = descriptor;
+      assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor, 'old custom descriptors must remain valid');
+      for (const extra of [
+        { languagePreference: { locale: 'zh-TW', resolved: 'true' } },
+        { languagePreference: { locale: 'x'.repeat(33), resolved: true } },
+        { languagePreference: null }, { fallbackModels: Array(5).fill(descriptor.model) },
+        { fallbackModels: [{ type: 'unknown', path: '/model' }] },
+        { fallbackModels: [{ type: 'vrm', path: 'x'.repeat(2049) }] },
+        { fallbackModels: new Array(1) },
+        { fallbackModels: [, descriptor.model] },
+        { fallbackModels: [descriptor.model, ,] },
+        { fallbackModels: [descriptor.model, , descriptor.model] },
+      ]) {
+        value = { ...descriptor, ...extra };
+        await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
+        if (!customTransport) await assert.rejects(host.getAvatarCharacter(), {code:'invalid_response'});
+      }
+      value = descriptor;
+      assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor,
+        'invalid metadata retained a query slot');
+    } finally { game.dispose(); }
+    assert.equal(env.timers.size, 0);
   }
 }
 
@@ -382,6 +696,8 @@ const watchdog = setTimeout(() => { throw new Error('Avatar discovery test did n
   if (!process.argv.includes('--bodies-only')) {
     if (!process.argv.includes('--queries-only')) await factories();
     if (!process.argv.includes('--factories-only')) await queries();
+    if (!process.argv.includes('--factories-only')) await characterBinding();
+    if (!process.argv.includes('--factories-only')) await characterMetadata();
   }
   if (!process.argv.includes('--queries-only') && !process.argv.includes('--factories-only')) await hostBodies();
   console.log('mini-game avatar discovery runtime test passed');

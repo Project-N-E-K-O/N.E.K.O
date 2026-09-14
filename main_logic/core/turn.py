@@ -419,6 +419,57 @@ class TurnMixin:
         request_id_str = str(request_id or "")
         return bool(request_id_str and request_id_str in self._magic_command_image_drop_request_ids)
 
+    def _record_request_staged_image(self, request_id: object, image: object) -> None:
+        """Remember which request staged ``image`` into the offline attachment queue.
+
+        ``_pending_images`` carries no request identity, so a consumed slash
+        command needs this ledger to remove only its own already-staged
+        attachments. Entries whose image has already left the queue are pruned
+        on every record and whenever a text turn has claimed the queue, so the
+        ledger never keeps a consumed frame alive.
+        """
+        request_id_str = str(request_id or "")
+        if not request_id_str:
+            return
+        self._prune_request_staged_images()
+        self._request_staged_images.append((request_id_str, image))
+
+    def _prune_request_staged_images(self) -> None:
+        """Drop ledger entries whose image is no longer in the session's attachment queue."""
+        ledger = getattr(self, "_request_staged_images", None)
+        if ledger is None:
+            self._request_staged_images = deque()
+            return
+        if not ledger:
+            return
+        pending = getattr(self.session, "_pending_images", None)
+        if not isinstance(pending, list):
+            ledger.clear()
+            return
+        live = [
+            (rid, staged) for rid, staged in ledger
+            if any(queued is staged for queued in pending)
+        ]
+        ledger.clear()
+        ledger.extend(live)
+
+    def _discard_request_staged_images(self, request_id: object) -> None:
+        """Remove attachments this request already staged; other requests' images stay."""
+        request_id_str = str(request_id or "")
+        ledger = getattr(self, "_request_staged_images", None)
+        if not request_id_str or not ledger:
+            return
+        pending = getattr(self.session, "_pending_images", None)
+        if isinstance(pending, list):
+            for rid, staged in ledger:
+                if rid != request_id_str:
+                    continue
+                for index, queued in enumerate(pending):
+                    if queued is staged:
+                        del pending[index]
+                        break
+        self._prune_request_staged_images()
+
     async def handle_response_complete(self):
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
         if self._takeover_active:
@@ -1090,12 +1141,155 @@ class TurnMixin:
             return "/daemon approve"
         return None
 
+    @staticmethod
+    def _normalize_mini_game_magic_command(text: str) -> Optional[str]:
+        """Return the game_type for a whole-message ``/<alias>`` mini-game command.
+
+        The message must be exactly one slash (ASCII or full-width) followed by
+        an alias from ``MINI_GAME_MAGIC_COMMANDS``; case and repeated whitespace
+        are ignored. Anything else returns None so ordinary chat never opens a
+        game implicitly.
+        """
+        raw = str(text or "").strip()
+        if len(raw) < 2 or raw[0] not in ("/", "／"):
+            return None
+        command = " ".join(raw[1:].lower().split())
+        if not command:
+            return None
+        from config import MINI_GAME_LAUNCH_URL_BY_GAME
+        from config.prompts.prompts_proactive import MINI_GAME_MAGIC_COMMANDS
+
+        for game_type, aliases_by_locale in MINI_GAME_MAGIC_COMMANDS.items():
+            if game_type not in MINI_GAME_LAUNCH_URL_BY_GAME:
+                continue
+            if any(command in aliases for aliases in aliases_by_locale.values()):
+                return game_type
+        return None
+
+    async def _maybe_handle_mini_game_magic_command(self, message: dict) -> bool:
+        """Consume a text message that is a slash mini-game command.
+
+        Runs before any session readiness check, auto-start, or realtime ->
+        offline handoff: opening a game needs no LLM session, so a failed
+        session start must not swallow the command and typing one during a
+        voice session must not tear that session down. Returns True when the
+        message was consumed.
+        """
+        data = message.get("data")
+        if not isinstance(data, str):
+            return False
+        game_type = self._normalize_mini_game_magic_command(data)
+        if not game_type:
+            return False
+        request_id = message.get("request_id")
+        # Drop only this command's own attachments: those it already staged (the
+        # composer sends images before the text) and any arriving later.
+        # ``_pending_images`` is session-wide with no request identity, so
+        # clearing it would strip an earlier message's image whose text task
+        # has not reached ``stream_text`` yet.
+        self._discard_request_staged_images(request_id)
+        self._mark_magic_command_image_drop_request(request_id)
+        if isinstance(self.session, OmniOfflineClient):
+            # The command never reaches stream_text, so a staged proactive
+            # screenshot or plugin ``read`` image would otherwise leak into the
+            # next unrelated message.
+            pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
+            if hasattr(pending_plugin_images, "clear"):
+                pending_plugin_images.clear()
+            clear_shot = getattr(self.session, "set_proactive_screenshot", None)
+            if callable(clear_shot):
+                clear_shot(None)
+        # The turn end below seals the frontend's current assistant bubble, so
+        # stop an in-flight reply first, the same way a new text message does,
+        # without tearing the session down. Only the offline producer is
+        # cancelled here; a realtime voice session keeps running and just has
+        # its current speech dropped by the frontend.
+        async with self.lock:
+            interrupted_speech_id = self.current_speech_id
+        if isinstance(self.session, OmniOfflineClient):
+            _interrupt = getattr(self.session, "handle_interruption", None)
+            if callable(_interrupt):
+                try:
+                    await _interrupt()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] mini-game magic command could not interrupt the reply: %s",
+                        self.lanlan_name, exc,
+                    )
+        self.audio_resampler.clear()
+        await self._clear_tts_pipeline()
+        await self.send_user_activity(interrupted_speech_id)
+        await self.mirror_user_input(
+            data,
+            metadata={
+                "source": "mini_game",
+                "kind": "magic_command",
+                "command": game_type,
+            },
+            request_id=request_id,
+        )
+        await self._emit_agent_callback_turn_end(request_id)
+        await self._push_mini_game_magic_command_launch(game_type)
+        logger.info(
+            "[%s] text input sent mini-game magic command: %s",
+            self.lanlan_name,
+            game_type,
+        )
+        return True
+
+    async def _push_mini_game_magic_command_launch(self, game_type: str) -> bool:
+        """Ask the frontend to open ``game_type`` through the invite launch event.
+
+        Reuses ``mini_game_invite_resolved`` with ``action='open_game'`` so all
+        chat surfaces keep one launch handler (the pet/single-window leader
+        opens, chat.html followers skip). The fresh session_id never matches a
+        pending ChoicePrompt, and the invite state machine is not touched.
+        """
+        from urllib.parse import urlencode
+        from config import MINI_GAME_LAUNCH_URL_BY_GAME
+
+        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+        if not url_template:
+            return False
+        session_id = str(uuid4())
+        separator = "&" if "?" in url_template else "?"
+        query = urlencode({"lanlan_name": self.lanlan_name, "session_id": session_id})
+        payload = {
+            "type": "mini_game_invite_resolved",
+            "session_id": session_id,
+            "action": "open_game",
+            "game_url": f"{url_template}{separator}{query}",
+            "game_type": game_type,
+        }
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, "send_json"):
+                ws_state = getattr(ws, "client_state", None)
+                if ws_state is None or ws_state == ws_state.CONNECTED:
+                    await ws.send_json(payload)
+                    return True
+        except Exception as exc:
+            logger.warning(
+                "[%s] mini-game magic command launch push failed (game=%s): %s",
+                self.lanlan_name, game_type, exc,
+            )
+            return False
+        logger.warning(
+            "[%s] mini-game magic command launch skipped: websocket not connected (game=%s)",
+            self.lanlan_name, game_type,
+        )
+        return False
+
     def _clear_text_pending_images(self) -> None:
         if not isinstance(self.session, OmniOfflineClient):
             return
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 队列清空后，请求→附件记录里的条目都已失效，一并释放。
+        self._prune_request_staged_images()
         # 插件 read 图片的独立暂存位同为「待发视觉上下文」，走同一个失效判据。
         pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
         if hasattr(pending_plugin_images, "clear"):

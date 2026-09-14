@@ -147,6 +147,8 @@ async def test_authoritative_numeric_string_danmaku_has_density(monkeypatch):
     monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
     info = await discovery.inspect_video('BV1GJ411x7h7')
     assert info['danmaku_per_minute'] == 101
+    # The frontend excludes failed automatic candidates by this identifier.
+    assert info['bvid'] == 'BV1GJ411x7h7'
     assert discovery.enforce_policy(info, automatic=True)
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status,location', [

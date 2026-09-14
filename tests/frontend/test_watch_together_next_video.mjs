@@ -73,16 +73,39 @@ const submissionFailure=createNextVideoQueue({media:{async request(action){
   throw Error('temporary prepare submission failure');
 }}},state=>submissionStates.push(state));
 await submissionFailure.start({topic:'cats'});
-assert.equal(submissionStates.some(state=>state.candidate),false,'a submission failure must not exclude an unattempted video');
+assert.equal(submissionStates.some(state=>state.candidate),false,'one submission failure may retry the same video');
+await submissionFailure.start({topic:'cats'});
+assert.deepEqual(submissionStates.filter(state=>state.candidate).map(state=>state.candidate),['temporary'],
+  'a second submission failure must exclude the video instead of retrying it indefinitely');
 for(const failure of ['error','cancelled']) {
   const states=[];
+  let discovered=0;
   const failing={media:{async request(action){
-    if(action==='discover')return {video:{bvid:'retryable',url:'video',title:'Retry'}};
+    if(action==='discover')return {video:{bvid:discovered++===1?'other':'retryable',url:'video',title:'Retry'}};
     if(action==='prepare')return {id:'failed'};
     if(action==='preparation')return {status:failure};
     throw Error(action);
   }}};
   const retryQueue=createNextVideoQueue(failing,state=>states.push(state));
+  const excluded=()=>states.filter(state=>state.candidate).map(state=>state.candidate);
   await retryQueue.start({topic:'cats'});
-  assert.equal(states.some(state=>state.candidate),true,'automatic discovery must skip a failing candidate instead of retrying it indefinitely');
+  assert.deepEqual(excluded(),[],'the first failed preparation may retry');
+  await retryQueue.start({topic:'cats'});
+  assert.deepEqual(excluded(),[],'failures are counted per video');
+  await retryQueue.start({topic:'cats'});
+  assert.deepEqual(excluded(),['retryable'],'automatic discovery must skip a candidate after its second failure');
+  assert.ok(states.some(state=>state.status==='error'));
 }
+const disposalStates=[];
+let disposalSubmissions=0, disposing=null;
+const disposalQueue=createNextVideoQueue({media:{async request(action){
+  if(action==='discover')return {video:{bvid:'closing',url:'video'}};
+  if(++disposalSubmissions===2)disposing.dispose();
+  throw Error('prepare submission failure');
+}}},state=>disposalStates.push(state));
+disposing=disposalQueue;
+await disposalQueue.start({topic:'cats'});
+await disposalQueue.start({topic:'cats'});
+assert.equal(disposalSubmissions,2);
+assert.equal(disposalStates.some(state=>state.candidate),false,'a failure after disposal must not publish exclusion state');
+console.log('next-video queue: a candidate is retried once, then excluded after its second failure');

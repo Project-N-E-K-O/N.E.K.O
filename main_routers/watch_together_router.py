@@ -9,6 +9,8 @@ from fastapi.responses import FileResponse
 from main_logic.watch_together.library import application_library
 
 router = APIRouter(prefix="/api/watch-together", tags=["watch-together"])
+# One live-line generation per scene route at a time.
+_LIVE_BUSY_KEY = "_watch_live_busy"
 
 
 def _library_call(method, *args):
@@ -55,8 +57,7 @@ async def media(job: str, version: str, filename: str):
                                  'Content-Security-Policy': "sandbox; default-src 'none'"})
 
 
-@router.post("/watch")
-async def watch(request: Request):
+async def _same_origin_object(request: Request) -> dict:
     origin = request.headers.get("origin")
     if origin and urlparse(origin).netloc != request.url.netloc:
         raise HTTPException(403, "Origin mismatch")
@@ -66,6 +67,10 @@ async def watch(request: Request):
         raise HTTPException(400, "Invalid JSON")
     if not isinstance(data, dict):
         raise HTTPException(400, "Expected an object")
+    return data
+
+
+def _active_scene_state(data: dict) -> dict:
     from main_routers.game_router.runtime import _sdk_route_instance_error
     from utils.game_route_state import _get_active_game_route_state
     state = _get_active_game_route_state(str(data.get("lanlan_name", "")), "watch-together")
@@ -73,6 +78,102 @@ async def watch(request: Request):
             or str(state.get("session_id")) != str(data.get("session_id"))
             or _sdk_route_instance_error(state, data)):
         raise HTTPException(409, "Scene session is no longer active")
+    return state
+
+
+def _finite_number(value, low, high):
+    if isinstance(value, bool):
+        raise ValueError()
+    number = float(value)
+    if not math.isfinite(number) or not low <= number <= high:
+        raise ValueError()
+    return number
+
+
+@router.post("/live")
+async def live(request: Request):
+    """Speak held plugin responses in a reaction gap, or an automatic-mode intermission."""
+    data = await _same_origin_object(request)
+    state = _active_scene_state(data)
+    action = data.get("action")
+    job, version = data.get("job"), data.get("version")
+    if (action not in ("interject", "intermission")
+            or not all(isinstance(value, str) and 0 < len(value) <= 128 for value in (job, version))):
+        raise HTTPException(400, "Invalid live request")
+    from main_logic.watch_together import live as live_lines
+    position = seconds = 0.0
+    if action == "interject":
+        try:
+            position = _finite_number(data.get("position"), 0, 86400)
+            seconds = _finite_number(data.get("gap"), 0, 600)
+        except (TypeError, ValueError, OverflowError):
+            raise HTTPException(400, "Invalid live request")
+    from main_routers.game_router.route_lifecycle import _TAKEOVER_CALLBACK_INBOX_KEY
+    inbox = state.get(_TAKEOVER_CALLBACK_INBOX_KEY)
+    if action == "interject" and (inbox is None or not inbox.pending):
+        return {"lines": []}
+    if state.get(_LIVE_BUSY_KEY):
+        return {"lines": [], "busy": True}
+    from main_routers.shared_state import get_session_manager
+    from main_routers.game_router.char_info import _extract_request_render_language_full
+    from main_logic.watch_together.preparation import session_language
+    manager = get_session_manager().get(str(data.get("lanlan_name", "")))
+    if not manager:
+        raise HTTPException(409, "Character session unavailable")
+    state[_LIVE_BUSY_KEY] = True
+    callbacks = []
+    try:
+        try:
+            video = await asyncio.to_thread(lambda: live_lines.video_context(application_library(), job, version))
+        except (KeyError, ValueError, OSError):
+            raise HTTPException(404, "Timeline unavailable")
+        if inbox is not None:
+            callbacks = inbox.take(live_lines.INTERJECT_TAKE if action == "interject" else live_lines.INTERMISSION_TAKE)
+        language = session_language(manager, _extract_request_render_language_full(data))
+        # Leave a second of margin so the line ends before the next reaction.
+        speakable = max(2.0, min(10.0, seconds - 1.0))
+
+        async def produce():
+            lines = await live_lines.compose(manager, mode=action, callbacks=callbacks, video=video,
+                                             language=language, position=position, seconds=speakable)
+            return await live_lines.speak(manager, lines, language)
+        spoken = await asyncio.wait_for(produce(), 90)
+    except (HTTPException, asyncio.CancelledError):
+        live_lines.settle(callbacks, False)
+        raise
+    except Exception as exc:
+        live_lines.settle(callbacks, False)
+        print(f"Watch live {action} failed: {type(exc).__name__}")
+        return {"lines": [], "error": type(exc).__name__}
+    finally:
+        state[_LIVE_BUSY_KEY] = False
+    from main_logic.proactive_delivery import callback_is_expired
+    # A gap line exists only to answer its cues; if they all expired while the
+    # model and TTS ran (danmaku replies are short-lived), it would be stale.
+    stale = action == "interject" and callbacks and all(callback_is_expired(callback) for callback in callbacks)
+    if not state.get("game_route_active") or stale:
+        live_lines.settle(callbacks, False)
+        return {"lines": []}
+    live_lines.settle(callbacks, True)
+    return {"lines": spoken}
+
+
+@router.get("/live-audio/{token}")
+async def live_audio(token: str):
+    from fastapi.responses import Response
+    from main_logic.watch_together.live import read_audio
+    data = read_audio(token)
+    if data is None:
+        raise HTTPException(404)
+    return Response(data, media_type="audio/wav",
+                    headers={'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
+                             'Content-Security-Policy': "sandbox; default-src 'none'"})
+
+
+@router.post("/watch")
+async def watch(request: Request):
+    data = await _same_origin_object(request)
+    state = _active_scene_state(data)
     try:
         if data.get("action") == "start":
             identifier = await asyncio.to_thread(_library_call, "start_watch", data["job"], data["version"], data["lanlan_name"])

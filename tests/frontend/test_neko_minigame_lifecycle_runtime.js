@@ -577,6 +577,7 @@ async function main() {
 
   const failedEndEnvironment = createEnvironment();
   let rejectEnd = true;
+  let degradedCommandCalls = 0;
   const failedEndTransport = {
     ...transport,
     logger: logger(),
@@ -589,12 +590,31 @@ async function main() {
       if (rejectEnd) throw Object.assign(new Error('network failed'), { code: 'request_failed' });
       return { ok: true };
     },
+    async executeGameCommand() {
+      degradedCommandCalls += 1;
+      return { ok: true, accepted: true };
+    },
     dispose() {},
   };
   const failedEndGame = await window.NekoMiniGame.connect({
     id: 'lifecycle-failed-end',
     version: '1.0.0',
     requiredCapabilities: ['runtime', 'logging'],
+    contracts: {
+      commands: {
+        'route:probe': {
+          request: { type: 'object' },
+          response: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              accepted: { type: 'boolean' },
+            },
+            required: ['accepted'],
+          },
+        },
+      },
+    },
   }, {
     transport: failedEndTransport,
     windowImpl: failedEndEnvironment.windowImpl,
@@ -613,6 +633,9 @@ async function main() {
     && failedEndGame.runtime.state === 'degraded'
     && failedEndEnvironment.intervals.size === 2,
   'failed runtime end was treated as ended instead of retryable and monitored');
+  const degradedCommand = await failedEndGame.commands.execute('route:probe', {});
+  assert(degradedCommand.data.accepted === true && degradedCommandCalls === 1,
+    'a failed runtime end disabled commands on a route that may still be active');
   rejectEnd = false;
   await failedEndGame.runtime.end({});
   assert(failedEndGame.runtime.state === 'ended' && failedEndEnvironment.intervals.size === 0,

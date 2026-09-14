@@ -56,6 +56,7 @@ from ._shared import (  # noqa: F401
     _coerce_payload_bool,
     _coerce_payload_float,
 )
+from .vision import game_sdk_vision_analyze  # noqa: F401
 from .char_info import (  # noqa: F401
     _extract_request_language_full,
     _absorb_request_language,
@@ -270,6 +271,8 @@ from .archive import (  # noqa: F401
 from .route_lifecycle import (  # noqa: F401
     _GAME_ROUTE_ACTIVATION_LOG_LIMIT,
     _push_game_window_state_change,
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _close_takeover_callback_inbox,
     _GAME_ROUTE_OUTPUT_LIMIT,
     _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
     _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,

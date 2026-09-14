@@ -7,12 +7,7 @@ function assert(condition, message) {
 }
 
 function jsonResponse(data, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return data; },
-    clone() { return jsonResponse(data, status); },
-  };
+  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 }
 
 function storage() {
@@ -70,12 +65,19 @@ async function main() {
   );
   const calls = [];
   const listeners = new Map();
+  let trustedAvatarFactoryCalls = 0;
+  let trustedAvatarMounts = 0;
+  let trustedAvatarDisposals = 0;
+  let forgedAvatarMounts = 0;
   let releaseProtocolTwo;
   let markProtocolTwoStarted;
   let releaseDelayedDrain;
   let markDelayedDrainStarted;
   let slowLogEnableGate = null;
   let releaseSlowLogEnable = null;
+  let commandCsrfFailure = false;
+  let nextCommandResponse = null;
+  let csrfToken = 'test-token';
   const protocolTwoGate = new Promise((resolve) => { releaseProtocolTwo = resolve; });
   const protocolTwoStarted = new Promise((resolve) => { markProtocolTwoStarted = resolve; });
   const delayedDrainGate = new Promise((resolve) => { releaseDelayedDrain = resolve; });
@@ -83,7 +85,7 @@ async function main() {
   const fetchImpl = async (url, init = {}) => {
     const pathName = String(url);
     if (pathName.startsWith('/api/config/page_config')) {
-      return jsonResponse({ autostart_csrf_token: 'test-token' });
+      return jsonResponse({ autostart_csrf_token: csrfToken });
     }
     if (pathName === '/api/game/logs/enable') {
       if (slowLogEnableGate) await slowLogEnableGate;
@@ -91,6 +93,16 @@ async function main() {
     }
     const body = init.body ? JSON.parse(init.body) : {};
     calls.push({ url: pathName, init, body });
+    if (pathName.endsWith('/round/input') && nextCommandResponse) {
+      const response = nextCommandResponse;
+      nextCommandResponse = null;
+      return response;
+    }
+    if (pathName.endsWith('/round/input') && commandCsrfFailure) {
+      commandCsrfFailure = false;
+      csrfToken = 'test-token-longer';
+      return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+    }
     if (pathName.endsWith('/protocol') && body.sequence === 2) {
       markProtocolTwoStarted();
       await protocolTwoGate;
@@ -187,6 +199,7 @@ async function main() {
   const hostLaunchRegistrations = Object.fromEntries(
     [...[
       'example-game',
+      'aliased-avatar-game',
       'waiting-lock-game',
       'third-party-game',
       'speech-only-game',
@@ -194,13 +207,31 @@ async function main() {
       'logger-one',
       'logger-two',
       'log-timeout-game',
+      'invalid-command-game',
     ], ...Array.from({ length: 70 }, (_unused, index) => `overflow-game-${index}`)]
       .map((gameId) => [gameId, {
       mode: gameId === 'example-game' ? 'registered' : 'development',
       gameId,
       publisherId: 'test-host',
       version: '1.0.0',
-      allowedCapabilities: defaultCapabilities,
+      allowedCapabilities: gameId === 'aliased-avatar-game'
+        ? ['runtime', 'logging', 'avatar-renderer']
+        : defaultCapabilities,
+      ...(gameId === 'aliased-avatar-game' ? {
+        routeGameType: 'shared_avatar_backend',
+      } : {}),
+      ...(gameId === 'example-game' ? {
+        commandRoutes: {
+          'round:input': {
+            path: 'round/input',
+            maxRequestBytes: 400 * 1024,
+            maxTimeoutMs: 1250,
+          },
+        },
+      } : {}),
+      ...(gameId === 'invalid-command-game' ? {
+        commandRoutes: { 'round:input': { path: '../admin' } },
+      } : {}),
       capabilityProviders: gameId === 'example-game' ? {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
       } : {},
@@ -211,6 +242,40 @@ async function main() {
     nekoCapabilityProviders: {
       'example-game': {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
+      },
+      'aliased-avatar-game': {
+        avatarHostFactory({ windowImpl, documentImpl, fetchImpl: trustedFetch }) {
+          trustedAvatarFactoryCalls += 1;
+          assert(windowImpl === windowMock
+            && documentImpl === windowMock.document
+            && typeof trustedFetch === 'function',
+          'the trusted Avatar factory did not receive bounded host dependencies');
+          return {
+            async mount(config) {
+              trustedAvatarMounts += 1;
+              return { config, dispose() {} };
+            },
+            async getCurrentCharacter() {
+              return {
+                name: 'Shared Neko',
+                model: { type: 'mmd', path: '/models/shared-neko.pmx' },
+                rendererAvailable: true,
+                privatePrompt: 'must-not-cross-the-boundary',
+              };
+            },
+            async getCharacter(name) {
+              return {
+                name,
+                model: { type: 'pngtuber', path: '/models/shared-neko.png' },
+                rendererAvailable: true,
+              };
+            },
+            async listCharacters() {
+              return ['Shared Neko', 'PNG Neko', 'Shared Neko'];
+            },
+            dispose() { trustedAvatarDisposals += 1; },
+          };
+        },
       },
     },
     remove() { this.removed = true; },
@@ -292,6 +357,17 @@ async function main() {
   } catch (error) { missingRegistrationError = error; }
   assert(missingRegistrationError?.code === 'game_unregistered',
     'a game minted a registered host identity without a launch registration');
+  let invalidCommandRegistrationError = null;
+  try {
+    window.createNekoMiniGameSameOriginHost({
+      gameType: 'invalid-command-game',
+      fetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+  } catch (error) { invalidCommandRegistrationError = error; }
+  assert(invalidCommandRegistrationError?.code === 'game_unregistered',
+    'a launch registration with a traversing command route was accepted');
   let overflowRegistrationError = null;
   try {
     window.createNekoMiniGameSameOriginHost({
@@ -303,6 +379,51 @@ async function main() {
   } catch (error) { overflowRegistrationError = error; }
   assert(overflowRegistrationError?.code === 'game_unregistered',
     'the host launch registry exceeded its page-lifetime capacity bound');
+
+  const aliasedAvatarHost = createHost({
+    gameType: 'aliased-avatar-game',
+    routeGameType: 'forged-route',
+    sessionId: 'aliased-avatar-session',
+    fetchImpl,
+    windowImpl: windowMock,
+    navigatorImpl: windowMock.navigator,
+    // Avatar providers are created through the trusted registration factory.
+    trustedAvatarHost: { mount() { forgedAvatarMounts += 1; } },
+  });
+  const aliasedAvatarHandshake = aliasedAvatarHost.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'aliased-avatar-game',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'avatar-renderer'],
+      optionalCapabilities: [],
+    },
+  });
+  assert(aliasedAvatarHandshake.grantedCapabilities.includes('avatar-renderer')
+    && trustedAvatarFactoryCalls === 1,
+  'the bootstrap-owned Avatar provider was not granted');
+  const currentAvatarCharacter = await aliasedAvatarHost.getAvatarCharacter();
+  const namedAvatarCharacter = await aliasedAvatarHost.getAvatarCharacter('PNG Neko');
+  const avatarCharacterNames = await aliasedAvatarHost.listAvatarCharacters();
+  const mountedAvatar = await aliasedAvatarHost.mountAvatar({ slot: 'shared-avatar' });
+  assert(currentAvatarCharacter.name === 'Shared Neko'
+    && currentAvatarCharacter.model.type === 'mmd'
+    && currentAvatarCharacter.privatePrompt === undefined
+    && namedAvatarCharacter.model.type === 'pngtuber'
+    && avatarCharacterNames.join(',') === 'Shared Neko,PNG Neko'
+    && trustedAvatarMounts === 1
+    && forgedAvatarMounts === 0
+    && mountedAvatar.config.slot === 'shared-avatar',
+  'the Avatar facade did not project and use the bootstrap-owned provider');
+  await aliasedAvatarHost.start({ sdk_route_instance_id: 'aliased-avatar-generation' });
+  const aliasedStartCall = calls.find((call) => (
+    call.url === '/api/game/shared_avatar_backend/route/start'
+  ));
+  assert(aliasedStartCall?.body.game_type === 'shared_avatar_backend',
+    'the host trusted a caller-supplied route alias instead of its registration');
+  aliasedAvatarHost.dispose();
+  assert(trustedAvatarDisposals === 1,
+    'the bootstrap-owned Avatar provider was not disposed with its host');
 
   const host = createHost({
     gameType: 'example-game',
@@ -325,6 +446,14 @@ async function main() {
         'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
         'voice-input', 'media-timeline',
       ],
+      contracts: {
+        commands: {
+          'round:input': {
+            request: { type: 'object' },
+            response: { type: 'object' },
+          },
+        },
+      },
     },
   });
   assert(handshake.grantedCapabilities.includes('context-read'),
@@ -402,13 +531,14 @@ async function main() {
   const startResponse = await host.start({
     session_id: 'attacker-session',
     lanlan_name: 'Attacker Neko',
+    sdk_route_instance_id: 'route-generation-1',
     game_memory_archive_enabled: false,
     legacyGameMemoryEnabled: false,
     legacy_game_memory_event_reply_enabled: false,
   });
   const startData = await startResponse.clone().json();
   host.applyRouteState(startData.state);
-  const startCall = calls.find((call) => call.url.endsWith('/route/start'));
+  const startCall = calls.find((call) => call.url === '/api/game/example-game/route/start');
   assert(startCall.body.session_id === 'client-session',
     'route start trusted an application-supplied session id');
   assert(startCall.body.game_memory_enabled === true,
@@ -421,6 +551,323 @@ async function main() {
   assert(!Object.hasOwn(startCall.body, 'legacyGameMemoryEnabled')
     && !Object.hasOwn(startCall.body, 'legacy_game_memory_event_reply_enabled'),
   'caller-controlled legacy memory aliases survived the trusted host boundary');
+  const commandEnvelope = (payload, routeInstanceId = 'route-generation-1') => ({
+    protocolVersion: '1',
+    sequence: 1,
+    type: 'round:input',
+    sessionId: 'server-session',
+    routeInstanceId,
+    payload,
+  });
+  const commandResponse = await host.executeGameCommand(
+    'round:input',
+    commandEnvelope({
+      text: 'hello',
+      session_id: 'attacker-session',
+      game_type: 'attacker-game',
+      lanlan_name: 'Attacker Neko',
+      sdk_route_instance_id: 'attacker-generation',
+    }),
+    { timeoutMs: 5000 },
+  );
+  assert((await commandResponse.json()).accepted === true,
+    'a declared command did not receive its endpoint response');
+  for (const status of [200, 500]) {
+    let cancelled = false;
+    let reads = 0;
+    nextCommandResponse = new Response(new ReadableStream({
+      pull(controller) {
+        reads += 1;
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        if (reads === 5) controller.close();
+      },
+      cancel() { cancelled = true; },
+    }), { status });
+    let failure;
+    try { await host.executeGameCommand('round:input', commandEnvelope({ text: 'bounded' })); }
+    catch (error) { failure = error; }
+    assert(failure?.code === 'invalid_response' && cancelled && reads < 5,
+      `command response ${status} was buffered past its limit or not cancelled`);
+  }
+  const exactResponse = JSON.stringify({text:'x'.repeat(2 * 1024 * 1024 - 11)});
+  let parsedUnbounded = false;
+  nextCommandResponse = { ok: true, status: 200, json: async () => { parsedUnbounded = true; return {}; } };
+  const unboundedError = await host.executeGameCommand('round:input', commandEnvelope({text:'response'}))
+    .then(() => null, error => error);
+  assert(unboundedError?.code === 'invalid_response' && !parsedUnbounded,
+    'a size-limited command parsed a JSON-only response before rejecting it');
+  assert(Buffer.byteLength(exactResponse) === 2 * 1024 * 1024);
+  nextCommandResponse = new Response(exactResponse, {headers:{'content-type':'application/json'}});
+  const boundedResponse = await host.executeGameCommand('round:input', commandEnvelope({text:'response'}));
+  assert((await boundedResponse.clone().json()).text.length === 2 * 1024 * 1024 - 11,
+    'an exactly bounded response lost JSON/clone compatibility');
+  assert((await boundedResponse.json()).text.length === 2 * 1024 * 1024 - 11);
+  let headerCancelled = false;
+  nextCommandResponse = new Response(new ReadableStream({
+    cancel() { headerCancelled = true; },
+  }), {headers:{'content-length':String(2 * 1024 * 1024 + 1)}});
+  let headerError;
+  try { await host.executeGameCommand('round:input', commandEnvelope({text:'response'})); }
+  catch (error) { headerError = error; }
+  assert(headerError?.code === 'invalid_response' && headerCancelled,
+    'an oversized declared response was not cancelled before reading');
+
+  // A custom fetch can ignore its signal even when it returns a real Response.
+  // Cancelling the reader must settle pending reads without waiting for the
+  // underlying source's (possibly non-cooperative) cancellation promise.
+  const streamCases = [32, undefined].flatMap(maxBytes =>
+    ['timeout', 'abort', 'dispose', 'read-error', 'overflow', 'header-overflow', 'late']
+      .filter(mode => maxBytes !== undefined || !mode.includes('overflow'))
+      .map(mode => ({ maxBytes, mode })));
+  for (const { maxBytes, mode } of streamCases) {
+    let cancelCalls = 0;
+    let bodyController;
+    let requestSignal;
+    let releaseFetch;
+    let abortListeners = 0;
+    const body = new ReadableStream({
+      start(controller) { bodyController = controller; },
+      cancel() {
+        cancelCalls += 1;
+        if (mode === 'abort') return Promise.reject(new Error('cancel hook failed'));
+        return new Promise(() => {});
+      },
+    });
+    const streamResponse = new Response(body, mode === 'header-overflow'
+      ? { headers: { 'content-length': '33' } } : {});
+    if (mode === 'read-error') {
+      const getReader = body.getReader.bind(body);
+      body.getReader = () => {
+        const reader = getReader();
+        reader.read = async () => { throw new Error('injected reader failure'); };
+        return reader;
+      };
+    }
+    const streamHost = createHost({
+      gameType: 'example-game', windowImpl: windowMock, navigatorImpl: windowMock.navigator,
+      pendingRequestLimit: 1,
+      fetchImpl: async (_url, init) => {
+        requestSignal = init.signal;
+        const add = requestSignal.addEventListener.bind(requestSignal);
+        const remove = requestSignal.removeEventListener.bind(requestSignal);
+        requestSignal.addEventListener = (type, ...args) => {
+          if (type === 'abort') abortListeners += 1;
+          return add(type, ...args);
+        };
+        requestSignal.removeEventListener = (type, ...args) => {
+          if (type === 'abort') abortListeners -= 1;
+          return remove(type, ...args);
+        };
+        if (mode === 'late') await new Promise(resolve => { releaseFetch = resolve; });
+        return streamResponse;
+      },
+    });
+    const external = new AbortController();
+    const result = streamHost._request('/bounded-stream', {}, {
+      signal: external.signal, maxResponseBytes: maxBytes, timeoutMs: mode === 'timeout' ? 30 : 300,
+    }).then(() => null, error => error);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      if (mode === 'abort' || mode === 'late') external.abort();
+      if (mode === 'dispose') streamHost.dispose();
+      if (mode === 'overflow') bodyController.enqueue(new Uint8Array(33));
+      const failure = await result;
+      if (mode === 'late') {
+        assert(streamHost._rawRequests.size === 1, 'unreturned fetch prematurely freed its raw slot');
+        releaseFetch();
+      }
+      await new Promise(resolve => setImmediate(resolve));
+      const expected = mode === 'timeout' ? 'timeout' : mode === 'dispose' ? 'disposed'
+        : mode.includes('overflow') ? 'invalid_response' : mode === 'read-error' ? 'network_error' : 'cancelled';
+      assert(failure?.code === expected, `${mode}: lost request failure semantics`);
+      assert(cancelCalls === 1 && !body.locked && abortListeners === 0,
+        `${mode} (maxBytes=${maxBytes}): response reader or abort listener was not released`);
+      assert(streamHost._pendingRequests.size === 0 && streamHost._rawRequests.size === 0,
+        `${mode}: completed body cancellation retained a request slot`);
+      if (mode !== 'dispose') {
+        streamHost._fetchImpl = async () => jsonResponse({ ok: true });
+        assert((await (await streamHost._request('/next', {}, { maxResponseBytes: 32 })).json()).ok,
+          `${mode}: a cancelled response left the next request busy`);
+      }
+    } finally {
+      releaseFetch?.();
+      try { bodyController.close(); } catch (_) { /* already closed by cancellation */ }
+      streamHost.dispose();
+    }
+  }
+  const fullLegacyResponse = await host._bufferResponse(new Response(exactResponse + ' '));
+  assert((await fullLegacyResponse.clone().text()) === exactResponse + ' '
+    && (await fullLegacyResponse.json()).text.length === 2 * 1024 * 1024 - 11,
+  'legacy response reading imposed the command limit or lost complete replay semantics');
+  const defaultResponseLimit = 16 * 1024 * 1024;
+  let nullBodyRead = false;
+  const nullBodyFailure = await host._bufferResponse({
+    body: null, status: 200, headers: new Headers(),
+    arrayBuffer() { nullBodyRead = true; return new ArrayBuffer(8); },
+  }).catch(error => error);
+  assert(nullBodyFailure?.code === 'invalid_response' && !nullBodyRead,
+    'custom null body silently discarded arrayBuffer data');
+  for (const status of [200, 204, 205, 304]) {
+    const empty = await host._bufferResponse(new Response(null, { status }));
+    assert(empty.status === status && (await empty.arrayBuffer()).byteLength === 0,
+      'native null-body response was rejected');
+  }
+  // Native branding must not depend on the provider's constructor identity.
+  const brandedEmpty = new Response(null);
+  function OtherResponse(body, init) { return new Response(body, init); }
+  Object.defineProperty(OtherResponse.prototype, 'body', Object.getOwnPropertyDescriptor(Response.prototype, 'body'));
+  const originalResponse = host._window.Response;
+  host._window.Response = OtherResponse;
+  try {
+    assert(!(brandedEmpty instanceof OtherResponse), 'test did not separate constructor identity');
+    assert((await (await host._bufferResponse(brandedEmpty)).arrayBuffer()).byteLength === 0,
+      'native response brand was rejected solely by constructor identity');
+  } finally { host._window.Response = originalResponse; }
+  let unboundedArrayRead = false;
+  const unreadableResponse = await host._bufferResponse({
+    status: 200, headers: new Headers(),
+    arrayBuffer() { unboundedArrayRead = true; return new ArrayBuffer(1); },
+  }).catch(error => error);
+  assert(unreadableResponse?.code === 'invalid_response' && !unboundedArrayRead,
+    'ordinary response used an unbounded arrayBuffer-only fallback');
+  for (const mode of ['exact', 'overflow', 'header-overflow']) {
+    let emitted = 0;
+    let cancelled = 0;
+    const total = defaultResponseLimit + (mode === 'exact' ? 0 : 1);
+    const body = new ReadableStream({
+      pull(controller) {
+        const count = Math.min(1024 * 1024, total - emitted);
+        if (!count) { controller.close(); return; }
+        controller.enqueue(new Uint8Array(count));
+        emitted += count;
+      },
+      cancel() { cancelled++; },
+    }, { highWaterMark: 0 });
+    const boundedHost = createHost({ gameType: 'example-game', windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator, fetchImpl: async () => new Response(body,
+        mode === 'header-overflow' ? { headers: { 'content-length': String(total) } } : {}),
+    });
+    try {
+      const response = await boundedHost._request('/ordinary-rest').catch(error => error);
+      if (mode === 'exact') {
+        assert((await response.arrayBuffer()).byteLength === defaultResponseLimit,
+          'ordinary REST rejected its exact default byte budget');
+      } else {
+        assert(response?.code === 'invalid_response' && cancelled === 1,
+          `${mode}: ordinary REST response exceeded its default byte budget`);
+        if (mode === 'header-overflow') assert(emitted === 0, 'oversized header read the body');
+      }
+      assert(boundedHost._rawRequests.size === 0 && !body.locked,
+        'default-budget response retained raw capacity or reader lock');
+    } finally { boundedHost.dispose(); }
+  }
+  // Nonstandard readers may ignore both read cancellation and the fetch signal.
+  // The caller retires promptly, but a raw slot is not free until read settles.
+  for (const mode of ['abort', 'timeout', 'dispose']) {
+    let finishRead;
+    let reads = 0;
+    let cancels = 0;
+    let releases = 0;
+    const response = { status: 200, headers: new Headers(),
+      arrayBuffer() { throw new Error('must use the bounded reader'); },
+      body: { getReader() { return {
+        read() {
+          if (++reads === 1) return Promise.resolve({ done: false, value: new Uint8Array(1024 * 1024) });
+          return new Promise(resolve => { finishRead = resolve; });
+        },
+        cancel() { cancels++; return new Promise(() => {}); },
+        releaseLock() { releases++; },
+      }; } },
+    };
+    const blockedHost = createHost({ gameType: 'example-game', windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator, pendingRequestLimit: 1, fetchImpl: async () => response,
+    });
+    const abort = new AbortController();
+    const request = blockedHost._request('/ordinary-rest', {}, {
+      signal: abort.signal, timeoutMs: mode === 'timeout' ? 30 : 1000,
+    }).catch(error => error);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert(reads === 2, 'non-cooperative read fixture did not reach its wait');
+      if (mode === 'abort') abort.abort();
+      if (mode === 'dispose') blockedHost.dispose();
+      const result = await request;
+      assert(result.code === (mode === 'abort' ? 'cancelled' : mode === 'dispose' ? 'disposed' : 'timeout')
+        && cancels === 1 && blockedHost._pendingRequests.size === 0,
+      'non-cooperative reader delayed caller cancellation');
+      if (mode !== 'dispose') {
+        assert(blockedHost._rawRequests.size === 1
+          && (await blockedHost._request('/next').catch(error => error)).code === 'busy',
+        'cancellation falsely retired unfinished raw work');
+      }
+    } finally {
+      finishRead?.({ done: false, value: new Uint8Array(16) });
+      await new Promise(resolve => setImmediate(resolve));
+      assert(reads === 2 && releases === 1 && blockedHost._rawRequests.size === 0,
+        'late reader result resumed buffering or failed to release raw capacity');
+      blockedHost.dispose();
+    }
+  }
+  const commandCall = calls.find((call) => call.url.endsWith('/round/input') && call.body.text === 'hello');
+  assert(commandCall?.url === '/api/game/example-game/round/input'
+    && commandCall.body.text === 'hello'
+    && commandCall.body.session_id === 'server-session'
+    && commandCall.body.game_type === 'example-game'
+    && commandCall.body.lanlan_name === 'Server Neko'
+    && commandCall.body.sdk_route_instance_id === 'route-generation-1',
+  'the command endpoint or trusted runtime identity was not host-owned');
+  const exactTextLength = 400 * 1024 - Buffer.byteLength(JSON.stringify(commandCall.body), 'utf8') + 5;
+  await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength) }));
+  const beforeFinalOversize = calls.length;
+  let finalSizeError;
+  try {
+    await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength + 1) }));
+  } catch (error) { finalSizeError = error; }
+  assert(finalSizeError?.code === 'invalid_payload' && calls.length === beforeFinalOversize,
+    'runtime identity and CSRF bytes escaped the final command budget');
+  commandCsrfFailure = true;
+  const beforeCsrfRetry = calls.length;
+  let retrySizeError;
+  try {
+    await host.executeGameCommand('round:input', commandEnvelope({ text: 'x'.repeat(exactTextLength) }));
+  } catch (error) { retrySizeError = error; }
+  assert(retrySizeError?.code === 'invalid_payload' && calls.length === beforeCsrfRetry + 1,
+    'a longer refreshed CSRF token escaped the command budget on retry');
+  csrfToken = 'test-token';
+  let oversizedCommandError = null;
+  const commandCallsBeforeOversize = calls.filter(
+    (call) => call.url.endsWith('/round/input'),
+  ).length;
+  try {
+    await host.executeGameCommand(
+      'round:input',
+      commandEnvelope({ text: 'x'.repeat((400 * 1024) + 1) }),
+    );
+  } catch (error) { oversizedCommandError = error; }
+  assert(oversizedCommandError?.code === 'invalid_payload'
+    && calls.filter((call) => call.url.endsWith('/round/input')).length === commandCallsBeforeOversize,
+  'a command above its host-owned request policy reached the backend');
+  let staleCommandError = null;
+  try {
+    await host.executeGameCommand(
+      'round:input',
+      commandEnvelope({ text: 'stale' }, 'stale-generation'),
+    );
+  } catch (error) { staleCommandError = error; }
+  assert(staleCommandError?.code === 'session_invalid',
+    'a command escaped its active route-generation fence');
+  const rejectedBeaconEnd = await host.end(
+    { force_end_http_error: true },
+    { useBeacon: true },
+  );
+  assert(rejectedBeaconEnd.ok === false,
+    'the failed beacon fallback probe did not reject route end');
+  const commandAfterRejectedBeaconEnd = await host.executeGameCommand(
+    'round:input',
+    commandEnvelope({ text: 'retry after rejected end' }),
+  );
+  assert((await commandAfterRejectedBeaconEnd.json()).accepted === true,
+    'a rejected beacon fallback retired the still-retryable command route');
   const ungrantedHost = createHost({
     gameType: 'third-party-game',
     sessionId: 'ungranted-session',
@@ -1220,6 +1667,27 @@ async function main() {
       'history must preserve explicit cancellation and timeout options');
   } finally {
     host._request = realMediaRequest;
+  }
+  // Retiring soccer's raw host query must preserve the media character path.
+  const previousMediaCharacter = host._session.lanlanName;
+  host._request = async (url, _init, options) => {
+    const target = new URL(url);
+    assert(target.pathname === '/api/game/example-game/character'
+      && target.searchParams.get('lanlan_name') === 'Media Neko'
+      && options.operation === 'character',
+    'media character lookup lost its routed request or requested identity');
+    return jsonResponse({ lanlan_name: 'Canonical Media Neko' });
+  };
+  try {
+    assert(typeof host.getCharacter === 'undefined',
+      'the retired soccer raw-character compatibility entry remains public');
+    const character = await host.requestMedia('character', { name: 'Media Neko' });
+    assert(character.lanlan_name === 'Canonical Media Neko'
+      && host._session.lanlanName === 'Canonical Media Neko',
+    'media character lookup did not retain the response and canonical binding');
+  } finally {
+    host._request = realMediaRequest;
+    host._session.lanlanName = previousMediaCharacter;
   }
   const realPost = host._post.bind(host);
   host._post = (url, body, options) => {

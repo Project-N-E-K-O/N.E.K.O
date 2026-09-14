@@ -10,10 +10,19 @@ from tests.node_harness import run_node_script
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 NODE_RUNTIME_TESTS = (
+    "test_neko_minigame_avatar_fit_runtime.js",
+    "test_neko_minigame_vision_runtime.js",
+    "test_neko_minigame_audio_host_runtime.js",
+    "test_neko_minigame_context_memory_runtime.js",
+    "test_neko_minigame_leaderboard_runtime.js",
+    "test_neko_minigame_presentation_runtime.js",
+    "test_neko_minigame_speech_output_runtime.js",
     "test_neko_minigame_sdk_runtime.js",
     "test_neko_minigame_lifecycle_runtime.js",
     "test_neko_minigame_same_origin_host_runtime.js",
+    "test_neko_minigame_response_memory_runtime.js",
     "test_neko_minigame_avatar_host_runtime.js",
+    "test_neko_minigame_avatar_speech_runtime.js",
     "test_neko_minigame_drawing_avatar_host_runtime.js",
     "test_drawing_guess_sdk_integration.js",
 )

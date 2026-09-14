@@ -278,6 +278,9 @@ class LLMSessionManager(
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
         ] = None
+        # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
+        # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
+        self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -351,6 +354,9 @@ class LLMSessionManager(
         self._active_text_request_id: Optional[str] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
+        # (request_id, staged image) pairs for offline attachments still queued in
+        # the session's _pending_images; pruned whenever a new image is recorded.
+        self._request_staged_images: deque[tuple[str, object]] = deque()
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪

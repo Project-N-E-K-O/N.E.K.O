@@ -64,9 +64,11 @@ output, and uses `video.currentTime` for scheduling. Pause/buffering stops audio
 resume uses the current offset, seek discards stale reactions and rearms future
 reactions, and playback rate follows video. Generation changes invalidate
 pending mounts. A Web Lock prevents concurrent timeline output from two scene
-windows. The watch-together route suppresses ordinary host/plugin speech for the
-whole viewing session. External text and active voice input do not interrupt the
-reaction timeline. Exit releases media, renderers and the SDK route.
+windows. The watch-together route suppresses ordinary host speech for the whole
+viewing session; plugin responses are spoken by the scene itself in reaction gaps
+(see "Automatic watching and speech ownership"). External text and active voice
+input do not interrupt the reaction timeline. Exit releases media, renderers and
+the SDK route.
 
 Live2D and VRM have symmetric trusted avatar providers mounted through
 `game.avatar`. Mouth opening uses the actual reaction waveform. Available happy
@@ -147,14 +149,34 @@ a new user gesture. Stop watching cancels automatic transitions, pauses media an
 releases the game route, including when startup is still pending.
 
 The same game route stays active during preparation and automatic transitions,
-so ordinary proactive/plugin respond cues remain behind the SessionManager
-takeover gate. The bounded/coalescing proactive queue retains ordering and expiry
-until takeover ends. External text and STT do not invoke generic game speech or
-interrupt the reaction timeline. This deliberately suppresses ordinary speech for
-the entire viewing session; it does not add inter-video live chat replies.
-NEKO Live uses the existing plugin push_message respond channel; no plugin code
-change or automatic stream publishing is performed by this feature. Streaming
-software must already capture the companion player and its audio.
+so ordinary proactive speech stays behind the SessionManager takeover gate.
+External text and STT do not invoke generic game speech or interrupt the
+reaction timeline.
+
+Plugin respond cues (push_message `ai_behavior="respond"` and plugin entry
+results, from every plugin) are not queued behind that gate while this scene is
+open; topic hooks, computer-use/browser results and system cues still are. The
+route holds plugin cues
+in a bounded inbox: at most 12, same `coalesce_key` keeps the newest, the lowest
+priority/newest cue is shed first, and a cue is dropped after its `expires_in_s`
+or five minutes. While the video plays, the scene polls every 2.5 seconds; when
+no reaction is playing and the next reaction (or the video end) is at least five
+seconds away, the backend turns up to three held cues into one line with the
+vision model and the character's official TTS. The line is played only if it
+still fits the gap, through the reaction output (soundtrack ducking and mouth
+movement). A reaction coming due, pause, seek or buffering cuts it off. A
+generated line that never started (the gap closed, playback paused or ended)
+waits up to 60 seconds, at most three, for the next gap or the intermission.
+
+In automatic mode each finished video gets an intermission before the next one
+plays: one summary sentence from the title, description and reactions, plus up
+to three replies to the cues still held. Failures skip the intermission; the
+next video is never blocked. When the scene route ends, cues received in the
+last 90 seconds go back to ordinary proactive delivery and older ones are
+dropped, matching that queue's own expiry. Generated lines are not written to chat history or
+memory, and synthesized audio lives only in a bounded in-memory store for ten
+minutes. NEKO Live needs no plugin change for this; streaming software must
+already capture the companion player and its audio.
 
 Automatic mode allows background playback and uses timeupdate as a media-clock
 fallback when animation frames stop. Browser throttling, device sleep and audio

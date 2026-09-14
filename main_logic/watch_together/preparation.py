@@ -47,6 +47,17 @@ def confirm_preparation(identifier, manager, accepted, duration):
     return {"ok": True}
 
 
+def session_language(manager, render_language=None):
+    """Resolve the speech language: explicit preference, request, then session."""
+    from utils.language_utils import get_global_language_full, normalize_language_code
+    explicit_language = (getattr(manager, "user_language", None)
+                         if getattr(manager, "_user_language_explicit", False) else None)
+    return normalize_language_code(
+        explicit_language or render_language or getattr(manager, "_conversation_render_language", None)
+        or getattr(manager, "_conversation_turn_language", None)
+        or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+
+
 async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None, render_language=None):
     if tasks:
         raise ValueError("A video is already being prepared")
@@ -54,13 +65,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     # Another request may have claimed the single slot during initialization.
     if tasks:
         raise ValueError("A video is already being prepared")
-    from utils.language_utils import get_global_language_full, normalize_language_code
-    explicit_language = (getattr(manager, "user_language", None)
-                         if getattr(manager, "_user_language_explicit", False) else None)
-    language = normalize_language_code(
-        explicit_language or render_language or getattr(manager, "_conversation_render_language", None)
-        or getattr(manager, "_conversation_turn_language", None)
-        or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+    language = session_language(manager, render_language)
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
     persona = str(getattr(manager, "lanlan_prompt", "") or "")
     job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": [],

@@ -13,13 +13,14 @@ declare namespace NekoMiniGame {
     | 'audio'
     | 'media-timeline'
     | 'speech-output'
+    | 'vision'
     | 'context-read'
     | 'memory'
     | 'storage'
     | 'leaderboard-local'
     | 'leaderboard-server'
     | (string & {});
-  type ContractKind = 'event' | 'state' | 'control' | 'result';
+  type ContractKind = 'event' | 'state' | 'control' | 'result' | 'command';
   type ContractSchemaType =
     | 'null'
     | 'boolean'
@@ -46,11 +47,24 @@ declare namespace NekoMiniGame {
 
   type ContractDeclaration = ContractSchema | readonly string[];
 
+  interface CommandRequestSchema {
+    type: 'object';
+    properties?: Readonly<Record<string, ContractDeclaration>>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
+  interface CommandContract {
+    request: CommandRequestSchema;
+    response: ContractDeclaration;
+  }
+
   interface ManifestContracts {
     events?: Readonly<Record<string, ContractDeclaration>>;
     states?: Readonly<Record<string, ContractDeclaration>>;
     controls?: Readonly<Record<string, ContractDeclaration>>;
     results?: Readonly<Record<string, ContractDeclaration>>;
+    commands?: Readonly<Record<string, CommandContract>>;
   }
 
   interface Manifest {
@@ -159,6 +173,7 @@ declare namespace NekoMiniGame {
   interface RuntimeSession {
     readonly id: string;
     readonly characterName: string;
+    readonly routeInstanceId: string;
   }
 
   interface RuntimeEvent<T = unknown> {
@@ -187,6 +202,8 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
+    /** Resolve and bind locally before pregame requests. Omit name for current character. */
+    bindCharacter(name?: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
     /**
      * Accepts object interfaces without index signatures. Static checking only
      * excludes primitives; runtime requires a bounded plain JSON object and rejects
@@ -204,7 +221,7 @@ declare namespace NekoMiniGame {
   interface GameProtocolEnvelope<T = JsonValue> {
     readonly protocolVersion: '1';
     readonly sequence: number;
-    readonly kind: Exclude<ContractKind, 'control'>;
+    readonly kind: Exclude<ContractKind, 'control' | 'command'>;
     readonly type: string;
     readonly timestamp: number;
     readonly sessionId: string;
@@ -242,6 +259,16 @@ declare namespace NekoMiniGame {
     readonly connected: boolean;
     on(type: string, handler: (control: ControlEnvelope) => void): () => void;
     onError(handler: (error: { code: string; message: string }) => void): () => void;
+  }
+
+  interface Commands {
+    readonly declared: readonly string[];
+    readonly pendingCount: number;
+    execute<T extends JsonValue = JsonValue>(
+      name: string,
+      payload: Readonly<Record<string, JsonValue>>,
+      options?: RequestOptions,
+    ): Promise<Response<T>>;
   }
 
   interface Dialogue {
@@ -569,18 +596,32 @@ declare namespace NekoMiniGame {
     disposeAll(): void;
   }
 
-  interface AvatarModel { type: 'live2d' | 'vrm'; path: string }
+  interface AvatarModel { type: 'live2d' | 'vrm' | 'mmd' | 'pngtuber'; path: string }
   interface AvatarCharacterDescriptor {
     readonly name: string;
-    readonly model: Readonly<{ type: 'live2d' | 'vrm' | 'mmd' | 'pngtuber'; path: string }> | null;
+    readonly model: Readonly<AvatarModel> | null;
     readonly rendererAvailable: boolean;
+    /** Empty locale + resolved=true means explicitly no stored preference; false means unavailable. */
+    readonly languagePreference?: Readonly<{ locale: string; resolved: boolean }>;
+    /** Canonical host-supplied alternatives, at most four. Never invented by the game. */
+    readonly fallbackModels?: readonly Readonly<AvatarModel>[];
   }
   interface AvatarMountConfiguration {
     slot: string;
+    /** Matching session characters automatically follow SDK speech playback. */
+    characterName?: string;
     model: AvatarModel;
-    viewport: { mode: 'fixed' | 'container' | 'host-window'; width?: number; height?: number };
+    /** Maximum display rectangle. Fixed mode requires both dimensions. */
+    viewport: { mode: 'fixed'; width: number; height: number }
+      | { mode: 'container' | 'host-window'; width?: number; height?: number };
     fit?: {
-      mode?: 'contain' | 'cover' | 'native';
+      /** contain is the default; width/height can crop the other axis. */
+      mode?: 'contain' | 'cover' | 'native' | 'width' | 'height';
+      /** Default true. False preserves native size times scaleMultiplier. */
+      autoScale?: boolean;
+      /** Soft CSS-pixel minima; ignored in manual/native mode. */
+      minWidth?: number;
+      minHeight?: number;
       align?: string;
       padding?: number;
       scaleMultiplier?: number;
@@ -592,6 +633,9 @@ declare namespace NekoMiniGame {
     readonly disposed: boolean;
     readonly config: Readonly<AvatarMountConfiguration>;
     setModel(model: AvatarModel): Promise<unknown>;
+    setView(view: { scale: number; x: number; y: number }): Promise<unknown>;
+    /** Manual override for custom rendering; not needed for normal SDK speech. */
+    setSpeaking(active: boolean): Promise<unknown>;
     focus(point: { x: number; y: number }): unknown;
     setEmotion(name: string): unknown;
     pause(): unknown;
@@ -612,11 +656,41 @@ declare namespace NekoMiniGame {
     disposeAll(): void;
   }
 
+  type VisionUnit = 'px' | 'percent';
+  interface VisionPoint { x: number; y: number }
+  type VisionRegion =
+    | { kind: 'element'; selector: string }
+    | { kind: 'rect'; unit: VisionUnit; x: number; y: number; width: number; height: number }
+    | { kind: 'edges'; unit: VisionUnit; top: number; right: number; bottom: number; left: number }
+    | { kind: 'corners'; unit: VisionUnit; topLeft: VisionPoint; topRight: VisionPoint;
+        bottomRight: VisionPoint; bottomLeft: VisionPoint };
+  interface VisionResult { readonly text: string; readonly width: number; readonly height: number }
+  type VisionImageMimeType = 'image/jpeg' | 'image/png' | 'image/webp';
+  type VisionAttachment = {
+    type: 'image'; label?: string;
+  } & ({ source: string | Blob; mimeType?: VisionImageMimeType }
+    | { source: Uint8Array | ArrayBuffer; mimeType: VisionImageMimeType });
+  interface VisionAnalysisResult { readonly text: string }
+  interface Vision {
+    readonly pendingCount: number;
+    /** Ordered images in one call; no screen-sharing permission for supplied images. */
+    analyze(input: { text: string; attachments: readonly VisionAttachment[] }, options?: RequestOptions): Promise<VisionAnalysisResult>;
+    /** One user-authorized capture, active runtime required. No automatic speech or memory writes. */
+    analyze(input: { region: VisionRegion; prompt: string }, options?: RequestOptions): Promise<VisionResult>;
+  }
+
   interface Client {
     readonly media: {
-      request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover', payload?: Record<string, JsonValue>): Promise<JsonValue>;
+      request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover' | 'live', payload?: Record<string, JsonValue>): Promise<JsonValue>;
       mount(config: { video: HTMLVideoElement; job: string; version: string; signal?: AbortSignal; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
         play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
+        /**
+         * Speak a line returned by `request('live')`. Resolves 'completed' once it finished,
+         * 'interrupted' when it started and a due reaction, pause, seek or disposal cut it off, or
+         * 'skipped' when it never started (another line or a reaction was playing, or playback
+         * paused, buffered or seeked during the fetch). Only a skipped line is safe to retry.
+         */
+        say(line: { text: string; audio: string; duration?: number }): Promise<'completed' | 'interrupted' | 'skipped'>;
       }>;
     };
     readonly manifest: NormalizedManifest;
@@ -626,6 +700,8 @@ declare namespace NekoMiniGame {
     readonly events: Events;
     readonly state: StatePublisher;
     readonly controls: Controls;
+    readonly commands: Commands;
+    readonly vision: Vision;
     readonly results: ResultPublisher;
     readonly context: ContextReader;
     readonly memory: Memory;

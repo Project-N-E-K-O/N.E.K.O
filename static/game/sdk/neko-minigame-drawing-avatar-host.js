@@ -10,6 +10,10 @@
 
   const SLOT = 'drawing-guess-character';
   const CHARACTER_LIMIT = 256;
+  const QUERY_LIMIT = 4;
+  // Catalogs and model JSON are not command/image payloads. Keep a separate,
+  // finite input budget, enforced before materializing the parsed object.
+  const MAX_JSON_BYTES = 16 * 1024 * 1024;
   const NAME_LIMIT = 128;
   const PATH_LIMIT = 2048;
   const VRM_DEFAULT_IDLE = '/static/vrm/animation/wait03.vrma.gz';
@@ -95,6 +99,9 @@
     if (!Array.isArray(fileReferences.Motions.PreviewAll)) {
       fileReferences.Motions.PreviewAll = [];
     }
+    if (configuredMotionIndex(fileReferences.Motions.PreviewAll, configuredPath) < 0) {
+      fileReferences.Motions.PreviewAll.push({ File: comparableMotionPath(configuredPath) });
+    }
   }
 
   function boundedNumber(value, minimum, maximum, fallback) {
@@ -105,9 +112,9 @@
 
   function normalizeView(value = {}) {
     return Object.freeze({
-      scale: boundedNumber(value.scale, 0.5, 5000, 325.63),
-      x: boundedNumber(value.x, -5000, 5000, -0.96),
-      y: boundedNumber(value.y, -5000, 5000, 66.41),
+      scale: boundedNumber(value.scale, 0.5, 5000, 100),
+      x: boundedNumber(value.x, -5000, 5000, 0),
+      y: boundedNumber(value.y, -5000, 5000, 0),
     });
   }
 
@@ -174,7 +181,7 @@
     let pngPath = cleanString(pngtuber.idle_image)
       || cleanString(character?.pngtuber_idle_image)
       || (typeof character?.pngtuber === 'string' ? cleanString(character.pngtuber) : '')
-      || modelPath;
+      || (['pngtuber', 'png', 'png-tuber'].includes(modelType.toLowerCase()) ? modelPath : '');
     const type = modelType.toLowerCase();
     const subtype = live3dSubType.toLowerCase();
     if (!vrmPath && (type === 'vrm' || (type === 'live3d' && subtype === 'vrm'))) vrmPath = modelPath;
@@ -210,6 +217,7 @@
       name,
       type: effective,
       path: cleanString(paths[effective]),
+      paths: Object.freeze({ ...paths }),
       pngtuber,
       lighting: safeLighting(firstOwnValue([
         [vrm, 'lighting'],
@@ -227,57 +235,171 @@
     const documentImpl = options.documentImpl || windowImpl.document;
     const fetchImpl = options.fetchImpl || windowImpl.fetch?.bind(windowImpl);
     const avatarRuntime = options.avatarRuntime || windowImpl.NekoMiniGameAvatarHost;
+    const slot = cleanString(options.slot, 64) || SLOT;
+    const containerId = cleanString(options.containerId, 128) || 'model-stage';
+    const mmdContainerId = cleanString(options.mmdContainerId, 128) || LAYERS.mmd;
+    const mmdCanvasId = cleanString(options.mmdCanvasId, 128) || 'mmd-canvas';
+    const pngContainerId = cleanString(options.pngContainerId, 128) || LAYERS.pngtuber;
+    const layers = options.extendedOnly
+      ? { mmd: mmdContainerId, pngtuber: pngContainerId } : LAYERS;
     if (!avatarRuntime || typeof avatarRuntime.create !== 'function') {
       fail('invalid_host', 'The trusted mini-game Avatar runtime is unavailable');
     }
     if (typeof fetchImpl !== 'function') fail('invalid_host', 'A trusted fetch implementation is required');
 
     const privateDescriptorsByName = new Map();
-    let charactersPromise = null;
+    const lifetime = new (windowImpl.AbortController || AbortController)();
+    const queries = new Set();
     let disposed = false;
 
-    function json(url, requestOptions = {}) {
-      return Promise.resolve(fetchImpl(url, {
-        cache: 'no-store', credentials: 'same-origin', ...requestOptions,
-      }))
-        .then((response) => {
-          if (!response?.ok) fail('request_failed', 'The Avatar character request failed', {
-            status: Number(response?.status || 0),
-          });
-          return response.json();
-        });
-    }
-
-    function loadCharacters() {
-      if (!charactersPromise) {
-        charactersPromise = json('/api/characters').then((payload) => {
-          const raw = payload?.['猫娘'];
-          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.freeze({});
-          const result = Object.create(null);
-          for (const [rawName, value] of Object.entries(raw).slice(0, CHARACTER_LIMIT)) {
-            const name = cleanString(rawName, NAME_LIMIT);
-            if (name && value && typeof value === 'object' && !Array.isArray(value)) result[name] = value;
-          }
-          return Object.freeze(result);
-        }).finally(() => { charactersPromise = null; });
+    async function query(requestOptions, invoke) {
+      if (disposed) fail('disposed', 'The Avatar host has been disposed');
+      if (requestOptions.signal?.aborted) fail('cancelled', 'Avatar query cancelled');
+      if (queries.size >= QUERY_LIMIT) fail('busy', 'Avatar query limit reached');
+      const requestedTimeout = requestOptions.timeoutMs ?? 10000;
+      if (!Number.isFinite(requestedTimeout) || requestedTimeout <= 0) {
+        fail('invalid_timeout', 'Avatar query timeout must be positive and finite');
       }
-      return charactersPromise;
+      const timeoutMs = Math.min(30000, Math.max(1, Math.floor(requestedTimeout)));
+      const controller = new (windowImpl.AbortController || AbortController)();
+      let reason = '';
+      let cancel;
+      const cancelled = new Promise((_, reject) => {
+        cancel = (code) => {
+          if (reason) return;
+          reason = code;
+          controller.abort();
+          reject(new DrawingAvatarHostError(code, 'Avatar query cancelled'));
+        };
+      });
+      const onAbort = () => cancel('cancelled');
+      const onDispose = () => cancel('disposed');
+      requestOptions.signal?.addEventListener('abort', onAbort, { once: true });
+      lifetime.signal.addEventListener('abort', onDispose, { once: true });
+      const timer = windowImpl.setTimeout(() => cancel('timeout'), timeoutMs);
+      queries.add(controller);
+      // Caller cancellation is prompt, but ignored aborts keep their raw slot
+      // until actual settlement so repeated timeouts cannot accumulate work.
+      const raw = Promise.resolve().then(() => {
+        if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
+        return invoke({ signal: controller.signal, managedDeadline: true });
+      }).finally(() => queries.delete(controller));
+      try {
+        const result = await Promise.race([raw, cancelled]);
+        if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
+        return result;
+      } finally {
+        windowImpl.clearTimeout(timer);
+        requestOptions.signal?.removeEventListener('abort', onAbort);
+        lifetime.signal.removeEventListener('abort', onDispose);
+      }
     }
 
-    async function currentCharacterName() {
-      const payload = await json('/api/characters/current_catgirl');
+    async function json(url, requestOptions = {}) {
+      const { managedDeadline = false, ...fetchOptions } = requestOptions;
+      const controller = new (windowImpl.AbortController || AbortController)();
+      const signals = [lifetime.signal, requestOptions.signal].filter(Boolean);
+      const abort = () => controller.abort();
+      for (const signal of signals) {
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }
+      // Only query() owns a total deadline. Mount signals represent disposal,
+      // so their model/settings reads still need a local network deadline.
+      const timer = managedDeadline ? null : windowImpl.setTimeout(abort, 10000);
+      try {
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        const response = await fetchImpl(url, {
+          cache: 'no-store', credentials: 'same-origin', ...fetchOptions, signal: controller.signal,
+        });
+        const cancelBody = () => {
+          try { response?.body?.cancel?.()?.catch?.(() => {}); } catch (_) { /* already closed */ }
+        };
+        if (controller.signal.aborted) { cancelBody(); fail('cancelled', 'Avatar request cancelled'); }
+        if (!response?.ok) {
+          cancelBody();
+          fail('request_failed', 'The Avatar character request failed', {status: Number(response?.status || 0)});
+        }
+        if (Number(response.headers?.get?.('Content-Length')) > MAX_JSON_BYTES) {
+          cancelBody(); fail('invalid_response', 'Avatar JSON response exceeds 16 MiB');
+        }
+        if (typeof response.body?.getReader !== 'function') {
+          cancelBody(); fail('invalid_response', 'Avatar fetch must return a readable Response');
+        }
+        const reader = response.body.getReader();
+        let complete = false;
+        let bytes = 0;
+        let text = '';
+        const cancelReader = () => {
+          try { reader.cancel()?.catch?.(() => {}); } catch (_) { /* already closed */ }
+        };
+        controller.signal.addEventListener('abort', cancelReader, {once:true});
+        let value;
+        try {
+          const decoder = new TextDecoder('utf-8');
+          while (true) {
+            if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+            const chunk = await reader.read();
+            if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+            if (chunk.done) { complete = true; break; }
+            bytes += chunk.value.byteLength;
+            if (bytes > MAX_JSON_BYTES) fail('invalid_response', 'Avatar JSON response exceeds 16 MiB');
+            text += decoder.decode(chunk.value, {stream:true});
+          }
+          text += decoder.decode();
+          try { value = JSON.parse(text); }
+          catch (_) { fail('invalid_response', 'Invalid Avatar JSON response'); }
+        } finally {
+          controller.signal.removeEventListener('abort', cancelReader);
+          if (!complete) cancelReader();
+          reader.releaseLock();
+          text = '';
+        }
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        return value;
+      } catch (cause) {
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        throw cause;
+      } finally {
+        if (timer !== null) windowImpl.clearTimeout(timer);
+        for (const signal of signals) signal.removeEventListener('abort', abort);
+      }
+    }
+
+    function loadCharacters(requestOptions) {
+      // Each query owns its request; cancelling one consumer must not abort
+      // another consumer or leave it attached to an abandoned shared promise.
+      return json('/api/characters', requestOptions).then((payload) => {
+        const raw = payload?.['猫娘'];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.freeze({});
+        const result = Object.create(null);
+        for (const [rawName, value] of Object.entries(raw).slice(0, CHARACTER_LIMIT)) {
+          const name = cleanString(rawName, NAME_LIMIT);
+          if (name && value && typeof value === 'object' && !Array.isArray(value)) result[name] = value;
+        }
+        return Object.freeze(result);
+      });
+    }
+
+    async function currentCharacterName(requestOptions) {
+      const payload = await json('/api/characters/current_catgirl', requestOptions);
       return cleanString(payload?.current_catgirl, NAME_LIMIT);
     }
 
-    async function resolveLive2DPath(name, fallback) {
+    async function resolveLive2DPath(name, fallback, requestOptions, primary) {
       if (!name) return fallback;
       try {
         const payload = await json(
           `/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(name)}`,
+          requestOptions,
         );
+        // The global default belongs to the primary Live2D policy, not to a
+        // different renderer's character-owned alternatives.
+        if (!primary && payload?.model_info?.is_fallback === true) return '';
         const resolved = payload?.success ? cleanString(payload?.model_info?.path) : '';
         return resolved || fallback;
-      } catch (_) {
+      } catch (cause) {
+        if (requestOptions.signal.aborted || cause?.code === 'cancelled') throw cause;
         return fallback;
       }
     }
@@ -291,6 +413,9 @@
         name: descriptor.name,
         model,
         rendererAvailable: Boolean(model),
+        fallbackModels: Object.freeze(TYPES.filter(type => type !== descriptor.type)
+          .map(type => ({ type, path: descriptor.paths[type] }))
+          .filter(model => model.path).map(Object.freeze)),
       });
     }
 
@@ -299,49 +424,102 @@
       const descriptor = name ? privateDescriptorsByName.get(name) : null;
       const type = cleanString(model?.type, 32).toLowerCase();
       const path = cleanString(model?.path);
-      if (!descriptor || !descriptor.path
-          || descriptor.type !== type || descriptor.path !== path) {
+      const configuredPath = descriptor?.paths[type];
+      if (!descriptor || !TYPES.includes(type) || !path || !configuredPath
+          || configuredPath !== path) {
         fail('model_not_allowed', 'Avatar model is not the trusted character model', {
           characterName: name,
         });
       }
-      return descriptor;
+      return Object.freeze({ ...descriptor, type, path });
     }
 
-    async function getCharacter(name = '') {
+    function getCharacter(name = '', requestOptions = {}) {
+      return query(requestOptions, (managed) => readCharacter(name, managed));
+    }
+
+    async function readCharacter(name, requestOptions) {
       if (disposed) fail('disposed', 'The Drawing Guess Avatar host has been disposed');
-      const requested = cleanString(name, NAME_LIMIT) || await currentCharacterName();
+      const requested = cleanString(name, NAME_LIMIT) || await currentCharacterName(requestOptions);
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
       if (!requested) return null;
-      const characters = await loadCharacters();
+      const characters = await loadCharacters(requestOptions);
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
       const character = Object.prototype.hasOwnProperty.call(characters, requested)
         ? characters[requested]
         : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
-      if (configured.type === 'live2d') {
-        configured.path = await resolveLive2DPath(requested, configured.path);
+      const relativeTypes = ['vrm', 'mmd'].filter((type) => {
+        const path = cleanString(configured.paths[type]).replace(/\\/g, '/');
+        return path && !/^(https?:\/\/|\/)/.test(path);
+      });
+      if (relativeTypes.length) {
+        // The browser cannot decide which filesystem owns a relative model.
+        // Use the existing game-independent character projection, not a
+        // guessed static prefix, for both primary and fallback 3D models.
+        let resolved;
+        try {
+          resolved = await json(
+            `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
+          );
+        } catch (cause) {
+          if (requestOptions.signal.aborted || cause?.code === 'cancelled'
+              || relativeTypes.includes(configured.type)) throw cause;
+          // Optional 3D fallback failure must not disable a usable primary.
+          // Omit unresolved paths instead of authorizing filesystem aliases.
+          resolved = { lanlan_name: requested };
+        }
+        if (resolved?.lanlan_name !== requested) {
+          fail('invalid_response', 'Avatar character identity changed');
+        }
+        const paths = { ...configured.paths };
+        for (const type of relativeTypes) {
+          paths[type] = cleanString(resolved?.[`${type}_path`]);
+          if (configured.type === type) configured.path = paths[type];
+        }
+        configured.paths = Object.freeze(paths);
+      }
+      if (configured.type === 'live2d' || configured.paths.live2d) {
+        // An optional fallback is only advertised when canonical resolution
+        // succeeds. Preserve the existing primary Live2D compatibility path.
+        const path = await resolveLive2DPath(requested,
+          configured.type === 'live2d' ? configured.paths.live2d : '', requestOptions,
+          configured.type === 'live2d');
+        configured.paths = Object.freeze({ ...configured.paths, live2d: path });
+        if (configured.type === 'live2d') configured.path = path;
       }
       const descriptor = Object.freeze({
         ...configured,
         path: cleanString(configured.path),
       });
+      if (disposed) fail('disposed', 'The Avatar host was disposed during character lookup');
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
+      if (!privateDescriptorsByName.has(descriptor.name) && privateDescriptorsByName.size >= CHARACTER_LIMIT) {
+        privateDescriptorsByName.delete(privateDescriptorsByName.keys().next().value);
+      }
       privateDescriptorsByName.set(descriptor.name, descriptor);
       return publicDescriptor(descriptor);
     }
 
-    async function listCharacters() {
-      if (disposed) fail('disposed', 'The Drawing Guess Avatar host has been disposed');
-      const characters = await loadCharacters();
-      return Object.freeze(Object.keys(characters).slice(0, CHARACTER_LIMIT));
+    function listCharacters(requestOptions = {}) {
+      return query(requestOptions, async (managed) => {
+        const characters = await loadCharacters(managed);
+        return Object.freeze(Object.keys(characters).slice(0, CHARACTER_LIMIT));
+      });
     }
 
-    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal, timeoutMs = 10000) {
+    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal,
+      timeoutMs = 10000, hasFailed = () => false) {
       if (signal?.aborted) {
         return Promise.reject(new DrawingAvatarHostError(
           'disposed', `${label} renderer load was cancelled`, { type: label },
         ));
       }
       if (predicate()) return Promise.resolve();
+      if (hasFailed()) return Promise.reject(new DrawingAvatarHostError(
+        'renderer_unavailable', `${label} failed to initialize`, { type: label },
+      ));
       return new Promise((resolve, reject) => {
         let settled = false;
         let timer = null;
@@ -373,11 +551,16 @@
             'renderer_unavailable', `${label} timed out`, { type: label },
           ));
         }, timeoutMs);
+        // An earlier loader failure may predate this mount's subscription.
+        // Readiness wins if a later successful attempt left an old marker.
+        if (signal?.aborted) onAbort();
+        else if (predicate()) finish();
+        else if (hasFailed()) onFailed();
       });
     }
 
     function setLayer(kind) {
-      for (const [candidate, id] of Object.entries(LAYERS)) {
+      for (const [candidate, id] of Object.entries(layers)) {
         const node = documentImpl?.getElementById?.(id);
         if (!node) continue;
         const hidden = candidate !== kind;
@@ -402,7 +585,8 @@
       return windowImpl.appState?.globalAnalyser || windowImpl.globalAnalyser || null;
     }
 
-    function createController({ config, signal }) {
+    function createController({ config, viewport, signal }) {
+      const speechAnalyser = avatarRuntime.createSpeechAnalyser();
       const characterName = cleanString(config?.characterName, NAME_LIMIT);
       const descriptor = trustedDescriptorForModel(characterName, config?.model);
       const state = {
@@ -411,7 +595,11 @@
         descriptor,
         model: null,
         view: normalizeView(),
-        viewport: null,
+        viewport,
+        fit: config.fit || {},
+        layout: null,
+        nativeLive2DScale: null,
+        imageCleanup: null,
         baseViewport: null,
         ready: false,
         paused: false,
@@ -462,6 +650,7 @@
 
       function stopSpeaking() {
         state.speaking = false;
+        speechAnalyser.clear();
         stopLive2DMouth();
         const manager = state.manager;
         if (state.kind === 'vrm') {
@@ -566,10 +755,14 @@
       }
 
       function disposeManager() {
+        state.imageCleanup?.();
+        state.imageCleanup = null;
         if (state.disposePromise) return state.disposePromise;
         stopSpeaking();
         const manager = state.manager;
         const kind = state.kind;
+        const referenceModel = kind === 'vrm' ? manager?.currentModel?.vrm?.scene : manager?.currentModel?.mesh;
+        if (referenceModel) avatarRuntime.releasePerspectiveReference(referenceModel, manager.camera);
         state.manager = null;
         state.ready = false;
         if (!manager) return Promise.resolve();
@@ -588,35 +781,114 @@
         if (!manager?.pixi_app?.renderer || !model) return;
         const width = Math.max(1, Math.round(state.viewport.width));
         const height = Math.max(1, Math.round(state.viewport.height));
-        if (!state.baseViewport) state.baseViewport = { width, height };
-        const fitWidth = Math.max(1, Math.min(width, state.baseViewport.width));
-        const fitHeight = Math.max(1, Math.min(height, state.baseViewport.height));
-        try {
-          manager.pixi_app.renderer.resize(width, height);
-          const canvas = manager.pixi_app.view || manager.pixi_app.renderer.view;
-          canvas?.style?.setProperty?.('width', `${width}px`, 'important');
-          canvas?.style?.setProperty?.('height', `${height}px`, 'important');
-          model.anchor?.set?.(0.5, 0.5);
-          let bounds = null;
-          try { bounds = model.getLocalBounds?.() || null; } catch (_) { bounds = null; }
-          const rawWidth = bounds?.width > 0 ? bounds.width : 1200;
-          const rawHeight = bounds?.height > 0 ? bounds.height : 1800;
-          let scale = Math.min(fitWidth * 0.78 / rawWidth, fitHeight * 0.86 / rawHeight)
-            * (state.view.scale / 100);
-          if (!Number.isFinite(scale) || scale <= 0) scale = Math.min(fitWidth, fitHeight) / 1600;
-          scale = Math.max(0.025, Math.min(0.68, scale));
-          model.scale?.set?.(scale);
-          model.x = fitWidth * 0.5;
-          model.y = fitHeight * 0.5;
-          let rendered = null;
-          try { rendered = model.getBounds?.() || null; } catch (_) { rendered = null; }
-          if (rendered?.width > 0 && rendered?.height > 0) {
-            model.x += fitWidth * 0.5 - (rendered.x + rendered.width / 2);
-            model.y += fitHeight * 0.5 - (rendered.y + rendered.height / 2);
+        manager.pixi_app.renderer.resize(width, height);
+        const canvas = manager.pixi_app.view || manager.pixi_app.renderer.view;
+        canvas?.style?.setProperty?.('width', `${width}px`, 'important');
+        canvas?.style?.setProperty?.('height', `${height}px`, 'important');
+        model.anchor?.set?.(0.5, 0.5);
+        const bounds = model.getLocalBounds?.();
+        if (!bounds?.width || !bounds?.height) return;
+        if (state.nativeLive2DScale == null) state.nativeLive2DScale = Math.abs(model.scale.x) || 1;
+        const native = state.nativeLive2DScale;
+        const layout = avatarRuntime.fitRectangle({ width: bounds.width * native,
+          height: bounds.height * native }, state.viewport, state.fit);
+        const scale = native * layout.scale * state.view.scale / 100;
+        model.scale?.set?.(scale);
+        const aligned = avatarRuntime.fitRectangle({ width: bounds.width * scale,
+          height: bounds.height * scale }, state.viewport,
+          { ...state.fit, autoScale: false, scaleMultiplier: 1 });
+        const rendered = model.getBounds?.();
+        if (rendered?.width > 0 && rendered?.height > 0) {
+          model.x += aligned.x - rendered.x;
+          model.y += aligned.y - rendered.y;
+        }
+        model.x += width * (state.view.x / 100);
+        model.y += height * (state.view.y / 100);
+        state.layout = layout;
+      }
+
+      function fitPngtuber(manager) {
+        if (state.disposed || !state.viewport || !manager?.image) return;
+        const image = manager.image;
+        const width = image.naturalWidth || image.width;
+        const height = image.naturalHeight || image.height;
+        if (!(width > 0 && height > 0)) return;
+        const layout = avatarRuntime.fitRectangle({ width, height }, state.viewport, state.fit);
+        const scaled = { width: layout.width * state.view.scale / 100,
+          height: layout.height * state.view.scale / 100 };
+        const aligned = avatarRuntime.fitRectangle(scaled, state.viewport,
+          { ...state.fit, autoScale: false, scaleMultiplier: 1 });
+        const bounce = manager.currentSpeakingBounceTransform?.() || {};
+        const breathing = manager.currentLayeredBreathingTransform?.() || {};
+        const hop = manager.currentTalkingHopTransform?.() || {};
+        const sx = (manager.config?.mirror ? -1 : 1) * (bounce.scaleX || 1)
+          * (breathing.scaleX || 1) * (hop.scaleX || 1);
+        const sy = (bounce.scaleY || 1) * (breathing.scaleY || 1) * (hop.scaleY || 1);
+        Object.assign(image.style, {
+          position: 'absolute', left: `${aligned.x + state.viewport.width * state.view.x / 100}px`,
+          top: `${aligned.y + state.viewport.height * state.view.y / 100}px`, right: 'auto', bottom: 'auto',
+          width: `${scaled.width}px`, height: `${scaled.height}px`, maxWidth: 'none', maxHeight: 'none',
+          transformOrigin: 'center bottom',
+          transform: `translateY(${(bounce.y || 0) + (breathing.y || 0) + (hop.y || 0)}px) scale(${sx}, ${sy})`,
+        });
+        state.layout = layout;
+      }
+
+      function observeImage(manager) {
+        const image = manager.imageElement;
+        if (!image?.addEventListener || manager.image !== image) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          let waiting = true;
+          let timer = null;
+          const finish = (error) => {
+            if (!waiting) return;
+            waiting = false;
+            if (timer !== null) windowImpl.clearTimeout(timer);
+            timer = null;
+            signal?.removeEventListener('abort', onAbort);
+            if (error) reject(error); else resolve();
+          };
+          const onLoad = () => { fitPngtuber(manager); finish(); };
+          const onError = () => finish(new DrawingAvatarHostError('renderer_unavailable', 'Avatar image failed to load'));
+          const onAbort = () => finish(new DrawingAvatarHostError('disposed', 'Avatar image load cancelled'));
+          image.addEventListener('load', onLoad);
+          image.addEventListener('error', onError);
+          signal?.addEventListener('abort', onAbort, { once: true });
+          // One listener pair per controller, retained for talking/emotion image
+          // changes; one initial timer, released on success/error/cancel/dispose.
+          state.imageCleanup = () => {
+            image.removeEventListener('load', onLoad);
+            image.removeEventListener('error', onError);
+            onAbort();
+          };
+          timer = windowImpl.setTimeout(onError, 15000);
+          if (signal?.aborted) onAbort();
+          else if (image.complete) {
+            if (image.naturalWidth > 0) onLoad(); else onError();
           }
-          model.x += fitWidth * (state.view.x / 100);
-          model.y += fitHeight * (state.view.y / 100);
-        } catch (_) { /* a later ResizeObserver pass can retry */ }
+        });
+      }
+
+      function fitRenderer() {
+        if (!state.viewport || !state.manager) return;
+        const manager = state.manager;
+        const layer = documentImpl.getElementById(layers[state.kind]);
+        if (layer?.style) Object.assign(layer.style, {
+          position: 'absolute', left: '0', top: '0',
+          width: `${state.viewport.width}px`, height: `${state.viewport.height}px`, overflow: 'hidden',
+        });
+        if (state.kind === 'live2d') fitLive2D();
+        else if (state.kind === 'pngtuber') fitPngtuber(manager);
+        else {
+          manager.onWindowResize?.();
+          manager.renderer?.setSize?.(state.viewport.width, state.viewport.height);
+          manager.effect?.setSize?.(state.viewport.width, state.viewport.height);
+          const model = state.kind === 'mmd' ? manager.currentModel?.mesh : manager.currentModel?.vrm?.scene;
+          if (model && manager.camera) {
+            state.layout = avatarRuntime.fitPerspectiveModel(windowImpl.THREE, model, manager.camera,
+              state.viewport, state.fit, state.view);
+          }
+        }
       }
 
       async function restoreLive2DIdle(manager, descriptor, generation) {
@@ -702,9 +974,11 @@
         const initialized = typeof manager.ensurePIXIReady === 'function'
           ? manager.ensurePIXIReady('live2d-canvas', 'live2d-container', {
             backgroundAlpha: 0, antialias: true,
+            resizeMode: 'fixed', width: state.viewport.width, height: state.viewport.height,
           })
           : manager.initPIXI('live2d-canvas', 'live2d-container', {
             backgroundAlpha: 0, antialias: true,
+            resizeMode: 'fixed', width: state.viewport.width, height: state.viewport.height,
           });
         await initialized;
         await retireIfStale(manager, 'live2d', generation);
@@ -732,24 +1006,42 @@
         suppressChrome(manager);
         const path = typeof windowImpl.convertVRMModelPath === 'function'
           ? windowImpl.convertVRMModelPath(model.path) : model.path;
-        const ok = await manager.initThreeJS('vrm-canvas', 'vrm-container', descriptor?.lighting || null);
+        const ok = await manager.initThreeJS('vrm-canvas', 'vrm-container', descriptor?.lighting || null,
+          { embed: true, resizeMode: 'fixed' });
         await retireIfStale(manager, 'vrm', generation);
         if (ok === false) fail('renderer_unavailable', 'VRM scene initialization failed');
         suppressChrome(manager);
         await manager.loadModel(path, {
           canvasId: 'vrm-canvas',
           containerId: 'vrm-container',
+          embed: true,
           // Never let this isolated renderer borrow another character's global idle motion.
           idleAnimation: descriptor?.idleAnimation || VRM_DEFAULT_IDLE,
           idleAnimations: descriptor?.idleAnimations || undefined,
         });
         await retireIfStale(manager, 'vrm', generation);
+        await avatarRuntime.preparePerspectiveReference(windowImpl.THREE, manager, {
+          type: 'vrm', signal, isCurrent: () => !state.disposed && state.modelGeneration === generation,
+        });
+        await retireIfStale(manager, 'vrm', generation);
+        const presentationIdle = descriptor?.idleAnimation || VRM_DEFAULT_IDLE;
+        if (presentationIdle !== VRM_DEFAULT_IDLE && typeof manager.playVRMAAnimation === 'function') {
+          try {
+            await manager.playVRMAAnimation(presentationIdle, { loop: true, immediate: true, isIdle: true,
+              shouldApply: () => !state.disposed && state.modelGeneration === generation });
+            await retireIfStale(manager, 'vrm', generation);
+          } catch (error) {
+            await retireIfStale(manager, 'vrm', generation);
+            windowImpl.console?.warn?.('[Drawing Avatar] VRM presentation idle failed:', error);
+          }
+        }
       }
 
       async function loadMmd(model, descriptor, generation) {
         await waitForRuntime(
           () => Boolean(windowImpl.mmdModuleLoaded) && typeof windowImpl.MMDManager === 'function',
           'mmd-modules-ready', 'mmd-modules-failed', 'mmd', signal,
+          10000, () => Boolean(windowImpl._mmdModulesFailed),
         );
         ensureLoadActive(generation);
         const manager = new windowImpl.MMDManager();
@@ -762,7 +1054,7 @@
         const path = typeof windowImpl._mmdConvertPath === 'function'
           ? windowImpl._mmdConvertPath(model.path) : model.path;
         if (!manager.core?.renderer) {
-          await manager.init('mmd-canvas', 'mmd-container');
+          await manager.init(mmdCanvasId, mmdContainerId, { embed: true });
           await retireIfStale(manager, 'mmd', generation);
         }
         let savedSettings = null;
@@ -790,10 +1082,11 @@
           windowImpl.console?.warn?.('[Drawing Avatar] MMD settings request failed:', error);
         }
         suppressChrome(manager);
-        await manager.loadModel(path, {});
+        await manager.loadModel(path, { embed: true });
         await retireIfStale(manager, 'mmd', generation);
         if (savedSettings && typeof manager.applySettings === 'function') {
-          const { physics: _physics, ...nonPhysicsSettings } = savedSettings;
+          const nonPhysicsSettings = { lighting: savedSettings.lighting,
+            rendering: savedSettings.rendering, cursorFollow: savedSettings.cursorFollow };
           try {
             await manager.applySettings(nonPhysicsSettings);
             await retireIfStale(manager, 'mmd', generation);
@@ -803,10 +1096,15 @@
             windowImpl.console?.warn?.('[Drawing Avatar] MMD settings apply failed:', error);
           }
         }
-        const idleAnimation = descriptor?.mmdIdleAnimations?.[0];
+        const previousIdle = manager.currentAnimationUrl;
+        await avatarRuntime.preparePerspectiveReference(windowImpl.THREE, manager, {
+          type: 'mmd', signal, isCurrent: () => !state.disposed && state.modelGeneration === generation,
+        });
+        await retireIfStale(manager, 'mmd', generation);
+        const idleAnimation = descriptor?.mmdIdleAnimations?.[0] || previousIdle;
         if (idleAnimation && typeof manager.loadAnimation === 'function') {
           try {
-            await manager.loadAnimation(idleAnimation);
+            await manager.loadAnimation(idleAnimation, { immediate: true });
             await retireIfStale(manager, 'mmd', generation);
             manager.playAnimation?.('idle');
           } catch (error) {
@@ -824,8 +1122,13 @@
           null, null, 'pngtuber', signal,
         );
         ensureLoadActive(generation);
-        const manager = new windowImpl.PNGTuberManager('pngtuber-container');
+        const manager = new windowImpl.PNGTuberManager(pngContainerId);
         state.manager = manager;
+        const applyTransform = manager.applyTransform?.bind(manager);
+        manager.applyTransform = (...args) => {
+          applyTransform?.(...args);
+          fitPngtuber(manager);
+        };
         suppressChrome(manager);
         const config = { ...(descriptor?.pngtuber || {}) };
         if (!config.idle_image) config.idle_image = model.path;
@@ -840,6 +1143,8 @@
         manager.setSpeaking?.(false);
         manager.setState?.('idle');
         manager.show?.();
+        await observeImage(manager);
+        await retireIfStale(manager, 'pngtuber', generation);
       }
 
       async function setModel(model) {
@@ -857,6 +1162,8 @@
         state.kind = type;
         state.model = Object.freeze({ type, path });
         state.baseViewport = null;
+        state.nativeLive2DScale = null;
+        state.layout = null;
         state.mouthParameterId = '';
         setLayer(type);
         try {
@@ -867,14 +1174,14 @@
           ensureLoadActive(generation);
           state.ready = true;
           await raw.setView(state.view);
+          if (state.paused) raw.pause();
         } catch (error) {
           await disposeManager();
           throw error;
         }
       }
 
-      function beginLive2DMouth() {
-        const audioAnalyser = analyser();
+      function beginLive2DMouth(audioAnalyser = analyser()) {
         const core = live2dModel()?.internalModel?.coreModel;
         if (!audioAnalyser || !core || typeof core.setParameterValueById !== 'function') return false;
         const candidates = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamO'];
@@ -907,18 +1214,51 @@
 
       const raw = {
         setModel,
+        async setSpeechPlayback(frame) {
+          if (state.disposed) return false;
+          if (!frame?.active || !frame.mouthFrame || state.paused || !state.ready) {
+            stopSpeaking();
+            return false;
+          }
+          // Keep an existing lip-sync loop attached; only replace its bounded
+          // samples. There is no per-frame timer or analyser allocation.
+          const alreadyAutomatic = state.speaking && state.automaticSpeech;
+          if (!alreadyAutomatic) stopSpeaking();
+          if (!speechAnalyser.update(frame.mouthFrame)) {
+            stopSpeaking();
+            return false;
+          }
+          state.automaticSpeech = true;
+          if (alreadyAutomatic) return true;
+          state.speaking = true;
+          if (state.kind === 'live2d') state.speaking = beginLive2DMouth(speechAnalyser);
+          else {
+            const target = state.kind === 'vrm' ? state.manager?.animation
+              : state.kind === 'mmd' ? state.manager?.animationModule : state.manager;
+            const method = state.kind === 'pngtuber' ? 'setSpeaking' : 'startLipSync';
+            if (typeof target?.[method] !== 'function') state.speaking = false;
+            else {
+              try { target[method](state.kind === 'pngtuber' ? true : speechAnalyser); }
+              catch (error) {
+                stopSpeaking();
+                state.automaticSpeech = false;
+                throw error;
+              }
+            }
+          }
+          return state.speaking;
+        },
         async setView(value) {
           if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           state.view = normalizeView(value);
-          if (state.kind === 'live2d') fitLive2D();
-          else if (state.kind === 'vrm') state.manager?.onWindowResize?.();
-          else if (state.kind === 'mmd') state.manager?.onWindowResize?.();
+          fitRenderer();
           return state.view;
         },
         async setSpeaking(active) {
           if (typeof active !== 'boolean') fail('invalid_request', 'Avatar speaking state must be boolean');
           if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           stopSpeaking();
+          state.automaticSpeech = false;
           if (!active || !state.ready || state.paused) return false;
           state.speaking = true;
           const audioAnalyser = analyser();
@@ -1005,13 +1345,14 @@
             paused: state.paused,
             speaking: state.speaking,
             view: state.view,
+            layout: state.layout,
           });
         },
-        async resize(viewport) {
+        async resize(viewport, fit = state.fit) {
+          if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           state.viewport = viewport;
-          if (state.kind === 'live2d') fitLive2D();
-          else if (state.kind === 'vrm') state.manager?.onWindowResize?.();
-          else if (state.kind === 'mmd') state.manager?.onWindowResize?.();
+          state.fit = fit;
+          fitRenderer();
         },
         dispose() {
           if (state.disposed) return state.disposePromise || Promise.resolve();
@@ -1030,8 +1371,8 @@
       requestAnimationFrameImpl: options.requestAnimationFrameImpl,
       cancelAnimationFrameImpl: options.cancelAnimationFrameImpl,
       slots: {
-        [SLOT]: {
-          containerId: 'model-stage',
+        [slot]: {
+          containerId,
           createController,
         },
       },
@@ -1041,17 +1382,17 @@
       get activeCount() { return rendererHost.activeCount; },
       get pendingCount() { return rendererHost.pendingCount; },
       getCharacter,
-      getCurrentCharacter() { return getCharacter(''); },
+      getCurrentCharacter(requestOptions = {}) { return getCharacter('', requestOptions); },
       listCharacters,
       async mount(config) {
-        if (String(config?.slot || '') !== SLOT) {
+        if (String(config?.slot || '') !== slot) {
           fail('slot_unavailable', 'The Drawing Guess Avatar slot is not registered');
         }
         let characterName = cleanString(config?.characterName, NAME_LIMIT);
         if (!characterName) {
-          characterName = (await getCharacter(''))?.name || '';
+          characterName = (await getCharacter('', { signal: config?.signal }))?.name || '';
         } else if (!privateDescriptorsByName.has(characterName)) {
-          await getCharacter(characterName);
+          await getCharacter(characterName, { signal: config?.signal });
         }
         const descriptor = trustedDescriptorForModel(characterName, config?.model);
         const trustedConfig = Object.freeze({
@@ -1064,6 +1405,7 @@
       dispose() {
         if (disposed) return Promise.resolve();
         disposed = true;
+        lifetime.abort();
         privateDescriptorsByName.clear();
         return rendererHost.dispose();
       },

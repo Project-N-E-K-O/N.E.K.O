@@ -7,12 +7,7 @@ function assert(condition, message) {
 }
 
 function jsonResponse(data, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return data; },
-    clone() { return jsonResponse(data, status); },
-  };
+  return new Response(JSON.stringify(data), {status, headers:{'content-type':'application/json'}});
 }
 
 async function main() {
@@ -291,17 +286,20 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
-    avatarHost: {
-      mount() { forgedAvatarMounts += 1; },
-      getCharacter() { return null; },
-      listCharacters() { return []; },
-    },
+    // Do not use the deprecated legacy override in a new SDK integration.
     trustedAvatarHost: {
       mount() { forgedAvatarMounts += 1; },
       getCharacter() { return null; },
       listCharacters() { return []; },
     },
   });
+  // Use the game's real strict command schema, so adding a payload field but
+  // forgetting its SDK contract cannot silently pass this integration test.
+  const drawingSource = fs.readFileSync(path.resolve(sdkDir, '../games/drawing_guess/drawing-guess.js'), 'utf8');
+  const contractScope = { window: {} };
+  vm.runInNewContext(drawingSource.slice(0, drawingSource.indexOf('  var ROUND_FALLBACK_SECONDS'))
+    + 'window.contracts = ROUND_COMMAND_CONTRACTS; })();', contractScope);
+  const drawingContracts = JSON.parse(JSON.stringify(contractScope.window.contracts));
   const game = await windowMock.NekoMiniGame.connect({
     id: 'drawing-guess',
     version: '0.1.0',
@@ -328,23 +326,7 @@ async function main() {
             additionalProperties: true,
           },
         },
-        'round:ai-draw-review': {
-          request: {
-            type: 'object',
-            properties: {
-              client_round_token: { type: 'integer', minimum: 0 },
-              image_data_url: { type: 'string', maxLength: 1800000 },
-            },
-            required: ['client_round_token', 'image_data_url'],
-            additionalProperties: false,
-          },
-          response: {
-            type: 'object',
-            properties: { ok: { type: 'boolean' } },
-            required: ['ok'],
-            additionalProperties: true,
-          },
-        },
+        'round:ai-draw-review': drawingContracts['round:ai-draw-review'],
       },
     },
   }, { transport, windowImpl: windowMock, documentImpl: windowMock.document });
@@ -354,7 +336,7 @@ async function main() {
     `unexpected drawing capability grant: ${game.capabilities.granted.join(',')}`);
   assert(trustedAvatarFactoryCalls === 1 && forgedAvatarMounts === 0,
     'the game replaced the bootstrap-owned Avatar provider');
-  assert(transport._avatarHost === undefined && transport.trustedAvatarHost === undefined,
+  assert(transport._avatarHost == null && transport.trustedAvatarHost === undefined,
     'the trusted Avatar provider leaked through the game transport object');
   assert(game.speech.connected === true,
     'the drawing SDK did not establish the host speech-output state bridge');
@@ -426,12 +408,15 @@ async function main() {
   const unsubscribeVoiceTranscript = game.voice.onTranscript((transcript) => voiceTranscripts.push(transcript));
   const unsubscribeVoiceError = game.voice.onError((error) => voiceErrors.push(error));
   const voiceStarted = await game.voice.toggle({ timeoutMs: 1000 });
+  const toggleRequests = voiceControlRequests.filter(request => request.action === 'toggle');
+  assert(voiceControlRequests.filter(request => request.action === 'query').length === 1,
+    'drawing startup did not use the bounded SDK voice-state synchronization');
   assert(voiceStarted.ok === true
     && voiceStarted.active === true
-    && voiceControlRequests.length === 1
-    && voiceControlRequests[0].game_type === 'drawing_guess'
-    && voiceControlRequests[0].session_id === 'drawing-sdk-session'
-    && voiceControlRequests[0].sdk_route_instance_id === startCall.body.sdk_route_instance_id
+    && toggleRequests.length === 1
+    && toggleRequests[0].game_type === 'drawing_guess'
+    && toggleRequests[0].session_id === 'drawing-sdk-session'
+    && toggleRequests[0].sdk_route_instance_id === startCall.body.sdk_route_instance_id
     && voiceStates.at(-1)?.active === true,
   'drawing voice.toggle did not use the active SDK route identity');
   windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
@@ -484,6 +469,7 @@ async function main() {
 
   const commandResult = await game.commands.execute('round:start', {
     marker: 'drawing-command-round-trip',
+    render_language: 'zh-CN',
     game_type: 'forged_game_type',
     session_id: 'forged-session',
     lanlan_name: 'Forged Neko',
@@ -504,6 +490,7 @@ async function main() {
   assert(commandCall?.url === '/api/game/drawing_guess/round/start',
     `the trusted command alias/path was not used: ${commandCall?.url}`);
   assert(commandCall.body.marker === 'drawing-command-round-trip'
+    && commandCall.body.render_language === 'zh-CN'
     && commandCall.body.game_type === 'drawing_guess'
     && commandCall.body.session_id === 'drawing-sdk-session'
     && commandCall.body.lanlan_name === 'SDK Neko'
@@ -518,12 +505,14 @@ async function main() {
   const reviewImage = 'data:image/jpeg;base64,YWktZHJhd2luZw==';
   const reviewResult = await game.commands.execute('round:ai-draw-review', {
     client_round_token: 1,
+    render_language: 'zh-TW',
     image_data_url: reviewImage,
   }, { timeoutMs: 120000 });
   assert(reviewResult.ok === true && reviewResult.data.ok === true,
     'the drawing review command did not complete through the SDK');
   const reviewCall = calls.find((call) => call.url.endsWith('/ai-draw/review'));
   assert(reviewCall?.url === '/api/game/drawing_guess/ai-draw/review'
+    && reviewCall.body.render_language === 'zh-TW'
     && reviewCall.body.image_data_url === reviewImage
     && reviewCall.body.client_round_token === 1
     && reviewCall.body.game_type === 'drawing_guess'

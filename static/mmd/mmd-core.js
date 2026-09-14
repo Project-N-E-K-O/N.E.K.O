@@ -230,7 +230,7 @@ class MMDCore {
 
     // ═══════════════════ 场景初始化 ═══════════════════
 
-    async init(canvasId, containerId) {
+    async init(canvasId, containerId, options = {}) {
         this._ensureThreeReady();
         const THREE = window.THREE;
 
@@ -251,14 +251,16 @@ class MMDCore {
         container.style.display = 'block';
         container.style.visibility = 'visible';
         container.style.opacity = '1';
-        container.style.width = '100%';
-        container.style.height = '100%';
-        container.style.position = 'fixed';
-        container.style.top = '0';
-        container.style.left = '0';
-        container.style.setProperty('pointer-events', 'auto', 'important');
-        // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
-        container.style.zIndex = '10';
+        if (options.embed !== true) {
+            container.style.width = '100%';
+            container.style.height = '100%';
+            container.style.position = 'fixed';
+            container.style.top = '0';
+            container.style.left = '0';
+            container.style.setProperty('pointer-events', 'auto', 'important');
+            // 【修复】确保 z-index 与 vrm-container 一致，作为 CSS 缺失时的后备
+            container.style.zIndex = '10';
+        }
 
         this.manager.clock = new THREE.Clock();
         this.manager.scene = new THREE.Scene();
@@ -382,7 +384,7 @@ class MMDCore {
         const alreadyRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'resize' && h.handler === this.manager._resizeHandler
         );
-        if (!alreadyRegistered) {
+        if (!alreadyRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
             window.addEventListener('resize', this.manager._resizeHandler);
         }
@@ -400,7 +402,7 @@ class MMDCore {
         const alreadyDisplayRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'electron-display-changed' && h.handler === this.manager._displayChangeHandler
         );
-        if (!alreadyDisplayRegistered) {
+        if (!alreadyDisplayRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'electron-display-changed', handler: this.manager._displayChangeHandler });
             window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);
         }
@@ -416,13 +418,13 @@ class MMDCore {
         const alreadyQualityRegistered = this.manager._coreWindowHandlers.some(
             h => h.event === 'neko-render-quality-changed' && h.handler === qualityChangeHandler
         );
-        if (!alreadyQualityRegistered) {
+        if (!alreadyQualityRegistered && options.embed !== true) {
             this.manager._coreWindowHandlers.push({ event: 'neko-render-quality-changed', handler: qualityChangeHandler });
             window.addEventListener('neko-render-quality-changed', qualityChangeHandler);
         }
 
         // 应用已保存的调试渲染设置
-        if (typeof window.applyMMDSavedDebugSettings === 'function') {
+        if (options.embed !== true && typeof window.applyMMDSavedDebugSettings === 'function') {
             try {
                 window.applyMMDSavedDebugSettings();
                 console.log('[MMD Core] 已应用保存的调试渲染设置');

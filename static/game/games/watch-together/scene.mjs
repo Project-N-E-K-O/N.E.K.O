@@ -21,13 +21,15 @@ export async function run(game, character) {
     if(!runtimeStarting)runtimeStarting=game.runtime.start({lanlan_name:character}).finally(()=>{runtimeStarting=null;});
     return runtimeStarting;
   }
-  let progressTimer = null;
+  let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [], heldEpoch = 0;
   let nextRow=null, queuedFor=null, preparing=false;
   let automaticPending=false;
   const automatic=createAutomatic({
     report:error=>{status(error.message);if(error.name==='NotAllowedError')void stopAutomatic();},
     async advance(current) {
       if(!current())return true;
+      // The finished video's intermission speaks before anything else plays.
+      if(intermission){await intermission;if(!current())return true;}
       if(game.runtime.state!=='running') {
         const response=await startRuntime();
         if(!response.ok || response.data?.ok===false)throw Error(response.data?.reason || 'Scene start failed');
@@ -89,6 +91,85 @@ export async function run(game, character) {
     void nextQueue.start({topic:discoveryTopic(),exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
   }
   const status = message => { $('status').textContent = message; };
+  const warn = (message, error) => { try { game.logger?.warn?.(message, {error: String(error?.message || error)}); } catch (_) { /* Logging never blocks playback. */ } };
+  // Real seconds until the next reaction (or the video end); 0 while one is playing.
+  function reactionGap(time) {
+    let gap = Infinity;
+    for (const cue of selected?.events || []) {
+      const at = Number(cue.at), length = Number.isFinite(cue.duration) && cue.duration > 0 ? cue.duration : 3;
+      if (at <= time && time < at + length + 0.5) return 0;
+      if (at > time) gap = Math.min(gap, at - time);
+    }
+    const remaining = Number($('video').duration) - time;
+    const rate = Number($('video').playbackRate) > 0 ? Number($('video').playbackRate) : 1;
+    // Timeline seconds pass faster at higher rates; lines are measured in real seconds.
+    return (Number.isFinite(remaining) ? Math.min(gap, remaining) : gap) / rate;
+  }
+  // Generated lines that never started (the gap closed, playback paused or ended)
+  // wait for the next gap or the intermission; the backend already consumed their cues.
+  // Entries keep the time the line was generated, so retries never extend its 60-second life.
+  const freshEntries = lines => lines.map(line => ({line, at: Date.now()}));
+  // `epoch` is the value captured when the request started; a teardown in between discards the lines.
+  function holdLines(entries, epoch) {
+    if (epoch !== heldEpoch) return;
+    const now = Date.now();
+    heldLines = [...heldLines, ...entries].filter(entry => now - entry.at < 60000).slice(-3);
+  }
+  function takeHeldLines() {
+    const now = Date.now(), entries = heldLines.filter(entry => now - entry.at < 60000);
+    heldLines = [];
+    return entries;
+  }
+  // Plugin responses held by the scene route are spoken only in reaction gaps.
+  function pollLive() {
+    const current = media, row = selected, video = $('video'), generation = playbackGeneration, epoch = heldEpoch;
+    if (liveFlight || intermission || !current || !row || video.paused || video.ended || game.runtime.state !== 'running') return;
+    const position = video.currentTime, gap = reactionGap(position);
+    if (!(gap >= 5)) return;
+    const flight = (async () => {
+      let entries = takeHeldLines();
+      if (!entries.length) entries = freshEntries((await game.media.request('live', {action:'interject', job:row.id, version:row.version, position, gap:Math.min(gap,600), render_language:renderLanguage()}))?.lines || []);
+      for (let index = 0; index < entries.length; index++) {
+        if (current !== media || generation !== playbackGeneration || video.paused || video.ended
+            || reactionGap(video.currentTime) < (Number(entries[index].line.duration) || 0) + 0.5) {
+          holdLines(entries.slice(index), epoch);
+          return;
+        }
+        // A line cut off after it started is not replayed; one that never started is kept.
+        if (await current.say(entries[index].line) === 'skipped') {
+          holdLines(entries.slice(index), epoch);
+          return;
+        }
+      }
+    })().catch(error => warn('watch-together live line failed', error)).finally(() => { if (liveFlight === flight) liveFlight = null; });
+    liveFlight = flight;
+  }
+  // Automatic mode: a one-line summary plus replies to held messages between videos.
+  function startIntermission() {
+    const current = media, row = selected, epoch = heldEpoch;
+    if (!current || !row || intermission) return;
+    const request = () => game.media.request('live', {action:'intermission', job:row.id, version:row.version, render_language:renderLanguage()});
+    const task = (async () => {
+      if (liveFlight) await Promise.race([liveFlight, new Promise(resolve => setTimeout(resolve, 20000))]);
+      // Capture before asking: the interjection may settle (and clear liveFlight) while it answers busy.
+      const pendingFlight = liveFlight;
+      let result = await request();
+      // The backend runs one generation per route; retry once after a slow interjection settles.
+      if (result?.busy) { await pendingFlight; result = await request(); }
+      const [summary, ...replies] = result?.lines || [];
+      const queue = [...freshEntries(summary ? [summary] : []), ...takeHeldLines(), ...freshEntries(replies)];
+      for (let index = 0; index < queue.length; index++) {
+        if (current !== media || !automatic.enabled) break;
+        if (await current.say(queue[index].line) === 'skipped') {
+          // Stop rather than wait out each remaining line; replies still wait for a gap in
+          // the next video, while the summary belongs to this video only.
+          holdLines(queue.slice(index).filter(entry => entry.line !== summary), epoch);
+          break;
+        }
+      }
+    })().catch(error => warn('watch-together intermission failed', error)).finally(() => { if (intermission === task) intermission = null; });
+    intermission = task;
+  }
   function renderUsage(stats) {
     if (!stats) { $('usage').textContent=t('unrecorded');return; }
     const value={...stats};
@@ -127,7 +208,7 @@ export async function run(game, character) {
       void refreshWatches();
     })
       .catch(error => status(error.message));
-    if(event.type==='ended' && automatic.enabled)automatic.next();
+    if(event.type==='ended' && automatic.enabled){startIntermission();automatic.next();}
   };
   function end(keepRoute=false) {
     if(ending)return keepRoute?ending:ending.then(()=>end());
@@ -138,12 +219,15 @@ export async function run(game, character) {
     playbackGeneration++;
     mountingController?.abort();mountingController=null;
     clearInterval(progressTimer); progressTimer = null;
+    clearInterval(liveTimer); liveTimer = null;
     try {await runtimeStarting;}catch(_){}
     // Keep the route alive until an in-flight start has supplied its watch ID.
     try { await watchStarting; } catch (_) { /* A failed start has no watch to close. */ }
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
+    // A torn-down session also forgets its in-flight live work, so the next one is not blocked by it.
+    if (!keepRoute) { heldLines = []; heldEpoch++; liveFlight = null; intermission = null; }
     if (!keepRoute && !['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row,keepRoute=false) {
@@ -217,6 +301,7 @@ export async function run(game, character) {
         if(stale()){mounted.dispose();return;}
         media = mounted;
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
+        liveTimer = setInterval(pollLive,2500);
       }
       await media.play();
       if(stale())return;
@@ -238,7 +323,7 @@ export async function run(game, character) {
   };
   $('play').onclick=()=>play().catch(error=>status(error.message));
   // The active scene owns speech. Ordinary/chat/plugin speech must not pause reactions.
-  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);clearInterval(liveTimer);liveTimer=null;heldLines=[];heldEpoch++;liveFlight=null;intermission=null;nextQueue.clear();queuedFor=null;});
   $('automatic-enabled').onchange=()=>{
     if($('automatic-enabled').checked){automaticPending=!!media;automatic.start();}
     else void stopAutomatic().catch(error=>status(error.message));
