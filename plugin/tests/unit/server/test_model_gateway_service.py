@@ -710,7 +710,8 @@ async def test_rejected_injected_stream_options_are_retried_once_and_remembered(
         body = json.loads(request.content)
         bodies.append(body)
         if "stream_options" in body:
-            return httpx.Response(400, content=SECRET)
+            # Error usage from the rejected request must not leak into the retry.
+            return httpx.Response(400, json={"error": {"message": SECRET}, "usage": USAGE})
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
                               stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
 
