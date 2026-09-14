@@ -488,12 +488,6 @@ class Engine:
                 addresses = [pic]
                 if (parsed_pic.hostname or "").endswith(".hdslb.com") and "@" not in parsed_pic.path:
                     addresses.insert(0, pic + "@640w.jpg")
-                for address in addresses:
-                    response = await client.get(address)
-                    if response.is_success:
-                        break
-                response.raise_for_status()
-
                 def low_resolution_jpeg(data):
                     from io import BytesIO
                     from PIL import Image, ImageOps
@@ -502,7 +496,16 @@ class Engine:
                         image = (ImageOps.exif_transpose(image) or image).convert("RGB")
                         return compress_screenshot(image, target_h=360, max_w=640)
 
-                jpeg = await asyncio.to_thread(low_resolution_jpeg, response.content)
+                for index, address in enumerate(addresses):
+                    # A thumbnail may answer 200 with a non-image body; fall back to the original.
+                    try:
+                        response = await client.get(address)
+                        response.raise_for_status()
+                        jpeg = await asyncio.to_thread(low_resolution_jpeg, response.content)
+                        break
+                    except Exception:
+                        if index == len(addresses) - 1:
+                            raise
                 cover = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
                 (folder / "cover.jpg").write_bytes(jpeg)
             except Exception:

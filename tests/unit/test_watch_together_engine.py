@@ -85,6 +85,8 @@ def _budget_engine(tmp_path, monkeypatch, events):
     ('https://i0.hdslb.com/bfs/archive/cover.png', 200, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg']),
     ('https://i0.hdslb.com/bfs/archive/cover.png', 404, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg',
                                                          'https://i0.hdslb.com/bfs/archive/cover.png']),
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 'html', ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg',
+                                                            'https://i0.hdslb.com/bfs/archive/cover.png']),
     ('https://covers.test/cover.png', None, ['https://covers.test/cover.png']),
 ])
 async def test_cover_is_stored_and_sent_only_as_low_resolution_jpeg(tmp_path, monkeypatch, pic, thumbnail_status, expected_urls):
@@ -103,6 +105,8 @@ async def test_cover_is_stored_and_sent_only_as_low_resolution_jpeg(tmp_path, mo
     requested = []
     def respond(request):
         requested.append(str(request.url))
+        if str(request.url).endswith('@640w.jpg') and thumbnail_status == 'html':
+            return httpx.Response(200, content=b'<html>not an image</html>')
         if str(request.url).endswith('@640w.jpg') and thumbnail_status != 200:
             return httpx.Response(thumbnail_status)
         return httpx.Response(200, content=original)
