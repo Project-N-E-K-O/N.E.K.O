@@ -3193,6 +3193,7 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
     mgr.start_session = AsyncMock()
     mgr.end_session = AsyncMock()
     mgr._process_stream_data_internal = AsyncMock()
+    mgr._clear_tts_pipeline = AsyncMock()
     mgr.pending_input_data = []
     mgr.session_ready = True
     mgr.is_active = True
@@ -3210,8 +3211,10 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
         mgr.session = object.__new__(core_module.OmniRealtimeClient)
     else:
         mgr.session = object.__new__(core_module.OmniOfflineClient)
-        mgr.session._pending_images = []
+        # An earlier message's attachment whose text has not been streamed yet.
+        mgr.session._pending_images = ["earlier-image"]
         mgr.session.stream_text = AsyncMock()
+        mgr.session.handle_interruption = AsyncMock()
 
     await core_module.LLMSessionManager._stream_data_now(
         mgr,
@@ -3222,11 +3225,16 @@ async def test_mini_game_magic_command_launches_before_session_lifecycle(session
     mgr.end_session.assert_not_awaited()
     mgr._process_stream_data_internal.assert_not_awaited()
     assert mgr.pending_input_data == []
+    mgr._clear_tts_pipeline.assert_awaited_once()
+    if session_state == "offline":
+        mgr.session.handle_interruption.assert_awaited_once()
+        assert mgr.session._pending_images == ["earlier-image"]
     assert mgr.sync_message_queue.messages[0]["data"]["metadata"] == {
         "source": "mini_game",
         "kind": "magic_command",
         "command": "watch-together",
     }
+    assert mgr.user_activity == ["old-speech"]
     turn_end, launch = mgr.websocket.sent
     assert turn_end == {
         "type": "system",

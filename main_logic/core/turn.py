@@ -1131,8 +1131,33 @@ class TurnMixin:
         if not game_type:
             return False
         request_id = message.get("request_id")
-        self._clear_text_pending_images()
+        # Only drop this command's own attachments (by request id, as they
+        # arrive). ``_pending_images`` is a session-wide list with no request
+        # identity, so clearing it could strip an earlier message's image whose
+        # text task has not reached ``stream_text`` yet.
         self._mark_magic_command_image_drop_request(request_id)
+        # The turn end below seals the frontend's current assistant bubble, so
+        # stop an in-flight reply first, the same way a new text message does,
+        # without tearing the session down. Only the offline producer is
+        # cancelled here; a realtime voice session keeps running and just has
+        # its current speech dropped by the frontend.
+        async with self.lock:
+            interrupted_speech_id = self.current_speech_id
+        if isinstance(self.session, OmniOfflineClient):
+            _interrupt = getattr(self.session, "handle_interruption", None)
+            if callable(_interrupt):
+                try:
+                    await _interrupt()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] mini-game magic command could not interrupt the reply: %s",
+                        self.lanlan_name, exc,
+                    )
+        self.audio_resampler.clear()
+        await self._clear_tts_pipeline()
+        await self.send_user_activity(interrupted_speech_id)
         await self.mirror_user_input(
             data,
             metadata={
