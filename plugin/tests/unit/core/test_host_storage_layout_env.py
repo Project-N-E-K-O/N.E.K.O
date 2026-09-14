@@ -339,6 +339,92 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_cancels_trigger_without_run_id_before_closing_models(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import asyncio
+
+    order: list[str] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+
+    class _Plugin:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+        def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
+            return {}
+
+        async def hang(self) -> None:
+            order.append("started")
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                order.append("cancelled")
+                raise
+
+    class _Sender:
+        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+            return
+
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            return
+
+    class _ChildTransport:
+        def __init__(self, downlink_endpoint: str, uplink_endpoint: str, uplink_token: str) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.sent_trigger = False
+
+        def channel_sender(self, channel: str) -> _Sender:
+            return _Sender()
+
+        async def recv_downlink(self, timeout_ms: int = 1000):
+            if not self.sent_trigger:
+                self.sent_trigger = True
+                return (host_module.CH_CMD, {"type": "TRIGGER", "entry_id": "hang", "args": {}, "req_id": "r1"})
+            for _ in range(500):
+                if "started" in order:
+                    break
+                await asyncio.sleep(0.01)
+            return (host_module.CH_CMD, {"type": "STOP"})
+
+        def close(self) -> None:
+            return
+
+    original_cleanup = host_module._run_with_model_client_cleanup
+
+    async def _recording_cleanup(ctx, awaitable):
+        try:
+            return await original_cleanup(ctx, awaitable)
+        finally:
+            order.append("models_closed")
+
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+    monkeypatch.setattr(host_module, "_run_with_model_client_cleanup", _recording_cleanup)
+
+    host_module._plugin_process_runner(
+        plugin_id="demo",
+        entry_point="tests.fake:DemoPlugin",
+        config_path=config_path,
+        downlink_endpoint="ipc://down",
+        uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
+    )
+
+    # A trigger without _ctx.run_id must still be unwound before model clients close.
+    assert order[:3] == ["started", "cancelled", "models_closed"]
+
+
+@pytest.mark.plugin_unit
 def test_plugin_process_runner_uses_timeout_when_reporting_crash(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

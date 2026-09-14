@@ -340,6 +340,7 @@ def _scrub_inherited_host_credentials() -> None:
             try:
                 host._model_gateway_token = ""
             except Exception:
+                # Best-effort revocation; transports below are still shut down.
                 pass
         transport = getattr(host, "transport", None)
         if transport is None:

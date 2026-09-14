@@ -1831,8 +1831,13 @@ def _plugin_process_runner(
                     except Exception:
                         pass
                     task = asyncio.create_task(_handle_trigger(msg))
-                    if run_id:
-                        _run_tasks[run_id] = task
+                    # Register every trigger so shutdown cancels it before the
+                    # model clients close; only run_id keys are cancellable by CANCEL_RUN.
+                    task_key = run_id if run_id else f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+                    _run_tasks[task_key] = task
+                    task.add_done_callback(
+                        lambda _t, key=task_key: _run_tasks.pop(key, None) if _run_tasks.get(key) is _t else None
+                    )
                     continue
 
         async def _command_loop_with_cleanup():
