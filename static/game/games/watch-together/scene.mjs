@@ -21,7 +21,7 @@ export async function run(game, character) {
     if(!runtimeStarting)runtimeStarting=game.runtime.start({lanlan_name:character}).finally(()=>{runtimeStarting=null;});
     return runtimeStarting;
   }
-  let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [];
+  let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [], heldEpoch = 0;
   let nextRow=null, queuedFor=null, preparing=false;
   let automaticPending=false;
   const automatic=createAutomatic({
@@ -109,7 +109,9 @@ export async function run(game, character) {
   // wait for the next gap or the intermission; the backend already consumed their cues.
   // Entries keep the time the line was generated, so retries never extend its 60-second life.
   const freshEntries = lines => lines.map(line => ({line, at: Date.now()}));
-  function holdLines(entries) {
+  // `epoch` is the value captured when the request started; a teardown in between discards the lines.
+  function holdLines(entries, epoch) {
+    if (epoch !== heldEpoch) return;
     const now = Date.now();
     heldLines = [...heldLines, ...entries].filter(entry => now - entry.at < 60000).slice(-3);
   }
@@ -120,7 +122,7 @@ export async function run(game, character) {
   }
   // Plugin responses held by the scene route are spoken only in reaction gaps.
   function pollLive() {
-    const current = media, row = selected, video = $('video'), generation = playbackGeneration;
+    const current = media, row = selected, video = $('video'), generation = playbackGeneration, epoch = heldEpoch;
     if (liveFlight || intermission || !current || !row || video.paused || video.ended || game.runtime.state !== 'running') return;
     const position = video.currentTime, gap = reactionGap(position);
     if (!(gap >= 5)) return;
@@ -130,12 +132,12 @@ export async function run(game, character) {
       for (let index = 0; index < entries.length; index++) {
         if (current !== media || generation !== playbackGeneration || video.paused || video.ended
             || reactionGap(video.currentTime) < (Number(entries[index].line.duration) || 0) + 0.5) {
-          holdLines(entries.slice(index));
+          holdLines(entries.slice(index), epoch);
           return;
         }
         // A line cut off after it started is not replayed; one that never started is kept.
         if (await current.say(entries[index].line) === 'skipped') {
-          holdLines(entries.slice(index));
+          holdLines(entries.slice(index), epoch);
           return;
         }
       }
@@ -143,7 +145,7 @@ export async function run(game, character) {
   }
   // Automatic mode: a one-line summary plus replies to held messages between videos.
   function startIntermission() {
-    const current = media, row = selected;
+    const current = media, row = selected, epoch = heldEpoch;
     if (!current || !row || intermission) return;
     const request = () => game.media.request('live', {action:'intermission', job:row.id, version:row.version, render_language:renderLanguage()});
     intermission = (async () => {
@@ -160,7 +162,7 @@ export async function run(game, character) {
         if (await current.say(queue[index].line) === 'skipped') {
           // Stop rather than wait out each remaining line; replies still wait for a gap in
           // the next video, while the summary belongs to this video only.
-          holdLines(queue.slice(index).filter(entry => entry.line !== summary));
+          holdLines(queue.slice(index).filter(entry => entry.line !== summary), epoch);
           break;
         }
       }
@@ -222,7 +224,7 @@ export async function run(game, character) {
     record({type:'exit'}); media?.dispose(); media = null;
     $('video').controls = false; $('play').hidden = false;
     await writing; watch = null;
-    if (!keepRoute) heldLines = [];
+    if (!keepRoute) { heldLines = []; heldEpoch++; }
     if (!keepRoute && !['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row,keepRoute=false) {
@@ -318,7 +320,7 @@ export async function run(game, character) {
   };
   $('play').onclick=()=>play().catch(error=>status(error.message));
   // The active scene owns speech. Ordinary/chat/plugin speech must not pause reactions.
-  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);clearInterval(liveTimer);liveTimer=null;heldLines=[];nextQueue.clear();queuedFor=null;});
+  game.events.on('runtime-inactive',()=>{automatic.stop();$('automatic-enabled').checked=false;playbackGeneration++;media?.dispose();media=null;$('video').src=selected?.video || '';$('video').controls=false;$('play').hidden=false;clearInterval(progressTimer);clearInterval(liveTimer);liveTimer=null;heldLines=[];heldEpoch++;nextQueue.clear();queuedFor=null;});
   $('automatic-enabled').onchange=()=>{
     if($('automatic-enabled').checked){automaticPending=!!media;automatic.start();}
     else void stopAutomatic().catch(error=>status(error.message));

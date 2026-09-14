@@ -765,4 +765,33 @@ try {
 } finally {
   globalThis.setInterval=realInterval;globalThis.setTimeout=realTimer;
 }
+// A live line that returns after its playback was torn down is discarded, not replayed next session.
+const staleTicks=[];
+globalThis.setInterval=(fn,delay,...args)=>delay===2500?(staleTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
+try {
+  const stale=await fixture(false,false,{total_tokens:1});
+  const staleVideo=stale.elements.get('video'),staleRequests=[],staleSpoken=[];let finishStale=null;
+  const staleBase=stale.game.media.request;
+  stale.game.media.mount=async()=>({play:async()=>{staleVideo.paused=false;},say:async spokenLine=>{staleSpoken.push(spokenLine.text);return 'completed';},dispose(){}});
+  stale.game.media.request=(action,payload)=>{
+    if(action!=='live')return staleBase(action,payload);
+    staleRequests.push(payload);
+    return staleRequests.length===1?new Promise(resolve=>{finishStale=resolve;}):Promise.resolve({lines:[]});
+  };
+  await stale.elements.get('play').onclick();
+  staleVideo.duration=60;staleVideo.currentTime=10;
+  staleTicks.at(-1)();
+  await waitFor(()=>finishStale);
+  stale.handlers['runtime-inactive']();
+  finishStale({lines:[{text:'old session line',audio:'/old',duration:2}]});
+  await pause(20);
+  await stale.elements.get('play').onclick();
+  staleVideo.currentTime=10;staleTicks.at(-1)();
+  await waitFor(()=>staleRequests.length===2);
+  await pause(20);
+  assert.deepEqual(staleSpoken,[],'a line generated for the torn-down playback is never replayed');
+  stale.handlers['runtime-inactive']();
+} finally {
+  globalThis.setInterval=realInterval;
+}
 console.log('watch-together scene: gap lines and automatic intermission ordering passed');
