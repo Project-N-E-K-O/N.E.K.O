@@ -158,24 +158,49 @@
     // cannot open connections. Falls back to window.WebSocket, which merely
     // restores the previous behaviour rather than breaking the browser path
     // (no preload there, so window.WebSocket is already native).
+    let _wsConstructor = null;
+    let _wsConstants = null;
     function nativeWebSocketCtor() {
-        if (window.__nekoNativeWebSocket) return window.__nekoNativeWebSocket;
+        if (_wsConstructor) return _wsConstructor;
         let ctor = window.WebSocket;
+        let constants = {
+            CONNECTING: window.WebSocket.CONNECTING,
+            OPEN: window.WebSocket.OPEN,
+            CLOSING: window.WebSocket.CLOSING,
+            CLOSED: window.WebSocket.CLOSED,
+        };
         try {
             const probe = document.createElement('iframe');
             probe.style.display = 'none';
             probe.setAttribute('aria-hidden', 'true');
+            probe.setAttribute('data-neko-websocket-probe', 'true');
             (document.body || document.documentElement).appendChild(probe);
             const borrowed = probe.contentWindow && probe.contentWindow.WebSocket;
             if (typeof borrowed === 'function') {
                 ctor = borrowed;
+                constants = {
+                    CONNECTING: borrowed.CONNECTING,
+                    OPEN: borrowed.OPEN,
+                    CLOSING: borrowed.CLOSING,
+                    CLOSED: borrowed.CLOSED,
+                };
                 window.__nekoNativeWebSocketProbe = probe;
             } else {
                 probe.remove();
             }
-        } catch (_) { /* keep window.WebSocket */ }
+        } catch (err) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn('[VMC] Failed to borrow native WebSocket from iframe; CSP frame-src or sandbox attribute may block same-origin frames. Falling back to window.WebSocket, which will hit the preload wrapper in Electron.', err);
+            }
+        }
+        _wsConstructor = ctor;
+        _wsConstants = constants;
         window.__nekoNativeWebSocket = ctor;
         return ctor;
+    }
+    function wsReadyState() {
+        if (!_wsConstants) nativeWebSocketCtor();
+        return _wsConstants;
     }
 
     function closeWebSocket() {
@@ -193,7 +218,7 @@
         state.reconnectRefreshAuth = false;
         const socket = state.ws;
         state.ws = null;
-        if (socket && socket.readyState < WebSocket.CLOSING) {
+        if (socket && socket.readyState < wsReadyState().CLOSING) {
             try { socket.close(1000, 'VMC disabled'); } catch (_) { /* ignored */ }
         }
     }
@@ -339,7 +364,7 @@
         if (state.reconnectTimer) return Promise.resolve(false);
         if (
             state.ws
-            && state.ws.readyState === WebSocket.OPEN
+            && state.ws.readyState === wsReadyState().OPEN
             && state.wsReady
         ) {
             return Promise.resolve(true);
@@ -460,7 +485,7 @@
         if (
             !state.wsReady
             || !socket
-            || socket.readyState !== WebSocket.OPEN
+            || socket.readyState !== wsReadyState().OPEN
             || (!allowInactive && !state.sourceActive)
         ) {
             ensureWebSocket();
