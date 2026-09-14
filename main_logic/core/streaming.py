@@ -831,6 +831,9 @@ class StreamingMixin:
                                 await self._push_focus_thinking(True)
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
+                            # stream_text claims the staged attachments (or puts them
+                            # back on failure); release ledger entries for claimed ones.
+                            self._prune_request_staged_images()
                             # Clear unconditionally: a non-Focus turn may have pulsed the
                             # bubble True via the reasoning callback, so gating the clear
                             # on _focus_thinking would leave it stuck on tool-only / empty

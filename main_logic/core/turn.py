@@ -425,24 +425,33 @@ class TurnMixin:
         ``_pending_images`` carries no request identity, so a consumed slash
         command needs this ledger to remove only its own already-staged
         attachments. Entries whose image has already left the queue are pruned
-        on every record, so the ledger never keeps a consumed frame alive.
+        on every record and whenever a text turn has claimed the queue, so the
+        ledger never keeps a consumed frame alive.
         """
         request_id_str = str(request_id or "")
         if not request_id_str:
             return
+        self._prune_request_staged_images()
+        self._request_staged_images.append((request_id_str, image))
+
+    def _prune_request_staged_images(self) -> None:
+        """Drop ledger entries whose image is no longer in the session's attachment queue."""
         ledger = getattr(self, "_request_staged_images", None)
         if ledger is None:
-            ledger = deque()
-            self._request_staged_images = ledger
+            self._request_staged_images = deque()
+            return
+        if not ledger:
+            return
         pending = getattr(self.session, "_pending_images", None)
-        if isinstance(pending, list):
-            live = [
-                (rid, staged) for rid, staged in ledger
-                if any(queued is staged for queued in pending)
-            ]
+        if not isinstance(pending, list):
             ledger.clear()
-            ledger.extend(live)
-        ledger.append((request_id_str, image))
+            return
+        live = [
+            (rid, staged) for rid, staged in ledger
+            if any(queued is staged for queued in pending)
+        ]
+        ledger.clear()
+        ledger.extend(live)
 
     def _discard_request_staged_images(self, request_id: object) -> None:
         """Remove attachments this request already staged; other requests' images stay."""
@@ -451,18 +460,15 @@ class TurnMixin:
         if not request_id_str or not ledger:
             return
         pending = getattr(self.session, "_pending_images", None)
-        remaining = []
-        for rid, staged in ledger:
-            if rid != request_id_str:
-                remaining.append((rid, staged))
-                continue
-            if isinstance(pending, list):
+        if isinstance(pending, list):
+            for rid, staged in ledger:
+                if rid != request_id_str:
+                    continue
                 for index, queued in enumerate(pending):
                     if queued is staged:
                         del pending[index]
                         break
-        ledger.clear()
-        ledger.extend(remaining)
+        self._prune_request_staged_images()
 
     async def handle_response_complete(self):
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""

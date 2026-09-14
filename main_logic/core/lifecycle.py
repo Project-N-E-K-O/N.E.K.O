@@ -3966,6 +3966,10 @@ class LifecycleMixin:
             if not preserve_pending_input:
                 self.pending_input_data.clear()
             self._clear_pending_context_appends()
+        # Attachment ledger entries point into the retired session's queue.
+        staged_image_ledger = getattr(self, "_request_staged_images", None)
+        if staged_image_ledger:
+            staged_image_ledger.clear()
 
         self.last_time = None
         if callable(after_memory_settlement):

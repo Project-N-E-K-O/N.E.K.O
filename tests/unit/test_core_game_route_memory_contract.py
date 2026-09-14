@@ -2698,6 +2698,40 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_text_turn_releases_claimed_images_from_request_ledger(monkeypatch):
+    """Once stream_text claims staged attachments, the request ledger lets go of them."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    staged_image = "staged-image-" + "z" * 64
+    mgr.session._pending_images = [staged_image]
+    core_module.LLMSessionManager._record_request_staged_image(mgr, "req-image", staged_image)
+
+    async def _claim_images(*_args, **_kwargs):
+        mgr.session._pending_images.clear()
+
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock(side_effect=_claim_images)
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "what is in this picture", "request_id": "req-image"},
+    )
+
+    mgr.session.stream_text.assert_awaited_once()
+    assert list(mgr._request_staged_images) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_text_stream_discard_callback_keeps_original_request_owner(monkeypatch):
     """A late discard from request A must not clear request B's frontend output."""
     mgr = _make_transcript_manager()
