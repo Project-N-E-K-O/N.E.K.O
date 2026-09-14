@@ -96,4 +96,16 @@ for(const failure of ['error','cancelled']) {
   assert.deepEqual(excluded(),['retryable'],'automatic discovery must skip a candidate after its second failure');
   assert.ok(states.some(state=>state.status==='error'));
 }
+const disposalStates=[];
+let disposalSubmissions=0, disposing=null;
+const disposalQueue=createNextVideoQueue({media:{async request(action){
+  if(action==='discover')return {video:{bvid:'closing',url:'video'}};
+  if(++disposalSubmissions===2)disposing.dispose();
+  throw Error('prepare submission failure');
+}}},state=>disposalStates.push(state));
+disposing=disposalQueue;
+await disposalQueue.start({topic:'cats'});
+await disposalQueue.start({topic:'cats'});
+assert.equal(disposalSubmissions,2);
+assert.equal(disposalStates.some(state=>state.candidate),false,'a failure after disposal must not publish exclusion state');
 console.log('next-video queue: a candidate is retried once, then excluded after its second failure');

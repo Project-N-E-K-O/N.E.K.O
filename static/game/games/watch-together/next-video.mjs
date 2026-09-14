@@ -6,7 +6,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
   const publish=(token,state)=>{if(!disposed && token===generation)changed(state);};
   // A transient failure may retry once; a candidate that keeps failing is excluded.
   const failed=bvid=>{
-    if(!bvid)return;
+    if(!bvid || disposed || game.disposed)return;
     const count=(failures.get(bvid) || 0)+1;
     failures.delete(bvid);
     if(count>=MAX_CANDIDATE_FAILURES){changed({candidate:bvid});return;}
