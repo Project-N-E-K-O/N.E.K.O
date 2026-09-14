@@ -847,7 +847,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
-  it('shows a v3 tool for editing without allowing phase-4 equip gestures', async () => {
+  it('allows a phase-5 v3 tool to be equipped and edited', async () => {
     const managementTool: AvatarToolItem = {
       id: LOCAL_ID,
       label: { kind: 'literal', value: 'Flow' },
@@ -873,13 +873,14 @@ describe('AvatarToolItemManager local creation', () => {
       },
     };
     const onLoadDetail = vi.fn().mockResolvedValue(detail);
+    const onSave = vi.fn();
     render(
       <AvatarToolItemManager
         open
         activeToolIds={[]}
         availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, managementTool]}
-        runnableToolIds={new Set(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id))}
-        onSave={() => undefined}
+        runnableToolIds={new Set([...AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id), LOCAL_ID])}
+        onSave={onSave}
         onCancel={() => undefined}
         createLimits={LIMITS}
         onLoadDetail={onLoadDetail}
@@ -887,8 +888,12 @@ describe('AvatarToolItemManager local creation', () => {
       />,
     );
 
-    expect(screen.getByText('Not yet equippable')).toBeVisible();
-    expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).toBeDisabled();
+    expect(screen.queryByText('Not yet equippable')).toBeNull();
+    const libraryCard = document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`);
+    expect(libraryCard).toBeEnabled();
+    fireEvent.click(libraryCard!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledWith([LOCAL_ID]);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Flow' }));
     await waitFor(() => expect(onLoadDetail).toHaveBeenCalledWith(LOCAL_ID));
     expect(await screen.findByRole('dialog', { name: 'Edit custom tool' })).toBeVisible();

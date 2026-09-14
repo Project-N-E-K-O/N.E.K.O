@@ -14,6 +14,7 @@ import {
   type LocalAvatarToolDetail,
   type LocalAvatarToolDto,
   type LocalAvatarToolLimits,
+  type LocalAvatarToolV3RuntimeProjection,
   type UpdateLocalAvatarToolInput,
 } from './localTools';
 import {
@@ -43,7 +44,6 @@ export type LocalAvatarToolCatalog = {
 
 function buildValidLocalDefinitions(items: ReadonlyArray<LocalAvatarToolDto>): AvatarToolDefinition[] {
   return items.flatMap((item) => {
-    if (item.recordVersion === 3) return [];
     try {
       const definition = buildLocalAvatarToolDefinition(item);
       validateAvatarToolDefinition(definition);
@@ -75,6 +75,15 @@ function buildManagementItems(items: ReadonlyArray<LocalAvatarToolDto>): AvatarT
     ...BUILT_IN_AVATAR_TOOL_REGISTRY.items,
     ...items.map(buildManagementItem),
   ];
+}
+
+function retainOtherLocalDefinitions(
+  definitions: ReadonlyArray<AvatarToolDefinition>,
+  excludedToolId: LocalAvatarToolId,
+): AvatarToolDefinition[] {
+  return definitions.filter(definition => (
+    definition.definitionVersion !== 1 && definition.id !== excludedToolId
+  ));
 }
 
 function retainedMediaMatches(
@@ -168,12 +177,37 @@ function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAv
 function detailToPublicItem(detail: LocalAvatarToolDetail): LocalAvatarToolDto {
   if (detail.recordVersion === 3) {
     const initial = detail.images.find(image => image.id === detail.initialImageId)!;
+    const runtime: LocalAvatarToolV3RuntimeProjection = {
+      images: detail.images.map(image => ({
+        id: image.id,
+        url: image.url,
+        hasMeaning: image.meaning.trim().length > 0,
+      })),
+      initialImageId: detail.initialImageId,
+      initialInteractionIds: detail.imageInteractions.initialLinks.map(link => link.to),
+      interactions: detail.imageInteractions.items.map(item => ({
+        id: item.id,
+        trigger: item.trigger,
+        actions: item.actions,
+      })),
+      links: detail.imageInteractions.links.map(link => ({ from: link.from, to: link.to })),
+      ...(detail.normalSound ? { normalSoundUrl: detail.normalSound.url } : {}),
+      ...(detail.special ? {
+        special: {
+          probability: detail.special.probability,
+          imageUrl: detail.special.image.url,
+          hasMeaning: detail.special.meaning.trim().length > 0,
+          ...(detail.special.sound ? { soundUrl: detail.special.sound.url } : {}),
+        },
+      } : {}),
+    };
     return {
       recordVersion: 3,
       id: detail.id,
       revision: detail.revision,
       name: detail.name,
       initialImageUrl: initial.url,
+      runtime,
     };
   }
   return {
@@ -300,7 +334,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     ]);
     const definitions = buildValidLocalDefinitions([createdItem]);
     setRegistry((current) => createAvatarToolRegistrySnapshot([
-      ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== createdItem.id),
+      ...retainOtherLocalDefinitions(current.definitions, createdItem.id),
       ...definitions,
     ]));
     await staleRefresh?.catch(() => undefined);
@@ -362,7 +396,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
           ]);
           const definitions = buildValidLocalDefinitions([detailToPublicItem(currentDetail)]);
           setRegistry((current) => createAvatarToolRegistrySnapshot([
-            ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+            ...retainOtherLocalDefinitions(current.definitions, toolId),
             ...definitions,
           ]));
         }
@@ -378,7 +412,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     ]);
     const definitions = buildValidLocalDefinitions([updatedItem]);
     setRegistry((current) => createAvatarToolRegistrySnapshot([
-      ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+      ...retainOtherLocalDefinitions(current.definitions, toolId),
       ...definitions,
     ]));
     await staleRefresh?.catch(() => undefined);
@@ -416,7 +450,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     refreshEpochRef.current += 1;
     setItems(current => current.filter(item => item.id !== toolId));
     setRegistry((current) => createAvatarToolRegistrySnapshot(
-      current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+      retainOtherLocalDefinitions(current.definitions, toolId),
     ));
     await staleRefresh?.catch(() => undefined);
     await refresh().catch(() => undefined);

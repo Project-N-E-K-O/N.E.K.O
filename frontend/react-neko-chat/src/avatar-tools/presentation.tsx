@@ -582,7 +582,7 @@ export function buildAvatarToolVisualModel({
   registry?: AvatarToolRegistrySnapshot;
 }) : AvatarToolVisualModel {
   const activeDefinition = activeTool ? registry.getRegistration(activeTool.id).definition : null;
-  const activeFrame = activeDefinition?.definitionVersion === 2
+  const activeFrame = activeDefinition && activeDefinition.definitionVersion !== 1
     ? activeDefinition.visual.frames?.[imageFrameIndex] ?? activeDefinition.visual.frames?.[0]
     : null;
   const activeImagePaths = activeTool

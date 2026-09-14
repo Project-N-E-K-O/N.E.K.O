@@ -140,6 +140,34 @@ def test_v3_create_and_reopen_preserves_the_complete_editor_graph(tmp_path, monk
     assert item["revision"].startswith("3-")
     assert "imageInteractions" not in item
     assert item["initialImageUrl"].startswith(f"/user_avatar_tools/{tool_id}/image-000.png?v=")
+    assert item["runtime"] == {
+        "images": [
+            {
+                "id": "img-1",
+                "url": item["initialImageUrl"],
+                "hasMeaning": False,
+            },
+            {
+                "id": "img-2",
+                "url": next(
+                    image["url"] for image in store.get_detail(tool_id)["images"]
+                    if image["id"] == "img-2"
+                ),
+                "hasMeaning": True,
+            },
+        ],
+        "initialImageId": "img-1",
+        "initialInteractionIds": ["ix-click"],
+        "interactions": [{
+            "id": "ix-click",
+            "trigger": {"kind": "mouse-click"},
+            "actions": {
+                "press": {"kind": "keep"},
+                "release": {"kind": "show", "imageId": "img-2"},
+            },
+        }],
+        "links": [{"from": "ix-click", "to": "ix-click"}],
+    }
     assert detail["recordVersion"] == 3
     assert detail["initialImageId"] == "img-1"
     assert detail["imageInteractions"] == manifest["imageInteractions"]
@@ -176,6 +204,13 @@ def test_v3_create_reopen_and_retained_update_preserve_optional_media(tmp_path, 
     assert detail["special"]["image"]["resource"] == "special.png"
     assert detail["special"]["sound"]["resource"] == "special.mp3"
     assert detail["special"]["meaning"] == "sparkles appear"
+    assert created["runtime"]["normalSoundUrl"] == detail["normalSound"]["url"]
+    assert created["runtime"]["special"] == {
+        "probability": 0.2,
+        "imageUrl": detail["special"]["image"]["url"],
+        "hasMeaning": True,
+        "soundUrl": detail["special"]["sound"]["url"],
+    }
 
     retained = _v3_manifest(tool_id, sources=[{"kind": "resource", "name": "image-000.png"}])
     retained["interaction"] = {

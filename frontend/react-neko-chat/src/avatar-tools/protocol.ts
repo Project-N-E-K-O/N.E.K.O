@@ -221,6 +221,14 @@ function deriveAvatarInteractionContractFacts(
   if (profile.kind === 'round-choice') {
     throw new Error('round-choice uses its dedicated host interaction facts');
   }
+  if (profile.kind === 'custom-graph') {
+    return {
+      actions: [],
+      touchZones: profile.touchZones,
+      chanceField: null,
+      requiresChangeIndex: false,
+    };
+  }
   return {
     actions: [{
       actionId: profile.actionId,

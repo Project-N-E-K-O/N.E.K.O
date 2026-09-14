@@ -1,6 +1,6 @@
 # Avatar 用户自定义通用道具实施与分阶段验收
 
-> 状态：阶段 1～4 已收口；阶段 5 已完成开工准备，尚未开始实施
+> 状态：阶段 1～5 功能代码已收口，阶段 6 已完成开工检查、尚未实施；阶段 5 的四端完整人工验收与录屏仍待补，不能算作已留证通过
 >
 > 编写日期：2026-09-02  
 > 产品语义基线：[Avatar 用户自定义道具图片交互功能设计](./avatar-tool-user-created-general-design.md)（已锁定）  
@@ -41,20 +41,23 @@ flowchart LR
     D --> I[v3 manifest 保存<br/>完整图与资源]
     I --> J[v2 / v3 API 与 Store<br/>同一原子发布链]
     J --> K[管理目录 DTO<br/>v2 + v3]
-    K --> L[运行 registry 仅 v2<br/>press-swap 或 click-advance]
-    L --> M[changeIndex + revision]
-    M --> N[Host / Python 权威处理]
-    N --> O[模型反馈]
+    K --> L[运行 registry<br/>v2 + v3]
+    L --> M[Web / PC 道具会话]
+    M --> N[v3 本地切图、音效和彩蛋]
+    M --> O[v2 changeIndex + revision]
+    O --> P[Host / Python 权威处理]
+    P --> Q[模型反馈]
+    N -. 阶段 6 接入 .-> R[v3 按下前 imageId + revision]
+    R -.-> P
 ```
 
-阶段 1～4 已完成编辑入口、同级图片、完整互动图、持久化和再次编辑；运行仍保持 v2。当前事实与最终目标之间只剩后续阶段负责的差异：
+阶段 1～5 已完成编辑、保存、装备，以及 Web/PC 的 v3 本地图片流程。当前尚未接入的是 v3 模型反馈和最终跨端完整验收：
 
 | 当前实现 | 目标实现需要 |
 |---|---|
-| 编辑器把图片、初始图片、节点位置、完整互动、连接和用户选边写入 v3，重新打开可完整恢复 | 阶段 5 让 Web/PC 使用同一份图片交互图解释器和稳定 ID |
-| Router 和 Store 严格读取 v2/v3，并用同一套摘要、目录闭包与原子发布链写入 v3 | 阶段 5 只消费既有 v3，不再改变保存结构 |
-| 管理目录包含 v2/v3；运行 registry 只包含 v2，v3 不可新装备 | 阶段 5 完成消费者后再允许 v3 进入运行 registry |
-| 点击仍提交 `changeIndex`，Python 读取 v2 变化图片描述 | 后续阶段提交按下前记录的稳定 `imageId`，并由 Python 权威决定彩蛋、普通反馈或不调用模型 |
+| 编辑器和 Store 保存、重开完整 v3 图；Web/PC 已按稳定图片 ID 运行 | 阶段 6 不改保存结构或图片流程，只接入反馈事实 |
+| 管理目录和运行 registry 均包含有效 v2/v3；v3 已可装备 | 阶段 6 沿用同一目录和选中会话，不建立第二条运行链 |
+| v2 点击仍提交 `changeIndex`；v3 有本地图片、音效和彩蛋，但不提交模型事件 | 阶段 6 让 v3 提交按下前冻结的 `imageId`，由 Python 权威决定普通反馈、彩蛋反馈或不调用模型 |
 
 ### 2.2 必须复用的现有边界
 
@@ -695,6 +698,37 @@ flowchart LR
 - 实现候选竞争、点击占有、取消恢复、终点保持和循环；
 - surface handoff、revision 变化和重装备清理旧计时器与旧点击票据。
 
+**实施记录（2026-09-11）**
+
+- 运行投影：`AvatarToolStore` 直接从同一份已校验 v3 record 生成公开运行投影，包含有序稳定图片 ID、版本化图片 URL、`hasMeaning`、初始图片、完整交互与连接、普通音效和彩蛋本地资源；不公开描述正文，不让运行端逐项请求 detail，也没有建立第二份目录或磁盘读取链；
+- 严格消费者：Web 的列表 DTO、definition catalog 和 desktop contract，以及 N.E.K.O.-PC 的 desktop contract 均增加独立 v3 / `custom-graph` 分支。图片、互动、动作、引用、可达性、同一等待位置歧义、数量、延时和资源闭包均在运行前拒绝非法值；v1/v2 分支与既有 revision 规则保持不变；
+- 图解释器：Web 与 PC 各有一个不依赖 UI、可注入时钟的纯图运行核心，事实只有当前稳定图片 ID、等待候选、延时票据和可选点击票据。已实现初始进入、按下/松开动作、延时、同级竞争、点击占有、取消恢复、终点保持、自连接/回连和销毁清理；frame index 只在渲染边界由稳定图片 ID 映射；
+- Web 接入：图解释器接入原有唯一 pointer down/up/move/cancel/blur/visibility 会话，并复用同一命中范围、UI 排除、pointer/button、移动阈值、generation、disposer、Audio 和 `random-scatter` 执行器。道具或 revision 变化会销毁旧图会话，旧计时器不能再换图；
+- PC 接入：图解释器接入原有 interaction engine、受控 scheduler、surface lease/generation 和 Pet adapter。图片变化通过现有 runtime event 重新发布 visual state；同一内容发生 surface handoff 时重建初始图会话，deactivate/dispose 会清除旧点击与延时；没有新增全局 pointer 监听或第二套 surface lifecycle；
+- 桌面显示链收口：Compact/Full 把本地道具交给 Pet 前的权威目录核验原来只认识 v2 字段，导致合法 v3 被误判为缓存过期而始终不转发；现按 definition 版本分支，v2 规则保持不变，v3 逐项核对 revision、图片/初始图片、互动、动作、连接、普通音效和彩蛋资源后才转发，任一不一致仍失败关闭。当前服务中的真实 v3 记录已通过“Store 公开项 → Web 当前投影 → Chat bridge → Pet 状态”检查；Wayland Pet 内嵌显示也补齐当前 frame index，按下与松开不再固定回落到初始图；
+- 目录变更一致性：创建、修改、删除任一道具成功后，前端会先用服务器返回结果立即更新运行目录，再请求一次权威刷新。原实现此时只保留其他 v2 定义；若刷新失败，其他 v3 会被错误移出运行目录。现在统一保留除本次目标外的全部本地 v2/v3 定义，并用“创建成功、后续刷新离线、既有 v3 仍可运行”的回归用例覆盖；
+- 阶段边界：有效点击继续执行普通音效和彩蛋抽样、彩蛋图片散落和音效回退，但 v3 本阶段只产生受严格契约保护的本地命令，Web 不调用 `onInteraction`，PC 不调用 Host submit。`imageId` 模型反馈、Host/Python 解析和空描述抑制仍留在阶段 6；
+- 实际运行检查：当前服务中的真实 v3 条目及四张 PNG 都能由同源资源接口返回。应用内 Web 生产页临时把该条目保存到第三个快捷槽并选中后，页面实际出现对应的本地图片元素，运行图到时后图片 URL 由第一张切到第二张，页面没有运行错误；检查后已经重新保存为原来的“棒棒糖 / 猫爪 / 锤子”。N.E.K.O.-PC 已用 Forge 的真实启动入口重新编译并启动，成功连接当前后端并创建 Pet、Compact Chat 窗口，启动日志没有阶段 5 契约或 preload 错误；macOS 没有授予辅助功能/屏幕读取权限，因此桌面画面仍不冒充人工通过；
+- 自动验证：后端 Store/Router `182` 项通过；Web 全量 `25` 个测试文件、`626` 项通过，TypeScript 类型检查和生产构建通过；PC 阶段 5 相关 contract/runtime/lifecycle/adapter/Chat bridge 与真实跨仓描述符共 `138` 项通过，完整 contract 套件 `651` 项中 `611` 项通过、`40` 项按平台跳过、`0` 项失败；PC 相关文件 lint 与两仓 `git diff --check` 通过。Forge 启动后，Chat bridge、Pet adapter、desktop contract、图解释器、runtime 和 interaction output 六个实际加载文件均与当前源码逐文件一致。PC 全量 unit 基线共 `1206` 项，其中 `1196` 项通过、`5` 项按平台跳过，`portable-update` 仍有 `5` 个 macOS 临时路径别名及 Linux `stat -c` 命令兼容失败，与本阶段文件和运行链无关，本阶段不扩大范围修复。
+
+**阶段 5 功能收口复核（2026-09-14）**
+
+- 桌面交接修正：Compact/Full 切换到待核验的本地道具时，先停用当前正在运行的不同道具或同 ID 旧内容；权威目录匹配后才启用新内容。已验证内容的重复核验不闪断；目录证明内容变化时停用旧内容并请求刷新；失败或迟到的核验不重新启用旧道具，也不清空用户保存的快捷槽。
+- 本轮重新执行：Web `626` 项、后端 Store/Router `182` 项、PC 阶段相关与真实跨仓契约 `127` 项全部通过，Web 类型检查、PC 相关文件 lint 与 diff 检查通过。用户此前已确认基础流程可以跑通，但下列四端完整人工清单及录屏仍无留证；因此仅收口阶段 5 的功能代码与自动验证，不把人工项勾成完成，进入阶段 6 实施前保留这项最终验收债务。
+
+**自动收口检查**
+
+- [x] v3 运行投影来自同一权威记录，描述正文未进入公开目录或 PC；
+- [x] Web/PC 按稳定图片 ID 执行同一 A → B → C → 800ms → A 时序；
+- [x] 点击占有、延时竞争、取消恢复、终点、循环和销毁均有可控时钟测试；
+- [x] revision 变化、重装备、deactivate/dispose 和 surface handoff 会清除旧票据；
+- [x] v3 已可进入装备选择，v1/v2 全量 Web 与 PC contract 回归未退化；
+- [x] Compact/Full 只在 v3 权威目录投影与缓存桌面契约一致时转发给 Pet；真实现有 v3 已通过，过期图片、动作或连接仍被拒绝；
+- [x] 任一道具变更后的权威刷新即使失败，其他 v3 也不会从当前运行目录消失；
+- [x] 普通桌面叠加层与 Wayland Pet 内嵌显示都消费同一个当前 frame index；
+- [x] 阶段 5 没有提前发送 v3 模型反馈，也没有修改 Host/Python 反馈解释；
+- [ ] Web、Full、Compact 和 N.E.K.O.-PC 的真实运行画面仍需按下方人工清单及留证要求逐项验收。
+
 **人工验收**
 
 - [ ] 装备阶段 3 的标准图后首先显示 A；
@@ -708,6 +742,13 @@ flowchart LR
 **留证**：一段完整录屏，包含点击 B→C、延时 C→A、点击抢先退出并保持 C。
 
 ### 阶段 6：按按下前图片产生反馈
+
+**开工检查（2026-09-14）**
+
+- 现状：Web/PC 图解释器在有效按下时已保存 `capturedImageId`，正常松开时都能返回它；Web runtime 当前丢弃该结果，PC runtime 的本地命令未带出该字段，两端目前只执行切图、音效和彩蛋。不能从松开后的当前帧或图片顺序反推要反馈哪张图。
+- 现有接收链：Web `protocol.ts`、桌面 `interaction-output.js`、Host 的 `static/app/app-buttons.js`、Python `avatar_interaction_contract.py` 与 `GreetingMixin` 仍按 v2 `changeIndex` 解析本地互动。阶段 6 要按权威 `recordVersion` 严格分流：v2 原样，v3 使用稳定 `imageId` 与当前 revision；未知 ID、跨道具 ID、旧 revision 和混用两套字段均拒绝。
+- 范围：先使 Host/Python 能严格接收和权威解释 v3 事实，再让 Web/PC 在有效点击完成后发出同一事实；`hasMeaning=false` 且未命中彩蛋时客户端不调用模型，服务端仍按权威 record 兜底。只有配置了彩蛋才携带明确布尔的命中事实；普通音效、彩蛋音效和散落效果继续走阶段 5 的本地执行器，彩蛋命中只替代模型反馈、不取消图片动作。
+- 不改 v3 保存 schema、公开目录、图片交互图调度、编辑器或 surface 生命周期；阶段 5 的旧请求、旧计时器和切换防护继续作为回归项。验收按下方 A/B/C/彩蛋路径，并覆盖 Web/PC 载荷一致、v2 不退化、空描述无模型请求、无效或过期事件不消耗有效反馈。
 
 **用户路径**
 

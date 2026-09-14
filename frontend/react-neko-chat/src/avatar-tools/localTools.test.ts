@@ -562,6 +562,21 @@ describe('local avatar tool v3 persistence transport', () => {
       targetSide: 'right' as const,
     }],
   };
+  const runtime = {
+    images: [{
+      id: 'img-1' as const,
+      url: '/user_avatar_tools/tool/image-000.png?v=1',
+      hasMeaning: false,
+    }],
+    initialImageId: 'img-1' as const,
+    initialInteractionIds: ['ix-click' as const],
+    interactions: [{
+      id: 'ix-click' as const,
+      trigger: { kind: 'mouse-click' as const },
+      actions: { press: { kind: 'keep' as const }, release: { kind: 'keep' as const } },
+    }],
+    links: [{ from: 'ix-click' as const, to: 'ix-click' as const }],
+  };
 
   it('sends one strict manifest with indexed uploads when creating v3', async () => {
     window.nekoLocalMutationSecurity = { getMutationHeaders: () => ({ 'X-CSRF-Token': 'token' }) };
@@ -573,6 +588,7 @@ describe('local avatar tool v3 persistence transport', () => {
         revision: '3-123',
         name: 'Flow',
         initialImageUrl: '/user_avatar_tools/tool/image-000.png?v=1',
+        runtime,
       },
     }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
@@ -804,6 +820,7 @@ describe('local avatar tool v3 persistence transport', () => {
         revision: '3-789',
         name: 'Flow',
         initialImageUrl: '/user_avatar_tools/tool/image-000.png?v=1',
+        runtime,
       },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);

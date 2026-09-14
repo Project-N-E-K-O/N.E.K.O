@@ -24,7 +24,7 @@ const BASE_PAYLOAD = {
 } as const;
 
 function declaredFacts(profile: AvatarToolInteractionProfile) {
-  if (profile.kind === 'round-choice') return null;
+  if (profile.kind === 'round-choice' || profile.kind === 'custom-graph') return null;
   if (profile.kind === 'progressive-release') {
     return {
       actions: profile.stages.map(stage => ({

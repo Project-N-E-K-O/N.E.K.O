@@ -743,7 +743,7 @@ export default function AvatarToolItemManager({
   ), [availableTools]);
   const equippedIds = compactSlots(draftSlots);
   const equippedIdSet = new Set(equippedIds.filter(toolId => availableById.has(toolId)));
-  // 已保存但尚未接入运行时的 v3 道具仍是一个真实槽位；只有用户明确移除后
+  // 已保存但当前运行时未接受的道具仍是一个真实槽位；只有用户明确移除后
   // 才能复用。目录已经权威确认不存在的陈旧 ID 才按空槽处理。
   const draftFull = draftSlots.filter(toolId => toolId && availableById.has(toolId)).length
     >= MAX_ACTIVE_AVATAR_TOOLS;

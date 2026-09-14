@@ -167,6 +167,13 @@ def test_v3_post_get_put_and_list_complete_the_editor_persistence_chain(tmp_path
     assert created["recordVersion"] == 3
     assert created["revision"].startswith("3-")
     assert "imageInteractions" not in created
+    assert created["runtime"]["initialImageId"] == "img-1"
+    assert created["runtime"]["initialInteractionIds"] == ["ix-click"]
+    assert created["runtime"]["interactions"][0]["trigger"] == {"kind": "mouse-click"}
+    assert created["runtime"]["normalSoundUrl"].startswith(
+        f"/user_avatar_tools/{tool_id}/normal.mp3?v="
+    )
+    assert created["runtime"]["special"]["hasMeaning"] is True
     detail_response = client.get(f"/api/avatar-tools/{tool_id}")
     assert detail_response.status_code == 200
     detail = detail_response.json()["detail"]

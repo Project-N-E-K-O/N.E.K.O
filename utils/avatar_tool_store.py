@@ -1469,12 +1469,56 @@ class AvatarToolStore:
                 image for image in record["images"]
                 if image["id"] == record["initialImageId"]
             )
+            graph = record["imageInteractions"]
+            interaction = record["interaction"]
+            runtime = {
+                "images": [
+                    {
+                        "id": image["id"],
+                        "url": self._asset_url(record, image["resource"]),
+                        "hasMeaning": bool(image["meaning"]),
+                    }
+                    for image in record["images"]
+                ],
+                "initialImageId": record["initialImageId"],
+                "initialInteractionIds": [link["to"] for link in graph["initialLinks"]],
+                "interactions": [
+                    {
+                        "id": item["id"],
+                        "trigger": item["trigger"],
+                        "actions": item["actions"],
+                    }
+                    for item in graph["items"]
+                ],
+                "links": [
+                    {"from": link["from"], "to": link["to"]}
+                    for link in graph["links"]
+                ],
+                **(
+                    {"normalSoundUrl": self._asset_url(record, interaction["normalSound"])}
+                    if interaction.get("normalSound")
+                    else {}
+                ),
+            }
+            special = interaction.get("special")
+            if special:
+                runtime["special"] = {
+                    "probability": special["probability"],
+                    "imageUrl": self._asset_url(record, special["image"]),
+                    "hasMeaning": bool(special["meaning"]),
+                    **(
+                        {"soundUrl": self._asset_url(record, special["sound"])}
+                        if special.get("sound")
+                        else {}
+                    ),
+                }
             return {
                 "recordVersion": 3,
                 "id": tool_id,
                 "revision": self.record_revision(record),
                 "name": record["name"],
                 "initialImageUrl": self._asset_url(record, initial_image["resource"]),
+                "runtime": runtime,
             }
         item = {
             "recordVersion": 2,

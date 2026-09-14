@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
-import { buildLocalAvatarToolDefinition, type LocalAvatarToolV2Dto } from './localTools';
+import {
+  buildLocalAvatarToolDefinition,
+  type LocalAvatarToolV2Dto,
+  type LocalAvatarToolV3Dto,
+} from './localTools';
 import AvatarToolVisuals from './presentation';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
@@ -42,6 +46,52 @@ function localToolDto(version: number): LocalAvatarToolV2Dto {
 function localToolRegistry(version: number): AvatarToolRegistrySnapshot {
   return createAvatarToolRegistrySnapshot([
     buildLocalAvatarToolDefinition(localToolDto(version)),
+  ]);
+}
+
+function localGraphToolDto(version: number): LocalAvatarToolV3Dto {
+  const asset = (name: string) => `/user_avatar_tools/${LOCAL_TOOL_ID}/${name}.png?v=${version}`;
+  return {
+    recordVersion: 3,
+    id: LOCAL_TOOL_ID,
+    revision: `3-${version}`,
+    name: 'Flow',
+    initialImageUrl: asset('image-000'),
+    runtime: {
+      images: [
+        { id: 'img-a', url: asset('image-000'), hasMeaning: true },
+        { id: 'img-b', url: asset('image-001'), hasMeaning: false },
+        { id: 'img-c', url: asset('image-002'), hasMeaning: true },
+      ],
+      initialImageId: 'img-a',
+      initialInteractionIds: ['ix-click'],
+      interactions: [
+        {
+          id: 'ix-click',
+          trigger: { kind: 'mouse-click' },
+          actions: {
+            press: { kind: 'show', imageId: 'img-b' },
+            release: { kind: 'show', imageId: 'img-c' },
+          },
+        },
+        {
+          id: 'ix-delay',
+          trigger: { kind: 'after', delayMs: 800 },
+          actions: { complete: { kind: 'show', imageId: 'img-a' } },
+        },
+      ],
+      links: [
+        { from: 'ix-click', to: 'ix-delay' },
+        { from: 'ix-delay', to: 'ix-click' },
+      ],
+      normalSoundUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/normal.mp3?v=${version}`,
+    },
+  };
+}
+
+function localGraphToolRegistry(version: number): AvatarToolRegistrySnapshot {
+  return createAvatarToolRegistrySnapshot([
+    buildLocalAvatarToolDefinition(localGraphToolDto(version)),
   ]);
 }
 
@@ -824,6 +874,77 @@ describe('useAvatarToolRuntime press lifecycle', () => {
 
     fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
     expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+  });
+
+  it('runs a v3 graph through press, release and delay without sending phase-6 model feedback', () => {
+    vi.useFakeTimers();
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localGraphToolRegistry(1)}
+      />,
+    );
+
+    try {
+      selectTool();
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      expect(onInteraction).not.toHaveBeenCalled();
+      expect(audioInstances.some(audio => audio.play.mock.calls.length === 1)).toBe(true);
+
+      act(() => vi.advanceTimersByTime(799));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores a v3 graph press on moved release and clears its pending delay on revision reset', async () => {
+    vi.useFakeTimers();
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localGraphToolRegistry(1)}
+      />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { pointerId: 7, clientX: 160, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 160, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+      view.rerender(
+        <Harness
+          onInteraction={vi.fn()}
+          providers={createProviders()}
+          toolId={LOCAL_TOOL_ID}
+          registry={localGraphToolRegistry(2)}
+        />,
+      );
+      await act(async () => Promise.resolve());
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+      act(() => vi.advanceTimersByTime(800));
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('selects a local tool first loaded after the runtime mounted', async () => {

@@ -172,6 +172,67 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(result.current.refreshFailed).toBe(true);
   });
 
+  it('keeps other v3 runtime definitions published when a successful mutation refresh fails', async () => {
+    const existingV3Item = {
+      recordVersion: 3,
+      id: 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      revision: '3-100',
+      name: 'Existing flow',
+      initialImageUrl: '/existing.png?v=1',
+      runtime: {
+        images: [{ id: 'img-initial', url: '/existing.png?v=1', hasMeaning: false }],
+        initialImageId: 'img-initial',
+        initialInteractionIds: ['ix-click'],
+        interactions: [{
+          id: 'ix-click',
+          trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+        }],
+        links: [{ from: 'ix-click', to: 'ix-click' }],
+      },
+    };
+    const createdItem = {
+      id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=1',
+      changeUrls: ['/change-000.png?v=1'],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        items: [existingV3Item],
+        limits: LIMITS,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, item: createdItem }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockRejectedValueOnce(new Error('refresh offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(existingV3Item.id as `local-${string}`)).toBe(true));
+
+    await act(async () => {
+      await result.current.create({
+        toolId: createdItem.id as `local-${string}`,
+        name: createdItem.name,
+        changeMode: 'press-swap',
+        defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),
+        changeItems: [{
+          image: new File(['pressed'], 'pressed.png', { type: 'image/png' }),
+          meaning: 'A gentle touch',
+        }],
+      });
+    });
+
+    expect(result.current.registry.has(existingV3Item.id as `local-${string}`)).toBe(true);
+    expect(result.current.registry.has(createdItem.id as `local-${string}`)).toBe(true);
+    expect(result.current.refreshFailed).toBe(true);
+  });
+
   it('treats a lost POST response as successful when the authoritative refresh contains its stable id', async () => {
     const createdItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc' as const,
@@ -1156,7 +1217,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     ).toEqual({ kind: 'literal', value: 'New feather' }));
   });
 
-  it('keeps v3 tools editable in management while excluding them from the phase-4 runtime registry', async () => {
+  it('publishes a valid v3 tool to both management and the phase-5 runtime registry', async () => {
     const v2Id = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const v3Id = 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as const;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -1178,6 +1239,17 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
           revision: '3-100',
           name: 'Editable flow',
           initialImageUrl: '/v3.png?v=1',
+          runtime: {
+            images: [{ id: 'img-initial', url: '/v3.png?v=1', hasMeaning: false }],
+            initialImageId: 'img-initial',
+            initialInteractionIds: ['ix-click'],
+            interactions: [{
+              id: 'ix-click',
+              trigger: { kind: 'mouse-click' },
+              actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+            }],
+            links: [{ from: 'ix-click', to: 'ix-click' }],
+          },
         },
       ],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
@@ -1186,7 +1258,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
 
     expect(result.current.registry.has(v2Id)).toBe(true);
-    expect(result.current.registry.has(v3Id)).toBe(false);
+    expect(result.current.registry.has(v3Id)).toBe(true);
     expect(result.current.items.map(item => item.id)).toEqual([
       'lollipop', 'fist', 'hammer', 'rps', v2Id, v3Id,
     ]);

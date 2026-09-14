@@ -51,6 +51,7 @@ export type LocalAvatarToolV3Dto = {
   revision: string;
   name: string;
   initialImageUrl: string;
+  runtime: LocalAvatarToolV3RuntimeProjection;
 };
 
 export type LocalAvatarToolDto = LocalAvatarToolV2Dto | LocalAvatarToolV3Dto;
@@ -104,6 +105,35 @@ export type LocalAvatarToolConnectionSide = 'top' | 'right' | 'bottom' | 'left';
 export type LocalAvatarToolImageAction =
   | { kind: 'keep' }
   | { kind: 'show'; imageId: `img-${string}` };
+
+export type LocalAvatarToolV3RuntimeInteraction = {
+  id: `ix-${string}`;
+  trigger:
+    | { kind: 'mouse-click' }
+    | { kind: 'after'; delayMs: number };
+  actions:
+    | { press: LocalAvatarToolImageAction; release: LocalAvatarToolImageAction }
+    | { complete: LocalAvatarToolImageAction };
+};
+
+export type LocalAvatarToolV3RuntimeProjection = {
+  images: Array<{
+    id: `img-${string}`;
+    url: string;
+    hasMeaning: boolean;
+  }>;
+  initialImageId: `img-${string}`;
+  initialInteractionIds: Array<`ix-${string}`>;
+  interactions: LocalAvatarToolV3RuntimeInteraction[];
+  links: Array<{ from: `ix-${string}`; to: `ix-${string}` }>;
+  normalSoundUrl?: string;
+  special?: {
+    probability: number;
+    imageUrl: string;
+    hasMeaning: boolean;
+    soundUrl?: string;
+  };
+};
 
 export type LocalAvatarToolImageInteractions = {
   initialImagePosition: { x: number; y: number };
@@ -287,6 +317,7 @@ function decodeSpecial(value: unknown): LocalAvatarToolV2Dto['special'] | null {
 
 const LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN = /^img-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LOCAL_AVATAR_TOOL_INTERACTION_ID_PATTERN = /^ix-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH = 80;
 const LOCAL_AVATAR_TOOL_RESOURCE_PATTERN = /^(?:default|change-[0-9]{3}|image-[0-9]{3}|normal|special|special-sound)\.(?:png|jpg|jpeg|webp|gif|mp3|wav|ogg|m4a)$/;
 const LOCAL_AVATAR_TOOL_CONNECTION_SIDES = new Set<LocalAvatarToolConnectionSide>(['top', 'right', 'bottom', 'left']);
 const LOCAL_AVATAR_TOOL_MEANING_CONTROL_PATTERN = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -322,9 +353,175 @@ function isRevision(value: unknown): value is string {
   return typeof value === 'string' && /^\d+-\d+$/.test(value) && value.length <= 128;
 }
 
+function decodeV3RuntimeProjection(
+  value: unknown,
+  limits: Pick<LocalAvatarToolLimits, 'maxImages' | 'maxInteractions' | 'maxLinks' | 'maxDelayMs'>,
+): LocalAvatarToolV3RuntimeProjection | null {
+  if (!value || typeof value !== 'object') return null;
+  const runtime = value as Record<string, unknown>;
+  if (!hasOnlyKeys(runtime, [
+    'images', 'initialImageId', 'initialInteractionIds', 'interactions', 'links',
+    'normalSoundUrl', 'special',
+  ])) return null;
+  if (
+    !Array.isArray(runtime.images)
+    || runtime.images.length < 1
+    || runtime.images.length > limits.maxImages
+  ) return null;
+  const imageIds = new Set<string>();
+  const images: LocalAvatarToolV3RuntimeProjection['images'] = [];
+  for (const candidate of runtime.images) {
+    if (!candidate || typeof candidate !== 'object') return null;
+    const image = candidate as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(image, ['id', 'url', 'hasMeaning'])
+      || typeof image.id !== 'string'
+      || image.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
+      || !LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.test(image.id)
+      || imageIds.has(image.id)
+      || !isStrictAvatarToolResourceUrl(image.url)
+      || typeof image.hasMeaning !== 'boolean'
+    ) return null;
+    imageIds.add(image.id);
+    images.push({
+      id: image.id as `img-${string}`,
+      url: image.url,
+      hasMeaning: image.hasMeaning,
+    });
+  }
+  if (typeof runtime.initialImageId !== 'string' || !imageIds.has(runtime.initialImageId)) return null;
+  if (
+    !Array.isArray(runtime.interactions)
+    || runtime.interactions.length < 1
+    || runtime.interactions.length > limits.maxInteractions
+  ) return null;
+  const interactionIds = new Set<string>();
+  const interactions: LocalAvatarToolV3RuntimeInteraction[] = [];
+  for (const candidate of runtime.interactions) {
+    if (!candidate || typeof candidate !== 'object') return null;
+    const item = candidate as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(item, ['id', 'trigger', 'actions'])
+      || typeof item.id !== 'string'
+      || item.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
+      || !LOCAL_AVATAR_TOOL_INTERACTION_ID_PATTERN.test(item.id)
+      || interactionIds.has(item.id)
+      || !item.trigger || typeof item.trigger !== 'object'
+      || !item.actions || typeof item.actions !== 'object'
+    ) return null;
+    const trigger = item.trigger as Record<string, unknown>;
+    const actions = item.actions as Record<string, unknown>;
+    let decoded: LocalAvatarToolV3RuntimeInteraction;
+    if (hasOnlyKeys(trigger, ['kind']) && trigger.kind === 'mouse-click') {
+      if (!hasOnlyKeys(actions, ['press', 'release'])) return null;
+      const press = decodeImageAction(actions.press, imageIds);
+      const release = decodeImageAction(actions.release, imageIds);
+      if (!press || !release) return null;
+      decoded = {
+        id: item.id as `ix-${string}`,
+        trigger: { kind: 'mouse-click' },
+        actions: { press, release },
+      };
+    } else if (
+      hasOnlyKeys(trigger, ['kind', 'delayMs'])
+      && trigger.kind === 'after'
+      && Number.isSafeInteger(trigger.delayMs)
+      && Number(trigger.delayMs) >= 1
+      && Number(trigger.delayMs) <= limits.maxDelayMs
+    ) {
+      if (!hasOnlyKeys(actions, ['complete'])) return null;
+      const complete = decodeImageAction(actions.complete, imageIds);
+      if (!complete) return null;
+      decoded = {
+        id: item.id as `ix-${string}`,
+        trigger: { kind: 'after', delayMs: Number(trigger.delayMs) },
+        actions: { complete },
+      };
+    } else {
+      return null;
+    }
+    interactionIds.add(item.id);
+    interactions.push(decoded);
+  }
+  if (
+    !Array.isArray(runtime.initialInteractionIds)
+    || runtime.initialInteractionIds.length < 1
+    || runtime.initialInteractionIds.some(id => typeof id !== 'string' || !interactionIds.has(id))
+    || new Set(runtime.initialInteractionIds).size !== runtime.initialInteractionIds.length
+    || !Array.isArray(runtime.links)
+    || runtime.initialInteractionIds.length + runtime.links.length > limits.maxLinks
+  ) return null;
+  const links: LocalAvatarToolV3RuntimeProjection['links'] = [];
+  const linkKeys = new Set<string>();
+  for (const candidate of runtime.links) {
+    if (!candidate || typeof candidate !== 'object') return null;
+    const link = candidate as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(link, ['from', 'to'])
+      || typeof link.from !== 'string' || !interactionIds.has(link.from)
+      || typeof link.to !== 'string' || !interactionIds.has(link.to)
+    ) return null;
+    const key = `${link.from}\u0000${link.to}`;
+    if (linkKeys.has(key)) return null;
+    linkKeys.add(key);
+    links.push({ from: link.from as `ix-${string}`, to: link.to as `ix-${string}` });
+  }
+  const initialInteractionIds = runtime.initialInteractionIds as Array<`ix-${string}`>;
+  const reachable = new Set<string>();
+  const queue = [...initialInteractionIds];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    links.forEach((link) => { if (link.from === id) queue.push(link.to); });
+  }
+  if (reachable.size !== interactionIds.size) return null;
+  const byId = new Map(interactions.map(item => [item.id, item]));
+  const waitingPositions = [
+    initialInteractionIds,
+    ...interactions.map(item => links.filter(link => link.from === item.id).map(link => link.to)),
+  ];
+  for (const ids of waitingPositions) {
+    const candidates = ids.map(id => byId.get(id)!);
+    if (candidates.filter(item => item.trigger.kind === 'mouse-click').length > 1) return null;
+    const delays = candidates.flatMap(item => item.trigger.kind === 'after' ? [item.trigger.delayMs] : []);
+    if (new Set(delays).size !== delays.length) return null;
+  }
+  if (runtime.normalSoundUrl !== undefined && !isStrictAvatarToolResourceUrl(runtime.normalSoundUrl)) return null;
+  let special: LocalAvatarToolV3RuntimeProjection['special'];
+  if (runtime.special !== undefined) {
+    if (!runtime.special || typeof runtime.special !== 'object') return null;
+    const value = runtime.special as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(value, ['probability', 'imageUrl', 'hasMeaning', 'soundUrl'])
+      || typeof value.probability !== 'number'
+      || !Number.isFinite(value.probability)
+      || value.probability <= 0 || value.probability > 1
+      || !isStrictAvatarToolResourceUrl(value.imageUrl)
+      || typeof value.hasMeaning !== 'boolean'
+      || (value.soundUrl !== undefined && !isStrictAvatarToolResourceUrl(value.soundUrl))
+    ) return null;
+    special = {
+      probability: value.probability,
+      imageUrl: value.imageUrl,
+      hasMeaning: value.hasMeaning,
+      ...(typeof value.soundUrl === 'string' ? { soundUrl: value.soundUrl } : {}),
+    };
+  }
+  return {
+    images,
+    initialImageId: runtime.initialImageId as `img-${string}`,
+    initialInteractionIds: [...initialInteractionIds],
+    interactions,
+    links,
+    ...(typeof runtime.normalSoundUrl === 'string' ? { normalSoundUrl: runtime.normalSoundUrl } : {}),
+    ...(special ? { special } : {}),
+  };
+}
+
 function decodeLocalAvatarToolItem(
   value: unknown,
-  limits: Pick<LocalAvatarToolLimits, 'maxNameChars'>
+  limits: Pick<LocalAvatarToolLimits, 'maxNameChars' | 'maxImages' | 'maxInteractions' | 'maxLinks' | 'maxDelayMs'>
     & Partial<Pick<LocalAvatarToolLimits, 'maxChangeImages'>>,
 ): LocalAvatarToolDto | null {
   if (!value || typeof value !== 'object') return null;
@@ -340,10 +537,13 @@ function decodeLocalAvatarToolItem(
   );
   if (commonInvalid) return null;
   if (item.recordVersion === 3) {
+    const runtime = decodeV3RuntimeProjection(item.runtime, limits);
     if (
-      !hasOnlyKeys(item, ['recordVersion', 'id', 'revision', 'name', 'initialImageUrl'])
+      !hasOnlyKeys(item, ['recordVersion', 'id', 'revision', 'name', 'initialImageUrl', 'runtime'])
       || !isStrictAvatarToolResourceUrl(item.initialImageUrl)
       || !/^3-\d+$/.test(item.revision as string)
+      || !runtime
+      || runtime.images.find(image => image.id === runtime.initialImageId)?.url !== item.initialImageUrl
     ) return null;
     return {
       recordVersion: 3,
@@ -351,6 +551,7 @@ function decodeLocalAvatarToolItem(
       revision: item.revision as string,
       name: item.name as string,
       initialImageUrl: item.initialImageUrl,
+      runtime,
     };
   }
   const changeUrls = item.changeUrls;
@@ -488,7 +689,7 @@ function decodeV3Interactions(
     const item = candidate as Record<string, unknown>;
     if (
       !hasOnlyKeys(item, ['id', 'name', 'trigger', 'actions', 'editorPosition'])
-      || typeof item.id !== 'string' || item.id.length > 80
+      || typeof item.id !== 'string' || item.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
       || !LOCAL_AVATAR_TOOL_INTERACTION_ID_PATTERN.test(item.id) || ids.has(item.id)
       || typeof item.name !== 'string'
       || getAvatarToolNameValidationError(item.name, limits.maxNameChars) !== null
@@ -680,7 +881,7 @@ function decodeV3Detail(detail: Record<string, unknown>, limits: LocalAvatarTool
     if (
       !resource
       || resource.resource !== `image-${String(index).padStart(3, '0')}.png`
-      || typeof item.id !== 'string' || item.id.length > 80
+      || typeof item.id !== 'string' || item.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
       || !LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.test(item.id) || imageIds.has(item.id)
       || typeof item.name !== 'string'
       || getAvatarToolNameValidationError(item.name, limits.maxNameChars) !== null
@@ -820,6 +1021,14 @@ async function postLocalAvatarTool(
       const item = payload.ok === true
         ? decodeLocalAvatarToolItem(payload.item, {
           maxNameChars: countAvatarToolNameCharacters(normalizeAvatarToolName(input.name)),
+          maxImages: isV3 ? input.images.length : 1,
+          maxInteractions: isV3 ? input.imageInteractions.items.length : 1,
+          maxLinks: isV3
+            ? input.imageInteractions.initialLinks.length + input.imageInteractions.links.length
+            : 1,
+          maxDelayMs: isV3 ? Math.max(1, ...input.imageInteractions.items.flatMap(item => (
+            item.trigger.kind === 'after' ? [item.trigger.delayMs] : []
+          ))) : 1,
           ...(!isV3 ? { maxChangeImages: input.changeItems.length } : {}),
         })
         : null;
@@ -947,6 +1156,14 @@ async function putLocalAvatarTool(
       const item = payload.ok === true
         ? decodeLocalAvatarToolItem(payload.item, {
           maxNameChars: countAvatarToolNameCharacters(normalizeAvatarToolName(input.name)),
+          maxImages: isV3 ? input.images.length : 1,
+          maxInteractions: isV3 ? input.imageInteractions.items.length : 1,
+          maxLinks: isV3
+            ? input.imageInteractions.initialLinks.length + input.imageInteractions.links.length
+            : 1,
+          maxDelayMs: isV3 ? Math.max(1, ...input.imageInteractions.items.flatMap(item => (
+            item.trigger.kind === 'after' ? [item.trigger.delayMs] : []
+          ))) : 1,
           ...(!isV3 ? { maxChangeImages: input.changeItems.length } : {}),
         })
         : null;
@@ -1026,7 +1243,107 @@ export async function deleteLocalAvatarTool(toolId: LocalAvatarToolId): Promise<
 }
 
 export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): AvatarToolDefinition {
-  if (item.recordVersion === 3) throw new Error('Avatar tool v3 runtime is not available yet');
+  if (item.recordVersion === 3) {
+    const initial = item.runtime.images.find(image => image.id === item.runtime.initialImageId)!;
+    const initialVariant = {
+      iconImagePath: initial.url,
+      pointerImagePath: initial.url,
+      menuOffsetX: 0,
+      menuOffsetY: 0,
+    };
+    const frames = item.runtime.images.map(image => ({
+      iconImagePath: image.url,
+      pointerImagePath: image.url,
+      menuOffsetX: 0,
+      menuOffsetY: 0,
+    }));
+    const normalSound = item.runtime.normalSoundUrl ? {
+      id: 'normal-feedback',
+      src: item.runtime.normalSoundUrl,
+      volume: 0.9,
+    } : null;
+    const specialSound = item.runtime.special?.soundUrl ? {
+      id: 'special-feedback',
+      src: item.runtime.special.soundUrl,
+      volume: 0.9,
+    } : null;
+    const specialEffect = item.runtime.special ? {
+      ...LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE,
+      assetPath: item.runtime.special.imageUrl,
+    } : null;
+    return {
+      definitionVersion: 3,
+      id: item.id,
+      label: { kind: 'literal', value: item.name },
+      capability: { desktopVisual: true, desktopInteraction: true },
+      visual: {
+        initialVariant: 'primary',
+        variants: { primary: initialVariant, secondary: initialVariant, tertiary: initialVariant },
+        frames,
+        presentation: {
+          inRangeVariantSource: 'range',
+          outsideVariantSource: 'outside',
+          effectActiveImageKind: 'pointer',
+        },
+        menuScale: 1,
+        hotspotX: 40,
+        hotspotY: 40,
+        naturalWidth: 80,
+        naturalHeight: 80,
+        pointer: {
+          displayWidth: 80,
+          displayHeight: 80,
+          displayCoordinateSpace: 'pre-scale-css-pixel',
+          scale: 0.62,
+          renderedAnchor: { x: 24.8, y: 24.8, coordinateSpace: 'final-css-pixel' },
+        },
+        inRange: {
+          displayWidth: 80,
+          displayHeight: 80,
+          displayCoordinateSpace: 'pre-scale-css-pixel',
+          scale: 1,
+          renderedAnchor: { x: 40, y: 40, coordinateSpace: 'final-css-pixel' },
+        },
+      },
+      sounds: [normalSound, specialSound].filter((sound): sound is NonNullable<typeof sound> => !!sound),
+      effects: specialEffect ? [specialEffect] : [],
+      interaction: {
+        kind: 'custom-graph',
+        revision: item.revision,
+        images: item.runtime.images.map((image, frameIndex) => ({
+          id: image.id,
+          frameIndex,
+          hasMeaning: image.hasMeaning,
+        })),
+        initialImageId: item.runtime.initialImageId,
+        initialInteractionIds: [...item.runtime.initialInteractionIds],
+        interactions: item.runtime.interactions.map(interaction => ({
+          id: interaction.id,
+          trigger: interaction.trigger,
+          actions: interaction.actions,
+        })),
+        links: item.runtime.links.map(link => ({ ...link })),
+        burst: {
+          key: item.id,
+          windowMs: 1800,
+          rapidThreshold: 3,
+          normalIntensity: 'normal',
+          rapidIntensity: 'rapid',
+        },
+        touchZone: 'release',
+        touchZones: ['ear', 'head', 'face', 'body'],
+        ...(normalSound ? { feedback: { sound: normalSound.id } } : {}),
+        ...(item.runtime.special ? {
+          chance: {
+            field: 'specialTriggered',
+            probability: item.runtime.special.probability,
+            effect: LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE.id,
+            ...(specialSound ? { sound: specialSound.id } : {}),
+          },
+        } : {}),
+      },
+    };
+  }
   const defaultVariant = {
     iconImagePath: item.defaultUrl,
     pointerImagePath: item.defaultUrl,
