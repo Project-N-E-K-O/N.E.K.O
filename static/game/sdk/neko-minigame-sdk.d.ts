@@ -685,11 +685,12 @@ declare namespace NekoMiniGame {
       mount(config: { video: HTMLVideoElement; job: string; version: string; signal?: AbortSignal; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
         play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
         /**
-         * Speak a line returned by `request('live')`. Resolves true once it finished; false when it never
-         * started (another line or a reaction was playing, playback paused, buffered or seeked during the
-         * fetch) or when a due reaction, pause, seek or disposal cut it off.
+         * Speak a line returned by `request('live')`. Resolves 'completed' once it finished,
+         * 'interrupted' when it started and a due reaction, pause, seek or disposal cut it off, or
+         * 'skipped' when it never started (another line or a reaction was playing, or playback
+         * paused, buffered or seeked during the fetch). Only a skipped line is safe to retry.
          */
-        say(line: { text: string; audio: string; duration?: number }): Promise<boolean>;
+        say(line: { text: string; audio: string; duration?: number }): Promise<'completed' | 'interrupted' | 'skipped'>;
       }>;
     };
     readonly manifest: NormalizedManifest;

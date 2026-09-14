@@ -100,7 +100,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     audio.removeAttribute('src');
     onCue(null);
     URL.revokeObjectURL(current.url);
-    current.resolve(completed);
+    current.resolve(completed ? 'completed' : current.started ? 'interrupted' : 'skipped');
   }
   function stop(clear = false) {
     if(outputStopped && (!clear || !active) && !speech)return;
@@ -140,7 +140,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   syncVolume();
   listen(video, 'volumechange', syncVolume);
   listen(audio, 'playing', () => {
-    if (speech) { duckSoundtrack(true); onCue(speech.cue); return; }
+    if (speech) { speech.started = true; duckSoundtrack(true); onCue(speech.cue); return; }
     if (!running() || playingGeneration !== generation) { stop(); return; }
     duckSoundtrack(true);
     emit('audio-started', active?.id); onCue(active);
@@ -216,14 +216,17 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (disposed) { release?.(); release = null; return; }
       await video.play();
     },
-    /** Speak one live line through the reaction output; resolves true only when it finished. */
+    /**
+     * Speak one live line through the reaction output. Resolves 'completed', 'interrupted' (it
+     * started, then a reaction, pause, seek or disposal cut it) or 'skipped' (it never started).
+     */
     async say(line) {
       if (disposed) throw Error('Media controller disposed');
       const url = line?.audio;
       if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix + '/')) throw Error('Unregistered live speech');
       if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
       const busy = () => disposed || speech || (active?.audio && !outputStopped);
-      if (busy()) return false;
+      if (busy()) return 'skipped';
       const attemptGeneration = generation;
       const response = await fetch(url);
       if (!response.ok) throw Error('Live speech unavailable');
@@ -231,9 +234,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
       // Playback may have paused or started buffering during the fetch; an ended
       // video is still a valid moment (the automatic-mode intermission).
-      if (busy() || generation !== attemptGeneration || waiting || (video.paused && !video.ended)) return false;
+      if (busy() || generation !== attemptGeneration || waiting || (video.paused && !video.ended)) return 'skipped';
       return new Promise(resolve => {
-        speech = { url: URL.createObjectURL(blob), resolve, cue: { text: String(line.text || ''), live: true } };
+        speech = { url: URL.createObjectURL(blob), resolve, started: false, cue: { text: String(line.text || ''), live: true } };
         const current = speech;
         outputStopped = false;
         const attempt = ++playAttempt;

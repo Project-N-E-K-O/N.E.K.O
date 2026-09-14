@@ -620,7 +620,7 @@ const realInterval=globalThis.setInterval,realTimer=globalThis.setTimeout,liveTi
 const pause=ms=>new Promise(resolve=>realTimer(resolve,ms));
 globalThis.setInterval=(fn,delay,...args)=>delay===2500?(liveTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
 try {
-  const spoken=[],liveRequests=[];let livePlays=0,releaseSummary=null,interjectReply=null,intermissionReplies=[];
+  const spoken=[],liveRequests=[];let livePlays=0,releaseSummary=null,interjectReply=null,intermissionReplies=[],skips=0;
   const liveScene=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
   const liveBase=liveScene.game.media.request;
   const liveVideo=liveScene.elements.get('video');
@@ -630,9 +630,11 @@ try {
   liveScene.game.media.mount=async options=>{
     liveScene.emit=options.onEvent;
     return {play:async()=>{livePlays++;liveVideo.ended=false;liveVideo.paused=false;},say:spokenLine=>new Promise(resolve=>{
+      // The first attempt at this line is reported as never started (e.g. paused during the fetch).
+      if(spokenLine.text==='skipped line' && !skips++){resolve('skipped');return;}
       spoken.push([spokenLine.text,livePlays]);
-      if(spokenLine.text==='summary')releaseSummary=()=>resolve(true);
-      else resolve(true);
+      if(spokenLine.text==='summary')releaseSummary=()=>resolve('completed');
+      else resolve('completed');
     }),dispose(){}};
   };
   liveScene.game.media.request=async(action,payload)=>{
@@ -678,6 +680,17 @@ try {
   await pause(20);
   assert.equal(spoken[1][0],'held line');
   assert.equal(interjections(),2,'the held line is spoken without generating a new one');
+  // A line that say() reports as never started is kept as well.
+  interjectReply={lines:[line('skipped line',2)]};
+  liveTicks.at(-1)();
+  await waitFor(()=>skips===1);
+  await pause(20);
+  assert.equal(spoken.length,2);
+  liveTicks.at(-1)();
+  await waitFor(()=>spoken.length===3);
+  await pause(20);
+  assert.equal(spoken[2][0],'skipped line');
+  assert.equal(interjections(),3,'a skipped line is retried without generating a new one');
   // A slow interjection at the video end: the busy intermission retries once it settles.
   let finishInterject=null;
   interjectReply=()=>new Promise(resolve=>{finishInterject=resolve;});
@@ -695,9 +708,9 @@ try {
   assert.equal(livePlays,1,'the next video waits while the intermission is still speaking');
   releaseSummary();
   await waitFor(()=>livePlays===2,()=>JSON.stringify({spoken,livePlays}));
-  assert.deepEqual(spoken.map(([text])=>text),['gap line','held line','summary','late line','reply'],
+  assert.deepEqual(spoken.map(([text])=>text),['gap line','held line','skipped line','summary','late line','reply'],
     'the late interjection is held past the video end and spoken after the summary');
-  assert.ok(spoken.slice(2).every(([,plays])=>plays===1),'intermission speaks before the next video plays');
+  assert.ok(spoken.slice(3).every(([,plays])=>plays===1),'intermission speaks before the next video plays');
   assert.equal(intermissions(),2);
   assert.equal(liveRequests.at(-1).job,'selected','intermission describes the video that just ended');
   await liveScene.elements.get('watch-stop').onclick();

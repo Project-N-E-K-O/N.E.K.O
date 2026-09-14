@@ -131,8 +131,11 @@ export async function run(game, character) {
           holdLines(lines.slice(index));
           return;
         }
-        // A reaction, pause or seek may cut a started line; it is not replayed.
-        await current.say(lines[index]);
+        // A line cut off after it started is not replayed; one that never started is kept.
+        if (await current.say(lines[index]) === 'skipped') {
+          holdLines(lines.slice(index));
+          return;
+        }
       }
     })().catch(error => warn('watch-together live line failed', error)).finally(() => { liveFlight = null; });
   }
