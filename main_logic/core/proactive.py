@@ -2162,6 +2162,8 @@ class ProactiveMixin:
         # muted for the whole takeover, so queuing here would only let them age out.
         sink = getattr(self, "_takeover_callback_sink", None)
         if getattr(self, "_takeover_active", False) and callable(sink):
+            # The sink only sees the dict; carry the caller's priority like the key above.
+            callback.setdefault("priority", priority)
             try:
                 consumed = bool(sink(callback))
             except Exception as exc:

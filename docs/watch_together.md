@@ -153,8 +153,10 @@ so ordinary proactive speech stays behind the SessionManager takeover gate.
 External text and STT do not invoke generic game speech or interrupt the
 reaction timeline.
 
-Plugin respond cues (push_message `ai_behavior="respond"`, from every plugin)
-are not queued behind that gate while this scene is open. The route holds them
+Plugin respond cues (push_message `ai_behavior="respond"` and plugin entry
+results, from every plugin) are not queued behind that gate while this scene is
+open; topic hooks, computer-use/browser results and system cues still are. The
+route holds plugin cues
 in a bounded inbox: at most 12, same `coalesce_key` keeps the newest, the lowest
 priority/newest cue is shed first, and a cue is dropped after its `expires_in_s`
 or five minutes. While the video plays, the scene polls every 2.5 seconds; when
@@ -162,7 +164,9 @@ no reaction is playing and the next reaction (or the video end) is at least five
 seconds away, the backend turns up to three held cues into one line with the
 vision model and the character's official TTS. The line is played only if it
 still fits the gap, through the reaction output (soundtrack ducking and mouth
-movement). A reaction coming due, pause, seek or buffering cuts it off.
+movement). A reaction coming due, pause, seek or buffering cuts it off. A
+generated line that never started (the gap closed, playback paused or ended)
+waits up to 60 seconds, at most three, for the next gap or the intermission.
 
 In automatic mode each finished video gets an intermission before the next one
 plays: one summary sentence from the title, description and reactions, plus up

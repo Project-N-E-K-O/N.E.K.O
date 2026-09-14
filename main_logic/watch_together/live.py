@@ -60,7 +60,9 @@ class LiveInbox:
         self._closed = False
 
     def accept(self, callback) -> bool:
-        if self._closed or not isinstance(callback, dict):
+        # Plugin cues only. Topic hooks, computer-use/browser results and system
+        # cues are ordinary proactive speech and stay behind the takeover gate.
+        if self._closed or not isinstance(callback, dict) or callback.get("source_kind") != "plugin":
             return False
         key = str(callback.get("coalesce_key") or "").strip()
         if key:
@@ -171,7 +173,8 @@ def video_context(library, job: str, version: str) -> dict:
             if isinstance(evidence, dict):
                 description = str(evidence.get("description") or "")[:4000]
     except (KeyError, OSError, ValueError):
-        pass
+        # Imported legacy jobs have no evidence.json; the description is optional context.
+        description = ""
     return {"title": str(timeline.get("title") or "")[:500],
             "duration": duration if math.isfinite(duration) else 0.0,
             "events": events, "description": description}
@@ -260,8 +263,12 @@ async def synthesize(manager, text: str, language: str) -> tuple[bytes, float]:
     """Synthesize one line with the character's official TTS into WAV bytes."""
     from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
     from .audio import write_speech_wav_async
-    key, _signature = manager.game_speech_audio_cache_identity(text, render_language=language)
+    identity = manager.game_speech_audio_cache_identity(text, render_language=language)
+    key = identity[0]
     result = await manager.preload_game_speech_audio([text], render_language=language)
+    # Same guard as preparation: a voice change during synthesis must not read the old entry.
+    if manager.game_speech_audio_cache_identity(text, render_language=language) != identity:
+        raise ValueError("Character voice changed during synthesis")
     if not result.get("ok"):
         raise ValueError("Character speech unavailable")
     chunks = GAME_SPEECH_AUDIO_CACHE.get(key)

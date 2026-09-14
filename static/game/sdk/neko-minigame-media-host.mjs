@@ -229,7 +229,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (!response.ok) throw Error('Live speech unavailable');
       const blob = await response.blob();
       if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
-      if (busy() || generation !== attemptGeneration) return false;
+      // Playback may have paused or started buffering during the fetch; an ended
+      // video is still a valid moment (the automatic-mode intermission).
+      if (busy() || generation !== attemptGeneration || waiting || (video.paused && !video.ended)) return false;
       return new Promise(resolve => {
         speech = { url: URL.createObjectURL(blob), resolve, cue: { text: String(line.text || ''), live: true } };
         const current = speech;

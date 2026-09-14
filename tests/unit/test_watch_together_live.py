@@ -33,14 +33,25 @@ async def test_inbox_orders_coalesces_and_sheds_like_proactive_delivery():
     inbox = live.LiveInbox(limit=3)
     old_gift, new_gift = _cue('old gift', priority=9, key='gift'), _cue('new gift', priority=9, key='gift')
     low, mid, late_low = _cue('low'), _cue('mid', priority=5), _cue('late low')
-    for cue in (old_gift, new_gift, low, mid):
-        assert inbox.accept(cue)
+    accepted = [inbox.accept(cue) for cue in (old_gift, new_gift, low, mid)]
+    assert all(accepted)
     assert _ack(old_gift) is False, 'a newer cue with the same coalesce key replaces the held one'
-    assert inbox.accept(late_low)
+    accepted_late = inbox.accept(late_low)
+    assert accepted_late
     assert _ack(late_low) is False, 'over the limit, the cue delivered last is shed'
     assert [cue['summary'] for cue in inbox.take(8)] == ['new gift', 'mid', 'low']
     assert inbox.pending == 0
     assert _ack(new_gift) is None, 'taking a cue leaves its acknowledgement to the speaker'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_kind', ['topic', 'cu', 'browser', 'system', None])
+async def test_inbox_leaves_non_plugin_proactive_cues_behind_the_gate(source_kind):
+    inbox = live.LiveInbox()
+    cue = _cue('ordinary proactive speech')
+    cue['source_kind'] = source_kind
+    assert not inbox.accept(cue)
+    assert inbox.pending == 0 and _ack(cue) is None
 
 
 @pytest.mark.asyncio
@@ -86,6 +97,14 @@ def test_respond_cues_go_to_takeover_sink_only_while_it_accepts(sink, takeover, 
     manager = _submitter(sink, takeover=takeover)
     ProactiveMixin.submit_proactive_callback(manager, {'summary': 'gift'}, priority=9)
     assert manager.proactive_manager.submit.called is queued
+
+
+def test_takeover_sink_sees_the_submitted_priority():
+    seen = []
+    manager = _submitter(lambda callback: seen.append(dict(callback)) or True)
+    ProactiveMixin.submit_proactive_callback(manager, {'summary': 'gift'}, priority=9)
+    ProactiveMixin.submit_proactive_callback(manager, {'summary': 'own', 'priority': 3}, priority=9)
+    assert [callback['priority'] for callback in seen] == [9, 3]
 
 
 @pytest.mark.asyncio
@@ -164,6 +183,25 @@ async def test_interject_speaks_held_cues_within_the_gap(scene):
     assert kwargs['position'] == 10 and kwargs['seconds'] == 5
     assert _ack(gift) is True
     assert scene.state[router._LIVE_BUSY_KEY] is False
+
+
+@pytest.mark.asyncio
+async def test_gap_line_is_dropped_when_every_cue_expired_during_generation(scene):
+    danmaku = _cue('danmaku reply')
+    danmaku[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() + 60
+    scene.inbox.accept(danmaku)
+
+    async def slow_generation(*_args, **_kwargs):
+        danmaku[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+        return ['late']
+    scene.compose.side_effect = slow_generation
+    assert await router.live(_request(action='interject', position=10, gap=20)) == {'lines': []}
+    assert _ack(danmaku) is False
+    kept = _cue('no deadline')
+    scene.inbox.accept(kept)
+    scene.compose.side_effect = None
+    assert (await router.live(_request(action='interject', position=10, gap=20)))['lines']
+    assert _ack(kept) is True
 
 
 @pytest.mark.asyncio
@@ -307,6 +345,11 @@ async def test_synthesize_and_speak_serve_official_tts_wav(monkeypatch):
     data, duration = await live.synthesize(manager, 'hello', 'en')
     assert data.startswith(b'RIFF') and duration == pytest.approx(0.1)
     manager.preload_game_speech_audio.assert_awaited_once_with(['hello'], render_language='en')
+    voices = iter(['voice', 'new voice'])
+    changing = SimpleNamespace(game_speech_audio_cache_identity=lambda text, render_language: ('key', next(voices)),
+                               preload_game_speech_audio=AsyncMock(return_value={'ok': True}))
+    with pytest.raises(ValueError, match='voice changed'):
+        await live.synthesize(changing, 'hello', 'en')
     manager.preload_game_speech_audio.return_value = {'ok': False}
     with pytest.raises(ValueError):
         await live.synthesize(manager, 'hello', 'en')

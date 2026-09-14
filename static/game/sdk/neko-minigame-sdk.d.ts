@@ -684,7 +684,11 @@ declare namespace NekoMiniGame {
       request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover' | 'live', payload?: Record<string, JsonValue>): Promise<JsonValue>;
       mount(config: { video: HTMLVideoElement; job: string; version: string; signal?: AbortSignal; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
         play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
-        /** Speak a line returned by `request('live')`; false when a reaction, pause or seek preempted it. */
+        /**
+         * Speak a line returned by `request('live')`. Resolves true once it finished; false when it never
+         * started (another line or a reaction was playing, playback paused, buffered or seeked during the
+         * fetch) or when a due reaction, pause, seek or disposal cut it off.
+         */
         say(line: { text: string; audio: string; duration?: number }): Promise<boolean>;
       }>;
     };

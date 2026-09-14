@@ -10,8 +10,10 @@ The returned controller supports `play`, `pause`, `interrupt`, `say`, and `dispo
 plugin responses held by the scene route into spoken lines that fit a reaction
 gap (an empty `lines` array when nothing is held); `{action: 'intermission', job,
 version}` returns a one-line summary plus replies after a video. `say(line)` plays
-one returned line through the reaction output and resolves `false` when a
-timeline reaction, pause, seek or disposal preempts it.
+one returned line through the reaction output. It resolves `true` once the line
+finished and `false` when it never started (another line or a reaction was
+playing, or playback paused, buffered or seeked while the audio was fetched) or
+when a due reaction, pause, seek or disposal cut it off.
 The trusted host resolves the immutable job/version, owns reaction audio and
 mouth analysis, and uses the video media clock. Pause/buffering stop reaction
 audio; seeks invalidate the current generation; playback rate follows video.

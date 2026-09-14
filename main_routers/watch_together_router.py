@@ -147,7 +147,11 @@ async def live(request: Request):
         return {"lines": [], "error": type(exc).__name__}
     finally:
         state[_LIVE_BUSY_KEY] = False
-    if not state.get("game_route_active"):
+    from main_logic.proactive_delivery import callback_is_expired
+    # A gap line exists only to answer its cues; if they all expired while the
+    # model and TTS ran (danmaku replies are short-lived), it would be stale.
+    stale = action == "interject" and callbacks and all(callback_is_expired(callback) for callback in callbacks)
+    if not state.get("game_route_active") or stale:
         live_lines.settle(callbacks, False)
         return {"lines": []}
     live_lines.settle(callbacks, True)

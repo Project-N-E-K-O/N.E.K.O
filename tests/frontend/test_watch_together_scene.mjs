@@ -616,18 +616,22 @@ try {
 }
 
 // Held plugin responses: gap lines while playing, then an intermission before the next video.
-const realInterval=globalThis.setInterval,liveTicks=[];
+const realInterval=globalThis.setInterval,realTimer=globalThis.setTimeout,liveTicks=[];
+const pause=ms=>new Promise(resolve=>realTimer(resolve,ms));
 globalThis.setInterval=(fn,delay,...args)=>delay===2500?(liveTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
 try {
-  const spoken=[],liveRequests=[];let livePlays=0,releaseSummary=null;
+  const spoken=[],liveRequests=[];let livePlays=0,releaseSummary=null,interjectReply=null,intermissionReplies=[];
   const liveScene=await fixture(false,false,{total_tokens:1},()=>({video:{bvid:'next',url:'next',title:'Next'}}));
   const liveBase=liveScene.game.media.request;
   const liveVideo=liveScene.elements.get('video');
+  const line=(text,duration)=>({text,audio:`/${text}`,duration});
+  const interjections=()=>liveRequests.filter(request=>request.action==='interject').length;
+  const intermissions=()=>liveRequests.filter(request=>request.action==='intermission').length;
   liveScene.game.media.mount=async options=>{
     liveScene.emit=options.onEvent;
-    return {play:async()=>{livePlays++;liveVideo.ended=false;liveVideo.paused=false;},say:line=>new Promise(resolve=>{
-      spoken.push([line.text,livePlays]);
-      if(line.text==='summary')releaseSummary=()=>resolve(true);
+    return {play:async()=>{livePlays++;liveVideo.ended=false;liveVideo.paused=false;},say:spokenLine=>new Promise(resolve=>{
+      spoken.push([spokenLine.text,livePlays]);
+      if(spokenLine.text==='summary')releaseSummary=()=>resolve(true);
       else resolve(true);
     }),dispose(){}};
   };
@@ -637,32 +641,67 @@ try {
     if(action==='history')return {analyses:[{job:'next-job',version:'v',status:'ready'}]};
     if(action==='live') {
       liveRequests.push(payload);
-      return payload.action==='intermission'
-        ? {lines:[{text:'summary',audio:'/a',duration:1},{text:'reply',audio:'/b',duration:1}]}
-        : {lines:[{text:'gap line',audio:'/c',duration:2}]};
+      if(payload.action==='intermission')return intermissionReplies.shift();
+      return typeof interjectReply==='function'?interjectReply():interjectReply;
     }
     return liveBase(action,payload);
   };
   liveScene.elements.get('automatic-enabled').checked=true;liveScene.elements.get('automatic-enabled').onchange();
   await waitFor(()=>livePlays===1 && !liveScene.elements.get('next-video').disabled);
   liveVideo.duration=60;liveVideo.currentTime=10;
+  // A line that fits the gap is spoken.
+  interjectReply={lines:[line('gap line',2)]};
   liveTicks.at(-1)();
   await waitFor(()=>spoken.length===1);
   assert.deepEqual([liveRequests[0].action,liveRequests[0].position,liveRequests[0].gap],['interject',10,50]);
   liveVideo.currentTime=57;liveTicks.at(-1)();
-  await new Promise(resolve=>setTimeout(resolve,0));
+  await pause(20);
   assert.equal(liveRequests.length,1,'no live request when the gap is too short');
+  liveVideo.playbackRate=2;liveVideo.currentTime=45;interjectReply={lines:[]};
+  liveTicks.at(-1)();
+  await waitFor(()=>interjections()===2);
+  await pause(20);
+  assert.equal(liveRequests.at(-1).gap,7.5,'gaps are real seconds at the current playback rate');
+  liveVideo.currentTime=51;liveTicks.at(-1)();
+  await pause(20);
+  assert.equal(interjections(),2,'a 9-second timeline gap at 2x is too short to ask');
+  liveVideo.playbackRate=1;liveRequests.splice(1);
+  // A line that no longer fits waits for the next gap instead of being lost.
+  liveVideo.currentTime=10;
+  interjectReply=()=>{liveVideo.currentTime=40;return {lines:[line('held line',30)]};};
+  liveTicks.at(-1)();
+  await waitFor(()=>interjections()===2);
+  await pause(20);
+  assert.equal(spoken.length,1,'a line that no longer fits is not spoken over the next reaction');
+  liveVideo.currentTime=10;liveTicks.at(-1)();
+  await waitFor(()=>spoken.length===2);
+  await pause(20);
+  assert.equal(spoken[1][0],'held line');
+  assert.equal(interjections(),2,'the held line is spoken without generating a new one');
+  // A slow interjection at the video end: the busy intermission retries once it settles.
+  let finishInterject=null;
+  interjectReply=()=>new Promise(resolve=>{finishInterject=resolve;});
+  liveTicks.at(-1)();
+  await waitFor(()=>finishInterject);
+  intermissionReplies=[{lines:[],busy:true},{lines:[line('summary',1),line('reply',1)]}];
+  globalThis.setTimeout=(fn,delay,...args)=>realTimer(fn,Math.min(delay,10),...args);
   liveVideo.ended=true;liveScene.emit({type:'ended'});
+  await waitFor(()=>intermissions()===1);
+  await pause(30);
+  assert.equal(intermissions(),1,'a busy intermission waits for the running interjection');
+  finishInterject({lines:[line('late line',30)]});
   await waitFor(()=>releaseSummary);
-  await new Promise(resolve=>setTimeout(resolve,50));
+  await pause(50);
   assert.equal(livePlays,1,'the next video waits while the intermission is still speaking');
   releaseSummary();
   await waitFor(()=>livePlays===2,()=>JSON.stringify({spoken,livePlays}));
-  assert.deepEqual(spoken,[['gap line',1],['summary',1],['reply',1]],'intermission speaks before the next video plays');
-  assert.equal(liveRequests.at(-1).action,'intermission');
+  assert.deepEqual(spoken.map(([text])=>text),['gap line','held line','summary','late line','reply'],
+    'the late interjection is held past the video end and spoken after the summary');
+  assert.ok(spoken.slice(2).every(([,plays])=>plays===1),'intermission speaks before the next video plays');
+  assert.equal(intermissions(),2);
   assert.equal(liveRequests.at(-1).job,'selected','intermission describes the video that just ended');
   await liveScene.elements.get('watch-stop').onclick();
 } finally {
-  globalThis.setInterval=realInterval;
+  globalThis.setInterval=realInterval;globalThis.setTimeout=realTimer;
 }
 console.log('watch-together scene: gap lines and automatic intermission ordering passed');
