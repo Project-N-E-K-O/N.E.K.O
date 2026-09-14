@@ -1033,6 +1033,8 @@
       else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
       else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`, {}, {timeoutMs: mediaValidationTimeoutMs, ...options});
       else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
+      // Live lines wait for model generation plus TTS; the backend caps them at 90 seconds.
+      else if (action === 'live') response = await this._post('/api/watch-together/live', this._trustedRuntimePayload(payload), {timeoutMs: 100000});
       else throw this._hostError('invalid_request', 'Unknown media operation');
       if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
       return response.json();

@@ -3,9 +3,15 @@
 ## Built-in media timelines
 
 The reviewed `media-timeline` capability exposes `game.media.request()` for
-`history`, `load`, `character`, `discover`, `prepare`, `preparation`, and `watch`, and
+`history`, `load`, `character`, `discover`, `prepare`, `preparation`, `watch`, and `live`, and
 `game.media.mount({video, job, version, onEvent, onCue})` for an active runtime.
-The returned controller supports `play`, `pause`, `interrupt`, and `dispose`.
+The returned controller supports `play`, `pause`, `interrupt`, `say`, and `dispose`.
+`media.request('live', {action: 'interject', job, version, position, gap})` turns
+plugin responses held by the scene route into spoken lines that fit a reaction
+gap (an empty `lines` array when nothing is held); `{action: 'intermission', job,
+version}` returns a one-line summary plus replies after a video. `say(line)` plays
+one returned line through the reaction output and resolves `false` when a
+timeline reaction, pause, seek or disposal preempts it.
 The trusted host resolves the immutable job/version, owns reaction audio and
 mouth analysis, and uses the video media clock. Pause/buffering stop reaction
 audio; seeks invalidate the current generation; playback rate follows video.

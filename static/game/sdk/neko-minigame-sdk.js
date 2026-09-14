@@ -5909,8 +5909,8 @@
         catch (_) { fail('invalid_request', 'Media payload must be JSON'); }
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail('invalid_request', 'Media payload must be an object');
         if (jsonByteLength(body) > 65536) fail('invalid_request', 'Media payload too large');
-        if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
-        if (action === 'watch') requireActiveRuntimeRoute('media.watch');
+        if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover', 'live'].includes(action)) fail('invalid_request', 'Unknown media operation');
+        if (action === 'watch' || action === 'live') requireActiveRuntimeRoute(`media.${action}`);
         try { return await transport.requestMedia(action, { ...body, sdk_route_instance_id: runtimeRouteInstanceId }); }
         catch(error) { throw normalizeTransportError(error, 'media.request'); }
       },
@@ -5950,6 +5950,11 @@
           play: () => { requireActiveRuntimeRoute('media.play'); return controller.play(); },
           pause: () => controller.pause(),
           interrupt: () => controller.interrupt(),
+          say: (line) => {
+            requireActiveRuntimeRoute('media.say');
+            if (typeof controller.say !== 'function') fail('capability_unavailable', 'Media speech is unavailable');
+            return controller.say(line);
+          },
           dispose: () => { controller.dispose(); mediaControllers.delete(controller); },
         });
       },

@@ -278,6 +278,9 @@ class LLMSessionManager(
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
         ] = None
+        # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
+        # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
+        self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,

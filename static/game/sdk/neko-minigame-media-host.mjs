@@ -44,6 +44,7 @@ export function unlock(video) {
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {}, keepPlayingWhenHidden = () => false }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
   const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
+  const liveAudioPrefix = '/api/watch-together/live-audio/';
   const resources = new Map();
   const cues=timeline.events || [];
   if(cues.length>1000)throw Error('Reaction preload budget exceeded');
@@ -81,6 +82,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   let context = null, analyser = null, soundtrack = null;
   const voiceNodes = [];
   let outputStopped = true, ducked = false;
+  // A live line (not on the timeline) borrowing the reaction output between cues.
+  let speech = null;
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
@@ -91,16 +94,27 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     ducked=value;
     if (soundtrack) soundtrack.gain.setTargetAtTime(value ? 0.25 : 1, context.currentTime, value ? 0.03 : 0.15);
   };
+  function finishSpeech(completed) {
+    const current=speech;
+    speech=null;
+    audio.removeAttribute('src');
+    onCue(null);
+    URL.revokeObjectURL(current.url);
+    current.resolve(completed);
+  }
   function stop(clear = false) {
-    if(outputStopped && (!clear || !active))return;
+    if(outputStopped && (!clear || !active) && !speech)return;
     outputStopped=true;
     playAttempt++;
     audio.pause();
     duckSoundtrack(false);
     onMouth(0);
+    // Timeline reactions, pause, seek and buffering all outrank a live line.
+    if (speech) finishSpeech(false);
     if (clear) { active = null; audio.removeAttribute('src'); onCue(null); }
   }
   function sync() {
+    if (speech) return;
     if (!active || !running()) { stop(); return; }
     const offset = video.currentTime - active.at;
     const duration=Number.isFinite(active.duration) && active.duration>0?active.duration:3;
@@ -126,12 +140,16 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   syncVolume();
   listen(video, 'volumechange', syncVolume);
   listen(audio, 'playing', () => {
+    if (speech) { duckSoundtrack(true); onCue(speech.cue); return; }
     if (!running() || playingGeneration !== generation) { stop(); return; }
     duckSoundtrack(true);
     emit('audio-started', active?.id); onCue(active);
   });
   listen(audio, 'waiting', () => duckSoundtrack(false));
-  listen(audio, 'ended', () => { emit('audio-ended', active?.id); stop(true); });
+  listen(audio, 'ended', () => {
+    if (speech) { outputStopped = true; duckSoundtrack(false); onMouth(0); finishSpeech(true); return; }
+    emit('audio-ended', active?.id); stop(true);
+  });
   listen(video, 'waiting', () => { waiting = true; stop(); });
   listen(video, 'playing', () => { waiting = false; sync(); });
   listen(video, 'pause', () => { stop(); emit('pause'); });
@@ -197,6 +215,30 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       }
       if (disposed) { release?.(); release = null; return; }
       await video.play();
+    },
+    /** Speak one live line through the reaction output; resolves true only when it finished. */
+    async say(line) {
+      if (disposed) throw Error('Media controller disposed');
+      const url = line?.audio;
+      if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix)) throw Error('Unregistered live speech');
+      if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
+      const busy = () => disposed || speech || (active?.audio && !outputStopped);
+      if (busy()) return false;
+      const attemptGeneration = generation;
+      const response = await fetch(url);
+      if (!response.ok) throw Error('Live speech unavailable');
+      const blob = await response.blob();
+      if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
+      if (busy() || generation !== attemptGeneration) return false;
+      return new Promise(resolve => {
+        speech = { url: URL.createObjectURL(blob), resolve, cue: { text: String(line.text || ''), live: true } };
+        const current = speech;
+        outputStopped = false;
+        const attempt = ++playAttempt;
+        audio.playbackRate = 1;
+        audio.src = current.url;
+        audio.play().catch(() => { if (speech === current && attempt === playAttempt) stop(); });
+      });
     },
     pause() { video.pause(); stop(); },
     interrupt() { video.pause(); generation++; stop(true); clock.seek(video.currentTime); },

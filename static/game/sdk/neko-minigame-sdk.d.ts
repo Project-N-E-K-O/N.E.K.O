@@ -681,9 +681,11 @@ declare namespace NekoMiniGame {
 
   interface Client {
     readonly media: {
-      request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover', payload?: Record<string, JsonValue>): Promise<JsonValue>;
+      request(action: 'history' | 'watches' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover' | 'live', payload?: Record<string, JsonValue>): Promise<JsonValue>;
       mount(config: { video: HTMLVideoElement; job: string; version: string; signal?: AbortSignal; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
         play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
+        /** Speak a line returned by `request('live')`; false when a reaction, pause or seek preempted it. */
+        say(line: { text: string; audio: string; duration?: number }): Promise<boolean>;
       }>;
     };
     readonly manifest: NormalizedManifest;

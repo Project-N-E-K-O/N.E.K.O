@@ -146,6 +146,8 @@ from .route_lifecycle import (  # noqa: F401
     _next_game_dialog_id,
     _push_game_speech_cancel,
     _push_game_window_state_change,
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _close_takeover_callback_inbox,
     _route_heartbeat_expired,
     _route_heartbeat_timeout_seconds,
     _route_liveness_at,
@@ -1887,6 +1889,8 @@ async def _start_watch_speech_takeover(state: dict, manager) -> None:
         state['exit_reason'] = 'speech_takeover_failed'
         manager._takeover_active = False
         manager._takeover_input_dispatcher = None
+        manager._takeover_callback_sink = None
+        _close_takeover_callback_inbox(state, manager)
         logger.warning('watch-together speech takeover failed: error_type=%s', type(exc).__name__)
         raise
 
@@ -2070,7 +2074,14 @@ async def game_route_start(game_type: str, request: Request):
                     )
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
+                mgr._takeover_callback_sink = None
                 if game_type == "watch-together":
+                    # The scene speaks plugin responses itself (reaction gaps and
+                    # intermissions), so respond cues go to its route inbox.
+                    from main_logic.watch_together.live import LiveInbox
+                    inbox = LiveInbox()
+                    state[_TAKEOVER_CALLBACK_INBOX_KEY] = inbox
+                    mgr._takeover_callback_sink = inbox.accept
                     await _start_watch_speech_takeover(state, mgr)
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))

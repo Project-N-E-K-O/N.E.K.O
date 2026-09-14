@@ -357,6 +357,55 @@ def record_usage(job, response, model, stage):
         stats["missing_usage_calls"] += 1
 
 
+async def vision_model_config(cm):
+    cfg = await asyncio.to_thread(cm.get_model_api_config, "vision")
+    if (not isinstance(cfg.get('model'), str) or not cfg['model'].strip()
+            or (not cfg.get("api_key") and not cfg.get('is_custom'))):
+        raise RuntimeError("请先配置猫娘的视觉模型 API")
+    return cfg
+
+
+async def structured_json_completion(cfg, system_prompt, content, job, validate, *, stage, label,
+                                     token_budget=16000, max_completion_tokens=8192):
+    """Run one isolated JSON completion; text blocks share one token budget."""
+    from utils.llm_client import create_chat_llm_async
+    from utils.llm_client.anthropic_client import _is_anthropic_endpoint
+    options = {} if _is_anthropic_endpoint(cfg.get('base_url'), cfg.get('provider_type')) else {"response_format": {"type": "json_object"}}
+    from main_logic.mini_game_sdk.structured_output import (
+        run_isolated_structured_output, StructuredOutputContentError,
+    )
+    async def attempt(_number, isolation_id):
+        from utils.tokenize import count_tokens, truncate_to_tokens
+        remaining = token_budget
+        bounded = []
+        for block in content:
+            if block.get('type') == 'text':
+                value = await asyncio.to_thread(truncate_to_tokens, block.get('text', ''), remaining)
+                remaining = max(0, remaining - await asyncio.to_thread(count_tokens, value))
+                bounded.append({**block, 'text': value})
+            else:
+                bounded.append(block)
+        client = await create_chat_llm_async(model=cfg['model'], api_key=cfg.get('api_key'),
+            base_url=cfg.get('base_url'), provider_type=cfg.get('provider_type'),
+            temperature=0.65, timeout=120, max_retries=0, max_completion_tokens=max_completion_tokens)
+        try:
+            response = await client.ainvoke(
+                [{"role":"system", "content":system_prompt},
+                    {"role":"user", "content":bounded}],
+                **options)
+            record_usage(job, response, cfg["model"], stage)
+            try:
+                return json_object(response.content or "")
+            except (ValueError, TypeError, IndexError) as exc:
+                raise StructuredOutputContentError(f"invalid_{label}_json") from exc
+        finally:
+            await client.aclose()
+    result = await run_isolated_structured_output(attempt, validate)
+    if not result.valid:
+        raise ValueError(f"Invalid {label} response")
+    return result.value
+
+
 class Engine:
     def __init__(self, cache: Path, synthesize, character: str, language="en", persona=""):
         self.cache, self.synthesize, self.character = cache, synthesize, character
@@ -376,53 +425,16 @@ class Engine:
         return self._cm
 
     async def vision_config(self):
-        cfg = await asyncio.to_thread(self.cm.get_model_api_config, "vision")
-        if (not isinstance(cfg.get('model'), str) or not cfg['model'].strip()
-                or (not cfg.get("api_key") and not cfg.get('is_custom'))):
-            raise RuntimeError("请先配置猫娘的视觉模型 API")
-        return cfg
+        return await vision_model_config(self.cm)
 
     async def llm(self, content, job):
-        from utils.llm_client import create_chat_llm_async
-        from utils.llm_client.anthropic_client import _is_anthropic_endpoint
         cfg = await self.vision_config()
-        options = {} if _is_anthropic_endpoint(cfg.get('base_url'), cfg.get('provider_type')) else {"response_format": {"type": "json_object"}}
-        from main_logic.mini_game_sdk.structured_output import (
-            run_isolated_structured_output, StructuredOutputContentError,
-        )
-        async def attempt(_number, isolation_id):
-            from utils.tokenize import count_tokens, truncate_to_tokens
-            remaining = 16000
-            bounded = []
-            for block in content:
-                if block.get('type') == 'text':
-                    value = await asyncio.to_thread(truncate_to_tokens, block.get('text', ''), remaining)
-                    remaining = max(0, remaining - await asyncio.to_thread(count_tokens, value))
-                    bounded.append({**block, 'text': value})
-                else:
-                    bounded.append(block)
-            client = await create_chat_llm_async(model=cfg['model'], api_key=cfg.get('api_key'),
-                base_url=cfg.get('base_url'), provider_type=cfg.get('provider_type'),
-                temperature=0.65, timeout=120, max_retries=0, max_completion_tokens=8192)
-            try:
-                response = await client.ainvoke(
-                    [{"role":"system", "content":self.director_prompt},
-                        {"role":"user", "content":bounded}],
-                    **options)
-                record_usage(job, response, cfg["model"], job.get("stage", "Visual analysis"))
-                try:
-                    return json_object(response.content or "")
-                except (ValueError, TypeError, IndexError) as exc:
-                    raise StructuredOutputContentError("invalid_timeline_json") from exc
-            finally:
-                await client.aclose()
         def validate(value):
             valid = isinstance(value, dict) and isinstance(value.get("events"), list)
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]
-        result = await run_isolated_structured_output(attempt, validate)
-        if not result.valid:
-            raise ValueError("Invalid timeline response")
-        return result.value
+        return await structured_json_completion(
+            cfg, self.director_prompt, content, job, validate,
+            stage=job.get("stage", "Visual analysis"), label="timeline")
 
     async def prepare(self, job, url, voice_name, *, automatic=False, confirmed_duration=None, confirm_download=None, deadline=None):
         # Fail before downloading or paying for analysis when prerequisites are absent.
