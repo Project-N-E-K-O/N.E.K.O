@@ -482,7 +482,11 @@ class Engine:
             try:
                 response = await client.get(info["pic"])
                 response.raise_for_status()
-                cover = "data:image/jpeg;base64," + base64.b64encode(response.content).decode()
+                # Bilibili covers reach ~5000x3000; with a window of frames that
+                # oversized image is rejected as unsupported, so send the model profile.
+                from utils.screenshot_utils import normalize_image_for_model
+                encoded = await asyncio.to_thread(normalize_image_for_model, base64.b64encode(response.content).decode())
+                cover = "data:image/jpeg;base64," + encoded
                 (folder / "cover.jpg").write_bytes(response.content)
             except Exception:
                 job["warning_keys"].append("noCover")

@@ -81,6 +81,36 @@ def _budget_engine(tmp_path, monkeypatch, events):
 
 
 @pytest.mark.asyncio
+async def test_oversized_cover_is_normalized_for_model_but_kept_on_disk(tmp_path, monkeypatch):
+    import base64
+    import io
+    import sys
+    import httpx
+    from PIL import Image
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
+    buffer = io.BytesIO()
+    Image.new('RGB', (4919, 3025), (200, 120, 80)).save(buffer, 'JPEG')
+    original = buffer.getvalue()
+    sys.modules['bilibili_api'].video.Video().get_info.return_value = {
+        'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101},
+        'pic': 'https://covers.test/cover.jpg'}
+    client_type = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=original))
+    monkeypatch.setattr(engine.httpx, 'AsyncClient', lambda **kwargs: client_type(transport=transport, **kwargs))
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert job['status'] == 'ready'
+    blocks = instance.llm.await_args_list[0].args[0]
+    covers = [block['image_url']['url'] for block in blocks if block.get('type') == 'image_url']
+    assert len(covers) == 1
+    sent = base64.b64decode(covers[0].removeprefix('data:image/jpeg;base64,'))
+    with Image.open(io.BytesIO(sent)) as image:
+        assert image.format == 'JPEG'
+        assert image.width <= 1280 and image.height <= 720
+    assert (tmp_path / 'job' / 'cover.jpg').read_bytes() == original
+
+
+@pytest.mark.asyncio
 async def test_synthesis_byte_budget_counts_shared_laugh_once(tmp_path, monkeypatch):
     engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [
         {'at': 5, 'kind': 'comment', 'text': 'first'},
