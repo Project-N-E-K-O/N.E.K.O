@@ -360,6 +360,7 @@ class VRMInteraction {
 
         // 1. 鼠标按下
         this.mouseDownHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
             if (isYuiGuideDragLocked()) return;
@@ -426,6 +427,7 @@ class VRMInteraction {
 
         // 2. 鼠标移动 (核心拖拽逻辑)
         this.dragHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (!this.manager._isModelReadyForInteraction) return;
             if (isYuiGuideDragLocked()) {
                 if (this.isDragging) {
@@ -530,6 +532,7 @@ class VRMInteraction {
 
         // 3. 鼠标释放
         this.mouseUpHandler = async (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.isDragging) {
                 e.preventDefault();
@@ -665,6 +668,12 @@ class VRMInteraction {
         };
 
         // 绑定事件
+        this._touchGestures = window.NekoModelTouchGestures.installThree(this, {
+            getModel: () => this.manager.currentModel?.scene,
+            setScale: scale => this.manager.setModelScaleScalar(scale),
+            enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.scene
+                && !this.checkLocked() && !isYuiGuideDragLocked()
+        });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler); // 绑定到 document 以支持拖出画布
         document.addEventListener('mouseup', this.mouseUpHandler);
@@ -791,6 +800,10 @@ class VRMInteraction {
      * 移除时必须使用相同的选项，否则 removeEventListener 不会生效
      */
     cleanupDragAndZoom() {
+        if (this._touchGestures) {
+            this._touchGestures.dispose();
+            this._touchGestures = null;
+        }
         if (!this.manager.renderer) return;
 
         // 清理初始化定时器（如果存在）
