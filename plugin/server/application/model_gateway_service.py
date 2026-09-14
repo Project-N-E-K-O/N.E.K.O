@@ -84,7 +84,9 @@ def _observe_stream_usage(converter, observation: AttemptObservation | None, *, 
         pass
 
 
-def _prepare(slot: ModelSlot, body: object, *, streaming: bool) -> tuple[str, bytes, dict, bool]:
+def _prepare(
+    slot: ModelSlot, body: object, *, streaming: bool, inject_stream_usage: bool = True,
+) -> tuple[str, bytes, dict, bool]:
     """Validate, convert and encode once, off the HTTP event loop."""
     request = prepare_chat_request(slot, body)
     try:
@@ -96,8 +98,10 @@ def _prepare(slot: ModelSlot, body: object, *, streaming: bool) -> tuple[str, by
     include_usage = request.get("stream_options", {}).get("include_usage", False)
     if slot.protocol == "anthropic_messages":
         payload = anthropic.prepare_request(request)
-    elif streaming:
+    elif streaming and (inject_stream_usage or include_usage):
         payload = {**request, "stream_options": {"include_usage": True}}
+    elif streaming:
+        payload = {key: value for key, value in request.items() if key != "stream_options"}
     else:
         payload = request
     try:
@@ -112,6 +116,8 @@ def _prepare(slot: ModelSlot, body: object, *, streaming: bool) -> tuple[str, by
 class ModelGatewayService:
     def __init__(self, client_factory: Callable[[ModelSlot], httpx.AsyncClient] | None = None):
         self._client_factory = client_factory or self._make_client
+        # OpenAI-compatible endpoints that rejected injected stream_options.
+        self._stream_options_unsupported: set[str] = set()
 
     @staticmethod
     def _make_client(slot: ModelSlot) -> httpx.AsyncClient:
@@ -159,38 +165,59 @@ class ModelGatewayService:
 
     async def stream(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> AsyncIterator[bytes]:
         slot = slot.model_copy(deep=True)
-        model_alias, payload, headers, include_usage = await asyncio.to_thread(_prepare, slot, body, streaming=True)
+        endpoint = _endpoint(slot)
+        options_unsupported = endpoint in self._stream_options_unsupported
+        model_alias, payload, headers, include_usage = await asyncio.to_thread(
+            _prepare, slot, body, streaming=True, inject_stream_usage=not options_unsupported,
+        )
         is_anthropic = slot.protocol == "anthropic_messages"
         if is_anthropic:
             converter = anthropic.AnthropicStreamConverter(model_alias, include_usage=include_usage)
         else:
             converter = openai.OpenAIStreamConverter(model_alias, include_usage=include_usage)
+        # stream_options is injected only for accounting. If an OpenAI-compatible
+        # endpoint rejects it, retry once without it unless the plugin asked.
+        can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
         try:
-            async with self._request(slot, payload, headers, observation) as response:
-                async for data in iter_sse_data(response):
-                    if data.strip() == "[DONE]":
-                        if is_anthropic:
-                            raise ModelGatewayError("invalid_upstream_response", "Unexpected stream terminator", 502)
-                        saw_done = True
-                        break
-                    try:
-                        chunks = converter.feed(decode_object(data))
-                        # Messages has no separate [DONE] marker: message_stop
-                        # makes usage final before its last chunks are yielded.
-                        completed = bool(is_anthropic and converter.done)
-                    finally:
-                        _observe_stream_usage(converter, observation, reported=completed)
-                    for chunk in chunks:
-                        yield encode_sse(chunk)
-                    if is_anthropic and converter.done:
-                        break
-                converter.finish()
-                if not is_anthropic and not saw_done:
-                    raise ModelGatewayError("incomplete_upstream_stream", "Model stream ended without a terminator", 502)
-                completed = True
-                _observe_stream_usage(converter, observation, reported=True)
+            for retrying in (False, True):
+                connected = False
+                try:
+                    async with self._request(slot, payload, headers, observation) as response:
+                        connected = True
+                        if retrying:
+                            self._stream_options_unsupported.add(endpoint)
+                        async for data in iter_sse_data(response):
+                            if data.strip() == "[DONE]":
+                                if is_anthropic:
+                                    raise ModelGatewayError("invalid_upstream_response", "Unexpected stream terminator", 502)
+                                saw_done = True
+                                break
+                            try:
+                                chunks = converter.feed(decode_object(data))
+                                # Messages has no separate [DONE] marker: message_stop
+                                # makes usage final before its last chunks are yielded.
+                                # OpenAI's usage-only chunk is likewise final before [DONE].
+                                completed = bool(converter.done if is_anthropic else converter.usage_final)
+                            finally:
+                                _observe_stream_usage(converter, observation, reported=completed)
+                            for chunk in chunks:
+                                yield encode_sse(chunk)
+                            if is_anthropic and converter.done:
+                                break
+                        converter.finish()
+                        if not is_anthropic and not saw_done:
+                            raise ModelGatewayError("incomplete_upstream_stream", "Model stream ended without a terminator", 502)
+                        completed = True
+                        _observe_stream_usage(converter, observation, reported=True)
+                    break
+                except ModelGatewayError as exc:
+                    if connected or retrying or not can_retry_without_options or exc.code != "upstream_request_rejected":
+                        raise
+                _, payload, headers, _ = await asyncio.to_thread(
+                    _prepare, slot, body, streaming=True, inject_stream_usage=False,
+                )
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

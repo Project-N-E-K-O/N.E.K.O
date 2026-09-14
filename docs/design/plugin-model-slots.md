@@ -175,6 +175,11 @@ Each low-level attempt owns and closes its HTTP client without SDK retries.
 The HTTP route wraps attempts in the execution policy described below. Upstream
 streaming usage is requested for OpenAI, but forwarded to the caller only when
 `include_usage=true`; internal observation is independent of that presentation.
+If an OpenAI-compatible endpoint rejects the injected `stream_options` with a
+4xx before any stream data and the plugin did not request usage itself, the
+stream is retried once without it and that endpoint skips the option for the
+rest of the process; usage for those streams is recorded as unknown. A final
+usage-only chunk marks usage as reported even if the caller closes before `[DONE]`.
 Requests and responses are bounded to 16 MiB and SSE events to 1 MiB, including
 unterminated lines. These are transport limits, not token-budget estimates.
 

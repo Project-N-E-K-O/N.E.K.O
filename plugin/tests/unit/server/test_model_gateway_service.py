@@ -587,9 +587,12 @@ async def test_error_body_read_failure_preserves_original_http_error():
 
 @pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
 async def test_interrupted_stream_retains_latest_cumulative_usage(protocol):
-    events = openai_events() if protocol == "openai_chat" else anthropic_events()[:-1]
+    # Interrupt before the protocol's final usage marker: OpenAI's usage-only
+    # chunk, Anthropic's message_stop. Cumulative counters are still retained.
+    events = openai_events()[:-1] if protocol == "openai_chat" else anthropic_events()[:-1]
     if protocol == "openai_chat":
         events[0]["usage"] = {"prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7}
+        events[-1]["usage"] = USAGE
     observation = AttemptObservation()
     stream = ByteStream(event_bytes(events))
     gateway, clients = gateway_for(lambda request: httpx.Response(
@@ -599,6 +602,18 @@ async def test_interrupted_stream_retains_latest_cumulative_usage(protocol):
     assert {key: observation.usage[key] for key in USAGE} == USAGE
     assert observation.usage_status == "partial"
     assert stream.closed and clients[0].is_closed
+
+
+async def test_openai_usage_chunk_is_reported_even_if_done_marker_is_missing():
+    observation = AttemptObservation()
+    gateway, _ = gateway_for(lambda request: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=ByteStream(event_bytes(openai_events()))))
+    with pytest.raises(ModelGatewayError) as error:
+        _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True), observation=observation)]
+    # The caller still sees an incomplete stream, but the provider's final counters are complete.
+    assert error.value.code == "incomplete_upstream_stream"
+    assert {key: observation.usage[key] for key in USAGE} == USAGE
+    assert observation.usage_status == "reported"
 
 
 @pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
@@ -670,6 +685,62 @@ async def test_anthropic_message_stop_is_reported_even_if_consumer_closes_on_fin
     assert observation.usage_status == "reported"
     assert observation.usage["total_tokens"] == 10
     assert stream.closed
+
+
+async def test_openai_final_usage_is_reported_even_if_consumer_closes_on_usage_chunk():
+    observation = AttemptObservation()
+    stream = ByteStream(event_bytes(openai_events(), done=True))
+    gateway, _ = gateway_for(lambda request: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=stream))
+    iterator = gateway.stream(
+        make_slot(), request_body(stream=True, stream_options={"include_usage": True}), observation=observation)
+    async for part in iterator:
+        if json.loads(part.decode()[6:])["choices"] == []:
+            break
+    await iterator.aclose()
+    assert observation.usage_status == "reported"
+    assert observation.usage["total_tokens"] == 10
+    assert stream.closed
+
+
+async def test_rejected_injected_stream_options_are_retried_once_and_remembered():
+    bodies = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, content=SECRET)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
+
+    gateway, clients = gateway_for(upstream)
+    observation = AttemptObservation()
+    parts = [part async for part in gateway.stream(make_slot(), request_body(stream=True), observation=observation)]
+    assert parts[-1] == b"data: [DONE]\n\n"
+    assert ["stream_options" in body for body in bodies] == [True, False]
+    assert observation.usage is None and observation.usage_status == "unknown"
+    parts = [part async for part in gateway.stream(make_slot(), request_body(stream=True))]
+    assert parts[-1] == b"data: [DONE]\n\n"
+    assert ["stream_options" in body for body in bodies] == [True, False, False]
+    assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize("updates,status", [
+    ({"stream_options": {"include_usage": True}}, 400),
+    ({}, 500),
+])
+async def test_stream_is_not_retried_for_explicit_usage_or_other_failures(updates, status):
+    requests = []
+
+    async def upstream(request):
+        requests.append(request)
+        return httpx.Response(status, content=SECRET)
+
+    gateway, _ = gateway_for(upstream)
+    with pytest.raises(ModelGatewayError):
+        _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True, **updates))]
+    assert len(requests) == 1
 
 
 async def test_preparation_error_never_marks_attempt_started():

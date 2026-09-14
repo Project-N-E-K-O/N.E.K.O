@@ -108,6 +108,8 @@ class OpenAIStreamConverter:
         self.include_usage = include_usage
         self.usage: dict | None = None
         self.finished = False
+        # The usage-only chunk after finish carries the provider's final counters.
+        self.usage_final = False
         self._envelope: dict | None = None
         self._tools: dict[int, dict[str, str]] = {}
 
@@ -176,6 +178,7 @@ class OpenAIStreamConverter:
         if choices == []:
             if not self.finished or result.get("usage") is None:
                 raise _invalid()
+            self.usage_final = True
             return [result] if self.include_usage else []
         if self.finished:
             raise _invalid()
