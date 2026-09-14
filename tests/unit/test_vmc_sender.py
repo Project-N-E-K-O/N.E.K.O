@@ -1052,3 +1052,134 @@ async def test_config_save_failure_does_not_contradict_runtime_state(
     assert disabled_status["enabled"] is False
     assert sender._client is None
     assert client.closed is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_callback_fires_only_on_disabled_to_enabled_transition(
+    monkeypatch,
+):
+    """The browser wake-up broadcast must be one-shot, not per-request.
+
+    A plugin re-posting /api/vmc/enable to retune the endpoint should not
+    re-broadcast: the sampler is already running and a redundant
+    syncStatusFromBackend() round-trip buys nothing.
+    """
+    fired: list[bool] = []
+
+    async def record(enabled: bool) -> None:
+        fired.append(enabled)
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=record)
+    monkeypatch.setattr(
+        sender, "_build_client", lambda _host, _port: _RecordingOscClient()
+    )
+
+    await sender.enable(host="127.0.0.1", port=39539, send_rate_hz=60)
+    assert fired == [True]
+
+    # Already enabled: retuning the endpoint is not a transition.
+    fired.clear()
+    await sender.enable(port=39540)
+    assert fired == []
+
+    # Off and on again is a fresh transition; the sampler needs waking.
+    await sender.disable()
+    await sender.enable()
+    assert fired == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_survives_a_failing_callback():
+    """A broken WebSocket fan-out must not fail the plugin's enable request."""
+
+    async def explode(_enabled: bool) -> None:
+        raise RuntimeError("no sessions connected")
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=explode)
+    sender._build_client = lambda _host, _port: _RecordingOscClient()
+
+    status = await sender.enable()
+    assert status["enabled"] is True
+    assert sender.enabled is True
+
+
+@pytest.mark.unit
+def test_set_vmc_enabled_callback_does_not_construct_the_singleton(monkeypatch):
+    """Routers register at import time, before the config manager exists.
+
+    Building the singleton then would resolve config_dir to None and silently
+    disable vmc_config.json persistence for the life of the process.
+    """
+    monkeypatch.setattr(vmc_sender_module, "_singleton", None)
+    monkeypatch.setattr(vmc_sender_module, "_enabled_callback", None)
+
+    async def noop(_enabled: bool) -> None:
+        return None
+
+    vmc_sender_module.set_vmc_enabled_callback(noop)
+    assert vmc_sender_module._singleton is None
+    assert vmc_sender_module._enabled_callback is noop
+
+    # The parked callback is applied when the singleton is finally built.
+    sender = vmc_sender_module.get_vmc_sender()
+    assert sender._on_enabled_callback is noop
+
+
+@pytest.mark.unit
+def test_set_vmc_enabled_callback_patches_an_existing_singleton(monkeypatch):
+    existing = VmcSender(config_dir=None)
+    monkeypatch.setattr(vmc_sender_module, "_singleton", existing)
+    monkeypatch.setattr(vmc_sender_module, "_enabled_callback", None)
+
+    async def noop(_enabled: bool) -> None:
+        return None
+
+    vmc_sender_module.set_vmc_enabled_callback(noop)
+    assert existing._on_enabled_callback is noop
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_wakes_browser_samplers(monkeypatch):
+    """The wake-up rides the chat WebSocket, not the isolated /api/vmc/ws.
+
+    The dedicated VMC socket only exists once the browser is already sampling,
+    so it cannot carry the signal that starts sampling in the first place.
+    """
+    from app.main_server import character_runtime
+
+    sent: list[dict] = []
+
+    async def fake_broadcast(payload: dict) -> int:
+        sent.append(payload)
+        return 2
+
+    monkeypatch.setattr(
+        character_runtime, "_broadcast_to_all_connected", fake_broadcast
+    )
+
+    await vmc_router._broadcast_vmc_enabled(True)
+    assert sent == [{"type": "vmc_state_changed", "enabled": True}]
+
+    # Disable needs no broadcast: the browser learns it from its own poll and
+    # waking a sampler for a dead sender would only burn frames.
+    sent.clear()
+    await vmc_router._broadcast_vmc_enabled(False)
+    assert sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_swallows_transport_failures(monkeypatch):
+    from app.main_server import character_runtime
+
+    async def explode(_payload: dict) -> int:
+        raise RuntimeError("event loop closed")
+
+    monkeypatch.setattr(
+        character_runtime, "_broadcast_to_all_connected", explode
+    )
+
+    await vmc_router._broadcast_vmc_enabled(True)

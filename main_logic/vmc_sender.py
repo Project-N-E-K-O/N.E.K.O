@@ -15,6 +15,7 @@ import asyncio
 import math
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +87,12 @@ _EXPRESSION_NAME_MAP = {
 class VmcSender:
     """Process-wide, lazily configured VMC UDP sender."""
 
-    def __init__(self, config_dir: Path | None) -> None:
+    def __init__(
+        self,
+        config_dir: Path | None,
+        *,
+        on_enabled_callback: Callable[[bool], Awaitable[None]] | None = None,
+    ) -> None:
         self._config_path = config_dir / _CONFIG_FILENAME if config_dir else None
         self._enabled = False
         self._host = _DEFAULT_HOST
@@ -108,6 +114,7 @@ class VmcSender:
         self._t_pose_generation = 0
         self._active_expression_names: set[str] = set()
         self._publisher_generation = 0
+        self._on_enabled_callback = on_enabled_callback
 
     @property
     def enabled(self) -> bool:
@@ -228,6 +235,7 @@ class VmcSender:
     ) -> dict[str, Any]:
         await self.ensure_config_loaded()
         async with self._lock:
+            was_enabled = self._enabled
             candidate_host = host if host is not None else self._host
             candidate_port = port if port is not None else self._port
             candidate_rate = (
@@ -273,7 +281,21 @@ class VmcSender:
                 self._port,
                 self._send_rate_hz,
             )
-            return self.status()
+            status = self.status()
+        # Notify outside the lock: the callback reaches into the WebSocket
+        # layer, which must never be able to stall a subsequent enable/disable.
+        if not was_enabled:
+            await self._notify_enabled_changed(True)
+        return status
+
+    async def _notify_enabled_changed(self, enabled: bool) -> None:
+        callback = self._on_enabled_callback
+        if callback is None:
+            return
+        try:
+            await callback(enabled)
+        except Exception as exc:
+            logger.warning("VMC enabled-state callback failed: %s", exc)
 
     async def disable(self) -> dict[str, Any]:
         await self.ensure_config_loaded()
@@ -510,6 +532,7 @@ class VmcSender:
 
 
 _singleton: VmcSender | None = None
+_enabled_callback: Callable[[bool], Awaitable[None]] | None = None
 
 
 def get_vmc_sender() -> VmcSender:
@@ -524,5 +547,22 @@ def get_vmc_sender() -> VmcSender:
     except Exception as exc:
         logger.warning("Failed to resolve config_dir for VmcSender: %s", exc)
         config_dir = None
-    _singleton = VmcSender(config_dir)
+    _singleton = VmcSender(config_dir, on_enabled_callback=_enabled_callback)
     return _singleton
+
+
+def set_vmc_enabled_callback(
+    callback: Callable[[bool], Awaitable[None]] | None,
+) -> None:
+    """Register the process-wide hook fired when VMC becomes enabled.
+
+    Routers register at import time, long before the config manager is ready,
+    so this must not construct the singleton: doing so would resolve
+    ``config_dir`` to ``None`` and permanently disable config persistence.
+    The callback is parked in a module global and applied when the singleton
+    is eventually built (or patched onto it if it already exists).
+    """
+    global _enabled_callback
+    _enabled_callback = callback
+    if _singleton is not None:
+        _singleton._on_enabled_callback = callback

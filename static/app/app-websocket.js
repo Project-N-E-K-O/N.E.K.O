@@ -4088,6 +4088,20 @@
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
                     }
 
+                // -------- vmc_state_changed --------
+                } else if (response.type === 'vmc_state_changed') {
+                    // A plugin (or any non-browser client) enabled the backend
+                    // VMC sender. The browser owns the frame source, so wake it
+                    // here; syncStatusFromBackend() lazy-loads the real sender,
+                    // flips __NEKO_VMC_ACTIVE__ and starts its own polling.
+                    if (response.enabled === true && window.vrmVmcSender
+                        && typeof window.vrmVmcSender.syncStatusFromBackend === 'function') {
+                        Promise.resolve(window.vrmVmcSender.syncStatusFromBackend())
+                            .catch(function (error) {
+                                console.warn('[VMC] backend-enable sync failed:', error);
+                            });
+                    }
+
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};

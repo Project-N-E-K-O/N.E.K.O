@@ -60,6 +60,10 @@ mutation route には same-origin CSRF header が必要です。first-party code
 
 `host` は ASCII hostname または IPv4、`port` は `1..65535` の整数、`send_rate_hz` は `1..120` の整数です。
 
+frame の sampling は browser 側が担当するため、disabled から enabled への遷移時に backend が chat WebSocket 経由で `{"type": "vmc_state_changed", "enabled": true}` を broadcast し、page が完全な sender を読み込んで per-frame sampling を開始します。plugin などの非 browser client は、page の console で `enable()` を手動実行せずにこの endpoint だけで有効化できます。page が未接続の場合、UDP sender は開きますが接続されるまで frame は送出されません。
+
+再度呼び出しても（`port` の変更のみなど）sampling は既に動作しているため broadcast は行われません。
+
 ### `POST /api/vmc/disable`
 
 terminal VMC state を送信し、UDP client を閉じて disabled state を返します。

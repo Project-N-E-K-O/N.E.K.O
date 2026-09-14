@@ -81,6 +81,10 @@ All JSON fields are optional:
 
 `host` accepts an ASCII hostname or IPv4 address, `port` must be an integer from `1..65535`, and `send_rate_hz` must be an integer from `1..120`.
 
+Frames are sampled by the browser, so on a disabled-to-enabled transition the backend broadcasts `{"type": "vmc_state_changed", "enabled": true}` over the main chat WebSocket. The page then loads the full sender and starts per-frame sampling. Non-browser clients such as plugins can therefore enable output with this endpoint alone, without a manual `enable()` call in the page console. If no page is connected, the UDP sender still opens but emits no frames until one connects.
+
+Repeat calls (for example to retune `port`) do not re-broadcast, because sampling is already running.
+
 ### `POST /api/vmc/disable`
 
 Sends the terminal VMC state, closes the UDP client, and reports the disabled runtime status.
