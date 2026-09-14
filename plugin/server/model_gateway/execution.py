@@ -20,6 +20,9 @@ from .observation import AttemptObservation
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
 })
+# With a fallback slot, the primary may use only this share of the total budget,
+# so a stalled primary still leaves time to switch within the same deadline.
+_PRIMARY_BUDGET_SHARE = 2 / 3
 logger = get_logger("server.model_gateway.execution")
 
 
@@ -291,7 +294,7 @@ class ModelExecutor:
             try:
                 async with deadline:
                     async with self._semaphore:
-                        return await self._attempts(call, body, attempts, deadline, stream)
+                        return await self._attempts(call, body, attempts, deadline, stream, started)
             except TimeoutError as exc:
                 raise _timeout_error() from exc
         except BaseException as exc:
@@ -305,11 +308,16 @@ class ModelExecutor:
             # Each owned execution task reaches this once, including cancellation.
             self._enqueue_record(request)
 
-    async def _attempts(self, call, body, attempts, deadline, stream):
+    async def _attempts(self, call, body, attempts, deadline, stream, started):
         slot_id, slot = call.slot_id, call.slot
+        primary_cutoff = None
+        if call.fallback_slot is not None and call.fallback_slot_id is not None:
+            primary_cutoff = started + (deadline.when() - started) * _PRIMARY_BUDGET_SHARE
         for index in range(2):
             try:
-                return await self._attempt(slot_id, slot, body, attempts, deadline, stream)
+                return await self._attempt(
+                    slot_id, slot, body, attempts, deadline, stream, primary_cutoff if index == 0 else None,
+                )
             except ModelGatewayError as exc:
                 if (
                     index != 0 or exc.code not in _FALLBACK_ERRORS
@@ -327,7 +335,7 @@ class ModelExecutor:
                 # the fallback slot, including protocol-specific validation.
                 slot_id, slot = call.fallback_slot_id, call.fallback_slot
 
-    async def _attempt(self, slot_id, slot, body, attempts, deadline, stream):
+    async def _attempt(self, slot_id, slot, body, attempts, deadline, stream, cutoff=None):
         loop = asyncio.get_running_loop()
         started = loop.time()
         observation = AttemptObservation()
@@ -340,16 +348,29 @@ class ModelExecutor:
             "error_code": None,
         }
         attempts.append(attempt)
+        budget = asyncio.timeout_at(cutoff)
         try:
-            if stream is None:
-                return await self.gateway.complete(slot, body, observation=observation)
-            upstream = self.gateway.stream(slot, body, observation=observation)
             try:
-                async for chunk in upstream:
-                    await stream.emit(chunk)
-            finally:
-                with anyio.CancelScope(shield=True):
-                    await upstream.aclose()
+                async with budget:
+                    if stream is None:
+                        return await self.gateway.complete(slot, body, observation=observation)
+                    upstream = self.gateway.stream(slot, body, observation=observation)
+                    try:
+                        async for chunk in upstream:
+                            if chunk:
+                                # Output has started: fallback is now governed by
+                                # delivery, so the primary keeps the full deadline.
+                                budget.reschedule(None)
+                            await stream.emit(chunk)
+                    finally:
+                        with anyio.CancelScope(shield=True):
+                            await upstream.aclose()
+            except TimeoutError as exc:
+                if budget.expired() and not deadline.expired():
+                    raise ModelGatewayError(
+                        "upstream_timeout", "Primary model exceeded its share of the time budget", 504,
+                    ) from exc
+                raise
         except BaseException as exc:
             attempt["status"], attempt["error_code"] = _failure(exc, expired=deadline.expired())
             raise

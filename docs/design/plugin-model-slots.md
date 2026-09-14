@@ -236,7 +236,12 @@ prefetch and response handoff. Supplier errors never echo raw error bodies.
 After authentication, body parsing and binding resolution, one monotonic
 deadline is established from the primary slot's `timeout_seconds`. Queueing,
 request preparation, provider I/O, generation, backpressure and fallback share
-that budget. HTTP response sends use the same deadline, so a connected client
+that budget. When a fallback slot is configured, the primary attempt may use at
+most two thirds of the budget, measured from request start; for streams that
+limit applies only until the primary produces its first non-empty chunk.
+Exceeding it is reported as `upstream_timeout`, so a stalled primary still
+leaves time for the fallback. Without a fallback the primary keeps the whole
+budget. HTTP response sends use the same deadline, so a connected client
 that stops reading cannot hold a send indefinitely. Only a final error frame
 gets a bounded 100 ms flush window beyond that deadline; model work, fallback
 and ordinary content sends never use it. Upstream resource cleanup remains

@@ -245,6 +245,61 @@ async def test_fallback_shares_primary_deadline():
     assert request["attempts"][1]["status"] == "timeout"
 
 
+async def test_stalled_primary_leaves_part_of_the_budget_for_fallback():
+    async def execute(model_slot, _request, observation):
+        if model_slot.model == "primary":
+            await stalled()
+        observation.observe(USAGE, reported=True)
+        return {"model": "backup"}
+
+    recorder = Recorder()
+    gateway = Gateway(complete=execute)
+    executor = ModelExecutor(gateway, recorder)
+    assert await executor.complete(call(slot(timeout_seconds=0.3), slot("backup")), body()) == {"model": "backup"}
+    assert gateway.calls == ["primary", "backup"]
+    await executor.aclose()
+    request, = recorder.requests
+    assert request["status"] == "success"
+    assert [(item["status"], item["error_code"]) for item in request["attempts"]] == [
+        ("timeout", "upstream_timeout"), ("success", None),
+    ]
+
+
+async def test_primary_without_fallback_keeps_the_whole_budget():
+    async def execute(*_args):
+        await asyncio.sleep(0.45)
+        return {"ok": True}
+
+    executor = ModelExecutor(Gateway(complete=execute), Recorder())
+    assert await executor.complete(call(slot(timeout_seconds=0.6)), body()) == {"ok": True}
+
+
+async def test_stream_primary_budget_only_limits_time_to_first_chunk():
+    async def execute(_slot, _request, observation):
+        yield b"first"
+        await asyncio.sleep(0.5)
+        observation.observe(USAGE, reported=True)
+        yield DONE
+
+    gateway = Gateway(stream=execute)
+    stream = ModelExecutor(gateway, Recorder()).stream(call(slot(timeout_seconds=0.6), slot("backup")), body(stream=True))
+    assert [chunk async for chunk in stream] == [b"first", DONE]
+    assert gateway.calls == ["primary"]
+
+
+async def test_stream_stalled_before_first_chunk_falls_back():
+    async def execute(model_slot, _request, _observation):
+        if model_slot.model == "primary":
+            await stalled()
+        yield b"backup"
+        yield DONE
+
+    gateway = Gateway(stream=execute)
+    stream = ModelExecutor(gateway, Recorder()).stream(call(slot(timeout_seconds=0.3), slot("backup")), body(stream=True))
+    assert [chunk async for chunk in stream] == [b"backup", DONE]
+    assert gateway.calls == ["primary", "backup"]
+
+
 async def test_queue_timeout_and_capacity_rejection_have_no_attempts():
     gateway = Gateway(complete=stalled)
     recorder = Recorder()
