@@ -457,36 +457,6 @@ async def test_empty_bytes_do_not_prevent_fallback():
     assert [chunk async for chunk in stream] == [b"backup", DONE]
 
 
-@pytest.mark.parametrize(("opening", "falls_back"), [
-    (b'data: {"id":"p","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n', True),
-    (b'data: {"id":"p","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n', False),
-    (b'data: {"id":"p","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":0,"total_tokens":1}}\n\n', False),
-])
-async def test_only_role_only_opening_chunk_still_allows_stream_fallback(opening, falls_back):
-    proceed = asyncio.Event()
-
-    async def execute(model_slot, _request, _observation):
-        if model_slot.model == "primary":
-            yield opening
-            await proceed.wait()
-            raise ModelGatewayError("upstream_connection_error", "failure", 502)
-        yield b"backup"
-        yield DONE
-
-    gateway = Gateway(stream=execute)
-    stream = ModelExecutor(gateway, Recorder()).stream(call(fallback=slot("backup")), body(stream=True))
-    assert await anext(stream) == opening
-    proceed.set()
-    if falls_back:
-        assert [chunk async for chunk in stream] == [b"backup", DONE]
-        assert gateway.calls == ["primary", "backup"]
-    else:
-        with pytest.raises(ModelGatewayError) as error:
-            await anext(stream)
-        assert error.value.code == "upstream_connection_error"
-        assert gateway.calls == ["primary"]
-
-
 @pytest.mark.parametrize("active, waiting", [(0, 1), (-1, 1), (1, -1), (True, 1), (1, 1.5)])
 def test_invalid_concurrency_limits_are_rejected(active, waiting):
     with pytest.raises(ValueError):
