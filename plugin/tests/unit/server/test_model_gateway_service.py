@@ -429,13 +429,17 @@ async def test_upstream_invalid_unicode_returns_safe_error(streaming, protocol):
     assert clients[0].is_closed
 
 
-@pytest.mark.parametrize("updates", [{"base_url": "https://☃.example"}, {"api_key": "无效凭证"}])
-async def test_invalid_http_configuration_is_reported_before_client_creation(updates):
+@pytest.mark.parametrize("build_slot", [
+    lambda: make_slot(base_url="https://☃.example"),
+    # Slot validation now rejects non-ASCII keys; the gateway still guards stored data.
+    lambda: make_slot().model_copy(update={"api_key": "无效凭证"}),
+])
+async def test_invalid_http_configuration_is_reported_before_client_creation(build_slot):
     def forbidden(slot):
         pytest.fail("Invalid configuration must not create a network client")
 
     with pytest.raises(ModelGatewayError) as error:
-        await ModelGatewayService(forbidden).complete(make_slot(**updates), request_body())
+        await ModelGatewayService(forbidden).complete(build_slot(), request_body())
     assert error.value.code == "invalid_model_configuration"
 
 

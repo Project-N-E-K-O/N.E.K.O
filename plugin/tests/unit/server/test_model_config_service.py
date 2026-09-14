@@ -109,7 +109,7 @@ def test_shared_slot_rename_and_secret_roundtrip_leave_core_config_untouched(con
     assert all(tx == {"operation": "save", "target": CONFIG_FILENAME} for tx in cm.transactions)
 
 
-@pytest.mark.parametrize("key", [SECRET_MASK, "********", "••••••", "abcdef......wxyz", "prefix......suffix-extra"])
+@pytest.mark.parametrize("key", [SECRET_MASK, "********", "******", "abcdef......wxyz", "prefix......suffix-extra"])
 def test_opaque_keys_can_be_created_replaced_and_cleared(config_env, key):
     _, service, _ = config_env
     slot_id = service.create_slot(slot_payload(api_key=key))["id"]
@@ -137,6 +137,17 @@ def test_endpoint_change_does_not_reuse_previous_credential(config_env, change):
     assert service.store.read().slots[slot_id].api_key == "test-secret-key"
     service.update_slot(slot_id, {**change, "api_key": "new-test-key"})
     assert service.store.read().slots[slot_id].api_key == "new-test-key"
+
+
+def test_partial_defaults_update_preserves_omitted_fields(config_env):
+    _, service, _ = config_env
+    slot_id = service.create_slot(slot_payload(defaults={"temperature": 0.7, "max_output_tokens": 8192}))["id"]
+    service.update_slot(slot_id, {"defaults": {"temperature": 0.2}})
+    defaults = service.store.read().slots[slot_id].defaults
+    assert (defaults.temperature, defaults.max_output_tokens) == (0.2, 8192)
+    service.update_slot(slot_id, {"defaults": {"max_output_tokens": None}})
+    defaults = service.store.read().slots[slot_id].defaults
+    assert (defaults.temperature, defaults.max_output_tokens) == (0.2, None)
 
 
 def test_binding_must_be_declared_and_meet_capabilities(config_env):
@@ -253,6 +264,8 @@ def test_write_fence_rejection_does_not_create_config(config_env, monkeypatch):
     {"model": "  "},
     {"protocol": "realtime"},
     {"api_key": "abc\r\ndef"},
+    {"api_key": "••••••"},
+    {"api_key": "sk-密钥"},
     {"timeout_seconds": float("inf")},
     {"timeout_seconds": True},
     {"defaults": {"max_output_tokens": True}},

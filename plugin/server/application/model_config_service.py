@@ -120,6 +120,9 @@ class ModelConfigService:
         def change(config):
             old = self._slot(config, slot_id)
             updates = dict(payload)
+            if isinstance(updates.get("defaults"), dict):
+                # PATCH semantics also apply to nested defaults; explicit null still clears a field.
+                updates["defaults"] = {**old.defaults.model_dump(), **updates["defaults"]}
             slot = _validate_slot({**old.model_dump(), **updates})
             if old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)

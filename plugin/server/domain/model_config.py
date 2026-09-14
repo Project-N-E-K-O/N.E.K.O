@@ -66,6 +66,9 @@ class ModelSlot(BaseModel):
     def validate_key(cls, value: str) -> str:
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("API key must not contain control characters")
+        if not value.isascii():
+            # Credentials are sent as HTTP header values, which the gateway encodes as ASCII.
+            raise ValueError("API key must contain only ASCII characters")
         return value
 
     @field_validator("base_url")
