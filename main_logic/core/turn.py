@@ -1191,7 +1191,11 @@ class TurnMixin:
         self._mark_magic_command_image_drop_request(request_id)
         if isinstance(self.session, OmniOfflineClient):
             # The command never reaches stream_text, so a staged proactive
-            # screenshot would otherwise leak into the next unrelated message.
+            # screenshot or plugin ``read`` image would otherwise leak into the
+            # next unrelated message.
+            pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
+            if hasattr(pending_plugin_images, "clear"):
+                pending_plugin_images.clear()
             clear_shot = getattr(self.session, "set_proactive_screenshot", None)
             if callable(clear_shot):
                 clear_shot(None)
@@ -1284,6 +1288,8 @@ class TurnMixin:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 队列清空后，请求→附件记录里的条目都已失效，一并释放。
+        self._prune_request_staged_images()
         # 插件 read 图片的独立暂存位同为「待发视觉上下文」，走同一个失效判据。
         pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
         if hasattr(pending_plugin_images, "clear"):

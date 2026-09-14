@@ -3966,10 +3966,10 @@ class LifecycleMixin:
             if not preserve_pending_input:
                 self.pending_input_data.clear()
             self._clear_pending_context_appends()
-        # Attachment ledger entries point into the retired session's queue.
-        staged_image_ledger = getattr(self, "_request_staged_images", None)
-        if staged_image_ledger:
-            staged_image_ledger.clear()
+        # Release ledger entries that pointed into the retired session's queue.
+        # Prune rather than clear: a replacement session may already have
+        # staged (and recorded) attachments while this teardown was awaiting.
+        self._prune_request_staged_images()
 
         self.last_time = None
         if callable(after_memory_settlement):

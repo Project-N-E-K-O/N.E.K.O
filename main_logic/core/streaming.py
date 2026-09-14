@@ -939,6 +939,10 @@ class StreamingMixin:
 
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
                         elif isinstance(target_session, OmniOfflineClient):
+                            # screen/camera 在后台任务里校验，期间同一请求的斜杠快捷
+                            # 指令可能已经执行完：暂存前再查一次，别把它的截图留给下一条。
+                            if self._should_drop_magic_command_image(message.get("request_id")):
+                                return
                             # 只添加到待发送队列，等待与文本一起发送
                             await target_session.stream_image(image_b64)
                             if not self.is_active or self.session is not target_session:
