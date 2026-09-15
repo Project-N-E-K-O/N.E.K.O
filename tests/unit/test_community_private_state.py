@@ -1544,6 +1544,88 @@ def test_social_lock_reclaims_own_published_lock_after_verification_failure(
     assert not lock_path.exists()
 
 
+def test_orphan_reclaim_publication_failure_does_not_deadlock_recovery_mutex(
+    tmp_path,
+    monkeypatch,
+):
+    recovery_mutex = C._SOCIAL_LOCK_RECOVERY_MUTEX
+    recovery_mutex.acquire()
+    try:
+        reacquired = recovery_mutex.acquire(blocking=False)
+        if reacquired:
+            recovery_mutex.release()
+    finally:
+        recovery_mutex.release()
+    assert reacquired, "orphan publication bookkeeping re-enters this mutex"
+
+    lock_path = tmp_path / "social_session.json.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "owner_kind": "neko",
+                "token": "999999:orphaned-owner",
+                "pid": 999999,
+                "created_at": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    expected_metadata, expected_fingerprint, expected_owner = (
+        C._read_social_lock_snapshot(lock_path)
+    )
+    original_read = C._read_social_lock_snapshot
+    read_calls = 0
+
+    def _fail_replacement_verification(*args, **kwargs):
+        nonlocal read_calls
+        read_calls += 1
+        # Revalidate the orphan first, then simulate Windows sharing conflicts
+        # both while verifying and while trying to retire the published replacement.
+        if read_calls in {2, 3}:
+            raise C._SocialLockBusyError(32, "simulated sharing violation")
+        return original_read(*args, **kwargs)
+
+    @contextmanager
+    def _recovery_authority():
+        yield
+
+    monkeypatch.setattr(C, "_read_social_lock_snapshot", _fail_replacement_verification)
+    monkeypatch.setattr(
+        C,
+        "classify_social_lock_owner",
+        lambda _owner: C.SOCIAL_LOCK_OWNER_ORPHANED,
+    )
+    monkeypatch.setattr(
+        C.single_instance,
+        "try_acquire_auxiliary_lock",
+        lambda _name: _recovery_authority(),
+    )
+
+    try:
+        with pytest.raises(C._SocialLockBusyError, match="sharing violation"):
+            C._reclaim_orphaned_social_lock(
+                lock_path,
+                expected_metadata,
+                expected_fingerprint,
+                expected_owner,
+                "current:replacement",
+            )
+        assert read_calls == 3
+        location = C._social_lock_location_key(lock_path)
+        with recovery_mutex:
+            assert C._SOCIAL_LOCK_ABANDONED_OWNERSHIP[location] == (
+                None,
+                "token:current:replacement",
+            )
+    finally:
+        with recovery_mutex:
+            C._SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(
+                C._social_lock_location_key(lock_path),
+                None,
+            )
+
+
 def test_social_lock_never_reclaims_replacement_using_abandoned_ownership(tmp_path, monkeypatch):
     session = tmp_path / "social_session.json"
     lock_path = Path(f"{session}.lock")

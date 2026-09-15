@@ -63,7 +63,9 @@ _SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
 _SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
 _SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV = "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"
-_SOCIAL_LOCK_RECOVERY_MUTEX = threading.Lock()
+# Orphan reclamation publishes while holding this mutex; publication-failure
+# bookkeeping protects the same recovery state and therefore re-enters it.
+_SOCIAL_LOCK_RECOVERY_MUTEX = threading.RLock()
 _SOCIAL_LOCK_RECOVERY_GUARD_FILE = "social-session-recovery.lock"
 _SOCIAL_LOCK_OWNER_IDENTITY_MUTEX = threading.Lock()
 _SOCIAL_LOCK_OWNER_IDENTITY: tuple[str, str, str] | None = None
