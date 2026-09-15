@@ -1865,11 +1865,13 @@ def test_rollback_completion_checkpoint_precedes_transaction_cleanup(
         )
     elif crash_step == "during_transaction_cleanup":
         def _interrupt_during_cleanup(path):
+            quarantine = storage_migration_module._private_directory_quarantine_path(
+                transaction_root
+            )
             if (
-                Path(path)
-                == storage_migration_module._private_directory_quarantine_path(
-                    transaction_root
-                )
+                Path(path).parent == quarantine
+                and Path(path).name
+                != storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
                 and not interrupted["value"]
             ):
                 interrupted["value"] = True
@@ -1935,6 +1937,107 @@ def test_rollback_completion_checkpoint_precedes_transaction_cleanup(
     assert result["error_code"] == "copy_failed"
     assert target_file.read_text(encoding="utf-8") == "TARGET"
     assert not quarantine.exists()
+
+
+@pytest.mark.unit
+def test_transaction_cleanup_recovers_crash_after_owner_marker_is_deleted(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    config_manager, _, target_file, transaction_root, _, _ = (
+        _prepare_interrupted_publish(tmp_path)
+    )
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    quarantine_marker = (
+        quarantine / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+    )
+    real_rmdir = Path.rmdir
+
+    def _interrupt_empty_quarantine_rmdir(path):
+        if path == quarantine and not quarantine_marker.exists():
+            raise SimulatedProcessLoss
+        return real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", _interrupt_empty_quarantine_rmdir)
+    with pytest.raises(SimulatedProcessLoss):
+        run_pending_storage_migration(config_manager)
+
+    checkpoint = load_storage_migration(config_manager)
+    assert checkpoint["status"] == STORAGE_MIGRATION_STATUS_PREFLIGHT
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not transaction_root.exists()
+    assert quarantine.is_dir()
+    assert list(quarantine.iterdir()) == []
+
+    monkeypatch.setattr(Path, "rmdir", real_rmdir)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_runtime_entry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StorageMigrationError("copy_failed", "stop after quarantine recovery")
+        ),
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "copy_failed"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not quarantine.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("replacement_kind", ("nonempty_directory", "symlink"))
+def test_transaction_cleanup_preserves_unowned_markerless_quarantine(
+    tmp_path,
+    replacement_kind,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    if replacement_kind == "nonempty_directory":
+        quarantine.mkdir(parents=True)
+        sentinel = quarantine / "third-party.txt"
+    else:
+        external = tmp_path / "external-third-party"
+        external.mkdir()
+        sentinel = external / "third-party.txt"
+        try:
+            quarantine.symlink_to(external, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("directory symlinks are unavailable")
+    sentinel.write_text("KEEP", encoding="utf-8")
+
+    removed = storage_migration_module._remove_transaction_root_if_owned(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+
+    assert removed is False
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert quarantine.exists() or quarantine.is_symlink()
 
 
 @pytest.mark.unit

@@ -409,6 +409,7 @@ def _remove_private_directory_via_quarantine(
     expected_identity: os.stat_result,
     *,
     verify_quarantine=None,
+    remove_quarantine=None,
 ) -> bool:
     """Detach an owned name before recursive deletion and verify what moved."""
     quarantine = _private_directory_quarantine_path(path)
@@ -425,6 +426,8 @@ def _remove_private_directory_via_quarantine(
     if not valid:
         _restore_quarantined_directory(quarantine, path)
         return False
+    if callable(remove_quarantine):
+        return bool(remove_quarantine(quarantine))
     _remove_existing_path(quarantine)
     return True
 
@@ -784,6 +787,72 @@ def _write_transaction_owner_marker(
     fsync_directory_best_effort(transaction_root)
 
 
+def _remove_owned_transaction_quarantine(
+    payload: dict[str, Any],
+    quarantine: Path,
+    txid: str,
+) -> bool:
+    """Delete owned transaction contents while keeping their proof until last."""
+    marker = quarantine / _TRANSACTION_OWNER_MARKER_FILENAME
+    try:
+        quarantine_identity = quarantine.lstat()
+    except OSError:
+        return False
+    if (
+        not stat.S_ISDIR(quarantine_identity.st_mode)
+        or _is_link_like_metadata(quarantine_identity)
+        or path_chain_has_symlink(quarantine)
+    ):
+        return False
+
+    if not marker.exists() and not marker.is_symlink():
+        # The only unauthenticated recoverable state is the empty directory
+        # left by a crash after deleting the marker but before rmdir. rmdir is
+        # itself the emptiness check, so a concurrent or unrelated entry is
+        # preserved rather than recursively deleted.
+        try:
+            current_identity = quarantine.lstat()
+            if (
+                not os.path.samestat(quarantine_identity, current_identity)
+                or not stat.S_ISDIR(current_identity.st_mode)
+                or _is_link_like_metadata(current_identity)
+            ):
+                return False
+            quarantine.rmdir()
+        except OSError:
+            return False
+        fsync_directory_best_effort(quarantine.parent)
+        return True
+
+    if not _transaction_root_is_owned(payload, quarantine, txid):
+        return False
+    try:
+        children = list(quarantine.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name == _TRANSACTION_OWNER_MARKER_FILENAME:
+            continue
+        _remove_existing_path(child)
+
+    try:
+        if (
+            not os.path.samestat(quarantine_identity, quarantine.lstat())
+            or not _transaction_root_is_owned(payload, quarantine, txid)
+        ):
+            return False
+        remaining = list(quarantine.iterdir())
+        if len(remaining) != 1 or remaining[0].name != _TRANSACTION_OWNER_MARKER_FILENAME:
+            return False
+        marker.unlink()
+        fsync_directory_best_effort(quarantine)
+        quarantine.rmdir()
+    except OSError:
+        return False
+    fsync_directory_best_effort(quarantine.parent)
+    return True
+
+
 def _remove_transaction_root_if_owned(
     payload: dict[str, Any],
     transaction_root: Path,
@@ -792,24 +861,15 @@ def _remove_transaction_root_if_owned(
     quarantine = _private_directory_quarantine_path(transaction_root)
     if not transaction_root.exists() and not transaction_root.is_symlink():
         try:
-            quarantined_identity = quarantine.lstat()
-        except OSError:
-            return False
-        if not _transaction_root_is_owned(payload, quarantine, txid):
-            return False
-        try:
-            if (
-                not os.path.samestat(quarantined_identity, quarantine.lstat())
-                or not _transaction_root_is_owned(payload, quarantine, txid)
-            ):
-                return False
+            quarantine.lstat()
         except OSError:
             return False
         # This is already the detached, deterministic quarantine left by an
         # interrupted cleanup. Deleting it in place avoids creating recursive
-        # ``.deleting`` names that a later generation could not rediscover.
-        _remove_existing_path(quarantine)
-        return True
+        # ``.deleting`` names that a later generation could not rediscover. The
+        # helper authenticates non-empty content and accepts an unauthenticated
+        # directory only when rmdir itself proves it is empty.
+        return _remove_owned_transaction_quarantine(payload, quarantine, txid)
     try:
         owned_identity = transaction_root.lstat()
     except OSError:
@@ -820,6 +880,11 @@ def _remove_transaction_root_if_owned(
         transaction_root,
         owned_identity,
         verify_quarantine=lambda quarantine: _transaction_root_is_owned(
+            payload,
+            quarantine,
+            txid,
+        ),
+        remove_quarantine=lambda quarantine: _remove_owned_transaction_quarantine(
             payload,
             quarantine,
             txid,
@@ -1573,14 +1638,7 @@ def run_pending_storage_migration(
                     "迁移事务目录的所有权标记在清理前发生变化，已停止迁移。",
                 )
         elif transaction_quarantine.exists() or transaction_quarantine.is_symlink():
-            if (
-                not transaction_checkpoint_bound
-                or not _transaction_root_is_owned(
-                    payload,
-                    transaction_quarantine,
-                    txid,
-                )
-            ):
+            if not transaction_checkpoint_bound:
                 return _finish_failure(
                     "transaction_ownership_changed",
                     "迁移事务隔离目录的所有权无法验证，已停止迁移。",
