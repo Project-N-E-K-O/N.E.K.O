@@ -39,6 +39,11 @@ _LOCAL_ROOT_TRANSFORM = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 _MAX_BONES_PER_FRAME = 64
 _MAX_EXPRESSIONS_PER_FRAME = 256
 
+# Upper bound on the enable broadcast. Browsers that miss it still recover via
+# the status sync their chat socket runs on connect, so failing fast here costs
+# nothing while keeping POST /api/vmc/enable responsive.
+_ENABLED_CALLBACK_TIMEOUT_SEC = 2.0
+
 _VRM_BONE_NAMES = (
     "hips", "spine", "chest", "upperChest", "neck", "head",
     "leftEye", "rightEye", "jaw",
@@ -311,7 +316,22 @@ class VmcSender:
         if callback is None:
             return
         try:
-            await callback(enabled)
+            # The callback fans out to every connected chat WebSocket. A single
+            # backpressured socket must not hang the control endpoint, and
+            # send_json() never completing is not an exception we could catch.
+            await asyncio.wait_for(
+                callback(enabled),
+                timeout=_ENABLED_CALLBACK_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            # Spelled via asyncio, not the builtin: the two are only aliases
+            # from 3.11 on, and on an older runtime the builtin would miss
+            # this entirely and fall through to the generic branch below.
+            logger.warning(
+                "VMC enabled-state callback timed out after %.1fs; "
+                "the sender stays enabled and browsers can still sync on connect",
+                _ENABLED_CALLBACK_TIMEOUT_SEC,
+            )
         except Exception as exc:
             logger.warning("VMC enabled-state callback failed: %s", exc)
 
@@ -345,6 +365,7 @@ class VmcSender:
                 self._send_terminal_state_to_client(prior)
                 self._close_specific_client(prior)
                 self._active_expression_names.clear()
+                self._reset_model_info_locked()
             self._client = replacement
 
     def _disable_client(self) -> None:
@@ -354,7 +375,18 @@ class VmcSender:
             if self._client is not None:
                 self._send_terminal_state_to_client(self._client)
             self._active_expression_names.clear()
+            self._reset_model_info_locked()
             self._close_client_locked()
+
+    def _reset_model_info_locked(self) -> None:
+        """Forget which model the retired client was told about.
+
+        ``/VMC/Ext/VRM`` is sent once per model, so a new receiver would never
+        learn the model name if the cache survived the endpoint swap. Callers
+        must already hold ``_send_lock``.
+        """
+        self._model_info = None
+        self._model_info_sent = False
 
     def set_publisher_generation(self, generation: int) -> None:
         """Bind subsequent frames to the currently authenticated publisher."""

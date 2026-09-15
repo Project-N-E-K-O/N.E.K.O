@@ -1251,6 +1251,95 @@ def test_model_info_ignores_malformed_payloads(model):
 
 
 @pytest.mark.unit
+def test_model_info_is_reannounced_after_endpoint_change():
+    """A retuned endpoint is a fresh receiver: it must be told the model again."""
+    sender, client = _enabled_sender()
+
+    frame = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    # Same model, new UDP client: the announcement cache belonged to the
+    # retired endpoint, so the replacement must not inherit it.
+    replacement = _RecordingOscClient()
+    sender._replace_client(replacement)
+
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in replacement.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_model_info_is_reannounced_after_disable_and_reenable():
+    """disable() ends the stream; the next receiver starts with no model context."""
+    sender, client = _enabled_sender()
+
+    frame = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    await sender.disable()
+    assert sender._model_info is None
+    assert sender._model_info_sent is False
+
+    reenabled = _RecordingOscClient()
+    sender._enabled = True
+    sender._client = reenabled
+    sender._min_interval = 0.0
+
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in reenabled.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_cannot_hang_the_control_endpoint(monkeypatch):
+    """A backpressured chat socket must not stall POST /api/vmc/enable.
+
+    ``_broadcast_to_all_connected`` gathers ``send_json()`` calls with no
+    per-socket timeout, so a stuck socket never raises — it simply never
+    returns. Only a bounded wait keeps the endpoint responsive.
+    """
+    monkeypatch.setattr(vmc_sender_module, "_ENABLED_CALLBACK_TIMEOUT_SEC", 0.05)
+
+    async def never_returns(_enabled: bool) -> None:
+        await asyncio.Event().wait()
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=never_returns)
+    sender._enabled = True
+
+    started = time.monotonic()
+    # Wrap the call itself: without the sender's own wait_for, this await never
+    # returns, and an unbounded test would hang the suite instead of failing.
+    # The outer budget is deliberately well above the 0.05s timeout under test
+    # so it only trips on a missing timeout, never on scheduling noise.
+    try:
+        await asyncio.wait_for(sender._notify_enabled_changed(True), timeout=5.0)
+    except asyncio.TimeoutError:
+        pytest.fail(
+            "_notify_enabled_changed() never returned: the enable broadcast has "
+            "no per-call timeout, so one backpressured socket stalls "
+            "POST /api/vmc/enable forever"
+        )
+    elapsed = time.monotonic() - started
+
+    # Bound the wait near the configured timeout, not merely "not forever":
+    # a 1.0s ceiling on a 0.05s timeout would still pass if the timeout were
+    # ignored and something else happened to unblock the await.
+    assert elapsed < 0.5, f"notification took {elapsed:.3f}s for a 0.05s timeout"
+    # The state enable() already committed survives a failed notification.
+    assert sender.enabled is True
+
+
+@pytest.mark.unit
 def test_expression_name_map_covers_vrm_presets():
     """VRM 1.0 preset names must reach receivers as VRM 0.x blendshape names."""
     sender, client = _enabled_sender()

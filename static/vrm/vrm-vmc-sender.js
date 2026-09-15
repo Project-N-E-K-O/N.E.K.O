@@ -45,6 +45,12 @@
     // The backend re-applies this cap at its trust boundary, so raising it there
     // alone changes nothing: frames are truncated here first, and silently.
     const MAX_EXPRESSIONS_PER_FRAME = 256;
+    // Slots held back for zero-value retirement frames while any expression is
+    // retiring. Without a reserved share, a model that fills the cap on its own
+    // would starve retirements forever and strand the previous model's weights
+    // in the receiver. Live expressions are resent in full every frame, so the
+    // ones displaced here reappear on the next frame that owes no retirements.
+    const RETIREMENT_QUOTA_PER_FRAME = 16;
     const CSRF_HEADER_NAME = 'X-CSRF-Token';
     // VMC owns its coordinate origin. vrm.scene is also moved/scaled/rotated
     // by webpage layout and drag controls, so it must never be used as the
@@ -653,10 +659,10 @@
 
         if (state.currentVrm !== vrm) {
             // Preserve old names only until one zero-value retirement frame is
-            // accepted. Current-model expressions are always queued first so
-            // MAX_EXPRESSIONS_PER_FRAME cannot starve them; retirements are the
-            // side that yields. Release chunks instead of truncating, so a
-            // model switch still zeroes everything eventually.
+            // accepted. Current-model expressions are queued first, but
+            // RETIREMENT_QUOTA_PER_FRAME keeps a share of each frame for the
+            // retiring side, so a model that fills the cap still lets the
+            // previous model's weights drain to zero.
             state.retiringExpressionNames = new Set([
                 ...state.retiringExpressionNames,
                 ...state.knownExpressionNames,
@@ -687,8 +693,24 @@
             }
         }
         state.exprBuf.length = 0;
+        // 新旧模型同名的表情无需退役：live 循环每帧全量驱动其值。但同名项
+        // 不会进入退役帧的 ack 清单，若不移出集合将永久滞留并虚占 liveCap
+        // 的预留配额。Set 迭代中删除当前项是安全的。
+        for (const name of state.retiringExpressionNames) {
+            if (state.knownExpressionNames.has(name)) {
+                state.retiringExpressionNames.delete(name);
+            }
+        }
+        // 存在待退役名时为退役侧预留每帧配额，防止挤满上限的模型把退役
+        // 饿死；预留量取 min(配额, 待退役数)，单个退役名不再挤掉整段配额。
+        // live 表情逐帧全量重发，被挤掉的会迟到若干帧（待退役名需
+        // ceil(数量/配额) 帧排空）而非丢失。
+        const liveCap = MAX_EXPRESSIONS_PER_FRAME - Math.min(
+            RETIREMENT_QUOTA_PER_FRAME,
+            state.retiringExpressionNames.size
+        );
         for (const name of state.knownExpressionNames) {
-            if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break;
+            if (state.exprBuf.length >= liveCap) break;
             state.exprBuf.push({
                 name,
                 value: currentExpressions.has(name) ? currentExpressions.get(name) : 0,
@@ -696,9 +718,9 @@
         }
         const retiringNamesInFrame = [];
         for (const name of state.retiringExpressionNames) {
-            // Retirements queue behind live expressions: a model at the cap
-            // cannot emit its zero frames, so those weights stay stuck in the
-            // receiver until the model is released.
+            // Retirements get the reserved tail of the frame. Names clear from
+            // the set once the backend acks them, so a batch that exceeds the
+            // quota drains over the next few frames rather than being dropped.
             if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break;
             if (state.knownExpressionNames.has(name)) continue;
             state.exprBuf.push({ name, value: 0 });
