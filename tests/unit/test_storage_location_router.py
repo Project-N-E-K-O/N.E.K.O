@@ -19,6 +19,7 @@ from utils import storage_location_bootstrap as storage_location_bootstrap_modul
 from utils.config_manager import ConfigManager
 from utils.storage_layout import resolve_storage_layout
 from utils.storage_migration import (
+    StorageMigrationError,
     create_pending_storage_migration,
     get_storage_migration_path,
     load_storage_migration,
@@ -1123,6 +1124,8 @@ def test_storage_location_select_different_path_requires_restart_without_committ
     assert payload["selected_root"] == str(target_root.resolve())
     assert payload["target_root"] == str(target_root.resolve())
     assert isinstance(payload["estimated_required_bytes"], int)
+    assert payload["estimated_required_bytes"] == 0
+    assert payload["estimated_required_bytes_available"] is False
     assert isinstance(payload["target_free_bytes"], int)
     assert payload["permission_ok"] is True
     assert payload["warning_codes"] == []
@@ -1151,7 +1154,97 @@ def test_storage_location_preflight_requires_safety_margin(tmp_path, monkeypatch
 
     assert payload["safety_margin_bytes"] == 64 * 1024 * 1024
     assert payload["estimated_required_with_margin_bytes"] == estimated_bytes + 64 * 1024 * 1024
+    assert payload["estimated_required_bytes_available"] is True
     assert payload["blocking_error_code"] == "insufficient_space"
+
+
+@pytest.mark.unit
+def test_storage_location_live_preflight_never_recursively_estimates_source(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    source_nested = config_manager.app_docs_dir / "config" / "nested"
+    source_nested.mkdir(parents=True)
+    (source_nested / "large.bin").write_bytes(b"payload")
+    target_root = tmp_path / "target" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    boundary_calls = []
+    real_iterdir = Path.iterdir
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "validate_storage_migration_preflight_boundaries",
+        lambda source, target: boundary_calls.append((source, target)),
+    )
+
+    def reject_source_traversal(path):
+        if path == config_manager.app_docs_dir or config_manager.app_docs_dir in path.parents:
+            pytest.fail("live preflight must not recursively traverse the source root")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", reject_source_traversal)
+
+    payload = storage_location_router_module._build_restart_preflight(
+        config_manager.app_docs_dir,
+        target_root,
+        config_manager=config_manager,
+    )
+
+    assert boundary_calls == [(config_manager.app_docs_dir, target_root.resolve())]
+    assert payload["estimated_required_bytes"] == 0
+    assert payload["estimated_required_bytes_available"] is False
+    assert payload["safety_margin_bytes"] == 0
+    assert payload["estimated_required_with_margin_bytes"] == 0
+
+
+@pytest.mark.unit
+def test_storage_location_preflight_boundary_error_skips_target_access(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "validate_storage_migration_preflight_boundaries",
+        lambda *_args: (_ for _ in ()).throw(
+            StorageMigrationError(
+                "nested_mount_unsupported",
+                "runtime entry contains nested mount",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        storage_location_router_module.shutil,
+        "disk_usage",
+        lambda *_args: pytest.fail("boundary failure must skip disk access"),
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_target_root_has_user_content",
+        lambda *_args: pytest.fail("boundary failure must skip target content access"),
+    )
+    monkeypatch.setattr(
+        Path,
+        "write_bytes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "boundary failure must skip the target write probe"
+        ),
+    )
+
+    payload = storage_location_router_module._build_restart_preflight(
+        config_manager.app_docs_dir,
+        target_root,
+        config_manager=config_manager,
+    )
+
+    assert payload["blocking_error_code"] == "nested_mount_unsupported"
+    assert payload["blocking_error_message"] == "runtime entry contains nested mount"
+    assert payload["estimated_required_bytes_available"] is False
+    assert payload["permission_ok"] is False
+    assert payload["disk_space_available"] is False
 
 
 @pytest.mark.unit

@@ -944,6 +944,7 @@
                 target_root: String(fallbackTargetPath || '').trim(),
                 restart_operation_id: '',
                 estimated_required_bytes: 0,
+                estimated_required_bytes_available: false,
                 target_free_bytes: 0,
                 permission_ok: true,
                 warning_codes: [],
@@ -959,6 +960,9 @@
             target_root: String(payload.target_root || payload.selected_root || fallbackTargetPath || '').trim(),
             restart_operation_id: String(payload.restart_operation_id || '').trim(),
             estimated_required_bytes: Number(payload.estimated_required_bytes || 0),
+            // Old backends supplied a real estimate without the availability
+            // flag, so only an explicit false means that the value is unknown.
+            estimated_required_bytes_available: payload.estimated_required_bytes_available !== false,
             target_free_bytes: Number(payload.target_free_bytes || 0),
             permission_ok: payload.permission_ok !== false,
             warning_codes: normalizeWarningCodes(payload.warning_codes),
@@ -1644,7 +1648,9 @@
             state.previewText.textContent = buildRestartPreviewReminder(preflight);
         }
         if (state.previewEstimated) {
-            state.previewEstimated.textContent = formatBytes(preflight.estimated_required_bytes);
+            state.previewEstimated.textContent = preflight.estimated_required_bytes_available === false
+                ? '—'
+                : formatBytes(preflight.estimated_required_bytes);
         }
         if (state.previewFreeSpace) {
             state.previewFreeSpace.textContent = formatBytes(preflight.target_free_bytes);

@@ -23,6 +23,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import sys
 import uuid
 from contextlib import suppress
@@ -201,10 +202,562 @@ def _persist_migration_payload(
     return save_storage_migration(config_manager, next_payload, anchor_root=anchor_root)
 
 
+def _opened_mount_identity(fd: int) -> tuple[str, int]:
+    """Return the mount containing an already-open POSIX entry.
+
+    Linux bind mounts deliberately keep the source device id, so ``st_dev``
+    alone cannot prove that a recursive operation stays on one mount.
+    """
+
+    metadata = os.fstat(fd)
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/self/fdinfo/{fd}", encoding="ascii") as fdinfo:
+                for line in fdinfo:
+                    field, separator, value = line.partition(":")
+                    if field == "mnt_id" and separator:
+                        return "linux-mnt-id", int(value.strip())
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise StorageMigrationError(
+                "mount_identity_unavailable",
+                "无法确认迁移路径的 Linux 挂载边界，已安全停止迁移。",
+            ) from exc
+        raise StorageMigrationError(
+            "mount_identity_unavailable",
+            "无法确认迁移路径的 Linux 挂载边界，已安全停止迁移。",
+        )
+    return "device", int(metadata.st_dev)
+
+
+def _ensure_opened_entry_on_mount(
+    fd: int,
+    expected_mount_identity: tuple[str, int],
+    path: Path | str,
+) -> None:
+    if _opened_mount_identity(fd) != expected_mount_identity:
+        raise StorageMigrationError(
+            "nested_mount_unsupported",
+            f"迁移路径包含嵌套挂载，已停止以避免访问或删除挂载外数据: {path}",
+        )
+
+
+def _decode_mount_path(value: str) -> str:
+    return re.sub(
+        r"\\([0-7]{3})",
+        lambda match: chr(int(match.group(1), 8)),
+        value,
+    )
+
+
+def _parse_macos_mount_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        source_and_mount = line.rsplit(" (", 1)[0]
+        _source, separator, mount_path = source_and_mount.partition(" on ")
+        if separator and mount_path:
+            paths.append(mount_path)
+    return paths
+
+
+def _normalize_mount_paths(raw_paths: list[str]) -> list[Path]:
+    return [
+        Path(os.path.abspath(_decode_mount_path(value)))
+        for value in raw_paths
+    ]
+
+
+def _mounted_paths() -> list[Path]:
+    """List current mount points without traversing potentially locked trees."""
+
+    raw_paths: list[str] = []
+    if sys.platform.startswith("linux"):
+        try:
+            lines = Path("/proc/self/mountinfo").read_text(
+                encoding="utf-8",
+                errors="strict",
+            ).splitlines()
+            raw_paths = [
+                fields[4]
+                for line in lines
+                if len(fields := line.split()) >= 5
+            ]
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise StorageMigrationError(
+                "mount_identity_unavailable",
+                "无法枚举 Linux 挂载边界，已安全停止迁移清理。",
+            ) from exc
+    elif sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/sbin/mount"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+            raw_paths = _parse_macos_mount_paths(result.stdout)
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise StorageMigrationError(
+                "mount_identity_unavailable",
+                "无法枚举 macOS 挂载边界，已安全停止迁移清理。",
+            ) from exc
+    else:
+        raise StorageMigrationError(
+            "mount_identity_unavailable",
+            "当前平台无法枚举迁移路径的挂载边界，已安全停止迁移清理。",
+        )
+    return _normalize_mount_paths(raw_paths)
+
+
+def _preflight_named_mounts_below(path: Path) -> None:
+    """Reject a nested mount before changing permissions or moving its parent."""
+
+    if os.name == "nt":
+        return
+    normalized_root = Path(os.path.abspath(path))
+    for mount_path in _mounted_paths():
+        try:
+            common = Path(os.path.commonpath((normalized_root, mount_path)))
+        except ValueError:
+            continue
+        if common == normalized_root and mount_path != normalized_root:
+            raise StorageMigrationError(
+                "nested_mount_unsupported",
+                f"迁移路径包含嵌套挂载，已停止以避免移动或删除挂载外数据: {mount_path}",
+            )
+
+
+def _open_verified_directory(path: Path) -> int:
+    before = path.lstat()
+    if _is_link_like_metadata(before) or not stat.S_ISDIR(before.st_mode):
+        raise StorageMigrationError(
+            "path_type_unsupported",
+            f"迁移目录不是可安全遍历的真实目录: {path}",
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(os.fspath(path), flags)
+    try:
+        opened = os.fstat(fd)
+        named = path.lstat()
+        if (
+            _is_link_like_metadata(opened)
+            or _is_link_like_metadata(named)
+            or not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or not os.path.samestat(before, opened)
+            or not os.path.samestat(opened, named)
+        ):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                f"迁移目录在安全检查期间被替换: {path}",
+            )
+        return fd
+    except BaseException:
+        with suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _ensure_directory_path_on_mount(
+    path: Path,
+    expected_mount_identity: tuple[str, int] | None,
+) -> None:
+    if expected_mount_identity is None or os.name == "nt":
+        return
+    fd = _open_verified_directory(path)
+    try:
+        _ensure_opened_entry_on_mount(fd, expected_mount_identity, path)
+    finally:
+        os.close(fd)
+
+
+def _preflight_opened_directory_tree_mounts(
+    path: Path,
+    *,
+    root_fd: int,
+    expected_mount_identity: tuple[str, int] | None = None,
+    expected_root_identity: os.stat_result | None = None,
+    make_traversable: bool = False,
+    retained_mode_handles: list[tuple[int, int]] | None = None,
+) -> tuple[str, int] | None:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    tree_mount_identity = expected_mount_identity or _opened_mount_identity(root_fd)
+    modified_modes: list[tuple[int, int]] = []
+
+    if expected_root_identity is not None and not os.path.samestat(
+        expected_root_identity,
+        os.fstat(root_fd),
+    ):
+        raise StorageMigrationError(
+            "migration_path_changed",
+            f"迁移目录在安全检查前被替换: {path}",
+        )
+
+    def _make_traversable(directory_fd: int) -> None:
+        mode = stat.S_IMODE(os.fstat(directory_fd).st_mode)
+        updated_mode = mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+        if updated_mode == mode:
+            return
+        restore_fd = os.dup(directory_fd)
+        try:
+            os.fchmod(directory_fd, updated_mode)
+        except BaseException:
+            os.close(restore_fd)
+            raise
+        modified_modes.append((restore_fd, mode))
+
+    def _open_child_directory(
+        directory_fd: int,
+        child_name: str,
+        before: os.stat_result,
+        child_display: Path,
+    ) -> int:
+        try:
+            return os.open(child_name, directory_flags, dir_fd=directory_fd)
+        except PermissionError:
+            if not make_traversable:
+                raise
+
+        # The system mount table was checked before cleanup permission repair.
+        # Recheck this exact inaccessible entry before chmod so a mount created
+        # after that snapshot is still refused rather than modified.
+        if sys.platform.startswith("linux"):
+            path_flag = getattr(os, "O_PATH", 0)
+            if not path_flag:
+                raise StorageMigrationError(
+                    "mount_identity_unavailable",
+                    f"无法安全检查不可访问的迁移目录: {child_display}",
+                )
+            probe_fd = os.open(
+                child_name,
+                path_flag | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                if not os.path.samestat(before, os.fstat(probe_fd)):
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        f"迁移目录在权限恢复前被替换: {child_display}",
+                    )
+                _ensure_opened_entry_on_mount(
+                    probe_fd,
+                    tree_mount_identity,
+                    child_display,
+                )
+            finally:
+                os.close(probe_fd)
+        elif tree_mount_identity != ("device", int(before.st_dev)):
+            raise StorageMigrationError(
+                "nested_mount_unsupported",
+                f"迁移路径包含嵌套挂载，拒绝修改其权限: {child_display}",
+            )
+
+        named = os.stat(
+            child_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _is_link_like_metadata(named)
+            or not stat.S_ISDIR(named.st_mode)
+            or not os.path.samestat(before, named)
+        ):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                f"迁移目录在权限恢复前被替换: {child_display}",
+            )
+        original_mode = stat.S_IMODE(named.st_mode)
+        updated_mode = original_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+        os.chmod(
+            child_name,
+            updated_mode,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        child_fd = -1
+        try:
+            child_fd = os.open(child_name, directory_flags, dir_fd=directory_fd)
+            if not os.path.samestat(before, os.fstat(child_fd)):
+                os.close(child_fd)
+                child_fd = -1
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移目录在权限恢复期间被替换: {child_display}",
+                )
+        except BaseException:
+            if child_fd >= 0:
+                os.close(child_fd)
+            current = os.stat(
+                child_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if os.path.samestat(before, current):
+                os.chmod(
+                    child_name,
+                    original_mode,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            raise
+        try:
+            restore_fd = os.dup(child_fd)
+        except BaseException:
+            os.fchmod(child_fd, original_mode)
+            os.close(child_fd)
+            raise
+        modified_modes.append((restore_fd, original_mode))
+        return child_fd
+
+    def _inspect(directory_fd: int, display_path: Path) -> None:
+        _ensure_opened_entry_on_mount(
+            directory_fd,
+            tree_mount_identity,
+            display_path,
+        )
+        if make_traversable:
+            _make_traversable(directory_fd)
+        with os.scandir(directory_fd) as children:
+            child_names = sorted(child.name for child in children)
+        for child_name in child_names:
+            child_display = display_path / child_name
+            before = os.stat(
+                child_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if _is_link_like_metadata(before):
+                continue
+            if stat.S_ISDIR(before.st_mode):
+                child_fd = _open_child_directory(
+                    directory_fd,
+                    child_name,
+                    before,
+                    child_display,
+                )
+                try:
+                    if not os.path.samestat(before, os.fstat(child_fd)):
+                        raise StorageMigrationError(
+                            "migration_path_changed",
+                            f"迁移目录在安全检查期间被替换: {child_display}",
+                        )
+                    _inspect(child_fd, child_display)
+                finally:
+                    os.close(child_fd)
+
+    try:
+        _inspect(root_fd, path)
+        if expected_root_identity is not None:
+            try:
+                named_root = path.lstat()
+            except OSError as exc:
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移目录在安全检查期间被替换: {path}",
+                ) from exc
+            if not os.path.samestat(expected_root_identity, named_root):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移目录在安全检查期间被替换: {path}",
+                )
+    except BaseException as exc:
+        restore_errors: list[OSError] = []
+        for restore_fd, original_mode in reversed(modified_modes):
+            try:
+                os.fchmod(restore_fd, original_mode)
+            except OSError as restore_exc:
+                restore_errors.append(restore_exc)
+            finally:
+                os.close(restore_fd)
+        if restore_errors:
+            raise StorageMigrationError(
+                "permission_restore_failed",
+                f"迁移预检失败后无法恢复事务目录权限: {path}",
+            ) from exc
+        raise
+    else:
+        if retained_mode_handles is None:
+            for restore_fd, _original_mode in modified_modes:
+                os.close(restore_fd)
+        else:
+            retained_mode_handles.extend(modified_modes)
+        return tree_mount_identity
+
+
+def _preflight_directory_tree_mounts(
+    path: Path,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+    expected_root_identity: os.stat_result | None = None,
+    make_traversable: bool = False,
+    retained_mode_handles: list[tuple[int, int]] | None = None,
+) -> tuple[str, int] | None:
+    """Inspect a complete tree without following links or crossing mounts."""
+
+    if os.name == "nt":
+        # Windows volume mount points and directory junctions are reparse
+        # points. The existing link-like checks reject them without relying on
+        # POSIX directory descriptors, which Python cannot portably open there.
+        return None
+
+    root_fd = _open_verified_directory(path)
+    try:
+        return _preflight_opened_directory_tree_mounts(
+            path,
+            root_fd=root_fd,
+            expected_mount_identity=expected_mount_identity,
+            expected_root_identity=expected_root_identity,
+            make_traversable=make_traversable,
+            retained_mode_handles=retained_mode_handles,
+        )
+    finally:
+        os.close(root_fd)
+
+
+def _close_mode_restore_handles(handles: list[tuple[int, int]]) -> None:
+    while handles:
+        restore_fd, _original_mode = handles.pop()
+        os.close(restore_fd)
+
+
+def _restore_directory_modes(handles: list[tuple[int, int]], path: Path) -> None:
+    restore_errors: list[OSError] = []
+    while handles:
+        restore_fd, original_mode = handles.pop()
+        try:
+            os.fchmod(restore_fd, original_mode)
+        except OSError as exc:
+            restore_errors.append(exc)
+        finally:
+            os.close(restore_fd)
+    if restore_errors:
+        raise StorageMigrationError(
+            "permission_restore_failed",
+            f"迁移清理失败后无法恢复事务目录权限: {path}",
+        )
+
+
+def _remove_posix_directory_children(
+    directory_fd: int,
+    *,
+    mount_identity: tuple[str, int],
+    display_path: Path,
+    preserve_names: frozenset[str] = frozenset(),
+) -> None:
+    """Delete children through one pinned directory without crossing mounts."""
+
+    _ensure_opened_entry_on_mount(directory_fd, mount_identity, display_path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    with os.scandir(directory_fd) as children:
+        child_names = sorted(child.name for child in children)
+    for child_name in child_names:
+        if child_name in preserve_names:
+            continue
+        child_display = display_path / child_name
+        before = os.stat(
+            child_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if stat.S_ISDIR(before.st_mode) and not _is_link_like_metadata(before):
+            child_fd = os.open(child_name, directory_flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child_fd)
+                if not os.path.samestat(before, opened):
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        f"迁移事务目录在清理期间被替换: {child_display}",
+                    )
+                _ensure_opened_entry_on_mount(
+                    child_fd,
+                    mount_identity,
+                    child_display,
+                )
+                _remove_posix_directory_children(
+                    child_fd,
+                    mount_identity=mount_identity,
+                    display_path=child_display,
+                )
+                named = os.stat(
+                    child_name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if not os.path.samestat(opened, named):
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        f"迁移事务目录在清理期间被替换: {child_display}",
+                    )
+            finally:
+                os.close(child_fd)
+            os.rmdir(child_name, dir_fd=directory_fd)
+        else:
+            os.unlink(child_name, dir_fd=directory_fd)
+
+
+def _remove_posix_directory_tree(path: Path) -> None:
+    """Remove one owned tree through pinned handles without crossing mounts."""
+
+    root_identity = path.lstat()
+    _preflight_named_mounts_below(path)
+    mount_identity = _runtime_root_mount_identity(path.parent)
+    if mount_identity is None:
+        raise StorageMigrationError(
+            "mount_identity_unavailable",
+            f"无法确认迁移事务目录所在的挂载边界: {path}",
+        )
+    # Complete preflight precedes the first unlink/rmdir. This both preserves
+    # all transaction evidence when a mount already exists and repairs only
+    # directories already proven to remain on the transaction mount.
+    mode_restore_handles: list[tuple[int, int]] = []
+    _preflight_directory_tree_mounts(
+        path,
+        expected_mount_identity=mount_identity,
+        expected_root_identity=root_identity,
+        make_traversable=True,
+        retained_mode_handles=mode_restore_handles,
+    )
+    try:
+        root_fd = _open_verified_directory(path)
+        try:
+            if not os.path.samestat(root_identity, os.fstat(root_fd)):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移事务目录在清理期间被替换: {path}",
+                )
+            _remove_posix_directory_children(
+                root_fd,
+                mount_identity=mount_identity,
+                display_path=path,
+            )
+            if not os.path.samestat(root_identity, path.lstat()):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移事务目录在清理期间被替换: {path}",
+                )
+        finally:
+            os.close(root_fd)
+        path.rmdir()
+    except BaseException as exc:
+        try:
+            _restore_directory_modes(mode_restore_handles, path)
+        except StorageMigrationError as restore_exc:
+            raise restore_exc from exc
+        raise
+    else:
+        _close_mode_restore_handles(mode_restore_handles)
+
+
 def _remove_existing_path(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
     if path.is_dir() and not path.is_symlink():
+        if os.name != "nt":
+            _remove_posix_directory_tree(path)
+            if path.exists() or path.is_symlink():
+                raise OSError(f"storage path cleanup did not remove {path}")
+            fsync_directory_best_effort(path.parent)
+            return
         removal_root = Path(path)
 
         def _make_owned_directory_traversable(candidate: Path) -> None:
@@ -445,21 +998,60 @@ def _remove_private_directory_via_quarantine(
     quarantine = _private_directory_quarantine_path(path)
     if quarantine.exists() or quarantine.is_symlink():
         return False
-    _durable_rename_without_replacing(path, quarantine)
     try:
-        quarantined_identity = quarantine.lstat()
-        valid = bool(os.path.samestat(expected_identity, quarantined_identity))
-        if valid and callable(verify_quarantine):
-            valid = bool(verify_quarantine(quarantine))
+        current_identity = path.lstat()
     except OSError:
-        valid = False
-    if not valid:
-        _restore_quarantined_directory(quarantine, path)
         return False
-    if callable(remove_quarantine):
-        return bool(remove_quarantine(quarantine))
-    _remove_existing_path(quarantine)
-    return True
+    if (
+        _is_link_like_metadata(current_identity)
+        or not stat.S_ISDIR(current_identity.st_mode)
+        or not os.path.samestat(expected_identity, current_identity)
+    ):
+        return False
+    mode_restore_handles: list[tuple[int, int]] = []
+    if os.name != "nt":
+        _preflight_named_mounts_below(path)
+        parent_mount_identity = _runtime_root_mount_identity(path.parent)
+        if parent_mount_identity is None:
+            return False
+        _preflight_directory_tree_mounts(
+            path,
+            expected_mount_identity=parent_mount_identity,
+            expected_root_identity=expected_identity,
+            make_traversable=True,
+            retained_mode_handles=mode_restore_handles,
+        )
+    try:
+        if not os.path.samestat(expected_identity, path.lstat()):
+            _restore_directory_modes(mode_restore_handles, path)
+            return False
+        _durable_rename_without_replacing(path, quarantine)
+        try:
+            quarantined_identity = quarantine.lstat()
+            valid = bool(os.path.samestat(expected_identity, quarantined_identity))
+            if valid and callable(verify_quarantine):
+                valid = bool(verify_quarantine(quarantine))
+        except OSError:
+            valid = False
+        if not valid:
+            _restore_quarantined_directory(quarantine, path)
+            removed = False
+        elif callable(remove_quarantine):
+            removed = bool(remove_quarantine(quarantine))
+        else:
+            _remove_existing_path(quarantine)
+            removed = True
+    except BaseException as exc:
+        try:
+            _restore_directory_modes(mode_restore_handles, path)
+        except StorageMigrationError as restore_exc:
+            raise restore_exc from exc
+        raise
+    if removed:
+        _close_mode_restore_handles(mode_restore_handles)
+    else:
+        _restore_directory_modes(mode_restore_handles, path)
+    return removed
 
 
 def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
@@ -906,7 +1498,11 @@ def _read_json_from_verified_regular_file(path: Path) -> Any:
                 os.close(fd)
 
 
-def _hash_file(path: Path) -> tuple[int, str]:
+def _hash_file(
+    path: Path,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> tuple[int, str]:
     source_fd = -1
     try:
         try:
@@ -918,6 +1514,12 @@ def _hash_file(path: Path) -> tuple[int, str]:
                 "source_changed_during_migration",
                 f"迁移校验文件无法安全打开: {path}: {exc}",
             ) from exc
+        if expected_mount_identity is not None and os.name != "nt":
+            _ensure_opened_entry_on_mount(
+                source_fd,
+                expected_mount_identity,
+                path,
+            )
 
         digest = hashlib.sha256()
         total_bytes = 0
@@ -953,7 +1555,11 @@ def _hash_file(path: Path) -> tuple[int, str]:
                 os.close(source_fd)
 
 
-def _snapshot_path(path: Path) -> dict[str, int | str]:
+def _snapshot_path(
+    path: Path,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> dict[str, int | str]:
     if path_chain_has_symlink(path):
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接路径: {path}")
     if not path.exists():
@@ -963,7 +1569,13 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
     if path.is_symlink():
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {path}")
     if path.is_file():
-        total_bytes, digest = _hash_file(path)
+        if expected_mount_identity is None:
+            total_bytes, digest = _hash_file(path)
+        else:
+            total_bytes, digest = _hash_file(
+                path,
+                expected_mount_identity=expected_mount_identity,
+            )
         return {
             "kind": "file",
             "file_count": 1,
@@ -973,10 +1585,18 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
     if not path.is_dir():
         raise StorageMigrationError("path_type_unsupported", f"迁移校验不支持该文件类型: {path}")
 
+    tree_mount_identity = _preflight_directory_tree_mounts(
+        path,
+        expected_mount_identity=expected_mount_identity,
+    )
     total_bytes = 0
     file_count = 0
     manifest_digest = hashlib.sha256()
     for current_root, dirnames, filenames in os.walk(path):
+        _ensure_directory_path_on_mount(
+            Path(current_root),
+            tree_mount_identity,
+        )
         dirnames.sort()
         filenames.sort()
         relative_root = Path(current_root).relative_to(path)
@@ -987,6 +1607,10 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
                     "path_symlink_unsupported",
                     f"迁移校验不支持符号链接: {current_dir}",
                 )
+            _ensure_directory_path_on_mount(
+                current_dir,
+                tree_mount_identity,
+            )
             manifest_digest.update(
                 b"D\0" + (relative_root / dirname).as_posix().encode("utf-8") + b"\0"
             )
@@ -999,7 +1623,10 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
                     "path_type_unsupported",
                     f"迁移校验不支持该文件类型: {current_file}",
                 )
-            file_bytes, file_digest = _hash_file(current_file)
+            file_bytes, file_digest = _hash_file(
+                current_file,
+                expected_mount_identity=tree_mount_identity,
+            )
             relative_file = (relative_root / filename).as_posix()
             manifest_digest.update(
                 b"F\0"
@@ -1034,13 +1661,100 @@ def _checked_migration_entry_path(
         ) from exc
 
 
+def validate_storage_migration_preflight_boundaries(
+    source_root: Path | str,
+    target_root: Path | str,
+) -> None:
+    """Reject unsafe runtime-entry boundaries without traversing their trees.
+
+    Live preflight must not enter a nested mount before it has written a
+    recovery checkpoint. Enumerate the POSIX mount table once, then compare
+    names lexically so a stalled child mount can be rejected without touching
+    it. Mounts elsewhere below either root are intentionally allowed because
+    migration never reads or writes those unrelated paths.
+
+    The canonical runtime-entry check remains the cross-platform boundary for
+    symlinks and Windows reparse points. It runs only after the mount-table
+    check so POSIX never has to inspect a known nested mount first.
+    """
+
+    roots = tuple(
+        Path(os.path.abspath(os.fspath(Path(root).expanduser())))
+        for root in (source_root, target_root)
+    )
+    entry_paths_by_root = tuple(
+        (
+            root,
+            tuple(root / entry.relative_path for entry in RUNTIME_STORAGE_ENTRIES),
+        )
+        for root in roots
+    )
+
+    if os.name != "nt":
+        mounted_paths = _mounted_paths()
+        for root, entry_paths in entry_paths_by_root:
+            for mount_path in mounted_paths:
+                if mount_path == root:
+                    # The selected storage root may itself be an external
+                    # volume. Only mounts nested below that root are unsafe.
+                    continue
+                try:
+                    mount_path.relative_to(root)
+                except ValueError:
+                    continue
+                for entry_path in entry_paths:
+                    try:
+                        mount_path.relative_to(entry_path)
+                        intersects_entry = True
+                    except ValueError:
+                        try:
+                            entry_path.relative_to(mount_path)
+                            intersects_entry = True
+                        except ValueError:
+                            intersects_entry = False
+                    if intersects_entry:
+                        raise StorageMigrationError(
+                            "nested_mount_unsupported",
+                            "迁移运行时条目路径包含嵌套挂载，"
+                            f"已停止以避免访问挂载外数据: {mount_path}",
+                        )
+
+    for root, _entry_paths in entry_paths_by_root:
+        for entry in RUNTIME_STORAGE_ENTRIES:
+            _checked_migration_entry_path(root, entry)
+
+
 def _snapshot_runtime_entries(root: Path) -> dict[str, dict[str, int | str]]:
     snapshots: dict[str, dict[str, int | str]] = {}
+    expected_mount_identity = _runtime_root_mount_identity(root)
     for entry in RUNTIME_STORAGE_ENTRIES:
         entry_path = _checked_migration_entry_path(root, entry)
         if entry_path.exists() or entry_path.is_symlink():
-            snapshots[entry.relative_path] = _snapshot_path(entry_path)
+            snapshots[entry.relative_path] = _snapshot_path(
+                entry_path,
+                expected_mount_identity=expected_mount_identity,
+            )
     return snapshots
+
+
+def _runtime_root_mount_identity(root: Path) -> tuple[str, int] | None:
+    if os.name == "nt" or not root.exists():
+        return None
+    root_fd = _open_verified_directory(root)
+    try:
+        return _opened_mount_identity(root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _snapshot_path_within_root(
+    root: Path,
+    path: Path,
+) -> dict[str, int | str]:
+    return _snapshot_path(
+        path,
+        expected_mount_identity=_runtime_root_mount_identity(root),
+    )
 
 
 def _validate_txid(value: Any) -> str:
@@ -1101,6 +1815,83 @@ def _transaction_owner_token(payload: dict[str, Any]) -> str:
     return token if re.fullmatch(r"[0-9a-f]{64}", token) else ""
 
 
+def _transaction_marker_payload_is_owned(
+    marker_payload: Any,
+    *,
+    owner_token: str,
+    txid: str,
+) -> bool:
+    return bool(
+        isinstance(marker_payload, dict)
+        and marker_payload.get("version") == _TRANSACTION_OWNER_MARKER_VERSION
+        and str(marker_payload.get("txid") or "").strip().lower() == txid
+        and secrets.compare_digest(
+            str(marker_payload.get("owner_token") or "").strip().lower(),
+            owner_token,
+        )
+    )
+
+
+def _transaction_directory_fd_is_owned(
+    payload: dict[str, Any],
+    directory_fd: int,
+    txid: str,
+) -> bool:
+    """Authenticate the owner marker relative to one pinned POSIX root."""
+
+    owner_token = _transaction_owner_token(payload)
+    if not owner_token:
+        return False
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    marker_fd = -1
+    try:
+        before = os.stat(
+            _TRANSACTION_OWNER_MARKER_FILENAME,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if _is_link_like_metadata(before) or not stat.S_ISREG(before.st_mode):
+            return False
+        marker_fd = os.open(
+            _TRANSACTION_OWNER_MARKER_FILENAME,
+            flags,
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(marker_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(before, opened)
+            or int(opened.st_size) > 4096
+        ):
+            return False
+        raw = os.read(marker_fd, 4097)
+        after = os.fstat(marker_fd)
+        named = os.stat(
+            _TRANSACTION_OWNER_MARKER_FILENAME,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            len(raw) > 4096
+            or not os.path.samestat(opened, after)
+            or not os.path.samestat(after, named)
+            or int(after.st_size) != len(raw)
+        ):
+            return False
+        marker_payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    finally:
+        if marker_fd >= 0:
+            with suppress(OSError):
+                os.close(marker_fd)
+    return _transaction_marker_payload_is_owned(
+        marker_payload,
+        owner_token=owner_token,
+        txid=txid,
+    )
+
+
 def _transaction_root_is_owned(
     payload: dict[str, Any],
     transaction_root: Path,
@@ -1134,14 +1925,10 @@ def _transaction_root_is_owned(
         if fd >= 0:
             with suppress(OSError):
                 os.close(fd)
-    return bool(
-        isinstance(marker_payload, dict)
-        and marker_payload.get("version") == _TRANSACTION_OWNER_MARKER_VERSION
-        and str(marker_payload.get("txid") or "").strip().lower() == txid
-        and secrets.compare_digest(
-            str(marker_payload.get("owner_token") or "").strip().lower(),
-            owner_token,
-        )
+    return _transaction_marker_payload_is_owned(
+        marker_payload,
+        owner_token=owner_token,
+        txid=txid,
     )
 
 
@@ -1224,6 +2011,99 @@ def _write_transaction_owner_marker(
     fsync_directory_best_effort(transaction_root)
 
 
+def _remove_owned_transaction_quarantine_posix(
+    payload: dict[str, Any],
+    quarantine: Path,
+    txid: str,
+    quarantine_identity: os.stat_result,
+) -> bool:
+    """Keep one authenticated root fd pinned through marker-last deletion."""
+
+    _preflight_named_mounts_below(quarantine)
+    parent_mount_identity = _runtime_root_mount_identity(quarantine.parent)
+    if parent_mount_identity is None:
+        return False
+    mode_restore_handles: list[tuple[int, int]] = []
+    _preflight_directory_tree_mounts(
+        quarantine,
+        expected_mount_identity=parent_mount_identity,
+        expected_root_identity=quarantine_identity,
+        make_traversable=True,
+        retained_mode_handles=mode_restore_handles,
+    )
+
+    removed = False
+    parent_fd = -1
+    root_fd = -1
+    try:
+        parent_fd = _open_verified_directory(quarantine.parent)
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        root_fd = os.open(quarantine.name, directory_flags, dir_fd=parent_fd)
+        opened_root = os.fstat(root_fd)
+        if (
+            not os.path.samestat(quarantine_identity, opened_root)
+            or _opened_mount_identity(parent_fd) != parent_mount_identity
+        ):
+            return False
+        _ensure_opened_entry_on_mount(
+            root_fd,
+            parent_mount_identity,
+            quarantine,
+        )
+        if not _transaction_directory_fd_is_owned(payload, root_fd, txid):
+            return False
+
+        _remove_posix_directory_children(
+            root_fd,
+            mount_identity=parent_mount_identity,
+            display_path=quarantine,
+            preserve_names=frozenset({_TRANSACTION_OWNER_MARKER_FILENAME}),
+        )
+        if (
+            not os.path.samestat(quarantine_identity, os.fstat(root_fd))
+            or not _transaction_directory_fd_is_owned(payload, root_fd, txid)
+        ):
+            return False
+        with os.scandir(root_fd) as remaining_children:
+            remaining = [child.name for child in remaining_children]
+        if remaining != [_TRANSACTION_OWNER_MARKER_FILENAME]:
+            return False
+        named_root = os.stat(
+            quarantine.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if not os.path.samestat(opened_root, named_root):
+            return False
+
+        os.unlink(_TRANSACTION_OWNER_MARKER_FILENAME, dir_fd=root_fd)
+        os.fsync(root_fd)
+        named_root = os.stat(
+            quarantine.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        if not os.path.samestat(opened_root, named_root):
+            return False
+        os.rmdir(quarantine.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        removed = True
+        return True
+    except OSError:
+        return False
+    finally:
+        if root_fd >= 0:
+            with suppress(OSError):
+                os.close(root_fd)
+        if parent_fd >= 0:
+            with suppress(OSError):
+                os.close(parent_fd)
+        if removed:
+            _close_mode_restore_handles(mode_restore_handles)
+        else:
+            _restore_directory_modes(mode_restore_handles, quarantine)
+
+
 def _remove_owned_transaction_quarantine(
     payload: dict[str, Any],
     quarantine: Path,
@@ -1263,6 +2143,13 @@ def _remove_owned_transaction_quarantine(
 
     if not _transaction_root_is_owned(payload, quarantine, txid):
         return False
+    if os.name != "nt":
+        return _remove_owned_transaction_quarantine_posix(
+            payload,
+            quarantine,
+            txid,
+            quarantine_identity,
+        )
     try:
         children = list(quarantine.iterdir())
     except OSError:
@@ -1270,7 +2157,17 @@ def _remove_owned_transaction_quarantine(
     for child in children:
         if child.name == _TRANSACTION_OWNER_MARKER_FILENAME:
             continue
+        if (
+            not os.path.samestat(quarantine_identity, quarantine.lstat())
+            or not _transaction_root_is_owned(payload, quarantine, txid)
+        ):
+            return False
         _remove_existing_path(child)
+        if (
+            not os.path.samestat(quarantine_identity, quarantine.lstat())
+            or not _transaction_root_is_owned(payload, quarantine, txid)
+        ):
+            return False
 
     try:
         if (
@@ -1380,9 +2277,9 @@ def _rollback_published_entries(
                     stat.S_ISREG(target_metadata.st_mode)
                     and stat.S_ISREG(staged_metadata.st_mode)
                     and os.path.samestat(target_metadata, staged_metadata)
-                    and _snapshot_path(target_path)
+                    and _snapshot_path_within_root(target_root, target_path)
                     == publish_entry_snapshots[relative_path]
-                    and _snapshot_path(staged_path)
+                    and _snapshot_path_within_root(transaction_root, staged_path)
                     == publish_entry_snapshots[relative_path]
                 )
             except OSError:
@@ -1393,7 +2290,10 @@ def _rollback_published_entries(
                 staged_exists = False
         if relative_path in original_entries:
             if backup_path.exists() or backup_path.is_symlink():
-                if _snapshot_path(backup_path) != target_baseline[relative_path]:
+                if (
+                    _snapshot_path_within_root(transaction_root, backup_path)
+                    != target_baseline[relative_path]
+                ):
                     raise StorageMigrationError(
                         "rollback_backup_mismatch",
                         f"迁移回滚备份与目标基线不一致，已保留事务目录: {relative_path}",
@@ -1404,7 +2304,10 @@ def _rollback_published_entries(
                             "rollback_target_changed",
                             f"迁移发布中断窗口出现未记录的目标数据，无法安全回滚: {relative_path}",
                         )
-                    if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                    if (
+                        _snapshot_path_within_root(transaction_root, staged_path)
+                        != publish_entry_snapshots[relative_path]
+                    ):
                         raise StorageMigrationError(
                             "rollback_target_changed",
                             f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
@@ -1412,7 +2315,7 @@ def _rollback_published_entries(
                 else:
                     if (
                         not target_exists
-                        or _snapshot_path(target_path)
+                        or _snapshot_path_within_root(target_root, target_path)
                         != publish_entry_snapshots[relative_path]
                     ):
                         raise StorageMigrationError(
@@ -1421,14 +2324,20 @@ def _rollback_published_entries(
                         )
                     staged_path.parent.mkdir(parents=True, exist_ok=True)
                     _durable_publish_without_replacing(target_path, staged_path)
-                    if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                    if (
+                        _snapshot_path_within_root(transaction_root, staged_path)
+                        != publish_entry_snapshots[relative_path]
+                    ):
                         raise StorageMigrationError(
                             "rollback_target_changed",
                             f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
                         )
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 _durable_publish_without_replacing(backup_path, target_path)
-            elif _snapshot_path(target_path) != target_baseline[relative_path]:
+            elif (
+                _snapshot_path_within_root(target_root, target_path)
+                != target_baseline[relative_path]
+            ):
                 # A prior rollback attempt may already have restored this entry
                 # and then crashed before deleting the transaction directory. A
                 # missing backup is only safe in that idempotent, baseline-equal
@@ -1443,7 +2352,10 @@ def _rollback_published_entries(
                     "rollback_target_changed",
                     f"迁移发布前目标位置出现了未记录的数据，无法安全回滚: {relative_path}",
                 )
-            if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+            if (
+                _snapshot_path_within_root(transaction_root, staged_path)
+                != publish_entry_snapshots[relative_path]
+            ):
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
@@ -1453,14 +2365,20 @@ def _rollback_published_entries(
             # instead of deleting it in place. Both the pre- and post-move
             # snapshots are required so a replacement race is preserved as
             # recovery evidence rather than recursively erased.
-            if _snapshot_path(target_path) != publish_entry_snapshots[relative_path]:
+            if (
+                _snapshot_path_within_root(target_root, target_path)
+                != publish_entry_snapshots[relative_path]
+            ):
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移已发布数据被并发改写，无法安全删除: {relative_path}",
                 )
             staged_path.parent.mkdir(parents=True, exist_ok=True)
             _durable_publish_without_replacing(target_path, staged_path)
-            if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+            if (
+                _snapshot_path_within_root(transaction_root, staged_path)
+                != publish_entry_snapshots[relative_path]
+            ):
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
@@ -1656,13 +2574,21 @@ def build_pending_storage_migration_payload(
     txid: str | None = None,
 ) -> dict[str, Any]:
     timestamp = _utc_now_iso()
+    normalized_source_root = normalize_runtime_root(source_root)
     normalized_target_root = normalize_runtime_root(target_root)
+    # This builder is also used outside the HTTP router.  Keep checkpoint
+    # creation itself from entering a known nested mount so every caller gets
+    # the same pre-shutdown safety boundary.
+    validate_storage_migration_preflight_boundaries(
+        normalized_source_root,
+        normalized_target_root,
+    )
     return {
         "version": STORAGE_MIGRATION_VERSION,
         "txid": str(txid or uuid.uuid4().hex),
         "transaction_owner_token": secrets.token_hex(32),
         "status": STORAGE_MIGRATION_STATUS_PENDING,
-        "source_root": str(normalize_runtime_root(source_root)),
+        "source_root": str(normalized_source_root),
         "target_root": str(normalized_target_root),
         "selection_source": _normalize_selection_source(selection_source),
         # Migration behavior is server-owned.  ``selection_source`` remains
@@ -2033,6 +2959,20 @@ def run_pending_storage_migration(
         if not source_root.exists() or not source_root.is_dir():
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
+        # The desktop preflight is advisory and a mount can appear after it.
+        # Re-run the non-traversing boundary check in the packaged launcher
+        # before any source/target snapshot can enter a nested filesystem.  A
+        # publish-stage failure must preserve the transaction for recovery
+        # rather than attempting a rollback through the same unsafe boundary.
+        try:
+            validate_storage_migration_preflight_boundaries(source_root, target_root)
+        except StorageMigrationError as boundary_exc:
+            return _finish_failure(
+                boundary_exc.error_code,
+                boundary_exc.message,
+                rollback_required=publish_started,
+            )
+
         transaction_quarantine = _private_directory_quarantine_path(transaction_root)
         if transaction_root.is_symlink():
             return _finish_failure(
@@ -2054,6 +2994,15 @@ def run_pending_storage_migration(
                     rollback_required=publish_started,
                 )
             if publish_started:
+                if os.name != "nt":
+                    try:
+                        _preflight_named_mounts_below(transaction_root)
+                    except StorageMigrationError as boundary_exc:
+                        return _finish_failure(
+                            boundary_exc.error_code,
+                            boundary_exc.message,
+                            rollback_required=True,
+                        )
                 if target_baseline is None:
                     return _finish_failure(
                         "rollback_baseline_missing",
@@ -2170,7 +3119,10 @@ def run_pending_storage_migration(
 
         existing_entries = _iter_existing_runtime_entries(source_root)
         source_snapshots: dict[str, dict[str, int | str]] = {
-            entry_name: _snapshot_path(_checked_migration_entry_path(source_root, entry_name))
+            entry_name: _snapshot_path_within_root(
+                source_root,
+                _checked_migration_entry_path(source_root, entry_name),
+            )
             for entry_name in existing_entries
         }
         source_runtime_baseline = dict(source_snapshots)
@@ -2235,14 +3187,21 @@ def run_pending_storage_migration(
             source_entry = _checked_migration_entry_path(source_root, entry_name)
             staged_entry = _checked_migration_entry_path(staged_root, entry_name)
             source_snapshot_before = source_snapshots[entry_name]
+            _snapshot_path_within_root(source_root, source_entry)
             _copy_runtime_entry(source_entry, staged_entry)
-            source_snapshot_after = _snapshot_path(source_entry)
+            source_snapshot_after = _snapshot_path_within_root(
+                source_root,
+                source_entry,
+            )
             if source_snapshot_after != source_snapshot_before:
                 raise StorageMigrationError(
                     "source_changed_during_migration",
                     f"迁移期间源数据发生变化，已停止迁移: {entry_name}",
                 )
-            staged_snapshot = _snapshot_path(staged_entry)
+            staged_snapshot = _snapshot_path_within_root(
+                transaction_root,
+                staged_entry,
+            )
             if staged_snapshot != source_snapshot_before:
                 raise StorageMigrationError(
                     "verification_failed",
@@ -2256,8 +3215,9 @@ def run_pending_storage_migration(
             target_root=target_root,
         )
         if "config" in source_snapshots:
-            source_snapshots["config"] = _snapshot_path(
-                _checked_migration_entry_path(staged_root, "config")
+            source_snapshots["config"] = _snapshot_path_within_root(
+                transaction_root,
+                _checked_migration_entry_path(staged_root, "config"),
             )
         # Flush the complete staging tree once so durability is requested from
         # each copied leaf through nested runtime parents and the staging root
@@ -2314,7 +3274,8 @@ def run_pending_storage_migration(
             else:
                 target_unchanged = bool(
                     target_exists
-                    and _snapshot_path(target_entry) == expected_target_snapshot
+                    and _snapshot_path_within_root(target_root, target_entry)
+                    == expected_target_snapshot
                 )
             if not target_unchanged:
                 raise StorageMigrationError(
@@ -2328,7 +3289,10 @@ def run_pending_storage_migration(
                 backup_entry.parent.mkdir(parents=True, exist_ok=True)
                 fsync_directory_best_effort(backup_entry.parent.parent)
                 _durable_replace(target_entry, backup_entry)
-                if _snapshot_path(backup_entry) != expected_target_snapshot:
+                if (
+                    _snapshot_path_within_root(transaction_root, backup_entry)
+                    != expected_target_snapshot
+                ):
                     raise StorageMigrationError(
                         "target_changed_during_publish",
                         f"目标路径在备份切换窗口发生了变化，已保留事务证据: {entry_name}",
@@ -2348,8 +3312,9 @@ def run_pending_storage_migration(
                 raise
 
         for entry_name, expected_snapshot in source_snapshots.items():
-            actual_snapshot = _snapshot_path(
-                _checked_migration_entry_path(target_root, entry_name)
+            actual_snapshot = _snapshot_path_within_root(
+                target_root,
+                _checked_migration_entry_path(target_root, entry_name),
             )
             if actual_snapshot != expected_snapshot:
                 logger.warning(

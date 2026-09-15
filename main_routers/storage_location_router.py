@@ -79,7 +79,7 @@ from utils.storage.community_private_state import (
     snapshot_retained_community_state,
 )
 from utils.storage_migration import (
-    MIGRATED_RUNTIME_ENTRY_NAMES,
+    StorageMigrationError,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
@@ -90,6 +90,7 @@ from utils.storage_migration import (
     load_storage_migration,
     save_storage_migration,
     storage_migration_retains_recovery_evidence,
+    validate_storage_migration_preflight_boundaries,
 )
 from utils.storage_policy import (
     StoragePolicyError,
@@ -724,6 +725,7 @@ def _build_same_root_restart_offer(current_root: Path) -> dict[str, Any]:
         "restart_mode": "rebind_only",
         "target_root": str(current_root),
         "estimated_required_bytes": 0,
+        "estimated_required_bytes_available": True,
         "safety_margin_bytes": 0,
         "estimated_required_with_margin_bytes": 0,
         "target_free_bytes": 0,
@@ -856,46 +858,6 @@ async def _schedule_same_root_storage_restart(
     }
 
 
-def _safe_path_size(path: Path) -> int:
-    try:
-        if path.is_symlink():
-            return 0
-        if path.is_file():
-            return int(path.stat().st_size)
-        if not path.is_dir():
-            return 0
-    except OSError:
-        return 0
-
-    total = 0
-    stack = [path]
-    while stack:
-        current = stack.pop()
-        try:
-            children = list(current.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            try:
-                if child.is_symlink():
-                    continue
-                if child.is_dir():
-                    stack.append(child)
-                    continue
-                if child.is_file():
-                    total += int(child.stat().st_size)
-            except OSError:
-                continue
-    return total
-
-
-def _estimate_runtime_payload_bytes(source_root: Path) -> int:
-    total = 0
-    for name in MIGRATED_RUNTIME_ENTRY_NAMES:
-        total += _safe_path_size(source_root / name)
-    return total
-
-
 def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
     try:
         from utils.cloudsave_runtime import runtime_root_has_user_content
@@ -982,10 +944,43 @@ def _build_restart_preflight(
     config_manager=None,
     estimated_required_bytes: int | None = None,
     allow_existing_target_content: bool = False,
+    migration_required: bool = True,
 ) -> dict[str, Any]:
     target_root = normalize_runtime_root(target_root)
+    estimated_required_bytes_available = estimated_required_bytes is not None
     if estimated_required_bytes is None:
-        estimated_required_bytes = _estimate_runtime_payload_bytes(current_root)
+        # Exact source snapshots and the authoritative space gate run in the
+        # launcher after the pending checkpoint is durable. A live request must
+        # not recursively walk user data before that recovery boundary exists.
+        estimated_required_bytes = 0
+    safety_margin_bytes = (
+        max(64 * 1024 * 1024, int(estimated_required_bytes * 0.05))
+        if estimated_required_bytes > 0
+        else 0
+    )
+    estimated_required_with_margin_bytes = estimated_required_bytes + safety_margin_bytes
+
+    if migration_required:
+        try:
+            validate_storage_migration_preflight_boundaries(current_root, target_root)
+        except StorageMigrationError as exc:
+            return {
+                "target_root": str(target_root),
+                "estimated_required_bytes": estimated_required_bytes,
+                "estimated_required_bytes_available": estimated_required_bytes_available,
+                "safety_margin_bytes": safety_margin_bytes,
+                "estimated_required_with_margin_bytes": estimated_required_with_margin_bytes,
+                "target_free_bytes": 0,
+                "disk_space_available": False,
+                "permission_ok": False,
+                "warning_codes": [],
+                "target_has_existing_content": False,
+                "requires_existing_target_confirmation": False,
+                "existing_target_confirmation_message": "",
+                "blocking_error_code": exc.error_code,
+                "blocking_error_message": exc.message,
+            }
+
     existing_anchor = _find_existing_ancestor(target_root)
 
     target_free_bytes = 0
@@ -1009,14 +1004,9 @@ def _build_restart_preflight(
         with suppress(OSError):
             permission_probe_path.unlink()
 
-    safety_margin_bytes = (
-        max(64 * 1024 * 1024, int(estimated_required_bytes * 0.05))
-        if estimated_required_bytes > 0
-        else 0
-    )
-    estimated_required_with_margin_bytes = estimated_required_bytes + safety_margin_bytes
     target_has_existing_content = bool(
         config_manager is not None
+        and not allow_existing_target_content
         and _target_root_has_user_content(target_root, config_manager)
     )
     requires_existing_target_confirmation = bool(
@@ -1042,6 +1032,7 @@ def _build_restart_preflight(
     return {
         "target_root": str(target_root),
         "estimated_required_bytes": estimated_required_bytes,
+        "estimated_required_bytes_available": estimated_required_bytes_available,
         "safety_margin_bytes": safety_margin_bytes,
         "estimated_required_with_margin_bytes": estimated_required_with_margin_bytes,
         "target_free_bytes": target_free_bytes,
@@ -2771,6 +2762,7 @@ async def _post_storage_location_select_locked(
                 config_manager=config_manager,
                 estimated_required_bytes=0,
                 allow_existing_target_content=True,
+                migration_required=False,
             )
         )
         return {
@@ -3146,6 +3138,7 @@ async def _post_storage_location_restart_locked(
                 config_manager=config_manager,
                 estimated_required_bytes=0,
                 allow_existing_target_content=True,
+                migration_required=False,
             )
         )
         if restart_preflight["blocking_error_code"]:

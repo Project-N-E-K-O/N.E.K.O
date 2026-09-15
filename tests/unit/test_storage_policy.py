@@ -174,6 +174,64 @@ def test_load_storage_policy_never_follows_the_policy_file(tmp_path):
 
 
 @pytest.mark.unit
+def test_fixed_anchor_json_rejects_oversized_stable_handle_before_read(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor"
+    policy_path = anchor_root / "state" / "oversized.json"
+    policy_path.parent.mkdir(parents=True)
+    with policy_path.open("wb") as handle:
+        handle.truncate(storage_policy_module._FIXED_ANCHOR_JSON_MAX_BYTES + 1)
+
+    if os.name == "nt":
+        import ctypes
+
+        monkeypatch.setattr(
+            ctypes,
+            "create_string_buffer",
+            lambda *_args, **_kwargs: pytest.fail(
+                "oversized fixed-anchor JSON must be rejected before ReadFile"
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            storage_policy_module,
+            "_read_open_file_descriptor",
+            lambda _fd: pytest.fail(
+                "oversized fixed-anchor JSON must be rejected before read"
+            ),
+        )
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module.read_fixed_anchor_state_json(
+            anchor_root,
+            policy_path.name,
+        )
+
+    assert caught.value.reason == "policy_payload_too_large"
+
+
+@pytest.mark.unit
+def test_fixed_anchor_json_chunk_reader_enforces_limit_after_size_precheck(
+    monkeypatch,
+):
+    monkeypatch.setattr(storage_policy_module, "_FIXED_ANCHOR_JSON_MAX_BYTES", 5)
+    chunks = iter([b"1234", b"56"])
+    requested_sizes = []
+
+    def read_chunk(size):
+        requested_sizes.append(size)
+        return next(chunks)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module._read_fixed_anchor_json_chunks(read_chunk)
+
+    assert caught.value.reason == "policy_payload_too_large"
+    assert requested_sizes == [6, 2]
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO race injection")
 def test_load_storage_policy_does_not_block_when_policy_becomes_fifo_before_open(
     tmp_path,

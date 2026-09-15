@@ -175,8 +175,8 @@ def test_owned_transaction_cleanup_repairs_nested_unsearchable_directories(tmp_p
     locked_file = lower / "characters.json"
     locked_file.write_text('{"preserved": true}', encoding="utf-8")
     os.chmod(locked_file, stat.S_IRUSR)
-    os.chmod(lower, stat.S_IRUSR)
-    os.chmod(upper, stat.S_IRUSR)
+    os.chmod(lower, 0)
+    os.chmod(upper, 0)
 
     try:
         storage_migration_module._remove_existing_path(transaction_root)
@@ -211,6 +211,466 @@ def test_owned_transaction_cleanup_never_chmods_a_link_target(tmp_path):
         assert external_file.read_text(encoding="utf-8") == "keep"
     finally:
         os.chmod(external, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount descriptor contract")
+def test_owned_transaction_cleanup_rejects_nested_mount_before_any_deletion(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    ordinary_file = transaction_root / "backup" / "a-local.json"
+    locked_dir = transaction_root / "backup" / "b-locked"
+    mounted_file = transaction_root / "backup" / "z-mounted" / "external.json"
+    ordinary_file.parent.mkdir(parents=True)
+    ordinary_file.write_text("LOCAL", encoding="utf-8")
+    locked_dir.mkdir()
+    os.chmod(locked_dir, stat.S_IRUSR)
+    locked_mode = stat.S_IMODE(locked_dir.stat().st_mode)
+    mounted_file.parent.mkdir()
+    mounted_file.write_text("EXTERNAL", encoding="utf-8")
+    mounted_inode = mounted_file.parent.stat().st_ino
+
+    def simulated_mount_identity(fd):
+        identity = os.fstat(fd)
+        return "test-mount", 2 if identity.st_ino == mounted_inode else 1
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        simulated_mount_identity,
+    )
+
+    try:
+        with pytest.raises(StorageMigrationError) as exc_info:
+            storage_migration_module._remove_existing_path(transaction_root)
+
+        assert exc_info.value.error_code == "nested_mount_unsupported"
+        assert ordinary_file.read_text(encoding="utf-8") == "LOCAL"
+        assert mounted_file.read_text(encoding="utf-8") == "EXTERNAL"
+        assert stat.S_IMODE(locked_dir.stat().st_mode) == locked_mode
+    finally:
+        os.chmod(locked_dir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount preflight contract")
+def test_preflight_closes_root_fd_when_mount_identity_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    transaction_root.mkdir()
+    opened_fd = -1
+    real_open_verified_directory = storage_migration_module._open_verified_directory
+
+    def record_opened_root(path):
+        nonlocal opened_fd
+        opened_fd = real_open_verified_directory(path)
+        return opened_fd
+
+    def reject_mount_identity(_fd):
+        raise StorageMigrationError(
+            "mount_identity_unavailable",
+            "simulated mount identity failure",
+        )
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_open_verified_directory",
+        record_opened_root,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        reject_mount_identity,
+    )
+
+    with pytest.raises(StorageMigrationError) as exc_info:
+        storage_migration_module._preflight_directory_tree_mounts(transaction_root)
+
+    assert exc_info.value.error_code == "mount_identity_unavailable"
+    assert opened_fd >= 0
+    with pytest.raises(OSError):
+        os.fstat(opened_fd)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX retained-mode contract")
+def test_quarantine_restores_modes_when_name_disappears_after_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    locked_dir = transaction_root / "locked"
+    locked_dir.mkdir(parents=True)
+    os.chmod(locked_dir, stat.S_IRUSR)
+    original_mode = stat.S_IMODE(locked_dir.stat().st_mode)
+    expected_identity = transaction_root.lstat()
+    parked = tmp_path / "parked"
+    real_preflight = storage_migration_module._preflight_directory_tree_mounts
+
+    def detach_name_after_preflight(*args, **kwargs):
+        result = real_preflight(*args, **kwargs)
+        transaction_root.rename(parked)
+        return result
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_preflight_directory_tree_mounts",
+        detach_name_after_preflight,
+    )
+
+    try:
+        with pytest.raises(FileNotFoundError):
+            storage_migration_module._remove_private_directory_via_quarantine(
+                transaction_root,
+                expected_identity,
+            )
+
+        assert parked.is_dir()
+        assert stat.S_IMODE((parked / "locked").stat().st_mode) == original_mode
+        assert not storage_migration_module._private_directory_quarantine_path(
+            transaction_root
+        ).exists()
+    finally:
+        os.chmod(
+            parked / "locked",
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount preflight contract")
+def test_nested_mount_is_rejected_before_quarantine_rename_or_chmod(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    locked_dir = transaction_root / "backup" / "a-locked"
+    mount_path = transaction_root / "backup" / "z-mounted"
+    locked_dir.mkdir(parents=True)
+    mount_path.mkdir()
+    os.chmod(locked_dir, stat.S_IRUSR)
+    original_mode = stat.S_IMODE(locked_dir.stat().st_mode)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_mounted_paths",
+        lambda: [mount_path],
+    )
+
+    try:
+        with pytest.raises(StorageMigrationError) as exc_info:
+            storage_migration_module._remove_private_directory_via_quarantine(
+                transaction_root,
+                transaction_root.lstat(),
+            )
+
+        assert exc_info.value.error_code == "nested_mount_unsupported"
+        assert transaction_root.is_dir()
+        assert not storage_migration_module._private_directory_quarantine_path(
+            transaction_root
+        ).exists()
+        assert stat.S_IMODE(locked_dir.stat().st_mode) == original_mode
+    finally:
+        os.chmod(locked_dir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount-table contract")
+@pytest.mark.parametrize(
+    ("mounted_side", "relative_mount"),
+    (
+        ("source", "config/mounted"),
+        ("target", "config"),
+        # ``state`` is an ancestor inside the runtime root of the declared
+        # ``state/game_scores`` entry and must be rejected before inspection.
+        ("source", "state"),
+    ),
+)
+def test_live_preflight_rejects_runtime_entry_mount_before_path_inspection(
+    tmp_path,
+    monkeypatch,
+    mounted_side,
+    relative_mount,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    source_root.mkdir()
+    target_root.mkdir()
+    selected_root = source_root if mounted_side == "source" else target_root
+    mount_path = selected_root / relative_mount
+    mount_calls = []
+
+    def mounted_paths():
+        mount_calls.append("enumerated")
+        return [mount_path]
+
+    monkeypatch.setattr(storage_migration_module, "_mounted_paths", mounted_paths)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_checked_migration_entry_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "known runtime-entry mount must be rejected before path inspection"
+        ),
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module.validate_storage_migration_preflight_boundaries(
+            source_root,
+            target_root,
+        )
+
+    assert caught.value.error_code == "nested_mount_unsupported"
+    assert mount_calls == ["enumerated"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount-table contract")
+def test_live_preflight_allows_root_mount_and_unrelated_nested_mounts(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    source_root.mkdir()
+    target_root.mkdir()
+    mount_calls = []
+
+    def mounted_paths():
+        mount_calls.append("enumerated")
+        return [
+            source_root,
+            source_root / "unmanaged" / "mounted",
+            target_root / "notes" / "mounted",
+        ]
+
+    monkeypatch.setattr(storage_migration_module, "_mounted_paths", mounted_paths)
+
+    storage_migration_module.validate_storage_migration_preflight_boundaries(
+        source_root,
+        target_root,
+    )
+
+    assert mount_calls == ["enumerated"]
+
+
+@pytest.mark.unit
+def test_live_preflight_uses_canonical_runtime_entry_redirect_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    source_root.mkdir()
+    target_root.mkdir()
+    redirected_entry = source_root / "config"
+    external = tmp_path / "external"
+    external.mkdir()
+    if os.name != "nt":
+        monkeypatch.setattr(storage_migration_module, "_mounted_paths", lambda: [])
+    try:
+        redirected_entry.symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory links are unavailable on this platform")
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module.validate_storage_migration_preflight_boundaries(
+            source_root,
+            target_root,
+        )
+
+    assert caught.value.error_code == "runtime_entry_path_unsafe"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor identity contract")
+def test_quarantine_preflight_never_chmods_a_replacement_root(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    transaction_root.mkdir()
+    owned_identity = transaction_root.lstat()
+    owned_aside = tmp_path / "owned-aside"
+    unrelated_locked = transaction_root / "unrelated-locked"
+
+    def replace_before_tree_preflight(_path):
+        transaction_root.rename(owned_aside)
+        unrelated_locked.mkdir(parents=True)
+        os.chmod(unrelated_locked, stat.S_IRUSR)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_preflight_named_mounts_below",
+        replace_before_tree_preflight,
+    )
+
+    try:
+        with pytest.raises(StorageMigrationError) as exc_info:
+            storage_migration_module._remove_private_directory_via_quarantine(
+                transaction_root,
+                owned_identity,
+            )
+
+        assert exc_info.value.error_code == "migration_path_changed"
+        assert stat.S_IMODE(unrelated_locked.stat().st_mode) == stat.S_IRUSR
+        assert owned_aside.is_dir()
+        assert not storage_migration_module._private_directory_quarantine_path(
+            transaction_root
+        ).exists()
+    finally:
+        os.chmod(
+            unrelated_locked,
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount descriptor contract")
+def test_owned_transaction_delete_walk_rechecks_mount_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    mounted_file = transaction_root / "backup" / "mounted" / "external.json"
+    locked_dir = transaction_root / "backup" / "z-locked"
+    mounted_file.parent.mkdir(parents=True)
+    mounted_file.write_text("EXTERNAL", encoding="utf-8")
+    locked_dir.mkdir()
+    os.chmod(locked_dir, stat.S_IRUSR)
+    locked_mode = stat.S_IMODE(locked_dir.stat().st_mode)
+    mounted_inode = mounted_file.parent.stat().st_ino
+    mounted_checks = 0
+
+    def changing_mount_identity(fd):
+        nonlocal mounted_checks
+        identity = os.fstat(fd)
+        if identity.st_ino == mounted_inode:
+            mounted_checks += 1
+            return "test-mount", 1 if mounted_checks == 1 else 2
+        return "test-mount", 1
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        changing_mount_identity,
+    )
+
+    try:
+        with pytest.raises(StorageMigrationError) as exc_info:
+            storage_migration_module._remove_existing_path(transaction_root)
+
+        assert exc_info.value.error_code == "nested_mount_unsupported"
+        assert mounted_checks >= 2
+        assert mounted_file.read_text(encoding="utf-8") == "EXTERNAL"
+        assert stat.S_IMODE(locked_dir.stat().st_mode) == locked_mode
+    finally:
+        os.chmod(locked_dir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned quarantine contract")
+def test_quarantine_replacement_after_preflight_is_never_deleted(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    storage_migration_module._create_owned_transaction_root(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    transaction_root.rename(quarantine)
+    parked = tmp_path / "owned-parked"
+    unrelated = quarantine / "unrelated.txt"
+    real_preflight = storage_migration_module._preflight_directory_tree_mounts
+    replaced = False
+
+    def replace_after_preflight(path, **kwargs):
+        nonlocal replaced
+        result = real_preflight(path, **kwargs)
+        if Path(path) == quarantine and kwargs.get("make_traversable") and not replaced:
+            replaced = True
+            quarantine.rename(parked)
+            quarantine.mkdir()
+            unrelated.write_text("UNRELATED", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_preflight_directory_tree_mounts",
+        replace_after_preflight,
+    )
+
+    removed = storage_migration_module._remove_owned_transaction_quarantine(
+        payload,
+        quarantine,
+        payload["txid"],
+    )
+
+    assert replaced is True
+    assert removed is False
+    assert unrelated.read_text(encoding="utf-8") == "UNRELATED"
+    assert (
+        parked / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+    ).is_file()
+
+
+@pytest.mark.unit
+def test_mount_path_parsing_preserves_on_and_decodes_escapes_once(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    output = (
+        r"/dev/disk9s1 on /private/tmp/name on side/space\040dir/literal\134040 "
+        "(apfs, local)\n"
+    )
+
+    raw_paths = storage_migration_module._parse_macos_mount_paths(output)
+    normalized = storage_migration_module._normalize_mount_paths(raw_paths)
+
+    assert raw_paths == [
+        r"/private/tmp/name on side/space\040dir/literal\134040"
+    ]
+    assert normalized == [
+        Path(os.path.abspath(r"/private/tmp/name on side/space dir/literal\040"))
+    ]
 
 
 @pytest.mark.unit
@@ -2164,6 +2624,125 @@ def test_run_pending_storage_migration_restores_existing_target_when_commit_fail
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount descriptor contract")
+@pytest.mark.parametrize("mounted_side", ("source", "target"))
+def test_migration_rejects_nested_mount_before_transaction_or_publish(
+    tmp_path,
+    monkeypatch,
+    mounted_side,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "source.json"
+    target_file = target_root / "config" / "target.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_file.write_text("TARGET", encoding="utf-8")
+    mounted_root = (source_root if mounted_side == "source" else target_root) / "config" / "mounted"
+    mounted_root.mkdir()
+    mounted_file = mounted_root / "external.json"
+    mounted_file.write_text("EXTERNAL", encoding="utf-8")
+
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+    mounted_inode = mounted_root.stat().st_ino
+
+    def simulated_mount_identity(fd):
+        identity = os.fstat(fd)
+        return "test-mount", 2 if identity.st_ino == mounted_inode else 1
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        simulated_mount_identity,
+    )
+    mutation_calls = []
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_create_owned_transaction_root",
+        lambda *args, **kwargs: mutation_calls.append("transaction"),
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_replace",
+        lambda *args, **kwargs: mutation_calls.append("replace"),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "nested_mount_unsupported"
+    assert mutation_calls == []
+    assert not transaction_root.exists()
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert mounted_file.read_text(encoding="utf-8") == "EXTERNAL"
+
+
+@pytest.mark.unit
+def test_launcher_rechecks_mount_boundaries_before_creating_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "source.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "validate_storage_migration_preflight_boundaries",
+        lambda *_args: (_ for _ in ()).throw(
+            StorageMigrationError(
+                "nested_mount_unsupported",
+                "runtime entry contains nested mount",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_create_owned_transaction_root",
+        lambda *_args, **_kwargs: pytest.fail(
+            "launcher boundary failure must precede transaction creation"
+        ),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "nested_mount_unsupported"
+    assert not transaction_root.exists()
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+
+
+@pytest.mark.unit
 def test_recovery_metadata_write_failures_keep_transaction_and_force_source_layout(
     tmp_path,
     monkeypatch,
@@ -2472,6 +3051,51 @@ def _prepare_interrupted_publish(tmp_path, *, legacy_transaction_layout=False):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mount-table contract")
+def test_interrupted_publish_rejects_transaction_mount_before_rollback_scan(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _, _, transaction_root, _, _ = _prepare_interrupted_publish(
+        tmp_path
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "validate_storage_migration_preflight_boundaries",
+        lambda *_args: None,
+    )
+
+    def reject_transaction_mount(path):
+        assert path == transaction_root
+        raise StorageMigrationError(
+            "nested_mount_unsupported",
+            "transaction contains nested mount",
+        )
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_preflight_named_mounts_below",
+        reject_transaction_mount,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_rollback_published_entries",
+        lambda *_args, **_kwargs: pytest.fail(
+            "known transaction mount must be rejected before rollback traversal"
+        ),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "nested_mount_unsupported"
+    assert result["payload"]["status"] == "rollback_required"
+    assert transaction_root.is_dir()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("marker_state", ("missing", "mismatch", "symlink"))
 def test_interrupted_publish_with_untrusted_marker_stays_rollback_required(
     tmp_path,
@@ -2622,25 +3246,46 @@ def test_rollback_completion_checkpoint_precedes_transaction_cleanup(
             _interrupt_before_cleanup,
         )
     elif crash_step == "during_transaction_cleanup":
-        def _interrupt_during_cleanup(path):
-            quarantine = storage_migration_module._private_directory_quarantine_path(
-                transaction_root
-            )
-            if (
-                Path(path).parent == quarantine
-                and Path(path).name
-                != storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
-                and not interrupted["value"]
-            ):
-                interrupted["value"] = True
-                raise SimulatedProcessLoss
-            return original_remove_existing(path)
-
-        monkeypatch.setattr(
-            storage_migration_module,
-            "_remove_existing_path",
-            _interrupt_during_cleanup,
+        quarantine = storage_migration_module._private_directory_quarantine_path(
+            transaction_root
         )
+        if os.name != "nt":
+            original_remove_children = (
+                storage_migration_module._remove_posix_directory_children
+            )
+
+            def _interrupt_during_posix_cleanup(directory_fd, **kwargs):
+                if (
+                    Path(kwargs["display_path"]) == quarantine
+                    and kwargs.get("preserve_names")
+                    and not interrupted["value"]
+                ):
+                    interrupted["value"] = True
+                    raise SimulatedProcessLoss
+                return original_remove_children(directory_fd, **kwargs)
+
+            monkeypatch.setattr(
+                storage_migration_module,
+                "_remove_posix_directory_children",
+                _interrupt_during_posix_cleanup,
+            )
+        else:
+            def _interrupt_during_cleanup(path):
+                if (
+                    Path(path).parent == quarantine
+                    and Path(path).name
+                    != storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+                    and not interrupted["value"]
+                ):
+                    interrupted["value"] = True
+                    raise SimulatedProcessLoss
+                return original_remove_existing(path)
+
+            monkeypatch.setattr(
+                storage_migration_module,
+                "_remove_existing_path",
+                _interrupt_during_cleanup,
+            )
     else:
         def _interrupt_after_cleanup(*args, **kwargs):
             if kwargs.get("status") == STORAGE_MIGRATION_STATUS_PREFLIGHT:
@@ -2716,14 +3361,32 @@ def test_transaction_cleanup_recovers_crash_after_owner_marker_is_deleted(
     quarantine_marker = (
         quarantine / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
     )
-    real_rmdir = Path.rmdir
+    if os.name != "nt":
+        real_rmdir = storage_migration_module.os.rmdir
 
-    def _interrupt_empty_quarantine_rmdir(path):
-        if path == quarantine and not quarantine_marker.exists():
-            raise SimulatedProcessLoss
-        return real_rmdir(path)
+        def _interrupt_empty_quarantine_rmdir(path, *, dir_fd=None):
+            if (
+                path == quarantine.name
+                and dir_fd is not None
+                and not quarantine_marker.exists()
+            ):
+                raise SimulatedProcessLoss
+            return real_rmdir(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "rmdir", _interrupt_empty_quarantine_rmdir)
+        monkeypatch.setattr(
+            storage_migration_module.os,
+            "rmdir",
+            _interrupt_empty_quarantine_rmdir,
+        )
+    else:
+        real_rmdir = Path.rmdir
+
+        def _interrupt_empty_quarantine_rmdir(path):
+            if path == quarantine and not quarantine_marker.exists():
+                raise SimulatedProcessLoss
+            return real_rmdir(path)
+
+        monkeypatch.setattr(Path, "rmdir", _interrupt_empty_quarantine_rmdir)
     with pytest.raises(SimulatedProcessLoss):
         run_pending_storage_migration(config_manager)
 
@@ -2734,7 +3397,10 @@ def test_transaction_cleanup_recovers_crash_after_owner_marker_is_deleted(
     assert quarantine.is_dir()
     assert list(quarantine.iterdir()) == []
 
-    monkeypatch.setattr(Path, "rmdir", real_rmdir)
+    if os.name != "nt":
+        monkeypatch.setattr(storage_migration_module.os, "rmdir", real_rmdir)
+    else:
+        monkeypatch.setattr(Path, "rmdir", real_rmdir)
     monkeypatch.setattr(
         storage_migration_module,
         "_copy_runtime_entry",

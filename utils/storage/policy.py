@@ -20,7 +20,7 @@ import stat
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
@@ -32,6 +32,14 @@ CLOUDSAVE_STRATEGY_FIXED_ANCHOR = "fixed_anchor"
 POLICY_SELECTION_SOURCE_DEFAULT = "default"
 POLICY_SELECTION_SOURCE_USER_SELECTED = "user_selected"
 POLICY_SELECTION_SOURCE_RECOVERED = "recovered"
+
+# Both fixed-anchor JSON files have app-owned, bounded schemas.  The migration
+# checkpoint currently contains snapshots for only the 16 declared runtime
+# entries; 4 MiB also leaves ample room for legacy checkpoints and extended
+# Windows paths while preventing a corrupt authority file from exhausting the
+# process during startup.
+_FIXED_ANCHOR_JSON_MAX_BYTES = 4 * 1024 * 1024
+_FIXED_ANCHOR_JSON_READ_CHUNK_BYTES = 1024 * 1024
 
 
 class StorageSelectionValidationError(ValueError):
@@ -403,11 +411,30 @@ def _validate_storage_policy_anchor(value: Path | str) -> os.stat_result | None:
     return anchor_metadata
 
 
-def _read_open_file_descriptor(fd: int) -> bytes:
+def _validate_fixed_anchor_json_size(size: int) -> None:
+    if size < 0 or size > _FIXED_ANCHOR_JSON_MAX_BYTES:
+        raise StoragePolicyError("policy_payload_too_large")
+
+
+def _read_fixed_anchor_json_chunks(read_chunk: Callable[[int], bytes]) -> bytes:
     chunks: list[bytes] = []
-    while chunk := os.read(fd, 1024 * 1024):
+    total_bytes = 0
+    while True:
+        remaining_bytes = _FIXED_ANCHOR_JSON_MAX_BYTES - total_bytes
+        chunk = read_chunk(
+            min(_FIXED_ANCHOR_JSON_READ_CHUNK_BYTES, remaining_bytes + 1)
+        )
+        if not chunk:
+            break
+        if len(chunk) > remaining_bytes:
+            raise StoragePolicyError("policy_payload_too_large")
         chunks.append(chunk)
+        total_bytes += len(chunk)
     return b"".join(chunks)
+
+
+def _read_open_file_descriptor(fd: int) -> bytes:
+    return _read_fixed_anchor_json_chunks(lambda size: os.read(fd, size))
 
 
 def _posix_directory_open_flags() -> int:
@@ -645,6 +672,7 @@ def _read_storage_policy_json_posix(
             _revalidate_posix_policy_absence(anchor_root, anchor_fd, state_fd, filename)
             raise
 
+        _validate_fixed_anchor_json_size(policy_before.st_size)
         raw = _read_open_file_descriptor(policy_fd)
         _revalidate_posix_policy_handles(
             anchor_root,
@@ -895,21 +923,22 @@ def _read_storage_policy_json_windows(
             raise
         handles.append(policy_handle)
 
-        chunks: list[bytes] = []
-        while True:
-            buffer = ctypes.create_string_buffer(1024 * 1024)
+        _validate_fixed_anchor_json_size(policy_before[3])
+
+        def _read_chunk(size: int) -> bytes:
+            buffer = ctypes.create_string_buffer(size)
             read_count = wintypes.DWORD()
             if not kernel32.ReadFile(
                 policy_handle,
                 buffer,
-                len(buffer),
+                size,
                 ctypes.byref(read_count),
                 None,
             ):
                 raise ctypes.WinError(ctypes.get_last_error())
-            if not read_count.value:
-                break
-            chunks.append(buffer.raw[: read_count.value])
+            return buffer.raw[: read_count.value]
+
+        raw = _read_fixed_anchor_json_chunks(_read_chunk)
 
         policy_after = _snapshot(policy_handle)
         refreshed_anchor = _validate_storage_policy_anchor(anchor_root)
@@ -922,7 +951,7 @@ def _read_storage_policy_json_windows(
             or policy_before[3:] != policy_after[3:]
         ):
             raise StoragePolicyError("policy_changed_during_read")
-        return json.loads(b"".join(chunks).decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     finally:
         for handle in reversed(handles):
             _close_handle(handle)

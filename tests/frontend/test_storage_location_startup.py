@@ -1816,6 +1816,61 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("estimate_available", "estimated_bytes", "expected_text"),
+    (
+        (False, 0, "—"),
+        (None, 4096, "4.0 KB"),
+    ),
+    ids=("new-backend-unavailable", "old-backend-compatible"),
+)
+def test_storage_location_preview_respects_estimate_availability(
+    mock_page: Page,
+    running_server: str,
+    tmp_path,
+    estimate_available,
+    estimated_bytes,
+    expected_text,
+):
+    page = mock_page
+    target_root = str((tmp_path / "estimate-preview" / "N.E.K.O").resolve())
+    _mock_selection_required_state(page)
+    preflight_payload = {
+        "ok": True,
+        "result": "restart_required",
+        "selected_root": target_root,
+        "selection_source": "custom",
+        "target_root": target_root,
+        "estimated_required_bytes": estimated_bytes,
+        "target_free_bytes": 1048576,
+        "permission_ok": True,
+        "warning_codes": [],
+        "blocking_error_code": "",
+        "blocking_error_message": "",
+    }
+    if estimate_available is not None:
+        preflight_payload["estimated_required_bytes_available"] = estimate_available
+    page.route(
+        "**/api/storage/location/select",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(preflight_payload, ensure_ascii=False),
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _continue_storage_intro(page)
+    page.locator(".storage-location-input").fill(target_root)
+    page.get_by_role("button", name="提交该位置").click()
+
+    estimated_value = page.locator(".storage-location-summary-item").filter(
+        has_text="预计迁移体量"
+    ).locator(".storage-location-summary-value")
+    expect(estimated_value).to_have_text(expected_text, timeout=10_000)
+
+
+@pytest.mark.frontend
 def test_storage_location_unknown_restart_outcome_polls_before_allowing_retry(
     mock_page: Page,
     running_server: str,
