@@ -87,6 +87,7 @@
         currentModelInfo: null,
         knownExpressionNames: new Set(),
         retiringExpressionNames: new Set(),
+        expressionOverflowWarned: false,
         tPoseDeadline: 0,
         tPoseGeneration: 0,
         samplingSuspended: false,
@@ -709,6 +710,26 @@
             RETIREMENT_QUOTA_PER_FRAME,
             state.retiringExpressionNames.size
         );
+        // 后端的 warn-once 溢出日志看不到这里：截断发生在帧离开浏览器之前，
+        // 后端收到的永远是已经削到上限的数组。超额时在采样侧补一条同语义的
+        // 告警，否则文档承诺的「超限会告警」在这条链路上是空的。
+        const totalExpressionDemand =
+            state.knownExpressionNames.size + state.retiringExpressionNames.size;
+        if (totalExpressionDemand > MAX_EXPRESSIONS_PER_FRAME) {
+            if (!state.expressionOverflowWarned) {
+                state.expressionOverflowWarned = true;
+                if (typeof console !== 'undefined' && console.warn) {
+                    console.warn(
+                        '[VRM-VMC] 模型的表情数量 ' + totalExpressionDemand
+                        + ' 超过每帧上限 ' + MAX_EXPRESSIONS_PER_FRAME
+                        + '，超出的表情本帧不会发送。此告警只提示一次。'
+                    );
+                }
+            }
+        } else {
+            // 换模型后回到上限内就重新武装，下一个超限模型仍能得到告警。
+            state.expressionOverflowWarned = false;
+        }
         for (const name of state.knownExpressionNames) {
             if (state.exprBuf.length >= liveCap) break;
             state.exprBuf.push({

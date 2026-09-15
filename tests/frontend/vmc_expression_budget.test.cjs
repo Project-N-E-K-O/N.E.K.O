@@ -14,6 +14,7 @@ const senderPath = path.join(projectRoot, 'static/vrm/vrm-vmc-sender.js');
 function loadSender() {
   const sentFrames = [];
   const ackResolvers = [];
+  const warnings = [];
   let now = 0;
 
   const listeners = new Map();
@@ -52,7 +53,12 @@ function loadSender() {
   const context = vm.createContext({
     window: windowStub,
     document: documentStub,
-    console: { info() {}, warn() {}, error() {}, log() {} },
+    console: {
+      info() {},
+      warn(...args) { warnings.push(args.join(' ')); },
+      error() {},
+      log() {},
+    },
     performance: { now: () => now },
     setTimeout: () => 0,
     clearTimeout: () => {},
@@ -109,6 +115,7 @@ function loadSender() {
     state: stateHolder,
     sentFrames,
     ackResolvers,
+    warnings,
     advance(ms) { now += ms; },
     // Acking a frame is what lets the module drop names from the retiring set.
     ackLastFrame() {
@@ -204,6 +211,56 @@ test('a model switch that shares preset names does not permanently shrink the li
       `${preset} must carry the live weight, got ${byName.get(preset)}`
     );
   }
+});
+
+test('an over-cap model warns once in the browser, where the truncation happens', async () => {
+  const harness = loadSender();
+
+  // The backend's warn-once overflow log can never fire for a browser
+  // publisher: the sampler truncates before the frame is sent, so the array
+  // the backend validates is already at the cap. Without a warning here, an
+  // over-cap model drops expressions with nothing in any log.
+  const overCap = makeVrm(Array.from({ length: 300 }, (_, i) => `x${i}`));
+
+  harness.api.sample(overCap);
+
+  const emitted = expressionsOf(harness.sentFrames[harness.sentFrames.length - 1]);
+  assert.equal(emitted.length, 256, `the frame must be capped, got ${emitted.length}`);
+
+  const overflowWarnings = harness.warnings.filter((line) => line.includes('300'));
+  assert.equal(
+    overflowWarnings.length,
+    1,
+    `truncation must warn exactly once, got ${JSON.stringify(harness.warnings)}`
+  );
+
+  // Warn-once, not warn-per-frame: at 60Hz a repeated log would flood the
+  // console within seconds.
+  for (let i = 0; i < 20; i++) {
+    harness.advance(100);
+    harness.api.sample(overCap);
+    await Promise.resolve();
+  }
+  assert.equal(
+    harness.warnings.filter((line) => line.includes('300')).length,
+    1,
+    'the overflow warning must not repeat every frame'
+  );
+
+  // Switching to a model inside the cap re-arms the flag, so the next
+  // over-cap model is still reported.
+  const withinCap = makeVrm(Array.from({ length: 10 }, (_, i) => `small${i}`));
+  for (let i = 0; i < 40; i++) {
+    harness.advance(100);
+    harness.api.sample(withinCap);
+    harness.ackLastFrame();
+    await Promise.resolve();
+  }
+  assert.equal(
+    harness.state.expressionOverflowWarned,
+    false,
+    'returning under the cap must re-arm the warning'
+  );
 });
 
 test('genuine retirements still drain to zero through the reserved quota', async () => {

@@ -32,7 +32,7 @@ await window.vrmVmcSender.disable()
 
 backend は Three.js の右手座標を Unity/VMC 座標へ変換し、`/VMC/Ext/OK`、`/VMC/Ext/T`、`/VMC/Ext/Root/Pos`、`/VMC/Ext/Bone/Pos`、`/VMC/Ext/Blend/Val`、`/VMC/Ext/Blend/Apply` を送信します。加えて `/VMC/Ext/VRM` を低頻度で送信します（model 変更時に一度だけ。receiver 側で現在の model を識別するため）。
 
-1 frame あたり bone は最大 64、expression は最大 256 です。humanoid rig は 55 bone なので、上限に達するのは custom expression が数百ある model だけです。超過分は破棄され、sender が warning を一度だけ記録します。
+1 frame あたり bone は最大 64、expression は最大 256 です。humanoid rig は 55 bone なので、上限に達するのは custom expression が数百ある model だけです。超過分は破棄され、warning が一度だけ記録されます。first-party sampler は送信前に切り詰めるため、browser publisher の場合この warning は browser console に出ます。backend 側の warning は、`/api/vmc/ws` へ直接超過 frame を送る third-party publisher を対象とします。
 
 画面表示用の位置・scale・rotation は VMC root に使いません。VMC は独立した identity root を持つため、desktop avatar の移動や resize は receiver の world origin に影響しません。
 

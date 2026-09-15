@@ -1358,6 +1358,37 @@ async def test_enable_broadcast_cannot_hang_the_control_endpoint(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_reports_the_state_it_returns_in(monkeypatch):
+    """enable() must not answer with a snapshot taken before the broadcast.
+
+    The broadcast runs outside ``_lock`` so a backpressured socket cannot stall
+    the control endpoint. That window lets a concurrent ``disable()`` finish
+    first — and a snapshot captured before the broadcast would then report
+    ``enabled: True`` after the disable response already said ``False``.
+    """
+    disable_started = asyncio.Event()
+
+    async def disable_midway(_enabled: bool) -> None:
+        # Stand in for the real fan-out: run a disable while enable() is
+        # parked outside the lock, exactly as a concurrent request would.
+        disable_started.set()
+        await sender.disable()
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=disable_midway)
+    sender._build_client = lambda _host, _port: _RecordingOscClient()
+
+    status = await sender.enable()
+
+    assert disable_started.is_set(), "the callback never ran; the test proves nothing"
+    assert sender.enabled is False
+    assert status["enabled"] is False, (
+        "enable() returned a pre-broadcast snapshot: it claims the sender is on "
+        "after a concurrent disable() already reported it off"
+    )
+
+
+@pytest.mark.unit
 def test_expression_name_map_covers_vrm_presets():
     """VRM 1.0 preset names must reach receivers as VRM 0.x blendshape names."""
     sender, client = _enabled_sender()

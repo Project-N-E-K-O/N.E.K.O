@@ -304,12 +304,17 @@ class VmcSender:
                 self._port,
                 self._send_rate_hz,
             )
-            status = self.status()
         # Notify outside the lock: the callback reaches into the WebSocket
         # layer, which must never be able to stall a subsequent enable/disable.
         if not was_enabled:
             await self._notify_enabled_changed(True)
-        return status
+        # Re-read under the lock instead of returning the pre-broadcast
+        # snapshot: a disable() that lands during the broadcast would answer
+        # `enabled: false` first, and a stale snapshot here would then claim
+        # the sender is still on. The response must describe the state as of
+        # the moment it is produced.
+        async with self._lock:
+            return self.status()
 
     async def _notify_enabled_changed(self, enabled: bool) -> None:
         callback = self._on_enabled_callback
