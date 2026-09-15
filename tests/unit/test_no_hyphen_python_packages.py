@@ -77,7 +77,9 @@ _VENV_DIR_PATTERN = re.compile(r"^\.venv")
 # 匹配，会把未来可能出现的 ``plugin/<某 feature>/frontend/``、``plugin/<x>/docs/``
 # 等子目录也静默吞掉，反而盖住该 lint 想抓的 hyphen 违规。
 _EXCLUDED_PATH_FRAGMENTS = (
-    ("local_server", "cosyvoice_server", "CosyVoice"),  # vendored
+    # Git may leave initialized submodule files behind when updating an old checkout.
+    # Retain this legacy path exclusion after removing the submodule from the index.
+    ("local_server", "cosyvoice_server", "CosyVoice"),
     ("frontend",),  # 顶层 JS/Vue 项目，连字符是其命名惯例
     ("docs",),  # 顶层纯文档站
     (".github",),  # CI yaml 等
@@ -134,3 +136,20 @@ def test_no_hyphen_directory_contains_python_source() -> None:
         + "\n\n请把目录重命名为下划线形式（如 my-tool → my_tool），"
         "并改 import 路径为 package 形式。"
     )
+
+
+@pytest.mark.unit
+def test_removed_submodule_checkout_does_not_hide_owned_violations(tmp_path, monkeypatch) -> None:
+    """Ignore a leftover submodule checkout while still checking owned source."""
+    monkeypatch.setitem(globals(), "PROJECT_ROOT", tmp_path)
+    leftover = tmp_path / "local_server/cosyvoice_server/CosyVoice/third_party/Matcha-TTS"
+    leftover.mkdir(parents=True)
+    (leftover / "model.py").write_text("", encoding="utf-8")
+
+    test_no_hyphen_directory_contains_python_source()
+
+    owned = tmp_path / "owned-package"
+    owned.mkdir()
+    (owned / "module.py").write_text("", encoding="utf-8")
+    with pytest.raises(AssertionError, match="owned-package"):
+        test_no_hyphen_directory_contains_python_source()

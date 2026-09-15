@@ -219,6 +219,25 @@
         } catch (_) {}
     }
 
+    function dispatchIcebreakerGalgameHandoff(session, message) {
+        if (!session || !message || !message.id) return;
+        var detail = {
+            sessionId: String(session.sessionId || ''),
+            messageId: String(message.id),
+            lanlanName: resolveSessionLanlanName(session)
+        };
+        try {
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                detail: detail
+            }));
+        } catch (_) {}
+        broadcastIcebreaker(null, {
+            action: 'icebreaker_galgame_handoff',
+            detail: detail,
+            lanlan_name: detail.lanlanName
+        });
+    }
+
     function endIcebreakerRoute(session, reason) {
         if (!session || session.routeEnded) return Promise.resolve(false);
         session.routeEnded = true;
@@ -1482,6 +1501,7 @@
         var sessionId = session.sessionId;
         var handoffSpeechPromise = Promise.resolve(false);
         var handoffDelivered = false;
+        var handoffMessage = null;
         return appendAssistantChatMessage(text, {
             day: day,
             nodeId: nodeId,
@@ -1490,6 +1510,7 @@
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return false;
             handoffDelivered = true;
+            handoffMessage = message;
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
@@ -1513,6 +1534,7 @@
             if (activeSession === session) {
                 activeSession = null;
             }
+            dispatchIcebreakerGalgameHandoff(session, handoffMessage);
             dispatchIcebreakerEnded('handoff');
             return true;
         });
@@ -1665,6 +1687,7 @@
         if (decision.action === 'release') {
             var releaseText = decision.reply || getText(localeData, fallback.releaseKey);
             var releaseVoiceKey = fallback.releaseVoiceKey || '';
+            var releaseMessage = null;
             recordFreeTextTurn(session, {
                 userText: info.userText,
                 action: 'release',
@@ -1680,6 +1703,7 @@
                 requestId: info.requestId || ''
             }, session).then(function (message) {
                 if (!didAppendChatMessage(message)) return false;
+                releaseMessage = message;
                 return true;
             }) : Promise.resolve(activeSession === session);
             return releaseAppend.then(function (didAppendRelease) {
@@ -1707,6 +1731,9 @@
                 });
                 if (activeSession === session) {
                     activeSession = null;
+                }
+                if (releaseMessage) {
+                    dispatchIcebreakerGalgameHandoff(session, releaseMessage);
                 }
                 dispatchIcebreakerEnded('free_text_release');
                 return true;

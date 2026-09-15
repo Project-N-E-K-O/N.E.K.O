@@ -374,7 +374,9 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
     logger = get_logger("server.application.plugins.metadata_worker")
 
     _ensure_python_requirement_paths(requirement_paths, logger, plugin_id)
-    module_obj = _import_plugin_module(module_path, config_path, logger)
+    module_obj = _import_plugin_module(
+        module_path, config_path, logger, source_only=request.get("source_only") is True,
+    )
     cls_obj = getattr(module_obj, class_name)
     if not isinstance(cls_obj, type):
         raise TypeError(
@@ -436,7 +438,8 @@ def _worker_main(protocol_fd: int | None = None) -> None:
         raw_dup2(devnull_fd, stderr_fd)
         raw_close(devnull_fd)
     try:
-        request_obj = json.loads(sys.stdin.readline())
+        # Parent writes UTF-8 regardless of the Windows console code page.
+        request_obj = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
         if not isinstance(request_obj, dict):
             raise TypeError("metadata scan request must be an object")
         result = _scan_in_worker(request_obj)
@@ -495,6 +498,7 @@ def _scan_plugin_metadata_uncached(
     pdata: Mapping[str, object],
     python_requirement_paths: list[Path] | tuple[Path, ...] = (),
     timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
+    source_only: bool = False,
 ) -> IsolatedPluginMetadata:
     if timeout <= 0:
         # 总预算已经用完：连进程都不要起。调用方拿到的是和"扫描超时"同一种
@@ -511,6 +515,7 @@ def _scan_plugin_metadata_uncached(
         "conf": _json_safe(conf),
         "pdata": _json_safe(pdata),
         "python_requirement_paths": [str(path) for path in python_requirement_paths],
+        "source_only": source_only,
     }
     project_root = Path(__file__).resolve().parents[4]
 
@@ -732,6 +737,7 @@ def scan_plugin_metadata_isolated(
     pdata: Mapping[str, object],
     python_requirement_paths: list[Path] | tuple[Path, ...] = (),
     timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
+    source_only: bool = False,
 ) -> IsolatedPluginMetadata:
     """Import one plugin in a throwaway worker and read its metadata back.
 
@@ -754,4 +760,5 @@ def scan_plugin_metadata_isolated(
         pdata=pdata,
         python_requirement_paths=python_requirement_paths,
         timeout=timeout,
+        source_only=source_only,
     )

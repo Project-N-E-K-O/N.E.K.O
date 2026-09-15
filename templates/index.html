@@ -54,7 +54,7 @@
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
-    <!-- 主题管理器（尽早加载以避免闪烁） -->
+    <!-- 主题与界面透明度管理器（在 body 前同步恢复，避免首帧闪烁） -->
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- 教程样式定制 -->

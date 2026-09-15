@@ -49,6 +49,10 @@ _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED = False
 _DEFAULT_GENERIC_GAME_MEMORY_ENABLED = False
 
 
+_GAME_MEMORY_ARCHIVE_OWNER_GENERIC = "generic"
+_GAME_MEMORY_ARCHIVE_OWNER_FEATURE = "feature"
+
+
 _GENERIC_GAME_MEMORY_POLICY_FIELDS = (
     "game_memory_enabled",
     "game_memory_player_interaction_enabled",
@@ -171,6 +175,13 @@ def _normalize_game_memory_type(game_type: str | None) -> str:
     if not game or game == "soccer":
         return "soccer"
     return "generic"
+
+
+def _normalize_game_memory_archive_owner(value: Any) -> str:
+    owner = str(value or "").strip().lower()
+    if owner == _GAME_MEMORY_ARCHIVE_OWNER_FEATURE:
+        return _GAME_MEMORY_ARCHIVE_OWNER_FEATURE
+    return _GAME_MEMORY_ARCHIVE_OWNER_GENERIC
 
 
 def _game_memory_policy_fields(game_type: str | None) -> tuple[str, ...]:

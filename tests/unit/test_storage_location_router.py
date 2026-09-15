@@ -3441,6 +3441,8 @@ def test_completed_cleanup_then_logout_removes_target_witness_but_not_reused_sou
     tmp_path,
     monkeypatch,
 ):
+    from contextlib import contextmanager
+
     import main_routers.card_drop_router as card_drop_router_module
     from utils import config_manager as config_manager_module
 
@@ -3486,11 +3488,27 @@ def test_completed_cleanup_then_logout_removes_target_witness_but_not_reused_sou
         "get_config_manager",
         lambda *_args, **_kwargs: reloaded_manager,
     )
+    locked_paths = []
+    real_social_session_locks = card_drop_router_module._social_session_locks
+
+    @contextmanager
+    def record_social_session_locks(paths, **kwargs):
+        locked_paths.extend(paths)
+        with real_social_session_locks(paths, **kwargs):
+            yield
+
+    monkeypatch.setattr(
+        card_drop_router_module,
+        "_social_session_locks",
+        record_social_session_locks,
+    )
     assert card_drop_router_module._clear_auth() is True
     assert not (reloaded_manager.local_state_dir / "community_auth.json").exists()
     assert not (reloaded_manager.local_state_dir / "social_session.json").exists()
     assert not (target_root / "community_auth.json").exists()
     assert not (target_root / "social_session.json").exists()
+    assert target_root / "social_session.json" in locked_paths
+    assert source_root / "social_session.json" not in locked_paths
     assert reused_source_auth.exists()
 
 

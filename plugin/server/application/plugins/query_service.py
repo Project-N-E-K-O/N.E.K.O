@@ -435,14 +435,17 @@ def _append_plugin_fallback(
         type(exc).__name__,
         str(exc),
     )
-    result.append(
-        {
-            "id": plugin_id,
-            "name": fallback_name,
-            "description": fallback_description,
-            "entries": [],
-        }
-    )
+    card: dict[str, object] = {
+        "id": plugin_id,
+        "name": fallback_name,
+        "description": fallback_description,
+        "entries": [],
+    }
+    if isinstance(plugin_meta_obj, Mapping) and (
+        plugin_meta_obj.get("source") == "development" or "development_ref" in plugin_meta_obj
+    ):
+        card["source"] = "development"
+    result.append(card)
 
 
 def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]]:
@@ -538,6 +541,16 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 by_plugin_id=install_source_by_plugin_id,
                 by_directory_name=install_source_by_directory_name,
             )
+            if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
+                # Public cards carry display/status data, not local directory
+                # provenance or detailed runtime errors containing source paths.
+                # The guarded development endpoint provides those details.
+                for field in (
+                    "source_dir", "development_ref", "config_path",
+                    "runtime_load_error_message", "runtime_startup_error",
+                    "static_ui_config",
+                ):
+                    plugin_info.pop(field, None)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

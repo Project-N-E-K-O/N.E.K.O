@@ -1033,6 +1033,16 @@
         I.syncCompactSurfaceAnchor();
         I.scheduleCompactMinimizeBallTracking();
         I.scheduleMobileContentLayout();
+        if (I.state.galgameModeEnabled) {
+            var seqAtReveal = I.state._galgameRequestSeq;
+            I.waitForAssistantBubblesFlushed(2000).then(function () {
+                if (!I.state.galgameModeEnabled) return;
+                if (I.state._galgameRequestSeq !== seqAtReveal) return;
+                var overlayNow = I.getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                I.fetchPendingIcebreakerGalgameHandoffOrLatest();
+            });
+        }
         return true;
     }
 

@@ -18,7 +18,50 @@
     'setModel', 'focus', 'setEmotion', 'pause', 'resume', 'getState', 'resize', 'dispose',
   ]);
   const live2dNativeBaselines = new WeakMap();
+  const cameraNativeBaselines = new WeakMap();
+  // One immutable reference per live model; never retains the model itself.
+  const perspectiveReferences = new WeakMap();
   const disposedRawControllers = new WeakSet();
+
+  // Read-only, bounded analyser facade for speech played in another window.
+  // Frequency bins are real player samples; the time-domain facade preserves
+  // only RMS amplitude for basic Live2D mouth opening, not recorded audio.
+  function createSpeechAnalyser() {
+    let frame = null;
+    let expiresAt = 0;
+    let context = Object.freeze({ sampleRate: 48000 });
+    const current = () => Date.now() <= expiresAt ? frame : null;
+    return Object.freeze({
+      get frequencyBinCount() { return current()?.bins.length || 256; },
+      get fftSize() { return this.frequencyBinCount * 2; },
+      get context() { return context; },
+      update(value) {
+        if (!value || !Array.isArray(value.bins) || value.bins.length < 16
+          || value.bins.length > 256 || (value.bins.length & (value.bins.length - 1)) !== 0
+          || !value.bins.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+          || !Number.isFinite(value.rms) || value.rms < 0 || value.rms > 1
+          || !Number.isFinite(value.sampleRate) || value.sampleRate < 1000 || value.sampleRate > 192000) {
+          frame = null;
+          expiresAt = 0;
+          return false;
+        }
+        frame = { bins: value.bins.slice(), rms: value.rms };
+        context = Object.freeze({ sampleRate: value.sampleRate });
+        expiresAt = Date.now() + 750;
+        return true;
+      },
+      clear() { frame = null; expiresAt = 0; },
+      getByteFrequencyData(target) {
+        target.fill(0);
+        const bins = current()?.bins;
+        if (bins) target.set(bins.slice(0, target.length));
+      },
+      getByteTimeDomainData(target) {
+        const amplitude = Math.min(127, Math.round((current()?.rms || 0) * 128));
+        for (let i = 0; i < target.length; i++) target[i] = 128 + (i % 2 ? amplitude : -amplitude);
+      },
+    });
+  }
 
   class NekoMiniGameAvatarHostError extends Error {
     constructor(code, message, details = {}) {
@@ -64,6 +107,206 @@
     return parts.length === 2 ? parts : ['center', 'center'];
   }
 
+  // CSS-pixel layout shared by image, Live2D and projected 3D bounds. No engine
+  // units, game names, persistent caches or renderer-owned listeners here.
+  function fitRectangle(size, viewport, fit = {}) {
+    const width = Number(viewport?.width), height = Number(viewport?.height);
+    const sourceWidth = Number(size?.width), sourceHeight = Number(size?.height);
+    if (![width, height, sourceWidth, sourceHeight].every(n => Number.isFinite(n) && n > 0)) {
+      fail('viewport_unavailable', 'Avatar bounds and viewport must have usable dimensions');
+    }
+    if (fit.autoScale !== undefined && typeof fit.autoScale !== 'boolean') {
+      fail('invalid_request', 'Avatar fit.autoScale must be boolean');
+    }
+    const mode = fit.mode || 'contain';
+    if (!['contain', 'cover', 'native', 'width', 'height'].includes(mode)) {
+      fail('invalid_request', 'Avatar fit.mode is invalid');
+    }
+    const padding = Number(fit.padding ?? 0);
+    const multiplier = Number(fit.scaleMultiplier ?? 1);
+    const minWidth = Number(fit.minWidth ?? 0), minHeight = Number(fit.minHeight ?? 0);
+    if (![padding, minWidth, minHeight].every(n => Number.isFinite(n) && n >= 0)
+        || !Number.isFinite(multiplier) || multiplier <= 0) {
+      fail('invalid_request', 'Avatar fit dimensions and multiplier must be finite and non-negative');
+    }
+    const availableWidth = Math.max(1, width - 2 * padding);
+    const availableHeight = Math.max(1, height - 2 * padding);
+    const widthRatio = availableWidth / sourceWidth, heightRatio = availableHeight / sourceHeight;
+    const automatic = fit.autoScale !== false && mode !== 'native';
+    let ratio = multiplier;
+    if (automatic) {
+      const maximum = mode === 'width' ? widthRatio : mode === 'height' ? heightRatio
+        : mode === 'cover' ? Math.max(widthRatio, heightRatio) : Math.min(widthRatio, heightRatio);
+      // A soft minimum must never override the chosen maximum/axis policy.
+      ratio = Math.min(maximum, Math.max(maximum * multiplier,
+        minWidth / sourceWidth, minHeight / sourceHeight));
+    }
+    const fittedWidth = sourceWidth * ratio, fittedHeight = sourceHeight * ratio;
+    const [vertical, horizontal] = normalizeAlignment(fit.align);
+    const x = horizontal === 'left' ? padding
+      : horizontal === 'right' ? width - padding - fittedWidth : (width - fittedWidth) / 2;
+    const y = vertical === 'top' ? padding
+      : vertical === 'bottom' ? height - padding - fittedHeight : (height - fittedHeight) / 2;
+    return Object.freeze({ width: fittedWidth, height: fittedHeight, x, y, scale: ratio,
+      minimumSatisfied: !automatic || (fittedWidth + 1e-7 >= minWidth && fittedHeight + 1e-7 >= minHeight),
+      clipped: x < 0 || y < 0 || x + fittedWidth > width + 1e-7 || y + fittedHeight > height + 1e-7 });
+  }
+
+  function capturePerspectiveReference(THREE, model, metadata = {}) {
+    model.updateWorldMatrix(true, true);
+    if (Math.abs(model.matrixWorld.determinant()) < 1e-12) {
+      fail('invalid_renderer', 'Avatar reference root has a singular transform');
+    }
+    const inverseRoot = model.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    const vertex = new THREE.Vector3();
+    model.traverse(object => {
+      const positions = object.geometry?.getAttribute?.('position');
+      if (!positions) return;
+      if (object.isInstancedMesh) fail('invalid_renderer', 'Instanced Avatar reference is unsupported');
+      const toRoot = new THREE.Matrix4().multiplyMatrices(inverseRoot, object.matrixWorld);
+      for (let i = 0; i < positions.count; i += 1) {
+        // getVertexPosition includes morph targets and current skinning, unlike
+        // cached geometry/SkinnedMesh.boundingBox. No mutation of engine bounds.
+        if (object.isMesh) object.getVertexPosition(i, vertex);
+        else vertex.fromBufferAttribute(positions, i);
+        vertex.applyMatrix4(toRoot);
+        if (![vertex.x, vertex.y, vertex.z].every(Number.isFinite)) {
+          fail('invalid_renderer', 'Avatar reference contains non-finite vertices');
+        }
+        box.expandByPoint(vertex);
+      }
+    });
+    if (box.isEmpty()) fail('invalid_renderer', 'Avatar model has empty bounds');
+    const info = Object.freeze({ source: metadata.source || 'current-pose-fallback',
+      reason: metadata.reason || 'reference-not-prepared',
+      animation: metadata.animation || null,
+      height: box.max.y - box.min.y });
+    perspectiveReferences.set(model, { box, info });
+    return info;
+  }
+
+  function releasePerspectiveReference(model, camera) {
+    if (model) perspectiveReferences.delete(model);
+    if (camera) cameraNativeBaselines.delete(camera);
+  }
+
+  async function preparePerspectiveReference(THREE, manager, options = {}) {
+    const kind = options.type;
+    if (kind !== 'vrm' && kind !== 'mmd') fail('invalid_renderer', 'Expected VRM or MMD reference');
+    const loaded = manager.currentModel;
+    const model = kind === 'vrm' ? loaded?.vrm?.scene : loaded?.mesh;
+    if (!model) fail('invalid_renderer', 'Avatar model is not loaded');
+    const current = () => !options.signal?.aborted && manager.currentModel === loaded
+      && (typeof options.isCurrent !== 'function' || options.isCurrent());
+    const check = () => { if (!current()) {
+      releasePerspectiveReference(model, manager.camera);
+      fail('disposed', 'Avatar reference preparation was cancelled');
+    } };
+    check();
+    const fallback = capturePerspectiveReference(THREE, model, { reason: 'standing-reference-unavailable' });
+    const visible = model.visible;
+    model.visible = false;
+    const animation = kind === 'vrm' ? '/static/vrm/animation/wait03.vrma.gz' : '/static/mmd/animation/wait03.vmd';
+    try {
+      if (kind === 'vrm') {
+        const ok = await manager.playVRMAAnimation?.(animation,
+          { loop: true, immediate: true, isIdle: true, shouldApply: current });
+        check();
+        if (ok !== true) return fallback;
+        // Immediate playback evaluates the clip at t=0; update normalized bones
+        // before reading raw skinned vertices. No sleep or physics time step.
+        manager.animation?.update?.(0);
+      } else {
+        const clip = await manager.loadAnimation?.(animation, { immediate: true });
+        check();
+        if (!clip) return fallback;
+        // MMD loadAnimation resolves after frame-zero mixer, IK and grant work.
+        manager.playAnimation?.('idle');
+      }
+      model.updateWorldMatrix(true, true);
+      const inverseRoot = model.matrixWorld.clone().invert();
+      const bone = (vrmName, mmdName) => kind === 'vrm'
+        ? loaded.vrm.humanoid?.getRawBoneNode?.(vrmName)
+        : loaded.mesh.skeleton?.bones?.find(node => node.name === mmdName);
+      const point = node => node?.getWorldPosition(new THREE.Vector3()).applyMatrix4(inverseRoot);
+      // A named idle is not proof of a standing pose. Require both wrists below
+      // upper arms and head above hips in this model's fixed local Y-up frame.
+      const head = point(bone('head', '頭')), hips = point(bone('hips', '下半身'));
+      const arms = [['leftUpperArm', '左腕', 'leftHand', '左手首'],
+        ['rightUpperArm', '右腕', 'rightHand', '右手首']];
+      const standing = head && hips && head.y > hips.y && arms.every(names => {
+        const upper = point(bone(names[0], names[1])), hand = point(bone(names[2], names[3]));
+        if (!upper || !hand) return false;
+        const length = upper.distanceTo(hand);
+        return length > 1e-6 && upper.y - hand.y >= length * 0.5;
+      });
+      check();
+      if (!standing) return fallback;
+      return capturePerspectiveReference(THREE, model,
+        { source: 'standing-reference', reason: 'validated-arms-down', animation });
+    } catch (error) {
+      check();
+      // Optional reference failure must not make an otherwise usable model fail.
+      return fallback;
+    } finally {
+      if (current()) model.visible = visible;
+    }
+  }
+
+  function fitPerspectiveModel(THREE, model, camera, viewport, fit = {}, view = {}) {
+    if (!THREE?.Box3 || !model || !camera?.isPerspectiveCamera) {
+      fail('invalid_renderer', 'Avatar 3D fit requires a model and perspective camera');
+    }
+    model.updateWorldMatrix(true, true);
+    if (!perspectiveReferences.has(model)) capturePerspectiveReference(THREE, model);
+    const reference = perspectiveReferences.get(model);
+    const box = reference.box.clone().applyMatrix4(model.matrixWorld);
+    if (box.isEmpty()) fail('invalid_renderer', 'Avatar model has empty bounds');
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    let baseline = cameraNativeBaselines.get(camera);
+    if (!baseline || baseline.model !== model) {
+      // Weak-key lifetime; only the current model is retained per live camera.
+      baseline = { model, height: viewport.height, zoom: camera.zoom,
+        distance: camera.position.distanceTo(center) || Math.max(size.x, size.y, size.z) * 2 };
+      cameraNativeBaselines.set(camera, baseline);
+    }
+    const automatic = fit.autoScale !== false && fit.mode !== 'native';
+    const distance = automatic ? Math.max(size.x, size.y, size.z, 0.001) * 2 : baseline.distance;
+    camera.position.copy(center).add(new THREE.Vector3(0, 0, distance).applyQuaternion(camera.quaternion));
+    camera.aspect = viewport.width / viewport.height;
+    camera.zoom = automatic ? 1 : baseline.zoom * baseline.height / viewport.height;
+    camera.clearViewOffset();
+    camera.near = Math.max(0.00001, distance - size.length());
+    camera.far = Math.max(camera.near + 1, distance + size.length() * 2);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) {
+      for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    }
+    const projected = () => {
+      const points = corners.map(p => p.clone().project(camera));
+      const left = (Math.min(...points.map(p => p.x)) + 1) * viewport.width / 2;
+      const top = (1 - Math.max(...points.map(p => p.y))) * viewport.height / 2;
+      return { x: left, y: top,
+        width: (Math.max(...points.map(p => p.x)) - Math.min(...points.map(p => p.x))) * viewport.width / 2,
+        height: (Math.max(...points.map(p => p.y)) - Math.min(...points.map(p => p.y))) * viewport.height / 2 };
+    };
+    const layout = fitRectangle(projected(), viewport, fit);
+    camera.zoom *= layout.scale * (Number(view.scale ?? 100) / 100);
+    camera.updateProjectionMatrix();
+    const current = projected();
+    const aligned = fitRectangle(current, viewport, { ...fit, autoScale: false, scaleMultiplier: 1 });
+    const dx = aligned.x - current.x + viewport.width * Number(view.x || 0) / 100;
+    const dy = aligned.y - current.y + viewport.height * Number(view.y || 0) / 100;
+    camera.setViewOffset(viewport.width, viewport.height, -dx, -dy,
+      viewport.width, viewport.height);
+    return Object.freeze({ ...projected(), minimumSatisfied: layout.minimumSatisfied,
+      reference: reference.info });
+  }
+
   function fitLive2DModel(model, viewport, fit = {}) {
     if (!model || !model.scale || typeof model.scale.set !== 'function') {
       fail('invalid_renderer', 'A scalable Live2D model is required');
@@ -75,43 +318,20 @@
     if (!(width > 0) || !(height > 0) || !(modelWidth > 0) || !(modelHeight > 0)) {
       fail('viewport_unavailable', 'Live2D model and viewport must have usable dimensions');
     }
-    const padding = Math.max(0, Number(fit.padding || 0));
-    const multiplier = Math.max(0.05, Number(fit.scaleMultiplier || 1));
-    const availableWidth = Math.max(1, width - padding * 2);
-    const availableHeight = Math.max(1, height - padding * 2);
-    const mode = String(fit.mode || 'contain');
-    let nextScaleX;
-    let nextScaleY;
-    if (mode === 'native') {
-      let baseline = live2dNativeBaselines.get(model);
-      if (!baseline) {
-        baseline = Object.freeze({ x: Number(model.scale.x), y: Number(model.scale.y) });
-        live2dNativeBaselines.set(model, baseline);
-      }
-      nextScaleX = baseline.x * multiplier;
-      nextScaleY = baseline.y * multiplier;
-    } else {
-      const ratio = mode === 'cover'
-        ? Math.max(availableWidth / modelWidth, availableHeight / modelHeight)
-        : Math.min(availableWidth / modelWidth, availableHeight / modelHeight);
-      nextScaleX = Number(model.scale.x) * ratio * multiplier;
-      nextScaleY = Number(model.scale.y) * ratio * multiplier;
+    let baseline = live2dNativeBaselines.get(model);
+    if (!baseline) {
+      baseline = Object.freeze({ x: Number(model.scale.x), y: Number(model.scale.y),
+        width: modelWidth, height: modelHeight });
+      live2dNativeBaselines.set(model, baseline);
     }
-    model.scale.set(nextScaleX, nextScaleY);
-
-    const [vertical, horizontal] = normalizeAlignment(fit.align);
+    const layout = fitRectangle(baseline, viewport, fit);
+    model.scale.set(baseline.x * layout.scale, baseline.y * layout.scale);
     const fittedWidth = Number(model.width);
     const fittedHeight = Number(model.height);
-    const boundsX = horizontal === 'left'
-      ? padding
-      : (horizontal === 'right' ? width - padding - fittedWidth : (width - fittedWidth) / 2);
-    const boundsY = vertical === 'top'
-      ? padding
-      : (vertical === 'bottom' ? height - padding - fittedHeight : (height - fittedHeight) / 2);
     const anchorX = Number(model.anchor?.x || 0);
     const anchorY = Number(model.anchor?.y || 0);
-    model.x = boundsX + fittedWidth * anchorX;
-    model.y = boundsY + fittedHeight * anchorY;
+    model.x = layout.x + fittedWidth * anchorX;
+    model.y = layout.y + fittedHeight * anchorY;
     return Object.freeze({
       width: fittedWidth,
       height: fittedHeight,
@@ -119,6 +339,7 @@
       y: model.y,
       scaleX: Number(model.scale.x),
       scaleY: Number(model.scale.y),
+      minimumSatisfied: layout.minimumSatisfied,
     });
   }
 
@@ -171,6 +392,27 @@
       }
       const containerId = String(descriptor.containerId || '').trim();
       return containerId ? documentImpl?.getElementById?.(containerId) : null;
+    }
+
+    function clipViewport(descriptor, viewport) {
+      const style = descriptorContainer(descriptor)?.style;
+      if (!style?.getPropertyValue) return () => {};
+      const values = { overflow: 'hidden' };
+      if (viewport.mode === 'fixed') Object.assign(values, {
+        width: `${viewport.width}px`, height: `${viewport.height}px`,
+      });
+      const saved = Object.entries(values).map(([key, value]) => {
+        const old = style.getPropertyValue(key), priority = style.getPropertyPriority(key);
+        style.setProperty(key, value, 'important');
+        return { key, value, old, priority };
+      });
+      return () => {
+        for (const { key, value, old, priority } of saved) {
+          if (style.getPropertyValue(key) !== value) continue;
+          if (old) style.setProperty(key, old, priority);
+          else style.removeProperty(key);
+        }
+      };
     }
 
     function measureViewport(config, descriptor) {
@@ -361,6 +603,7 @@
       active.delete(state.config.slot);
       detachResizeLifecycle(state);
       disposeRaw(state.raw, `${state.config.slot}.dispose`);
+      state.restoreClip?.();
     }
 
     function ensureState(state, operation) {
@@ -371,27 +614,64 @@
     function publicController(state) {
       return Object.freeze({
         get disposed() { return disposed || state.disposed; },
+        // Trusted adapter forwarding: nested providers must resize their inner
+        // controller rather than acknowledging an update without applying it.
+        resize(viewport, fit = state.config.fit) {
+          return enqueueStateOperation(state, 'resize', async () => {
+            const next = viewportSize(viewport?.width, viewport?.height, 'fixed');
+            const config = { ...state.config, viewport: next, fit, resize: { mode: 'fixed' } };
+            await state.raw.resize(next, fit, Object.freeze({ reason: 'explicit' }));
+            ensureState(state, 'resize');
+            detachResizeLifecycle(state);
+            state.restoreClip?.();
+            state.restoreClip = clipViewport(state.descriptor, next);
+            state.config = config;
+            state.viewport = next;
+          });
+        },
         async setModel(model) {
           return enqueueStateOperation(state, 'setModel', async () => {
             await state.raw.setModel(model);
             await resizeState(state, 'model-changed');
           });
         },
+        setView(view) {
+          return enqueueStateOperation(state, 'setView', () => {
+            if (typeof state.raw.setView !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setView', {
+                operation: 'setView',
+              });
+            }
+            return state.raw.setView(view);
+          });
+        },
+        setSpeaking(active) {
+          return enqueueStateOperation(state, 'setSpeaking', () => {
+            if (typeof state.raw.setSpeaking !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setSpeaking', {
+                operation: 'setSpeaking',
+              });
+            }
+            return state.raw.setSpeaking(active);
+          });
+        },
+        setSpeechPlayback(frame) {
+          return enqueueStateOperation(state, 'setSpeechPlayback', () => {
+            if (typeof state.raw.setSpeechPlayback !== 'function') return false;
+            return state.raw.setSpeechPlayback(frame);
+          });
+        },
         focus(point) {
-          ensureState(state, 'focus');
-          return state.raw.focus(point);
+          return enqueueStateOperation(state, 'focus', () => state.raw.focus(point));
         },
         setEmotion(name) {
-          ensureState(state, 'setEmotion');
-          return state.raw.setEmotion(name);
+          return enqueueStateOperation(state, 'setEmotion', () => state.raw.setEmotion(name));
         },
         pause() {
-          ensureState(state, 'pause');
-          return state.raw.pause();
+          return enqueueStateOperation(state, 'pause', () => state.raw.pause());
         },
         resume() {
-          ensureState(state, 'resume');
-          return state.raw.resume();
+          return enqueueStateOperation(state, 'resume', () => state.raw.resume());
         },
         getState() {
           ensureState(state, 'getState');
@@ -424,6 +704,7 @@
       pending.set(slot, pendingState);
       let raw = null;
       let state = null;
+      const restoreClip = clipViewport(descriptor, viewport);
       try {
         const controllerCreation = Promise.resolve().then(() => descriptor.createController({
           config,
@@ -454,6 +735,7 @@
         state = {
           config,
           descriptor,
+          restoreClip,
           raw,
           viewport,
           disposed: false,
@@ -476,7 +758,7 @@
         return publicController(state);
       } catch (error) {
         if (state) disposeState(state);
-        else disposeRaw(raw, `${slot}.mount-failed`);
+        else { disposeRaw(raw, `${slot}.mount-failed`); restoreClip(); }
         throw error;
       } finally {
         pending.delete(slot);
@@ -504,7 +786,13 @@
 
   global.NekoMiniGameAvatarHost = Object.freeze({
     create,
+    fitRectangle,
+    fitPerspectiveModel,
+    capturePerspectiveReference,
+    preparePerspectiveReference,
+    releasePerspectiveReference,
     fitLive2DModel,
+    createSpeechAnalyser,
     Error: NekoMiniGameAvatarHostError,
   });
 })(window);

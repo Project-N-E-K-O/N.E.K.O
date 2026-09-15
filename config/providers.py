@@ -96,6 +96,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # EXTRA_BODY_OPENROUTER 来填，那两个形状都会被 400（见常量处的实测记录）。
     "gpt-5.6-luna": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5.6-terra": EXTRA_BODY_OPENAI_NATIVE,
+    "gpt-5.6-sol": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5-nano": EXTRA_BODY_OPENAI_NATIVE_MINIMAL,
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
@@ -136,6 +137,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
+    "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
     # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
     # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
     # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，

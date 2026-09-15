@@ -2032,7 +2032,7 @@
                         if (I.state._galgameRequestSeq !== seqAtOpen) return;
                         var overlayNow = I.getOverlay();
                         if (!overlayNow || overlayNow.hidden) return;
-                        I.fetchGalgameOptionsForLatestTurn();
+                        I.fetchPendingIcebreakerGalgameHandoffOrLatest();
                     });
                 }
             })

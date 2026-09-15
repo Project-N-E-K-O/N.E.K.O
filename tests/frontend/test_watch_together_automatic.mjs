@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {createAutomatic} from '../../static/game/games/watch-together/automatic.mjs';
+const timers=new Map();let seq=0,calls=0,release;
+const schedule=(fn,delay)=>{timers.set(++seq,{fn,delay});return seq;};
+const cancel=id=>timers.delete(id);
+const flush=async()=>{const [id,task]=timers.entries().next().value;timers.delete(id);task.fn();await new Promise(resolve=>setImmediate(resolve));};
+const auto=createAutomatic({schedule,cancel,report(){},advance:async current=>{calls++;await new Promise(resolve=>{release=resolve;});return current();}});
+auto.start();await flush();auto.next();auto.next();assert.equal(calls,1);
+auto.stop();release();await new Promise(resolve=>setImmediate(resolve));assert.equal(timers.size,0,'stop cancels late work');
+let attempts=0;
+const retry=createAutomatic({schedule,cancel,report(){},advance:async()=>++attempts>=3});
+retry.start();await flush();assert.equal([...timers.values()][0].delay,4000);await flush();assert.equal([...timers.values()][0].delay,8000);await flush();assert.equal(timers.size,0);retry.next();await flush();assert.equal(attempts,4);retry.stop();
+const blocked=createAutomatic({schedule,cancel,report(){},advance:async()=>{throw Object.assign(Error('gesture'),{name:'NotAllowedError'});}});
+blocked.start();await flush();assert.equal(blocked.enabled,false);assert.equal(timers.size,0,'permission failure must not endlessly skip videos');
+console.log('automatic: serialized transitions, cancellation, backoff and permission gate passed');

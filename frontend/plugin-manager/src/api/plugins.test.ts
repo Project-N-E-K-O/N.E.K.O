@@ -9,6 +9,14 @@ vi.mock('@/api', () => ({
 }))
 
 describe('plugin hosted UI API', () => {
+  it('marks aggregate refreshes as local development actions and preserves caller options', async () => {
+    const { refreshPluginsRegistry } = await import('./plugins')
+    await refreshPluginsRegistry({ timeout: 1234, preserveMessagesOn404: true, headers: { 'X-Other': 'value' } })
+    expect(postMock).toHaveBeenCalledWith('/plugins/refresh', undefined, {
+      timeout: 1234, preserveMessagesOn404: true,
+      headers: { 'X-Other': 'value', 'X-Neko-Development': '1' },
+    })
+  })
   beforeEach(() => {
     postMock.mockReset()
     getMock.mockReset()
@@ -51,6 +59,7 @@ describe('plugin hosted UI API', () => {
 
     expect(postMock).toHaveBeenCalledWith('/plugins/reload', undefined, {
       timeout: 0,
+      headers: { 'X-Neko-Development': '1' },
     })
   })
 

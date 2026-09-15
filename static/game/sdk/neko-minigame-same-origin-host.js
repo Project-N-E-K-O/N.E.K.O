@@ -47,7 +47,14 @@
   const ROUTE_END_ESSENTIAL_REASON_CHARS = 512;
   const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
   const DEFAULT_PENDING_REQUEST_LIMIT = 64;
+  const DEFAULT_RESPONSE_BYTE_LIMIT = 16 * 1024 * 1024;
   const DEFAULT_PROTOCOL_QUEUE_LIMIT = 64;
+  const HOST_COMMAND_ROUTE_LIMIT = 64;
+  const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
+  const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
+  const MAX_BOUNDED_RESPONSE_BYTES = 2 * 1024 * 1024;
+  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
+  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
   const DEFAULT_SPEECH_SLOT_LIMIT = 4;
   // Leave headroom above the host's 12s microphone start/stop confirmation so
@@ -63,6 +70,16 @@
   const HOST_LAUNCH_REGISTRY_LIMIT = 64;
   const HOST_REGISTRATION_CAPABILITY_LIMIT = 32;
   const GLOBAL_CONSOLE_CAPTURE_REGISTRIES = new WeakMap();
+  // Keep this set symmetric with the SDK's command-contract rejection. These
+  // fields are removed before trusted route identity is attached.
+  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    '_csrf_token',
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+  ]);
   const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
     'gamememoryenabled',
     'gameplayerinteractionmemoryenabled',
@@ -122,6 +139,10 @@
   // require a completed connectGame() and a granted capability rather than a
   // bare read off a freshly constructed host.
   const HOST_CAPABILITY_PROVIDERS = new WeakMap();
+  const HOST_AVATAR_PROVIDERS = new WeakMap();
+  const HOST_COMMAND_ROUTES = new WeakMap();
+  const HOST_DECLARED_COMMANDS = new WeakMap();
+  const AVATAR_QUERY_LIMIT = 4;
 
   const TRUSTED_PAYLOAD_MAX_DEPTH = 24;
   const TRUSTED_PAYLOAD_MAX_NODES = 4096;
@@ -151,14 +172,23 @@
     }
   }
 
-  function cloneTrustedJsonData(value, state = { nodes: 0, bytes: 0, seen: new Set() }, depth = 0) {
+  function cloneTrustedJsonData(
+    value,
+    state = {
+      nodes: 0,
+      bytes: 0,
+      seen: new Set(),
+      maxBytes: TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
+    },
+    depth = 0,
+  ) {
     if (depth > TRUSTED_PAYLOAD_MAX_DEPTH || state.nodes >= TRUSTED_PAYLOAD_MAX_NODES) {
       throw new TypeError('invalid_payload');
     }
     state.nodes += 1;
     if (typeof value === 'string') {
       state.bytes = (state.bytes || 0) + utf8ByteLength(value);
-      if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
+      if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
       return value;
     }
     if (value == null || typeof value === 'boolean') return value;
@@ -180,7 +210,7 @@
         if (key === 'toJSON') continue;
         // Keys carry bytes too, and a payload can be all keys and no values.
         state.bytes = (state.bytes || 0) + utf8ByteLength(key);
-        if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
+        if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
         const cloned = cloneTrustedJsonData(descriptor.value, state, depth + 1);
         if (cloned !== TRUSTED_PAYLOAD_OMIT) result[key] = cloned;
       }
@@ -226,18 +256,59 @@
       : unescape(encodeURIComponent(text)).length;
   }
 
+  function normalizeCommandRoutes(value) {
+    if (value === undefined) return Object.freeze({});
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const entries = Object.entries(value);
+    if (entries.length > HOST_COMMAND_ROUTE_LIMIT) return null;
+    const routes = Object.create(null);
+    for (const [name, rawPolicy] of entries) {
+      if (!/^[a-z][a-z0-9:-]{0,63}$/.test(name)) return null;
+      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) return null;
+      if (Object.keys(rawPolicy).some((key) => !['path', 'maxRequestBytes', 'maxTimeoutMs'].includes(key))) {
+        return null;
+      }
+      const path = rawPolicy.path;
+      if (
+        typeof path !== 'string'
+        || !/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*$/.test(path)
+      ) return null;
+      const maxRequestBytes = rawPolicy.maxRequestBytes === undefined
+        ? DEFAULT_COMMAND_REQUEST_BYTES
+        : rawPolicy.maxRequestBytes;
+      const maxTimeoutMs = rawPolicy.maxTimeoutMs === undefined
+        ? DEFAULT_COMMAND_TIMEOUT_MS
+        : rawPolicy.maxTimeoutMs;
+      if (
+        !Number.isInteger(maxRequestBytes)
+        || maxRequestBytes < 1
+        || maxRequestBytes > MAX_COMMAND_REQUEST_BYTES
+        || !Number.isInteger(maxTimeoutMs)
+        || maxTimeoutMs < 250
+        || maxTimeoutMs > MAX_COMMAND_TIMEOUT_MS
+      ) return null;
+      routes[name] = Object.freeze({ path, maxRequestBytes, maxTimeoutMs });
+    }
+    return Object.freeze(routes);
+  }
+
+
   function normalizeLaunchRegistration(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const gameId = String(value.gameId || '').trim();
+    const routeGameType = String(value.routeGameType || gameId).trim();
     const version = String(value.version || '').trim();
     const mode = String(value.mode || '').trim();
     if (
       !gameId
       || gameId.length > 128
+      || !/^[a-z][a-z0-9_-]{0,127}$/.test(routeGameType)
       || !version
       || version.length > 64
       || !['registered', 'development'].includes(mode)
     ) return null;
+    const commandRoutes = normalizeCommandRoutes(value.commandRoutes);
+    if (!commandRoutes) return null;
     const allowedCapabilities = Object.freeze([
       ...new Set(
         (Array.isArray(value.allowedCapabilities) ? value.allowedCapabilities : [])
@@ -248,12 +319,14 @@
     return Object.freeze({
       mode,
       gameId,
+      routeGameType,
       publisherId: (
         String(value.publisherId || '').trim().slice(0, 128)
         || (mode === 'development' ? 'local-development' : 'unknown-publisher')
       ),
       version,
       allowedCapabilities,
+      commandRoutes,
     });
   }
 
@@ -276,6 +349,9 @@
       capabilityProviders.set(registration.gameId, Object.freeze({
         quickLines: typeof rawProviders?.quickLines === 'function'
           ? rawProviders.quickLines
+          : null,
+        avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
+          ? rawProviders.avatarHostFactory
           : null,
       }));
     }
@@ -301,14 +377,26 @@
       // may request an identity/capability, but cannot mint a registered result
       // from its own values. A future marketplace can replace the bootstrap's
       // resolver without changing the public game handshake.
-      this._launchRegistration = normalizeLaunchRegistration(options.launchRegistration);
-      if (!this._launchRegistration) {
+      const normalizedLaunchRegistration = normalizeLaunchRegistration(options.launchRegistration);
+      if (!normalizedLaunchRegistration) {
         throw new NekoMiniGameHostError(
           'game_unregistered',
           'A host-issued launchRegistration is required',
           { operation: 'construct' },
         );
       }
+      HOST_COMMAND_ROUTES.set(this, normalizedLaunchRegistration.commandRoutes);
+      HOST_DECLARED_COMMANDS.set(this, new Set());
+      // Endpoint policies stay in the bootstrap-owned WeakMap rather than on
+      // the transport object exposed to same-origin game code.
+      this._launchRegistration = Object.freeze({
+        mode: normalizedLaunchRegistration.mode,
+        gameId: normalizedLaunchRegistration.gameId,
+        routeGameType: normalizedLaunchRegistration.routeGameType,
+        publisherId: normalizedLaunchRegistration.publisherId,
+        version: normalizedLaunchRegistration.version,
+        allowedCapabilities: normalizedLaunchRegistration.allowedCapabilities,
+      });
       const requestedGameType = String(options.gameType || '').trim();
       const requestedGameVersion = String(options.gameVersion || '').trim();
       if (
@@ -322,6 +410,12 @@
         );
       }
       this.gameType = this._launchRegistration.gameId;
+      Object.defineProperty(this, 'routeGameType', {
+        value: this._launchRegistration.routeGameType,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
       this.gameVersion = this._launchRegistration.version || DEFAULT_GAME_VERSION;
       this.source = String(options.source || '').trim() || `${this.gameType}_demo`;
       this.displayName = String(options.displayName || '').trim() || this.gameType || 'Mini-game';
@@ -339,13 +433,17 @@
           || `${this.gameType}_${Date.now().toString(36)}_${randomIdSuffix(options.windowImpl || window)}`,
         lanlanName: '',
       };
-      this._fetchImpl = options.fetchImpl || window.fetch.bind(window);
-      this._navigator = options.navigatorImpl || window.navigator;
+      this._characterBindingLocked = false;
       this._window = options.windowImpl || window;
+      this._fetchImpl = options.fetchImpl || this._window.fetch.bind(this._window);
+      this._navigator = options.navigatorImpl || this._window.navigator;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      this._avatarHost = options.avatarHost || null;
+      this._avatarCleanup = [];
+      this._avatarFactoryController = null;
+      this._avatarQueries = new Set();
       this._audioHost = options.audioHost || null;
+      this._mediaHost = options.mediaHost || window.NekoMiniGameMediaHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
         : {};
@@ -355,6 +453,7 @@
           : null,
       }));
       this._disposed = false;
+      this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
         active: false,
@@ -369,6 +468,8 @@
         1024,
       );
       this._pendingRequests = new Map();
+      this._visionOperations = new Set();
+      this._rawRequests = new Set();
       this._pendingStorageLockLimit = boundedPositiveInteger(
         options.storageLockPendingLimit,
         DEFAULT_STORAGE_LOCK_PENDING_LIMIT,
@@ -480,6 +581,74 @@
       });
     }
 
+    _initializeAvatar(factory) {
+      if (this._avatarInitialized || this._disposed) return;
+      this._avatarInitialized = true;
+      let provider = null;
+      try {
+        if (typeof factory === 'function') {
+          this._avatarFactoryController = new (this._window.AbortController || AbortController)();
+          provider = factory(Object.freeze({
+            windowImpl: this._window,
+            documentImpl: this._window.document,
+            fetchImpl: this._fetchImpl,
+            signal: this._avatarFactoryController.signal,
+            onCleanup: (cleanup) => {
+              if (typeof cleanup !== 'function') {
+                throw this._hostError('invalid_request', 'Avatar cleanup must be a function');
+              }
+              if (this._avatarCleanup.length >= 16) {
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release overflow allocation */ }
+                throw this._hostError('invalid_request', 'Avatar factory cleanup limit reached');
+              }
+              if (this._disposed || this._avatarFactoryController.signal.aborted) {
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release late allocation */ }
+                return;
+              }
+              this._avatarCleanup.push(cleanup);
+            },
+            // Built-in display-only source; adapters need not reproduce role data.
+            characterSource: Object.freeze({
+              getCurrentCharacter: (options) => this._readAvatarCharacter('', options),
+              getCharacter: (name, options) => this._readAvatarCharacter(name, options),
+              listCharacters: (options) => this._readAvatarNames(options),
+            }),
+          }));
+        }
+        if (provider?.then) {
+          // Factories are synchronous. Still release an accidentally async result.
+          Promise.resolve(provider).then(value => this._disposeAvatarResource(value), () => {});
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar factory must return synchronously');
+        }
+        if (provider && (typeof provider.mount !== 'function' || typeof provider.dispose !== 'function')) {
+          this._disposeAvatarResource(provider);
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar provider must support mount and dispose');
+        }
+        if (provider) HOST_AVATAR_PROVIDERS.set(this, provider);
+      } catch (_) {
+        // Optional Avatar failure must not prevent runtime/logging handshakes.
+        this._disposeAvatarResource(provider);
+        this._releaseAvatar();
+      }
+    }
+
+    _disposeAvatarResource(resource) {
+      try { Promise.resolve(resource?.dispose?.()).catch(() => {}); }
+      catch (_) { /* cleanup must not block release of remaining resources */ }
+    }
+
+    _releaseAvatar() {
+      try { this._avatarFactoryController?.abort(); } catch (_) { /* still release owned resources */ }
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      HOST_AVATAR_PROVIDERS.delete(this);
+      this._disposeAvatarResource(provider);
+      for (const cleanup of this._avatarCleanup.splice(0).reverse()) {
+        try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* continue releasing */ }
+      }
+    }
+
     connectGame(request = {}) {
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
@@ -507,6 +676,23 @@
           message: `The requested ${this.displayName} game identity is not registered by this host`,
         };
       }
+      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
+      const declaredCommands = manifest.contracts?.commands;
+      const commandNames = declaredCommands && typeof declaredCommands === 'object'
+        && !Array.isArray(declaredCommands)
+        ? Object.keys(declaredCommands)
+        : [];
+      const missingCommandRoutes = commandNames.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(commandRoutes, name),
+      );
+      if (missingCommandRoutes.length) {
+        return {
+          accepted: false,
+          code: 'capability_unavailable',
+          message: `The ${this.displayName} host does not provide every declared game command`,
+        };
+      }
+      HOST_DECLARED_COMMANDS.set(this, new Set(commandNames));
       const requested = [
         ...(Array.isArray(manifest.requiredCapabilities) ? manifest.requiredCapabilities : []),
         ...(Array.isArray(manifest.optionalCapabilities) ? manifest.optionalCapabilities : []),
@@ -518,12 +704,14 @@
         'logging',
         'voice-input',
         'speech-output',
+        ...(this._window.NekoMiniGameVisionHost?.available(this._window) ? ['vision'] : []),
         'context-read',
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
-        ...(this._avatarHost ? ['avatar-renderer'] : []),
+        ...(HOST_AVATAR_PROVIDERS.has(this) ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
+        ...(this._mediaHost ? ['media-timeline'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
       const grantedCapabilities = [...new Set(requested)].filter((name) => (
@@ -815,12 +1003,43 @@
           operation: 'avatar.mount',
         });
       }
-      if (!this._avatarHost || typeof this._avatarHost.mount !== 'function') {
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      if (!provider || typeof provider.mount !== 'function') {
         throw this._hostError('capability_unavailable', 'Avatar renderer host is unavailable', {
           operation: 'avatar.mount',
         });
       }
-      return this._avatarHost.mount(config);
+      return provider.mount(config);
+    }
+
+    async requestMedia(action, payload = {}, options = {}) {
+      this._requireGrantedCapability('media-timeline', 'media.request');
+      let response;
+      // A cold page may validate 50 timelines, each with a video and 256 audio
+      // objects (10 seconds per probe). Keep the request cancellable via options
+      // and host disposal, but do not apply the ordinary 30-second API budget.
+      const mediaValidationTimeoutMs = (257 * 10000 + 30000);
+      if (action === 'history') response = await this._request('/api/watch-together/history?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}), {}, {timeoutMs: 50 * mediaValidationTimeoutMs, ...options});
+      else if (action === 'watches') response = await this._request('/api/watch-together/watches?' + new URLSearchParams({limit:50,offset:Math.max(0,Math.floor(Number(payload.offset) || 0))}));
+      else if (action === 'character') response = await this._readCharacter(payload.name || '');
+      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload), {timeoutMs: 120000});
+      else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || '', exclude: payload.exclude || []}, {timeoutMs: 190000});
+      else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
+      else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`, {}, {timeoutMs: mediaValidationTimeoutMs, ...options});
+      else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
+      // Live lines wait for model generation plus TTS; the backend caps them at 90 seconds.
+      else if (action === 'live') response = await this._post('/api/watch-together/live', this._trustedRuntimePayload(payload), {timeoutMs: 100000});
+      else throw this._hostError('invalid_request', 'Unknown media operation');
+      if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
+      return response.json();
+    }
+
+    async mountMedia(config) {
+      this._requireGrantedCapability('media-timeline', 'media.mount');
+      if (this._disposed) throw this._hostError('disposed', 'Host disposed');
+      const timeline = await this.requestMedia('load', { job: config.job, version: config.version }, {signal: config.signal});
+      if (config.signal?.aborted || this._disposed) throw this._hostError('cancelled', 'Media mount cancelled');
+      return this._mediaHost.mount({ ...config, timeline });
     }
 
     mountAudio(config) {
@@ -839,7 +1058,7 @@
     }
 
     _gameEndpoint(path) {
-      return `/api/game/${encodeURIComponent(this.gameType)}/${path}`;
+      return `/api/game/${encodeURIComponent(this.routeGameType)}/${path}`;
     }
 
     _hostError(code, message, details = {}) {
@@ -851,12 +1070,136 @@
       return `${operation}-${Date.now().toString(36)}-${this._nextRequestId.toString(36)}`;
     }
 
+    async _bufferResponse(response, maxBytes, signal) {
+      // All _request callers consume finite REST responses, not streaming audio.
+      // Buffer before releasing the fetch signal/deadline, then hand back a fresh
+      // Response so legacy json()/clone(), headers and bodyUsed semantics survive.
+      const ResponseImpl = this._window.Response || globalThis.Response;
+      // A trusted custom fetch may return after cancellation or ignore its
+      // signal while reading. Cancel the stream itself, without awaiting a
+      // source cancel hook that may never settle.
+      const cancelBody = (body) => {
+        try { Promise.resolve(body?.cancel?.()).catch(() => {}); }
+        catch (_) { /* cancellation must not replace the request error */ }
+      };
+      const cancelled = () => this._hostError('cancelled', 'Host response reading was cancelled');
+      if (signal?.aborted) {
+        cancelBody(response?.body);
+        throw cancelled();
+      }
+      if (typeof response?.arrayBuffer === 'function' && typeof ResponseImpl === 'function') {
+        const byteLimit = maxBytes === undefined ? DEFAULT_RESPONSE_BYTE_LIMIT : maxBytes;
+        if (!Number.isSafeInteger(byteLimit) || byteLimit < 1 || byteLimit > DEFAULT_RESPONSE_BYTE_LIMIT) {
+          cancelBody(response.body);
+          throw this._hostError('invalid_response', 'Invalid host response byte limit');
+        }
+        let bytes;
+        {
+          const overflow = () => this._hostError('invalid_response', 'Host response exceeds its byte limit');
+          if (Number(response.headers?.get?.('content-length')) > byteLimit) {
+            cancelBody(response.body);
+            throw overflow();
+          }
+          if (response.body === null) {
+            // A custom arrayBuffer-only object must not masquerade as an
+            // empty response. Native getter branding avoids relying on
+            // instanceof the host's constructor for cross-realm responses.
+            let nativeEmpty = false;
+            try {
+              nativeEmpty = Object.getOwnPropertyDescriptor(ResponseImpl.prototype, 'body')
+                ?.get?.call(response) === null;
+            } catch (_) { /* not a native Response */ }
+            if (!nativeEmpty) {
+              throw this._hostError('invalid_response', 'A host response requires a readable body');
+            }
+            bytes = new Uint8Array(0);
+          }
+          else {
+            if (typeof response.body?.getReader !== 'function') {
+              cancelBody(response.body);
+              throw this._hostError('invalid_response', 'A host response requires a readable body');
+            }
+            const reader = response.body.getReader();
+            // Grow only as needed, with the same hard bound for every read.
+            // A cancelled custom reader may never settle: drop our bytes in
+            // the abort handler, not only in this coroutine's delayed finally.
+            let buffer = null;
+            let size = 0;
+            let readerCancelled = false;
+            const cancelReader = () => {
+              if (readerCancelled) return;
+              readerCancelled = true;
+              buffer = null;
+              size = 0;
+              signal?.removeEventListener('abort', cancelReader);
+              cancelBody(reader);
+            };
+            signal?.addEventListener('abort', cancelReader, { once: true });
+            try {
+              if (signal?.aborted) { cancelReader(); throw cancelled(); }
+              while (true) {
+                let { done, value } = await reader.read();
+                if (signal?.aborted) throw cancelled();
+                if (done) break;
+                if (value.byteLength > byteLimit - size) {
+                  throw overflow();
+                }
+                const needed = size + value.byteLength;
+                if (needed > (buffer?.byteLength || 0)) {
+                  let grown = new Uint8Array(Math.min(byteLimit,
+                    Math.max(needed, buffer ? buffer.byteLength * 2 : 64 * 1024)));
+                  if (buffer) grown.set(buffer.subarray(0, size));
+                  buffer = grown;
+                  grown = null;
+                }
+                if (value.byteLength) buffer.set(value, size);
+                size += value.byteLength;
+                value = null;
+              }
+              bytes = buffer ? buffer.subarray(0, size) : new Uint8Array(0);
+            } catch (error) {
+              cancelReader();
+              throw error;
+            } finally {
+              buffer = null;
+              if (!readerCancelled) signal?.removeEventListener('abort', cancelReader);
+              reader.releaseLock();
+            }
+          }
+        }
+        const replay = new ResponseImpl([204, 205, 304].includes(response.status) ? null : bytes, {
+          status: response.status, statusText: response.statusText, headers: response.headers,
+        });
+        for (const key of ['url', 'redirected', 'type']) {
+          Object.defineProperty(replay, key, { value: response[key] });
+        }
+        return replay;
+      }
+      // Lightweight trusted transports/tests may provide the JSON Response
+      // subset only for legacy unbudgeted calls. Never parse an unbounded body
+      // when the operation promises a pre-parse byte limit.
+      if (maxBytes !== undefined) {
+        throw this._hostError('invalid_response', 'A size-limited host response requires a readable body');
+      }
+      if (typeof response?.json !== 'function') return response;
+      let data;
+      let failure;
+      try { data = await response.json(); } catch (error) { failure = error; }
+      const replay = () => ({
+        ...response,
+        json: async () => { if (failure) throw failure; return data; },
+        clone: replay,
+      });
+      return replay();
+    }
+
     async _request(url, init = {}, options = {}) {
       const operation = String(options.operation || 'request');
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, { operation });
       }
-      if (this._pendingRequests.size >= this._pendingRequestLimit) {
+      if (this._pendingRequests.size >= this._pendingRequestLimit
+        || this._rawRequests.size >= this._pendingRequestLimit) {
         throw this._hostError('busy', `${this.displayName} host pending request limit reached`, { operation });
       }
 
@@ -875,6 +1218,13 @@
         externalSignal,
         externalAbortHandler: null,
         cancelReason: '',
+        rejectCancellation: null,
+      };
+      const cancellation = new Promise((_, reject) => { entry.rejectCancellation = reject; });
+      const cancel = (reason) => {
+        if (!entry.cancelReason) entry.cancelReason = reason;
+        try { controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(entry.cancelReason, 'Host request cancelled', { operation, requestId }));
       };
 
       if (externalSignal?.aborted) {
@@ -882,20 +1232,27 @@
       }
       if (externalSignal && typeof externalSignal.addEventListener === 'function') {
         entry.externalAbortHandler = () => {
-          if (!entry.cancelReason) entry.cancelReason = 'cancelled';
-          try { controller.abort(); } catch (_) { /* already aborted */ }
+          cancel('cancelled');
         };
         externalSignal.addEventListener('abort', entry.externalAbortHandler, { once: true });
       }
       entry.timeoutId = this._window.setTimeout(() => {
-        if (!entry.cancelReason) entry.cancelReason = 'timeout';
-        try { controller.abort(); } catch (_) { /* already aborted */ }
+        cancel('timeout');
       }, timeoutMs);
       this._pendingRequests.set(requestId, entry);
+      this._rawRequests.add(entry);
 
       try {
-        return await this._fetchImpl(url, { ...init, signal: controller.signal });
+        const work = Promise.resolve().then(() => {
+          if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+          return this._fetchImpl(url, { ...init, signal: controller.signal });
+        }).then(response => this._bufferResponse(response, options.maxResponseBytes, controller.signal))
+          .finally(() => this._rawRequests.delete(entry));
+        const response = await Promise.race([work, cancellation]);
+        if (controller.signal.aborted) throw this._hostError(entry.cancelReason || 'cancelled', 'Host request cancelled');
+        return response;
       } catch (error) {
+        if (!entry.cancelReason && error instanceof NekoMiniGameHostError) throw error;
         const code = entry.cancelReason || (error?.name === 'AbortError' ? 'cancelled' : 'network_error');
         const message = code === 'timeout'
           ? `${this.displayName} host request timed out after ${timeoutMs}ms`
@@ -911,6 +1268,7 @@
           entry.externalSignal.removeEventListener?.('abort', entry.externalAbortHandler);
         }
         this._pendingRequests.delete(requestId);
+        entry.rejectCancellation = null;
       }
     }
 
@@ -923,6 +1281,7 @@
         if (preserveOperations.has(entry.operation)) continue;
         entry.cancelReason = normalizedReason;
         try { entry.controller.abort(); } catch (_) { /* already aborted */ }
+        entry.rejectCancellation?.(this._hostError(normalizedReason, 'Host request cancelled', { operation: entry.operation }));
       }
     }
 
@@ -958,6 +1317,8 @@
     }
 
     resetSession({ newSession = false } = {}) {
+      this._activeCommandRouteIdentity = null;
+      this._characterBindingLocked = false;
       if (newSession || !this._session.id) {
         this._cancelVoiceControlRequests('cancelled');
         // Same entropy as the constructor's generator: a reset that mints a
@@ -974,18 +1335,37 @@
     applyRouteState(state = {}) {
       const sessionId = String(state?.session_id || state?.sessionId || '').trim();
       const lanlanName = String(state?.lanlan_name || '').trim();
+      if (
+        this._activeCommandRouteIdentity
+        && (
+          (sessionId && sessionId !== this._activeCommandRouteIdentity.sessionId)
+          || (lanlanName && lanlanName !== this._activeCommandRouteIdentity.lanlanName)
+        )
+      ) {
+        this._activeCommandRouteIdentity = null;
+      }
       if (sessionId) this._session.id = sessionId;
       if (lanlanName) this._session.lanlanName = lanlanName;
       return { sessionId: this.sessionId, lanlanName: this.routeLanlanName };
     }
 
-    _trustedRuntimePayload(payload = {}) {
+    _trustedRuntimePayload(payload = {}, options = {}) {
+      this._characterBindingLocked = true;
       const source = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload
         : {};
       let trusted;
       try {
-        trusted = cloneTrustedJsonData(source);
+        trusted = cloneTrustedJsonData(source, {
+          nodes: 0,
+          bytes: 0,
+          seen: new Set(),
+          maxBytes: boundedPositiveInteger(
+            options.maxContentBytes,
+            TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
+            MAX_COMMAND_REQUEST_BYTES,
+          ),
+        });
       } catch (cause) {
         throw this._hostError('invalid_payload', `${this.displayName} host payload is invalid`, {
           operation: 'trusted_runtime_payload',
@@ -1003,6 +1383,9 @@
       return {
         ...trusted,
         session_id: this.sessionId,
+        // Public manifest ids may differ from legacy backend route slugs. The
+        // bootstrap-owned alias controls both the URL and payload identity.
+        game_type: this.routeGameType,
         ...(this.routeLanlanName ? { lanlan_name: this.routeLanlanName } : {}),
         game_memory_enabled: memoryEnabled,
         game_memory_player_interaction_enabled: memoryEnabled,
@@ -1022,20 +1405,204 @@
       }, {
         operation: options.operation || 'post',
         timeoutMs: options.timeoutMs,
+        maxResponseBytes: options.maxResponseBytes,
         signal: options.signal,
       });
     }
 
     _postWithCsrf(path, payload, options = {}) {
-      return this.withCsrfRetry((headers) => this._post(path, jsonBody(payload, headers), {
-        ...options,
-        headers: { ...headers, ...(options.headers || {}) },
-        credentials: options.credentials || 'same-origin',
-      }));
+      return this.withCsrfRetry((headers) => {
+        const body = jsonBody(payload, headers);
+        // Include host identity and the actual token on every CSRF attempt.
+        if (options.maxRequestBytes !== undefined && utf8ByteLength(body) > options.maxRequestBytes) {
+          throw this._hostError('invalid_payload', 'The final command body exceeds its request budget', {
+            operation: options.operation,
+          });
+        }
+        return this._post(path, body, {
+          ...options,
+          headers: { ...headers, ...(options.headers || {}) },
+          credentials: options.credentials || 'same-origin',
+        });
+      });
     }
 
-    async getCharacter(lanlanName = '') {
-      this._requireGrantedCapability('avatar-renderer', 'character');
+    async _readAvatarJson(endpoint, name, options = {}) {
+      this._requireGrantedCapability('avatar-renderer', 'avatar.character');
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      const url = new URL(this._gameEndpoint(endpoint), this._window.location.origin);
+      if (name) url.searchParams.set('lanlan_name', name);
+      const raw = await this._fetchImpl(url.toString(), { signal: options.signal, credentials: 'same-origin' });
+      // _queryAvatar already owns the deadline and raw-work slot. Consume the
+      // fallback HTTP body inside that scope, with the normal REST byte bound.
+      const response = await this._bufferResponse(raw, DEFAULT_RESPONSE_BYTE_LIMIT, options.signal);
+      if (!response.ok) throw this._hostError('request_failed', 'Avatar lookup failed', { status: response.status });
+      let data;
+      try { data = await response.json(); }
+      catch (cause) {
+        if (this._disposed || options.signal?.aborted) {
+          throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+        }
+        throw this._hostError('invalid_response', 'Invalid Avatar discovery JSON', { cause });
+      }
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      return data;
+    }
+
+    async _readAvatarCharacter(name = '', options = {}) {
+      const data = await this._readAvatarJson('character', name, options);
+      if (data?.error) throw this._hostError('request_failed', 'Avatar lookup failed');
+      if (!data?.lanlan_name || (name && data.lanlan_name !== name)) return null;
+      const type = data.model_type === 'live3d' ? data.live3d_sub_type : data.model_type;
+      const paths = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path, pngtuber: data.pngtuber_path };
+      const path = paths[type];
+      const fallbackModels = Object.entries(paths)
+        .filter(([candidate, candidatePath]) => candidatePath && !(candidate === type && candidatePath === path))
+        .map(([candidate, candidatePath]) => ({ type: candidate, path: candidatePath }));
+      return {
+        name: data.lanlan_name,
+        model: path ? { type, path } : null,
+        rendererAvailable: Boolean(path && ['live2d', 'vrm', 'mmd', 'pngtuber'].includes(type)),
+        languagePreference: { locale: data.language || '', resolved: data.language_preference_resolved === true },
+        fallbackModels,
+      };
+    }
+
+    _avatarMetadata(value) {
+      const result = {};
+      if (value.languagePreference !== undefined) {
+        const preference = value.languagePreference;
+        if (!preference || typeof preference.resolved !== 'boolean' || typeof preference.locale !== 'string'
+          || preference.locale.length > 32 || (preference.locale && !/^[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2}$/i.test(preference.locale))) {
+          throw this._hostError('invalid_response', 'Invalid language preference');
+        }
+        result.languagePreference = Object.freeze({ locale: preference.resolved ? preference.locale : '', resolved: preference.resolved });
+      }
+      if (value.fallbackModels !== undefined) {
+        if (!Array.isArray(value.fallbackModels) || value.fallbackModels.length > 4) {
+          throw this._hostError('invalid_response', 'Invalid fallback models');
+        }
+        result.fallbackModels = Object.freeze(Array.from(value.fallbackModels, model => {
+          if (!model || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
+            || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048) {
+            throw this._hostError('invalid_response', 'Invalid fallback model');
+          }
+          return Object.freeze({ type: model.type, path: model.path.trim() });
+        }));
+      }
+      return result;
+    }
+
+    // Synchronous local selection only. The SDK validates discovery and its
+    // lifecycle before this commit; no backend route or global character change.
+    bindRuntimeCharacter(name) {
+      this._requireGrantedCapability('runtime', 'runtime.bindCharacter');
+      this._requireGrantedCapability('avatar-renderer', 'runtime.bindCharacter');
+      if (this._disposed) throw this._hostError('disposed', 'Host disposed');
+      if (this._characterBindingLocked || this._activeCommandRouteIdentity) {
+        throw this._hostError('invalid_state', 'Bind the character before runtime requests');
+      }
+      if (typeof name !== 'string' || !name.trim() || name.length > 256 || Array.from(name).length > 128) {
+        throw this._hostError('invalid_request', 'Invalid character name');
+      }
+      this._session.lanlanName = name.trim();
+      return this.getRuntimeState();
+    }
+
+    async _readAvatarNames(options = {}) {
+      return (await this._readAvatarJson('characters', '', options))?.names;
+    }
+
+    async _queryAvatar(operation, options, invoke) {
+      this._requireGrantedCapability('avatar-renderer', operation);
+      if (this._disposed) throw this._hostError('disposed', 'Avatar host disposed');
+      if (options.signal?.aborted) throw this._hostError('cancelled', 'Avatar query cancelled');
+      if (this._avatarQueries.size >= AVATAR_QUERY_LIMIT) throw this._hostError('busy', 'Avatar query limit reached');
+      const controller = new (this._window.AbortController || AbortController)();
+      const timeoutMs = boundedPositiveInteger(options.timeoutMs, 10000, 30000);
+      const entry = { controller, cancel: null };
+      let timer;
+      let code = '';
+      const cancelled = new Promise((_, reject) => {
+        entry.cancel = (reason) => {
+          if (code) return;
+          code = reason;
+          controller.abort();
+          reject(this._hostError(reason, 'Avatar query cancelled', { operation }));
+        };
+      });
+      const onAbort = () => entry.cancel('cancelled');
+      this._avatarQueries.add(entry);
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      timer = this._window.setTimeout(() => entry.cancel('timeout'), timeoutMs);
+      // Keep the raw slot until settlement even when a provider ignores abort.
+      // Repeated timeouts cannot launch unbounded abandoned provider work.
+      const raw = Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw this._hostError(code || 'cancelled', 'Avatar query cancelled');
+        return invoke({ signal: controller.signal, timeoutMs });
+      }).finally(() => this._avatarQueries.delete(entry));
+      try {
+        const value = await Promise.race([raw, cancelled]);
+        if (this._disposed || controller.signal.aborted) {
+          throw this._hostError(this._disposed ? 'disposed' : code || 'cancelled', 'Avatar query cancelled');
+        }
+        return value;
+      } finally {
+        this._window.clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+      }
+    }
+
+    getAvatarCharacter(name = '', options = {}) {
+      if (typeof name !== 'string' || name.length > 256 || Array.from(name).length > 128) {
+        return Promise.reject(this._hostError('invalid_request', 'Invalid character name'));
+      }
+      const requested = name.trim();
+      return this._queryAvatar('avatar.getCharacter', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const value = requested
+          ? await (typeof provider?.getCharacter === 'function'
+            ? provider.getCharacter(requested, managed) : this._readAvatarCharacter(requested, managed))
+          : await (typeof provider?.getCurrentCharacter === 'function'
+            ? provider.getCurrentCharacter(managed)
+            : typeof provider?.getCharacter === 'function'
+              ? provider.getCharacter('', managed) : this._readAvatarCharacter('', managed));
+        if (value == null) return null;
+        const characterName = value.name;
+        const model = value.model;
+        if (typeof characterName !== 'string' || !characterName.trim()
+          || characterName.length > 256 || Array.from(characterName).length > 128
+          || (model != null && (!['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
+            || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048))) {
+          throw this._hostError('invalid_response', 'Invalid character descriptor');
+        }
+        if (requested && characterName.trim() !== requested) return null;
+        return Object.freeze({
+          name: characterName.trim(),
+          model: model == null ? null : Object.freeze({ type: model.type, path: model.path.trim() }),
+          rendererAvailable: Boolean(model && value.rendererAvailable === true),
+          ...this._avatarMetadata(value),
+        });
+      });
+    }
+
+    listAvatarCharacters(options = {}) {
+      return this._queryAvatar('avatar.listCharacters', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const names = await (typeof provider?.listCharacters === 'function'
+          ? provider.listCharacters(managed) : this._readAvatarNames(managed));
+        if (!Array.isArray(names) || names.length > 256 || names.some(name => (
+          typeof name !== 'string' || !name.trim() || name.length > 256 || Array.from(name).length > 128
+        ))) throw this._hostError('invalid_response', 'Invalid character list');
+        return Object.freeze([...new Set(names.map(name => name.trim()))]);
+      });
+    }
+
+    async _readCharacter(lanlanName = '') {
       const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
       if (lanlanName && lanlanName !== this.source) {
         url.searchParams.set('lanlan_name', lanlanName);
@@ -1098,24 +1665,59 @@
       });
     }
 
-    start(payload, options = {}) {
+    async start(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_start');
-      return this._post(this._gameEndpoint('route/start'), {
-        ...this._trustedRuntimePayload(payload),
-      }, {
+      const trustedPayload = this._trustedRuntimePayload(payload);
+      const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
+      const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
         timeoutMs: 60000,
         operation: 'route_start',
         ...options,
       });
+      let data = null;
+      try { data = await response.clone().json(); }
+      catch (_) { /* the public SDK still owns response validation */ }
+      const routeState = data?.state && typeof data.state === 'object' ? data.state : null;
+      const routeActive = routeState?.game_route_active === true || data?.active === true;
+      if (response.ok && data?.ok !== false && routeActive) {
+        this._activeCommandRouteIdentity = Object.freeze({
+          gameType: this.routeGameType,
+          sessionId: String(routeState?.session_id || trustedPayload.session_id || '').trim(),
+          lanlanName: String(routeState?.lanlan_name || trustedPayload.lanlan_name || '').trim(),
+          routeInstanceId: requestedRouteInstanceId,
+        });
+      } else if (response.ok && data?.ok !== false) {
+        this._activeCommandRouteIdentity = null;
+      }
+      return response;
     }
 
-    heartbeat(payload, options = {}) {
+    _retireCommandRouteIfRuntimeInactive(data, routeInstanceId) {
+      const state = data?.state && typeof data.state === 'object' ? data.state : null;
+      const explicitlyInactive = data?.active === false || state?.game_route_active === false;
+      if (!explicitlyInactive || !this._activeCommandRouteIdentity) return false;
+      const requestedGeneration = String(routeInstanceId || '').trim();
+      if (
+        requestedGeneration
+        && requestedGeneration !== this._activeCommandRouteIdentity.routeInstanceId
+      ) return false;
+      this._activeCommandRouteIdentity = null;
+      return true;
+    }
+
+    async heartbeat(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_heartbeat');
-      return this._post(this._gameEndpoint('route/heartbeat'), this._trustedRuntimePayload(payload), {
+      const trustedPayload = this._trustedRuntimePayload(payload);
+      const response = await this._post(this._gameEndpoint('route/heartbeat'), trustedPayload, {
         timeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
         operation: 'route_heartbeat',
         ...options,
       });
+      try {
+        const data = await response.clone().json();
+        this._retireCommandRouteIfRuntimeInactive(data, trustedPayload.sdk_route_instance_id);
+      } catch (_) { /* the public SDK still owns response validation */ }
+      return response;
     }
 
     async drain(payload, options = {}) {
@@ -1137,6 +1739,7 @@
       try {
         const data = await response.clone().json();
         this._dispatchGameControls(data?.outputs, sourceRoute);
+        this._retireCommandRouteIfRuntimeInactive(data, sourceRoute.routeInstanceId);
       } catch (_) { /* the SDK still owns response validation */ }
       return response;
     }
@@ -1181,6 +1784,194 @@
       return result.finally(() => {
         this._protocolQueueDepth = Math.max(0, this._protocolQueueDepth - 1);
       });
+    }
+
+    async analyzeGameVision(payload, options = {}) {
+      this._requireGrantedCapability('vision', 'vision.analyze');
+      this._requireGrantedCapability('runtime', 'vision.analyze');
+      const identity = this._activeCommandRouteIdentity;
+      const current = () => !this._disposed && identity && identity === this._activeCommandRouteIdentity
+        && identity.sessionId === this.sessionId && identity.lanlanName === this.routeLanlanName
+        && identity.routeInstanceId === payload?.sdk_route_instance_id
+        && identity.sessionId === payload?.session_id;
+      if (!current()) throw this._hostError('session_invalid', 'Vision requires the current route');
+      const attached = 'attachments' in payload || 'text' in payload;
+      if (attached && ('region' in payload || 'prompt' in payload)) {
+        throw this._hostError('invalid_request', 'Do not mix attachments with capture input');
+      }
+      const input = cloneTrustedJsonData(attached ? {text:payload.text} : { region: payload.region, prompt: payload.prompt },
+        { nodes: 0, bytes: 0, seen: new Set(), maxBytes: 64 * 1024 });
+      const text = attached ? input.text : input.prompt;
+      if (typeof text !== 'string' || !text.trim() || text.length > (attached ? 16384 : 4096)) {
+        throw this._hostError('invalid_request', 'Vision text exceeds the input budget');
+      }
+      if (options.signal?.aborted) throw this._hostError('cancelled', 'Vision cancelled');
+      if (this._visionOperations.size) throw this._hostError('busy', 'Vision is already pending');
+      const controller = new this._window.AbortController();
+      this._visionOperations.add(controller);
+      const abort = () => controller.abort();
+      options.signal?.addEventListener('abort', abort, { once: true });
+      const timeout = this._window.setTimeout(abort, Math.min(options.timeoutMs || 90000, 90000));
+      const watch = this._window.setInterval(() => { if (!current()) abort(); }, 100);
+      try {
+        let capture;
+        let attachments;
+        if (attached) {
+          attachments = await this._window.NekoMiniGameVisionHost.normalizeAttachments(payload.attachments, {
+            windowImpl:this._window, signal:controller.signal,
+          });
+        } else {
+          capture = await this._window.NekoMiniGameVisionHost.capture(input.region, {
+            windowImpl: this._window, signal: controller.signal, timeoutMs: Math.min(options.timeoutMs || 30000, 30000),
+          });
+        }
+        if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+        const response = await this._postWithCsrf(this._gameEndpoint('vision/analyze'), {
+          session_id: identity.sessionId, lanlan_name: identity.lanlanName,
+          sdk_route_instance_id: identity.routeInstanceId,
+          ...(attached ? {text:text.trim(), attachments} : {prompt:text.trim(), image_data_url:capture.imageDataUrl}),
+        }, { signal: controller.signal, timeoutMs: 60000, operation: 'vision.analyze',
+          maxResponseBytes: MAX_BOUNDED_RESPONSE_BYTES });
+        // Body consumption remains under the capture/request lifetime and raw slot.
+        let data;
+        try { data = await response.json(); }
+        catch (_) {
+          if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+          throw this._hostError('invalid_response', 'Vision response must contain valid JSON');
+        }
+        if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+        if (!response.ok || data?.ok !== true) {
+          const reasons = {
+            invalid_image: 'invalid_image', unsupported_attachment: 'unsupported_attachment',
+            busy: 'busy', timeout: 'timeout', vision_unavailable: 'capability_unavailable',
+            route_inactive: 'session_invalid', invalid_model_response: 'invalid_response',
+          };
+          const code = typeof data?.reason === 'string' && Object.prototype.hasOwnProperty.call(reasons, data.reason)
+            ? reasons[data.reason] : 'request_failed';
+          throw this._hostError(code, 'Vision analysis failed');
+        }
+        if (typeof data.text !== 'string' || data.text.length > 8192) throw this._hostError('invalid_response', 'Invalid vision result');
+        return attached ? {text:data.text} : { text: data.text, width: capture.width, height: capture.height };
+      } finally {
+        controller.abort();
+        this._window.clearTimeout(timeout); this._window.clearInterval(watch);
+        options.signal?.removeEventListener('abort', abort);
+        this._visionOperations.delete(controller);
+      }
+    }
+
+    async executeGameCommand(nameInput, envelope = {}, options = {}) {
+      this._requireGrantedCapability('runtime', 'game_command');
+      const name = String(nameInput || '').trim();
+      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
+      const policy = Object.prototype.hasOwnProperty.call(commandRoutes, name)
+        ? commandRoutes[name]
+        : null;
+      if (!policy || !HOST_DECLARED_COMMANDS.get(this)?.has(name)) {
+        throw this._hostError(
+          'capability_denied',
+          `The ${this.displayName} command is not declared for this launch`,
+          { operation: 'game_command' },
+        );
+      }
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command envelope must be an object`,
+          { operation: 'game_command' },
+        );
+      }
+      const protocolVersion = String(envelope.protocolVersion || envelope.protocol_version || '');
+      const envelopeType = String(envelope.type || '').trim();
+      const sequence = Number(envelope.sequence);
+      const requestedSessionId = String(envelope.sessionId || envelope.session_id || '').trim();
+      const routeInstanceId = String(
+        envelope.routeInstanceId || envelope.sdk_route_instance_id || '',
+      ).trim();
+      if (
+        protocolVersion !== SDK_PROTOCOL_VERSION
+        || envelopeType !== name
+        || !Number.isSafeInteger(sequence)
+        || sequence <= 0
+      ) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command envelope is invalid`,
+          { operation: 'game_command' },
+        );
+      }
+      const activeRouteIdentity = this._activeCommandRouteIdentity;
+      const routeIdentityIsCurrent = () => (
+        !!activeRouteIdentity
+        && this._activeCommandRouteIdentity === activeRouteIdentity
+        && activeRouteIdentity.gameType === this.routeGameType
+        && activeRouteIdentity.sessionId === this.sessionId
+        && activeRouteIdentity.lanlanName === this.routeLanlanName
+        && activeRouteIdentity.routeInstanceId === routeInstanceId
+        && requestedSessionId === activeRouteIdentity.sessionId
+      );
+      if (!requestedSessionId || !routeInstanceId || !routeIdentityIsCurrent()) {
+        throw this._hostError(
+          'session_invalid',
+          `${this.displayName} command does not match the active runtime identity`,
+          { operation: 'game_command' },
+        );
+      }
+      if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} same-origin command payload must be an object`,
+          { operation: 'game_command' },
+        );
+      }
+      let payload;
+      try {
+        const commandPayload = cloneTrustedJsonData(envelope.payload, {
+          nodes: 0,
+          bytes: 0,
+          seen: new Set(),
+          maxBytes: policy.maxRequestBytes,
+        });
+        for (const key of COMMAND_PAYLOAD_HOST_IDENTITY_KEYS) delete commandPayload[key];
+        if (utf8ByteLength(JSON.stringify(commandPayload)) > policy.maxRequestBytes) {
+          throw new TypeError('invalid_payload');
+        }
+        payload = this._trustedRuntimePayload({
+          ...commandPayload,
+          sdk_route_instance_id: routeInstanceId,
+        }, { maxContentBytes: policy.maxRequestBytes });
+      } catch (cause) {
+        if (cause instanceof NekoMiniGameHostError) throw cause;
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command payload is invalid`,
+          { operation: 'game_command', cause },
+        );
+      }
+      const requestedTimeoutMs = boundedPositiveInteger(
+        options.timeoutMs,
+        DEFAULT_COMMAND_TIMEOUT_MS,
+        MAX_COMMAND_TIMEOUT_MS,
+      );
+      const response = await this._postWithCsrf(
+        this._gameEndpoint(policy.path),
+        payload,
+        {
+          timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
+          maxRequestBytes: policy.maxRequestBytes,
+          maxResponseBytes: MAX_BOUNDED_RESPONSE_BYTES,
+          signal: options.signal,
+          operation: 'game_command',
+        },
+      );
+      if (!routeIdentityIsCurrent()) {
+        throw this._hostError(
+          'session_invalid',
+          `${this.displayName} command response belongs to a retired runtime identity`,
+          { operation: 'game_command' },
+        );
+      }
+      return response;
     }
 
     startGameControlBridge(options = {}) {
@@ -1507,7 +2298,7 @@
             bridge.seenMessageIds.delete(bridge.seenMessageOrder.shift());
           }
         }
-        if (String(data.game_type || '') !== this.gameType) return;
+        if (String(data.game_type || '') !== this.routeGameType) return;
         if (data.session_id && String(data.session_id) !== this.sessionId) return;
         if (data.type === 'game_voice_transcript') {
           const text = String(data.text || '').trim();
@@ -1692,7 +2483,7 @@
           request_id: requestId,
           timestamp: Date.now(),
           action: normalizedAction,
-          game_type: this.gameType,
+          game_type: this.routeGameType,
           session_id: this.sessionId,
           ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         });
@@ -2051,7 +2842,7 @@
       if (!transport.overflowContext && payload && typeof payload === 'object') {
         transport.overflowContext = {
           session_id: String(payload.session_id || this.sessionId || ''),
-          game_type: String(payload.game_type || this.gameType),
+          game_type: String(payload.game_type || this.routeGameType),
           lanlan_name: String(payload.lanlan_name || this.routeLanlanName || ''),
           source: String(payload.source || this.source),
         };
@@ -2083,7 +2874,7 @@
       transport.overflowNotified = false;
       const payload = {
         session_id: context.session_id || this.sessionId,
-        game_type: context.game_type || this.gameType,
+        game_type: context.game_type || this.routeGameType,
         lanlan_name: context.lanlan_name || this.routeLanlanName,
         source: context.source || this.source,
         level: 'warning',
@@ -2238,7 +3029,7 @@
       const context = this._loggerContext();
       const payload = {
         session_id: context.sessionId,
-        game_type: this.gameType,
+        game_type: this.routeGameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         level,
@@ -2339,7 +3130,7 @@
       const original = entry.payload || {};
       return {
         session_id: original.session_id || this.sessionId,
-        game_type: original.game_type || this.gameType,
+        game_type: original.game_type || this.routeGameType,
         lanlan_name: original.lanlan_name || this.routeLanlanName,
         source: original.source || this.source,
         level: event === 'repeated_log_recovered' ? 'info' : 'warning',
@@ -2485,7 +3276,7 @@
       const debugLogMutationHeaders = { ...mutationHeaders };
       const payload = {
         session_id: context.sessionId,
-        game_type: this.gameType,
+        game_type: this.routeGameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         reason,
@@ -2797,6 +3588,15 @@
 
     async end(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_end');
+      const endingCommandRoute = this._activeCommandRouteIdentity;
+      const retireEndingCommandRoute = () => {
+        if (
+          endingCommandRoute
+          && this._activeCommandRouteIdentity === endingCommandRoute
+        ) {
+          this._activeCommandRouteIdentity = null;
+        }
+      };
       let parsedPayload = payload;
       if (typeof payload === 'string') {
         try {
@@ -2832,7 +3632,10 @@
           return false;
         }
       };
-      if (sendEndBeacon()) return { ok: true, beacon: true };
+      if (sendEndBeacon()) {
+        retireEndingCommandRoute();
+        return { ok: true, beacon: true };
+      }
       if (options.useBeacon && utf8ByteLength(body) > KEEPALIVE_BODY_BYTES) {
         // On unload, keepalive is the only delivery with any chance at all, so
         // shed the CALLER's payload rather than the delivery guarantee. What the
@@ -2866,7 +3669,10 @@
             shed();
           }
         }
-        if (sendEndBeacon()) return { ok: true, beacon: true, truncated: true };
+        if (sendEndBeacon()) {
+          retireEndingCommandRoute();
+          return { ok: true, beacon: true, truncated: true };
+        }
       }
       // Keepalive only while the body fits the shared quota. Past it, fetch
       // rejects before the request is sent, which turned an oversized-but-valid
@@ -2902,7 +3708,16 @@
       });
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
       const projected = this._projectRouteEndResponse(data);
-      if (response.ok) return projected;
+      if (response.ok) {
+        if (
+          projected?.ok !== false
+          && endingCommandRoute
+          && this._activeCommandRouteIdentity === endingCommandRoute
+        ) {
+          retireEndingCommandRoute();
+        }
+        return projected;
+      }
       // A non-2xx body is usually FastAPI's `{"detail": ...}`: it parses fine,
       // carries no `ok`, and no field the projection keeps -- so it arrived as
       // `{}`, and the SDK reads a plain object without `ok` as SUCCESS. The
@@ -2920,19 +3735,27 @@
     dispose(options = {}) {
       if (this._disposed) return;
       this._disposed = true;
+      for (const controller of this._visionOperations) controller.abort();
       for (const controller of this._pendingStorageLockControllers) {
         try { controller.abort(); } catch (_) { /* already aborted */ }
       }
       this._pendingStorageLockControllers.clear();
       const preserveOperations = new Set(options.preservePendingOperations || []);
       this.cancelPendingRequests('disposed', { preserveOperations });
+      // Preserved route-end requests remain bounded by their original deadline.
+      for (const entry of this._rawRequests) {
+        if (!preserveOperations.has(entry.operation)) this._rawRequests.delete(entry);
+      }
       this.stopAllSpeechRecognition();
+      this._activeCommandRouteIdentity = null;
       this.stopSpeechPlaybackBridge();
       this.stopVoiceControlBridge('disposed');
       this._grantedCapabilities.clear();
+      HOST_DECLARED_COMMANDS.set(this, new Set());
       this.stopGameControlBridge();
-      try { this._avatarHost?.dispose?.(); }
-      catch (error) { this._console.warn(`[${this.displayName}Host] avatar host dispose failed:`, error); }
+      for (const entry of this._avatarQueries) entry.cancel('disposed');
+      this._avatarQueries.clear();
+      this._releaseAvatar();
       try { this._audioHost?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] audio host dispose failed:`, error); }
       this._disposeLogger();
@@ -2942,11 +3765,14 @@
 
   const createNekoMiniGameSameOriginHost = function createNekoMiniGameSameOriginHost(options = {}) {
     const gameType = String(options.gameType || '').trim();
-    return new NekoMiniGameSameOriginHost({
+    const host = new NekoMiniGameSameOriginHost({
       ...options,
       launchRegistration: HOST_BOOTSTRAP.registrations.get(gameType) || null,
       capabilityProviders: HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null,
     });
+    // Construction/identity validation completes before any factory allocates.
+    host._initializeAvatar(HOST_BOOTSTRAP.capabilityProviders.get(gameType)?.avatarHostFactory);
+    return host;
   };
   Object.defineProperty(window, FACTORY_PROPERTY, {
     value: createNekoMiniGameSameOriginHost,

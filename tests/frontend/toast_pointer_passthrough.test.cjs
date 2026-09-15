@@ -65,6 +65,7 @@ function createElement(tagName = 'div') {
     },
     focus() { document.activeElement = this; },
     blur() { if (document.activeElement === this) document.activeElement = null; },
+    select() {},
     getBoundingClientRect() {
       return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
     },
@@ -97,25 +98,33 @@ function createDeferred() {
 function createHarness(options = {}) {
   const callbacks = {};
   const mouseThrough = [];
+  const copied = [];
+  const statusInputRegions = [];
+  const legacyCopies = [];
   const timers = new Map();
   const windowListeners = new Map();
   const documentListeners = new Map();
   let nextTimerId = 0;
   let cursorPoint = { x: 20, y: 20 };
   let cursorProvider = () => Promise.resolve(cursorPoint);
-
-  const body = createElement('body');
-  const head = createElement('head');
-  const statusToast = createElement('div');
-  statusToast.id = 'status-toast';
-  statusToast.getBoundingClientRect = () => ({
+  let statusRect = {
     left: 100,
     top: 40,
     right: 300,
     bottom: 100,
     width: 200,
     height: 60,
-  });
+  };
+
+  const body = createElement('body');
+  const head = createElement('head');
+  const statusToast = createElement('div');
+  statusToast.id = 'status-toast';
+  statusToast.offsetLeft = 100;
+  statusToast.offsetTop = 40;
+  statusToast.offsetWidth = 200;
+  statusToast.offsetHeight = 60;
+  statusToast.getBoundingClientRect = () => ({ ...statusRect });
   body.appendChild(statusToast);
 
   document = {
@@ -137,13 +146,22 @@ function createHarness(options = {}) {
       }
       return null;
     },
+    execCommand(command) {
+      legacyCopies.push(command);
+      return command === 'copy';
+    },
     addEventListener(type, listener) { documentListeners.set(type, listener); },
   };
 
   const api = {
+    copyText(value) {
+      copied.push(value);
+      return typeof options.copyText === 'function' ? options.copyText(value) : true;
+    },
     supportsStatusPointerTracking: options.supportsStatusPointerTracking !== false,
     getCursorPoint() { return cursorProvider(); },
     setMouseThrough(ignore) { mouseThrough.push(ignore); },
+    setStatusInputRegion(rect) { statusInputRegions.push(rect); return true; },
     onShowStatusToast(callback) { callbacks.status = callback; },
     onShowVoicePreparing(callback) { callbacks.voicePreparing = callback; },
     onHideVoicePreparing(callback) { callbacks.voiceHide = callback; },
@@ -155,11 +173,18 @@ function createHarness(options = {}) {
     t(_key, options) { return options.defaultValue; },
     addEventListener(type, listener) { windowListeners.set(type, listener); },
     removeEventListener() {},
+    requestAnimationFrame(callback) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, { callback, delay: 16 });
+      return nextTimerId;
+    },
+    cancelAnimationFrame(id) { timers.delete(id); },
   };
 
   vm.runInNewContext(inlineScript, {
     window,
     document,
+    navigator: options.navigatorClipboard ? { clipboard: options.navigatorClipboard } : {},
     console: { log() {} },
     Promise,
     Date,
@@ -180,6 +205,10 @@ function createHarness(options = {}) {
   return {
     statusToast,
     mouseThrough,
+    copied,
+    legacyCopies,
+    statusInputRegions,
+    setStatusRect(rect) { statusRect = { ...rect }; },
     setCursor(point) { cursorPoint = point; },
     setCursorProvider(provider) { cursorProvider = provider; },
     emitStatus(message = 'saved') { callbacks.status({ message, duration: 3000 }); },
@@ -192,6 +221,9 @@ function createHarness(options = {}) {
     },
     hasTimer(delay) {
       return Array.from(timers.values()).some((timer) => timer.delay === delay);
+    },
+    countTimers(delay) {
+      return Array.from(timers.values()).filter((timer) => timer.delay === delay).length;
     },
     // 自动消失计时器是唯一延迟大于 1s 的：show=10ms、轮询=50ms、cleanup=400ms。
     // 按区间而不是精确值判定，因为暂停/恢复会把剩余时长按实际经过时间扣掉。
@@ -219,7 +251,135 @@ async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
+
+test('clicking status text copies the complete toast without changing mouse-through state', async () => {
+  const harness = createHarness();
+  harness.emitStatus('API request failed: 401');
+
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.onclick({ stopPropagation() {} });
+  await flushPromises();
+
+  assert.deepEqual(harness.copied, ['API request failed: 401']);
+  assert.deepEqual(harness.mouseThrough, []);
+  assert.equal(text.classList.contains('status-toast-copy-success'), true);
+});
+
+test('status text exposes the same copy action to the keyboard', async () => {
+  const harness = createHarness();
+  harness.emitStatus('API request failed: 403');
+
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  let prevented = false;
+  text.onkeydown({
+    key: 'Enter',
+    preventDefault() { prevented = true; },
+    stopPropagation() {},
+  });
+  await flushPromises();
+
+  assert.equal(text._attributes.get('role'), 'button');
+  assert.equal(text.tabIndex, 0);
+  assert.equal(prevented, true);
+  assert.deepEqual(harness.copied, ['API request failed: 403']);
+});
+
+test('a completed copy cannot show feedback on a replacement toast', async () => {
+  const pendingCopy = createDeferred();
+  const harness = createHarness({ copyText: () => pendingCopy.promise });
+  harness.emitStatus('first error');
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.onclick({ stopPropagation() {} });
+
+  harness.emitStatus('second error');
+  pendingCopy.resolve(true);
+  await flushPromises();
+
+  assert.equal(text.textContent, 'second error');
+  assert.equal(text.classList.contains('status-toast-copy-success'), false);
+});
+
+test('dedicated toast falls back to the web clipboard when its bridge declines', async () => {
+  const webCopies = [];
+  const harness = createHarness({
+    copyText: () => false,
+    navigatorClipboard: { writeText(value) { webCopies.push(value); return Promise.resolve(); } },
+  });
+  harness.emitStatus('bridge fallback');
+
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.onclick({ stopPropagation() {} });
+  await flushPromises();
+
+  assert.deepEqual(webCopies, ['bridge fallback']);
+  assert.equal(text.classList.contains('status-toast-copy-success'), true);
+});
+
+test('dedicated toast falls back to legacy copy when bridge and web clipboard fail', async () => {
+  const harness = createHarness({
+    copyText: () => false,
+    navigatorClipboard: { writeText() { return Promise.reject(new Error('denied')); } },
+  });
+  harness.emitStatus('legacy fallback');
+
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.onclick({ stopPropagation() {} });
+  await flushPromises();
+
+  assert.deepEqual(harness.legacyCopies, ['copy']);
+  assert.equal(text.classList.contains('status-toast-copy-success'), true);
+});
+
+test('pointer copy releases focus and resumes auto-hide', () => {
+  const harness = createHarness();
+  harness.emitStatus('copy and close later');
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.focus();
+  harness.statusToast.dispatch('focusin');
+  assert.equal(harness.hasAutoHideTimer(), false);
+
+  text.onclick({ stopPropagation() {} });
+
+  assert.equal(document.activeElement, null);
+  assert.equal(harness.hasAutoHideTimer(), true);
+});
+
+test('pointer copy keeps auto-hide paused while the toast remains hovered', () => {
+  const harness = createHarness();
+  harness.emitStatus('keep reading');
+  const text = harness.statusToast.querySelector('#status-toast-text');
+  text.focus();
+  harness.statusToast.dispatch('focusin');
+  harness.setHover(true);
+
+  text.onclick({ stopPropagation() {} });
+
+  assert.equal(document.activeElement, null);
+  assert.equal(harness.hasAutoHideTimer(), false);
+
+  harness.setHover(false);
+  harness.statusToast.dispatch('mouseleave');
+  assert.equal(harness.hasAutoHideTimer(), true);
+});
+
+test('dedicated repeated copies reset the success feedback timer', async () => {
+  const harness = createHarness();
+  harness.emitStatus('copy twice');
+  const text = harness.statusToast.querySelector('#status-toast-text');
+
+  text.onclick({ stopPropagation() {} });
+  await flushPromises();
+  text.onclick({ stopPropagation() {} });
+  await flushPromises();
+
+  assert.equal(harness.countTimers(450), 1);
+  assert.equal(text.classList.contains('status-toast-copy-success'), true);
+  harness.runTimer(450);
+  assert.equal(text.classList.contains('status-toast-copy-success'), false);
+});
 
 test('ordinary status toast only captures input while the cursor is inside its rectangle', async () => {
   const harness = createHarness();
@@ -346,8 +506,8 @@ test('a real DOM mouseenter does not double-count the poll-driven pause', async 
   );
 });
 
-// Niri 小窗与非 Electron 环境走 supportsStatusPointerTracking === false，
-// 此时轮询不启动，hover 判定必须退回纯 DOM 语义。
+// Niri 小窗走 supportsStatusPointerTracking === false，不做不可靠的全局光标轮询；
+// 由 preload 把真实气泡矩形交给合成器，透明余量仍保持穿透。
 test('with pointer tracking unsupported the DOM hover path still governs', async () => {
   const harness = createHarness({ supportsStatusPointerTracking: false });
   harness.setCursor({ x: 150, y: 60 });
@@ -356,7 +516,10 @@ test('with pointer tracking unsupported the DOM hover path still governs', async
   harness.runTimer(10);
   await flushPromises();
 
-  assert.deepEqual(harness.mouseThrough, [true], '不支持时应全程穿透，不发起轮询');
+  assert.deepEqual(harness.mouseThrough, [], 'Niri 精确输入区域不应再切换整窗穿透状态');
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.statusInputRegions)), [
+    { x: 100, y: 40, width: 200, height: 60 },
+  ]);
   assert.equal(harness.hasTimer(50), false);
   assert.equal(
     harness.hasAutoHideTimer(),
@@ -366,6 +529,35 @@ test('with pointer tracking unsupported the DOM hover path still governs', async
 
   harness.statusToast.dispatch('mouseenter', {});
   assert.equal(harness.hasAutoHideTimer(), false, 'DOM hover 仍应能暂停');
+});
+
+test('Niri compact status input region is cleared as soon as the toast closes', () => {
+  const harness = createHarness({ supportsStatusPointerTracking: false });
+
+  harness.emitStatus();
+  harness.runTimer(10);
+  harness.statusToast.querySelector('#status-toast-close').onclick({ stopPropagation() {} });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.statusInputRegions)), [
+    { x: 100, y: 40, width: 200, height: 60 },
+    null,
+  ]);
+});
+
+test('Niri compact status input region follows the visible transform during entry', () => {
+  const harness = createHarness({ supportsStatusPointerTracking: false });
+  harness.emitStatus();
+  harness.runTimer(10);
+
+  harness.setStatusRect({ left: 116, top: 24, right: 284, bottom: 74, width: 168, height: 50 });
+  harness.runTimer(16);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.statusInputRegions.at(-1))), {
+    x: 116,
+    y: 24,
+    width: 168,
+    height: 50,
+  });
 });
 
 // 连发场景：光标全程停在矩形上不动。第二条提示必须重新 pin —— 若 inside 标志位

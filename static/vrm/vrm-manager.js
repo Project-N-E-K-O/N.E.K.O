@@ -645,7 +645,7 @@ class VRMManager {
         }
     }
 
-    async initThreeJS(canvasId, containerId, lightingConfig = null) {
+    async initThreeJS(canvasId, containerId, lightingConfig = null, options = {}) {
         if (this._initThreePromise) {
             return await this._initThreePromise;
         }
@@ -684,10 +684,12 @@ class VRMManager {
                 const errorMsg = window.t ? window.t('vrm.error.coreNotLoaded') : 'VRMCore 尚未加载';
                 throw new Error(errorMsg);
             }
-            await this.core.init(canvasId, containerId, lightingConfig);
+            await this.core.init(canvasId, containerId, lightingConfig, options);
             if (this._isDisposed) return false;
-            if (this.interaction) this.interaction.initDragAndZoom();
-            this._initMouseLookAtTracking();
+            if (options.embed !== true) {
+                if (this.interaction) this.interaction.initDragAndZoom();
+                this._initMouseLookAtTracking();
+            }
             this.startAnimateLoop();
             // 设置初始化标志
             this._isInitialized = true;

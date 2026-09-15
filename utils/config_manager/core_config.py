@@ -1623,6 +1623,21 @@ class CoreConfigMixin:
         if isinstance(config.get('AGENT_MODEL_URL'), str):
             config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
+        # Keep a raw, independent image slot: no chat fallback or implicit generation.
+        config["IMAGE_GENERATION_CONFIG"] = {
+            key: core_cfg.get(key, "")
+            for key in ("imageModelProvider", "imageModelUrl", "imageModelId",
+                        "imageModelApiKey", "assistApiKeyOpenai",
+                        "assistApiKeyQwen", "assistApiKeyQwenIntl")
+        }
+        # Reuse the same provider-gated legacy key resolution as the Key Book.
+        # Never introduce a cross-provider fallback for image generation.
+        for field, resolved_field in (
+            ("assistApiKeyOpenai", "ASSIST_API_KEY_OPENAI"),
+            ("assistApiKeyQwen", "ASSIST_API_KEY_QWEN"),
+            ("assistApiKeyQwenIntl", "ASSIST_API_KEY_QWEN_INTL"),
+        ):
+            config["IMAGE_GENERATION_CONFIG"][field] = config.get(resolved_field, "")
         return config
 
     def get_model_api_config(self, model_type: str, *, _core_config: dict | None = None) -> dict:
@@ -1657,6 +1672,19 @@ class CoreConfigMixin:
 
         core_config = self.get_core_config() if _core_config is None else _core_config
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
+        if model_type == "image":
+            from utils.image_generation.config import resolve_image_config
+            image = resolve_image_config(
+                core_config.get("IMAGE_GENERATION_CONFIG", {}),
+                enabled=enable_custom_api,
+            )
+            if image is None:
+                return {"enabled": False}
+            return {
+                "enabled": True, "provider": image.provider,
+                "protocol": image.protocol, "base_url": image.base_url,
+                "model": image.model, "api_key": image.api_key, "is_custom": True,
+            }
 
         # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
         # 就是 "启用一个自定义 TTS"，但前端 (api_key_settings.js) 并不会顺手把
