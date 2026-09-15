@@ -3692,7 +3692,14 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     "retained_outcome",
-    ["cleaned", "present", "unknown", "in_progress_then_cleaned"],
+    [
+        "cleaned",
+        "present",
+        "unknown",
+        "legacy_missing_cleanup_state",
+        "mismatched_root",
+        "in_progress_then_cleaned",
+    ],
 )
 def test_storage_location_cleanup_network_failure_reconciles_authoritative_result(
     mock_page: Page,
@@ -3762,6 +3769,27 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
                 ),
             )
             return
+        if retained_outcome == "legacy_missing_cleanup_state":
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"ok": True, **completion_notice}),
+            )
+            return
+        if retained_outcome == "mismatched_root":
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "ok": True,
+                        **completion_notice,
+                        "retained_root": str(tmp_path / "different-retained-root"),
+                        "cleanup_in_progress": False,
+                    }
+                ),
+            )
+            return
         if (
             retained_outcome == "in_progress_then_cleaned"
             and retained_status_requests["count"] <= 8
@@ -3801,7 +3829,23 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
 
     completion_card = page.locator(".storage-location-completion-card")
     expect(completion_card).to_be_visible(timeout=10_000)
+    page.evaluate(
+        """
+        () => {
+            window.__nekoStorageLocationToasts = [];
+            const previousShowStatusToast = window.showStatusToast;
+            window.showStatusToast = (message, duration) => {
+                window.__nekoStorageLocationToasts.push(String(message || ''));
+                if (typeof previousShowStatusToast === 'function') {
+                    previousShowStatusToast(message, duration);
+                }
+            };
+        }
+        """
+    )
     completion_card.get_by_role("button", name="清理旧数据").evaluate("button => button.click()")
+    if retained_outcome in {"unknown", "legacy_missing_cleanup_state", "mismatched_root"}:
+        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
 
     if retained_outcome == "in_progress_then_cleaned":
         page.wait_for_timeout(1200)
@@ -3816,9 +3860,15 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
             timeout=10_000,
         )
     else:
-        page.wait_for_timeout(1000)
-        expect(completion_card).to_be_visible(timeout=10_000)
-        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
+        page.wait_for_function(
+            """
+            () => window.__nekoStorageLocationToasts.some(
+                (message) => message.includes('暂时无法确认旧数据是否已清理')
+            )
+            """,
+            timeout=10_000,
+        )
+        assert retained_status_requests["count"] == 6
     assert retained_status_requests["count"] >= 1
 
 

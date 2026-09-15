@@ -2099,7 +2099,6 @@
                     consecutiveUnknown += 1;
                     continue;
                 }
-                consecutiveUnknown = 0;
                 if (payload.completed !== true || payload.retained_root_exists === false) {
                     return 'cleaned';
                 }
@@ -2108,10 +2107,12 @@
                     if (payload.cleanup_in_progress === false) {
                         return 'present';
                     }
-                    if (payload.cleanup_in_progress !== true) {
-                        consecutiveUnknown += 1;
+                    if (payload.cleanup_in_progress === true) {
+                        consecutiveUnknown = 0;
+                        continue;
                     }
                 }
+                consecutiveUnknown += 1;
                 // True means the original request still owns the server-side
                 // mutation lock. A missing field is an older backend and is
                 // intentionally treated as unknown, never as permission to

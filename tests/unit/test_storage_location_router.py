@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -3783,13 +3785,13 @@ def test_storage_location_cleanup_dirfd_does_not_follow_public_root_swap(
     original_remove = storage_location_router_module._secure_remove_runtime_entry
     swapped = False
 
-    def _swap_then_remove(root_fd, entry):
+    def _swap_then_remove(root_fd, entry, **kwargs):
         nonlocal swapped
         if not swapped:
             swapped = True
             retained_root.rename(moved_root)
             retained_root.symlink_to(external_root, target_is_directory=True)
-        return original_remove(root_fd, entry)
+        return original_remove(root_fd, entry, **kwargs)
 
     monkeypatch.setattr(
         storage_location_router_module,
@@ -3827,13 +3829,13 @@ def test_storage_location_cleanup_dirfd_does_not_follow_swapped_ancestor(
     original_remove = storage_location_router_module._secure_remove_runtime_entry
     swapped = False
 
-    def _swap_ancestor_then_remove(root_fd, entry):
+    def _swap_ancestor_then_remove(root_fd, entry, **kwargs):
         nonlocal swapped
         if not swapped:
             swapped = True
             retained_parent.rename(moved_parent)
             retained_parent.symlink_to(external_parent, target_is_directory=True)
-        return original_remove(root_fd, entry)
+        return original_remove(root_fd, entry, **kwargs)
 
     monkeypatch.setattr(
         storage_location_router_module,
@@ -4015,6 +4017,112 @@ def test_storage_location_cleanup_rejects_nested_state_symlink_without_deleting_
 
     assert retained_config.read_text(encoding="utf-8") == "LOCAL"
     assert external_score.read_bytes() == b"KEEP"
+
+
+@pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
+def test_storage_location_cleanup_preflight_rejects_nested_mount_before_any_deletion(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    ordinary_file = retained_root / "config" / "ordinary.json"
+    mounted_file = retained_root / "config" / "mounted" / "external.json"
+    other_runtime_file = retained_root / "memory" / "keep.json"
+    ordinary_file.parent.mkdir(parents=True)
+    ordinary_file.write_text("LOCAL", encoding="utf-8")
+    mounted_file.parent.mkdir()
+    mounted_file.write_text("EXTERNAL", encoding="utf-8")
+    other_runtime_file.parent.mkdir()
+    other_runtime_file.write_text("KEEP", encoding="utf-8")
+    mounted_inode = mounted_file.parent.stat().st_ino
+
+    def _simulated_mount_identity(directory_fd):
+        identity = os.fstat(directory_fd)
+        return ("test-mount", 2 if identity.st_ino == mounted_inode else 1)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_directory_mount_identity",
+        _simulated_mount_identity,
+    )
+
+    with pytest.raises(ValueError, match="嵌套挂载"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            retained_root,
+            current_root=tmp_path / "current" / "N.E.K.O",
+            anchor_root=tmp_path / "anchor" / "N.E.K.O",
+        )
+
+    assert ordinary_file.read_text(encoding="utf-8") == "LOCAL"
+    assert mounted_file.read_text(encoding="utf-8") == "EXTERNAL"
+    assert other_runtime_file.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
+def test_storage_location_cleanup_delete_walk_rechecks_mount_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    mounted_file = retained_root / "config" / "mounted" / "external.json"
+    mounted_file.parent.mkdir(parents=True)
+    mounted_file.write_text("EXTERNAL", encoding="utf-8")
+    mounted_inode = mounted_file.parent.stat().st_ino
+
+    def _simulated_mount_identity(directory_fd):
+        identity = os.fstat(directory_fd)
+        return ("test-mount", 2 if identity.st_ino == mounted_inode else 1)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_directory_mount_identity",
+        _simulated_mount_identity,
+    )
+    root_fd = os.open(retained_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match="嵌套挂载"):
+            storage_location_router_module._secure_remove_runtime_entry(
+                root_fd,
+                "config",
+                expected_mount_identity=("test-mount", 1),
+            )
+    finally:
+        os.close(root_fd)
+
+    assert mounted_file.read_text(encoding="utf-8") == "EXTERNAL"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux mnt_id is unavailable")
+def test_storage_location_linux_mount_identity_uses_kernel_mount_id(tmp_path):
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        kind, mount_id = storage_location_router_module._directory_mount_identity(directory_fd)
+        fdinfo = Path(f"/proc/self/fdinfo/{directory_fd}").read_text(encoding="ascii")
+    finally:
+        os.close(directory_fd)
+
+    expected = int(
+        next(line.partition(":")[2].strip() for line in fdinfo.splitlines() if line.startswith("mnt_id:"))
+    )
+    assert kind == "linux-mnt-id"
+    assert mount_id == expected
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS device mount identity only")
+def test_storage_location_macos_mount_identity_uses_device_id(tmp_path):
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.fstat(directory_fd).st_dev
+        assert storage_location_router_module._directory_mount_identity(directory_fd) == (
+            "device",
+            expected,
+        )
+    finally:
+        os.close(directory_fd)
 
 
 @pytest.mark.unit

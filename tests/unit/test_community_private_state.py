@@ -1231,6 +1231,7 @@ def test_windows_social_lock_handle_contract_is_delete_shared_and_reparse_safe()
     assert C._WINDOWS_FILE_SHARE_DELETE == 0x00000004
     assert C._WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT == 0x00200000
     assert C._WINDOWS_FILE_DISPOSITION_INFO_CLASS == 4
+    assert C._WINDOWS_ERROR_SHARING_VIOLATION == 32
     assert 'if os.name == "nt"' in dispatch_source
     assert "_open_windows_social_lock_fd" in dispatch_source
     assert "delete_access=delete_access" in dispatch_source
@@ -1239,6 +1240,46 @@ def test_windows_social_lock_handle_contract_is_delete_shared_and_reparse_safe()
     assert "| _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT" in source
     assert "_WINDOWS_FILE_DISPOSITION_INFO_CLASS" in delete_source
     assert '("DeleteFile", wintypes.BOOLEAN)' in delete_source
+    assert "_SocialLockBusyError" in source
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing modes are unavailable")
+def test_windows_social_lock_open_maps_sharing_violation_to_retryable_busy(tmp_path):
+    import ctypes
+    from ctypes import wintypes
+
+    lock = tmp_path / "social_session.json.lock"
+    lock.write_text('{"token":"peer"}', encoding="utf-8")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    exclusive_handle = create_file(
+        os.fspath(lock),
+        C._WINDOWS_GENERIC_READ,
+        0,
+        None,
+        C._WINDOWS_OPEN_EXISTING,
+        C._WINDOWS_FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    assert exclusive_handle != wintypes.HANDLE(-1).value
+    try:
+        with pytest.raises(C._SocialLockBusyError) as error:
+            C._open_windows_social_lock_fd(lock, delete_access=False)
+        assert error.value.errno == C._WINDOWS_ERROR_SHARING_VIOLATION
+    finally:
+        kernel32.CloseHandle(exclusive_handle)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle deletion is unavailable")
@@ -1358,6 +1399,179 @@ def test_social_lock_acquisition_retries_name_replacement(
             os.close(root_fd)
 
     assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))
+@pytest.mark.parametrize("busy_stage", ("publish", "snapshot"))
+def test_social_lock_acquisition_retries_transient_windows_sharing_conflict(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+    busy_stage,
+):
+    if use_dir_fd and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd locks are unavailable")
+    root = tmp_path / "root"
+    root.mkdir()
+    lock_path = root / "social_session.json.lock"
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_POLL_SEC", 0)
+    calls = 0
+
+    if busy_stage == "publish":
+        original_publish = C._try_publish_social_lock
+
+        def _publish_after_busy(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise C._SocialLockBusyError(32, "simulated sharing violation")
+            return original_publish(*args, **kwargs)
+
+        monkeypatch.setattr(C, "_try_publish_social_lock", _publish_after_busy)
+    else:
+        lock_path.write_text('{"token":"peer"}', encoding="utf-8")
+        original_read = C._read_social_lock_snapshot
+
+        def _read_after_busy(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise C._SocialLockBusyError(32, "simulated sharing violation")
+            if calls == 2:
+                lock_path.unlink(missing_ok=True)
+                raise FileNotFoundError(lock_path)
+            return original_read(*args, **kwargs)
+
+        monkeypatch.setattr(C, "_read_social_lock_snapshot", _read_after_busy)
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY) if use_dir_fd else None
+    try:
+        lock_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with lock_context:
+            assert calls >= 1
+            assert lock_path.exists()
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))
+def test_social_lock_reclaims_exact_lock_after_own_release_failure(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+):
+    if use_dir_fd and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd locks are unavailable")
+    root = tmp_path / "root"
+    root.mkdir()
+    lock_path = root / "social_session.json.lock"
+    original_unlink = C._unlink_social_lock_if_unchanged
+    fail_release = True
+
+    def _fail_first_release(*args, **kwargs):
+        nonlocal fail_release
+        if fail_release:
+            fail_release = False
+            raise OSError("simulated transient release failure")
+        return original_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(C, "_unlink_social_lock_if_unchanged", _fail_first_release)
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_POLL_SEC", 0)
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY) if use_dir_fd else None
+    try:
+        first_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with first_context:
+            first_token = json.loads(lock_path.read_text(encoding="utf-8"))["token"]
+        assert lock_path.exists(), "the injected release failure must leave the exact lock"
+
+        second_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with second_context:
+            second_token = json.loads(lock_path.read_text(encoding="utf-8"))["token"]
+            assert second_token != first_token
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        with C._SOCIAL_LOCK_RECOVERY_MUTEX:
+            C._SOCIAL_LOCK_ABANDONED_OWNERSHIP.clear()
+
+    assert not lock_path.exists()
+
+
+def test_social_lock_reclaims_own_published_lock_after_verification_failure(
+    tmp_path,
+    monkeypatch,
+):
+    session = tmp_path / "social_session.json"
+    lock_path = Path(f"{session}.lock")
+    original_read = C._read_social_lock_snapshot
+    read_calls = 0
+
+    def _fail_initial_verification(*args, **kwargs):
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls <= 2:
+            raise OSError("simulated unavailable published lock")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(C, "_read_social_lock_snapshot", _fail_initial_verification)
+    with pytest.raises(OSError, match="unavailable published lock"):
+        with C._social_session_lock(session):
+            pass
+    assert lock_path.exists()
+
+    try:
+        with C._social_session_lock(session):
+            assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == os.getpid()
+    finally:
+        with C._SOCIAL_LOCK_RECOVERY_MUTEX:
+            C._SOCIAL_LOCK_ABANDONED_OWNERSHIP.clear()
+
+    assert not lock_path.exists()
+
+
+def test_social_lock_never_reclaims_replacement_using_abandoned_ownership(tmp_path, monkeypatch):
+    session = tmp_path / "social_session.json"
+    lock_path = Path(f"{session}.lock")
+    original_unlink = C._unlink_social_lock_if_unchanged
+    fail_release = True
+
+    def _fail_first_release(*args, **kwargs):
+        nonlocal fail_release
+        if fail_release:
+            fail_release = False
+            raise OSError("simulated transient release failure")
+        return original_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(C, "_unlink_social_lock_if_unchanged", _fail_first_release)
+    with C._social_session_lock(session):
+        pass
+    lock_path.unlink()
+    replacement = {"token": "999999:replacement", "pid": 999999}
+    lock_path.write_text(json.dumps(replacement), encoding="utf-8")
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
+    try:
+        with pytest.raises(TimeoutError), C._social_session_lock(session):
+            pass
+    finally:
+        with C._SOCIAL_LOCK_RECOVERY_MUTEX:
+            C._SOCIAL_LOCK_ABANDONED_OWNERSHIP.clear()
+
+    assert json.loads(lock_path.read_text(encoding="utf-8")) == replacement
 
 
 @pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))

@@ -67,6 +67,9 @@ _SOCIAL_LOCK_RECOVERY_MUTEX = threading.Lock()
 _SOCIAL_LOCK_RECOVERY_GUARD_FILE = "social-session-recovery.lock"
 _SOCIAL_LOCK_OWNER_IDENTITY_MUTEX = threading.Lock()
 _SOCIAL_LOCK_OWNER_IDENTITY: tuple[str, str, str] | None = None
+_SOCIAL_LOCK_ABANDONED_OWNERSHIP: dict[
+    tuple[object, ...], tuple[object | None, str]
+] = {}
 _SOCIAL_SESSION_LOCK_CONTEXT = threading.local()
 _WINDOWS_DELETE_ACCESS = 0x00010000
 _WINDOWS_GENERIC_READ = 0x80000000
@@ -76,6 +79,7 @@ _WINDOWS_OPEN_EXISTING = 3
 _WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
 _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WINDOWS_FILE_DISPOSITION_INFO_CLASS = 4
+_WINDOWS_ERROR_SHARING_VIOLATION = 32
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
@@ -113,6 +117,10 @@ class _InvalidIdentityResponse(Exception):
 
 class _SocialLockReplacedError(OSError):
     """The lock name moved to another inode during a stable snapshot read."""
+
+
+class _SocialLockBusyError(OSError):
+    """The exact Windows lock object is temporarily unavailable for sharing."""
 
 
 @dataclass(frozen=True)
@@ -960,6 +968,8 @@ def _open_windows_social_lock_fd(
             raise FileNotFoundError(error_number, message, os.fspath(lock_path))
         if error_number == 5:
             raise PermissionError(error_number, message, os.fspath(lock_path))
+        if error_number == _WINDOWS_ERROR_SHARING_VIOLATION:
+            raise _SocialLockBusyError(error_number, message, os.fspath(lock_path))
         raise OSError(error_number, message, os.fspath(lock_path))
     try:
         return msvcrt.open_osfhandle(
@@ -1113,6 +1123,128 @@ def _unlink_social_lock_if_unchanged(
         return True
     finally:
         os.close(fd)
+
+
+def _social_lock_location_key(
+    lock_path: Path | str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[object, ...]:
+    """Identify one public lock name without trusting path spelling aliases."""
+    name = os.fspath(lock_path)
+    if dir_fd is not None:
+        parent = os.fstat(dir_fd)
+        return "dirfd", int(parent.st_dev), int(parent.st_ino), name
+    path = Path(lock_path)
+    parent_path = path.parent
+    parent = parent_path.stat()
+    return (
+        "path",
+        os.path.normcase(os.path.abspath(os.fspath(parent_path))),
+        int(parent.st_dev),
+        int(parent.st_ino),
+        path.name,
+    )
+
+
+def _forget_abandoned_social_lock(
+    lock_path: Path | str,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    try:
+        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
+    except OSError:
+        return
+    with _SOCIAL_LOCK_RECOVERY_MUTEX:
+        _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
+
+
+def _remember_abandoned_social_lock(
+    lock_path: Path | str,
+    metadata: object | None,
+    fingerprint: str,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    try:
+        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
+    except OSError:
+        return
+    with _SOCIAL_LOCK_RECOVERY_MUTEX:
+        _SOCIAL_LOCK_ABANDONED_OWNERSHIP[location] = (metadata, fingerprint)
+
+
+def _retry_abandoned_social_lock_release(
+    lock_path: Path | str,
+    current_metadata,
+    current_fingerprint: str,
+    *,
+    dir_fd: int | None = None,
+) -> bool:
+    """Retry only a lock this process previously failed to release exactly."""
+    try:
+        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
+    except OSError:
+        return False
+    with _SOCIAL_LOCK_RECOVERY_MUTEX:
+        abandoned = _SOCIAL_LOCK_ABANDONED_OWNERSHIP.get(location)
+        if abandoned is None:
+            return False
+        abandoned_metadata, abandoned_fingerprint = abandoned
+        if (
+            abandoned_fingerprint != current_fingerprint
+            or (
+                abandoned_metadata is not None
+                and not _social_lock_metadata_equal(
+                    abandoned_metadata,
+                    current_metadata,
+                )
+            )
+        ):
+            _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
+            return False
+        try:
+            _unlink_social_lock_if_unchanged(
+                lock_path,
+                abandoned_metadata or current_metadata,
+                abandoned_fingerprint,
+                dir_fd=dir_fd,
+            )
+        except OSError:
+            # The exact object is still ours but temporarily cannot be retired.
+            return True
+        _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
+        # Whether it was removed or replaced during the second snapshot, retry
+        # acquisition from the public name instead of using an older observation.
+        return True
+
+
+def _release_owned_social_lock(
+    lock_path: Path | str,
+    owned_metadata,
+    owned_fingerprint: str,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    try:
+        _unlink_social_lock_if_unchanged(
+            lock_path,
+            owned_metadata,
+            owned_fingerprint,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        _remember_abandoned_social_lock(
+            lock_path,
+            owned_metadata,
+            owned_fingerprint,
+            dir_fd=dir_fd,
+        )
+        return
+    # False means the public name changed before deletion, so the remembered
+    # exact object is no longer the lock that can block this location either.
+    _forget_abandoned_social_lock(lock_path, dir_fd=dir_fd)
 
 
 def _legacy_social_path_ready(path: Path) -> bool:
@@ -1825,18 +1957,34 @@ def _try_publish_social_lock(
         return metadata, fingerprint
     except BaseException:
         if published:
-            with suppress(OSError):
+            retired_or_replaced = False
+            try:
                 metadata, fingerprint, _owner = _read_social_lock_snapshot(
                     lock_path,
                     dir_fd=dir_fd,
                 )
                 if fingerprint == f"token:{token}":
-                    _unlink_social_lock_if_unchanged(
+                    retired_or_replaced = _unlink_social_lock_if_unchanged(
                         lock_path,
                         metadata,
                         fingerprint,
                         dir_fd=dir_fd,
                     )
+                else:
+                    retired_or_replaced = True
+            except OSError:
+                pass
+            if not retired_or_replaced:
+                # Publication succeeded, but the exact object could not be
+                # reopened to capture metadata or retire it. The random token
+                # remains enough to recognize only this candidate on a later
+                # stable snapshot at the same physical lock location.
+                _remember_abandoned_social_lock(
+                    lock_path,
+                    None,
+                    f"token:{token}",
+                    dir_fd=dir_fd,
+                )
         raise
     finally:
         if fd >= 0:
@@ -1923,10 +2071,29 @@ def _social_session_lock(path: Path):
     owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
-        published = _try_publish_social_lock(lock_path, token)
+        try:
+            published = _try_publish_social_lock(lock_path, token)
+        except _SocialLockBusyError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("social session lock is busy")
+            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+            continue
         if published is None:
             try:
                 lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(lock_path)
+                if lock_fingerprint == token_fingerprint:
+                    owned_metadata = lock_metadata
+                    _forget_abandoned_social_lock(lock_path)
+                    break
+                if _retry_abandoned_social_lock_release(
+                    lock_path,
+                    lock_metadata,
+                    lock_fingerprint,
+                ):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("social session lock is busy")
+                    time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+                    continue
                 recovered = None
                 if _backend_social_lock_recovery_authority():
                     recovered = _reclaim_orphaned_social_lock(
@@ -1937,10 +2104,11 @@ def _social_session_lock(path: Path):
                         token,
                     )
             except FileNotFoundError:
+                _forget_abandoned_social_lock(lock_path)
                 if time.monotonic() >= deadline:
                     raise TimeoutError("social session lock is busy")
                 continue
-            except _SocialLockReplacedError:
+            except (_SocialLockReplacedError, _SocialLockBusyError):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("social session lock is busy")
                 time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
@@ -1953,18 +2121,18 @@ def _social_session_lock(path: Path):
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
         owned_metadata, token_fingerprint = published
+        _forget_abandoned_social_lock(lock_path)
         break
 
     try:
         yield
     finally:
         if owned_metadata is not None:
-            with suppress(OSError):
-                _unlink_social_lock_if_unchanged(
-                    lock_path,
-                    owned_metadata,
-                    token_fingerprint,
-                )
+            _release_owned_social_lock(
+                lock_path,
+                owned_metadata,
+                token_fingerprint,
+            )
 
 
 @contextmanager
@@ -1976,13 +2144,33 @@ def _social_session_lock_at(dir_fd: int):
     owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
-        published = _try_publish_social_lock(lock_name, token, dir_fd=dir_fd)
+        try:
+            published = _try_publish_social_lock(lock_name, token, dir_fd=dir_fd)
+        except _SocialLockBusyError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("social session lock is busy")
+            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+            continue
         if published is None:
             try:
                 lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(
                     lock_name,
                     dir_fd=dir_fd,
                 )
+                if lock_fingerprint == token_fingerprint:
+                    owned_metadata = lock_metadata
+                    _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
+                    break
+                if _retry_abandoned_social_lock_release(
+                    lock_name,
+                    lock_metadata,
+                    lock_fingerprint,
+                    dir_fd=dir_fd,
+                ):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("social session lock is busy")
+                    time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+                    continue
                 recovered = None
                 if _backend_social_lock_recovery_authority():
                     recovered = _reclaim_orphaned_social_lock(
@@ -1994,10 +2182,11 @@ def _social_session_lock_at(dir_fd: int):
                         dir_fd=dir_fd,
                     )
             except FileNotFoundError:
+                _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
                 if time.monotonic() >= deadline:
                     raise TimeoutError("social session lock is busy")
                 continue
-            except _SocialLockReplacedError:
+            except (_SocialLockReplacedError, _SocialLockBusyError):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("social session lock is busy")
                 time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
@@ -2010,19 +2199,19 @@ def _social_session_lock_at(dir_fd: int):
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
         owned_metadata, token_fingerprint = published
+        _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
         break
 
     try:
         yield
     finally:
         if owned_metadata is not None:
-            with suppress(OSError):
-                _unlink_social_lock_if_unchanged(
-                    lock_name,
-                    owned_metadata,
-                    token_fingerprint,
-                    dir_fd=dir_fd,
-                )
+            _release_owned_social_lock(
+                lock_name,
+                owned_metadata,
+                token_fingerprint,
+                dir_fd=dir_fd,
+            )
 
 
 @contextmanager

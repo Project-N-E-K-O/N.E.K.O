@@ -852,6 +852,7 @@ def test_run_pending_storage_migration_copies_every_selected_root_data_class(tmp
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file and directory fsync semantics")
 def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -875,6 +876,7 @@ def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync semantics")
 def test_posix_fsync_staged_tree_propagates_directory_failure(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -989,6 +991,10 @@ def test_staged_copy_metadata_never_follows_a_replaced_target_name(tmp_path, mon
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX unlink permits a stable replacement while the original handle remains open",
+)
 def test_staged_copy_failure_preserves_a_late_target_competitor(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -1218,6 +1224,7 @@ def test_run_pending_storage_migration_flushes_staged_root_before_verifying_chec
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync semantics")
 def test_posix_directory_flush_failure_never_reaches_verifying_or_publishing(
     tmp_path,
     monkeypatch,

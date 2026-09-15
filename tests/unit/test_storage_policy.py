@@ -56,6 +56,40 @@ def test_save_storage_policy_writes_stable_layout_under_anchor_state(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barriers")
+def test_save_storage_policy_flushes_every_new_first_run_ancestor(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    flushed_directories = []
+    real_fsync = storage_policy_module._fsync_policy_directory_required
+
+    def record_directory_fsync(path):
+        flushed_directories.append(path)
+        real_fsync(path)
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_fsync_policy_directory_required",
+        record_directory_fsync,
+    )
+
+    save_storage_policy(
+        config_manager,
+        selected_root=selected_root,
+        selection_source="current",
+    )
+
+    policy_path = get_storage_policy_path(config_manager)
+    assert flushed_directories == [
+        policy_path.parent,
+        policy_path.parent.parent,
+        policy_path.parent.parent.parent,
+        policy_path.parent.parent.parent.parent,
+    ]
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barrier")
 def test_save_storage_policy_fails_closed_when_parent_flush_fails(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)

@@ -1028,8 +1028,15 @@ def save_storage_policy(
         policy_payload,
         anchor_root=normalized_anchor_root,
     )
+    missing_directories: list[Path] = []
+    candidate = policy_path.parent
+    while not candidate.exists() and candidate.parent != candidate:
+        missing_directories.append(candidate)
+        candidate = candidate.parent
     atomic_write_json(policy_path, policy_payload, ensure_ascii=False, indent=2)
     _fsync_policy_directory_required(policy_path.parent)
+    for created_directory in missing_directories:
+        _fsync_policy_directory_required(created_directory.parent)
     return policy_payload
 
 

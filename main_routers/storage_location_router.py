@@ -1665,7 +1665,19 @@ def _build_storage_location_diagnostics_payload(config_manager) -> dict[str, Any
 
 
 def _secure_retained_cleanup_supported() -> bool:
-    return bool(os.name != "nt" and shutil.rmtree.avoids_symlink_attacks)
+    if os.name == "nt" or not shutil.rmtree.avoids_symlink_attacks:
+        return False
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = -1
+    try:
+        root_fd = os.open(os.path.abspath(os.sep), flags)
+        _directory_mount_identity(root_fd)
+        return True
+    except OSError:
+        return False
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
 
 
 def _utc_now_iso() -> str:
@@ -1814,7 +1826,89 @@ def _open_retained_root_no_follow(
         raise
 
 
-def _secure_remove_runtime_entry(root_fd: int, entry) -> None:
+def _directory_mount_identity(directory_fd: int) -> tuple[str, int]:
+    """Return a stable mount identity for an already-open POSIX directory."""
+    metadata = os.fstat(directory_fd)
+    if sys.platform.startswith("linux"):
+        try:
+            with open(
+                f"/proc/self/fdinfo/{directory_fd}",
+                encoding="ascii",
+            ) as fdinfo:
+                for line in fdinfo:
+                    field, separator, value = line.partition(":")
+                    if field == "mnt_id" and separator:
+                        return "linux-mnt-id", int(value.strip())
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise OSError("Linux mount identity is unavailable") from exc
+        raise OSError("Linux mount identity is unavailable")
+    # macOS and the other supported POSIX filesystems expose a distinct device
+    # id at a mount boundary. Linux needs mnt_id above because bind mounts may
+    # deliberately retain the same st_dev as their source.
+    return "device", int(metadata.st_dev)
+
+
+def _ensure_same_cleanup_mount(
+    directory_fd: int,
+    expected_mount_identity: tuple[str, int],
+    display_path: str,
+) -> None:
+    if _directory_mount_identity(directory_fd) != expected_mount_identity:
+        raise ValueError(f"运行时条目包含嵌套挂载，拒绝自动清理: {display_path}")
+
+
+def _secure_clear_directory_tree(
+    directory_fd: int,
+    *,
+    expected_mount_identity: tuple[str, int],
+    display_path: str,
+) -> None:
+    """Clear a pinned directory without following links or crossing mounts."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    _ensure_same_cleanup_mount(
+        directory_fd,
+        expected_mount_identity,
+        display_path,
+    )
+    with os.scandir(directory_fd) as children:
+        child_names = [child.name for child in children]
+    for child_name in child_names:
+        child_display = f"{display_path}/{child_name}"
+        try:
+            metadata = os.stat(
+                child_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"运行时条目超出安全边界: {child_display}")
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(child_name, flags, dir_fd=directory_fd)
+            try:
+                if not os.path.samestat(metadata, os.fstat(child_fd)):
+                    raise ValueError(f"运行时条目在清理时发生变化: {child_display}")
+                _secure_clear_directory_tree(
+                    child_fd,
+                    expected_mount_identity=expected_mount_identity,
+                    display_path=child_display,
+                )
+            finally:
+                os.close(child_fd)
+            os.rmdir(child_name, dir_fd=directory_fd)
+        elif stat.S_ISREG(metadata.st_mode):
+            os.unlink(child_name, dir_fd=directory_fd)
+        else:
+            raise ValueError(f"运行时条目包含不支持的文件类型: {child_display}")
+
+
+def _secure_remove_runtime_entry(
+    root_fd: int,
+    entry,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> None:
     """Delete one inventory entry relative to a pinned root directory handle."""
     relative_path = getattr(entry, "relative_path", entry)
     parts = Path(relative_path).parts
@@ -1824,6 +1918,7 @@ def _secure_remove_runtime_entry(root_fd: int, entry) -> None:
     base_fd = os.dup(root_fd)
     opened: list[tuple[int, str, int]] = []
     current_fd = base_fd
+    mount_identity = expected_mount_identity or _directory_mount_identity(root_fd)
     try:
         for component in parts[:-1]:
             try:
@@ -1836,6 +1931,7 @@ def _secure_remove_runtime_entry(root_fd: int, entry) -> None:
             if not os.path.samestat(before, os.fstat(child_fd)):
                 os.close(child_fd)
                 raise ValueError(f"runtime entry parent changed: {relative_path}")
+            _ensure_same_cleanup_mount(child_fd, mount_identity, str(relative_path))
             opened.append((current_fd, component, child_fd))
             current_fd = child_fd
 
@@ -1847,7 +1943,18 @@ def _secure_remove_runtime_entry(root_fd: int, entry) -> None:
         if stat.S_ISLNK(metadata.st_mode):
             raise ValueError(f"运行时条目超出安全边界: {relative_path}")
         if stat.S_ISDIR(metadata.st_mode):
-            shutil.rmtree(name, dir_fd=current_fd)
+            child_fd = os.open(name, flags, dir_fd=current_fd)
+            try:
+                if not os.path.samestat(metadata, os.fstat(child_fd)):
+                    raise ValueError(f"运行时条目在清理时发生变化: {relative_path}")
+                _secure_clear_directory_tree(
+                    child_fd,
+                    expected_mount_identity=mount_identity,
+                    display_path=str(relative_path),
+                )
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=current_fd)
         else:
             os.unlink(name, dir_fd=current_fd)
 
@@ -1867,15 +1974,22 @@ def _secure_remove_runtime_entry(root_fd: int, entry) -> None:
             os.close(base_fd)
 
 
-def _preflight_runtime_entry(root_fd: int, entry) -> None:
+def _preflight_runtime_entry(
+    root_fd: int,
+    entry,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> None:
     """Reject unsafe retained content before the first cleanup mutation."""
     relative_path = getattr(entry, "relative_path", entry)
     parts = Path(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError(f"invalid runtime entry: {relative_path}")
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    mount_identity = expected_mount_identity or _directory_mount_identity(root_fd)
 
     def _validate_tree(directory_fd: int, display_path: str) -> None:
+        _ensure_same_cleanup_mount(directory_fd, mount_identity, display_path)
         with os.scandir(directory_fd) as children:
             for child in children:
                 metadata = child.stat(follow_symlinks=False)
@@ -1887,6 +2001,11 @@ def _preflight_runtime_entry(root_fd: int, entry) -> None:
                     try:
                         if not os.path.samestat(metadata, os.fstat(child_fd)):
                             raise ValueError(f"运行时条目在预检时发生变化: {child_display}")
+                        _ensure_same_cleanup_mount(
+                            child_fd,
+                            mount_identity,
+                            child_display,
+                        )
                         _validate_tree(child_fd, child_display)
                     finally:
                         os.close(child_fd)
@@ -1911,6 +2030,7 @@ def _preflight_runtime_entry(root_fd: int, entry) -> None:
             if not os.path.samestat(before, os.fstat(child_fd)):
                 os.close(child_fd)
                 raise ValueError(f"运行时条目在预检时发生变化: {relative_path}")
+            _ensure_same_cleanup_mount(child_fd, mount_identity, str(relative_path))
             os.close(current_fd)
             current_fd = child_fd
             if is_leaf:
@@ -1929,7 +2049,7 @@ def _cleanup_retained_runtime_root(
     expected_private_snapshot: dict[str, str] | None = None,
     expected_root_identity: dict[str, int] | None = None,
 ) -> None:
-    if os.name == "nt" or not shutil.rmtree.avoids_symlink_attacks:
+    if not _secure_retained_cleanup_supported():
         raise ValueError("当前平台无法提供句柄锚定的无跟随删除，请手动清理保留目录。")
     try:
         initial_metadata = retained_path.lstat()
@@ -1978,8 +2098,13 @@ def _cleanup_retained_runtime_root(
     try:
         from main_routers.card_drop_router import prepare_retained_community_state_cleanup
 
+        root_mount_identity = _directory_mount_identity(root_fd)
         for entry in RUNTIME_STORAGE_ENTRIES:
-            _preflight_runtime_entry(root_fd, entry)
+            _preflight_runtime_entry(
+                root_fd,
+                entry,
+                expected_mount_identity=root_mount_identity,
+            )
         prepare_retained_community_state_cleanup(
             retained_path,
             config_manager=config_manager,
@@ -1987,7 +2112,11 @@ def _cleanup_retained_runtime_root(
             retained_dir_fd=root_fd,
         )
         for entry in RUNTIME_STORAGE_ENTRIES:
-            _secure_remove_runtime_entry(root_fd, entry)
+            _secure_remove_runtime_entry(
+                root_fd,
+                entry,
+                expected_mount_identity=root_mount_identity,
+            )
 
         if not paths_equal(retained_path, anchor_root):
             try:
