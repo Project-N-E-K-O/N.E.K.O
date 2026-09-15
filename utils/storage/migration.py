@@ -93,6 +93,7 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 MIGRATED_RUNTIME_ENTRY_NAMES = RUNTIME_STORAGE_RELATIVE_PATHS
 _TRANSACTION_OWNER_MARKER_FILENAME = ".neko-storage-transaction-owner.json"
 _TRANSACTION_OWNER_MARKER_VERSION = 1
+_TRANSACTION_CAPACITY_ENTRY_RESERVE = 8
 _MIGRATION_ERROR_MESSAGE_MAX_BYTES = 16 * 1024
 
 
@@ -136,9 +137,13 @@ def _utc_now_iso() -> str:
 
 def _bounded_migration_error_message(value: Any) -> str:
     message = str(value or "").strip()
-    encoded = message.encode("utf-8")
+    # POSIX exposes undecodable filename bytes through surrogateescape.  Error
+    # text can therefore contain lone surrogates even though the fixed-anchor
+    # JSON checkpoint must always be valid UTF-8. Preserve those bytes as their
+    # explicit \udcXX spelling before applying the durable size bound.
+    encoded = message.encode("utf-8", errors="backslashreplace")
     if len(encoded) <= _MIGRATION_ERROR_MESSAGE_MAX_BYTES:
-        return message
+        return encoded.decode("utf-8")
     suffix = "…[truncated]"
     suffix_bytes = suffix.encode("utf-8")
     prefix = encoded[: _MIGRATION_ERROR_MESSAGE_MAX_BYTES - len(suffix_bytes)]
@@ -387,6 +392,257 @@ def _open_verified_directory(path: Path) -> int:
     except BaseException:
         with suppress(OSError):
             os.close(fd)
+        raise
+
+
+def _open_windows_directory_rename_guard(
+    path: Path,
+    expected_identity: os.stat_result,
+) -> int:
+    """Pin a real Windows directory while denying rename/delete sharing."""
+
+    if os.name != "nt":
+        raise OSError("Windows directory guards are unavailable on this platform")
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", _FileTime),
+            ("last_access_time", _FileTime),
+            ("last_write_time", _FileTime),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    native_path = str(path)
+    if not native_path.startswith("\\\\?\\"):
+        if native_path.startswith("\\\\"):
+            native_path = "\\\\?\\UNC\\" + native_path[2:]
+        else:
+            native_path = "\\\\?\\" + native_path
+
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_attribute_directory = 0x0010
+    file_attribute_reparse_point = 0x0400
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+    handle = kernel32.CreateFileW(
+        native_path,
+        file_read_attributes,
+        # Deliberately omit FILE_SHARE_DELETE. Windows then refuses renaming or
+        # deleting this directory until the migration releases the guard.
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle_value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = _ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        named_after = path.lstat()
+        if (
+            info.attributes & file_attribute_reparse_point
+            or not info.attributes & file_attribute_directory
+            or _is_link_like_metadata(named_after)
+            or not stat.S_ISDIR(named_after.st_mode)
+            or not os.path.samestat(expected_identity, named_after)
+        ):
+            raise StorageMigrationError(
+                "transaction_ownership_changed",
+                f"迁移事务目录在 Windows 句柄固定期间被替换: {path}",
+            )
+        return int(handle)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def _close_windows_directory_rename_guard(handle: int) -> None:
+    if handle < 0 or os.name != "nt":
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    kernel32.CloseHandle(handle)
+
+
+def _ensure_opened_directory_still_named(
+    path: Path,
+    fd: int,
+    *,
+    error_code: str = "migration_path_changed",
+    message: str | None = None,
+) -> None:
+    """Require a pinned directory to remain the inode named by ``path``."""
+
+    try:
+        opened = os.fstat(fd)
+        named = path.lstat()
+    except OSError as exc:
+        raise StorageMigrationError(
+            error_code,
+            message or f"迁移目录在操作期间发生变化: {path}: {exc}",
+        ) from exc
+    if (
+        _is_link_like_metadata(opened)
+        or _is_link_like_metadata(named)
+        or not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(named.st_mode)
+        or not os.path.samestat(opened, named)
+    ):
+        raise StorageMigrationError(
+            error_code,
+            message or f"迁移目录在操作期间被替换: {path}",
+        )
+
+
+def _open_or_create_posix_child_directory(
+    parent_fd: int,
+    name: str,
+    display_path: Path,
+    *,
+    expected_mount_identity: tuple[str, int],
+    allow_existing: bool,
+    create_missing: bool = True,
+) -> int:
+    """Create/open one child below a pinned POSIX parent without path re-resolution."""
+
+    if not name or name in {".", ".."} or Path(name).name != name:
+        raise StorageMigrationError(
+            "staging_entry_changed",
+            f"迁移暂存目录名称无效: {display_path}",
+        )
+    _ensure_opened_entry_on_mount(
+        parent_fd,
+        expected_mount_identity,
+        display_path.parent,
+    )
+    if create_missing:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError as exc:
+            if not allow_existing:
+                raise StorageMigrationError(
+                    "staging_entry_exists",
+                    f"迁移暂存条目已存在，无法安全覆盖: {display_path}",
+                ) from exc
+        except OSError as exc:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存目录无法安全创建: {display_path}: {exc}",
+            ) from exc
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    child_fd = -1
+    try:
+        named_before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+        opened = os.fstat(child_fd)
+        named_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            _is_link_like_metadata(named_before)
+            or _is_link_like_metadata(opened)
+            or _is_link_like_metadata(named_after)
+            or not stat.S_ISDIR(named_before.st_mode)
+            or not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(named_after.st_mode)
+            or not os.path.samestat(named_before, opened)
+            or not os.path.samestat(opened, named_after)
+        ):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存目录在打开期间被替换: {display_path}",
+            )
+        _ensure_opened_entry_on_mount(
+            child_fd,
+            expected_mount_identity,
+            display_path,
+        )
+        return child_fd
+    except StorageMigrationError:
+        if child_fd >= 0:
+            os.close(child_fd)
+        raise
+    except OSError as exc:
+        if child_fd >= 0:
+            os.close(child_fd)
+        raise StorageMigrationError(
+            "staging_entry_changed",
+            f"迁移暂存目录在打开期间发生变化: {display_path}: {exc}",
+        ) from exc
+
+
+def _open_or_create_posix_directory_chain(
+    root_fd: int,
+    root_display: Path,
+    relative_parts: tuple[str, ...],
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> int:
+    """Return a pinned parent below a trusted staging root, creating safe parents."""
+
+    current_fd = os.dup(root_fd)
+    current_display = root_display
+    try:
+        _ensure_opened_entry_on_mount(
+            current_fd,
+            expected_mount_identity,
+            current_display,
+        )
+        for part in relative_parts:
+            child_display = current_display / part
+            child_fd = _open_or_create_posix_child_directory(
+                current_fd,
+                part,
+                child_display,
+                expected_mount_identity=expected_mount_identity,
+                allow_existing=True,
+            )
+            os.close(current_fd)
+            current_fd = child_fd
+            current_display = child_display
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
         raise
 
 
@@ -1141,10 +1397,14 @@ def _copy_posix_directory_tree_durably(
     target_path: Path,
     *,
     expected_mount_identity: tuple[str, int],
+    target_parent_fd: int | None = None,
+    target_name: str | None = None,
+    expected_target_mount_identity: tuple[str, int] | None = None,
 ) -> None:
     """Copy one directory through pinned source descriptors without crossing mounts."""
 
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    target_mount_identity: tuple[str, int] | None = None
     try:
         source_root_fd = _open_verified_directory(source_path)
     except StorageMigrationError:
@@ -1158,28 +1418,30 @@ def _copy_posix_directory_tree_durably(
     def _copy_directory(
         source_fd: int,
         source_display: Path,
-        target_directory: Path,
+        target_parent_fd: int,
+        target_name: str,
+        target_display: Path,
     ) -> None:
         _ensure_opened_entry_on_mount(
             source_fd,
             expected_mount_identity,
             source_display,
         )
+        assert target_mount_identity is not None
+        target_fd = _open_or_create_posix_child_directory(
+            target_parent_fd,
+            target_name,
+            target_display,
+            expected_mount_identity=target_mount_identity,
+            allow_existing=False,
+        )
         try:
-            target_directory.mkdir(mode=0o700)
-        except FileExistsError as exc:
-            raise StorageMigrationError(
-                "staging_entry_exists",
-                f"迁移暂存条目已存在，无法安全覆盖: {target_directory}",
-            ) from exc
-
-        target_fd = _open_verified_directory(target_directory)
-        try:
+            opened_target = os.fstat(target_fd)
             with os.scandir(source_fd) as children:
                 child_names = sorted(child.name for child in children)
             for child_name in child_names:
                 child_display = source_display / child_name
-                target_child = target_directory / child_name
+                target_child = target_display / child_name
                 try:
                     named_before = os.stat(
                         child_name,
@@ -1238,7 +1500,13 @@ def _copy_posix_directory_tree_durably(
                             expected_mount_identity,
                             child_display,
                         )
-                        _copy_directory(child_fd, child_display, target_child)
+                        _copy_directory(
+                            child_fd,
+                            child_display,
+                            target_fd,
+                            child_name,
+                            target_child,
+                        )
                         try:
                             named_after_copy = os.stat(
                                 child_name,
@@ -1265,7 +1533,10 @@ def _copy_posix_directory_tree_durably(
                         target_child,
                         source_parent_fd=source_fd,
                         source_name=child_name,
+                        target_parent_fd=target_fd,
+                        target_name=child_name,
                         expected_mount_identity=expected_mount_identity,
+                        expected_target_mount_identity=target_mount_identity,
                     )
                     continue
                 raise StorageMigrationError(
@@ -1282,18 +1553,68 @@ def _copy_posix_directory_tree_durably(
             except OSError as exc:
                 raise StorageMigrationError(
                     "target_flush_failed",
-                    f"迁移目录元数据无法可靠写入目标磁盘: {target_directory}: {exc}",
+                    f"迁移目录元数据无法可靠写入目标磁盘: {target_display}: {exc}",
                 ) from exc
+            named_target_after_copy = os.stat(
+                target_name,
+                dir_fd=target_parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _is_link_like_metadata(named_target_after_copy)
+                or not stat.S_ISDIR(named_target_after_copy.st_mode)
+                or not os.path.samestat(opened_target, named_target_after_copy)
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存目录在复制期间被替换: {target_display}",
+                )
+            _ensure_opened_directory_still_named(
+                target_display,
+                target_fd,
+                error_code="staging_entry_changed",
+                message=f"迁移暂存目录在复制期间被替换: {target_display}",
+            )
+        except StorageMigrationError:
+            raise
+        except OSError as exc:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存目录在复制期间发生变化: {target_display}: {exc}",
+            ) from exc
         finally:
             os.close(target_fd)
 
+    owned_target_parent_fd = -1
     try:
         _ensure_opened_entry_on_mount(
             source_root_fd,
             expected_mount_identity,
             source_path,
         )
-        _copy_directory(source_root_fd, source_path, target_path)
+        if target_parent_fd is None:
+            owned_target_parent_fd = _open_verified_directory(target_path.parent)
+            root_target_name = target_path.name
+        else:
+            owned_target_parent_fd = os.dup(target_parent_fd)
+            root_target_name = target_name or target_path.name
+        target_mount_identity = (
+            expected_target_mount_identity
+            or _opened_mount_identity(owned_target_parent_fd)
+        )
+        _copy_directory(
+            source_root_fd,
+            source_path,
+            owned_target_parent_fd,
+            root_target_name,
+            target_path,
+        )
+        _ensure_opened_directory_still_named(
+            target_path.parent,
+            owned_target_parent_fd,
+            error_code="staging_entry_changed",
+            message=f"迁移暂存父目录在复制期间被替换: {target_path.parent}",
+        )
         try:
             named_source_after = source_path.lstat()
         except OSError as exc:
@@ -1307,6 +1628,8 @@ def _copy_posix_directory_tree_durably(
                 f"迁移源目录在复制期间被替换: {source_path}",
             )
     finally:
+        if owned_target_parent_fd >= 0:
+            os.close(owned_target_parent_fd)
         os.close(source_root_fd)
 
 
@@ -1315,6 +1638,9 @@ def _copy_runtime_entry(
     target_path: Path,
     *,
     expected_mount_identity: tuple[str, int] | None = None,
+    target_parent_fd: int | None = None,
+    target_name: str | None = None,
+    expected_target_mount_identity: tuple[str, int] | None = None,
 ) -> None:
     if path_chain_has_symlink(source_path):
         raise StorageMigrationError("source_symlink_unsupported", "迁移源目录包含符号链接，当前阶段暂不自动迁移。")
@@ -1351,7 +1677,12 @@ def _copy_runtime_entry(
             "target_symlink_unsupported",
             "迁移暂存目录包含符号链接或重解析点，已停止迁移。",
         )
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" or target_parent_fd is None:
+        # Windows lacks portable directory-relative creation. POSIX production
+        # passes a parent descriptor rooted at the transaction staging inode;
+        # direct helper callers retain the legacy path setup before the helper
+        # pins and verifies that parent.
+        target_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         source_metadata = source_path.lstat()
@@ -1372,6 +1703,9 @@ def _copy_runtime_entry(
                 source_path,
                 target_path,
                 expected_mount_identity=copy_mount_identity,
+                target_parent_fd=target_parent_fd,
+                target_name=target_name,
+                expected_target_mount_identity=expected_target_mount_identity,
             )
             return
         # Preserve a link as a link if one appears after the pre-copy scan.  The
@@ -1389,7 +1723,10 @@ def _copy_runtime_entry(
         _copy_staged_file_durably(
             source_path,
             target_path,
+            target_parent_fd=target_parent_fd,
+            target_name=target_name,
             expected_mount_identity=copy_mount_identity,
+            expected_target_mount_identity=expected_target_mount_identity,
         )
         return
 
@@ -1531,12 +1868,47 @@ def _copy_staged_file_durably(
     *,
     source_parent_fd: int | None = None,
     source_name: str | None = None,
+    target_parent_fd: int | None = None,
+    target_name: str | None = None,
     expected_mount_identity: tuple[str, int] | None = None,
+    expected_target_mount_identity: tuple[str, int] | None = None,
 ) -> str:
     """Copy one private staged file and flush data before restoring source metadata."""
 
     source = Path(source_path)
     target = Path(target_path)
+    if os.name != "nt" and target_parent_fd is None:
+        pinned_target_parent_fd = _open_verified_directory(target.parent)
+        try:
+            pinned_target_mount_identity = _opened_mount_identity(
+                pinned_target_parent_fd
+            )
+            result = _copy_staged_file_durably(
+                source,
+                target,
+                source_parent_fd=source_parent_fd,
+                source_name=source_name,
+                target_parent_fd=pinned_target_parent_fd,
+                target_name=target.name,
+                expected_mount_identity=expected_mount_identity,
+                expected_target_mount_identity=pinned_target_mount_identity,
+            )
+            _ensure_opened_directory_still_named(
+                target.parent,
+                pinned_target_parent_fd,
+                error_code="staging_entry_changed",
+                message=f"迁移暂存父目录在复制期间被替换: {target.parent}",
+            )
+            return result
+        finally:
+            os.close(pinned_target_parent_fd)
+    if target_parent_fd is not None and not target_name:
+        raise StorageMigrationError(
+            "staging_entry_changed",
+            f"迁移暂存文件缺少目录内名称: {target}",
+        )
+    if target_parent_fd is not None and expected_target_mount_identity is None:
+        expected_target_mount_identity = _opened_mount_identity(target_parent_fd)
     try:
         if source_parent_fd is None:
             named_source_before = source.lstat()
@@ -1650,7 +2022,15 @@ def _copy_staged_file_durably(
             | getattr(os, "O_NOINHERIT", 0)
         )
         try:
-            target_fd = os.open(os.fspath(target), target_flags, 0o600)
+            if target_parent_fd is None:
+                target_fd = os.open(os.fspath(target), target_flags, 0o600)
+            else:
+                target_fd = os.open(
+                    target_name,
+                    target_flags,
+                    0o600,
+                    dir_fd=target_parent_fd,
+                )
         except FileExistsError as exc:
             raise StorageMigrationError(
                 "staging_entry_exists",
@@ -1661,6 +2041,12 @@ def _copy_staged_file_durably(
             raise StorageMigrationError(
                 "path_type_unsupported",
                 f"迁移暂存目标不是普通文件: {target}",
+            )
+        if expected_target_mount_identity is not None and os.name != "nt":
+            _ensure_opened_entry_on_mount(
+                target_fd,
+                expected_target_mount_identity,
+                target,
             )
 
         try:
@@ -1679,7 +2065,14 @@ def _copy_staged_file_durably(
                 f"迁移数据无法可靠写入目标磁盘: {target}: {exc}",
             ) from exc
         try:
-            named_target_after = target.lstat()
+            if target_parent_fd is None:
+                named_target_after = target.lstat()
+            else:
+                named_target_after = os.stat(
+                    target_name,
+                    dir_fd=target_parent_fd,
+                    follow_symlinks=False,
+                )
         except OSError as exc:
             raise StorageMigrationError(
                 "staging_entry_changed",
@@ -1709,21 +2102,440 @@ def _copy_staged_file_durably(
     return str(target)
 
 
+def _capture_opened_posix_tree_identity_manifest(
+    root_fd: int,
+    root_path: Path,
+    expected_mount_identity: tuple[str, int],
+) -> dict[str, tuple[str, int, int, int, int, int, int]]:
+    """Capture stable staged-entry identities below one pinned POSIX directory."""
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    manifest: dict[str, tuple[str, int, int, int, int, int, int]] = {}
+
+    def _stable_fields(metadata: os.stat_result) -> tuple[int, int, int, int]:
+        return (
+            stat.S_IMODE(metadata.st_mode),
+            int(metadata.st_size),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+        )
+
+    def _walk(directory_fd: int, relative_root: Path, display_root: Path) -> None:
+        _ensure_opened_entry_on_mount(
+            directory_fd,
+            expected_mount_identity,
+            display_root,
+        )
+        with os.scandir(directory_fd) as entries:
+            child_names = sorted(entry.name for entry in entries)
+        for child_name in child_names:
+            child_path = display_root / child_name
+            relative_path = (relative_root / child_name).as_posix()
+            named_before = os.stat(
+                child_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if _is_link_like_metadata(named_before):
+                raise StorageMigrationError(
+                    "path_symlink_unsupported",
+                    f"迁移暂存区包含符号链接: {child_path}",
+                )
+            if stat.S_ISDIR(named_before.st_mode):
+                child_fd = -1
+                try:
+                    child_fd = os.open(
+                        child_name,
+                        directory_flags,
+                        dir_fd=directory_fd,
+                    )
+                    opened = os.fstat(child_fd)
+                    named_after_open = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        _is_link_like_metadata(opened)
+                        or _is_link_like_metadata(named_after_open)
+                        or not stat.S_ISDIR(opened.st_mode)
+                        or not stat.S_ISDIR(named_after_open.st_mode)
+                        or not os.path.samestat(named_before, opened)
+                        or not os.path.samestat(opened, named_after_open)
+                        or _stable_fields(named_before) != _stable_fields(opened)
+                        or _stable_fields(opened) != _stable_fields(named_after_open)
+                    ):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存目录在清单核验期间被替换或修改: {child_path}",
+                        )
+                    _ensure_opened_entry_on_mount(
+                        child_fd,
+                        expected_mount_identity,
+                        child_path,
+                    )
+                    manifest[relative_path] = (
+                        "dir",
+                        int(opened.st_dev),
+                        int(opened.st_ino),
+                        *_stable_fields(opened),
+                    )
+                    _walk(child_fd, relative_root / child_name, child_path)
+                    opened_after = os.fstat(child_fd)
+                    named_after_walk = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        not os.path.samestat(opened, opened_after)
+                        or not os.path.samestat(opened_after, named_after_walk)
+                        or _stable_fields(opened) != _stable_fields(opened_after)
+                        or _stable_fields(opened_after)
+                        != _stable_fields(named_after_walk)
+                    ):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存目录在清单核验期间被替换或修改: {child_path}",
+                        )
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+                continue
+            if stat.S_ISREG(named_before.st_mode):
+                child_fd = -1
+                try:
+                    child_fd = os.open(
+                        child_name,
+                        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                    opened = os.fstat(child_fd)
+                    named_after_open = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or not stat.S_ISREG(named_after_open.st_mode)
+                        or not os.path.samestat(named_before, opened)
+                        or not os.path.samestat(opened, named_after_open)
+                        or _stable_fields(named_before) != _stable_fields(opened)
+                        or _stable_fields(opened) != _stable_fields(named_after_open)
+                    ):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存文件在清单核验期间被替换或修改: {child_path}",
+                        )
+                    _ensure_opened_entry_on_mount(
+                        child_fd,
+                        expected_mount_identity,
+                        child_path,
+                    )
+                    manifest[relative_path] = (
+                        "file",
+                        int(opened.st_dev),
+                        int(opened.st_ino),
+                        *_stable_fields(opened),
+                    )
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+                continue
+            raise StorageMigrationError(
+                "path_type_unsupported",
+                f"迁移暂存区包含不支持的文件类型: {child_path}",
+            )
+
+        with os.scandir(directory_fd) as final_entries:
+            final_names = sorted(entry.name for entry in final_entries)
+        if final_names != child_names:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存目录在清单核验期间发生变化: {display_root}",
+            )
+
+    _walk(root_fd, Path(), root_path)
+    return manifest
+
+
 def _rewrite_migrated_runtime_config_paths(
     *,
     source_root: Path,
     content_root: Path,
     target_root: Path,
-) -> None:
+    content_root_fd: int | None = None,
+    expected_target_mount_identity: tuple[str, int] | None = None,
+) -> dict[str, int | str] | None:
     workshop_config_path = content_root / "config" / "workshop_config.json"
+    if os.name != "nt" and content_root_fd is not None:
+        if expected_target_mount_identity is None:
+            expected_target_mount_identity = _opened_mount_identity(content_root_fd)
+        try:
+            os.stat(
+                "config",
+                dir_fd=content_root_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+        config_fd = _open_or_create_posix_child_directory(
+            content_root_fd,
+            "config",
+            content_root / "config",
+            expected_mount_identity=expected_target_mount_identity,
+            allow_existing=True,
+            create_missing=False,
+        )
+        source_fd = -1
+        temp_fd = -1
+        temp_name = f".neko-storage-rewrite-{secrets.token_hex(16)}.tmp"
+        temp_created = False
+        config_read_completed = False
+        try:
+            config_manifest_before = _capture_opened_posix_tree_identity_manifest(
+                config_fd,
+                content_root / "config",
+                expected_target_mount_identity,
+            )
+            try:
+                named_before = os.stat(
+                    "workshop_config.json",
+                    dir_fd=config_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return None
+            if _is_link_like_metadata(named_before) or not stat.S_ISREG(
+                named_before.st_mode
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置不是普通文件: {workshop_config_path}",
+                )
+            read_flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+            source_fd = os.open(
+                "workshop_config.json",
+                read_flags,
+                dir_fd=config_fd,
+            )
+            opened_before = os.fstat(source_fd)
+            named_after_open = os.stat(
+                "workshop_config.json",
+                dir_fd=config_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(opened_before.st_mode)
+                or not stat.S_ISREG(named_after_open.st_mode)
+                or not os.path.samestat(named_before, opened_before)
+                or not os.path.samestat(opened_before, named_after_open)
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在打开期间被替换: {workshop_config_path}",
+                )
+            _ensure_opened_entry_on_mount(
+                source_fd,
+                expected_target_mount_identity,
+                workshop_config_path,
+            )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            opened_after = os.fstat(source_fd)
+            named_after_read = os.stat(
+                "workshop_config.json",
+                dir_fd=config_fd,
+                follow_symlinks=False,
+            )
+            stable_fields = ("st_size", "st_mtime_ns", "st_ctime_ns")
+            if (
+                not os.path.samestat(opened_before, opened_after)
+                or not os.path.samestat(opened_after, named_after_read)
+                or any(
+                    getattr(opened_before, field) != getattr(opened_after, field)
+                    for field in stable_fields
+                )
+                or any(
+                    getattr(opened_after, field) != getattr(named_after_read, field)
+                    for field in stable_fields
+                )
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在读取期间被替换或修改: {workshop_config_path}",
+                )
+            payload = json.loads(b"".join(chunks).decode("utf-8"))
+            config_read_completed = True
+            rewritten_payload = rebase_runtime_bound_workshop_config_paths(
+                payload,
+                source_root=source_root,
+                target_root=target_root,
+            )
+            if rewritten_payload is payload:
+                return None
+
+            encoded = json.dumps(
+                rewritten_payload,
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8")
+            temp_fd = os.open(
+                temp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=config_fd,
+            )
+            temp_created = True
+            created_temp = os.fstat(temp_fd)
+            _ensure_opened_entry_on_mount(
+                temp_fd,
+                expected_target_mount_identity,
+                workshop_config_path.parent / temp_name,
+            )
+            view = memoryview(encoded)
+            while view:
+                written = os.write(temp_fd, view)
+                if written <= 0:
+                    raise OSError("short write while rewriting migrated workshop config")
+                view = view[written:]
+            os.fsync(temp_fd)
+            named_before_replace = os.stat(
+                "workshop_config.json",
+                dir_fd=config_fd,
+                follow_symlinks=False,
+            )
+            if not os.path.samestat(opened_after, named_before_replace):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在重写前被替换: {workshop_config_path}",
+                )
+            os.replace(
+                temp_name,
+                "workshop_config.json",
+                src_dir_fd=config_fd,
+                dst_dir_fd=config_fd,
+            )
+            temp_created = False
+            named_after_replace = os.stat(
+                "workshop_config.json",
+                dir_fd=config_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _is_link_like_metadata(named_after_replace)
+                or not stat.S_ISREG(named_after_replace.st_mode)
+                or not os.path.samestat(created_temp, named_after_replace)
+                or not os.path.samestat(os.fstat(temp_fd), named_after_replace)
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在原子重写期间被替换: {workshop_config_path}",
+                )
+            os.fsync(config_fd)
+            named_after_directory_flush = os.stat(
+                "workshop_config.json",
+                dir_fd=config_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _is_link_like_metadata(named_after_directory_flush)
+                or not stat.S_ISREG(named_after_directory_flush.st_mode)
+                or not os.path.samestat(created_temp, named_after_directory_flush)
+                or not os.path.samestat(
+                    os.fstat(temp_fd),
+                    named_after_directory_flush,
+                )
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在目录持久化期间被替换: {workshop_config_path}",
+                )
+            config_manifest_after = _capture_opened_posix_tree_identity_manifest(
+                config_fd,
+                content_root / "config",
+                expected_target_mount_identity,
+            )
+            config_manifest_before.pop("workshop_config.json", None)
+            config_manifest_after.pop("workshop_config.json", None)
+            if config_manifest_after != config_manifest_before:
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置目录在路径重写期间发生额外变化: {content_root / 'config'}",
+                )
+            opened_config = os.fstat(config_fd)
+            named_config_before_snapshot = os.stat(
+                "config",
+                dir_fd=content_root_fd,
+                follow_symlinks=False,
+            )
+            if not os.path.samestat(opened_config, named_config_before_snapshot):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置目录在生成清单前被替换: {content_root / 'config'}",
+                )
+            rewritten_snapshot = _snapshot_path(
+                content_root / "config",
+                expected_mount_identity=expected_target_mount_identity,
+            )
+            named_config_after_snapshot = os.stat(
+                "config",
+                dir_fd=content_root_fd,
+                follow_symlinks=False,
+            )
+            final_config_manifest = _capture_opened_posix_tree_identity_manifest(
+                config_fd,
+                content_root / "config",
+                expected_target_mount_identity,
+            )
+            final_config_manifest.pop("workshop_config.json", None)
+            if (
+                not os.path.samestat(opened_config, named_config_after_snapshot)
+                or final_config_manifest != config_manifest_after
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置目录在生成清单期间发生变化: {content_root / 'config'}",
+                )
+            return rewritten_snapshot
+        except StorageMigrationError:
+            raise
+        except Exception as exc:
+            if not config_read_completed:
+                logger.warning(
+                    "Failed to read migrated workshop_config for path rewrite: %s",
+                    exc,
+                )
+                return None
+            raise StorageMigrationError(
+                "target_flush_failed",
+                f"迁移暂存配置无法可靠重写到目标磁盘: {workshop_config_path}: {exc}",
+            ) from exc
+        finally:
+            if source_fd >= 0:
+                with suppress(OSError):
+                    os.close(source_fd)
+            if temp_fd >= 0:
+                with suppress(OSError):
+                    os.close(temp_fd)
+            if temp_created:
+                with suppress(OSError):
+                    os.unlink(temp_name, dir_fd=config_fd)
+            os.close(config_fd)
+
     if not workshop_config_path.is_file():
-        return
+        return None
 
     try:
         payload = _read_json_from_verified_regular_file(workshop_config_path)
     except Exception as exc:
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
-        return
+        return None
 
     rewritten_payload = rebase_runtime_bound_workshop_config_paths(
         payload,
@@ -1731,9 +2543,10 @@ def _rewrite_migrated_runtime_config_paths(
         target_root=target_root,
     )
     if rewritten_payload is payload:
-        return
+        return None
 
     atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
+    return _snapshot_path(content_root / "config")
 
 
 def _verify_opened_regular_file(
@@ -2365,7 +3178,7 @@ def _create_owned_transaction_root(
     payload: dict[str, Any],
     transaction_root: Path,
     txid: str,
-) -> None:
+) -> os.stat_result:
     """Publish a complete marked directory without replacing a late occupant."""
     owner_token = _transaction_owner_token(payload)
     if not owner_token:
@@ -2411,6 +3224,7 @@ def _create_owned_transaction_root(
         or not _transaction_root_is_owned(payload, transaction_root, txid)
     ):
         raise OSError("published migration transaction ownership is unverifiable")
+    return prepared_identity
 
 
 def _write_transaction_owner_marker(
@@ -2820,7 +3634,157 @@ def _rollback_published_entries(
         )
 
 
-def _fsync_staged_tree(path: Path) -> None:
+def _fsync_opened_posix_staged_tree(
+    directory_fd: int,
+    path: Path,
+    expected_mount_identity: tuple[str, int],
+) -> None:
+    """Flush a staged tree without re-resolving its replaceable root path."""
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    _ensure_opened_entry_on_mount(directory_fd, expected_mount_identity, path)
+    try:
+        with os.scandir(directory_fd) as entries:
+            child_names = sorted(entry.name for entry in entries)
+        for child_name in child_names:
+            child_path = path / child_name
+            named_before = os.stat(
+                child_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if _is_link_like_metadata(named_before):
+                raise StorageMigrationError(
+                    "path_symlink_unsupported",
+                    f"迁移暂存区包含符号链接: {child_path}",
+                )
+            if stat.S_ISDIR(named_before.st_mode):
+                child_fd = -1
+                try:
+                    child_fd = os.open(
+                        child_name,
+                        directory_flags,
+                        dir_fd=directory_fd,
+                    )
+                    opened = os.fstat(child_fd)
+                    named_after_open = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        _is_link_like_metadata(opened)
+                        or _is_link_like_metadata(named_after_open)
+                        or not stat.S_ISDIR(opened.st_mode)
+                        or not stat.S_ISDIR(named_after_open.st_mode)
+                        or not os.path.samestat(named_before, opened)
+                        or not os.path.samestat(opened, named_after_open)
+                    ):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存目录在持久化期间被替换: {child_path}",
+                        )
+                    _ensure_opened_entry_on_mount(
+                        child_fd,
+                        expected_mount_identity,
+                        child_path,
+                    )
+                    _fsync_opened_posix_staged_tree(
+                        child_fd,
+                        child_path,
+                        expected_mount_identity,
+                    )
+                    named_after_flush = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if not os.path.samestat(opened, named_after_flush):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存目录在持久化期间被替换: {child_path}",
+                        )
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+                continue
+            if stat.S_ISREG(named_before.st_mode):
+                child_fd = -1
+                try:
+                    child_fd = os.open(
+                        child_name,
+                        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+                    opened = os.fstat(child_fd)
+                    named_after_open = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or not stat.S_ISREG(named_after_open.st_mode)
+                        or not os.path.samestat(named_before, opened)
+                        or not os.path.samestat(opened, named_after_open)
+                    ):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存文件在持久化期间被替换: {child_path}",
+                        )
+                    _ensure_opened_entry_on_mount(
+                        child_fd,
+                        expected_mount_identity,
+                        child_path,
+                    )
+                    os.fsync(child_fd)
+                    named_after_flush = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if not os.path.samestat(opened, named_after_flush):
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            f"迁移暂存文件在持久化期间被替换: {child_path}",
+                        )
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+                continue
+            raise StorageMigrationError(
+                "path_type_unsupported",
+                f"迁移暂存区包含不支持的文件类型: {child_path}",
+            )
+
+        with os.scandir(directory_fd) as final_entries:
+            final_names = sorted(entry.name for entry in final_entries)
+        if final_names != child_names:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存目录在持久化期间发生变化: {path}",
+            )
+        os.fsync(directory_fd)
+    except StorageMigrationError:
+        raise
+    except OSError as exc:
+        raise StorageMigrationError(
+            "target_flush_failed",
+            f"迁移数据无法可靠写入目标磁盘: {path}: {exc}",
+        ) from exc
+
+
+def _fsync_staged_tree(
+    path: Path,
+    *,
+    root_fd: int | None = None,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> None:
+    if os.name != "nt" and root_fd is not None:
+        mount_identity = expected_mount_identity or _opened_mount_identity(root_fd)
+        _fsync_opened_posix_staged_tree(root_fd, path, mount_identity)
+        return
+
     paths: list[Path] = []
     directories: list[Path] = []
     if path.is_file():
@@ -3166,6 +4130,11 @@ def run_pending_storage_migration(
     publish_entry_snapshots: dict[str, dict[str, int | str]] | None = None
     publish_started = False
     policy_payload: dict[str, Any] | None = None
+    windows_directory_guards: list[int] = []
+
+    def _release_windows_directory_guards() -> None:
+        while windows_directory_guards:
+            _close_windows_directory_rename_guard(windows_directory_guards.pop())
 
     def _finish_failure(
         error_code: str,
@@ -3451,6 +4420,34 @@ def run_pending_storage_migration(
                         rollback_required=True,
                     )
                 try:
+                    if os.name == "nt":
+                        recovery_transaction_identity = transaction_root.lstat()
+                        windows_directory_guards.append(
+                            _open_windows_directory_rename_guard(
+                                transaction_root,
+                                recovery_transaction_identity,
+                            )
+                        )
+                        for recovery_directory in (
+                            transaction_root / "staged",
+                            transaction_root / "backup",
+                        ):
+                            recovery_identity = recovery_directory.lstat()
+                            windows_directory_guards.append(
+                                _open_windows_directory_rename_guard(
+                                    recovery_directory,
+                                    recovery_identity,
+                                )
+                            )
+                        if not _transaction_root_is_owned(
+                            payload,
+                            transaction_root,
+                            txid,
+                        ):
+                            raise StorageMigrationError(
+                                "rollback_transaction_unowned",
+                                "迁移事务目录在 Windows 回滚固定后失去所有权。",
+                            )
                     _rollback_published_entries(
                         target_root,
                         transaction_root,
@@ -3465,6 +4462,8 @@ def run_pending_storage_migration(
                         f"迁移目标回滚未完成: {rollback_exc}",
                         rollback_required=True,
                     )
+                finally:
+                    _release_windows_directory_guards()
                 payload = _persist_migration_payload(
                     config_manager,
                     payload,
@@ -3572,12 +4571,19 @@ def run_pending_storage_migration(
                 copy_allocation_unit=copy_allocation_unit,
             )
         source_runtime_baseline = dict(source_snapshots)
-        required_bytes = copy_capacity.required_bytes
-        safety_margin_bytes = (
-            max(64 * 1024 * 1024, int(required_bytes * 0.05))
-            if copy_capacity.entry_count
-            else 0
+        # The transaction root, prepared root, owner marker, staged/backup
+        # roots and atomic transaction metadata need a small fixed allocation
+        # in addition to the source tree. Count both bytes and entries: Windows
+        # has no portable free-inode probe, and allocation units can be large.
+        required_bytes = (
+            copy_capacity.required_bytes
+            + _TRANSACTION_CAPACITY_ENTRY_RESERVE * copy_allocation_unit
         )
+        # Even an empty managed source still creates the prepared transaction
+        # directory, owner marker, staged/backup roots and transaction metadata.
+        # Keep the fixed reserve independent of source entry count so migration
+        # cannot pass preflight and then strand startup while writing metadata.
+        safety_margin_bytes = max(64 * 1024 * 1024, int(required_bytes * 0.05))
         try:
             target_free_bytes = int(shutil.disk_usage(str(target_root)).free)
             target_free_entries = _filesystem_free_entry_count(target_root)
@@ -3586,13 +4592,11 @@ def run_pending_storage_migration(
                 "disk_space_unavailable",
                 f"无法确认目标卷剩余空间，已停止迁移: {exc}",
             ) from exc
-        # The transaction root, owner marker, staged/backup roots and atomic
-        # metadata writes need a small fixed number of entries in addition to
-        # the source tree itself.
-        required_entries = copy_capacity.entry_count + 8
+        required_entries = (
+            copy_capacity.entry_count + _TRANSACTION_CAPACITY_ENTRY_RESERVE
+        )
         if required_bytes + safety_margin_bytes > target_free_bytes or (
-            copy_capacity.entry_count
-            and target_free_entries is not None
+            target_free_entries is not None
             and required_entries > target_free_entries
         ):
             raise StorageMigrationError(
@@ -3613,7 +4617,11 @@ def run_pending_storage_migration(
             source_runtime_baseline=source_runtime_baseline,
         )
         try:
-            _create_owned_transaction_root(payload, transaction_root, txid)
+            created_transaction_identity = _create_owned_transaction_root(
+                payload,
+                transaction_root,
+                txid,
+            )
         except FileExistsError as exc:
             raise StorageMigrationError(
                 "transaction_path_occupied",
@@ -3622,71 +4630,233 @@ def run_pending_storage_migration(
         transaction_owned = True
         staged_root = transaction_root / "staged"
         backup_root = transaction_root / "backup"
-        staged_root.mkdir()
-        backup_root.mkdir()
-        # These names are the only destinations for copied data and original
-        # target backups. Persist them before advancing to COPYING; the
-        # transaction name itself was flushed by _create_owned_transaction_root.
-        _fsync_migration_directory(transaction_root)
+        transaction_root_fd = -1
+        staged_root_fd = -1
+        staged_target_mount_identity: tuple[str, int] | None = None
+        try:
+            if os.name != "nt":
+                transaction_root_fd = _open_verified_directory(transaction_root)
+                if (
+                    not os.path.samestat(
+                        created_transaction_identity,
+                        os.fstat(transaction_root_fd),
+                    )
+                    or not _transaction_directory_fd_is_owned(
+                        payload,
+                        transaction_root_fd,
+                        txid,
+                    )
+                ):
+                    raise StorageMigrationError(
+                        "transaction_ownership_changed",
+                        "迁移事务目录在暂存初始化前被替换，已安全停止迁移。",
+                    )
+                staged_target_mount_identity = _opened_mount_identity(
+                    transaction_root_fd
+                )
+                staged_root_fd = _open_or_create_posix_child_directory(
+                    transaction_root_fd,
+                    "staged",
+                    staged_root,
+                    expected_mount_identity=staged_target_mount_identity,
+                    allow_existing=False,
+                )
+                backup_root_fd = _open_or_create_posix_child_directory(
+                    transaction_root_fd,
+                    "backup",
+                    backup_root,
+                    expected_mount_identity=staged_target_mount_identity,
+                    allow_existing=False,
+                )
+                os.close(backup_root_fd)
+                _ensure_opened_directory_still_named(
+                    transaction_root,
+                    transaction_root_fd,
+                    error_code="staging_entry_changed",
+                    message=f"迁移事务目录在暂存初始化期间被替换: {transaction_root}",
+                )
+            else:
+                transaction_guard = _open_windows_directory_rename_guard(
+                    transaction_root,
+                    created_transaction_identity,
+                )
+                windows_directory_guards.append(transaction_guard)
+                if not _transaction_root_is_owned(payload, transaction_root, txid):
+                    raise StorageMigrationError(
+                        "transaction_ownership_changed",
+                        "迁移事务目录在暂存初始化前被替换，已安全停止迁移。",
+                    )
+                staged_root.mkdir()
+                staged_identity = staged_root.lstat()
+                windows_directory_guards.append(
+                    _open_windows_directory_rename_guard(
+                        staged_root,
+                        staged_identity,
+                    )
+                )
+                backup_root.mkdir()
+                backup_identity = backup_root.lstat()
+                windows_directory_guards.append(
+                    _open_windows_directory_rename_guard(
+                        backup_root,
+                        backup_identity,
+                    )
+                )
+                if not _transaction_root_is_owned(payload, transaction_root, txid):
+                    raise StorageMigrationError(
+                        "transaction_ownership_changed",
+                        "迁移事务目录在暂存初始化期间失去所有权，已安全停止迁移。",
+                    )
+            # These names are the only destinations for copied data and original
+            # target backups. Persist them before advancing to COPYING; the
+            # transaction name itself was flushed by _create_owned_transaction_root.
+            _fsync_migration_directory(transaction_root)
 
-        payload = _persist_migration_payload(
-            config_manager,
-            payload,
-            anchor_root=normalized_anchor_root,
-            status=STORAGE_MIGRATION_STATUS_COPYING,
-        )
-        for entry_name in existing_entries:
-            if path_chain_has_symlink(source_root) or path_chain_has_symlink(target_root):
-                raise StorageMigrationError(
-                    "migration_path_changed",
-                    "迁移期间源路径或目标路径的文件系统边界发生变化，已停止迁移。",
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                status=STORAGE_MIGRATION_STATUS_COPYING,
+            )
+            for entry_name in existing_entries:
+                if path_chain_has_symlink(source_root) or path_chain_has_symlink(target_root):
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        "迁移期间源路径或目标路径的文件系统边界发生变化，已停止迁移。",
+                    )
+                source_entry = _checked_migration_entry_path(source_root, entry_name)
+                staged_entry = _checked_migration_entry_path(staged_root, entry_name)
+                source_snapshot_before = source_snapshots[entry_name]
+                _snapshot_path(
+                    source_entry,
+                    expected_mount_identity=source_mount_identity,
                 )
-            source_entry = _checked_migration_entry_path(source_root, entry_name)
-            staged_entry = _checked_migration_entry_path(staged_root, entry_name)
-            source_snapshot_before = source_snapshots[entry_name]
-            _snapshot_path(
-                source_entry,
-                expected_mount_identity=source_mount_identity,
-            )
-            _copy_runtime_entry(
-                source_entry,
-                staged_entry,
-                expected_mount_identity=source_mount_identity,
-            )
-            source_snapshot_after = _snapshot_path(
-                source_entry,
-                expected_mount_identity=source_mount_identity,
-            )
-            if source_snapshot_after != source_snapshot_before:
-                raise StorageMigrationError(
-                    "source_changed_during_migration",
-                    f"迁移期间源数据发生变化，已停止迁移: {entry_name}",
+                staged_parent_fd = -1
+                try:
+                    if os.name != "nt":
+                        assert staged_root_fd >= 0
+                        assert staged_target_mount_identity is not None
+                        entry_parts = Path(entry_name).parts
+                        staged_parent_fd = _open_or_create_posix_directory_chain(
+                            staged_root_fd,
+                            staged_root,
+                            entry_parts[:-1],
+                            expected_mount_identity=staged_target_mount_identity,
+                        )
+                        _copy_runtime_entry(
+                            source_entry,
+                            staged_entry,
+                            expected_mount_identity=source_mount_identity,
+                            target_parent_fd=staged_parent_fd,
+                            target_name=entry_parts[-1],
+                            expected_target_mount_identity=staged_target_mount_identity,
+                        )
+                    else:
+                        _copy_runtime_entry(
+                            source_entry,
+                            staged_entry,
+                            expected_mount_identity=source_mount_identity,
+                        )
+                finally:
+                    if staged_parent_fd >= 0:
+                        os.close(staged_parent_fd)
+                source_snapshot_after = _snapshot_path(
+                    source_entry,
+                    expected_mount_identity=source_mount_identity,
                 )
-            staged_snapshot = _snapshot_path_within_root(
-                transaction_root,
-                staged_entry,
-            )
-            if staged_snapshot != source_snapshot_before:
-                raise StorageMigrationError(
-                    "verification_failed",
-                    f"迁移暂存校验失败：{entry_name} 未完整复制。",
+                if source_snapshot_after != source_snapshot_before:
+                    raise StorageMigrationError(
+                        "source_changed_during_migration",
+                        f"迁移期间源数据发生变化，已停止迁移: {entry_name}",
+                    )
+                if os.name != "nt":
+                    _ensure_opened_directory_still_named(
+                        staged_root,
+                        staged_root_fd,
+                        error_code="staging_entry_changed",
+                        message=f"迁移暂存根在复制期间被替换: {staged_root}",
+                    )
+                staged_snapshot = _snapshot_path_within_root(
+                    transaction_root,
+                    staged_entry,
                 )
-            source_snapshots[entry_name] = staged_snapshot
+                if staged_snapshot != source_snapshot_before:
+                    raise StorageMigrationError(
+                        "verification_failed",
+                        f"迁移暂存校验失败：{entry_name} 未完整复制。",
+                    )
+                source_snapshots[entry_name] = staged_snapshot
 
-        _rewrite_migrated_runtime_config_paths(
-            source_root=source_root,
-            content_root=staged_root,
-            target_root=target_root,
-        )
-        if "config" in source_snapshots:
-            source_snapshots["config"] = _snapshot_path_within_root(
+            rewritten_config_snapshot = _rewrite_migrated_runtime_config_paths(
+                source_root=source_root,
+                content_root=staged_root,
+                target_root=target_root,
+                content_root_fd=staged_root_fd if os.name != "nt" else None,
+                expected_target_mount_identity=staged_target_mount_identity,
+            )
+            if os.name != "nt":
+                _ensure_opened_directory_still_named(
+                    staged_root,
+                    staged_root_fd,
+                    error_code="staging_entry_changed",
+                    message=f"迁移暂存根在复制期间被替换: {staged_root}",
+                )
+                _fsync_staged_tree(
+                    staged_root,
+                    root_fd=staged_root_fd,
+                    expected_mount_identity=staged_target_mount_identity,
+                )
+                if (
+                    rewritten_config_snapshot is not None
+                    and "config" in source_snapshots
+                ):
+                    _ensure_opened_directory_still_named(
+                        staged_root,
+                        staged_root_fd,
+                        error_code="staging_entry_changed",
+                        message=f"迁移暂存根在配置校验前被替换: {staged_root}",
+                    )
+                    current_rewritten_snapshot = _snapshot_path_within_root(
+                        transaction_root,
+                        _checked_migration_entry_path(staged_root, "config"),
+                    )
+                    if current_rewritten_snapshot != rewritten_config_snapshot:
+                        raise StorageMigrationError(
+                            "staging_entry_changed",
+                            "迁移暂存配置在重写清单固定后发生变化。",
+                        )
+                    source_snapshots["config"] = rewritten_config_snapshot
+                    _ensure_opened_directory_still_named(
+                        staged_root,
+                        staged_root_fd,
+                        error_code="staging_entry_changed",
+                        message=f"迁移暂存根在配置校验期间被替换: {staged_root}",
+                    )
+        finally:
+            if staged_root_fd >= 0:
+                os.close(staged_root_fd)
+            if transaction_root_fd >= 0:
+                os.close(transaction_root_fd)
+        if (
+            os.name == "nt"
+            and rewritten_config_snapshot is not None
+            and "config" in source_snapshots
+        ):
+            current_rewritten_snapshot = _snapshot_path_within_root(
                 transaction_root,
                 _checked_migration_entry_path(staged_root, "config"),
             )
-        # Flush the complete staging tree once so durability is requested from
-        # each copied leaf through nested runtime parents and the staging root
-        # itself before the VERIFYING checkpoint is written.
-        _fsync_staged_tree(staged_root)
+            if current_rewritten_snapshot != rewritten_config_snapshot:
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    "迁移暂存配置在重写清单固定后发生变化。",
+                )
+            source_snapshots["config"] = rewritten_config_snapshot
+        if os.name == "nt":
+            # POSIX flushed through the pinned staging descriptor above. Windows
+            # retains its best-effort directory barriers after each copied file
+            # was flushed through its writable handle.
+            _fsync_staged_tree(staged_root)
 
         if _snapshot_runtime_entries(
             source_root,
@@ -3844,6 +5014,7 @@ def run_pending_storage_migration(
             committed_at=completed_at,
             completed_at=completed_at,
         )
+        _release_windows_directory_guards()
         try:
             if not _remove_transaction_root_if_owned(
                 payload,
@@ -3890,6 +5061,7 @@ def run_pending_storage_migration(
             except Exception as caught_rollback_error:
                 rollback_error = caught_rollback_error
                 logger.exception("Failed to roll back storage migration target")
+        _release_windows_directory_guards()
         if rollback_error is not None:
             return _finish_failure(
                 "rollback_failed",
@@ -3923,6 +5095,7 @@ def run_pending_storage_migration(
             except Exception as caught_rollback_error:
                 rollback_error = caught_rollback_error
                 logger.exception("Failed to roll back unexpected storage migration failure")
+        _release_windows_directory_guards()
         if rollback_error is not None:
             return _finish_failure(
                 "rollback_failed",
@@ -3931,6 +5104,11 @@ def run_pending_storage_migration(
             )
         wrapped_exc = StorageMigrationError("storage_migration_unexpected", f"执行存储迁移时发生未预期错误: {exc}")
         return _finish_rolled_back_failure(wrapped_exc.error_code, wrapped_exc.message)
+    finally:
+        # Crash-simulation tests raise BaseException in-process; production
+        # process loss also relies on the OS to release these handles. Keep the
+        # in-process semantics equivalent so a retry can recover immediately.
+        _release_windows_directory_guards()
 
 
 def delete_storage_migration(
