@@ -14,11 +14,15 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,9 +187,106 @@ def _remove_existing_path(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        removal_root = Path(path)
+
+        def _make_owned_directory_traversable(candidate: Path) -> None:
+            try:
+                candidate.relative_to(removal_root)
+            except ValueError as exc:
+                raise OSError("refusing to chmod outside owned removal tree") from exc
+            metadata = candidate.lstat()
+            file_attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+            is_link_like = stat.S_ISLNK(metadata.st_mode) or bool(
+                file_attributes
+                & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+            )
+            if is_link_like or not stat.S_ISDIR(metadata.st_mode):
+                raise OSError("refusing to chmod unsafe owned removal directory")
+            mode = stat.S_IMODE(metadata.st_mode)
+            os.chmod(
+                candidate,
+                mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+            )
+
+        # Repair owned directories top-down before rmtree. Its onerror callback
+        # cannot recover arbitrary consecutive 0400 directories in one walk:
+        # once a parent scan is skipped, that traversal never revisits children.
+        _make_owned_directory_traversable(removal_root)
+        for walked_root, directory_names, _file_names in os.walk(
+            removal_root,
+            topdown=True,
+            followlinks=False,
+        ):
+            walked_path = Path(walked_root)
+            traversable_names: list[str] = []
+            for directory_name in directory_names:
+                candidate = walked_path / directory_name
+                metadata = candidate.lstat()
+                file_attributes = int(
+                    getattr(metadata, "st_file_attributes", 0) or 0
+                )
+                if stat.S_ISLNK(metadata.st_mode) or bool(
+                    file_attributes
+                    & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+                ):
+                    continue
+                _make_owned_directory_traversable(candidate)
+                traversable_names.append(directory_name)
+            # topdown os.walk reads this list after yielding. Prune every link
+            # and Windows reparse point explicitly so it never descends into an
+            # external target that merely reports is_dir=True.
+            directory_names[:] = traversable_names
+
+        def _make_owned_entry_removable(func, raw_path, _exc_info) -> None:
+            candidate = Path(raw_path)
+            try:
+                candidate.relative_to(removal_root)
+            except ValueError as exc:
+                raise OSError("refusing to chmod outside owned removal tree") from exc
+
+            # A directory without owner execute permission can make lstat on
+            # one of its children fail. Repair the owned parent first, while
+            # still refusing to follow links or Windows reparse points.
+            parent = candidate.parent
+            if parent == removal_root or removal_root in parent.parents:
+                parent_metadata = parent.lstat()
+                parent_attributes = int(
+                    getattr(parent_metadata, "st_file_attributes", 0) or 0
+                )
+                parent_is_link_like = stat.S_ISLNK(parent_metadata.st_mode) or bool(
+                    parent_attributes
+                    & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+                )
+                if parent_is_link_like or not stat.S_ISDIR(parent_metadata.st_mode):
+                    raise OSError("refusing to chmod unsafe owned removal parent")
+                parent_mode = stat.S_IMODE(parent_metadata.st_mode)
+                os.chmod(
+                    parent,
+                    parent_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
+                )
+
+            metadata = candidate.lstat()
+            file_attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+            is_link_like = stat.S_ISLNK(metadata.st_mode) or bool(
+                file_attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+            )
+
+            # Never chmod a symlink/junction: chmod may follow it and mutate an
+            # unrelated target.  Making its owned parent writable is sufficient
+            # for unlink/rmdir to retry safely.
+            if not is_link_like:
+                candidate_mode = stat.S_IMODE(metadata.st_mode)
+                writable_mode = candidate_mode | stat.S_IRUSR | stat.S_IWUSR
+                if stat.S_ISDIR(metadata.st_mode):
+                    writable_mode |= stat.S_IXUSR
+                os.chmod(candidate, writable_mode)
+            func(raw_path)
+
+        shutil.rmtree(path, onerror=_make_owned_entry_removable)
     else:
         path.unlink()
+    if path.exists() or path.is_symlink():
+        raise OSError(f"storage path cleanup did not remove {path}")
     fsync_directory_best_effort(path.parent)
 
 
@@ -202,10 +303,7 @@ def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     """Publish a staged runtime entry without erasing a late external write."""
 
     if source.is_dir():
-        # Windows rename is no-replace. POSIX may replace an existing *empty*
-        # directory, but refuses a non-empty directory or any type mismatch;
-        # replacing an empty directory cannot discard user data.
-        os.rename(source, target)
+        _rename_directory_without_replacing(source, target)
     else:
         # Files need an explicit no-replace primitive on POSIX, where rename
         # would otherwise silently overwrite a file created after our CAS.
@@ -213,6 +311,49 @@ def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     fsync_directory_best_effort(source.parent)
     if source.parent != target.parent:
         fsync_directory_best_effort(target.parent)
+
+
+def _rename_directory_without_replacing(source: Path, target: Path) -> None:
+    """Atomically publish one directory name, never replacing a late winner."""
+    if os.name == "nt":
+        # CPython's Windows os.rename refuses every existing destination.
+        os.rename(source, target)
+        return
+
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    target_bytes = os.fsencode(target)
+    if sys.platform.startswith("linux"):
+        renameat2 = getattr(library, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOTSUP, "atomic no-replace directory rename unavailable")
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, source_bytes, -100, target_bytes, 1)  # RENAME_NOREPLACE
+    elif sys.platform == "darwin":
+        renameatx_np = getattr(library, "renameatx_np", None)
+        if renameatx_np is None:
+            raise OSError(errno.ENOTSUP, "atomic exclusive directory rename unavailable")
+        renameatx_np.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameatx_np.restype = ctypes.c_int
+        result = renameatx_np(-2, source_bytes, -2, target_bytes, 0x00000004)  # RENAME_EXCL
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace directory rename unavailable")
+    if result != 0:
+        error_number = ctypes.get_errno() or errno.EIO
+        raise OSError(error_number, os.strerror(error_number), target)
 
 
 def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:

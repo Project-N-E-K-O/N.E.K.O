@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -86,6 +87,102 @@ def test_create_pending_storage_migration_writes_anchor_checkpoint(tmp_path):
     assert payload["migration_mode"] == "copy"
     assert payload["target_baseline"] == {}
     assert is_storage_migration_pending(payload) is True
+
+
+@pytest.mark.unit
+def test_owned_transaction_cleanup_removes_read_only_tree(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    locked_dir = transaction_root / "backup" / "config"
+    locked_dir.mkdir(parents=True)
+    locked_file = locked_dir / "characters.json"
+    locked_file.write_text('{"preserved": true}', encoding="utf-8")
+    os.chmod(locked_file, stat.S_IRUSR)
+    # No execute permission means the rmtree callback cannot even lstat a
+    # child until it repairs the owned parent directory first.
+    os.chmod(locked_dir, stat.S_IRUSR)
+
+    try:
+        storage_migration_module._remove_existing_path(transaction_root)
+    finally:
+        if locked_dir.exists():
+            os.chmod(locked_dir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        if locked_file.exists():
+            os.chmod(locked_file, stat.S_IRUSR | stat.S_IWUSR)
+
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+def test_owned_transaction_cleanup_repairs_nested_unsearchable_directories(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    upper = transaction_root / "backup" / "locked-upper"
+    lower = upper / "locked-lower"
+    lower.mkdir(parents=True)
+    locked_file = lower / "characters.json"
+    locked_file.write_text('{"preserved": true}', encoding="utf-8")
+    os.chmod(locked_file, stat.S_IRUSR)
+    os.chmod(lower, stat.S_IRUSR)
+    os.chmod(upper, stat.S_IRUSR)
+
+    try:
+        storage_migration_module._remove_existing_path(transaction_root)
+    finally:
+        for candidate in (upper, lower):
+            if candidate.exists():
+                os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        if locked_file.exists():
+            os.chmod(locked_file, stat.S_IRUSR | stat.S_IWUSR)
+
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+def test_owned_transaction_cleanup_never_chmods_a_link_target(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    transaction_root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    external_file = external / "keep.txt"
+    external_file.write_text("keep", encoding="utf-8")
+    original_mode = stat.S_IRUSR | stat.S_IXUSR
+    os.chmod(external, original_mode)
+    (transaction_root / "external-link").symlink_to(external, target_is_directory=True)
+
+    try:
+        storage_migration_module._remove_existing_path(transaction_root)
+        assert stat.S_IMODE(external.stat().st_mode) == original_mode
+        assert external_file.read_text(encoding="utf-8") == "keep"
+    finally:
+        os.chmod(external, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+@pytest.mark.unit
+def test_directory_publish_never_replaces_a_late_empty_directory(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "staged"
+    target = tmp_path / "published"
+    source.mkdir()
+    (source / "data.json").write_text('{"source": true}', encoding="utf-8")
+    target.mkdir()
+    target_identity = target.stat()
+
+    with pytest.raises(OSError):
+        storage_migration_module._durable_publish_without_replacing(source, target)
+
+    current_identity = target.stat()
+    assert (current_identity.st_dev, current_identity.st_ino) == (
+        target_identity.st_dev,
+        target_identity.st_ino,
+    )
+    assert list(target.iterdir()) == []
+    assert (source / "data.json").is_file()
 
 
 @pytest.mark.unit

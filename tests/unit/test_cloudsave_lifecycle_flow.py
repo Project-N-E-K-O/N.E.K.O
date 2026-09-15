@@ -480,15 +480,35 @@ async def test_main_server_limited_shutdown_skips_runtime_persistence_without_ma
     from app import main_server
 
     tracker = SimpleNamespace(save=Mock())
+    cleanup = Mock()
+    join_connectors = AsyncMock(return_value=[])
+    stop_workers = AsyncMock()
     monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_main_runtime_limited_mode_enabled", True), \
+         patch.object(main_server, "_runtime_startup_init_completed", True), \
+         patch.object(main_server, "_preload_task", None), \
+         patch.object(main_server, "_game_cleanup_task", None), \
+         patch.object(main_server, "agent_event_bridge", None), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server, "cleanup", cleanup), \
+         patch.object(main_server, "join_sync_connector_threads", join_connectors), \
+         patch.object(main_server, "_stop_neko_servers_integration_workers", stop_workers), \
+         patch.object(main_server, "get_start_config", Mock(return_value={"shutdown_memory_server_on_exit": False})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
+         patch("app.main_server.voice_identity_runtime.close_voice_identity_runtime", AsyncMock()), \
+         patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
+         patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
+         patch("utils.internal_http_client.aclose_internal_http_client", AsyncMock(return_value=None)), \
+         patch("utils.external_http_client.aclose_external_http_client", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=tracker):
         await main_server.on_shutdown()
 
     tracker.save.assert_not_called()
     run_cloudsave_action.assert_not_awaited()
+    cleanup.assert_called_once_with()
+    join_connectors.assert_awaited_once_with(3.0)
+    stop_workers.assert_awaited_once_with()
 
 
 @pytest.mark.unit
@@ -1179,11 +1199,41 @@ async def test_memory_server_blocked_shutdown_skips_runtime_persistence(monkeypa
 
     tracker = SimpleNamespace(save=Mock())
     monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
-    with patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", True), \
+    manager = SimpleNamespace(cleanup=Mock())
+    release_embedding = AsyncMock()
+    with patch.object(memory_server.runtime, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", True), \
+         patch.object(memory_server.runtime, "embedding_warmup_worker", None), \
+         patch.object(memory_server.runtime, "_deferred_time_managers", [manager]), \
+         patch.object(memory_server.runtime, "time_manager", None), \
+         patch.object(memory_server.runtime, "_reload_lock", asyncio.Lock()), \
+         patch("memory.embeddings.release_embedding_service", release_embedding), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=tracker):
         await memory_server.shutdown_event_handler()
 
     tracker.save.assert_not_called()
+    manager.cleanup.assert_called_once_with()
+    release_embedding.assert_awaited_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_shared_recovery_marker_closes_initialized_fast_path(
+    monkeypatch,
+):
+    from app import memory_server
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "recovery_required")
+    call_next = AsyncMock(side_effect=AssertionError("blocked request reached memory route"))
+    with patch.object(memory_server.runtime, "_memory_runtime_init_completed", True), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False):
+        response = await memory_server.storage_limited_mode_guard(
+            SimpleNamespace(url=SimpleNamespace(path="/get_settings/test")),
+            call_next,
+        )
+
+    assert response.status_code == 409
+    call_next.assert_not_awaited()
 
 
 @pytest.mark.unit

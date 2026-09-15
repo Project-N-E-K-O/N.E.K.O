@@ -73,6 +73,7 @@ from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
     CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
+    ROOT_MODE_DEFERRED_INIT,
     ROOT_MODE_MAINTENANCE_READONLY,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
@@ -91,6 +92,7 @@ from utils.storage_layout import (
     resolve_storage_layout,
 )
 from utils.storage_migration import (
+    STORAGE_MIGRATION_STATUS_FAILED,
     is_storage_migration_rollback_required,
     is_storage_migration_pending,
     load_storage_migration,
@@ -675,10 +677,24 @@ def _resolve_storage_layout_for_launch() -> dict:
             source="migration_failure_recovery",
         )
     else:
+        load_root_state = getattr(resolved_config_manager, "load_root_state", None)
+        try:
+            root_state = load_root_state() if callable(load_root_state) else {}
+        except Exception as exc:
+            return _storage_status_unavailable_recovery_bootstrap(
+                resolved_config_manager,
+                exc,
+            )
         try:
             layout = resolve_storage_layout(resolved_config_manager)
         except StoragePolicyError as exc:
             return _policy_unavailable_recovery_bootstrap(exc)
+    root_mode = str((root_state if not force_recovery_layout else {}).get("mode") or "").strip()
+    migration_status = str(recovery_payload.get("status") or "").strip()
+    durable_recovery_required = (
+        root_mode == ROOT_MODE_DEFERRED_INIT
+        or migration_status == STORAGE_MIGRATION_STATUS_FAILED
+    )
     rebind_result = _consume_storage_rebind_handoff(
         resolved_config_manager,
         layout=layout,
@@ -696,7 +712,7 @@ def _resolve_storage_layout_for_launch() -> dict:
             "limited_mode_reason": "storage_status_unavailable",
         }
     limited_mode_reason = ""
-    if force_recovery_layout:
+    if force_recovery_layout or durable_recovery_required:
         limited_mode_reason = "recovery_required"
     elif migration_incomplete:
         limited_mode_reason = "migration_pending"
@@ -2965,6 +2981,10 @@ def _acquire_single_instance_ownership() -> bool:
     the answer by probing ports.
     """
     global _single_instance_handle
+    # Orphan-lock takeover is destructive and therefore requires a positive
+    # launcher uniqueness proof. Never inherit a stale proof into a failed or
+    # duplicate acquisition path.
+    os.environ.pop("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", None)
 
     handoff = os.environ.get(RESTART_HANDOFF_ENV, "").strip().lower() in ("1", "true", "yes")
     try:
@@ -3062,6 +3082,7 @@ def _acquire_single_instance_ownership() -> bool:
         return False
 
     _single_instance_handle = handle
+    os.environ["NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"] = INSTANCE_ID
     os.environ.pop(RESTART_HANDOFF_ENV, None)
     emit_frontend_event(
         "single_instance",
@@ -3109,6 +3130,7 @@ def release_single_instance_ownership() -> None:
 
     handle = _single_instance_handle
     _single_instance_handle = None
+    os.environ.pop("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", None)
     if handle is not None:
         try:
             handle.release()

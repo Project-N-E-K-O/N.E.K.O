@@ -1055,8 +1055,10 @@ def test_single_instance_acquisition_publishes_the_winner(monkeypatch):
 
     try:
         assert launcher._acquire_single_instance_ownership() is True
+        assert os.environ["NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"] == launcher.INSTANCE_ID
     finally:
         launcher._single_instance_handle = None
+        os.environ.pop("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", None)
 
     role = [p["role"] for e, p in events if e == "single_instance"]
     assert role == ["owner"]
@@ -1078,8 +1080,10 @@ def test_losing_the_lock_hands_the_frontend_the_winner_instead_of_a_hint(monkeyp
                         lambda: (launcher.single_instance.OWNER_OWNED, winner))
     monkeypatch.setattr(launcher.single_instance, "read_owner_record", lambda: winner)
     monkeypatch.setattr(launcher, "_parent_death_guard", None)
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "stale-proof")
 
     assert launcher._acquire_single_instance_ownership() is False
+    assert "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN" not in os.environ
 
     by_event = {e: p for e, p in events}
     assert by_event["single_instance"]["role"] == "duplicate"
@@ -1101,6 +1105,8 @@ def test_unreadable_lock_does_not_block_startup(monkeypatch):
 
     monkeypatch.setattr(launcher.single_instance, "acquire_single_instance", _raise)
     monkeypatch.setattr(launcher, "_parent_death_guard", None)
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "stale-proof")
 
     assert launcher._acquire_single_instance_ownership() is True
+    assert "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN" not in os.environ
     assert [p["role"] for e, p in events if e == "single_instance"] == ["unverified"]

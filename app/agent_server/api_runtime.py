@@ -167,7 +167,11 @@ _agent_storage_admission_generation = 0
 
 @app.middleware("http")
 async def storage_recovery_mode_guard(request, call_next):
-    if _agent_runtime_init_completed and not _agent_storage_blocked_after_init:
+    if (
+        _agent_runtime_init_completed
+        and not _agent_storage_blocked_after_init
+        and not get_storage_recovery_mode()
+    ):
         return await call_next(request)
     recovery_mode = get_storage_recovery_mode()
     if request.url.path in _AGENT_STORAGE_LIMITED_MODE_ALLOWED_PATHS:
@@ -1014,19 +1018,19 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
 
-    if (
+    persistence_blocked = bool(
         not _agent_runtime_init_completed
         or _agent_storage_blocked_after_init
         or get_storage_recovery_mode()
-    ):
-        logger.info("[Agent] Recovery generation shutdown completed without runtime persistence")
-        return
-
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        pass
+    )
+    if persistence_blocked:
+        logger.info("[Agent] Recovery generation shutdown skips runtime persistence")
+    else:
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception:
+            pass
 
     if Modules.computer_use:
         Modules.computer_use.cancel_running()

@@ -14,6 +14,7 @@ import main_routers.card_drop_router as C
 import main_routers.community_oauth as O
 from utils import config_manager as config_manager_module
 from utils import storage_migration as storage_migration_module
+from utils.storage import community_private_state as private_state
 from utils.storage.community_private_state import probe_retained_community_state
 
 
@@ -302,7 +303,7 @@ def test_completed_checkpoint_uses_retained_authority_while_target_is_offline(
     assert json.loads((anchor_state / "community_auth.json").read_text(encoding="utf-8")) == retained_auth
 
 
-def test_single_legacy_root_with_mismatched_auth_and_social_tokens_fails_closed(
+def test_single_legacy_root_allows_rotated_tokens_for_same_credential_identity(
     tmp_path,
     monkeypatch,
 ):
@@ -327,11 +328,88 @@ def test_single_legacy_root_with_mismatched_auth_and_social_tokens_fails_closed(
     (retained_root / "community_auth.json").write_text(json.dumps(auth), encoding="utf-8")
     (retained_root / "social_session.json").write_text(json.dumps(social), encoding="utf-8")
 
+    assert C._load_auth() == auth
+    assert C._load_social_session() == social
+    assert json.loads((anchor_state / "community_auth.json").read_text(encoding="utf-8")) == auth
+    assert json.loads((anchor_state / "social_session.json").read_text(encoding="utf-8")) == social
+    assert not (retained_root / "community_auth.json").exists()
+    assert not (retained_root / "social_session.json").exists()
+
+
+def test_single_legacy_root_rejects_different_credential_identities(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    target_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=target_root,
+        retained_root=retained_root,
+    )
+    retained_root.mkdir(parents=True)
+    auth = {"access_token": "shared-token", "local_user_id": USER_ID}
+    social = {
+        "token": "shared-token",
+        "local_user_id": "00000000-0000-4000-8000-000000000002",
+    }
+    (retained_root / "community_auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    (retained_root / "social_session.json").write_text(json.dumps(social), encoding="utf-8")
+
     assert C._load_auth() is None
     assert C._load_social_session() is None
     assert not anchor_state.exists() or not any(anchor_state.glob("*.json"))
     assert (retained_root / "community_auth.json").exists()
     assert (retained_root / "social_session.json").exists()
+
+
+def test_retained_cleanup_preserves_refreshed_social_token_for_same_identity(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    electron_root = tmp_path / "electron-user-data"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    manager = _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
+    anchor_state.mkdir(parents=True)
+    electron_root.mkdir(parents=True)
+    retained_root.mkdir(parents=True)
+    retained_auth = {"access_token": "old-token", "local_user_id": USER_ID}
+    retained_social = {"token": "old-token", "local_user_id": USER_ID}
+    refreshed_social = {"token": "new-token", "local_user_id": USER_ID}
+    (anchor_state / "community_auth.json").write_text(
+        json.dumps(retained_auth),
+        encoding="utf-8",
+    )
+    (electron_root / "social_session.json").write_text(
+        json.dumps(refreshed_social),
+        encoding="utf-8",
+    )
+    (retained_root / "community_auth.json").write_text(
+        json.dumps(retained_auth),
+        encoding="utf-8",
+    )
+    (retained_root / "social_session.json").write_text(
+        json.dumps(retained_social),
+        encoding="utf-8",
+    )
+
+    C.prepare_retained_community_state_cleanup(retained_root, config_manager=manager)
+
+    assert json.loads(
+        (electron_root / "social_session.json").read_text(encoding="utf-8")
+    ) == refreshed_social
+    assert not (retained_root / "community_auth.json").exists()
+    assert not (retained_root / "social_session.json").exists()
 
 
 def test_legacy_social_cannot_pair_with_different_canonical_auth(
@@ -881,6 +959,191 @@ def test_private_inventory_distinguishes_absent_active_lock_unsafe_and_unreadabl
     assert probe_retained_community_state(retained_root).state == "unreadable"
 
 
+def test_private_inventory_allows_only_a_proven_orphan_lock_for_explicit_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    orphan_pid = 999999
+    (retained_root / "social_session.json.lock").write_text(
+        json.dumps({
+            "schema_version": 2,
+            "token": f"{orphan_pid}:orphan",
+            "pid": orphan_pid,
+            "start_token": "old",
+            "start_token_scheme": "test",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        private_state,
+        "probe_social_lock_process",
+        lambda pid: ("orphaned", "", "test") if pid == orphan_pid else ("unknown", "", ""),
+    )
+
+    inventory = probe_retained_community_state(retained_root)
+
+    assert inventory.state == "orphaned_lock"
+    assert inventory.orphaned_social_lock is True
+    assert inventory.active_social_lock is False
+    assert inventory.cleanup_blocked is False
+
+
+def test_private_inventory_keeps_a_pc_orphan_blocked_for_backend_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    orphan_pid = 999999
+    (retained_root / "social_session.json.lock").write_text(
+        json.dumps({
+            "schema_version": 2,
+            "owner_kind": "pc",
+            "token": f"{orphan_pid}:pc-orphan",
+            "pid": orphan_pid,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        private_state,
+        "probe_social_lock_process",
+        lambda pid: ("orphaned", "", "test") if pid == orphan_pid else ("unknown", "", ""),
+    )
+
+    inventory = probe_retained_community_state(retained_root)
+
+    assert inventory.state == "active_lock"
+    assert inventory.cleanup_blocked is True
+    assert inventory.orphaned_social_lock is False
+
+
+def test_metadata_only_private_inventory_never_probes_a_lock_process(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    (retained_root / "social_session.json.lock").write_text(
+        json.dumps({"token": "123:owner", "pid": 123}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        private_state,
+        "probe_social_lock_process",
+        lambda _pid: (_ for _ in ()).throw(AssertionError("must not probe")),
+    )
+
+    inventory = probe_retained_community_state(
+        retained_root,
+        classify_social_lock_process=False,
+    )
+
+    assert inventory.state == "active_lock"
+    assert inventory.cleanup_blocked is True
+
+
+def test_social_lock_owner_identity_reuse_and_unknown_stay_three_state():
+    owner = {
+        "pid": 123,
+        "start_token": "old-start",
+        "start_token_scheme": "test-scheme",
+    }
+    assert private_state.classify_social_lock_owner(
+        owner,
+        process_probe=lambda _pid: ("active", "new-start", "test-scheme"),
+    ) == "orphaned"
+    assert private_state.classify_social_lock_owner(
+        owner,
+        process_probe=lambda _pid: ("active", "old-start", "test-scheme"),
+    ) == "active"
+    assert private_state.classify_social_lock_owner(
+        owner,
+        process_probe=lambda _pid: ("unknown", "", "test-scheme"),
+    ) == "unknown"
+
+
+def test_current_platform_social_lock_process_probe_reports_a_real_start_identity():
+    state, start_token, scheme = private_state.probe_social_lock_process(os.getpid())
+
+    assert state == "active"
+    assert start_token
+    if private_state.sys.platform.startswith("linux"):
+        assert scheme == "linux-proc-start-v1"
+    elif private_state.sys.platform == "win32":
+        assert scheme == "windows-powershell-start-v1"
+    elif private_state.sys.platform == "darwin":
+        assert scheme == "darwin-ps-lstart-v1"
+
+
+def test_windows_social_lock_probe_hides_powershell(monkeypatch):
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "2026-01-01T00:00:00.0000000Z\n"
+        stderr = ""
+
+    monkeypatch.setattr(private_state.sys, "platform", "win32")
+    monkeypatch.setattr(private_state.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(
+        private_state.subprocess,
+        "run",
+        lambda *args, **kwargs: captured.update(kwargs) or _Result(),
+    )
+
+    state, token, scheme = private_state.probe_social_lock_process(123)
+
+    assert state == "active"
+    assert token
+    assert scheme == "windows-powershell-start-v1"
+    assert captured["creationflags"] == 0x08000000
+
+
+def test_backend_social_lock_caches_its_own_process_identity(monkeypatch):
+    calls = []
+    monkeypatch.setattr(C, "_SOCIAL_LOCK_OWNER_IDENTITY", None)
+    monkeypatch.setattr(
+        C,
+        "probe_social_lock_process",
+        lambda pid: calls.append(pid) or ("active", "stable-start", "test-scheme"),
+    )
+
+    first = C._current_social_lock_record(f"{os.getpid()}:first")
+    second = C._current_social_lock_record(f"{os.getpid()}:second")
+
+    assert calls == [os.getpid()]
+    assert first["start_token"] == second["start_token"] == "stable-start"
+
+
+def test_social_lock_is_not_published_until_its_complete_record_is_durable(
+    tmp_path,
+    monkeypatch,
+):
+    session = tmp_path / "social_session.json"
+    lock = Path(f"{session}.lock")
+    observed_payload = None
+
+    def _fail_before_publish(source, target):
+        nonlocal observed_payload
+        observed_payload = json.loads(Path(source).read_text(encoding="utf-8"))
+        assert target == lock
+        assert not lock.exists()
+        raise OSError("simulated publish interruption")
+
+    monkeypatch.setattr(C, "publish_without_replacing", _fail_before_publish)
+    with pytest.raises(OSError, match="publish interruption"):
+        with C._social_session_lock(session):
+            pass
+
+    assert observed_payload["schema_version"] == 2
+    assert observed_payload["token"].startswith(f"{os.getpid()}:")
+    assert observed_payload["pid"] == os.getpid()
+    assert not lock.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.parametrize("operation", ("load", "cleanup"))
 def test_social_legacy_lock_is_held_through_publish_verify_and_delete(
     tmp_path,
@@ -1068,3 +1331,75 @@ def test_old_social_lock_is_never_automatically_broken(
     finally:
         if root_fd is not None:
             os.close(root_fd)
+
+
+@pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))
+def test_dead_social_lock_owner_is_reclaimed(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+):
+    if use_dir_fd and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd locks are unavailable")
+    root = tmp_path / "root"
+    root.mkdir()
+    lock_name = "social_session.json.lock"
+    lock_path = root / lock_name
+    orphan_pid = 999999
+    lock_path.write_text(
+        json.dumps(
+            {
+                "token": f"{orphan_pid}:orphaned-owner",
+                "pid": orphan_pid,
+                "created_at": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "test-owner")
+    monkeypatch.setattr(
+        C,
+        "classify_social_lock_owner",
+        lambda owner: "orphaned" if owner and owner.get("pid") == orphan_pid else "active",
+    )
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY) if use_dir_fd else None
+    try:
+        lock_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with lock_context:
+            current = json.loads(lock_path.read_text(encoding="utf-8"))
+            assert current["pid"] == os.getpid()
+            assert current["token"].startswith(f"{os.getpid()}:")
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+
+    assert not lock_path.exists()
+
+
+def test_backend_never_reclaims_a_pc_owned_orphan_lock(tmp_path, monkeypatch):
+    session = tmp_path / "social_session.json"
+    lock_path = Path(f"{session}.lock")
+    orphan_pid = 999999
+    record = {
+        "schema_version": 2,
+        "owner_kind": "pc",
+        "token": f"{orphan_pid}:pc-orphan",
+        "pid": orphan_pid,
+    }
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "test-owner")
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
+    monkeypatch.setattr(
+        C,
+        "classify_social_lock_owner",
+        lambda _owner: "orphaned",
+    )
+
+    with pytest.raises(TimeoutError), C._social_session_lock(session):
+        pass
+
+    assert json.loads(lock_path.read_text(encoding="utf-8")) == record

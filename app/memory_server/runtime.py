@@ -254,7 +254,11 @@ async def character_publication_guard(request: Request, call_next):
 
 @app.middleware("http")
 async def storage_limited_mode_guard(request: Request, call_next):
-    if _memory_runtime_init_completed and not _memory_storage_blocked_after_init:
+    if (
+        _memory_runtime_init_completed
+        and not _memory_storage_blocked_after_init
+        and not get_storage_recovery_mode()
+    ):
         return await call_next(request)
 
     if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
@@ -1272,16 +1276,21 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
-    if get_storage_recovery_mode() or _memory_storage_blocked_after_init:
-        logger.info("[Memory] 存储恢复会话关闭：跳过运行态持久化")
-        return
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        # Best-effort final flush — the shutdown path must never fail on
-        # tracker IO, and the periodic save loop already persisted recent data.
-        pass
+    persistence_blocked = bool(
+        not _memory_runtime_init_completed
+        or get_storage_recovery_mode()
+        or _memory_storage_blocked_after_init
+    )
+    if persistence_blocked:
+        logger.info("[Memory] 存储恢复会话关闭：跳过运行态持久化，继续释放资源")
+    else:
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception:
+            # Best-effort final flush — the shutdown path must never fail on
+            # tracker IO, and the periodic save loop already persisted recent data.
+            pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.

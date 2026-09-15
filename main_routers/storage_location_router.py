@@ -1986,8 +1986,12 @@ async def get_storage_location_bootstrap(response: Response):
 
     try:
         config_manager = _get_storage_config_manager()
+        payload = await asyncio.to_thread(
+            build_storage_location_bootstrap_payload,
+            config_manager,
+        )
         return {
-            **build_storage_location_bootstrap_payload(config_manager),
+            **payload,
             "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
         }
     except StoragePolicyError:
@@ -2005,7 +2009,7 @@ async def get_storage_location_status(response: Response, request: Request):
 
     try:
         config_manager = _get_storage_config_manager()
-        payload = _build_status_payload(config_manager)
+        payload = await asyncio.to_thread(_build_status_payload, config_manager)
     except StoragePolicyError:
         payload = _build_storage_policy_unavailable_status()
     except Exception as exc:  # noqa: BLE001
@@ -2047,9 +2051,15 @@ async def post_storage_location_exit(request: Request, response: Response):
     else:
         try:
             config_manager = _get_storage_config_manager()
-            bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
+            def _read_exit_storage_state() -> tuple[dict[str, Any], str]:
+                bootstrap = build_storage_location_bootstrap_payload(config_manager)
+                mode = str((config_manager.load_root_state() or {}).get("mode") or "").strip()
+                return bootstrap, mode
+
+            bootstrap_payload, root_mode = await asyncio.to_thread(
+                _read_exit_storage_state
+            )
             blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
-            root_mode = str((config_manager.load_root_state() or {}).get("mode") or "").strip()
         except Exception as exc:  # noqa: BLE001
             # A corrupt/unreadable policy, migration checkpoint, or root-state
             # file must still allow safe exit without rewriting evidence.
@@ -2102,7 +2112,10 @@ async def get_storage_location_diagnostics(response: Response):
     _set_no_cache_headers(response)
 
     config_manager = _get_storage_config_manager()
-    return _build_storage_location_diagnostics_payload(config_manager)
+    return await asyncio.to_thread(
+        _build_storage_location_diagnostics_payload,
+        config_manager,
+    )
 
 
 @router.get("/retained-source")
@@ -2110,7 +2123,8 @@ async def get_storage_location_retained_source(response: Response):
     _set_no_cache_headers(response)
 
     config_manager = _get_storage_config_manager()
-    notice = _build_completed_migration_notice(
+    notice = await asyncio.to_thread(
+        _build_completed_migration_notice,
         config_manager,
         require_existing_retained_root=False,
     )
@@ -2218,10 +2232,12 @@ async def _post_storage_location_retained_source_cleanup_locked(
         return disabled_response
 
     config_manager = _get_storage_config_manager()
-    notice = _build_completed_migration_notice(
-        config_manager,
-        require_existing_retained_root=True,
-        persist_reconcile=True,
+    notice = await _run_locked_storage_job(
+        lambda: _build_completed_migration_notice(
+            config_manager,
+            require_existing_retained_root=True,
+            persist_reconcile=True,
+        )
     )
     if notice.get("completed") is not True:
         response.status_code = 404
@@ -2464,23 +2480,16 @@ async def _post_storage_location_select_locked(
             "error": "迁移目标尚未完成安全回滚，当前不能更改存储位置。请先安全退出并重新启动应用以重试恢复。",
             "blocking_reason": "migration_pending",
         }
-    selected_root_missing_recovery = _is_selected_root_missing_recovery(
-        config_manager,
-        current_root=current_root,
-        anchor_root=anchor_root,
-    )
-    committed_selected_root = _load_committed_selected_root(
-        config_manager,
-        anchor_root=anchor_root,
-        fallback_root=current_root,
-    )
     if paths_equal(normalized_selected_root, current_root):
-        restart_plan = _resolve_same_root_restart_plan(
-            config_manager,
-            anchor_root=anchor_root,
-            current_root=current_root,
-            selection_source=payload.selection_source,
-            blocking_bootstrap=blocking_bootstrap,
+        restart_plan = await _run_locked_storage_job(
+            partial(
+                _resolve_same_root_restart_plan,
+                config_manager,
+                anchor_root=anchor_root,
+                current_root=current_root,
+                selection_source=payload.selection_source,
+                blocking_bootstrap=blocking_bootstrap,
+            )
         )
         if restart_plan.get("error_code"):
             response.status_code = 409
@@ -2503,6 +2512,16 @@ async def _post_storage_location_select_locked(
             **_build_same_root_restart_offer(current_root),
         }
 
+    selected_root_missing_recovery = _is_selected_root_missing_recovery(
+        config_manager,
+        current_root=current_root,
+        anchor_root=anchor_root,
+    )
+    committed_selected_root = _load_committed_selected_root(
+        config_manager,
+        anchor_root=anchor_root,
+        fallback_root=current_root,
+    )
     if bool(blocking_bootstrap.get("recovery_required")) and selected_root_missing_recovery:
         if not paths_equal(normalized_selected_root, committed_selected_root):
             response.status_code = 409
@@ -2585,12 +2604,18 @@ async def post_storage_location_preflight(
     anchor_root = _get_storage_anchor_root(config_manager, current_root=current_root)
 
     try:
-        blocking_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+        def _read_preflight_storage_state() -> tuple[dict[str, Any], str]:
+            bootstrap = build_storage_location_bootstrap_payload(config_manager)
+            state = config_manager.load_root_state()
+            mode = str(state.get("mode") or ROOT_MODE_NORMAL).strip() or ROOT_MODE_NORMAL
+            return bootstrap, mode
+
+        blocking_bootstrap, root_mode = await asyncio.to_thread(
+            _read_preflight_storage_state
+        )
     except StoragePolicyError:
         return _reject_storage_mutation_for_unavailable_policy(response)
     blocking_reason = str(blocking_bootstrap.get("blocking_reason") or "").strip()
-    root_state = config_manager.load_root_state()
-    root_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL).strip() or ROOT_MODE_NORMAL
     if blocking_reason or root_mode == ROOT_MODE_MAINTENANCE_READONLY:
         response.status_code = 409
         if blocking_reason == "migration_pending" or root_mode == ROOT_MODE_MAINTENANCE_READONLY:
@@ -2608,7 +2633,8 @@ async def post_storage_location_preflight(
         }
 
     try:
-        normalized_selected_root = validate_selected_root(
+        normalized_selected_root = await asyncio.to_thread(
+            validate_selected_root,
             config_manager,
             payload.selected_root,
             current_root=current_root,
@@ -2699,6 +2725,11 @@ async def post_storage_location_restart(
         operation_state = "accepted"
     elif isinstance(result, dict) and result.get("error_code") == "restart_schedule_rollback_failed":
         operation_state = "indeterminate"
+    elif isinstance(result, dict) and result.get("error_code") == "target_confirmation_required":
+        # Existing target content can appear after /select preflight.  The
+        # renderer confirms that exact fresh observation and retries the same
+        # operation, so this recoverable answer must not consume its token.
+        operation_state = "prepared"
     else:
         operation_state = "rejected"
     _finish_storage_restart_operation(
@@ -2777,12 +2808,15 @@ async def _post_storage_location_restart_locked(
             )
         except StoragePolicyError:
             return _reject_storage_mutation_for_unavailable_policy(response)
-        restart_plan = _resolve_same_root_restart_plan(
-            config_manager,
-            anchor_root=anchor_root,
-            current_root=current_root,
-            selection_source=payload.selection_source,
-            blocking_bootstrap=blocking_bootstrap,
+        restart_plan = await _run_locked_storage_job(
+            partial(
+                _resolve_same_root_restart_plan,
+                config_manager,
+                anchor_root=anchor_root,
+                current_root=current_root,
+                selection_source=payload.selection_source,
+                blocking_bootstrap=blocking_bootstrap,
+            )
         )
         if restart_plan.get("error_code"):
             response.status_code = 409

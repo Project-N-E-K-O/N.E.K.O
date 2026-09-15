@@ -213,7 +213,7 @@ plugin-runtime
 
 如果请求退出失败或调用在持久化期间被取消，路由会用写入前快照精确恢复。若恢复 root state 和保留 recovery checkpoint 又同时失败，同进程的退化标记仍必须让后续 `/status` 保持 `awaiting_shutdown`，不能因检查点缺失而翻回 ready。暂存、发布、最终核验或策略提交失败时，后端先删除本次发布入口并恢复目标原有入口，再让策略和根状态回到源目录；恢复策略、根状态或终态检查点有任一无法落盘时，launcher 使用迁移结果中的 source root 强制构建只读恢复布局并阻止普通服务启动，不能重新解析到已经回滚的空目标。自动回滚本身失败时保留事务目录并进入 `rollback_required`，不得假装迁移成功。回滚只有在发布清单、备份摘要和目标最终摘要全部能证明与 `target_baseline` 一致时才可删除事务目录；备份缺失只允许“此前已经恢复且目标正好等于基线”的幂等恢复。任何目标并发改写、清单缺失、事务目录缺失或摘要不一致都继续保留 `rollback_required` 证据。
 
-原子写和 rename 的掉电顺序是安全合同：POSIX 在文件 `fsync` 后同步父目录；Windows 对目录句柄能力不一致，目录 flush 为 best-effort，但仍依赖同卷原子 replace、检查点和内容摘要在下次启动恢复。任何平台都不能把“API 返回成功”当成磁盘已持久化的替代证据。
+原子写和 rename 的掉电顺序是安全合同：POSIX 在文件 `fsync` 后同步父目录；Windows 对目录句柄能力不一致，目录 flush 为 best-effort，但仍依赖同卷原子 replace、检查点和内容摘要在下次启动恢复。运行目录从暂存区公开时还必须拒绝覆盖切换窗口中新出现的名字：Windows 使用拒绝覆盖的 `os.rename`，Linux 使用 `renameat2(RENAME_NOREPLACE)`，macOS 使用 `renameatx_np(RENAME_EXCL)`；缺少原子 no-replace 原语时 fail-closed，不能用会替换空目录的普通 POSIX rename。任何平台都不能把“API 返回成功”当成磁盘已持久化的替代证据。
 
 进程在 `publishing` 或 `committing` 中崩溃时，下次启动先按检查点恢复目标，再从源目录重新执行。一个由普通 pending 进入 `rollback_required` 的启动代次最多交接给宿主一次；若本次启动进入时已经是 `rollback_required`，launcher 不再自动重启，避免失败代次无限循环。此时在线受限服务只提供状态与受控退出；用户安全退出后，下一次显式启动再做一次恢复尝试，不在业务服务在线时执行危险回滚。
 
@@ -222,9 +222,13 @@ plugin-runtime
 旧目录清理再次校验当前根、目标根和锚点边界：
 
 - 当前根、锚点、目标根及它们的祖先或子目录都不能作为旧根删除；只有“旧运行根恰好就是锚点”这一历史兼容场景允许选择性删除锚点内的运行条目，锚点本身和固定状态始终保留；
-- 旧版本可能写在 selected root 顶层的 `community_auth.json`、`social_session.json` 和仍有效的 OAuth/Steam pending，必须先无覆盖地发布到固定私有状态并再次核验，之后才能删除旧副本；损坏凭据、目标落盘失败或活动中的 social lock 都必须中止整次清理；
-- 过期或损坏的项目自有 pending 可以在用户明确发起清理时删除，但 `.lock` 永不迁移；任何 lock（包括看似过期的 lock）都必须阻断导入和清理，wall-clock 年龄无法证明一个挂起或慢 I/O 进程已放弃所有权；
-- social session 的多个路径锁按物理父目录身份统一排序；程序只释放本进程持有且 token/文件身份仍匹配的 lock，不自动接管或删除旧 lock。确认没有持有进程后，残留 lock 只能作为显式人工恢复操作移除；
+- 旧版本可能写在 selected root 顶层的 `community_auth.json`、`social_session.json` 和仍有效的 OAuth/Steam pending，必须先无覆盖地发布到固定私有状态并再次核验，之后才能删除旧副本；损坏凭据、目标落盘失败或活动中/无法验证的 social lock 都必须中止整次清理；
+- 过期或损坏的项目自有 pending 可以在用户明确发起清理时删除，但 `.lock` 永不迁移。wall-clock 年龄不能证明一个挂起或慢 I/O 进程已放弃所有权；空文件、损坏 JSON、身份探测失败、权限拒绝或无法确认来自本机的 lock 一律保留并继续阻断；
+- 新 social lock 必须先在同目录临时文件中完整写入并 `fsync`，再用 no-replace 原语一次性公开：backend 在 Windows 使用 Python 明确拒绝覆盖目标的 `os.rename`、在 macOS/Linux 使用 hard-link；PC 的 Node/libuv `rename` 在 Windows 可能覆盖目标，因此三平台统一使用同卷 hard-link。文件系统不支持时必须 fail-closed，不能退回覆盖 rename 或“先创建公开空 lock、再填内容”的窗口。公开记录包含兼容 `token`、PID 和可用时的启动身份；
+- 自动接管必须同时满足三项：lock 是可完整解析的记录、OS 确证 PID 已消失或同 PID 的可靠启动身份已经变化、当前进程持有唯一 recovery authority。PID 存活且身份一致继续视为活动；证据 unknown 时 fail-closed；
+- orphan recovery 按 lock 中不可变的 `owner_kind` 分区：backend 只接管 `neko` 和缺少该字段的历史 lock，PC 只接管 `pc` lock，任何未知类型均 fail-closed。这样即使 remote 标记与仍存活的本地 backend 重叠，两端也不会对同一个 orphan 执行 compare-delete。backend 覆盖 canonical、legacy 和 retained 路径，且只有在 launcher 单实例锁已正向证明后才能接管，并在重验、删除和新 lock 原子发布期间持有固定 runtime-state 下的 `flock`/`msvcrt` 恢复锁及进程内互斥锁；PC 还必须持有 Electron 单实例锁；
+- Windows 使用进程启动时间、Linux 使用 boot ID 与 `/proc/<pid>/stat` starttime、macOS 使用 `ps lstart` 关闭 PID 复用窗口；缺少相同方案的可靠启动身份时只接受“PID 已确证不存在”，不把可疑差异当作死亡。固定私有状态的合同仅覆盖本机 userData，本版本没有跨主机身份，明确不支持把该目录配置到跨主机共享文件系统；若未来支持，必须先禁用自动接管或增加可靠主机身份，不能拿本机 PID 证据判断远端 owner；
+- social session 的多个路径锁按物理父目录身份统一排序；正常释放仍只删除本进程持有且 token/文件身份匹配的 lock。旧格式只有在 token 可解析出 PID且唯一 authority 确证 PID 已不存在时才可接管；历史空/坏 lock 无法自动证明 owner，保留安全退出并要求显式人工恢复；
 - 所有旧根都只删除权威清单中的受管入口；未知文件、导出、笔记或未来版本数据一律保留；
 - 受管入口清理后，非锚点旧根仅在已经为空时删除；锚点本身始终保留；
 - 第一次删除前先把 `retained_source_mode=cleanup_in_progress`、私有文件摘要和旧根设备号/inode 持久化；落盘失败时零删除。重试只能清理同一物理目录，原路径被复用为另一真实目录时必须停止；

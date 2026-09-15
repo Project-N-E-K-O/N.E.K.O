@@ -343,6 +343,19 @@ def test_lock_path_does_not_drift_with_the_ambient_environment(monkeypatch, tmp_
 
 
 @pytest.mark.unit
+def test_auxiliary_recovery_lock_is_kernel_released_and_never_stolen(monkeypatch, tmp_path):
+    monkeypatch.setenv(single_instance.RUNTIME_STATE_DIR_ENV, str(tmp_path / "runtime"))
+    first = single_instance.try_acquire_auxiliary_lock("social-session-recovery.lock")
+    assert first is not None
+    assert single_instance.try_acquire_auxiliary_lock("social-session-recovery.lock") is None
+
+    first.release()
+    second = single_instance.try_acquire_auxiliary_lock("social-session-recovery.lock")
+    assert second is not None
+    second.release()
+
+
+@pytest.mark.unit
 def test_windows_runtime_state_is_outside_the_replaceable_cloudsave_root(monkeypatch, tmp_path):
     """A held launcher.lock must not block first-run root replacement on Windows."""
     local_app_data = tmp_path / "LocalAppData"

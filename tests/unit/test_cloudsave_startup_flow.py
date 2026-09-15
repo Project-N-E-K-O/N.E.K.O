@@ -649,6 +649,59 @@ def test_launcher_forces_source_layout_when_recovery_metadata_is_degraded(monkey
 
 
 @pytest.mark.unit
+def test_launcher_keeps_terminal_migration_failure_behind_recovery_gate(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    source_root = (tmp_path / "source" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    checkpoint = {
+        "status": "failed",
+        "source_root": str(source_root),
+        "target_root": str(tmp_path / "target" / "N.E.K.O"),
+        "recovery_metadata_degraded": False,
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=source_root,
+        load_root_state=lambda: {"mode": launcher.ROOT_MODE_DEFERRED_INIT},
+    )
+    exported = []
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda *_args, **_kwargs: checkpoint)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda *_args, **_kwargs: {
+            "attempted": False,
+            "completed": False,
+            "payload": checkpoint,
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: launcher.build_storage_layout(
+            selected_root=source_root,
+            anchor_root=anchor_root,
+            source="policy",
+        ),
+    )
+    monkeypatch.setattr(launcher, "_consume_storage_rebind_handoff", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda layout: exported.append(layout))
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is False
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert result["layout"]["selected_root"] == str(source_root)
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
+    assert exported == [result["layout"]]
+
+
+@pytest.mark.unit
 def test_launcher_does_not_relaunch_when_recovery_metadata_is_degraded(monkeypatch):
     from launcher_core import runtime as launcher
 

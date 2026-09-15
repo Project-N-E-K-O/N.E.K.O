@@ -34,12 +34,19 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from utils import single_instance
 from utils.file_utils import fsync_directory_best_effort, publish_without_replacing
 from utils.storage.community_private_state import (
     COMMUNITY_AUTH_FILENAME as _AUTH_FILENAME,
     COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
     COMMUNITY_STEAM_PENDING_FILENAME as _STEAM_PENDING_FILENAME,
     SOCIAL_SESSION_FILENAME as _SOCIAL_SESSION_FILENAME,
+    SOCIAL_LOCK_OWNER_ORPHANED,
+    SOCIAL_LOCK_SCHEMA_VERSION,
+    backend_can_recover_social_lock_owner,
+    classify_social_lock_owner,
+    parse_social_lock_owner,
+    probe_social_lock_process,
     probe_retained_community_state,
     retained_community_snapshot_matches,
 )
@@ -55,6 +62,11 @@ _SOCIAL_SESSION_LOCK_SUFFIX = ".lock"
 _SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
 _SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
+_SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV = "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"
+_SOCIAL_LOCK_RECOVERY_MUTEX = threading.Lock()
+_SOCIAL_LOCK_RECOVERY_GUARD_FILE = "social-session-recovery.lock"
+_SOCIAL_LOCK_OWNER_IDENTITY_MUTEX = threading.Lock()
+_SOCIAL_LOCK_OWNER_IDENTITY: tuple[str, str, str] | None = None
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
@@ -602,7 +614,13 @@ def _legacy_root_candidates(
                 if retained_root.is_absolute() and not path_chain_has_symlink(retained_root):
                     import_roots.append(retained_root)
                     witness_roots.append(retained_root)
-                    retained_inventory = probe_retained_community_state(retained_root)
+                    # This compatibility read only needs file presence. Process
+                    # identity probing may spawn PowerShell/ps and must not
+                    # block an async social request merely to classify a lock.
+                    retained_inventory = probe_retained_community_state(
+                        retained_root,
+                        classify_social_lock_process=False,
+                    )
                     # A retained directory with no managed private state may be
                     # the residue of a cleanup whose two metadata writes both
                     # failed. Do not use its stale checkpoint to revive target
@@ -818,6 +836,30 @@ def _social_lock_fingerprint(raw: bytes) -> str:
     return f"digest:{hashlib.sha256(raw).hexdigest()}"
 
 
+def _backend_social_lock_recovery_authority() -> bool:
+    """Require the launcher's positive backend-singleton proof before reaping."""
+    return bool(
+        os.environ.get(_SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV, "").strip()
+    )
+
+
+def _current_social_lock_record(token: str, *, owner_kind: str = "neko") -> dict:
+    global _SOCIAL_LOCK_OWNER_IDENTITY
+    with _SOCIAL_LOCK_OWNER_IDENTITY_MUTEX:
+        if _SOCIAL_LOCK_OWNER_IDENTITY is None:
+            _SOCIAL_LOCK_OWNER_IDENTITY = probe_social_lock_process(os.getpid())
+        state, start_token, scheme = _SOCIAL_LOCK_OWNER_IDENTITY
+    return {
+        "schema_version": SOCIAL_LOCK_SCHEMA_VERSION,
+        "token": token,
+        "owner_kind": owner_kind,
+        "pid": os.getpid(),
+        "start_token": start_token if state != "unknown" else "",
+        "start_token_scheme": scheme if start_token else "",
+        "created_at": int(time.time() * 1000),
+    }
+
+
 def _social_lock_metadata_equal(left, right) -> bool:
     return bool(
         os.path.samestat(left, right)
@@ -830,7 +872,7 @@ def _open_social_lock_snapshot(
     lock_path: Path | str,
     *,
     dir_fd: int | None = None,
-) -> tuple[int, object, str]:
+) -> tuple[int, object, str, dict | None]:
     """Open a lock without following it and prove the name still names that inode."""
     before = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
@@ -856,7 +898,7 @@ def _open_social_lock_snapshot(
         named = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
         if not _social_lock_metadata_equal(after, named):
             raise OSError("social session lock was replaced while reading")
-        return fd, after, _social_lock_fingerprint(raw)
+        return fd, after, _social_lock_fingerprint(raw), parse_social_lock_owner(raw)
     except BaseException:
         os.close(fd)
         raise
@@ -866,13 +908,13 @@ def _read_social_lock_snapshot(
     lock_path: Path | str,
     *,
     dir_fd: int | None = None,
-) -> tuple[object, str]:
-    fd, metadata, fingerprint = _open_social_lock_snapshot(
+) -> tuple[object, str, dict | None]:
+    fd, metadata, fingerprint, owner = _open_social_lock_snapshot(
         lock_path,
         dir_fd=dir_fd,
     )
     os.close(fd)
-    return metadata, fingerprint
+    return metadata, fingerprint, owner
 
 
 def _unlink_social_lock_if_unchanged(
@@ -882,9 +924,9 @@ def _unlink_social_lock_if_unchanged(
     *,
     dir_fd: int | None = None,
 ) -> bool:
-    """Release a lock owned by this process; never use this for stale takeover."""
+    """Delete only the exact open-and-reverified lock inode/token snapshot."""
     try:
-        fd, current_metadata, current_fingerprint = _open_social_lock_snapshot(
+        fd, current_metadata, current_fingerprint, _owner = _open_social_lock_snapshot(
             lock_path,
             dir_fd=dir_fd,
         )
@@ -896,8 +938,9 @@ def _unlink_social_lock_if_unchanged(
             or current_fingerprint != expected_fingerprint
         ):
             return False
-        # Keep the verified inode open through unlink. The cooperative O_EXCL
-        # protocol prevents a second owner while this name still exists.
+        # Keep the verified inode open through unlink. Normal release is
+        # protected by token ownership; orphan takeover additionally holds the
+        # kernel recovery authority until a replacement lock is published.
         os.unlink(lock_path, dir_fd=dir_fd)
         return True
     finally:
@@ -905,15 +948,19 @@ def _unlink_social_lock_if_unchanged(
 
 
 def _legacy_social_path_ready(path: Path) -> bool:
-    """Reject every legacy lock; age alone cannot prove that its owner is gone."""
+    """Permit only a backend-owned path whose complete lock is provably orphaned."""
     lock_path = Path(f"{path}{_SOCIAL_SESSION_LOCK_SUFFIX}")
     try:
-        _read_social_lock_snapshot(lock_path)
+        _metadata, _fingerprint, owner = _read_social_lock_snapshot(lock_path)
     except FileNotFoundError:
         return True
     except OSError:
         return False
-    return False
+    return bool(
+        _backend_social_lock_recovery_authority()
+        and backend_can_recover_social_lock_owner(owner)
+        and classify_social_lock_owner(owner) == SOCIAL_LOCK_OWNER_ORPHANED
+    )
 
 
 def _read_private_json_state(path: Path) -> tuple[str, dict | None]:
@@ -1085,7 +1132,7 @@ def _legacy_credential_sources_conflict(
     retained_dir_fd: int | None = None,
 ) -> bool:
     """Return True unless multiple credential roots prove the same identity."""
-    source_records: list[tuple[set[str], set[str]]] = []
+    source_records: list[tuple[str, set[str]]] = []
     sources: list[tuple[tuple[Path, str], ...]] = []
     state_dir = _community_state_dir(config_manager)
     if state_dir is not None:
@@ -1114,6 +1161,7 @@ def _legacy_credential_sources_conflict(
     for source in sources:
         users: set[str] = set()
         tokens: set[str] = set()
+        record_users: list[str] = []
         has_record = False
         for path, token_field in source:
             if (
@@ -1134,21 +1182,42 @@ def _legacy_credential_sources_conflict(
             has_record = True
             tokens.add(token)
             user_id = _normalize_local_user_id((data or {}).get("local_user_id"))
+            record_users.append(user_id)
             if user_id:
                 users.add(user_id)
         if has_record:
-            if len(users) > 1 or len(tokens) > 1:
+            identity = next(iter(users)) if len(users) == 1 and all(record_users) else ""
+            if len(users) > 1 or (len(tokens) > 1 and not identity):
                 return True
-            source_records.append((users, tokens))
+            source_records.append((identity, tokens))
 
-    for index, (left_users, left_tokens) in enumerate(source_records):
-        for right_users, right_tokens in source_records[index + 1 :]:
-            if left_users and right_users:
-                if left_users.isdisjoint(right_users):
+    for index, (left_identity, left_tokens) in enumerate(source_records):
+        for right_identity, right_tokens in source_records[index + 1 :]:
+            if left_identity and right_identity:
+                if left_identity != right_identity:
                     return True
+                # Electron rotates social_session.json independently from the
+                # anchored compatibility mirror.  Matching valid UUIDs prove
+                # the account even when the bearer generations differ.
+                continue
             if not left_tokens or not right_tokens or left_tokens.isdisjoint(right_tokens):
                 return True
     return False
+
+
+def _private_state_records_equivalent(
+    filename: str,
+    left: dict | None,
+    right: dict | None,
+) -> bool:
+    """Compare private records without mistaking token rotation for an account change."""
+    if left == right:
+        return True
+    if filename not in {_AUTH_FILENAME, _SOCIAL_SESSION_FILENAME}:
+        return False
+    left_user = _normalize_local_user_id((left or {}).get("local_user_id"))
+    right_user = _normalize_local_user_id((right or {}).get("local_user_id"))
+    return bool(left_user and right_user and left_user == right_user)
 
 
 def _existing_safe_parent(path: Path) -> bool:
@@ -1294,10 +1363,14 @@ def _prepare_retained_community_state_cleanup_locked(
             if (
                 candidate_state != "valid"
                 or retained_state != "valid"
-                or candidate_data != retained_data
+                or not _private_state_records_equivalent(
+                    filename,
+                    candidate_data,
+                    retained_data,
+                )
             ):
                 raise OSError(f"conflicting legacy {filename} records")
-    verified: list[tuple[Path, dict, Path | None, object | None]] = []
+    verified: list[tuple[Path, dict, Path | None, object | None, dict | None]] = []
     for filename, canonical_path, validator, ephemeral in specs:
         legacy_path = root / filename
         legacy_state, legacy_data = _read_retained(filename)
@@ -1308,7 +1381,7 @@ def _prepare_retained_community_state_cleanup_locked(
                 # Pending filenames are owned, one-shot local state. Corrupt
                 # records cannot authenticate a callback and are safe to discard
                 # during an explicit old-root cleanup; never promote them.
-                verified.append((legacy_path, {}, None, None))
+                verified.append((legacy_path, {}, None, None, None))
                 continue
             raise OSError(f"legacy {filename} is unreadable or malformed")
         if not validator(legacy_data or {}):
@@ -1322,7 +1395,7 @@ def _prepare_retained_community_state_cleanup_locked(
             if ephemeral and well_formed_expired:
                 # Expired well-formed PKCE state has no recovery value and must
                 # not be promoted into fixed state during explicit old-root cleanup.
-                verified.append((legacy_path, legacy_data or {}, None, None))
+                verified.append((legacy_path, legacy_data or {}, None, None, None))
                 continue
             raise OSError(f"legacy {filename} is unreadable or malformed")
         if canonical_path is None or canonical_path == legacy_path:
@@ -1337,15 +1410,27 @@ def _prepare_retained_community_state_cleanup_locked(
         if (
             canonical_state != "valid"
             or not validator(canonical_data or {})
-            or canonical_data != legacy_data
+            or not _private_state_records_equivalent(
+                filename,
+                canonical_data,
+                legacy_data,
+            )
         ):
             raise OSError(f"canonical {filename} is unreadable or malformed")
-        verified.append((legacy_path, legacy_data or {}, canonical_path, validator))
+        verified.append(
+            (
+                legacy_path,
+                legacy_data or {},
+                canonical_path,
+                validator,
+                dict(canonical_data or {}),
+            )
+        )
 
     # Validate every source and destination again before deleting the first old
     # record. This prevents a concurrent refresh from turning a safe cleanup into
     # deletion of the newest/only credentials.
-    for legacy_path, expected_legacy, canonical_path, validator in verified:
+    for legacy_path, expected_legacy, canonical_path, validator, expected_canonical in verified:
         if canonical_path is None and validator is None and not expected_legacy:
             try:
                 metadata = legacy_path.lstat()
@@ -1363,11 +1448,11 @@ def _prepare_retained_community_state_cleanup_locked(
         if (
             canonical_state != "valid"
             or not validator(canonical_data or {})
-            or canonical_data != expected_legacy
+            or canonical_data != expected_canonical
         ):
             raise OSError(f"canonical {canonical_path.name} changed during cleanup")
 
-    for legacy_path, _expected_legacy, _canonical_path, _validator in verified:
+    for legacy_path, _expected_legacy, _canonical_path, _validator, _expected_canonical in verified:
         if retained_dir_fd is None:
             legacy_path.unlink()
             fsync_directory_best_effort(legacy_path.parent)
@@ -1506,6 +1591,150 @@ def _write_private_json(path: Path, data: dict) -> None:
             pass
 
 
+def _try_publish_social_lock(
+    lock_path: Path | str,
+    token: str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[object, str] | None:
+    """Publish a complete lock record atomically, or return None if busy."""
+    encoded = json.dumps(
+        _current_social_lock_record(token),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    display_name = Path(lock_path).name
+    tmp_name = f".{display_name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    tmp_path = Path(lock_path).with_name(tmp_name) if dir_fd is None else tmp_name
+    fd = -1
+    published = False
+    try:
+        fd = os.open(
+            tmp_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=dir_fd,
+        )
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(fd, encoded[offset:])
+            if written <= 0:
+                raise OSError("short social session lock write")
+            offset += written
+        os.fsync(fd)
+        with suppress(OSError):
+            os.fchmod(fd, 0o600)
+        os.close(fd)
+        fd = -1
+        try:
+            if dir_fd is None:
+                publish_without_replacing(tmp_path, Path(lock_path))
+            else:
+                os.link(
+                    tmp_name,
+                    lock_path,
+                    src_dir_fd=dir_fd,
+                    dst_dir_fd=dir_fd,
+                    follow_symlinks=False,
+                )
+            published = True
+        except FileExistsError:
+            return None
+        metadata, fingerprint, _owner = _read_social_lock_snapshot(
+            lock_path,
+            dir_fd=dir_fd,
+        )
+        if fingerprint != f"token:{token}":
+            raise OSError("published social session lock changed unexpectedly")
+        return metadata, fingerprint
+    except BaseException:
+        if published:
+            with suppress(OSError):
+                metadata, fingerprint, _owner = _read_social_lock_snapshot(
+                    lock_path,
+                    dir_fd=dir_fd,
+                )
+                if fingerprint == f"token:{token}":
+                    _unlink_social_lock_if_unchanged(
+                        lock_path,
+                        metadata,
+                        fingerprint,
+                        dir_fd=dir_fd,
+                    )
+        raise
+    finally:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+        with suppress(OSError):
+            os.unlink(tmp_path, dir_fd=dir_fd)
+        if published:
+            if dir_fd is None:
+                fsync_directory_best_effort(Path(lock_path).parent)
+            else:
+                with suppress(OSError):
+                    os.fsync(dir_fd)
+
+
+def _reclaim_orphaned_social_lock(
+    lock_path: Path | str,
+    expected_metadata,
+    expected_fingerprint: str,
+    expected_owner: dict | None,
+    replacement_token: str,
+    *,
+    dir_fd: int | None = None,
+) -> tuple[object, str] | None:
+    """Reclaim only under the launcher's unique authority proof."""
+    if (
+        not backend_can_recover_social_lock_owner(expected_owner)
+        or classify_social_lock_owner(expected_owner) != SOCIAL_LOCK_OWNER_ORPHANED
+    ):
+        return None
+    with _SOCIAL_LOCK_RECOVERY_MUTEX:
+        try:
+            authority = single_instance.try_acquire_auxiliary_lock(
+                _SOCIAL_LOCK_RECOVERY_GUARD_FILE
+            )
+        except (OSError, ValueError):
+            return None
+        if authority is None:
+            return None
+        with authority:
+            try:
+                current_metadata, current_fingerprint, current_owner = _read_social_lock_snapshot(
+                    lock_path,
+                    dir_fd=dir_fd,
+                )
+            except FileNotFoundError:
+                return _try_publish_social_lock(
+                    lock_path,
+                    replacement_token,
+                    dir_fd=dir_fd,
+                )
+            if (
+                not _social_lock_metadata_equal(expected_metadata, current_metadata)
+                or expected_fingerprint != current_fingerprint
+                or not backend_can_recover_social_lock_owner(current_owner)
+                or classify_social_lock_owner(current_owner) != SOCIAL_LOCK_OWNER_ORPHANED
+            ):
+                return None
+            if not _unlink_social_lock_if_unchanged(
+                lock_path,
+                current_metadata,
+                current_fingerprint,
+                dir_fd=dir_fd,
+            ):
+                return None
+            # Hold the kernel recovery guard until this authority either
+            # publishes its complete replacement or observes another writer.
+            return _try_publish_social_lock(
+                lock_path,
+                replacement_token,
+                dir_fd=dir_fd,
+            )
+
+
 @contextmanager
 def _social_session_lock(path: Path):
     """Serialize social-session CAS writes with the Electron main process."""
@@ -1518,37 +1747,30 @@ def _social_session_lock(path: Path):
     owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
+        published = _try_publish_social_lock(lock_path, token)
+        if published is None:
             try:
-                _read_social_lock_snapshot(lock_path)
+                lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(lock_path)
             except FileNotFoundError:
                 continue
+            recovered = None
+            if _backend_social_lock_recovery_authority():
+                recovered = _reclaim_orphaned_social_lock(
+                    lock_path,
+                    lock_metadata,
+                    lock_fingerprint,
+                    lock_owner,
+                    token,
+                )
+            if recovered is not None:
+                owned_metadata, token_fingerprint = recovered
+                break
             if time.monotonic() >= deadline:
                 raise TimeoutError("social session lock is busy")
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
-        created_metadata = os.fstat(fd)
-        try:
-            encoded = json.dumps({"token": token, "created_at": time.time()}).encode("utf-8")
-            if os.write(fd, encoded) != len(encoded):
-                raise OSError("short social session lock write")
-            owned_metadata = os.fstat(fd)
-        except OSError:
-            os.close(fd)
-            with suppress(OSError):
-                current_metadata, current_fingerprint = _read_social_lock_snapshot(lock_path)
-                if os.path.samestat(created_metadata, current_metadata):
-                    _unlink_social_lock_if_unchanged(
-                        lock_path,
-                        current_metadata,
-                        current_fingerprint,
-                    )
-            raise
-        else:
-            os.close(fd)
-            break
+        owned_metadata, token_fingerprint = published
+        break
 
     try:
         yield
@@ -1571,49 +1793,34 @@ def _social_session_lock_at(dir_fd: int):
     owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
-        try:
-            fd = os.open(
-                lock_name,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-                dir_fd=dir_fd,
-            )
-        except FileExistsError:
+        published = _try_publish_social_lock(lock_name, token, dir_fd=dir_fd)
+        if published is None:
             try:
-                _read_social_lock_snapshot(
+                lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(
                     lock_name,
                     dir_fd=dir_fd,
                 )
             except FileNotFoundError:
                 continue
+            recovered = None
+            if _backend_social_lock_recovery_authority():
+                recovered = _reclaim_orphaned_social_lock(
+                    lock_name,
+                    lock_metadata,
+                    lock_fingerprint,
+                    lock_owner,
+                    token,
+                    dir_fd=dir_fd,
+                )
+            if recovered is not None:
+                owned_metadata, token_fingerprint = recovered
+                break
             if time.monotonic() >= deadline:
                 raise TimeoutError("social session lock is busy")
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
-        created_metadata = os.fstat(fd)
-        try:
-            encoded = json.dumps({"token": token, "created_at": time.time()}).encode("utf-8")
-            if os.write(fd, encoded) != len(encoded):
-                raise OSError("short social session lock write")
-            owned_metadata = os.fstat(fd)
-        except OSError:
-            os.close(fd)
-            with suppress(OSError):
-                current_metadata, current_fingerprint = _read_social_lock_snapshot(
-                    lock_name,
-                    dir_fd=dir_fd,
-                )
-                if os.path.samestat(created_metadata, current_metadata):
-                    _unlink_social_lock_if_unchanged(
-                        lock_name,
-                        current_metadata,
-                        current_fingerprint,
-                        dir_fd=dir_fd,
-                    )
-            raise
-        else:
-            os.close(fd)
-            break
+        owned_metadata, token_fingerprint = published
+        break
 
     try:
         yield

@@ -1336,9 +1336,14 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
-        if get_storage_recovery_mode() or _main_runtime_limited_mode_enabled:
-            logger.info("存储恢复会话关闭：跳过运行态持久化、角色释放和云存档导出")
-            return
+        persistence_blocked = bool(
+            get_storage_recovery_mode()
+            or _main_runtime_limited_mode_enabled
+        )
+        if persistence_blocked:
+            logger.info(
+                "存储恢复会话关闭：跳过运行态持久化、角色释放和云存档导出，继续释放资源"
+            )
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 
@@ -1407,12 +1412,13 @@ async def on_shutdown():
             logger.debug(f"Translation service cleanup failed: {e}")
 
         # 保存 Token 用量数据
-        try:
-            from utils.token_tracker import TokenTracker
+        if not persistence_blocked:
+            try:
+                from utils.token_tracker import TokenTracker
 
-            TokenTracker.get_instance().save()
-        except Exception as e:
-            logger.debug(f"Token usage save on shutdown failed: {e}")
+                TokenTracker.get_instance().save()
+            except Exception as e:
+                logger.debug(f"Token usage save on shutdown failed: {e}")
 
         # 关闭音乐爬虫连接池
         try:
@@ -1432,9 +1438,12 @@ async def on_shutdown():
         any_release_failed = False
         failed_release_characters: list[str] = []
         try:
-            from main_routers.characters_router import release_memory_server_character
+            if persistence_blocked:
+                releasable_names = []
+            else:
+                from main_routers.characters_router import release_memory_server_character
 
-            releasable_names = sorted(name for name, _mgr in _iter_session_managers())
+                releasable_names = sorted(name for name, _mgr in _iter_session_managers())
 
             # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
             # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
@@ -1494,7 +1503,9 @@ async def on_shutdown():
                 f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
             )
 
-        if any_release_failed:
+        if persistence_blocked:
+            logger.info("存储恢复会话关闭：未释放角色或上传 cloudsave 快照")
+        elif any_release_failed:
             logger.warning(
                 "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
                 ", ".join(sorted(set(failed_release_characters)))

@@ -62,6 +62,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Optional
 
@@ -306,6 +307,45 @@ def _open_lock_file(path: Path) -> int:
     # pre-created for us to follow.
     flags |= getattr(os, "O_NOFOLLOW", 0)
     return os.open(str(path), flags, 0o600)
+
+
+class AuxiliaryLockHandle:
+    """A small kernel-backed lock for serializing destructive recovery work."""
+
+    def __init__(self, fd: int):
+        self._fd: Optional[int] = fd
+
+    def release(self) -> None:
+        fd = self._fd
+        self._fd = None
+        if fd is None:
+            return
+        _unlock_fd(fd)
+        with suppress(OSError):
+            os.close(fd)
+
+    def __enter__(self) -> "AuxiliaryLockHandle":
+        return self
+
+    def __exit__(self, *_exc_info) -> None:
+        self.release()
+
+
+def try_acquire_auxiliary_lock(filename: str) -> AuxiliaryLockHandle | None:
+    """Try a stable per-user OS lock; return None only for proven contention."""
+    normalized = str(filename or "").strip()
+    if not normalized or Path(normalized).name != normalized:
+        raise ValueError("auxiliary lock filename must be one safe path component")
+    fd = _open_lock_file(runtime_state_dir() / normalized)
+    try:
+        _try_lock_fd(fd)
+    except LockHeldByAnother:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return AuxiliaryLockHandle(fd)
 
 
 def _ensure_private_dir(directory: Path) -> None:

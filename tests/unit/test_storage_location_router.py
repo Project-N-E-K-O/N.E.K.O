@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +26,41 @@ from utils.storage_migration import (
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
 from utils.file_utils import atomic_write_json
 from config import AUTOSTART_CSRF_TOKEN
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_polled_storage_status_builds_off_the_event_loop(monkeypatch):
+    main_thread = threading.get_ident()
+    observed_threads = []
+    config_manager = object()
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_get_storage_config_manager",
+        lambda: config_manager,
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_build_status_payload",
+        lambda observed: observed_threads.append(threading.get_ident()) or {
+            "ok": observed is config_manager,
+        },
+    )
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/storage/location/status",
+        "headers": [],
+        "query_string": b"",
+    })
+
+    payload = await storage_location_router_module.get_storage_location_status(
+        Response(),
+        request,
+    )
+
+    assert payload["ok"] is True
+    assert observed_threads and observed_threads[0] != main_thread
 
 
 class _DummyConfigManager:
@@ -1437,6 +1473,56 @@ def test_storage_location_existing_target_content_requires_confirmation_before_r
 
 
 @pytest.mark.unit
+def test_restart_confirmation_retry_preserves_correlated_operation(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_parent = tmp_path / "custom-storage-parent"
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        select_response = client.post(
+            "/api/storage/location/select",
+            json={"selected_root": str(selected_parent), "selection_source": "custom"},
+        )
+        selection = select_response.json()
+        operation_id = selection["restart_operation_id"]
+        selected_root = Path(selection["selected_root"])
+
+        (selected_root / "config").mkdir(parents=True)
+        (selected_root / "config" / "characters.json").write_text(
+            '{"appeared_after_preflight": true}',
+            encoding="utf-8",
+        )
+        first_restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "custom",
+                "restart_operation_id": operation_id,
+            },
+        )
+        confirmed_restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "custom",
+                "confirm_existing_target_content": True,
+                "restart_operation_id": operation_id,
+            },
+        )
+
+    assert first_restart.status_code == 409
+    assert first_restart.json()["error_code"] == "target_confirmation_required"
+    assert first_restart.json()["restart_operation"]["state"] == "prepared"
+    assert shutdown_calls == ["shutdown"]
+    assert confirmed_restart.status_code == 200
+    assert confirmed_restart.json()["restart_operation"]["state"] == "accepted"
+    assert load_storage_migration(config_manager)["confirmed_existing_target_content"] is True
+
+
+@pytest.mark.unit
 def test_storage_location_select_rejects_anchor_reserved_path(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     invalid_target = tmp_path / "anchor-base" / "N.E.K.O" / "state" / "nested"
@@ -2651,6 +2737,62 @@ def test_storage_location_cleanup_moves_legacy_community_state_before_removing_r
     assert json.loads((state_dir / "social_session.json").read_text(encoding="utf-8")) == social_payload
     assert json.loads((state_dir / "community_oauth_pending.json").read_text(encoding="utf-8")) == oauth_pending
     assert not (state_dir / "community_steam_pending.json").exists(), "expired PKCE state is discarded, not migrated"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reclaims_proven_orphaned_retained_social_lock(
+    tmp_path,
+    monkeypatch,
+):
+    if storage_location_router_module.os.name == "nt":
+        pytest.skip("retained cleanup requires POSIX directory handles")
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    social_payload = {"token": "legacy-token"}
+    (source_root / "social_session.json").write_text(
+        json.dumps(social_payload),
+        encoding="utf-8",
+    )
+    orphan_pid = 999999
+    (source_root / "social_session.json.lock").write_text(
+        json.dumps({"token": f"{orphan_pid}:orphan", "pid": orphan_pid}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "test-owner")
+    monkeypatch.setattr(
+        "utils.storage.community_private_state.probe_social_lock_process",
+        lambda pid: ("orphaned", "", "") if pid == orphan_pid else ("active", "", ""),
+    )
+    monkeypatch.setattr(
+        "main_routers.card_drop_router.classify_social_lock_owner",
+        lambda owner: "orphaned" if owner and owner.get("pid") == orphan_pid else "active",
+    )
+
+    with _build_client(reloaded_manager) as client:
+        before = client.get("/api/storage/location/status")
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert before.status_code == 200
+    assert before.json()["completion_notice"]["cleanup_available"] is True
+    assert cleanup.status_code == 200
+    assert not source_root.exists()
+    assert json.loads(
+        (reloaded_manager.local_state_dir / "social_session.json").read_text(encoding="utf-8")
+    ) == social_payload
 
 
 @pytest.mark.unit

@@ -101,6 +101,26 @@ async def test_agent_recovery_generation_allows_only_health(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_agent_shared_recovery_marker_closes_initialized_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_runtime as srv
+
+    monkeypatch.setattr(srv, "_agent_runtime_init_completed", True)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", False)
+    monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "recovery_required")
+    call_next = AsyncMock(side_effect=AssertionError("blocked request reached runtime route"))
+
+    response = await srv.storage_recovery_mode_guard(
+        SimpleNamespace(url=SimpleNamespace(path="/plugin/execute")),
+        call_next,
+    )
+
+    assert response.status_code == 409
+    call_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "recovery_mode",
     ["selection_required", "migration_pending", "recovery_required"],
@@ -172,11 +192,29 @@ async def test_agent_blocked_shutdown_skips_runtime_persistence_without_marker(
     monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
     monkeypatch.setattr(srv, "_agent_runtime_init_completed", True)
     monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
+    plugin_stop = AsyncMock()
+    plugin_server_stop = AsyncMock()
+    browser_stop = AsyncMock()
+    emit_status = AsyncMock()
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", lambda: tracker)
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", plugin_stop)
+    monkeypatch.setattr(srv, "_stop_embedded_user_plugin_server", plugin_server_stop)
+    monkeypatch.setattr(srv, "_close_browser_use_adapter", browser_stop)
+    monkeypatch.setattr(srv, "_emit_agent_status_update", emit_status)
+    monkeypatch.setattr(srv.Modules, "computer_use", None)
+    monkeypatch.setattr(srv.Modules, "browser_use", None)
+    monkeypatch.setattr(srv.Modules, "agent_bridge", None)
+    monkeypatch.setattr(srv.Modules, "_persistent_tasks", set())
+    monkeypatch.setattr(srv.Modules, "_background_tasks", set())
+    monkeypatch.setattr(srv.Modules, "active_computer_use_async_task", None)
 
     await srv.shutdown()
 
     tracker.save.assert_not_called()
+    plugin_stop.assert_awaited_once_with()
+    plugin_server_stop.assert_awaited_once_with()
+    browser_stop.assert_awaited_once_with()
+    emit_status.assert_awaited_once_with()
 
 
 # ---------------------------------------------------------------------------
