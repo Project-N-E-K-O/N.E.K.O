@@ -431,6 +431,98 @@ def test_storage_location_bootstrap_payload_marks_cleanup_pending_for_non_anchor
 
 
 @pytest.mark.unit
+def test_cleanup_pending_inventory_skips_social_lock_owner_probe(tmp_path, monkeypatch):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    (source_root / "social_session.json.lock").write_text("unclassified", encoding="utf-8")
+
+    observed = []
+    real_probe = storage_location_bootstrap_module.probe_retained_community_state
+
+    def _probe(path, **kwargs):
+        observed.append(kwargs.get("classify_social_lock_process"))
+        return real_probe(path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "probe_retained_community_state",
+        _probe,
+    )
+
+    payload = build_storage_location_bootstrap_payload(
+        _make_real_config_manager(tmp_path)
+    )
+
+    assert payload["legacy_cleanup_pending"] is True
+    assert observed and set(observed) == {False}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("checkpoint_status", (None, "completed", "failed"))
+def test_next_launcher_exposes_checkpointless_restart_intent_as_recovery(
+    tmp_path,
+    monkeypatch,
+    checkpoint_status,
+):
+    config_manager = _DummyConfigManager(
+        tmp_path,
+        root_mode="maintenance_readonly",
+    )
+    current_root = config_manager.app_docs_dir
+    config_manager.load_root_state = lambda: {
+        "mode": "maintenance_readonly",
+        "last_known_good_root": str(current_root),
+        "last_migration_source": str(current_root),
+        "last_migration_result": f"restart_pending:{current_root}",
+    }
+    old_checkpoint = (
+        None
+        if checkpoint_status is None
+        else {
+            "status": checkpoint_status,
+            "source_root": str(current_root),
+            "target_root": str(tmp_path / "old-target" / "N.E.K.O"),
+        }
+    )
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, "recovery_required")
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: old_checkpoint,
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "_should_require_selection",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
+    assert payload["migration_phase"] == ""
+    assert payload["shutdown_retry_allowed"] is False
+    assert payload["restart_intent_recovery_required"] is True
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_keeps_cleanup_pending_when_checkpoint_is_missing(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir

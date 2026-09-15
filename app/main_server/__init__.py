@@ -119,6 +119,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved  # noqa
+from utils.internal_http_auth import internal_http_auth_headers
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import (
     clear_runtime_storage_blocking_reason,
@@ -418,6 +419,7 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/continue",
             json={"reason": reason},
+            headers=internal_http_auth_headers(),
             timeout=60.0,
         )
         if response.status_code == 409:
@@ -456,6 +458,7 @@ async def _request_agent_server_continue_startup(reason: str = "") -> None:
         response = await client.post(
             f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/continue",
             json={"reason": reason},
+            headers=internal_http_auth_headers(),
             timeout=60.0,
         )
         response.raise_for_status()
@@ -484,6 +487,7 @@ async def _request_memory_server_block_startup(
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
             json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
             timeout=10.0,
         )
         response.raise_for_status()
@@ -511,6 +515,7 @@ async def _request_agent_server_block_startup(
         response = await client.post(
             f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/block",
             json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
             timeout=10.0,
         )
         response.raise_for_status()

@@ -8,6 +8,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCALES_DIR = REPO_ROOT / "static" / "locales"
 STORAGE_LOCATION_JS = REPO_ROOT / "static" / "app" / "app-storage-location.js"
+MEMORY_BROWSER_JS = REPO_ROOT / "static" / "js" / "memory_browser.js"
 STORAGE_KEY_RE = re.compile(r"""['"]storage\.([A-Za-z0-9_.-]+)['"]""")
 
 
@@ -82,6 +83,32 @@ def test_storage_location_cloudsave_local_state_error_code_is_translated():
         re.DOTALL | re.MULTILINE,
     )
     assert branch_pattern.search(source)
+
+
+@pytest.mark.unit
+def test_backend_directory_picker_uses_its_own_interactive_timeout_budget():
+    shared_source = STORAGE_LOCATION_JS.read_text(encoding="utf-8")
+    memory_source = MEMORY_BROWSER_JS.read_text(encoding="utf-8")
+
+    for source in (shared_source, memory_source):
+        picker_timeout = re.search(
+            r"STORAGE_DIRECTORY_PICKER_TIMEOUT_MS\s*=\s*(\d+)",
+            source,
+        )
+        assert picker_timeout is not None
+        assert int(picker_timeout.group(1)) > 120_000
+
+    shared_picker_block = shared_source.split(
+        "async function pickDirectoryWithBackend",
+        1,
+    )[1].split("function getHostBridge", 1)[0]
+    memory_picker_block = memory_source.split(
+        "async function pickStorageTargetDirectory",
+        1,
+    )[1].split("function formatPreflightResult", 1)[0]
+    for picker_block in (shared_picker_block, memory_picker_block):
+        assert "STORAGE_DIRECTORY_PICKER_TIMEOUT_MS" in picker_block
+        assert "STORAGE_MUTATION_REQUEST_TIMEOUT_MS" not in picker_block
 
 
 @pytest.mark.unit

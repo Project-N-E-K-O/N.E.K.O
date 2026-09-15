@@ -108,6 +108,7 @@ from utils.root_state_lock import root_state_transaction
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
+_DIRECTORY_PICKER_TIMEOUT_SECONDS = 120.0
 _storage_mutation_lock = asyncio.Lock()
 _STORAGE_RESTART_OPERATION_TTL_SECONDS = 10 * 60
 _storage_restart_operations: dict[str, dict[str, Any]] = {}
@@ -592,6 +593,39 @@ def _resolve_same_root_restart_plan(
         }
 
     if bool(blocking_bootstrap.get("recovery_required")):
+        if bool(blocking_bootstrap.get("restart_intent_recovery_required")):
+            previous_checkpoint = load_storage_migration(
+                config_manager,
+                anchor_root=anchor_root,
+            )
+            previous_status = str(
+                (previous_checkpoint or {}).get("status") or ""
+            ).strip()
+            if previous_checkpoint is None or previous_status == STORAGE_MIGRATION_STATUS_COMPLETED:
+                def _recover_from_indeterminate_restart() -> dict[str, Any]:
+                    recovered_policy = save_storage_policy(
+                        config_manager,
+                        selected_root=current_root,
+                        selection_source=selection_source,
+                        anchor_root=anchor_root,
+                    )
+                    set_root_mode(
+                        config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(current_root),
+                        last_known_good_root=str(current_root),
+                        last_migration_result=(
+                            "recovered:restart_schedule_indeterminate:"
+                            f"{current_root}"
+                        ),
+                    )
+                    return recovered_policy
+
+                return {
+                    "selection_source": selection_source,
+                    "write_selection": _recover_from_indeterminate_restart,
+                }
+
         if not selected_root_missing_recovery:
             migration_payload = load_storage_migration(
                 config_manager,
@@ -1129,7 +1163,7 @@ def _pick_directory_via_osascript(*, start_path: str) -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=120,
+            timeout=_DIRECTORY_PICKER_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
         raise _DirectoryPickerUnavailable(
@@ -1175,6 +1209,7 @@ def _pick_directory_via_powershell(*, start_path: str) -> str:
     script = """
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $owner = New-Object System.Windows.Forms.Form
 $owner.Text = 'N.E.K.O'
 $owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
@@ -1206,8 +1241,10 @@ exit 2
             [powershell_executable, "-NoProfile", "-STA", "-Command", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             check=False,
-            timeout=120,
+            timeout=_DIRECTORY_PICKER_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
         raise _DirectoryPickerUnavailable(
@@ -1263,14 +1300,18 @@ def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
         )
 
     last_error = None
+    deadline = time.monotonic() + _DIRECTORY_PICKER_TIMEOUT_SECONDS
     for command in commands:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             completed = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=120,
+                timeout=remaining,
             )
         except Exception as exc:
             last_error = exc
@@ -1611,6 +1652,10 @@ def _build_storage_location_diagnostics_payload(config_manager) -> dict[str, Any
     }
 
 
+def _secure_retained_cleanup_supported() -> bool:
+    return bool(os.name != "nt" and shutil.rmtree.avoids_symlink_attacks)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -1654,7 +1699,11 @@ def _build_completed_migration_notice(
     ).strip()
     retained_exists = bool(retained_root and Path(retained_root).exists())
     retained_has_runtime_entries = False
-    retained_private_state = probe_retained_community_state(retained_root)
+    secure_cleanup_supported = _secure_retained_cleanup_supported()
+    retained_private_state = probe_retained_community_state(
+        retained_root,
+        classify_social_lock_process=secure_cleanup_supported,
+    )
     retained_mode = str(migration_payload.get("retained_source_mode") or "").strip()
     retained_has_private_state = retained_private_state.has_managed_content
     if retained_mode == "cleanup_in_progress":
@@ -1681,9 +1730,7 @@ def _build_completed_migration_notice(
         return {
             "completed": False,
         }
-    cleanup_available = bool(
-        os.name != "nt" and shutil.rmtree.avoids_symlink_attacks
-    ) and is_retained_root_cleanup_available(
+    cleanup_available = secure_cleanup_supported and is_retained_root_cleanup_available(
         retained_root,
         current_root=current_root,
         anchor_root=anchor_root,

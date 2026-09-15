@@ -18,6 +18,7 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
+import asyncio
 import os
 from typing import Any
 
@@ -83,7 +84,10 @@ async def get_system_status(response: Response):
 
     try:
         config_manager = _get_system_config_manager()
-        storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+        storage_bootstrap = await asyncio.to_thread(
+            build_storage_location_bootstrap_payload,
+            config_manager,
+        )
         blocking_reason = str(storage_bootstrap.get("blocking_reason") or "")
         storage_status_unavailable = blocking_reason in {
             "storage_policy_unavailable",

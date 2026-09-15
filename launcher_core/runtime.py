@@ -690,11 +690,20 @@ def _resolve_storage_layout_for_launch() -> dict:
         except StoragePolicyError as exc:
             return _policy_unavailable_recovery_bootstrap(exc)
     root_mode = str((root_state if not force_recovery_layout else {}).get("mode") or "").strip()
+    last_migration_result = str(
+        (root_state if not force_recovery_layout else {}).get("last_migration_result") or ""
+    ).strip()
     migration_status = str(recovery_payload.get("status") or "").strip()
     durable_recovery_required = (
         root_mode == ROOT_MODE_DEFERRED_INIT
         or migration_status == STORAGE_MIGRATION_STATUS_FAILED
     )
+    restart_handoff_indeterminate = bool(
+        root_mode == ROOT_MODE_MAINTENANCE_READONLY
+        and last_migration_result.startswith("restart_pending:")
+        and not migration_was_pending
+    )
+    durable_recovery_required = durable_recovery_required or restart_handoff_indeterminate
     rebind_result = _consume_storage_rebind_handoff(
         resolved_config_manager,
         layout=layout,

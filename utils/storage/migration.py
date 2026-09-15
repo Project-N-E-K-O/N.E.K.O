@@ -20,10 +20,12 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import sys
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -85,6 +87,8 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 )
 
 MIGRATED_RUNTIME_ENTRY_NAMES = RUNTIME_STORAGE_RELATIVE_PATHS
+_TRANSACTION_OWNER_MARKER_FILENAME = ".neko-storage-transaction-owner.json"
+_TRANSACTION_OWNER_MARKER_VERSION = 1
 
 
 class StorageMigrationError(RuntimeError):
@@ -92,6 +96,14 @@ class StorageMigrationError(RuntimeError):
         super().__init__(message)
         self.error_code = str(error_code or "storage_migration_failed").strip() or "storage_migration_failed"
         self.message = str(message or "Storage migration failed.").strip() or "Storage migration failed."
+
+
+def _is_link_like_metadata(metadata: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISLNK(metadata.st_mode)
+        or int(getattr(metadata, "st_file_attributes", 0) or 0)
+        & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    )
 
 
 def _utc_now_iso() -> str:
@@ -303,7 +315,7 @@ def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     """Publish a staged runtime entry without erasing a late external write."""
 
     if source.is_dir():
-        _rename_directory_without_replacing(source, target)
+        _rename_entry_without_replacing(source, target)
     else:
         # Files need an explicit no-replace primitive on POSIX, where rename
         # would otherwise silently overwrite a file created after our CAS.
@@ -313,8 +325,8 @@ def _durable_publish_without_replacing(source: Path, target: Path) -> None:
         fsync_directory_best_effort(target.parent)
 
 
-def _rename_directory_without_replacing(source: Path, target: Path) -> None:
-    """Atomically publish one directory name, never replacing a late winner."""
+def _rename_entry_without_replacing(source: Path, target: Path) -> None:
+    """Atomically move one directory entry, never replacing a late winner."""
     if os.name == "nt":
         # CPython's Windows os.rename refuses every existing destination.
         os.rename(source, target)
@@ -354,6 +366,58 @@ def _rename_directory_without_replacing(source: Path, target: Path) -> None:
     if result != 0:
         error_number = ctypes.get_errno() or errno.EIO
         raise OSError(error_number, os.strerror(error_number), target)
+
+
+def _durable_rename_without_replacing(source: Path, target: Path) -> None:
+    """Move the named entry itself and flush both directory-entry sides."""
+    _rename_entry_without_replacing(source, target)
+    fsync_directory_best_effort(source.parent)
+    if source.parent != target.parent:
+        fsync_directory_best_effort(target.parent)
+
+
+def _restore_quarantined_directory(quarantine: Path, original: Path) -> None:
+    try:
+        # Quarantine deals with an untrusted name that may have changed type.
+        # Always rename the directory entry itself: the normal file publisher
+        # may hard-link through a symlink on POSIX and thereby alter the object
+        # we are trying to preserve.
+        _durable_rename_without_replacing(quarantine, original)
+    except Exception as exc:
+        logger.error(
+            "Preserving unverified storage directory at %s after restore failed: %s",
+            quarantine,
+            exc,
+        )
+
+
+def _private_directory_quarantine_path(path: Path) -> Path:
+    return path.parent / f".{path.name}.deleting"
+
+
+def _remove_private_directory_via_quarantine(
+    path: Path,
+    expected_identity: os.stat_result,
+    *,
+    verify_quarantine=None,
+) -> bool:
+    """Detach an owned name before recursive deletion and verify what moved."""
+    quarantine = _private_directory_quarantine_path(path)
+    if quarantine.exists() or quarantine.is_symlink():
+        return False
+    _durable_rename_without_replacing(path, quarantine)
+    try:
+        quarantined_identity = quarantine.lstat()
+        valid = bool(os.path.samestat(expected_identity, quarantined_identity))
+        if valid and callable(verify_quarantine):
+            valid = bool(verify_quarantine(quarantine))
+    except OSError:
+        valid = False
+    if not valid:
+        _restore_quarantined_directory(quarantine, path)
+        return False
+    _remove_existing_path(quarantine)
+    return True
 
 
 def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
@@ -577,6 +641,183 @@ def _checkpoint_transaction_root(
     return candidate, True
 
 
+def _transaction_owner_token(payload: dict[str, Any]) -> str:
+    token = str(payload.get("transaction_owner_token") or "").strip().lower()
+    return token if re.fullmatch(r"[0-9a-f]{64}", token) else ""
+
+
+def _transaction_root_is_owned(
+    payload: dict[str, Any],
+    transaction_root: Path,
+    txid: str,
+) -> bool:
+    """Prove a checkpoint-bound transaction directory carries our durable marker."""
+    owner_token = _transaction_owner_token(payload)
+    if not owner_token:
+        return False
+    marker = transaction_root / _TRANSACTION_OWNER_MARKER_FILENAME
+    fd = -1
+    try:
+        root_before = transaction_root.lstat()
+        if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(root_before.st_mode):
+            return False
+        if path_chain_has_symlink(transaction_root):
+            return False
+        marker_before = marker.lstat()
+        if not stat.S_ISREG(marker_before.st_mode) or _is_link_like_metadata(marker_before):
+            return False
+        fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        marker_opened = os.fstat(fd)
+        if not os.path.samestat(marker_before, marker_opened):
+            return False
+        raw = os.read(fd, 4097)
+        marker_after = os.fstat(fd)
+        marker_named = marker.lstat()
+        root_after = transaction_root.lstat()
+        if (
+            len(raw) > 4096
+            or _is_link_like_metadata(marker_named)
+            or not os.path.samestat(marker_opened, marker_after)
+            or not os.path.samestat(marker_after, marker_named)
+            or not os.path.samestat(root_before, root_after)
+        ):
+            return False
+        marker_payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    finally:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+    return bool(
+        isinstance(marker_payload, dict)
+        and marker_payload.get("version") == _TRANSACTION_OWNER_MARKER_VERSION
+        and str(marker_payload.get("txid") or "").strip().lower() == txid
+        and secrets.compare_digest(
+            str(marker_payload.get("owner_token") or "").strip().lower(),
+            owner_token,
+        )
+    )
+
+
+def _create_owned_transaction_root(
+    payload: dict[str, Any],
+    transaction_root: Path,
+    txid: str,
+) -> None:
+    """Publish a complete marked directory without replacing a late occupant."""
+    owner_token = _transaction_owner_token(payload)
+    if not owner_token:
+        raise StorageMigrationError(
+            "transaction_owner_missing",
+            "迁移检查点缺少事务目录所有权凭据，已停止迁移。",
+        )
+    prepared_root = transaction_root.parent / f".{transaction_root.name}.{uuid.uuid4().hex}.tmp"
+    prepared_root.mkdir(parents=False, exist_ok=False)
+    prepared_identity = prepared_root.lstat()
+    try:
+        _write_transaction_owner_marker(payload, prepared_root, txid)
+        if (
+            not os.path.samestat(prepared_identity, prepared_root.lstat())
+            or not _transaction_root_is_owned(payload, prepared_root, txid)
+        ):
+            raise OSError("migration preparation directory identity changed")
+        _durable_publish_without_replacing(prepared_root, transaction_root)
+    except BaseException:
+        if prepared_root.exists() or prepared_root.is_symlink():
+            try:
+                if not _remove_private_directory_via_quarantine(
+                    prepared_root,
+                    prepared_identity,
+                ):
+                    logger.warning(
+                        "Preserving replaced migration preparation directory: %s",
+                        prepared_root,
+                    )
+            except OSError as cleanup_exc:
+                logger.warning(
+                    "Failed to clean migration preparation directory %s: %s",
+                    prepared_root,
+                    cleanup_exc,
+                )
+        raise
+    if (
+        not os.path.samestat(prepared_identity, transaction_root.lstat())
+        or not _transaction_root_is_owned(payload, transaction_root, txid)
+    ):
+        raise OSError("published migration transaction ownership is unverifiable")
+
+
+def _write_transaction_owner_marker(
+    payload: dict[str, Any],
+    transaction_root: Path,
+    txid: str,
+) -> None:
+    """Persist the complete marker before a prepared transaction is published."""
+    owner_token = _transaction_owner_token(payload)
+    if not owner_token:
+        raise StorageMigrationError(
+            "transaction_owner_missing",
+            "迁移检查点缺少事务目录所有权凭据，已停止迁移。",
+        )
+    marker = transaction_root / _TRANSACTION_OWNER_MARKER_FILENAME
+    atomic_write_json(
+        marker,
+        {
+            "version": _TRANSACTION_OWNER_MARKER_VERSION,
+            "txid": txid,
+            "owner_token": owner_token,
+        },
+        ensure_ascii=True,
+    )
+    with suppress(OSError):
+        marker.chmod(0o600)
+    fsync_directory_best_effort(transaction_root)
+
+
+def _remove_transaction_root_if_owned(
+    payload: dict[str, Any],
+    transaction_root: Path,
+    txid: str,
+) -> bool:
+    quarantine = _private_directory_quarantine_path(transaction_root)
+    if not transaction_root.exists() and not transaction_root.is_symlink():
+        try:
+            quarantined_identity = quarantine.lstat()
+        except OSError:
+            return False
+        if not _transaction_root_is_owned(payload, quarantine, txid):
+            return False
+        try:
+            if (
+                not os.path.samestat(quarantined_identity, quarantine.lstat())
+                or not _transaction_root_is_owned(payload, quarantine, txid)
+            ):
+                return False
+        except OSError:
+            return False
+        # This is already the detached, deterministic quarantine left by an
+        # interrupted cleanup. Deleting it in place avoids creating recursive
+        # ``.deleting`` names that a later generation could not rediscover.
+        _remove_existing_path(quarantine)
+        return True
+    try:
+        owned_identity = transaction_root.lstat()
+    except OSError:
+        return False
+    if not _transaction_root_is_owned(payload, transaction_root, txid):
+        return False
+    return _remove_private_directory_via_quarantine(
+        transaction_root,
+        owned_identity,
+        verify_quarantine=lambda quarantine: _transaction_root_is_owned(
+            payload,
+            quarantine,
+            txid,
+        ),
+    )
+
+
 def _rollback_published_entries(
     target_root: Path,
     transaction_root: Path,
@@ -628,20 +869,30 @@ def _rollback_published_entries(
                             "rollback_target_changed",
                             f"迁移发布中断窗口出现未记录的目标数据，无法安全回滚: {relative_path}",
                         )
-                elif (
-                    not target_exists
-                    or _snapshot_path(target_path) != publish_entry_snapshots[relative_path]
-                ):
-                    raise StorageMigrationError(
-                        "rollback_target_changed",
-                        f"迁移已发布数据被改写或缺失，无法安全覆盖: {relative_path}",
-                    )
-                target_path = _checked_migration_entry_path(target_root, relative_path)
-                backup_path = _checked_migration_entry_path(backup_root, relative_path)
-                _remove_existing_path(target_path)
+                    if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                        raise StorageMigrationError(
+                            "rollback_target_changed",
+                            f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
+                        )
+                else:
+                    if (
+                        not target_exists
+                        or _snapshot_path(target_path)
+                        != publish_entry_snapshots[relative_path]
+                    ):
+                        raise StorageMigrationError(
+                            "rollback_target_changed",
+                            f"迁移已发布数据被改写或缺失，无法安全覆盖: {relative_path}",
+                        )
+                    staged_path.parent.mkdir(parents=True, exist_ok=True)
+                    _durable_publish_without_replacing(target_path, staged_path)
+                    if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                        raise StorageMigrationError(
+                            "rollback_target_changed",
+                            f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
+                        )
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                fsync_directory_best_effort(target_path.parent.parent)
-                _durable_replace(backup_path, target_path)
+                _durable_publish_without_replacing(backup_path, target_path)
             elif _snapshot_path(target_path) != target_baseline[relative_path]:
                 # A prior rollback attempt may already have restored this entry
                 # and then crashed before deleting the transaction directory. A
@@ -657,17 +908,28 @@ def _rollback_published_entries(
                     "rollback_target_changed",
                     f"迁移发布前目标位置出现了未记录的数据，无法安全回滚: {relative_path}",
                 )
+            if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                raise StorageMigrationError(
+                    "rollback_target_changed",
+                    f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
+                )
         elif target_exists:
-            # No original entry and no staged entry means publication moved the
-            # staged copy into place.  Prove it is still exactly our copy before
-            # deleting it; otherwise a concurrent writer would be erased.
+            # Move our verified published copy back under the owned transaction
+            # instead of deleting it in place. Both the pre- and post-move
+            # snapshots are required so a replacement race is preserved as
+            # recovery evidence rather than recursively erased.
             if _snapshot_path(target_path) != publish_entry_snapshots[relative_path]:
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移已发布数据被并发改写，无法安全删除: {relative_path}",
                 )
-            target_path = _checked_migration_entry_path(target_root, relative_path)
-            _remove_existing_path(target_path)
+            staged_path.parent.mkdir(parents=True, exist_ok=True)
+            _durable_publish_without_replacing(target_path, staged_path)
+            if _snapshot_path(staged_path) != publish_entry_snapshots[relative_path]:
+                raise StorageMigrationError(
+                    "rollback_target_changed",
+                    f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
+                )
 
     if _snapshot_runtime_entries(target_root) != target_baseline:
         raise StorageMigrationError(
@@ -836,6 +1098,7 @@ def build_pending_storage_migration_payload(
     return {
         "version": STORAGE_MIGRATION_VERSION,
         "txid": str(txid or uuid.uuid4().hex),
+        "transaction_owner_token": secrets.token_hex(32),
         "status": STORAGE_MIGRATION_STATUS_PENDING,
         "source_root": str(normalize_runtime_root(source_root)),
         "target_root": str(normalized_target_root),
@@ -915,13 +1178,29 @@ def run_pending_storage_migration(
                     completed_target,
                     completed_txid,
                 )
+                terminal_status = str(migration_payload.get("status") or "").strip()
+                completed_quarantine = _private_directory_quarantine_path(
+                    completed_transaction_root
+                )
                 if (
-                    str(migration_payload.get("status") or "").strip()
-                    == STORAGE_MIGRATION_STATUS_COMPLETED
+                    terminal_status == STORAGE_MIGRATION_STATUS_COMPLETED
                     and checkpoint_owned
-                    and completed_transaction_root.exists()
+                    and (
+                        completed_transaction_root.exists()
+                        or completed_transaction_root.is_symlink()
+                        or completed_quarantine.exists()
+                        or completed_quarantine.is_symlink()
+                    )
                 ):
-                    _remove_existing_path(completed_transaction_root)
+                    if not _remove_transaction_root_if_owned(
+                        migration_payload,
+                        completed_transaction_root,
+                        completed_txid,
+                    ):
+                        logger.warning(
+                            "Preserving unverified completed migration transaction: %s",
+                            completed_transaction_root,
+                        )
             except Exception as exc:
                 logger.warning("Failed to clean completed storage migration transaction: %s", exc)
         return {
@@ -939,6 +1218,7 @@ def run_pending_storage_migration(
     original_target_entries: list[str] = []
     publish_entry_names: list[str] = []
     source_snapshots: dict[str, dict[str, int | str]] = {}
+    source_runtime_baseline: dict[str, dict[str, int | str]] | None = None
     target_baseline: dict[str, dict[str, int | str]] | None = None
     publish_entry_snapshots: dict[str, dict[str, int | str]] | None = None
     publish_started = False
@@ -1047,6 +1327,19 @@ def run_pending_storage_migration(
             "force_recovery_layout": not recovery_metadata_persisted,
         }
 
+    def _source_matches_recovery_baseline() -> bool:
+        if source_root is None or source_runtime_baseline is None:
+            return False
+        try:
+            return bool(
+                source_root.exists()
+                and source_root.is_dir()
+                and _snapshot_runtime_entries(source_root)
+                == source_runtime_baseline
+            )
+        except Exception:
+            return False
+
     def _finish_rolled_back_failure(
         error_code: str,
         error_message: str,
@@ -1056,9 +1349,18 @@ def run_pending_storage_migration(
             transaction_root is not None
             and transaction_owned
             and bool(result.get("recovery_checkpoint_persisted"))
+            and _source_matches_recovery_baseline()
         ):
             try:
-                _remove_existing_path(transaction_root)
+                if not _remove_transaction_root_if_owned(
+                    payload,
+                    transaction_root,
+                    txid,
+                ):
+                    logger.warning(
+                        "Preserving migration transaction after ownership changed: %s",
+                        transaction_root,
+                    )
             except Exception as cleanup_exc:
                 logger.warning("Failed to clean rolled-back migration transaction: %s", cleanup_exc)
         return result
@@ -1083,10 +1385,15 @@ def run_pending_storage_migration(
         if migration_mode != STORAGE_MIGRATION_MODE_COPY:
             raise StorageMigrationError("invalid_migration_mode", "存储迁移检查点包含不支持的迁移模式。")
         txid = _validate_txid(payload.get("txid"))
-        transaction_root, transaction_owned = _checkpoint_transaction_root(
+        transaction_root, transaction_checkpoint_bound = _checkpoint_transaction_root(
             payload,
             target_root,
             txid,
+        )
+        transaction_owned = bool(
+            transaction_checkpoint_bound
+            and transaction_root.exists()
+            and _transaction_root_is_owned(payload, transaction_root, txid)
         )
         original_target_entries = [
             str(value)
@@ -1104,6 +1411,9 @@ def run_pending_storage_migration(
         raw_publish_entry_snapshots = payload.get("publish_entry_snapshots")
         if isinstance(raw_publish_entry_snapshots, dict):
             publish_entry_snapshots = raw_publish_entry_snapshots
+        raw_source_runtime_baseline = payload.get("source_runtime_baseline")
+        if isinstance(raw_source_runtime_baseline, dict):
+            source_runtime_baseline = raw_source_runtime_baseline
         publish_started = str(payload.get("status") or "").strip() in {
             STORAGE_MIGRATION_STATUS_PUBLISHING,
             STORAGE_MIGRATION_STATUS_COMMITTING,
@@ -1124,6 +1434,7 @@ def run_pending_storage_migration(
         if not source_root.exists() or not source_root.is_dir():
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
+        transaction_quarantine = _private_directory_quarantine_path(transaction_root)
         if transaction_root.is_symlink():
             return _finish_failure(
                 "transaction_path_symlink_unsupported",
@@ -1141,6 +1452,7 @@ def run_pending_storage_migration(
                 return _finish_failure(
                     "transaction_path_occupied",
                     "迁移事务目录已被其他内容占用，已停止迁移以避免删除未知数据。",
+                    rollback_required=publish_started,
                 )
             if publish_started:
                 if target_baseline is None:
@@ -1170,8 +1482,57 @@ def run_pending_storage_migration(
                         f"迁移目标回滚未完成: {rollback_exc}",
                         rollback_required=True,
                     )
-            _remove_existing_path(transaction_root)
-            publish_started = False
+                payload = _persist_migration_payload(
+                    config_manager,
+                    payload,
+                    anchor_root=normalized_anchor_root,
+                    status=STORAGE_MIGRATION_STATUS_PREFLIGHT,
+                    original_target_entries=[],
+                    publish_entry_names=[],
+                    publish_entry_snapshots={},
+                )
+                publish_started = False
+            if not _source_matches_recovery_baseline():
+                return _finish_failure(
+                    "source_recovery_unverifiable",
+                    "无法证明迁移源仍与事务暂存前一致；已保留事务副本。",
+                )
+            if not _remove_transaction_root_if_owned(
+                payload,
+                transaction_root,
+                txid,
+            ):
+                return _finish_failure(
+                    "transaction_ownership_changed",
+                    "迁移事务目录的所有权标记在清理前发生变化，已停止迁移。",
+                )
+        elif transaction_quarantine.exists() or transaction_quarantine.is_symlink():
+            if (
+                not transaction_checkpoint_bound
+                or not _transaction_root_is_owned(
+                    payload,
+                    transaction_quarantine,
+                    txid,
+                )
+            ):
+                return _finish_failure(
+                    "transaction_ownership_changed",
+                    "迁移事务隔离目录的所有权无法验证，已停止迁移。",
+                )
+            if not _source_matches_recovery_baseline():
+                return _finish_failure(
+                    "source_recovery_unverifiable",
+                    "无法证明迁移源仍与事务暂存前一致；已保留隔离副本。",
+                )
+            if not _remove_transaction_root_if_owned(
+                payload,
+                transaction_root,
+                txid,
+            ):
+                return _finish_failure(
+                    "transaction_ownership_changed",
+                    "迁移事务隔离目录的所有权在清理前发生变化，已停止迁移。",
+                )
 
         payload = _persist_migration_payload(
             config_manager,
@@ -1238,21 +1599,26 @@ def run_pending_storage_migration(
                 "目标卷剩余空间不足，无法安全执行迁移。",
             )
 
-        # Bind the random transaction path to the durable checkpoint before it
-        # can exist on disk.  A crash after mkdir must not leave an apparently
-        # unowned directory that forces the next launch through recovery.  Keep
-        # transaction_owned false until mkdir succeeds so a pre-existing path
-        # collision is never deleted merely because the checkpoint names it.
+        # Bind the random path and owner token before publishing anything at
+        # the final name. Build a complete marker in a private sibling, then
+        # atomically publish that directory without replacing a late occupant.
+        # A checkpoint path alone is never deletion authority after restart.
         payload = _persist_migration_payload(
             config_manager,
             payload,
             anchor_root=normalized_anchor_root,
             status=STORAGE_MIGRATION_STATUS_PREFLIGHT,
             transaction_root=str(transaction_root),
+            source_runtime_baseline=source_runtime_baseline,
         )
-        transaction_root.mkdir(parents=False, exist_ok=False)
+        try:
+            _create_owned_transaction_root(payload, transaction_root, txid)
+        except FileExistsError as exc:
+            raise StorageMigrationError(
+                "transaction_path_occupied",
+                "迁移事务目录已被其他内容占用，已停止迁移以避免删除未知数据。",
+            ) from exc
         transaction_owned = True
-        fsync_directory_best_effort(transaction_root.parent)
         staged_root = transaction_root / "staged"
         backup_root = transaction_root / "backup"
         staged_root.mkdir()
@@ -1450,7 +1816,15 @@ def run_pending_storage_migration(
             completed_at=completed_at,
         )
         try:
-            _remove_existing_path(transaction_root)
+            if not _remove_transaction_root_if_owned(
+                payload,
+                transaction_root,
+                txid,
+            ):
+                logger.warning(
+                    "Preserving completed migration transaction after ownership changed: %s",
+                    transaction_root,
+                )
         except Exception as cleanup_exc:
             logger.warning("Failed to clean completed migration transaction: %s", cleanup_exc)
         return {
@@ -1471,6 +1845,11 @@ def run_pending_storage_migration(
         ):
             try:
                 if publish_started:
+                    if not _transaction_root_is_owned(payload, transaction_root, txid):
+                        raise StorageMigrationError(
+                            "rollback_transaction_unowned",
+                            "迁移事务目录所有权无法验证，已停止自动回滚。",
+                        )
                     _rollback_published_entries(
                         target_root,
                         transaction_root,
@@ -1499,6 +1878,11 @@ def run_pending_storage_migration(
         ):
             try:
                 if publish_started:
+                    if not _transaction_root_is_owned(payload, transaction_root, txid):
+                        raise StorageMigrationError(
+                            "rollback_transaction_unowned",
+                            "迁移事务目录所有权无法验证，已停止自动回滚。",
+                        )
                     _rollback_published_entries(
                         target_root,
                         transaction_root,

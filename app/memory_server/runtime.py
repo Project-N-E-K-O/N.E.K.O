@@ -35,7 +35,7 @@ import asyncio
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -61,6 +61,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.internal_http_auth import is_internal_http_request_authorized
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.storage.layout import (
@@ -1171,7 +1172,15 @@ async def startup_event_handler():
     await ensure_memory_server_runtime_initialized(reason="startup")
 
 
-@app.post("/internal/storage/startup/continue")
+def _require_storage_startup_control_auth(request: Request) -> None:
+    if not is_internal_http_request_authorized(request.scope, request.headers):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post(
+    "/internal/storage/startup/continue",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
     global _memory_storage_blocked_after_init
     admission_generation = _memory_storage_admission_generation
@@ -1229,7 +1238,10 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         )
 
 
-@app.post("/internal/storage/startup/block")
+@app.post(
+    "/internal/storage/startup/block",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
     global _memory_storage_blocked_after_init, _memory_storage_admission_generation
     reason = str(getattr(payload, "reason", "") or "").strip()

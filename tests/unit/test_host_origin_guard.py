@@ -8,6 +8,11 @@ import json
 import pytest
 
 from utils.host_origin_guard import HostOriginGuardMiddleware
+from utils.internal_http_auth import (
+    INTERNAL_HTTP_AUTH_HEADER,
+    internal_http_auth_headers,
+    is_internal_http_request_authorized,
+)
 
 
 def _run(coro):
@@ -178,6 +183,32 @@ def test_http_only_checks_host_not_origin():
     )
     assert hit is True
     assert sent[0]["status"] == 200
+
+
+def test_internal_control_auth_requires_launch_token_and_safe_origin():
+    scope = _scope("http", "127.0.0.1:48911")
+    headers = internal_http_auth_headers()
+
+    assert is_internal_http_request_authorized(scope, headers) is True
+    assert is_internal_http_request_authorized(scope, {}) is False
+    assert is_internal_http_request_authorized(
+        scope,
+        {INTERNAL_HTTP_AUTH_HEADER: "wrong-token"},
+    ) is False
+
+    malicious_scope = _scope(
+        "http",
+        "127.0.0.1:48911",
+        origin="https://attacker.example",
+    )
+    assert is_internal_http_request_authorized(malicious_scope, headers) is False
+
+    loopback_scope = _scope(
+        "http",
+        "127.0.0.1:48911",
+        origin="http://localhost:48911",
+    )
+    assert is_internal_http_request_authorized(loopback_scope, headers) is True
 
 
 def test_websocket_without_origin_is_allowed_for_native_clients():

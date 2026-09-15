@@ -26,6 +26,7 @@ from utils.storage_migration import (
 from utils.storage_policy import get_storage_policy_path, load_storage_policy, save_storage_policy
 from utils.file_utils import atomic_write_json
 from config import AUTOSTART_CSRF_TOKEN
+from tests.fake_clock import patch_module_clock
 
 
 @pytest.mark.unit
@@ -1724,7 +1725,7 @@ def test_storage_location_pick_directory_uses_windows_native_picker(tmp_path):
 
 @pytest.mark.unit
 def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
-    selected_root = str((tmp_path / "picked-win").resolve())
+    selected_root = str((tmp_path / "中文-🐈-picked-win").resolve())
 
     with patch.object(
         storage_location_router_module,
@@ -1752,11 +1753,14 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
     command = run_mock.call_args.args[0]
     script = command[-1]
     assert "Add-Type -AssemblyName System.Drawing" in script
+    assert "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)" in script
     assert "$owner.TopMost = $true" in script
     assert "$owner.Activate()" in script
     assert "$owner.BringToFront()" in script
     assert "[System.Windows.Forms.Application]::DoEvents()" in script
     assert "$result = $dialog.ShowDialog($owner)" in script
+    assert run_mock.call_args.kwargs["encoding"] == "utf-8"
+    assert run_mock.call_args.kwargs["errors"] == "strict"
 
 
 @pytest.mark.unit
@@ -1775,6 +1779,96 @@ def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(
                 storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
 
     linux_picker.assert_called_once()
+
+
+@pytest.mark.unit
+def test_linux_directory_picker_candidates_share_one_timeout_budget(monkeypatch):
+    observed_timeouts = []
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_resolve_executable_name",
+        lambda *_candidates: _candidates[-1],
+    )
+    monkeypatch.setattr(
+        storage_location_router_module.shutil,
+        "which",
+        lambda candidate: f"/usr/bin/{candidate}",
+    )
+    monotonic_values = iter((100.0, 100.0, 130.0, 221.0))
+    patch_module_clock(
+        monkeypatch,
+        storage_location_router_module,
+        monotonic=lambda: next(monotonic_values),
+    )
+
+    def _failed_picker(*_args, **kwargs):
+        observed_timeouts.append(kwargs["timeout"])
+        return storage_location_router_module.subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout="",
+            stderr="failed",
+        )
+
+    monkeypatch.setattr(
+        storage_location_router_module.subprocess,
+        "run",
+        _failed_picker,
+    )
+
+    with pytest.raises(storage_location_router_module._DirectoryPickerUnavailable):
+        storage_location_router_module._pick_directory_via_linux_dialog(start_path="")
+
+    assert observed_timeouts == [120.0, 90.0]
+
+
+@pytest.mark.unit
+def test_completed_notice_skips_owner_probe_when_secure_cleanup_is_unsupported(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    (retained_root / "social_session.json.lock").write_text(
+        "unclassified",
+        encoding="utf-8",
+    )
+    observed = []
+    real_probe = storage_location_router_module.probe_retained_community_state
+
+    def _probe(path, **kwargs):
+        observed.append(kwargs.get("classify_social_lock_process"))
+        return real_probe(path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_secure_retained_cleanup_supported",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "probe_retained_community_state",
+        _probe,
+    )
+
+    notice = storage_location_router_module._build_completed_migration_notice(
+        config_manager,
+        bootstrap_payload={
+            "migration": {
+                "status": "completed",
+                "source_root": str(retained_root),
+                "target_root": str(config_manager.app_docs_dir),
+                "retained_source_root": str(retained_root),
+                "retained_source_mode": "manual_retention",
+            }
+        },
+    )
+
+    assert notice["completed"] is True
+    assert notice["cleanup_available"] is False
+    assert observed == [False]
 
 
 @pytest.mark.unit
@@ -2027,6 +2121,113 @@ def test_restart_double_restore_failure_never_flips_online_status_back_to_ready(
     assert status_payload["migration_phase"] == "awaiting_shutdown"
     assert status_payload["shutdown_retry_allowed"] is True
     assert status_payload["recovery_action"] == "retry_safe_exit"
+
+
+@pytest.mark.unit
+def test_checkpointless_restart_recovery_can_reselect_current_root(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    current_root = config_manager.app_docs_dir.resolve()
+    save_storage_policy(
+        config_manager,
+        selected_root=current_root,
+        selection_source="current",
+    )
+    root_state = config_manager.load_root_state()
+    root_state.update(
+        {
+            "mode": ROOT_MODE_MAINTENANCE_READONLY,
+            "last_known_good_root": str(current_root),
+            "last_migration_result": f"restart_pending:{current_root}",
+        }
+    )
+    config_manager.save_root_state(root_state)
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "recovery_required")
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager, request_app_shutdown=lambda: None) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(current_root),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "restart_initiated"
+    assert load_storage_migration(config_manager) is None
+    recovered_state = config_manager.load_root_state()
+    assert recovered_state["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert recovered_state["last_migration_result"].startswith("restart_rebind:")
+
+
+@pytest.mark.unit
+def test_checkpointless_restart_recovery_preserves_completed_retention_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    current_root = config_manager.app_docs_dir.resolve()
+    retained_root = (tmp_path / "retained" / "N.E.K.O").resolve()
+    retained_file = retained_root / "config" / "characters.json"
+    retained_file.parent.mkdir(parents=True)
+    retained_file.write_text("{}", encoding="utf-8")
+    save_storage_policy(
+        config_manager,
+        selected_root=current_root,
+        selection_source="current",
+    )
+    completed_checkpoint = save_storage_migration(
+        config_manager,
+        {
+            "version": 2,
+            "txid": "a" * 32,
+            "status": "completed",
+            "source_root": str(retained_root),
+            "target_root": str(current_root),
+            "selection_source": "custom",
+            "migration_mode": "copy",
+            "retained_source_root": str(retained_root),
+            "retained_source_mode": "manual_retention",
+            "completed_at": "2026-09-15T00:00:00Z",
+        },
+    )
+    root_state = config_manager.load_root_state()
+    root_state.update(
+        {
+            "mode": ROOT_MODE_MAINTENANCE_READONLY,
+            "last_known_good_root": str(current_root),
+            "last_migration_result": f"restart_pending:{current_root}",
+            "legacy_cleanup_pending": True,
+        }
+    )
+    config_manager.save_root_state(root_state)
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "recovery_required")
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager, request_app_shutdown=lambda: None) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(current_root),
+                "selection_source": "current",
+            },
+        )
+
+    assert response.status_code == 200
+    assert load_storage_migration(config_manager) == completed_checkpoint
+    assert config_manager.load_root_state()["legacy_cleanup_pending"] is True
 
 
 @pytest.mark.unit

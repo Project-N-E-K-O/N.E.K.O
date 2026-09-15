@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+from fastapi import Depends, Request
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -147,6 +149,7 @@ from .api_shared import (  # noqa: F401
     uuid,
 )
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.internal_http_auth import is_internal_http_request_authorized
 from utils.storage.layout import (
     clear_storage_recovery_mode,
     get_storage_recovery_mode,
@@ -942,7 +945,15 @@ class AgentStorageStartupRequest(BaseModel):
     recovery_mode: str = ""
 
 
-@app.post("/internal/storage/startup/continue")
+def _require_storage_startup_control_auth(request: Request) -> None:
+    if not is_internal_http_request_authorized(request.scope, request.headers):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post(
+    "/internal/storage/startup/continue",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def continue_storage_startup(payload: AgentStorageStartupRequest | None = None):
     global _agent_storage_blocked_after_init
     admission_generation = _agent_storage_admission_generation
@@ -991,7 +1002,10 @@ async def continue_storage_startup(payload: AgentStorageStartupRequest | None = 
         )
 
 
-@app.post("/internal/storage/startup/block")
+@app.post(
+    "/internal/storage/startup/block",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def block_storage_startup(payload: AgentStorageStartupRequest | None = None):
     global _agent_storage_blocked_after_init, _agent_storage_admission_generation
     reason = str(getattr(payload, "reason", "") or "").strip()

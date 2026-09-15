@@ -9,6 +9,7 @@
     var STORAGE_STATUS_REQUEST_TIMEOUT_MS = 4000;
     var STORAGE_EXIT_REQUEST_TIMEOUT_MS = 8000;
     var STORAGE_MUTATION_REQUEST_TIMEOUT_MS = 15000;
+    var STORAGE_DIRECTORY_PICKER_TIMEOUT_MS = 125000;
     var STORAGE_HOST_CAPABILITY_TIMEOUT_MS = 3000;
     var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
         'storage-location-' + Date.now() + '-' + Math.random().toString(36).slice(2)
@@ -1417,7 +1418,7 @@
             body: JSON.stringify({
                 start_path: startPath
             })
-        }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+        }, STORAGE_DIRECTORY_PICKER_TIMEOUT_MS);
 
         var payload = null;
         try {

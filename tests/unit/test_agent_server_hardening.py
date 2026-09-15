@@ -20,6 +20,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
+
+from utils.internal_http_auth import internal_http_auth_headers
 
 pytestmark = pytest.mark.unit
 
@@ -27,6 +30,58 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Storage recovery generation: health-only and side-effect free
 # ---------------------------------------------------------------------------
+
+
+def test_agent_storage_control_routes_require_internal_auth(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_runtime as srv
+
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", False)
+    monkeypatch.setattr(srv, "_agent_storage_admission_generation", 30)
+
+    client = TestClient(srv.app)
+    for path in (
+        "/internal/storage/startup/block",
+        "/internal/storage/startup/continue",
+    ):
+        assert client.post(path, json={"reason": "attacker"}).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "attacker"},
+            headers={"X-CSRF-Token": "wrong-token"},
+        ).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "attacker"},
+            headers={**internal_http_auth_headers(), "Origin": "https://attacker.example"},
+        ).status_code == 403
+
+    assert srv._agent_storage_blocked_after_init is False
+    assert srv._agent_storage_admission_generation == 30
+
+    response = client.post(
+        "/internal/storage/startup/block",
+        json={"reason": "main_server"},
+        headers=internal_http_auth_headers(),
+    )
+    assert response.status_code == 200
+    assert srv._agent_storage_blocked_after_init is True
+    assert srv._agent_storage_admission_generation == 31
+
+    monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
+    initialize = AsyncMock(return_value=False)
+    monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", initialize)
+    response = client.post(
+        "/internal/storage/startup/continue",
+        json={"reason": "main_server"},
+        headers=internal_http_auth_headers(),
+    )
+    assert response.status_code == 200
+    assert srv._agent_storage_blocked_after_init is False
+    initialize.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

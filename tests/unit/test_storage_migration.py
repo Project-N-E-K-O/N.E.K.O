@@ -1,7 +1,9 @@
+import json
 import os
 import shutil
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    STORAGE_MIGRATION_STATUS_PREFLIGHT,
     STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
     create_pending_storage_migration,
     get_storage_migration_path,
@@ -975,6 +978,179 @@ def test_pending_migration_never_deletes_unowned_transaction_path(tmp_path):
 
 
 @pytest.mark.unit
+def test_checkpoint_bound_transaction_path_without_marker_preserves_late_occupant(
+    tmp_path,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("SOURCE", encoding="utf-8")
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    payload["transaction_root"] = str(transaction_root)
+    storage_migration_module.save_storage_migration(config_manager, payload)
+
+    transaction_root.mkdir(parents=True)
+    sentinel = transaction_root / "third-party.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_path_occupied"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+def test_completed_checkpoint_preserves_unmarked_transaction_path(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    transaction_root.mkdir(parents=True)
+    sentinel = transaction_root / "third-party.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+    payload.update(
+        {
+            "status": "completed",
+            "transaction_root": str(transaction_root),
+        }
+    )
+    storage_migration_module.save_storage_migration(config_manager, payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["attempted"] is False
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("marker_state", ("mismatch", "symlink"))
+def test_checkpoint_bound_transaction_rejects_untrusted_marker(
+    tmp_path,
+    marker_state,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    transaction_root.mkdir(parents=True)
+    marker = transaction_root / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+    if marker_state == "mismatch":
+        marker.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "txid": payload["txid"],
+                    "owner_token": "0" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        external = tmp_path / "external-marker.json"
+        external.write_text("{}", encoding="utf-8")
+        try:
+            marker.symlink_to(external)
+        except (OSError, NotImplementedError):
+            pytest.skip("marker symlinks are unavailable")
+    sentinel = transaction_root / "third-party.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+    payload["transaction_root"] = str(transaction_root)
+    storage_migration_module.save_storage_migration(config_manager, payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_path_occupied"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+def test_transaction_marker_write_failure_never_publishes_unowned_root(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_write_transaction_owner_marker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "storage_migration_unexpected"
+    assert not transaction_root.exists()
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_windows_reparse_metadata_is_never_treated_as_owned_file():
+    from utils import storage_migration as storage_migration_module
+
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+    )
+
+    assert storage_migration_module._is_link_like_metadata(metadata) is True
+
+
+@pytest.mark.unit
 def test_pending_migration_recovers_transaction_created_before_copying_checkpoint(
     tmp_path,
     monkeypatch,
@@ -1267,6 +1443,9 @@ def test_interrupted_publish_is_rolled_back_before_retry(tmp_path, monkeypatch):
     target_file.parent.mkdir(parents=True, exist_ok=True)
     source_file.write_text("SOURCE", encoding="utf-8")
     target_file.write_text("TARGET", encoding="utf-8")
+    source_runtime_baseline = storage_migration_module._snapshot_runtime_entries(
+        source_root
+    )
     payload = create_pending_storage_migration(
         config_manager,
         source_root=source_root,
@@ -1280,6 +1459,11 @@ def test_interrupted_publish_is_rolled_back_before_retry(tmp_path, monkeypatch):
     backup_entry = transaction_root / "backup" / "config"
     staged_file.parent.mkdir(parents=True)
     backup_entry.parent.mkdir(parents=True)
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
     shutil.copy2(source_file, staged_file)
     os.replace(target_root / "config", backup_entry)
     os.replace(transaction_root / "staged" / "config", target_root / "config")
@@ -1291,6 +1475,7 @@ def test_interrupted_publish_is_rolled_back_before_retry(tmp_path, monkeypatch):
             "publish_entry_snapshots": {
                 "config": storage_migration_module._snapshot_path(target_root / "config"),
             },
+            "source_runtime_baseline": source_runtime_baseline,
             "transaction_root": str(transaction_root),
         }
     )
@@ -1320,6 +1505,9 @@ def _prepare_interrupted_publish(tmp_path, *, legacy_transaction_layout=False):
     target_file.parent.mkdir(parents=True, exist_ok=True)
     source_file.write_text("SOURCE", encoding="utf-8")
     target_file.write_text("TARGET", encoding="utf-8")
+    source_runtime_baseline = storage_migration_module._snapshot_runtime_entries(
+        source_root
+    )
     payload = create_pending_storage_migration(
         config_manager,
         source_root=source_root,
@@ -1336,6 +1524,11 @@ def _prepare_interrupted_publish(tmp_path, *, legacy_transaction_layout=False):
     backup_entry = transaction_root / "backup" / "config"
     staged_file.parent.mkdir(parents=True)
     backup_entry.parent.mkdir(parents=True)
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
     shutil.copy2(source_file, staged_file)
     os.replace(target_root / "config", backup_entry)
     os.replace(transaction_root / "staged" / "config", target_root / "config")
@@ -1347,11 +1540,496 @@ def _prepare_interrupted_publish(tmp_path, *, legacy_transaction_layout=False):
             "publish_entry_snapshots": {
                 "config": storage_migration_module._snapshot_path(target_root / "config"),
             },
+            "source_runtime_baseline": source_runtime_baseline,
             "transaction_root": str(transaction_root),
         }
     )
     storage_migration_module.save_storage_migration(config_manager, payload)
     return config_manager, target_root, target_file, transaction_root, backup_entry, payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("marker_state", ("missing", "mismatch", "symlink"))
+def test_interrupted_publish_with_untrusted_marker_stays_rollback_required(
+    tmp_path,
+    marker_state,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _, target_file, transaction_root, backup_entry, payload = (
+        _prepare_interrupted_publish(tmp_path)
+    )
+    marker = transaction_root / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+    if marker_state == "missing":
+        marker.unlink()
+    elif marker_state == "mismatch":
+        marker.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "txid": payload["txid"],
+                    "owner_token": "0" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        marker.unlink()
+        external = tmp_path / "external-owner-marker.json"
+        external.write_text("{}", encoding="utf-8")
+        try:
+            marker.symlink_to(external)
+        except (OSError, NotImplementedError):
+            pytest.skip("marker symlinks are unavailable")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_path_occupied"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+    assert target_file.read_text(encoding="utf-8") == "SOURCE"
+    assert (backup_entry / "characters.json").read_text(encoding="utf-8") == "TARGET"
+    assert transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("crash_step", ("published_to_staged", "backup_to_target"))
+def test_interrupted_publish_rollback_rename_steps_are_crash_recoverable(
+    tmp_path,
+    monkeypatch,
+    crash_step,
+):
+    from utils import storage_migration as storage_migration_module
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    config_manager, target_root, target_file, transaction_root, backup_entry, _ = (
+        _prepare_interrupted_publish(tmp_path)
+    )
+    staged_entry = transaction_root / "staged" / "config"
+    original_publish = storage_migration_module._durable_publish_without_replacing
+    interrupted = {"value": False}
+
+    def _interrupt_rollback_rename(source, target):
+        original_publish(source, target)
+        is_selected_step = (
+            crash_step == "published_to_staged"
+            and source == target_root / "config"
+            and target == staged_entry
+        ) or (
+            crash_step == "backup_to_target"
+            and source == backup_entry
+            and target == target_root / "config"
+        )
+        if is_selected_step and not interrupted["value"]:
+            interrupted["value"] = True
+            raise SimulatedProcessLoss
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_publish_without_replacing",
+        _interrupt_rollback_rename,
+    )
+    with pytest.raises(SimulatedProcessLoss):
+        run_pending_storage_migration(config_manager)
+
+    assert load_storage_migration(config_manager)["status"] == "publishing"
+    assert staged_entry.exists()
+    if crash_step == "published_to_staged":
+        assert not target_file.exists()
+        assert (backup_entry / "characters.json").read_text(encoding="utf-8") == "TARGET"
+    else:
+        assert target_file.read_text(encoding="utf-8") == "TARGET"
+        assert not backup_entry.exists()
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_publish_without_replacing",
+        original_publish,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_runtime_entry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StorageMigrationError("copy_failed", "stop after rollback")
+        ),
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "copy_failed"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "crash_step",
+    ("before_transaction_cleanup", "during_transaction_cleanup", "after_cleanup"),
+)
+def test_rollback_completion_checkpoint_precedes_transaction_cleanup(
+    tmp_path,
+    monkeypatch,
+    crash_step,
+):
+    from utils import storage_migration as storage_migration_module
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    config_manager, _, target_file, transaction_root, _, _ = _prepare_interrupted_publish(
+        tmp_path
+    )
+    original_remove = storage_migration_module._remove_transaction_root_if_owned
+    original_remove_existing = storage_migration_module._remove_existing_path
+    original_persist = storage_migration_module._persist_migration_payload
+    interrupted = {"value": False}
+    preflight_writes = {"count": 0}
+
+    if crash_step == "before_transaction_cleanup":
+        def _interrupt_before_cleanup(*args, **kwargs):
+            if not interrupted["value"]:
+                interrupted["value"] = True
+                raise SimulatedProcessLoss
+            return original_remove(*args, **kwargs)
+
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_remove_transaction_root_if_owned",
+            _interrupt_before_cleanup,
+        )
+    elif crash_step == "during_transaction_cleanup":
+        def _interrupt_during_cleanup(path):
+            if (
+                Path(path)
+                == storage_migration_module._private_directory_quarantine_path(
+                    transaction_root
+                )
+                and not interrupted["value"]
+            ):
+                interrupted["value"] = True
+                raise SimulatedProcessLoss
+            return original_remove_existing(path)
+
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_remove_existing_path",
+            _interrupt_during_cleanup,
+        )
+    else:
+        def _interrupt_after_cleanup(*args, **kwargs):
+            if kwargs.get("status") == STORAGE_MIGRATION_STATUS_PREFLIGHT:
+                preflight_writes["count"] += 1
+                if preflight_writes["count"] == 2:
+                    raise SimulatedProcessLoss
+            return original_persist(*args, **kwargs)
+
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_persist_migration_payload",
+            _interrupt_after_cleanup,
+        )
+
+    with pytest.raises(SimulatedProcessLoss):
+        run_pending_storage_migration(config_manager)
+
+    checkpoint = load_storage_migration(config_manager)
+    assert checkpoint["status"] == STORAGE_MIGRATION_STATUS_PREFLIGHT
+    assert checkpoint["publish_entry_names"] == []
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert transaction_root.exists() is (crash_step == "before_transaction_cleanup")
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    assert quarantine.exists() is (crash_step == "during_transaction_cleanup")
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_transaction_root_if_owned",
+        original_remove,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_persist_migration_payload",
+        original_persist,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_existing_path",
+        original_remove_existing,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_runtime_entry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StorageMigrationError("copy_failed", "stop after rollback")
+        ),
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "copy_failed"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not quarantine.exists()
+
+
+@pytest.mark.unit
+def test_transaction_cleanup_preserves_name_replacement_race(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    transaction_root.mkdir(parents=True)
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+    owned_aside = target_root / "owned-aside"
+    replacement = target_root / "third-party"
+    replacement.mkdir()
+    sentinel = replacement / "third-party.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+    original_remove_private = (
+        storage_migration_module._remove_private_directory_via_quarantine
+    )
+
+    def _swap_before_quarantine(path, expected_identity, **kwargs):
+        path.rename(owned_aside)
+        replacement.rename(path)
+        return original_remove_private(path, expected_identity, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_private_directory_via_quarantine",
+        _swap_before_quarantine,
+    )
+
+    removed = storage_migration_module._remove_transaction_root_if_owned(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+
+    assert removed is False
+    assert (transaction_root / sentinel.name).read_text(encoding="utf-8") == "KEEP"
+    assert owned_aside.exists()
+
+
+@pytest.mark.unit
+def test_transaction_cleanup_restores_replacement_symlink_without_following_it(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    transaction_root.mkdir()
+    owned_identity = transaction_root.lstat()
+    owned_aside = tmp_path / "owned-aside"
+    transaction_root.rename(owned_aside)
+    external = tmp_path / "external.txt"
+    external.write_text("KEEP", encoding="utf-8")
+    try:
+        transaction_root.symlink_to(external)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks are unavailable")
+
+    removed = storage_migration_module._remove_private_directory_via_quarantine(
+        transaction_root,
+        owned_identity,
+    )
+
+    assert removed is False
+    assert transaction_root.is_symlink()
+    assert transaction_root.readlink() == external
+    assert external.read_text(encoding="utf-8") == "KEEP"
+    assert owned_aside.is_dir()
+
+
+@pytest.mark.unit
+def test_prepared_transaction_identity_replacement_is_preserved(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    original_write_marker = storage_migration_module._write_transaction_owner_marker
+    replaced = {}
+
+    def _replace_prepared_root(marker_payload, prepared_root, txid):
+        owned_aside = prepared_root.with_name(f"{prepared_root.name}.owned-aside")
+        prepared_root.rename(owned_aside)
+        prepared_root.mkdir()
+        sentinel = prepared_root / "third-party.txt"
+        sentinel.write_text("KEEP", encoding="utf-8")
+        replaced.update(root=prepared_root, aside=owned_aside, sentinel=sentinel)
+        original_write_marker(marker_payload, prepared_root, txid)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_write_transaction_owner_marker",
+        _replace_prepared_root,
+    )
+
+    with pytest.raises(OSError, match="identity changed"):
+        storage_migration_module._create_owned_transaction_root(
+            payload,
+            transaction_root,
+            payload["txid"],
+        )
+
+    assert not transaction_root.exists()
+    assert replaced["root"].is_dir()
+    assert replaced["aside"].is_dir()
+    assert replaced["sentinel"].read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("terminal_status", "cleanup_expected"),
+    (
+        (STORAGE_MIGRATION_STATUS_COMPLETED, True),
+        (STORAGE_MIGRATION_STATUS_FAILED, False),
+    ),
+)
+def test_terminal_checkpoint_recovers_interrupted_transaction_quarantine(
+    tmp_path,
+    terminal_status,
+    cleanup_expected,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    transaction_root.mkdir()
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    storage_migration_module._durable_rename_without_replacing(
+        transaction_root,
+        quarantine,
+    )
+    payload.update(status=terminal_status, transaction_root=str(transaction_root))
+    storage_migration_module.save_storage_migration(config_manager, payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["attempted"] is False
+    assert not transaction_root.exists()
+    assert quarantine.exists() is not cleanup_expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("detached", (False, True))
+@pytest.mark.parametrize(
+    ("source_loss", "expected_error"),
+    (
+        ("root_missing", "source_root_missing"),
+        ("entry_missing", "source_recovery_unverifiable"),
+    ),
+)
+def test_copying_checkpoint_preserves_staged_data_when_source_disappears(
+    tmp_path,
+    detached,
+    source_loss,
+    expected_error,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    source_baseline = storage_migration_module._snapshot_runtime_entries(source_root)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    staged_file = transaction_root / "staged" / "config" / "characters.json"
+    staged_file.parent.mkdir(parents=True)
+    staged_file.write_text("ONLY-COPY", encoding="utf-8")
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        payload["txid"],
+    )
+    payload.update(
+        status="copying",
+        transaction_root=str(transaction_root),
+        source_runtime_baseline=source_baseline,
+    )
+    storage_migration_module.save_storage_migration(config_manager, payload)
+    evidence_root = transaction_root
+    if detached:
+        evidence_root = storage_migration_module._private_directory_quarantine_path(
+            transaction_root
+        )
+        storage_migration_module._durable_rename_without_replacing(
+            transaction_root,
+            evidence_root,
+        )
+    if source_loss == "root_missing":
+        shutil.rmtree(source_root)
+    else:
+        source_file.unlink()
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == expected_error
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert (evidence_root / "staged" / "config" / "characters.json").read_text(
+        encoding="utf-8"
+    ) == "ONLY-COPY"
+
+    # A terminal failed checkpoint still cannot prove this copy is redundant.
+    run_pending_storage_migration(config_manager)
+    assert (evidence_root / "staged" / "config" / "characters.json").read_text(
+        encoding="utf-8"
+    ) == "ONLY-COPY"
 
 
 @pytest.mark.unit

@@ -248,7 +248,10 @@ def _derive_legacy_cleanup_pending(
         # Existing unsafe entries are still pending cleanup, but the mutation
         # route will refuse to follow them.
         has_retained_runtime_entries = True
-    retained_private_state = probe_retained_community_state(retained_path)
+    retained_private_state = probe_retained_community_state(
+        retained_path,
+        classify_social_lock_process=False,
+    )
     retained_mode = str(migration_payload.get("retained_source_mode") or "").strip()
     has_retained_private_state = retained_private_state.has_managed_content
     if retained_mode == "cleanup_in_progress":
@@ -410,13 +413,22 @@ def _build_storage_location_bootstrap_payload_from_disk(
         anchor_root=anchor_root,
     )
     migration_pending = is_storage_migration_pending(migration_checkpoint)
-    awaiting_shutdown = _is_awaiting_controlled_shutdown(
+    restart_intent_recovery_required = bool(
+        recovery_mode == "recovery_required"
+        and root_mode == ROOT_MODE_MAINTENANCE_READONLY
+        and last_migration_result.startswith("restart_pending:")
+        and not migration_pending
+    )
+    awaiting_shutdown = not restart_intent_recovery_required and _is_awaiting_controlled_shutdown(
         root_mode=root_mode,
         last_migration_result=last_migration_result,
         migration_pending=migration_pending,
     )
     migration_pending = migration_pending or awaiting_shutdown
-    recovery_required = root_mode == ROOT_MODE_DEFERRED_INIT
+    recovery_required = bool(
+        root_mode == ROOT_MODE_DEFERRED_INIT
+        or restart_intent_recovery_required
+    )
     migration_payload = _build_migration_payload(
         migration_checkpoint,
         last_migration_result,
@@ -460,6 +472,7 @@ def _build_storage_location_bootstrap_payload_from_disk(
         "migration_phase": "awaiting_shutdown" if awaiting_shutdown else "",
         "shutdown_retry_allowed": awaiting_shutdown,
         "recovery_action": "retry_safe_exit" if awaiting_shutdown else "",
+        "restart_intent_recovery_required": restart_intent_recovery_required,
         "migration": migration_payload,
         "stage": STORAGE_LOCATION_STAGE,
         "poll_interval_ms": STORAGE_STATUS_POLL_INTERVAL_MS,

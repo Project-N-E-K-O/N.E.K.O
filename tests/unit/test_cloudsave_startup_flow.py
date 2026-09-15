@@ -292,6 +292,74 @@ def test_launcher_promotes_first_run_layout_to_pre_phase0_limited_generation(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("checkpoint_status", (None, "completed", "failed"))
+def test_launcher_blocks_phase0_when_restart_intent_lost_its_checkpoint(
+    monkeypatch,
+    tmp_path,
+    checkpoint_status,
+):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(selected_root),
+        "last_migration_result": f"restart_pending:{selected_root}",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        load_root_state=lambda: dict(root_state),
+    )
+    layout = launcher.build_storage_layout(
+        selected_root=selected_root,
+        anchor_root=anchor_root,
+        source="policy",
+    )
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "get_config_manager",
+        lambda *_args, **_kwargs: config_manager,
+    )
+    old_checkpoint = (
+        None
+        if checkpoint_status is None
+        else {
+            "status": checkpoint_status,
+            "source_root": str(selected_root),
+            "target_root": str(tmp_path / "old-target" / "N.E.K.O"),
+        }
+    )
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _manager: old_checkpoint,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(
+        launcher,
+        "_consume_storage_rebind_handoff",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
+
+
+@pytest.mark.unit
 def test_launcher_consumes_cold_rebind_handoff_before_normal_startup(monkeypatch, tmp_path):
     from launcher_core import runtime as launcher
 

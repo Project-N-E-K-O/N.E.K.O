@@ -1,8 +1,10 @@
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from main_routers.system_router import status as system_router_module
@@ -297,6 +299,43 @@ def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
     assert payload["storage_status_unavailable"] is False
     assert payload["ready"] is False
     assert payload["storage"]["blocking_reason"] == "runtime_initializing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_system_status_builds_storage_snapshot_off_event_loop(monkeypatch):
+    main_thread = threading.get_ident()
+    observed_threads = []
+    config_manager = object()
+    monkeypatch.setattr(
+        system_router_module,
+        "_get_system_config_manager",
+        lambda: config_manager,
+    )
+
+    def _build_snapshot(observed_manager):
+        observed_threads.append(threading.get_ident())
+        assert observed_manager is config_manager
+        return {
+            "selection_required": False,
+            "migration_pending": False,
+            "recovery_required": False,
+            "blocking_reason": "",
+            "migration": {},
+        }
+
+    monkeypatch.setattr(
+        system_router_module,
+        "build_storage_location_bootstrap_payload",
+        _build_snapshot,
+    )
+
+    heartbeat = asyncio.create_task(asyncio.sleep(0))
+    payload = await system_router_module.get_system_status(Response())
+    await heartbeat
+
+    assert payload["ok"] is True
+    assert observed_threads and observed_threads[0] != main_thread
 
 
 @pytest.mark.unit

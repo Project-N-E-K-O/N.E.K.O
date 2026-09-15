@@ -42,6 +42,7 @@
     let storagePreflightState = null;
     let storagePreflightBusy = false;
     const STORAGE_MUTATION_REQUEST_TIMEOUT_MS = 15000;
+    const STORAGE_DIRECTORY_PICKER_TIMEOUT_MS = 125000;
 
     function storageLocationMutationHeaders(headers) {
         const result = Object.assign({}, headers || {});
@@ -2620,7 +2621,7 @@
                     method: 'POST',
                     headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ start_path: startPath })
-                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+                }, STORAGE_DIRECTORY_PICKER_TIMEOUT_MS);
                 payload = await readJsonResponse(resp);
                 if (!resp.ok || !payload || payload.ok !== true) {
                     throw new Error(storageErrorMessage(payload, translate('memory.storagePickTargetFailed', '选择目标位置失败，请手动输入路径')));

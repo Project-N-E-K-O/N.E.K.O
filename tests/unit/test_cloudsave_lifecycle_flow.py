@@ -46,6 +46,7 @@ from utils.steam_cloud_bundle import (
 )
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
+from utils.internal_http_auth import internal_http_auth_headers
 from utils.storage_location_bootstrap import clear_runtime_storage_blocking_reason
 
 
@@ -1086,6 +1087,105 @@ async def test_memory_server_continue_startup_preserves_409_blocking_payload():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs"),
+    [
+        ("_request_memory_server_continue_startup", ("unit_test",), {}),
+        ("_request_agent_server_continue_startup", ("unit_test",), {}),
+        (
+            "_request_memory_server_block_startup",
+            ("unit_test",),
+            {"recovery_mode": "recovery_required"},
+        ),
+        (
+            "_request_agent_server_block_startup",
+            ("unit_test",),
+            {"recovery_mode": "recovery_required"},
+        ),
+    ],
+)
+async def test_main_storage_control_calls_include_internal_auth(
+    method_name,
+    args,
+    kwargs,
+):
+    import httpx
+    from app import main_server
+
+    observed = []
+
+    class _Client:
+        async def post(self, url, **request_kwargs):
+            observed.append((url, request_kwargs))
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request("POST", url),
+            )
+
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=_Client(),
+    ):
+        await getattr(main_server, method_name)(*args, **kwargs)
+
+    assert len(observed) == 1
+    assert observed[0][1]["headers"] == internal_http_auth_headers()
+
+
+@pytest.mark.unit
+def test_memory_storage_control_routes_require_internal_auth(monkeypatch):
+    from app import memory_server
+
+    runtime = memory_server.runtime
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", False)
+    monkeypatch.setattr(runtime, "_memory_storage_admission_generation", 70)
+
+    client = TestClient(memory_server.app)
+    for path in (
+        "/internal/storage/startup/block",
+        "/internal/storage/startup/continue",
+    ):
+        assert client.post(path, json={"reason": "attacker"}).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "attacker"},
+            headers={"X-CSRF-Token": "wrong-token"},
+        ).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "attacker"},
+            headers={**internal_http_auth_headers(), "Origin": "https://attacker.example"},
+        ).status_code == 403
+
+    assert runtime._memory_storage_blocked_after_init is False
+    assert runtime._memory_storage_admission_generation == 70
+
+    response = client.post(
+        "/internal/storage/startup/block",
+        json={"reason": "main_server"},
+        headers=internal_http_auth_headers(),
+    )
+    assert response.status_code == 200
+    assert runtime._memory_storage_blocked_after_init is True
+    assert runtime._memory_storage_admission_generation == 71
+
+    monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "get_storage_startup_blocking_reason", lambda _cm: "")
+    initialize = AsyncMock(return_value=False)
+    monkeypatch.setattr(runtime, "ensure_memory_server_runtime_initialized", initialize)
+    response = client.post(
+        "/internal/storage/startup/continue",
+        json={"reason": "main_server"},
+        headers=internal_http_auth_headers(),
+    )
+    assert response.status_code == 200
+    assert runtime._memory_storage_blocked_after_init is False
+    initialize.assert_awaited_once_with(reason="main_server")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
     from app import memory_server
 
@@ -1280,6 +1380,7 @@ def test_memory_server_block_startup_endpoint_restores_limited_mode():
             response = client.post(
                 "/internal/storage/startup/block",
                 json={"reason": "main_failed"},
+                headers=internal_http_auth_headers(),
             )
             blocked_response = client.get("/get_settings/小满")
             runtime_completed_during_block = memory_server.runtime._memory_runtime_init_completed
