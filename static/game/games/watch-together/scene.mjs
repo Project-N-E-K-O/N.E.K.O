@@ -120,18 +120,22 @@ export async function run(game, character) {
     heldLines = [];
     return entries;
   }
-  // Plugin responses held by the scene route are spoken only in reaction gaps.
+  // Plugin responses held by the scene route. A line is written as soon as a response is held,
+  // because the model and TTS take longer than most reaction gaps; it is spoken while playback
+  // is paused, or once no reaction is due for LIVE_GAP_SECONDS and the line ends before the next.
+  const LIVE_GAP_SECONDS = 5;
+  const liveMoment = (video, duration) => !video.seeking && !(video.ended && automatic.enabled)
+    && (video.paused || reactionGap(video.currentTime) >= Math.max(LIVE_GAP_SECONDS, duration + 0.5));
   function pollLive() {
     const current = media, row = selected, video = $('video'), generation = playbackGeneration, epoch = heldEpoch;
-    if (liveFlight || intermission || !current || !row || video.paused || video.ended || game.runtime.state !== 'running') return;
-    const position = video.currentTime, gap = reactionGap(position);
-    if (!(gap >= 5)) return;
+    // Automatic mode answers what is held in the intermission once a video ends.
+    if (liveFlight || intermission || !current || !row || video.seeking || (video.ended && automatic.enabled)
+        || game.runtime.state !== 'running') return;
     const flight = (async () => {
       let entries = takeHeldLines();
-      if (!entries.length) entries = freshEntries((await game.media.request('live', {action:'interject', job:row.id, version:row.version, position, gap:Math.min(gap,600), render_language:renderLanguage()}))?.lines || []);
+      if (!entries.length) entries = freshEntries((await game.media.request('live', {action:'interject', job:row.id, version:row.version, position:video.currentTime, gap:LIVE_GAP_SECONDS, render_language:renderLanguage()}))?.lines || []);
       for (let index = 0; index < entries.length; index++) {
-        if (current !== media || generation !== playbackGeneration || video.paused || video.ended
-            || reactionGap(video.currentTime) < (Number(entries[index].line.duration) || 0) + 0.5) {
+        if (current !== media || generation !== playbackGeneration || !liveMoment(video, Number(entries[index].line.duration) || 0)) {
           holdLines(entries.slice(index), epoch);
           return;
         }

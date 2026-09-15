@@ -659,18 +659,20 @@ try {
   interjectReply={lines:[line('gap line',2)]};
   liveTicks.at(-1)();
   await waitFor(()=>spoken.length===1);
-  assert.deepEqual([liveRequests[0].action,liveRequests[0].position,liveRequests[0].gap],['interject',10,50]);
-  liveVideo.currentTime=57;liveTicks.at(-1)();
-  await pause(20);
-  assert.equal(liveRequests.length,1,'no live request when the gap is too short');
-  liveVideo.playbackRate=2;liveVideo.currentTime=45;interjectReply={lines:[]};
-  liveTicks.at(-1)();
+  assert.deepEqual([liveRequests[0].action,liveRequests[0].position,liveRequests[0].gap],['interject',10,5]);
+  // Lines are written ahead of a gap, since the model and TTS take longer than most gaps last.
+  liveVideo.currentTime=57;interjectReply={lines:[line('rate line',1)]};liveTicks.at(-1)();
   await waitFor(()=>interjections()===2);
   await pause(20);
-  assert.equal(liveRequests.at(-1).gap,7.5,'gaps are real seconds at the current playback rate');
-  liveVideo.currentTime=51;liveTicks.at(-1)();
+  assert.equal(spoken.length,1,'a line written in a short gap waits instead of talking over what comes next');
+  // Gaps are real seconds: 9 timeline seconds at 2x is too short, 15 is long enough.
+  liveVideo.playbackRate=2;liveVideo.currentTime=51;liveTicks.at(-1)();
   await pause(20);
-  assert.equal(interjections(),2,'a 9-second timeline gap at 2x is too short to ask');
+  assert.equal(spoken.length,1,'a 9-second timeline gap at 2x is too short to speak in');
+  liveVideo.currentTime=45;liveTicks.at(-1)();
+  await waitFor(()=>spoken.length===2);
+  await pause(20);
+  assert.equal(interjections(),2,'the held line is spoken in a later gap without a new generation');
   liveVideo.playbackRate=1;liveRequests.splice(1);
   // A line that no longer fits waits for the next gap instead of being lost.
   liveVideo.currentTime=10;
@@ -678,22 +680,22 @@ try {
   liveTicks.at(-1)();
   await waitFor(()=>interjections()===2);
   await pause(20);
-  assert.equal(spoken.length,1,'a line that no longer fits is not spoken over the next reaction');
+  assert.equal(spoken.length,2,'a line that no longer fits is not spoken over the next reaction');
   liveVideo.currentTime=10;liveTicks.at(-1)();
-  await waitFor(()=>spoken.length===2);
+  await waitFor(()=>spoken.length===3);
   await pause(20);
-  assert.equal(spoken[1][0],'held line');
+  assert.equal(spoken[2][0],'held line');
   assert.equal(interjections(),2,'the held line is spoken without generating a new one');
   // A line that say() reports as never started is kept as well.
   interjectReply={lines:[line('skipped line',2)]};
   liveTicks.at(-1)();
   await waitFor(()=>!skipOnce.has('skipped line'));
   await pause(20);
-  assert.equal(spoken.length,2);
+  assert.equal(spoken.length,3);
   liveTicks.at(-1)();
-  await waitFor(()=>spoken.length===3);
+  await waitFor(()=>spoken.length===4);
   await pause(20);
-  assert.equal(spoken[2][0],'skipped line');
+  assert.equal(spoken[3][0],'skipped line');
   assert.equal(interjections(),3,'a skipped line is retried without generating a new one');
   // A slow interjection at the video end: the busy intermission retries once it settles.
   let finishInterject=null;
@@ -712,9 +714,9 @@ try {
   assert.equal(livePlays,1,'the next video waits while the intermission is still speaking');
   releaseSummary();
   await waitFor(()=>livePlays===2,()=>JSON.stringify({spoken,livePlays}));
-  assert.deepEqual(spoken.map(([text])=>text),['gap line','held line','skipped line','summary','late line','reply'],
+  assert.deepEqual(spoken.map(([text])=>text),['gap line','rate line','held line','skipped line','summary','late line','reply'],
     'the late interjection is held past the video end and spoken after the summary');
-  assert.ok(spoken.slice(3).every(([,plays])=>plays===1),'intermission speaks before the next video plays');
+  assert.ok(spoken.slice(4).every(([,plays])=>plays===1),'intermission speaks before the next video plays');
   assert.equal(intermissions(),2);
   assert.equal(liveRequests.at(-1).job,'selected','intermission describes the video that just ended');
   // An intermission line that never starts ends the intermission; the unstarted replies wait for
@@ -794,6 +796,35 @@ try {
   await pause(20);
   assert.deepEqual(staleSpoken,[],'a line generated for the torn-down playback is never replayed');
   stale.handlers['runtime-inactive']();
+} finally {
+  globalThis.setInterval=realInterval;
+}
+// A paused video is a valid moment: a line held through a short gap is spoken once playback pauses.
+const pausedTicks=[];
+globalThis.setInterval=(fn,delay,...args)=>delay===2500?(pausedTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
+try {
+  const paused=await fixture(false,false,{total_tokens:1});
+  const pausedVideo=paused.elements.get('video'),pausedRequests=[],pausedSpoken=[];
+  const pausedBase=paused.game.media.request;
+  paused.game.media.mount=async()=>({play:async()=>{pausedVideo.paused=false;},say:async spokenLine=>{pausedSpoken.push(spokenLine.text);return 'completed';},dispose(){}});
+  paused.game.media.request=(action,payload)=>{
+    if(action!=='live')return pausedBase(action,payload);
+    pausedRequests.push(payload);
+    return Promise.resolve({lines:pausedRequests.length===1?[{text:'paused line',audio:'/paused',duration:6}]:[]});
+  };
+  await paused.elements.get('play').onclick();
+  pausedVideo.duration=60;pausedVideo.currentTime=57;
+  pausedTicks.at(-1)();
+  await waitFor(()=>pausedRequests.length===1);
+  await pause(20);
+  assert.deepEqual(pausedSpoken,[],'three seconds before the end is too short while playing');
+  pausedVideo.paused=true;pausedTicks.at(-1)();
+  await waitFor(()=>pausedSpoken.length===1);
+  await pause(20);
+  assert.equal(pausedRequests.length,1,'the held line is spoken while paused without a new generation');
+  pausedTicks.at(-1)();
+  await waitFor(()=>pausedRequests.length===2,()=>'a paused video still asks for held plugin responses');
+  paused.handlers['runtime-inactive']();
 } finally {
   globalThis.setInterval=realInterval;
 }

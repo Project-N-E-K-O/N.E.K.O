@@ -153,7 +153,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   });
   listen(video, 'waiting', () => { waiting = true; stop(); });
   listen(video, 'playing', () => { waiting = false; sync(); });
-  listen(video, 'pause', () => { stop(); emit('pause'); });
+  // A paused video is a valid moment for a live line, so pausing only stops reactions.
+  listen(video, 'pause', () => { if (!speech) stop(); emit('pause'); });
   listen(video, 'play', () => { if (!release) { video.pause(); return; } emit('play'); });
   listen(video, 'seeking', () => { generation++; stop(true); });
   listen(video, 'seeked', () => { clock.seek(video.currentTime); waiting = false; emit('seek'); });
@@ -226,8 +227,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       const url = line?.audio;
       if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix + '/')) throw Error('Unregistered live speech');
       if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
-      // Any active timeline cue, including a silent text reaction on screen, owns the moment.
-      const busy = () => disposed || speech || active;
+      // Any active timeline cue, including a silent text reaction on screen, owns the moment
+      // while the video plays; a paused reaction is silent until playback resumes.
+      const busy = () => disposed || speech || (active && !video.paused);
       if (busy()) return 'skipped';
       const attemptGeneration = generation;
       // A stalled download must not hold the intermission (and automatic mode) forever.
@@ -247,9 +249,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
         liveDownloads.delete(download);
       }
       if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
-      // Playback may have paused or started buffering during the fetch; an ended
-      // video is still a valid moment (the automatic-mode intermission).
-      if (busy() || generation !== attemptGeneration || waiting || video.seeking || (video.paused && !video.ended)) return 'skipped';
+      // Playback may have started buffering or seeking during the fetch. Paused and ended
+      // videos are valid moments (plugin replies while paused, the automatic-mode intermission).
+      if (busy() || generation !== attemptGeneration || (waiting && !video.paused) || video.seeking) return 'skipped';
       return new Promise(resolve => {
         speech = { url: URL.createObjectURL(blob), resolve, started: false, cue: { text: String(line.text || ''), live: true } };
         const current = speech;
