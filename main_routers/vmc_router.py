@@ -25,7 +25,7 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
-from main_logic.vmc_sender import get_vmc_sender, set_vmc_enabled_callback
+from main_logic.vmc_sender import get_vmc_sender
 from main_routers.system_router import _validate_local_mutation_request
 from utils.logger_config import get_module_logger
 
@@ -43,28 +43,11 @@ _publisher_generation = 0
 _pending_terminal_task: asyncio.Task[None] | None = None
 
 
-async def _broadcast_vmc_enabled(enabled: bool) -> None:
-    """Wake browser samplers after a non-browser client enables VMC.
-
-    The browser only starts sampling once its own ``enable()`` runs, so a
-    plugin calling ``POST /api/vmc/enable`` would otherwise leave the UDP
-    sender running with no frame source. The chat WebSocket carries this
-    one-shot control event; per-frame VMC data stays on ``/api/vmc/ws``.
-    """
-    if not enabled:
-        return
-    try:
-        from app.main_server.character_runtime import _broadcast_to_all_connected
-
-        delivered = await _broadcast_to_all_connected(
-            {"type": "vmc_state_changed", "enabled": True}
-        )
-        logger.info("VMC enable broadcast delivered to %d session(s)", delivered)
-    except Exception as exc:
-        logger.warning("VMC enable broadcast failed: %s", exc)
-
-
-set_vmc_enabled_callback(_broadcast_vmc_enabled)
+# The enable-broadcast hook that wakes browser samplers lives in
+# app/main_server/character_runtime.py, next to the connection registry it
+# broadcasts over. Reaching for it from here is a layer inversion
+# (main_routers L3 -> app L6) plus an import cycle; main_logic.vmc_sender's
+# set_vmc_enabled_callback() is the seam that lets the app layer own the wiring.
 
 
 def _claim_active_vmc_publisher(websocket: WebSocket) -> int | None:

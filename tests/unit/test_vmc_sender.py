@@ -1163,13 +1163,13 @@ async def test_enable_broadcast_wakes_browser_samplers(monkeypatch):
         character_runtime, "_broadcast_to_all_connected", fake_broadcast
     )
 
-    await vmc_router._broadcast_vmc_enabled(True)
+    await character_runtime._broadcast_vmc_enabled(True)
     assert sent == [{"type": "vmc_state_changed", "enabled": True}]
 
     # Disable needs no broadcast: the browser learns it from its own poll and
     # waking a sampler for a dead sender would only burn frames.
     sent.clear()
-    await vmc_router._broadcast_vmc_enabled(False)
+    await character_runtime._broadcast_vmc_enabled(False)
     assert sent == []
 
 
@@ -1185,7 +1185,25 @@ async def test_enable_broadcast_swallows_transport_failures(monkeypatch):
         character_runtime, "_broadcast_to_all_connected", explode
     )
 
-    await vmc_router._broadcast_vmc_enabled(True)
+    await character_runtime._broadcast_vmc_enabled(True)
+
+
+@pytest.mark.unit
+def test_enable_broadcast_is_wired_up_at_import_time():
+    """Importing the app layer must register the broadcast hook.
+
+    The wiring sits in character_runtime rather than beside the
+    ``/api/vmc/enable`` route it serves, because a router (L3) cannot import
+    ``app`` (L6) without tripping check_module_layering. Nothing else asserts
+    the callback is installed, so a move that dropped the registration would
+    leave the UDP sender running with no frame source while every other VMC
+    test stayed green.
+    """
+    from app.main_server import character_runtime
+
+    assert (
+        vmc_sender_module._enabled_callback is character_runtime._broadcast_vmc_enabled
+    )
 
 
 @pytest.mark.unit
@@ -1363,8 +1381,9 @@ def test_expression_name_map_covers_vrm_presets():
 def _captured_warnings():
     """Collect vmc_sender warnings.
 
-    N.E.K.O. 的 logger 不向 root 传播，caplog 的 handler 挂在 root 上收不到记录，
-    所以直接把 handler 挂到模块 logger 本身。
+    N.E.K.O. loggers do not propagate to root, so caplog's root-mounted
+    handler never receives these records; attach the collector to the module
+    logger itself instead.
     """
     records: list[logging.LogRecord] = []
 
@@ -1454,10 +1473,12 @@ def test_no_overflow_warning_for_normal_frames():
 
 @pytest.mark.unit
 def test_expression_cap_matches_between_sampler_and_sender():
-    """采样器先截断,后端只是信任边界上的第二道闸。
+    """The sampler truncates first; the backend cap is only the second gate.
 
-    两边各写各的常量时,只调后端那个不会有任何效果——帧在前端就已经被
-    静默截断了。把「保持同步」的注释变成可执行的断言。
+    With the constant written independently on each side, raising the backend
+    one alone has no effect — the frame was already silently truncated in the
+    browser. This turns the "keep these in sync" comment into an executable
+    assertion.
     """
     source = Path("static/vrm/vrm-vmc-sender.js").read_text(encoding="utf-8")
     match = re.search(r"const MAX_EXPRESSIONS_PER_FRAME = (\d+);", source)
