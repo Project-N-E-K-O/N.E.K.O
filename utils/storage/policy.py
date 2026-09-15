@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from utils.file_utils import atomic_write_json, read_json
+from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -362,10 +362,12 @@ def _validate_storage_policy_payload(
     return payload
 
 
-def _validate_storage_policy_anchor(value: Path | str) -> None:
+def _validate_storage_policy_anchor(value: Path | str) -> os.stat_result | None:
     """Allow an absent first-run anchor, but never an unsafe existing chain."""
 
     candidate = Path(value).expanduser()
+    anchor = candidate
+    anchor_metadata: os.stat_result | None = None
     blocked_lookup = False
     while True:
         try:
@@ -388,6 +390,8 @@ def _validate_storage_policy_anchor(value: Path | str) -> None:
                 raise StoragePolicyError("anchor_root_redirect")
             if not stat.S_ISDIR(metadata.st_mode):
                 raise StoragePolicyError("anchor_root_not_directory")
+            if candidate == anchor:
+                anchor_metadata = metadata
 
         parent = candidate.parent
         if parent == candidate:
@@ -396,6 +400,527 @@ def _validate_storage_policy_anchor(value: Path | str) -> None:
 
     if blocked_lookup:
         raise StoragePolicyError("anchor_root_uninspectable")
+    return anchor_metadata
+
+
+def _read_open_file_descriptor(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := os.read(fd, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _posix_directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _posix_file_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _fsync_policy_directory_required(path: Path) -> None:
+    if os.name == "nt":
+        return
+    directory_fd = -1
+    try:
+        directory_fd = os.open(path, _posix_directory_open_flags())
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise StoragePolicyError("policy_flush_failed") from exc
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+
+
+def _open_posix_anchor_directory(
+    anchor_root: Path,
+    expected_anchor: os.stat_result | None,
+) -> int:
+    """Open every anchor component relative to its already-open parent."""
+
+    if not anchor_root.is_absolute() or not anchor_root.anchor:
+        raise StoragePolicyError("anchor_root_uninspectable")
+
+    directory_fd = -1
+    try:
+        directory_fd = os.open(anchor_root.anchor, _posix_directory_open_flags())
+        for component in anchor_root.parts[1:]:
+            child_fd = os.open(
+                component,
+                _posix_directory_open_flags(),
+                dir_fd=directory_fd,
+            )
+            parent_fd = directory_fd
+            directory_fd = child_fd
+            os.close(parent_fd)
+    except FileNotFoundError as exc:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if expected_anchor is None:
+            raise
+        raise StoragePolicyError("anchor_root_changed") from exc
+    except OSError as exc:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        raise StoragePolicyError("anchor_root_changed") from exc
+
+    opened_anchor = os.fstat(directory_fd)
+    if (
+        expected_anchor is None
+        or not stat.S_ISDIR(opened_anchor.st_mode)
+        or not os.path.samestat(expected_anchor, opened_anchor)
+    ):
+        os.close(directory_fd)
+        raise StoragePolicyError("anchor_root_changed")
+    return directory_fd
+
+
+def _open_posix_child_directory(parent_fd: int, name: str) -> int:
+    try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    if stat.S_ISLNK(named.st_mode) or not stat.S_ISDIR(named.st_mode):
+        raise StoragePolicyError("policy_path_redirect")
+
+    try:
+        child_fd = os.open(name, _posix_directory_open_flags(), dir_fd=parent_fd)
+    except FileNotFoundError as exc:
+        raise StoragePolicyError("policy_path_changed") from exc
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    opened = os.fstat(child_fd)
+    if not stat.S_ISDIR(opened.st_mode) or not os.path.samestat(named, opened):
+        os.close(child_fd)
+        raise StoragePolicyError("policy_path_changed")
+    return child_fd
+
+
+def _open_posix_policy_file(state_fd: int) -> tuple[int, os.stat_result]:
+    filename = "storage_policy.json"
+    named = os.stat(filename, dir_fd=state_fd, follow_symlinks=False)
+    if stat.S_ISLNK(named.st_mode) or not stat.S_ISREG(named.st_mode):
+        raise StoragePolicyError("policy_path_redirect")
+    try:
+        policy_fd = os.open(filename, _posix_file_open_flags(), dir_fd=state_fd)
+    except FileNotFoundError as exc:
+        raise StoragePolicyError("policy_changed_during_read") from exc
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    opened = os.fstat(policy_fd)
+    if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(named, opened):
+        os.close(policy_fd)
+        raise StoragePolicyError("policy_changed_during_read")
+    return policy_fd, opened
+
+
+def _revalidate_posix_policy_handles(
+    anchor_root: Path,
+    anchor_fd: int,
+    state_fd: int,
+    policy_fd: int,
+    policy_before: os.stat_result,
+) -> None:
+    _validate_storage_policy_anchor(anchor_root)
+
+    try:
+        named_anchor = anchor_root.lstat()
+        named_state = (anchor_root / "state").lstat()
+        named_policy = (anchor_root / "state" / "storage_policy.json").lstat()
+    except OSError as exc:
+        raise StoragePolicyError("policy_changed_during_read") from exc
+    opened_anchor = os.fstat(anchor_fd)
+    opened_state = os.fstat(state_fd)
+    policy_after = os.fstat(policy_fd)
+    if (
+        stat.S_ISLNK(named_anchor.st_mode)
+        or not stat.S_ISDIR(named_anchor.st_mode)
+        or not os.path.samestat(named_anchor, opened_anchor)
+    ):
+        raise StoragePolicyError("anchor_root_changed")
+    if (
+        stat.S_ISLNK(named_state.st_mode)
+        or not stat.S_ISDIR(named_state.st_mode)
+        or not os.path.samestat(named_state, opened_state)
+        or stat.S_ISLNK(named_policy.st_mode)
+        or not stat.S_ISREG(named_policy.st_mode)
+        or not os.path.samestat(named_policy, policy_after)
+        or not os.path.samestat(policy_before, policy_after)
+        or policy_before.st_size != policy_after.st_size
+        or policy_before.st_mtime_ns != policy_after.st_mtime_ns
+    ):
+        raise StoragePolicyError("policy_changed_during_read")
+
+
+def _revalidate_posix_policy_absence(
+    anchor_root: Path,
+    anchor_fd: int,
+    state_fd: int,
+) -> None:
+    if state_fd < 0:
+        parent_fd = anchor_fd
+        missing_name = "state"
+    else:
+        parent_fd = state_fd
+        missing_name = "storage_policy.json"
+
+    try:
+        os.stat(missing_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    else:
+        raise StoragePolicyError("policy_changed_during_read")
+
+    # The named identity must be the final observation. Otherwise the anchor
+    # could be replaced after the absence check and the detached directory's
+    # missing child would be misclassified as a genuine first run.
+    _validate_storage_policy_anchor(anchor_root)
+    try:
+        named_anchor = anchor_root.lstat()
+    except OSError as exc:
+        raise StoragePolicyError("anchor_root_changed") from exc
+    opened_anchor = os.fstat(anchor_fd)
+    if (
+        stat.S_ISLNK(named_anchor.st_mode)
+        or not stat.S_ISDIR(named_anchor.st_mode)
+        or not os.path.samestat(named_anchor, opened_anchor)
+    ):
+        raise StoragePolicyError("anchor_root_changed")
+    if state_fd >= 0:
+        try:
+            named_state = (anchor_root / "state").lstat()
+        except OSError as exc:
+            raise StoragePolicyError("policy_changed_during_read") from exc
+        if (
+            stat.S_ISLNK(named_state.st_mode)
+            or not stat.S_ISDIR(named_state.st_mode)
+            or not os.path.samestat(named_state, os.fstat(state_fd))
+        ):
+            raise StoragePolicyError("policy_changed_during_read")
+
+
+def _read_storage_policy_json_posix(
+    anchor_root: Path,
+    expected_anchor: os.stat_result | None,
+) -> Any:
+    anchor_fd = -1
+    state_fd = -1
+    policy_fd = -1
+    try:
+        anchor_fd = _open_posix_anchor_directory(anchor_root, expected_anchor)
+        try:
+            state_fd = _open_posix_child_directory(anchor_fd, "state")
+        except FileNotFoundError:
+            _revalidate_posix_policy_absence(anchor_root, anchor_fd, -1)
+            raise
+        try:
+            policy_fd, policy_before = _open_posix_policy_file(state_fd)
+        except FileNotFoundError:
+            _revalidate_posix_policy_absence(anchor_root, anchor_fd, state_fd)
+            raise
+
+        raw = _read_open_file_descriptor(policy_fd)
+        _revalidate_posix_policy_handles(
+            anchor_root,
+            anchor_fd,
+            state_fd,
+            policy_fd,
+            policy_before,
+        )
+        return json.loads(raw.decode("utf-8"))
+    finally:
+        for fd in (policy_fd, state_fd, anchor_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _read_storage_policy_json_windows(
+    anchor_root: Path,
+    expected_anchor: os.stat_result | None,
+) -> Any:
+    """Read through stable Win32 handles and reject every reparse component."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", _FileTime),
+            ("last_access_time", _FileTime),
+            ("last_write_time", _FileTime),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.ReadFile.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    file_share_delete = 0x00000004
+    open_existing = 3
+    file_attribute_directory = 0x0010
+    file_attribute_reparse_point = 0x0400
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+    absent_errors = {2, 3}
+    handles: list[int] = []
+
+    def _native_path(path: Path) -> str:
+        value = str(path)
+        if value.startswith("\\\\?\\"):
+            return value
+        if value.startswith("\\\\"):
+            return "\\\\?\\UNC\\" + value[2:]
+        return "\\\\?\\" + value
+
+    def _snapshot(handle: int) -> tuple[int, int, int, int, int]:
+        info = _ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return (
+            int(info.attributes),
+            int(info.volume_serial_number),
+            (int(info.file_index_high) << 32) | int(info.file_index_low),
+            (int(info.file_size_high) << 32) | int(info.file_size_low),
+            (int(info.last_write_time.high) << 32) | int(info.last_write_time.low),
+        )
+
+    def _open_handle(path: Path, *, directory: bool) -> tuple[int, tuple[int, int, int, int, int]]:
+        flags = file_flag_open_reparse_point
+        if directory:
+            flags |= file_flag_backup_semantics
+        access = file_read_attributes if directory else generic_read | file_read_attributes
+        # Denying DELETE sharing on directories keeps every opened path
+        # component from being renamed while the full child path is opened.
+        share_mode = file_share_read | file_share_write
+        if not directory:
+            share_mode |= file_share_delete
+        handle = kernel32.CreateFileW(
+            _native_path(path),
+            access,
+            share_mode,
+            None,
+            open_existing,
+            flags,
+            None,
+        )
+        if handle == invalid_handle_value:
+            error = ctypes.get_last_error()
+            if error in absent_errors:
+                raise FileNotFoundError(error, "path is absent", str(path))
+            raise ctypes.WinError(error)
+        try:
+            snapshot = _snapshot(handle)
+        except Exception:
+            kernel32.CloseHandle(handle)
+            raise
+        is_directory = bool(snapshot[0] & file_attribute_directory)
+        if snapshot[0] & file_attribute_reparse_point or is_directory != directory:
+            kernel32.CloseHandle(handle)
+            raise StoragePolicyError("policy_path_redirect")
+        return handle, snapshot
+
+    def _close_handle(handle: int) -> None:
+        if handle != invalid_handle_value:
+            kernel32.CloseHandle(handle)
+
+    def _named_snapshot(path: Path, *, directory: bool) -> tuple[int, int, int, int, int]:
+        handle, snapshot = _open_handle(path, directory=directory)
+        try:
+            return snapshot
+        finally:
+            _close_handle(handle)
+
+    def _identity(snapshot: tuple[int, int, int, int, int]) -> tuple[int, int]:
+        return snapshot[1], snapshot[2]
+
+    def _revalidate_absence(
+        missing_path: Path,
+        *,
+        directory: bool,
+        anchor_snapshot: tuple[int, int, int, int, int],
+        state_path: Path | None = None,
+        state_snapshot: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
+        # Check absence first and finish on the stable parent identity. Reversing
+        # this order would recreate the detached-anchor first-run race.
+        try:
+            _named_snapshot(missing_path, directory=directory)
+        except FileNotFoundError:
+            pass
+        else:
+            raise StoragePolicyError("policy_changed_during_read")
+
+        refreshed_anchor = _validate_storage_policy_anchor(anchor_root)
+        if (
+            refreshed_anchor is None
+            or expected_anchor is None
+            or not os.path.samestat(expected_anchor, refreshed_anchor)
+            or _identity(anchor_snapshot)
+            != _identity(_named_snapshot(anchor_root, directory=True))
+        ):
+            raise StoragePolicyError("anchor_root_changed")
+        if state_path is not None and state_snapshot is not None and (
+            _identity(state_snapshot)
+            != _identity(_named_snapshot(state_path, directory=True))
+        ):
+            raise StoragePolicyError("policy_changed_during_read")
+
+    try:
+        if not anchor_root.is_absolute() or not anchor_root.anchor:
+            raise StoragePolicyError("anchor_root_uninspectable")
+
+        current = Path(anchor_root.anchor)
+        try:
+            handle, _root_snapshot = _open_handle(current, directory=True)
+        except FileNotFoundError as exc:
+            raise StoragePolicyError("anchor_root_changed") from exc
+        handles.append(handle)
+        anchor_snapshot = _root_snapshot
+        for component in anchor_root.parts[1:]:
+            current /= component
+            try:
+                handle, anchor_snapshot = _open_handle(current, directory=True)
+            except FileNotFoundError as exc:
+                if expected_anchor is None:
+                    raise
+                raise StoragePolicyError("anchor_root_changed") from exc
+            handles.append(handle)
+
+        if expected_anchor is None:
+            raise StoragePolicyError("anchor_root_changed")
+        try:
+            current_anchor = anchor_root.lstat()
+        except OSError as exc:
+            raise StoragePolicyError("anchor_root_changed") from exc
+        if (
+            not os.path.samestat(expected_anchor, current_anchor)
+            or _identity(anchor_snapshot)
+            != _identity(_named_snapshot(anchor_root, directory=True))
+        ):
+            raise StoragePolicyError("anchor_root_changed")
+
+        state_path = anchor_root / "state"
+        try:
+            state_handle, state_snapshot = _open_handle(state_path, directory=True)
+        except FileNotFoundError:
+            _revalidate_absence(
+                state_path,
+                directory=True,
+                anchor_snapshot=anchor_snapshot,
+            )
+            raise
+        handles.append(state_handle)
+
+        policy_path = state_path / "storage_policy.json"
+        try:
+            policy_handle, policy_before = _open_handle(policy_path, directory=False)
+        except FileNotFoundError:
+            _revalidate_absence(
+                policy_path,
+                directory=False,
+                anchor_snapshot=anchor_snapshot,
+                state_path=state_path,
+                state_snapshot=state_snapshot,
+            )
+            raise
+        handles.append(policy_handle)
+
+        chunks: list[bytes] = []
+        while True:
+            buffer = ctypes.create_string_buffer(1024 * 1024)
+            read_count = wintypes.DWORD()
+            if not kernel32.ReadFile(
+                policy_handle,
+                buffer,
+                len(buffer),
+                ctypes.byref(read_count),
+                None,
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not read_count.value:
+                break
+            chunks.append(buffer.raw[: read_count.value])
+
+        policy_after = _snapshot(policy_handle)
+        refreshed_anchor = _validate_storage_policy_anchor(anchor_root)
+        if refreshed_anchor is None or not os.path.samestat(expected_anchor, refreshed_anchor):
+            raise StoragePolicyError("anchor_root_changed")
+        if (
+            _identity(anchor_snapshot) != _identity(_named_snapshot(anchor_root, directory=True))
+            or _identity(state_snapshot) != _identity(_named_snapshot(state_path, directory=True))
+            or _identity(policy_after) != _identity(_named_snapshot(policy_path, directory=False))
+            or policy_before[3:] != policy_after[3:]
+        ):
+            raise StoragePolicyError("policy_changed_during_read")
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    finally:
+        for handle in reversed(handles):
+            _close_handle(handle)
+
+
+def _read_storage_policy_json(
+    anchor_root: Path,
+    expected_anchor: os.stat_result | None,
+) -> Any:
+    if os.name == "nt":
+        return _read_storage_policy_json_windows(anchor_root, expected_anchor)
+    return _read_storage_policy_json_posix(anchor_root, expected_anchor)
 
 
 def load_storage_policy(
@@ -405,20 +930,15 @@ def load_storage_policy(
     default: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     configured_anchor_root = anchor_root or compute_anchor_root(config_manager)
-    _validate_storage_policy_anchor(configured_anchor_root)
-
-    policy_path = get_storage_policy_path(
-        config_manager,
-        anchor_root=normalize_runtime_root(configured_anchor_root),
-    )
+    expected_anchor = _validate_storage_policy_anchor(configured_anchor_root)
+    normalized_anchor_root = normalize_runtime_root(configured_anchor_root)
+    policy_path = normalized_anchor_root / "state" / "storage_policy.json"
     try:
-        payload = read_json(policy_path)
+        payload = _read_storage_policy_json(normalized_anchor_root, expected_anchor)
     except FileNotFoundError:
-        # Windows maps a child lookup below a newly replaced regular file to
-        # FileNotFoundError. Recheck the authority boundary before deciding
-        # this is the legitimate first-run "policy absent" state.
-        _validate_storage_policy_anchor(configured_anchor_root)
         return default
+    except StoragePolicyError:
+        raise
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("Malformed storage_policy at %s: %s", policy_path, exc)
         raise StoragePolicyError("malformed") from exc
@@ -434,9 +954,7 @@ def load_storage_policy(
         return _validate_storage_policy_payload(
             config_manager,
             payload,
-            anchor_root=normalize_runtime_root(
-                anchor_root or compute_anchor_root(config_manager)
-            ),
+            anchor_root=normalized_anchor_root,
         )
     except StoragePolicyError as exc:
         logger.warning("Invalid storage_policy at %s: %s", policy_path, exc.reason)
@@ -511,6 +1029,7 @@ def save_storage_policy(
         anchor_root=normalized_anchor_root,
     )
     atomic_write_json(policy_path, policy_payload, ensure_ascii=False, indent=2)
+    _fsync_policy_directory_required(policy_path.parent)
     return policy_payload
 
 

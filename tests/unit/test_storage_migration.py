@@ -323,7 +323,7 @@ def test_durable_replace_flushes_both_directory_entries_after_rename(tmp_path, m
     )
     monkeypatch.setattr(
         storage_migration_module,
-        "fsync_directory_best_effort",
+        "_fsync_migration_directory",
         lambda path: calls.append(("fsync", Path(path))),
     )
 
@@ -331,9 +331,43 @@ def test_durable_replace_flushes_both_directory_entries_after_rename(tmp_path, m
 
     assert calls == [
         ("replace", source, target),
-        ("fsync", source.parent),
         ("fsync", target.parent),
+        ("fsync", source.parent),
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barrier")
+def test_durable_publish_propagates_a_directory_flush_failure(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "staged" / "config"
+    target = tmp_path / "target" / "config"
+    source.parent.mkdir()
+    target.parent.mkdir()
+    source.write_text("SOURCE", encoding="utf-8")
+    real_fsync = storage_migration_module._fsync_migration_directory
+
+    def fail_target_directory(path):
+        if Path(path) == target.parent:
+            raise StorageMigrationError(
+                "target_flush_failed",
+                "simulated target directory flush failure",
+            )
+        return real_fsync(Path(path))
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_fsync_migration_directory",
+        fail_target_directory,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._durable_publish_without_replacing(source, target)
+
+    assert caught.value.error_code == "target_flush_failed"
+    assert not source.exists()
+    assert target.read_text(encoding="utf-8") == "SOURCE"
 
 
 @pytest.mark.unit
@@ -371,6 +405,38 @@ def test_load_storage_migration_distinguishes_missing_from_malformed_checkpoint(
         load_storage_migration(config_manager)
 
     assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barrier")
+def test_delete_storage_migration_propagates_checkpoint_unlink_flush_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    migration_path = get_storage_migration_path(config_manager)
+    real_fsync = storage_migration_module.os.fsync
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("checkpoint unlink flush failed")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module.delete_storage_migration(config_manager)
+
+    assert caught.value.error_code == "target_flush_failed"
+    assert not migration_path.exists()
 
 
 @pytest.mark.unit
@@ -796,9 +862,10 @@ def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path
     (nested_root / "scores.db").write_bytes(b"score")
     flushed_directories = []
 
+    monkeypatch.setattr(storage_migration_module.sys, "platform", "linux")
     monkeypatch.setattr(
         storage_migration_module,
-        "fsync_directory_best_effort",
+        "_fsync_migration_directory",
         lambda path: flushed_directories.append(Path(path)),
     )
 
@@ -808,7 +875,48 @@ def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path
 
 
 @pytest.mark.unit
-def test_windows_staged_copy_flushes_before_restoring_read_only_metadata(tmp_path, monkeypatch):
+def test_posix_fsync_staged_tree_propagates_directory_failure(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    staged_root = tmp_path / "transaction" / "staged"
+    staged_root.mkdir(parents=True)
+
+    def fail_fsync(_fd):
+        raise OSError("directory flush failed")
+
+    monkeypatch.setattr(storage_migration_module.sys, "platform", "linux")
+    monkeypatch.setattr(storage_migration_module.os, "fsync", fail_fsync)
+
+    with pytest.raises(StorageMigrationError) as exc_info:
+        storage_migration_module._fsync_staged_tree(staged_root)
+
+    assert exc_info.value.error_code == "target_flush_failed"
+
+
+@pytest.mark.unit
+def test_new_target_root_flushes_every_created_parent_boundary(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    target_root = tmp_path / "new-volume-folder" / "nested" / "N.E.K.O"
+    flushed = []
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_fsync_migration_directory",
+        lambda path: flushed.append(Path(path)),
+    )
+
+    storage_migration_module._ensure_target_root_writable(target_root)
+
+    assert target_root.is_dir()
+    assert flushed == [
+        target_root.parent,
+        target_root.parent.parent,
+        tmp_path,
+    ]
+
+
+@pytest.mark.unit
+def test_staged_copy_flushes_before_and_after_restoring_open_file_metadata(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
     source_file = tmp_path / "source" / "readonly.json"
@@ -819,7 +927,7 @@ def test_windows_staged_copy_flushes_before_restoring_read_only_metadata(tmp_pat
     os.chmod(source_file, stat.S_IRUSR)
     source_mode = stat.S_IMODE(source_file.stat().st_mode)
     real_fsync = os.fsync
-    real_copystat = storage_migration_module.shutil.copystat
+    real_copy_metadata = storage_migration_module._copy_open_file_metadata
     events = []
 
     def record_windows_style_fsync(fd):
@@ -827,18 +935,83 @@ def test_windows_staged_copy_flushes_before_restoring_read_only_metadata(tmp_pat
         events.append("fsync")
         real_fsync(fd)
 
-    def record_copystat(source, target, **kwargs):
-        events.append("copystat")
-        return real_copystat(source, target, **kwargs)
+    def record_copy_metadata(source_fd, target_fd, metadata):
+        events.append("metadata")
+        return real_copy_metadata(source_fd, target_fd, metadata)
 
     monkeypatch.setattr(storage_migration_module.os, "fsync", record_windows_style_fsync)
-    monkeypatch.setattr(storage_migration_module.shutil, "copystat", record_copystat)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_open_file_metadata",
+        record_copy_metadata,
+    )
 
     storage_migration_module._copy_staged_file_durably(source_file, staged_file)
 
-    assert events == ["fsync", "copystat"]
+    assert events == ["fsync", "metadata", "fsync"]
     assert stat.S_IMODE(staged_file.stat().st_mode) == source_mode
     assert staged_file.read_text(encoding="utf-8") == '{"preserved": true}'
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX name replacement injection")
+def test_staged_copy_metadata_never_follows_a_replaced_target_name(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.json"
+    staged_file = tmp_path / "staged.json"
+    external_file = tmp_path / "external.json"
+    source_file.write_text("source", encoding="utf-8")
+    external_file.write_text("external", encoding="utf-8")
+    os.chmod(source_file, 0o600)
+    os.chmod(external_file, 0o644)
+    external_mode = stat.S_IMODE(external_file.stat().st_mode)
+    real_copy_metadata = storage_migration_module._copy_open_file_metadata
+
+    def replace_name_then_copy_metadata(source_fd, target_fd, metadata):
+        staged_file.unlink()
+        staged_file.symlink_to(external_file)
+        return real_copy_metadata(source_fd, target_fd, metadata)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_open_file_metadata",
+        replace_name_then_copy_metadata,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+
+    assert caught.value.error_code == "staging_entry_changed"
+    assert staged_file.is_symlink()
+    assert external_file.read_text(encoding="utf-8") == "external"
+    assert stat.S_IMODE(external_file.stat().st_mode) == external_mode
+
+
+@pytest.mark.unit
+def test_staged_copy_failure_preserves_a_late_target_competitor(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.json"
+    staged_file = tmp_path / "staged.json"
+    source_file.write_text("source", encoding="utf-8")
+
+    def replace_target_then_fail(_source_fd, _target_fd, _metadata):
+        staged_file.unlink()
+        staged_file.write_text("late-winner", encoding="utf-8")
+        raise OSError("metadata restore failed")
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_open_file_metadata",
+        replace_target_then_fail,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+
+    assert caught.value.error_code == "target_flush_failed"
+    assert staged_file.read_text(encoding="utf-8") == "late-winner"
 
 
 @pytest.mark.unit
@@ -867,6 +1040,107 @@ def test_staged_copy_rejects_fifo_without_blocking(tmp_path):
     assert isinstance(outcome[0], StorageMigrationError)
     assert outcome[0].error_code == "path_type_unsupported"
     assert not staged_file.exists()
+
+
+@pytest.mark.unit
+def test_staged_copy_does_not_block_when_source_becomes_fifo_before_open(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    if os.name == "nt" or not hasattr(os, "mkfifo"):
+        pytest.skip("POSIX FIFO creation is unavailable")
+    source_file = tmp_path / "source.bin"
+    staged_file = tmp_path / "staged.bin"
+    source_file.write_bytes(b"regular-before-open")
+    real_open = storage_migration_module.os.open
+    opened_flags = []
+    replaced = False
+
+    def replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if Path(path) == source_file and not replaced:
+            replaced = True
+            source_file.unlink()
+            os.mkfifo(source_file)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", replace_with_fifo_before_open)
+    outcome = []
+
+    def copy_raced_source():
+        try:
+            storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=copy_raced_source, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        # Make a regressed blocking reader finish so it cannot leak into later tests.
+        writer_fd = real_open(source_file, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+
+    assert not worker.is_alive(), "opening a raced FIFO must be non-blocking"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], StorageMigrationError)
+    assert outcome[0].error_code == "path_type_unsupported"
+    assert opened_flags and opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+    assert not staged_file.exists()
+
+
+@pytest.mark.unit
+def test_staged_copy_rejects_source_symlink_without_copying_target(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source-link"
+    external_file = tmp_path / "external.bin"
+    staged_file = tmp_path / "staged.bin"
+    external_file.write_bytes(b"external")
+    try:
+        source_file.symlink_to(external_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable")
+
+    with pytest.raises(StorageMigrationError) as exc_info:
+        storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+
+    assert exc_info.value.error_code == "path_symlink_unsupported"
+    assert not staged_file.exists()
+
+
+@pytest.mark.unit
+def test_staged_copy_exclusive_target_preserves_a_late_winner(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.bin"
+    staged_file = tmp_path / "staged.bin"
+    source_file.write_bytes(b"source")
+    real_open = storage_migration_module.os.open
+    occupied = False
+    target_flags_seen = []
+
+    def occupy_target_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal occupied
+        if Path(path) == staged_file and flags & os.O_CREAT and not occupied:
+            occupied = True
+            target_flags_seen.append(flags)
+            staged_file.write_bytes(b"late-winner")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", occupy_target_before_open)
+
+    with pytest.raises(StorageMigrationError) as exc_info:
+        storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+
+    assert exc_info.value.error_code == "staging_entry_exists"
+    assert target_flags_seen and target_flags_seen[0] & os.O_RDWR
+    assert staged_file.read_bytes() == b"late-winner"
 
 
 @pytest.mark.unit
@@ -941,6 +1215,52 @@ def test_run_pending_storage_migration_flushes_staged_root_before_verifying_chec
     assert events.index(flush_events[0]) < events.index(
         ("checkpoint", storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING)
     )
+
+
+@pytest.mark.unit
+def test_posix_directory_flush_failure_never_reaches_verifying_or_publishing(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "state" / "game_scores" / "scores.db"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_bytes(b"source-score")
+    persisted_statuses = []
+    real_fsync = storage_migration_module.os.fsync
+    real_persist = storage_migration_module._persist_migration_payload
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("directory flush failed")
+        return real_fsync(fd)
+
+    def record_persist(*args, **kwargs):
+        if kwargs.get("status"):
+            persisted_statuses.append(kwargs["status"])
+        return real_persist(*args, **kwargs)
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    monkeypatch.setattr(storage_migration_module.os, "fsync", fail_directory_fsync)
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", record_persist)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_flush_failed"
+    assert storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING not in persisted_statuses
+    assert storage_migration_module.STORAGE_MIGRATION_STATUS_PUBLISHING not in persisted_statuses
+    assert source_file.read_bytes() == b"source-score"
+    assert not (target_root / "state").exists()
 
 
 @pytest.mark.unit
@@ -1404,6 +1724,22 @@ def test_windows_reparse_metadata_is_never_treated_as_owned_file():
     )
 
     assert storage_migration_module._is_link_like_metadata(metadata) is True
+
+
+@pytest.mark.unit
+def test_windows_open_file_metadata_never_combines_normal_with_readonly():
+    from utils import storage_migration as storage_migration_module
+
+    readonly = 0x00000001
+    normal = 0x00000080
+    archive = 0x00000020
+
+    assert storage_migration_module._windows_copied_file_attributes(normal, readonly) == readonly
+    assert storage_migration_module._windows_copied_file_attributes(normal, 0) == normal
+    assert storage_migration_module._windows_copied_file_attributes(
+        archive | normal,
+        readonly,
+    ) == archive | readonly
 
 
 @pytest.mark.unit

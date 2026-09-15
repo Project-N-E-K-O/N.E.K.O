@@ -3690,7 +3690,10 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("retained_outcome", ["cleaned", "unknown"])
+@pytest.mark.parametrize(
+    "retained_outcome",
+    ["cleaned", "present", "unknown", "in_progress_then_cleaned"],
+)
 def test_storage_location_cleanup_network_failure_reconciles_authoritative_result(
     mock_page: Page,
     running_server: str,
@@ -3746,6 +3749,35 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
         if retained_outcome == "unknown":
             route.abort("connectionreset")
             return
+        if retained_outcome == "present":
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "ok": True,
+                        **completion_notice,
+                        "cleanup_in_progress": False,
+                    }
+                ),
+            )
+            return
+        if (
+            retained_outcome == "in_progress_then_cleaned"
+            and retained_status_requests["count"] <= 8
+        ):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "ok": True,
+                        **completion_notice,
+                        "cleanup_in_progress": True,
+                    }
+                ),
+            )
+            return
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -3771,9 +3803,20 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
     expect(completion_card).to_be_visible(timeout=10_000)
     completion_card.get_by_role("button", name="清理旧数据").evaluate("button => button.click()")
 
-    if retained_outcome == "cleaned":
+    if retained_outcome == "in_progress_then_cleaned":
+        page.wait_for_timeout(1200)
+        assert retained_status_requests["count"] >= 2
+        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
         expect(completion_card).to_be_hidden(timeout=10_000)
+    elif retained_outcome == "cleaned":
+        expect(completion_card).to_be_hidden(timeout=10_000)
+    elif retained_outcome == "present":
+        expect(completion_card).to_be_visible(timeout=10_000)
+        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_enabled(
+            timeout=10_000,
+        )
     else:
+        page.wait_for_timeout(1000)
         expect(completion_card).to_be_visible(timeout=10_000)
         expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
     assert retained_status_requests["count"] >= 1

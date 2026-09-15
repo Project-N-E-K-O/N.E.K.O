@@ -21,6 +21,7 @@ outranks Steam and Steam never latches; only free-route users are probed;
 the probe never gives up; and every path that freezes a session route settles
 the region first.
 """
+import ast
 import asyncio
 import os
 import sys
@@ -1739,6 +1740,60 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
     assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
 
 
+def _calls_in_own_function_scope(function_node):
+    """Collect calls executed by one function without merging nested scopes."""
+
+    class _OwnScopeVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.calls = []
+
+        def visit_Call(self, node):
+            self.calls.append(node)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_ClassDef(self, node):
+            return
+
+        def visit_Lambda(self, node):
+            return
+
+    visitor = _OwnScopeVisitor()
+    for statement in function_node.body:
+        visitor.visit(statement)
+    return visitor.calls
+
+
+@pytest.mark.unit
+def test_agent_deduper_ast_guard_ignores_nested_fake_calls():
+    function_node = ast.parse(
+        """
+async def initialize():
+    async def unused_coroutine():
+        await manager.awarmup_region_check()
+    def unused_function():
+        return _initialize_agent_runtime_unlocked()
+    class UnusedClass:
+        fake = ensure_agent_server_runtime_initialized()
+    callback = lambda: startup()
+    TaskDeduper()
+"""
+    ).body[0]
+
+    calls = _calls_in_own_function_scope(function_node)
+    names = {
+        getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+        for call in calls
+    }
+
+    assert names == {"TaskDeduper"}
+
+
 @pytest.mark.unit
 def test_agent_deduper_is_built_after_the_region_settles():
     """``TaskDeduper`` freezes the ``summary`` base URL in ``__init__`` forever.
@@ -1748,7 +1803,6 @@ def test_agent_deduper_is_built_after_the_region_settles():
     as its own process never sees the main server's warmup. Distinct from the
     Agent proxy, which is deliberately exempt from the region rewrite.
     """
-    import ast
     import pathlib
 
     source = (pathlib.Path(__file__).resolve().parents[2]
@@ -1757,7 +1811,7 @@ def test_agent_deduper_is_built_after_the_region_settles():
 
     functions = {
         node.name: node
-        for node in ast.walk(tree)
+        for node in tree.body
         if isinstance(node, ast.AsyncFunctionDef)
     }
     initializer = functions.get('_initialize_agent_runtime_unlocked')
@@ -1772,24 +1826,21 @@ def test_agent_deduper_is_built_after_the_region_settles():
     # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
     settles = [
         call.lineno
-        for call in ast.walk(initializer)
-        if isinstance(call, ast.Call)
-        and getattr(call.func, 'attr', None) == 'awarmup_region_check'
+        for call in _calls_in_own_function_scope(initializer)
+        if getattr(call.func, 'attr', None) == 'awarmup_region_check'
     ]
     builds = [
         call.lineno
-        for call in ast.walk(initializer)
-        if isinstance(call, ast.Call) and getattr(call.func, 'id', None) == 'TaskDeduper'
+        for call in _calls_in_own_function_scope(initializer)
+        if getattr(call.func, 'id', None) == 'TaskDeduper'
     ]
     ensure_calls_initializer = any(
-        isinstance(call, ast.Call)
-        and getattr(call.func, 'id', None) == '_initialize_agent_runtime_unlocked'
-        for call in ast.walk(ensure)
+        getattr(call.func, 'id', None) == '_initialize_agent_runtime_unlocked'
+        for call in _calls_in_own_function_scope(ensure)
     )
     startup_calls_ensure = any(
-        isinstance(call, ast.Call)
-        and getattr(call.func, 'id', None) == 'ensure_agent_server_runtime_initialized'
-        for call in ast.walk(startup)
+        getattr(call.func, 'id', None) == 'ensure_agent_server_runtime_initialized'
+        for call in _calls_in_own_function_scope(startup)
     )
     assert builds, '未找到 TaskDeduper 构造，断言失效'
     assert settles, 'agent_server runtime 初始化未落定区域判定'

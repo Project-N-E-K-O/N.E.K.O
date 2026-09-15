@@ -339,6 +339,10 @@ plugin-runtime
 
 PC 只把后端字段映射为 `checking`、`selection_required`、`maintenance`、`recovery_required`、`ready` 或 `backend_unreachable`。每次启动轮询都分配单调递增的 generation；异步响应、回退请求、UI 更新和下一次定时器都必须仍属于当前 generation，旧轮询不能在 stop/start 或维护切换后覆盖新状态。`guardStorageStartupGate()` 在 ready 前阻止聊天、字幕、Agent HUD、点唱机等卫星窗口动作，并把焦点带回 Pet 窗口。托盘 Reload、移动模式和直播模式也必须在修改配置、停止轮询或重建窗口之前经过同一门禁，不能销毁正在承担进度与兜底职责的维护页。
 
+新版 PC 与 launcher 还建立双侧因果 bootstrap guard，关闭“launcher 已进入存储解析/迁移，但 stdout 事件尚未被 Electron 消费”这一窗口。PC 只有在显式声明 `NEKO_STORAGE_BOOTSTRAP_GUARD_V1=1`、提供专用 fd 5，且已按当前 `launch_id` 接收带随机 `guard_id` 的认证 `storage_bootstrap_guard_request` 后，才通过私有管道回复严格 ACK；launcher 在 ACK 前不得读取迁移权威、执行迁移或运行 cloudsave phase-0。初始启动和退出后的重启判定是两个独立 phase，后者必须重新申请新的 guard，不能复用旧 ACK。fd 由 launcher 立即设为不可继承并从环境删除，POSIX fork 子进程也关闭副本；响应为 ABORT、EOF、无效帧、过期 ID 或 5 秒超时时，本代在接触该存储边界前有界失败并退出，PC 保持保护直到进程终止。危险边界结束后 launcher 发送带相同 ID、phase 和封闭 outcome 的 release；更强的 processing/completed/failure/restart 状态不被 release 覆盖。旧 PC 不声明 capability，独立运行也没有该环境与 fd，因此保持原启动行为，不因协议升级而卡死。
+
+这个运行时握手只关闭活跃桌面属主的进程内竞态，不是持久化恢复证据。系统关机、强杀、掉电或旧版宿主没有机会完成握手时，数据安全仍由固定锚点中的迁移检查点、事务 marker、摘要核验和幂等回滚保证；不能用 guard 的内存状态替代或清理 checkpoint。
+
 迁移进入维护时，PC 记录当前可见的 compact/full chat、字幕、Agent HUD 和点唱机，隐藏或暂停它们；后端恢复 ready 后，PC 通过文档重载 fence 刷新 Pet，再恢复之前可见的卫星窗口。
 
 ### 9.2 通用宿主桥

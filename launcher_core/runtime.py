@@ -105,6 +105,7 @@ from utils.storage_migration import (
     run_pending_storage_migration,
 )
 from utils.storage_policy import StoragePolicyError, compute_anchor_root, paths_equal
+from .storage_bootstrap_guard import StorageBootstrapGuardChannel
 
 
 def _configure_multiprocessing_executable(project_dir: str) -> None:
@@ -126,6 +127,11 @@ def _configure_multiprocessing_executable(project_dir: str) -> None:
 LAUNCH_ID = ""
 # 实例 ID：在显式启动路径中初始化，确保导入模块时不改动进程环境
 INSTANCE_ID = ""
+
+# Initialized only by the explicit launcher bootstrap. Importing this module is
+# common in unit tests and worker processes and must not consume an inherited fd.
+_storage_bootstrap_guard = StorageBootstrapGuardChannel(None, enabled=False)
+_storage_bootstrap_guard_initialized = False
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
@@ -346,7 +352,8 @@ def _patch_http_user_agents() -> None:
 
 def _initialize_launcher_context() -> None:
     """Populate per-launch ids and env only during explicit launcher startup."""
-    global LAUNCH_ID, INSTANCE_ID
+    global LAUNCH_ID, INSTANCE_ID, _storage_bootstrap_guard
+    global _storage_bootstrap_guard_initialized
 
     if not LAUNCH_ID:
         LAUNCH_ID = uuid.uuid4().hex
@@ -355,6 +362,10 @@ def _initialize_launcher_context() -> None:
         INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
+
+    if not _storage_bootstrap_guard_initialized:
+        _storage_bootstrap_guard = StorageBootstrapGuardChannel.from_environment()
+        _storage_bootstrap_guard_initialized = True
 
     # Keep the credential out of the environment: every launcher-owned server
     # receives it through multiprocessing's private argument channel, while
@@ -418,6 +429,26 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
     # thread sharing stdout splice text into the JSON line in unbuffered mode.
     sys.stdout.write(frame)
     sys.stdout.flush()
+
+
+def _request_storage_bootstrap_guard(phase: str) -> str | None:
+    """Wait for the desktop owner before the next storage bootstrap boundary."""
+
+    return _storage_bootstrap_guard.request(
+        phase=phase,
+        launch_id=LAUNCH_ID,
+        emit_event=emit_frontend_event,
+    )
+
+
+def _release_storage_bootstrap_guard(guard_id: str | None, outcome: str) -> None:
+    """Tell the owner that the authorized storage boundary is now complete."""
+
+    _storage_bootstrap_guard.release(
+        guard_id,
+        outcome=outcome,
+        emit_event=emit_frontend_event,
+    )
 
 
 def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:
@@ -956,6 +987,11 @@ def _maybe_schedule_storage_restart() -> bool:
         # in root_state and is applied by the next launcher the owner starts.
         return False
 
+    # This is a second storage-bootstrap entry in the same launcher generation.
+    # The first authorization covered initial resolution/phase-0 only; it cannot
+    # be reused after services have run and the owner may have begun a new quit.
+    storage_guard_id = _request_storage_bootstrap_guard("restart_resolution")
+
     pre_restart_root_state: dict[str, object] = {}
     pre_restart_migration: dict | None = None
     pre_restart_migration_known = False
@@ -991,6 +1027,7 @@ def _maybe_schedule_storage_restart() -> bool:
             "leaving recovery evidence intact without relaunching",
             flush=True,
         )
+        _release_storage_bootstrap_guard(storage_guard_id, "recovery_limited")
         return False
     restart_reason = ""
     pre_restart_root_mode = str(pre_restart_root_state.get("mode") or "").strip()
@@ -1025,6 +1062,7 @@ def _maybe_schedule_storage_restart() -> bool:
                 "leaving the recovery checkpoint intact without relaunching",
                 flush=True,
             )
+            _release_storage_bootstrap_guard(storage_guard_id, "recovery_limited")
             return False
         restart_reason = "migration"
     else:
@@ -1048,6 +1086,7 @@ def _maybe_schedule_storage_restart() -> bool:
             restart_reason = "rebind_only"
 
     if not restart_reason:
+        _release_storage_bootstrap_guard(storage_guard_id, "no_restart")
         return False
 
     owner_relaunch = _owner_will_relaunch()
@@ -1063,6 +1102,11 @@ def _maybe_schedule_storage_restart() -> bool:
             "relaunch": "owner" if owner_relaunch else "self",
         },
     )
+    # The stronger restart fact was emitted first. Desktop owners only apply
+    # this release while the exact guard is still their current state, so it
+    # cannot erase the handoff gate; the paired release merely completes the
+    # protocol for tracing and old/new generation isolation.
+    _release_storage_bootstrap_guard(storage_guard_id, "restart_handoff")
     if _owner_death_in_progress:
         # The owner died while we were resolving the storage layout. The entry
         # check above was true when we started; this is the commit point, and
@@ -3382,6 +3426,64 @@ def _is_local_state_directory_error(exc) -> bool:
     return False
 
 
+def _initialize_storage_generation_for_launch() -> tuple[dict, bool]:
+    """Resolve storage and finish phase-0 under one owner authorization."""
+
+    storage_guard_id = _request_storage_bootstrap_guard("initial_bootstrap")
+    storage_bootstrap = _resolve_storage_layout_for_launch()
+    storage_limited_mode = bool(
+        storage_bootstrap.get("startup_limited")
+        or storage_bootstrap.get("startup_blocked")
+    )
+    if storage_limited_mode:
+        print(
+            "[Launcher] Storage normal startup is blocked; starting the read-only recovery surface "
+            f"(reason={storage_bootstrap.get('limited_mode_reason') or 'recovery_required'})",
+            flush=True,
+        )
+    else:
+        try:
+            _prepare_cloudsave_runtime_for_launch()
+        except Exception as e:
+            if not _is_local_state_directory_error(e):
+                # Phase-0 touches the same root-state/cloudsave authority
+                # that failed.  Do not try to rewrite maintenance metadata
+                # through that broken path, and do not fail before the
+                # recovery HTTP surface can bind.  Child services inherit
+                # this marker and skip all automatic persistence.
+                os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
+                storage_limited_mode = True
+                emit_frontend_event(
+                    "storage_migration_failed",
+                    {
+                        "error_code": str(
+                            getattr(e, "error_code", "")
+                            or "storage_status_unavailable"
+                        ),
+                        "error_message": "存储启动状态无法安全初始化。",
+                    },
+                )
+                print(
+                    "[Launcher] Storage phase-0 failed; starting the read-only recovery surface: "
+                    f"{e}",
+                    flush=True,
+                )
+                reset_config_manager_cache()
+            else:
+                os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+                print(
+                    "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
+                    f"{e}",
+                    flush=True,
+                )
+
+    _release_storage_bootstrap_guard(
+        storage_guard_id,
+        "recovery_limited" if storage_limited_mode else "ready",
+    )
+    return storage_bootstrap, storage_limited_mode
+
+
 def main():
     """Main entry point"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -3430,52 +3532,7 @@ def main():
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
 
-        storage_bootstrap = _resolve_storage_layout_for_launch()
-        storage_limited_mode = bool(
-            storage_bootstrap.get("startup_limited")
-            or storage_bootstrap.get("startup_blocked")
-        )
-        if storage_limited_mode:
-            print(
-                "[Launcher] Storage normal startup is blocked; starting the read-only recovery surface "
-                f"(reason={storage_bootstrap.get('limited_mode_reason') or 'recovery_required'})",
-                flush=True,
-            )
-        else:
-            try:
-                _prepare_cloudsave_runtime_for_launch()
-            except Exception as e:
-                if not _is_local_state_directory_error(e):
-                    # Phase-0 touches the same root-state/cloudsave authority
-                    # that failed.  Do not try to rewrite maintenance metadata
-                    # through that broken path, and do not fail before the
-                    # recovery HTTP surface can bind.  Child services inherit
-                    # this marker and skip all automatic persistence.
-                    os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
-                    storage_limited_mode = True
-                    emit_frontend_event(
-                        "storage_migration_failed",
-                        {
-                            "error_code": str(
-                                getattr(e, "error_code", "")
-                                or "storage_status_unavailable"
-                            ),
-                            "error_message": "存储启动状态无法安全初始化。",
-                        },
-                    )
-                    print(
-                        "[Launcher] Storage phase-0 failed; starting the read-only recovery surface: "
-                        f"{e}",
-                        flush=True,
-                    )
-                    reset_config_manager_cache()
-                else:
-                    os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
-                    print(
-                        "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
-                        f"{e}",
-                        flush=True,
-                    )
+        storage_bootstrap, storage_limited_mode = _initialize_storage_generation_for_launch()
 
         # Recovery does not start browser-use.  An installer/network timeout
         # here would delay the only safe-exit surface by up to five minutes.

@@ -308,13 +308,43 @@ def _remove_existing_path(path: Path) -> None:
     fsync_directory_best_effort(path.parent)
 
 
+def _fsync_migration_directory(path: Path) -> None:
+    """Require POSIX directory durability; retain Windows best-effort semantics."""
+
+    if sys.platform == "win32":
+        fsync_directory_best_effort(path)
+        return
+    handle = -1
+    try:
+        handle = os.open(
+            os.fspath(path),
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        os.fsync(handle)
+    except OSError as exc:
+        raise StorageMigrationError(
+            "target_flush_failed",
+            f"迁移数据无法可靠写入目标磁盘: {path}: {exc}",
+        ) from exc
+    finally:
+        if handle >= 0:
+            with suppress(OSError):
+                os.close(handle)
+
+
 def _durable_replace(source: Path, target: Path) -> None:
     """Rename and flush both directory-entry sides where supported."""
 
     os.replace(source, target)
-    fsync_directory_best_effort(source.parent)
+    # Persist the destination name before the source-name removal. If the
+    # second barrier fails or power is lost between them, recovery may see two
+    # names, but it never has to recover an entry whose only durable name was
+    # removed first.
+    _fsync_migration_directory(target.parent)
     if source.parent != target.parent:
-        fsync_directory_best_effort(target.parent)
+        _fsync_migration_directory(source.parent)
 
 
 def _durable_publish_without_replacing(source: Path, target: Path) -> None:
@@ -329,9 +359,9 @@ def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     else:
         # Preserve the existing Windows sharing-violation retry contract.
         publish_without_replacing(source, target)
-    fsync_directory_best_effort(source.parent)
+    _fsync_migration_directory(target.parent)
     if source.parent != target.parent:
-        fsync_directory_best_effort(target.parent)
+        _fsync_migration_directory(source.parent)
 
 
 def _rename_entry_without_replacing(source: Path, target: Path) -> None:
@@ -475,31 +505,280 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
     raise StorageMigrationError("source_entry_missing", f"迁移源条目不存在: {source_path}")
 
 
+def _copy_open_file_xattrs(source_fd: int, target_fd: int) -> None:
+    """Copy supported xattrs without resolving either file name again."""
+
+    list_xattrs = getattr(os, "listxattr", None)
+    get_xattr = getattr(os, "getxattr", None)
+    set_xattr = getattr(os, "setxattr", None)
+    if not all(callable(item) for item in (list_xattrs, get_xattr, set_xattr)):
+        return
+    ignored_errors = {
+        getattr(errno, name)
+        for name in ("ENOTSUP", "ENODATA", "EINVAL", "EPERM")
+        if hasattr(errno, name)
+    }
+    try:
+        names = list_xattrs(source_fd)
+    except OSError as exc:
+        if exc.errno in ignored_errors:
+            return
+        raise
+    for name in names:
+        try:
+            set_xattr(target_fd, name, get_xattr(source_fd, name))
+        except OSError as exc:
+            if exc.errno not in ignored_errors:
+                raise
+
+
+def _windows_copied_file_attributes(
+    target_attributes: int,
+    source_attributes: int,
+) -> int:
+    file_attribute_readonly = 0x00000001
+    file_attribute_normal = 0x00000080
+    # FILE_ATTRIBUTE_NORMAL is valid only by itself. Remove it before adding a
+    # copied READONLY bit, then restore NORMAL only when no other attribute is
+    # present on the newly-created target.
+    merged = int(target_attributes) & ~(
+        file_attribute_readonly | file_attribute_normal
+    )
+    merged |= int(source_attributes) & file_attribute_readonly
+    return merged or file_attribute_normal
+
+
+def _copy_windows_open_file_metadata(source_fd: int, target_fd: int) -> None:
+    """Copy the Win32 metadata that copystat preserves through exact handles."""
+
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation_time", ctypes.c_longlong),
+            ("last_access_time", ctypes.c_longlong),
+            ("last_write_time", ctypes.c_longlong),
+            ("change_time", ctypes.c_longlong),
+            ("file_attributes", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_file_information = kernel32.GetFileInformationByHandleEx
+    get_file_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    get_file_information.restype = wintypes.BOOL
+    set_file_information = kernel32.SetFileInformationByHandle
+    set_file_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_file_information.restype = wintypes.BOOL
+
+    source_info = _FileBasicInfo()
+    target_info = _FileBasicInfo()
+    information_size = ctypes.sizeof(_FileBasicInfo)
+    source_handle = msvcrt.get_osfhandle(source_fd)
+    target_handle = msvcrt.get_osfhandle(target_fd)
+    for handle, info in ((source_handle, source_info), (target_handle, target_info)):
+        if not get_file_information(
+            handle,
+            0,  # FileBasicInfo
+            ctypes.byref(info),
+            information_size,
+        ):
+            error_number = ctypes.get_last_error()
+            raise OSError(error_number, ctypes.FormatError(error_number).strip())
+
+    target_info.last_access_time = source_info.last_access_time
+    target_info.last_write_time = source_info.last_write_time
+    target_info.file_attributes = _windows_copied_file_attributes(
+        target_info.file_attributes,
+        source_info.file_attributes,
+    )
+    if not set_file_information(
+        target_handle,
+        0,  # FileBasicInfo
+        ctypes.byref(target_info),
+        information_size,
+    ):
+        error_number = ctypes.get_last_error()
+        raise OSError(error_number, ctypes.FormatError(error_number).strip())
+
+
+def _copy_open_file_metadata(
+    source_fd: int,
+    target_fd: int,
+    source_metadata: os.stat_result,
+) -> None:
+    """Restore file metadata without reopening a replaceable path."""
+
+    if os.name == "nt":
+        _copy_windows_open_file_metadata(source_fd, target_fd)
+        return
+
+    _copy_open_file_xattrs(source_fd, target_fd)
+    os.utime(
+        target_fd,
+        ns=(source_metadata.st_atime_ns, source_metadata.st_mtime_ns),
+    )
+    os.fchmod(target_fd, stat.S_IMODE(source_metadata.st_mode))
+    fchflags = getattr(os, "fchflags", None)
+    if callable(fchflags) and hasattr(source_metadata, "st_flags"):
+        fchflags(target_fd, source_metadata.st_flags)
+
+
 def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) -> str:
     """Copy one private staged file and flush data before restoring source metadata."""
 
     source = Path(source_path)
     target = Path(target_path)
     try:
-        # copyfile preserves shutil's prompt rejection of FIFOs/devices. Opening
-        # the source directly can block forever on a late FIFO in a user-owned
-        # runtime tree, leaving the maintenance window stuck indefinitely.
-        shutil.copyfile(source, target)
-    except shutil.SpecialFileError as exc:
+        named_source_before = source.lstat()
+    except OSError as exc:
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移源文件在复制前已发生变化: {source}: {exc}",
+        ) from exc
+    if _is_link_like_metadata(named_source_before):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移源条目包含符号链接或重解析点: {source}",
+        )
+    if not stat.S_ISREG(named_source_before.st_mode):
         raise StorageMigrationError(
             "path_type_unsupported",
             f"迁移源条目包含不支持的文件类型: {source}",
-        ) from exc
-    with target.open("r+b") as target_handle:
+        )
+
+    source_fd = -1
+    target_fd = -1
+    try:
+        source_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOINHERIT", 0)
+        )
+        if os.name != "nt":
+            # A FIFO swapped in after lstat must never block this maintenance
+            # thread, and a symlink must not be followed even for an instant.
+            source_flags |= os.O_NONBLOCK | os.O_NOFOLLOW
         try:
-            target_handle.flush()
-            os.fsync(target_handle.fileno())
+            source_fd = os.open(os.fspath(source), source_flags)
+        except OSError as exc:
+            error_code = (
+                "path_symlink_unsupported"
+                if exc.errno == errno.ELOOP
+                else "source_changed_during_migration"
+            )
+            raise StorageMigrationError(
+                error_code,
+                f"迁移源文件无法安全打开: {source}: {exc}",
+            ) from exc
+
+        opened_source = os.fstat(source_fd)
+        try:
+            named_source_after = source.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源文件在打开期间已发生变化: {source}: {exc}",
+            ) from exc
+        if _is_link_like_metadata(named_source_after):
+            raise StorageMigrationError(
+                "path_symlink_unsupported",
+                f"迁移源条目包含符号链接或重解析点: {source}",
+            )
+        if (
+            not stat.S_ISREG(opened_source.st_mode)
+            or not stat.S_ISREG(named_source_after.st_mode)
+        ):
+            raise StorageMigrationError(
+                "path_type_unsupported",
+                f"迁移源条目包含不支持的文件类型: {source}",
+            )
+        if (
+            not os.path.samestat(named_source_before, opened_source)
+            or not os.path.samestat(opened_source, named_source_after)
+        ):
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源文件在打开期间被替换: {source}",
+            )
+
+        target_flags = (
+            # Windows FileBasicInfo metadata restoration needs both
+            # FILE_READ_ATTRIBUTES and FILE_WRITE_ATTRIBUTES on this exact
+            # handle; UCRT maps O_RDWR to the required GENERIC_READ|WRITE.
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOINHERIT", 0)
+        )
+        try:
+            target_fd = os.open(os.fspath(target), target_flags, 0o600)
+        except FileExistsError as exc:
+            raise StorageMigrationError(
+                "staging_entry_exists",
+                f"迁移暂存条目已存在，无法安全覆盖: {target}",
+            ) from exc
+        created_target = os.fstat(target_fd)
+        if not stat.S_ISREG(created_target.st_mode):
+            raise StorageMigrationError(
+                "path_type_unsupported",
+                f"迁移暂存目标不是普通文件: {target}",
+            )
+
+        try:
+            with os.fdopen(source_fd, "rb", closefd=False) as source_handle:
+                with os.fdopen(target_fd, "wb", closefd=False) as target_handle:
+                    shutil.copyfileobj(source_handle, target_handle)
+                    target_handle.flush()
+            # Flush content before restoring a potentially read-only mode, then
+            # flush the exact same handle again after its metadata is applied.
+            os.fsync(target_fd)
+            _copy_open_file_metadata(source_fd, target_fd, opened_source)
+            os.fsync(target_fd)
         except OSError as exc:
             raise StorageMigrationError(
                 "target_flush_failed",
                 f"迁移数据无法可靠写入目标磁盘: {target}: {exc}",
             ) from exc
-    shutil.copystat(source, target, follow_symlinks=False)
+        try:
+            named_target_after = target.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存文件在复制期间已发生变化: {target}: {exc}",
+            ) from exc
+        if (
+            _is_link_like_metadata(named_target_after)
+            or not stat.S_ISREG(named_target_after.st_mode)
+            or not os.path.samestat(created_target, named_target_after)
+        ):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存文件在复制期间被替换: {target}",
+            )
+    finally:
+        if source_fd >= 0:
+            with suppress(OSError):
+                os.close(source_fd)
+        if target_fd >= 0:
+            with suppress(OSError):
+                os.close(target_fd)
+
+    # Do not perform best-effort path cleanup here. On error the partial leaf is
+    # recovery evidence inside the owner-marked private transaction and the
+    # outer migration state machine removes or preserves that transaction. A
+    # local stat-then-unlink cannot prove it is still deleting this exact inode.
     return str(target)
 
 
@@ -767,6 +1046,10 @@ def _create_owned_transaction_root(
             or not _transaction_root_is_owned(payload, prepared_root, txid)
         ):
             raise OSError("migration preparation directory identity changed")
+        # The owner marker is the authority for every later cleanup. Persist
+        # its name inside the prepared directory before publishing that
+        # directory under the checkpoint-bound transaction name.
+        _fsync_migration_directory(prepared_root)
         _durable_publish_without_replacing(prepared_root, transaction_root)
     except BaseException:
         if prepared_root.exists() or prepared_root.is_symlink():
@@ -1104,8 +1387,15 @@ def _fsync_staged_tree(path: Path) -> None:
                     "target_flush_failed",
                     f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
                 ) from exc
-    for staged_directory in reversed(directories):
-        fsync_directory_best_effort(staged_directory)
+        for staged_directory in reversed(directories):
+            _fsync_migration_directory(staged_directory)
+    else:
+        # Python cannot portably open/flush directory handles on Windows. Each
+        # copied file was already flushed through a writable handle before its
+        # source metadata was restored, so keep only the existing best-effort
+        # directory barrier here instead of reopening read-only files/dirs.
+        for staged_directory in reversed(directories):
+            fsync_directory_best_effort(staged_directory)
 
 
 def _iter_existing_runtime_entries(root: Path) -> list[str]:
@@ -1132,10 +1422,14 @@ def _root_has_user_content(root: Path, *, config_manager) -> bool:
 
 
 def _ensure_target_root_writable(target_root: Path) -> None:
-    target_existed = target_root.exists()
+    missing_directories: list[Path] = []
+    candidate = target_root
+    while not candidate.exists() and candidate.parent != candidate:
+        missing_directories.append(candidate)
+        candidate = candidate.parent
     target_root.mkdir(parents=True, exist_ok=True)
-    if not target_existed:
-        fsync_directory_best_effort(target_root.parent)
+    for created_directory in missing_directories:
+        _fsync_migration_directory(created_directory.parent)
     probe_path = target_root / f".neko-storage-migration-write-probe-{uuid.uuid4().hex}.tmp"
     try:
         probe_path.write_bytes(b"")
@@ -1260,6 +1554,11 @@ def save_storage_migration(
 ) -> dict[str, Any]:
     migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
     atomic_write_json(migration_path, payload, ensure_ascii=False, indent=2)
+    # The generic writer is intentionally best-effort for directory handles so
+    # ordinary application writes remain portable. Migration checkpoints are
+    # recovery authority, so POSIX must not report success until the replace is
+    # also durable in its parent directory.
+    _fsync_migration_directory(migration_path.parent)
     return payload
 
 
@@ -1781,7 +2080,10 @@ def run_pending_storage_migration(
         backup_root = transaction_root / "backup"
         staged_root.mkdir()
         backup_root.mkdir()
-        fsync_directory_best_effort(transaction_root)
+        # These names are the only destinations for copied data and original
+        # target backups. Persist them before advancing to COPYING; the
+        # transaction name itself was flushed by _create_owned_transaction_root.
+        _fsync_migration_directory(transaction_root)
 
         payload = _persist_migration_payload(
             config_manager,
@@ -2074,6 +2376,11 @@ def delete_storage_migration(
         os.unlink(migration_path)
     except FileNotFoundError:
         return
+    # A deleted checkpoint is itself recovery authority: callers may restore
+    # the normal root state immediately after this returns.  On POSIX, do not
+    # report that rollback as complete until the directory entry removal is
+    # durable; otherwise a failed pending intent can reappear after power loss.
+    _fsync_migration_directory(migration_path.parent)
 
 
 def _migration_transaction_evidence_is_present(

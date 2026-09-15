@@ -2082,27 +2082,45 @@
     }
 
     async function reconcileRetainedCleanupOutcome(retainedRoot) {
-        var lastConfirmedPresent = false;
-        for (var attempt = 0; attempt < 6; attempt += 1) {
-            if (attempt > 0) await sleep(400);
+        var consecutiveUnknown = 0;
+        while (consecutiveUnknown < 6) {
+            await sleep(400);
             try {
                 var response = await fetchWithTimeout('/api/storage/location/retained-source', {
                     cache: 'no-store',
                     headers: { 'Accept': 'application/json' }
                 }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
-                if (!response.ok) continue;
+                if (!response.ok) {
+                    consecutiveUnknown += 1;
+                    continue;
+                }
                 var payload = await response.json();
-                if (!payload || payload.ok !== true) continue;
+                if (!payload || payload.ok !== true) {
+                    consecutiveUnknown += 1;
+                    continue;
+                }
+                consecutiveUnknown = 0;
                 if (payload.completed !== true || payload.retained_root_exists === false) {
                     return 'cleaned';
                 }
                 if (pathEquals(payload.retained_root, retainedRoot)
                     && payload.retained_root_exists === true) {
-                    lastConfirmedPresent = true;
+                    if (payload.cleanup_in_progress === false) {
+                        return 'present';
+                    }
+                    if (payload.cleanup_in_progress !== true) {
+                        consecutiveUnknown += 1;
+                    }
                 }
-            } catch (_) {}
+                // True means the original request still owns the server-side
+                // mutation lock. A missing field is an older backend and is
+                // intentionally treated as unknown, never as permission to
+                // submit a second delete.
+            } catch (_) {
+                consecutiveUnknown += 1;
+            }
         }
-        return lastConfirmedPresent ? 'present' : 'unknown';
+        return 'unknown';
     }
 
     function finishRetainedCleanupUi() {

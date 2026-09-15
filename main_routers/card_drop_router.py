@@ -68,6 +68,14 @@ _SOCIAL_LOCK_RECOVERY_GUARD_FILE = "social-session-recovery.lock"
 _SOCIAL_LOCK_OWNER_IDENTITY_MUTEX = threading.Lock()
 _SOCIAL_LOCK_OWNER_IDENTITY: tuple[str, str, str] | None = None
 _SOCIAL_SESSION_LOCK_CONTEXT = threading.local()
+_WINDOWS_DELETE_ACCESS = 0x00010000
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_DISPOSITION_INFO_CLASS = 4
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
@@ -902,17 +910,130 @@ def _social_lock_metadata_equal(left, right) -> bool:
     )
 
 
+def _open_windows_social_lock_fd(
+    lock_path: Path | str,
+    *,
+    delete_access: bool,
+) -> int:
+    """Open a Windows lock snapshot without forfeiting exact-handle deletion."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    desired_access = _WINDOWS_GENERIC_READ
+    if delete_access:
+        desired_access |= _WINDOWS_DELETE_ACCESS
+    # Published lock records are immutable. Sharing reads keeps contenders
+    # observable and sharing deletion lets the owner retire the exact object;
+    # deliberately deny new writers so its verified bytes cannot change before
+    # the handle disposition is committed.
+    share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_DELETE
+    handle = create_file(
+        os.fspath(lock_path),
+        desired_access,
+        share_mode,
+        None,
+        _WINDOWS_OPEN_EXISTING,
+        _WINDOWS_FILE_ATTRIBUTE_NORMAL | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error_number = ctypes.get_last_error()
+        message = ctypes.FormatError(error_number).strip()
+        if error_number in {2, 3}:
+            raise FileNotFoundError(error_number, message, os.fspath(lock_path))
+        if error_number == 5:
+            raise PermissionError(error_number, message, os.fspath(lock_path))
+        raise OSError(error_number, message, os.fspath(lock_path))
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def _open_social_lock_fd(
+    lock_path: Path | str,
+    *,
+    dir_fd: int | None = None,
+    delete_access: bool = False,
+) -> int:
+    if os.name == "nt":
+        if dir_fd is not None:
+            raise NotImplementedError("Windows social lock dir_fd is unavailable")
+        return _open_windows_social_lock_fd(
+            lock_path,
+            delete_access=delete_access,
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    return os.open(lock_path, flags, dir_fd=dir_fd)
+
+
+def _delete_windows_social_lock_handle(fd: int) -> None:
+    """Mark the exact verified Windows handle for deletion on close."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileDispositionInfo(ctypes.Structure):
+        # Win32 FILE_DISPOSITION_INFO uses BOOLEAN (one byte), not BOOL.
+        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_file_information = kernel32.SetFileInformationByHandle
+    set_file_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_file_information.restype = wintypes.BOOL
+    disposition = _FileDispositionInfo(True)
+    handle = msvcrt.get_osfhandle(fd)
+    if not set_file_information(
+        handle,
+        _WINDOWS_FILE_DISPOSITION_INFO_CLASS,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        error_number = ctypes.get_last_error()
+        raise OSError(error_number, ctypes.FormatError(error_number).strip())
+
+
 def _open_social_lock_snapshot(
     lock_path: Path | str,
     *,
     dir_fd: int | None = None,
+    delete_access: bool = False,
 ) -> tuple[int, object, str, dict | None]:
     """Open a lock without following it and prove the name still names that inode."""
     before = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise OSError("unsafe social session lock")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(lock_path, flags, dir_fd=dir_fd)
+    fd = _open_social_lock_fd(
+        lock_path,
+        dir_fd=dir_fd,
+        delete_access=delete_access,
+    )
     try:
         opened = os.fstat(fd)
         if not os.path.samestat(before, opened):
@@ -971,6 +1092,7 @@ def _unlink_social_lock_if_unchanged(
         fd, current_metadata, current_fingerprint, _owner = _open_social_lock_snapshot(
             lock_path,
             dir_fd=dir_fd,
+            delete_access=os.name == "nt",
         )
     except FileNotFoundError:
         return False
@@ -980,10 +1102,14 @@ def _unlink_social_lock_if_unchanged(
             or current_fingerprint != expected_fingerprint
         ):
             return False
-        # Keep the verified inode open through unlink. Normal release is
-        # protected by token ownership; orphan takeover additionally holds the
-        # kernel recovery authority until a replacement lock is published.
-        os.unlink(lock_path, dir_fd=dir_fd)
+        # Keep the verified object open through deletion. POSIX unlink names
+        # the still-open inode; Windows must mark that same DELETE-capable
+        # handle instead, because path deletion while a normal fd is open is
+        # rejected and close-then-unlink would restore a name-replacement race.
+        if os.name == "nt":
+            _delete_windows_social_lock_handle(fd)
+        else:
+            os.unlink(lock_path, dir_fd=dir_fd)
         return True
     finally:
         os.close(fd)

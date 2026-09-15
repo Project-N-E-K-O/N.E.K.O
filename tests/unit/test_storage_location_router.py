@@ -70,6 +70,36 @@ async def test_polled_storage_status_builds_off_the_event_loop(monkeypatch):
     assert observed_threads and observed_threads[0] != main_thread
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retained_source_status_exposes_inflight_storage_mutation(monkeypatch):
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_get_storage_config_manager",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_build_completed_migration_notice",
+        lambda *_args, **_kwargs: {
+            "completed": True,
+            "retained_root_exists": True,
+        },
+    )
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_retained_cleanup_requests_in_flight",
+        1,
+    )
+
+    payload = await storage_location_router_module.get_storage_location_retained_source(
+        Response()
+    )
+
+    assert payload["cleanup_in_progress"] is True
+
+
 class _DummyConfigManager:
     def __init__(self, tmp_path: Path):
         self.app_name = "N.E.K.O"
@@ -307,6 +337,7 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         await asyncio.sleep(0)
         assert restart_task.done() is False
         assert cleanup_task.done() is False
+        assert storage_location_router_module._retained_cleanup_requests_in_flight == 1
 
         release_first_call.set()
         select_result, restart_result, cleanup_result = await asyncio.gather(select_task, restart_task, cleanup_task)
@@ -315,6 +346,7 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
     assert restart_result == {"route": "restart"}
     assert cleanup_result == {"route": "cleanup"}
     assert max_active_calls == 1
+    assert storage_location_router_module._retained_cleanup_requests_in_flight == 0
 
 
 @pytest.mark.unit
@@ -2081,6 +2113,60 @@ def test_restart_shutdown_and_checkpoint_restore_failure_keeps_recoverable_pendi
 
 
 @pytest.mark.unit
+def test_restart_checkpoint_unlink_barrier_failure_is_not_reported_as_rolled_back(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    checkpoint_parent = get_storage_migration_path(config_manager).parent
+    real_fsync_directory = storage_migration_module._fsync_migration_directory
+    checkpoint_barrier_calls = 0
+
+    def fail_rollback_unlink_barrier(path):
+        nonlocal checkpoint_barrier_calls
+        if Path(path) == checkpoint_parent:
+            checkpoint_barrier_calls += 1
+            # The pending checkpoint write is the first strict barrier. Let it
+            # commit, then fail the rollback unlink barrier after shutdown is
+            # rejected.
+            if checkpoint_barrier_calls == 2:
+                raise storage_migration_module.StorageMigrationError(
+                    "target_flush_failed",
+                    "checkpoint unlink barrier failed",
+                )
+        return real_fsync_directory(path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_fsync_migration_directory",
+        fail_rollback_unlink_barrier,
+    )
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: (_ for _ in ()).throw(
+            RuntimeError("shutdown failed")
+        ),
+    ) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "recommended",
+            },
+        )
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["result"] == "result_unknown"
+    assert payload["error_code"] == "restart_schedule_rollback_failed"
+    assert payload["migration_phase"] == "awaiting_shutdown"
+
+
+@pytest.mark.unit
 def test_restart_double_restore_failure_never_flips_online_status_back_to_ready(
     tmp_path,
 ):
@@ -2836,6 +2922,56 @@ def test_storage_location_restart_rebind_rolls_back_state_when_shutdown_fails(tm
 
 
 @pytest.mark.unit
+def test_storage_location_restart_rebind_reports_indeterminate_when_rollback_fails(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        config_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    unavailable_selected_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_restore_storage_mutation_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rollback denied")),
+    )
+
+    with _build_client(
+        reloaded_manager,
+        request_app_shutdown=lambda: (_ for _ in ()).throw(RuntimeError("shutdown failed")),
+    ) as client:
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(unavailable_selected_root),
+                "selection_source": "current",
+            },
+        )
+        status_response = client.get("/api/storage/location/status")
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["result"] == "result_unknown"
+    assert payload["error_code"] == "restart_schedule_rollback_failed"
+    assert payload["restart_mode"] == "rebind_only"
+    assert payload["migration_phase"] == "awaiting_shutdown"
+    assert payload["shutdown_retry_allowed"] is True
+    assert payload["recovery_action"] == "retry_safe_exit"
+    assert reloaded_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert status_response.json()["ready"] is False
+
+
+@pytest.mark.unit
 def test_storage_location_recovery_keeps_third_path_blocked_after_launcher_exports_anchor_runtime_layout(
     tmp_path,
     monkeypatch,
@@ -2915,6 +3051,7 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     reloaded_manager = _make_real_config_manager(tmp_path)
     with _build_client(reloaded_manager) as client:
         response = client.get("/api/storage/location/status")
+        retained_response = client.get("/api/storage/location/retained-source")
 
     assert response.status_code == 200
     payload = response.json()
@@ -2932,6 +3069,8 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     assert payload["completion_notice"]["cleanup_available"] is (
         storage_location_router_module._secure_retained_cleanup_supported()
     )
+    assert retained_response.status_code == 200
+    assert retained_response.json()["cleanup_in_progress"] is False
 
     migrated_workshop_config = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
     assert migrated_workshop_config["default_workshop_folder"] == str((target_root / "workshop").resolve())

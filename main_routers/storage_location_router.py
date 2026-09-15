@@ -111,6 +111,7 @@ router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
 _DIRECTORY_PICKER_TIMEOUT_SECONDS = 120.0
 _storage_mutation_lock = asyncio.Lock()
+_retained_cleanup_requests_in_flight = 0
 _STORAGE_RESTART_OPERATION_TTL_SECONDS = 10 * 60
 _storage_restart_operations: dict[str, dict[str, Any]] = {}
 
@@ -2191,6 +2192,12 @@ async def get_storage_location_retained_source(response: Response):
     return {
         "ok": True,
         **notice,
+        # The cleanup request deliberately remains in flight until its worker has
+        # reached a terminal result, even if the client-side fetch timed out.
+        # Expose that operation fact so the UI cannot queue a second destructive
+        # request merely because the retained directory is still visible while
+        # the first deletion is running.
+        "cleanup_in_progress": _retained_cleanup_requests_in_flight > 0,
     }
 
 
@@ -2271,14 +2278,20 @@ async def post_storage_location_retained_source_cleanup(
     request: Request,
     response: Response,
 ):
+    global _retained_cleanup_requests_in_flight
+
     validation_error = _validate_local_mutation_request(
         request,
         error_defaults={"ok": False},
     )
     if validation_error is not None:
         return validation_error
-    async with _storage_mutation_lock:
-        return await _post_storage_location_retained_source_cleanup_locked(payload, response)
+    _retained_cleanup_requests_in_flight += 1
+    try:
+        async with _storage_mutation_lock:
+            return await _post_storage_location_retained_source_cleanup_locked(payload, response)
+    finally:
+        _retained_cleanup_requests_in_flight -= 1
 
 
 async def _post_storage_location_retained_source_cleanup_locked(
@@ -3062,6 +3075,7 @@ async def _post_storage_location_restart_locked(
                     )
             raise
         except Exception as exc:
+            rollback_failed = False
             if state_snapshot:
                 try:
                     await _run_locked_storage_job(
@@ -3073,11 +3087,31 @@ async def _post_storage_location_restart_locked(
                         )
                     )
                 except Exception:
+                    rollback_failed = True
                     logger.exception(
                         "failed to rollback storage mutation state after restart scheduling failed",
                     )
 
             response.status_code = 500
+            if rollback_failed:
+                # The rebind writes are durable but their rollback is not.  Do
+                # not describe this as an ordinary scheduling failure: callers
+                # must preserve the restricted state and guide the user through
+                # a safe exit/recovery instead of permitting another mutation.
+                return {
+                    "ok": False,
+                    "result": "result_unknown",
+                    "error_code": "restart_schedule_rollback_failed",
+                    "error": (
+                        "受控关闭启动失败，且无法确认存储状态是否已完整回滚。"
+                        "应用将保持阻断，请仅重试安全退出。"
+                    ),
+                    "restart_mode": "rebind_only",
+                    "migration_phase": "awaiting_shutdown",
+                    "shutdown_retry_allowed": True,
+                    "recovery_action": "retry_safe_exit",
+                    **restart_preflight,
+                }
             return {
                 "ok": False,
                 "error_code": "restart_schedule_failed",

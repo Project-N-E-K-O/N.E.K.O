@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import threading
@@ -1178,6 +1179,86 @@ def test_social_lock_publish_succeeds_when_platform_has_no_fchmod(tmp_path, monk
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_social_lock_windows_delete_delegates_to_the_verified_handle(
+    tmp_path,
+    monkeypatch,
+):
+    lock = tmp_path / "social_session.json.lock"
+    raw = b'{"token":"verified-owner"}'
+    lock.write_bytes(raw)
+    metadata = lock.stat()
+    fingerprint = C._social_lock_fingerprint(raw)
+    fd = os.open(lock, os.O_RDONLY)
+    observed = {}
+
+    def _snapshot(path, *, dir_fd=None, delete_access=False):
+        observed["snapshot"] = (path, dir_fd, delete_access)
+        return fd, metadata, fingerprint, None
+
+    def _delete_handle(opened_fd):
+        observed["deleted_fd"] = opened_fd
+
+    with monkeypatch.context() as patch:
+        patch.setattr(C.os, "name", "nt")
+        patch.setattr(C, "_open_social_lock_snapshot", _snapshot)
+        patch.setattr(C, "_delete_windows_social_lock_handle", _delete_handle)
+        patch.setattr(
+            C.os,
+            "unlink",
+            lambda *_args, **_kwargs: pytest.fail("Windows must not fall back to path unlink"),
+        )
+        assert C._unlink_social_lock_if_unchanged(
+            lock,
+            metadata,
+            fingerprint,
+        )
+
+    assert observed == {
+        "snapshot": (lock, None, True),
+        "deleted_fd": fd,
+    }
+    with pytest.raises(OSError):
+        os.fstat(fd)
+    assert lock.exists(), "the fake handle deleter intentionally leaves the fixture in place"
+
+
+def test_windows_social_lock_handle_contract_is_delete_shared_and_reparse_safe():
+    dispatch_source = inspect.getsource(C._open_social_lock_fd)
+    source = inspect.getsource(C._open_windows_social_lock_fd)
+    delete_source = inspect.getsource(C._delete_windows_social_lock_handle)
+
+    assert C._WINDOWS_DELETE_ACCESS == 0x00010000
+    assert C._WINDOWS_FILE_SHARE_DELETE == 0x00000004
+    assert C._WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT == 0x00200000
+    assert C._WINDOWS_FILE_DISPOSITION_INFO_CLASS == 4
+    assert 'if os.name == "nt"' in dispatch_source
+    assert "_open_windows_social_lock_fd" in dispatch_source
+    assert "delete_access=delete_access" in dispatch_source
+    assert "desired_access |= _WINDOWS_DELETE_ACCESS" in source
+    assert "| _WINDOWS_FILE_SHARE_DELETE" in source
+    assert "| _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT" in source
+    assert "_WINDOWS_FILE_DISPOSITION_INFO_CLASS" in delete_source
+    assert '("DeleteFile", wintypes.BOOLEAN)' in delete_source
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle deletion is unavailable")
+def test_windows_social_lock_release_never_uses_path_unlink(tmp_path, monkeypatch):
+    session = tmp_path / "social_session.json"
+    lock = Path(f"{session}.lock")
+    original_unlink = C.os.unlink
+
+    def _reject_lock_path_unlink(path, *args, **kwargs):
+        if Path(path) == lock:
+            pytest.fail("verified Windows lock must be deleted by its open handle")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(C.os, "unlink", _reject_lock_path_unlink)
+    with C._social_session_lock(session):
+        assert lock.exists()
+
+    assert not lock.exists()
+
+
 @pytest.mark.parametrize("replacement_window", ("opening", "after_read"))
 def test_social_lock_snapshot_classifies_name_replacement_as_retryable(
     tmp_path,
@@ -1190,16 +1271,16 @@ def test_social_lock_snapshot_classifies_name_replacement_as_retryable(
     replacement = tmp_path / "replacement.lock"
     lock.write_text('{"token":"first"}', encoding="utf-8")
     replacement.write_text('{"token":"second"}', encoding="utf-8")
-    original_open = C.os.open
+    original_open = C._open_social_lock_fd
     original_stat = C.os.stat
     replaced = False
 
-    def _open_after_replacement(path, flags, *args, **kwargs):
+    def _open_after_replacement(path, *args, **kwargs):
         nonlocal replaced
         if replacement_window == "opening" and Path(path) == lock and not replaced:
             replaced = True
             replacement.replace(lock)
-        return original_open(path, flags, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
     stat_calls = 0
 
@@ -1212,7 +1293,7 @@ def test_social_lock_snapshot_classifies_name_replacement_as_retryable(
                 replacement.replace(lock)
         return original_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(C.os, "open", _open_after_replacement)
+    monkeypatch.setattr(C, "_open_social_lock_fd", _open_after_replacement)
     monkeypatch.setattr(C.os, "stat", _stat_before_replacement)
 
     with pytest.raises(C._SocialLockReplacedError):
