@@ -97,6 +97,10 @@ class _InvalidIdentityResponse(Exception):
     detail = "invalid_identity_response"
 
 
+class _SocialLockReplacedError(OSError):
+    """The lock name moved to another inode during a stable snapshot read."""
+
+
 @dataclass(frozen=True)
 class _CloudIdentity:
     local_user_id: str
@@ -881,6 +885,10 @@ def _open_social_lock_snapshot(
     fd = os.open(lock_path, flags, dir_fd=dir_fd)
     try:
         opened = os.fstat(fd)
+        if not os.path.samestat(before, opened):
+            raise _SocialLockReplacedError(
+                "social session lock was replaced while opening"
+            )
         if not _social_lock_metadata_equal(before, opened):
             raise OSError("social session lock changed while opening")
         chunks: list[bytes] = []
@@ -896,8 +904,12 @@ def _open_social_lock_snapshot(
         if len(raw) > 4096 or not _social_lock_metadata_equal(opened, after):
             raise OSError("social session lock changed while reading")
         named = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
+        if not os.path.samestat(after, named):
+            raise _SocialLockReplacedError(
+                "social session lock was replaced while reading"
+            )
         if not _social_lock_metadata_equal(after, named):
-            raise OSError("social session lock was replaced while reading")
+            raise OSError("social session lock changed while resolving its name")
         return fd, after, _social_lock_fingerprint(raw), parse_social_lock_owner(raw)
     except BaseException:
         os.close(fd)
@@ -1751,17 +1763,24 @@ def _social_session_lock(path: Path):
         if published is None:
             try:
                 lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(lock_path)
+                recovered = None
+                if _backend_social_lock_recovery_authority():
+                    recovered = _reclaim_orphaned_social_lock(
+                        lock_path,
+                        lock_metadata,
+                        lock_fingerprint,
+                        lock_owner,
+                        token,
+                    )
             except FileNotFoundError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("social session lock is busy")
                 continue
-            recovered = None
-            if _backend_social_lock_recovery_authority():
-                recovered = _reclaim_orphaned_social_lock(
-                    lock_path,
-                    lock_metadata,
-                    lock_fingerprint,
-                    lock_owner,
-                    token,
-                )
+            except _SocialLockReplacedError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("social session lock is busy")
+                time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+                continue
             if recovered is not None:
                 owned_metadata, token_fingerprint = recovered
                 break
@@ -1800,18 +1819,25 @@ def _social_session_lock_at(dir_fd: int):
                     lock_name,
                     dir_fd=dir_fd,
                 )
+                recovered = None
+                if _backend_social_lock_recovery_authority():
+                    recovered = _reclaim_orphaned_social_lock(
+                        lock_name,
+                        lock_metadata,
+                        lock_fingerprint,
+                        lock_owner,
+                        token,
+                        dir_fd=dir_fd,
+                    )
             except FileNotFoundError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("social session lock is busy")
                 continue
-            recovered = None
-            if _backend_social_lock_recovery_authority():
-                recovered = _reclaim_orphaned_social_lock(
-                    lock_name,
-                    lock_metadata,
-                    lock_fingerprint,
-                    lock_owner,
-                    token,
-                    dir_fd=dir_fd,
-                )
+            except _SocialLockReplacedError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("social session lock is busy")
+                time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+                continue
             if recovered is not None:
                 owned_metadata, token_fingerprint = recovered
                 break

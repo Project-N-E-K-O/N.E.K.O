@@ -171,7 +171,7 @@ def probe_social_lock_process(pid: int) -> tuple[str, str, str]:
                 check=False,
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0),
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             return SOCIAL_LOCK_OWNER_UNKNOWN, "", "windows-powershell-start-v1"
         output = str(result.stdout or "").strip()
         if result.returncode != 0 or str(result.stderr or "").strip():
@@ -189,7 +189,7 @@ def probe_social_lock_process(pid: int) -> tuple[str, str, str]:
                 timeout=5,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             return SOCIAL_LOCK_OWNER_UNKNOWN, "", "darwin-ps-lstart-v1"
         output = str(result.stdout or "").strip()
         if result.returncode == 1 and not output and not str(result.stderr or "").strip():

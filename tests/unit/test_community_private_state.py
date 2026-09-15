@@ -1101,6 +1101,27 @@ def test_windows_social_lock_probe_hides_powershell(monkeypatch):
     assert captured["creationflags"] == 0x08000000
 
 
+@pytest.mark.parametrize(
+    ("platform", "scheme"),
+    (
+        ("win32", "windows-powershell-start-v1"),
+        ("darwin", "darwin-ps-lstart-v1"),
+    ),
+)
+def test_platform_social_lock_probe_maps_decode_failure_to_unknown(
+    monkeypatch,
+    platform,
+    scheme,
+):
+    def _raise_decode_error(*_args, **_kwargs):
+        raise UnicodeDecodeError("platform", b"\xff", 0, 1, "invalid output")
+
+    monkeypatch.setattr(private_state.sys, "platform", platform)
+    monkeypatch.setattr(private_state.subprocess, "run", _raise_decode_error)
+
+    assert private_state.probe_social_lock_process(123) == ("unknown", "", scheme)
+
+
 def test_backend_social_lock_caches_its_own_process_identity(monkeypatch):
     calls = []
     monkeypatch.setattr(C, "_SOCIAL_LOCK_OWNER_IDENTITY", None)
@@ -1142,6 +1163,160 @@ def test_social_lock_is_not_published_until_its_complete_record_is_durable(
     assert observed_payload["pid"] == os.getpid()
     assert not lock.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("replacement_window", ("opening", "after_read"))
+def test_social_lock_snapshot_classifies_name_replacement_as_retryable(
+    tmp_path,
+    monkeypatch,
+    replacement_window,
+):
+    lock = tmp_path / "social_session.json.lock"
+    replacement = tmp_path / "replacement.lock"
+    lock.write_text('{"token":"first"}', encoding="utf-8")
+    replacement.write_text('{"token":"second"}', encoding="utf-8")
+    original_open = C.os.open
+    original_stat = C.os.stat
+    replaced = False
+
+    def _open_after_replacement(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if replacement_window == "opening" and Path(path) == lock and not replaced:
+            replaced = True
+            replacement.replace(lock)
+        return original_open(path, flags, *args, **kwargs)
+
+    stat_calls = 0
+
+    def _stat_before_replacement(path, *args, **kwargs):
+        nonlocal replaced, stat_calls
+        if Path(path) == lock:
+            stat_calls += 1
+            if replacement_window == "after_read" and stat_calls == 2:
+                replaced = True
+                replacement.replace(lock)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(C.os, "open", _open_after_replacement)
+    monkeypatch.setattr(C.os, "stat", _stat_before_replacement)
+
+    with pytest.raises(C._SocialLockReplacedError):
+        C._read_social_lock_snapshot(lock)
+
+    assert replaced is True
+    assert json.loads(lock.read_text(encoding="utf-8"))["token"] == "second"
+
+
+@pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))
+@pytest.mark.parametrize("race_stage", ("snapshot", "reclaim"))
+def test_social_lock_acquisition_retries_name_replacement(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+    race_stage,
+):
+    if use_dir_fd and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd locks are unavailable")
+    root = tmp_path / "root"
+    root.mkdir()
+    lock_path = root / "social_session.json.lock"
+    lock_path.write_text('{"token":"previous"}', encoding="utf-8")
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_POLL_SEC", 0)
+    raced = False
+
+    if race_stage == "snapshot":
+        original_read = C._read_social_lock_snapshot
+
+        def _read_after_replacement(*args, **kwargs):
+            nonlocal raced
+            if not raced:
+                raced = True
+                lock_path.unlink()
+                raise C._SocialLockReplacedError("simulated name replacement")
+            return original_read(*args, **kwargs)
+
+        monkeypatch.setattr(C, "_read_social_lock_snapshot", _read_after_replacement)
+    else:
+        monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "test-owner")
+
+        def _reclaim_after_replacement(*_args, **_kwargs):
+            nonlocal raced
+            raced = True
+            lock_path.unlink()
+            raise C._SocialLockReplacedError("simulated reclaim revalidation race")
+
+        monkeypatch.setattr(C, "_reclaim_orphaned_social_lock", _reclaim_after_replacement)
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY) if use_dir_fd else None
+    try:
+        lock_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with lock_context:
+            assert raced is True
+            assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == os.getpid()
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("use_dir_fd", (False, True), ids=("path", "dirfd"))
+def test_social_lock_acquisition_does_not_retry_unsafe_read_error(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+):
+    if use_dir_fd and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd locks are unavailable")
+    root = tmp_path / "root"
+    root.mkdir()
+    lock_path = root / "social_session.json.lock"
+    lock_path.write_text('{"token":"previous"}', encoding="utf-8")
+    calls = 0
+
+    def _unsafe_read(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise OSError("unsafe social session lock")
+
+    monkeypatch.setattr(C, "_read_social_lock_snapshot", _unsafe_read)
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY) if use_dir_fd else None
+    try:
+        lock_context = (
+            C._social_session_lock_at(root_fd)
+            if use_dir_fd
+            else C._social_session_lock(root / "social_session.json")
+        )
+        with pytest.raises(OSError, match="unsafe social session lock"), lock_context:
+            pass
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+
+    assert calls == 1
+    assert lock_path.exists()
+
+
+def test_social_lock_name_replacement_obeys_busy_timeout(tmp_path, monkeypatch):
+    session = tmp_path / "social_session.json"
+    lock_path = Path(f"{session}.lock")
+    lock_path.write_text('{"token":"previous"}', encoding="utf-8")
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
+
+    def _replace_during_snapshot(*_args, **_kwargs):
+        raise C._SocialLockReplacedError("simulated name replacement")
+
+    monkeypatch.setattr(C, "_read_social_lock_snapshot", _replace_during_snapshot)
+
+    with pytest.raises(TimeoutError, match="social session lock is busy"):
+        with C._social_session_lock(session):
+            pass
+
+    assert lock_path.exists()
 
 
 @pytest.mark.parametrize("operation", ("load", "cleanup"))
