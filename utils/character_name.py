@@ -64,6 +64,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "card_maker",
     "soccer_demo",
     "badminton_demo",
+    "air_basketball",
     "drawing_guess_demo",
     "watch_together",
     "jukebox",
