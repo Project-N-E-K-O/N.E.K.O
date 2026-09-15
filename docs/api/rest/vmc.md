@@ -40,7 +40,9 @@ The backend converts Three.js right-handed transforms to Unity/VMC coordinates a
 - `/VMC/Ext/Blend/Apply`
 - `/VMC/Ext/VRM` (low-frequency: sent once per model change to identify the character)
 
-Each frame carries at most 64 bones and 256 expressions. A humanoid rig uses 55 bones, so only a model with hundreds of custom expressions can reach either cap; the extras are dropped and a warning is logged once. The first-party sampler truncates before sending, so for browser publishers that warning appears in the browser console; the backend's own warning covers third-party publishers that post oversized frames directly to `/api/vmc/ws`.
+Each frame carries at most 64 bones and 256 expressions. The two caps apply independently: a frame with 65 bones is truncated regardless of how many expressions it carries, and vice versa. The first-party sampler walks a fixed list of 55 humanoid bones, so only a third-party publisher posting directly to `/api/vmc/ws` can reach the bone cap; the expression cap is reachable from the browser with a model that ships hundreds of custom expressions.
+
+Extras are dropped and a warning is logged once per cap. The sampler truncates before sending, so for browser publishers the expression warning appears in the browser console; the backend's own warnings cover third-party publishers.
 
 The webpage's display position, scale, and rotation are not used as the VMC root. VMC owns an independent identity root so dragging or resizing the desktop avatar does not move the receiver's world origin.
 
