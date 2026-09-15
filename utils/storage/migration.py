@@ -70,6 +70,7 @@ STORAGE_MIGRATION_STATUS_PUBLISHING = "publishing"
 STORAGE_MIGRATION_STATUS_COMMITTING = "committing"
 STORAGE_MIGRATION_STATUS_RETAINING_SOURCE = "retaining_source"
 STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED = "rollback_required"
+STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED = "recovery_required"
 STORAGE_MIGRATION_STATUS_FAILED = "failed"
 STORAGE_MIGRATION_STATUS_COMPLETED = "completed"
 
@@ -83,6 +84,7 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
         STORAGE_MIGRATION_STATUS_COMMITTING,
         STORAGE_MIGRATION_STATUS_RETAINING_SOURCE,
         STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+        STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     }
 )
 
@@ -133,6 +135,7 @@ def is_retained_root_cleanup_available(
     target_root: Path | str | None = None,
     require_exists: bool = True,
     allow_anchor_root: bool = False,
+    anchor_has_managed_private_state: bool = False,
 ) -> bool:
     raw_retained_root = str(retained_root or "").strip()
     if not raw_retained_root:
@@ -154,7 +157,10 @@ def is_retained_root_cleanup_available(
         if paths_equal(normalized_retained_root, normalized_anchor_root):
             if not allow_anchor_root:
                 return False
-            return any((normalized_retained_root / name).exists() for name in MIGRATED_RUNTIME_ENTRY_NAMES)
+            return bool(anchor_has_managed_private_state) or any(
+                (normalized_retained_root / name).exists()
+                for name in MIGRATED_RUNTIME_ENTRY_NAMES
+            )
         if _path_contains(
             normalized_retained_root, normalized_anchor_root
         ) or _path_contains(normalized_anchor_root, normalized_retained_root):
@@ -314,11 +320,14 @@ def _durable_replace(source: Path, target: Path) -> None:
 def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     """Publish a staged runtime entry without erasing a late external write."""
 
-    if source.is_dir():
+    if source.is_dir() or os.name != "nt":
+        # Linux renameat2(RENAME_NOREPLACE) and macOS renameatx_np(RENAME_EXCL)
+        # work for both files and directories.  Keeping a file publication to
+        # one rename avoids the POSIX hard-link/unlink crash window where both
+        # staged and public names temporarily identify the same inode.
         _rename_entry_without_replacing(source, target)
     else:
-        # Files need an explicit no-replace primitive on POSIX, where rename
-        # would otherwise silently overwrite a file created after our CAS.
+        # Preserve the existing Windows sharing-violation retry contract.
         publish_without_replacing(source, target)
     fsync_directory_best_effort(source.parent)
     if source.parent != target.parent:
@@ -856,6 +865,30 @@ def _rollback_published_entries(
         backup_path = _checked_migration_entry_path(backup_root, relative_path)
         target_exists = target_path.exists() or target_path.is_symlink()
         staged_exists = staged_path.exists() or staged_path.is_symlink()
+        if target_exists and staged_exists:
+            # Compatibility with checkpoints created by the earlier POSIX
+            # link-then-unlink publisher.  A process loss between those two
+            # syscalls leaves two names for our one verified file.  Collapse
+            # only that exact same-inode state; equal content at a different
+            # inode remains an external collision and stays fail-closed.
+            try:
+                target_metadata = target_path.lstat()
+                staged_metadata = staged_path.lstat()
+                interrupted_file_publish = bool(
+                    stat.S_ISREG(target_metadata.st_mode)
+                    and stat.S_ISREG(staged_metadata.st_mode)
+                    and os.path.samestat(target_metadata, staged_metadata)
+                    and _snapshot_path(target_path)
+                    == publish_entry_snapshots[relative_path]
+                    and _snapshot_path(staged_path)
+                    == publish_entry_snapshots[relative_path]
+                )
+            except OSError:
+                interrupted_file_publish = False
+            if interrupted_file_publish:
+                staged_path.unlink()
+                fsync_directory_best_effort(staged_path.parent)
+                staged_exists = False
         if relative_path in original_entries:
             if backup_path.exists() or backup_path.is_symlink():
                 if _snapshot_path(backup_path) != target_baseline[relative_path]:
@@ -1166,6 +1199,22 @@ def run_pending_storage_migration(
         config_manager,
         anchor_root=normalized_anchor_root,
     )
+    if (
+        isinstance(migration_payload, dict)
+        and str(migration_payload.get("status") or "").strip()
+        == STORAGE_MIGRATION_STATUS_FAILED
+        and _migration_transaction_evidence_is_present(migration_payload)
+    ):
+        # Upgrade legacy terminal checkpoints that still own staged recovery
+        # data.  Keeping them active lets a later launch revalidate the restored
+        # source and securely retire the transaction instead of leaving the UI
+        # behind a permanent 409 with no recovery path.
+        migration_payload = _persist_migration_payload(
+            config_manager,
+            migration_payload,
+            anchor_root=normalized_anchor_root,
+            status=STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
+        )
     if not is_storage_migration_pending(migration_payload):
         if isinstance(migration_payload, dict):
             try:
@@ -1274,13 +1323,16 @@ def run_pending_storage_migration(
             logger.warning("Failed to persist recovery root_state after migration failure: %s", root_state_exc)
 
         next_payload = dict(payload)
+        next_status = (
+            STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+            if rollback_required
+            else STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+            if _migration_transaction_evidence_is_present(next_payload)
+            else STORAGE_MIGRATION_STATUS_FAILED
+        )
         next_payload.update(
             {
-                "status": (
-                    STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
-                    if rollback_required
-                    else STORAGE_MIGRATION_STATUS_FAILED
-                ),
+                "status": next_status,
                 "backup_root": recovery_source_root,
                 "error_code": error_code,
                 "error_message": error_message,
@@ -1344,6 +1396,7 @@ def run_pending_storage_migration(
         error_code: str,
         error_message: str,
     ) -> dict[str, Any]:
+        nonlocal payload
         result = _finish_failure(error_code, error_message)
         if (
             transaction_root is not None
@@ -1352,15 +1405,27 @@ def run_pending_storage_migration(
             and _source_matches_recovery_baseline()
         ):
             try:
-                if not _remove_transaction_root_if_owned(
+                removed = _remove_transaction_root_if_owned(
                     payload,
                     transaction_root,
                     txid,
-                ):
+                )
+                if not removed:
                     logger.warning(
                         "Preserving migration transaction after ownership changed: %s",
                         transaction_root,
                     )
+                elif str(payload.get("status") or "").strip() == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED:
+                    # The durable failed checkpoint existed before destructive
+                    # cleanup.  Only after the owned transaction is gone may it
+                    # become a replaceable terminal failure.
+                    payload = _persist_migration_payload(
+                        config_manager,
+                        payload,
+                        anchor_root=normalized_anchor_root,
+                        status=STORAGE_MIGRATION_STATUS_FAILED,
+                    )
+                    result["payload"] = payload
             except Exception as cleanup_exc:
                 logger.warning("Failed to clean rolled-back migration transaction: %s", cleanup_exc)
         return result
@@ -1914,3 +1979,79 @@ def delete_storage_migration(
         os.unlink(migration_path)
     except FileNotFoundError:
         return
+
+
+def _migration_transaction_evidence_is_present(
+    payload: dict[str, Any] | None,
+) -> bool:
+    """Return true unless a checkpoint proves its transaction is absent.
+
+    A terminal ``failed`` state can still own the only staged copy after the
+    source disappeared or changed.  Such a checkpoint is not replaceable: its
+    txid, owner token and transaction path are the authority needed for later
+    recovery.  Presence is intentionally independent of marker validity; an
+    untrusted or unreadable entry is a reason to preserve the checkpoint, not
+    permission to orphan it.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    raw_txid = str(payload.get("txid") or "").strip()
+    raw_transaction_root = str(payload.get("transaction_root") or "").strip()
+    if not raw_txid and not raw_transaction_root:
+        # Pre-transaction failures (including legacy checkpoints) have no
+        # owned staging location to orphan.
+        return False
+    try:
+        txid = _validate_txid(raw_txid)
+        target_root = normalize_runtime_root(str(payload.get("target_root") or "").strip())
+        transaction_root, checkpoint_bound = _checkpoint_transaction_root(
+            payload,
+            target_root,
+            txid,
+        )
+    except Exception:
+        return True
+
+    candidates = [transaction_root]
+    if not checkpoint_bound:
+        candidates.append(_legacy_transaction_root_for(target_root, txid))
+    candidates.extend(_private_directory_quarantine_path(path) for path in tuple(candidates))
+    for candidate in candidates:
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        return True
+    return False
+
+
+def storage_migration_retains_recovery_evidence(
+    payload: dict[str, Any] | None,
+) -> bool:
+    """Return whether a failed/recovery checkpoint still maps recovery data."""
+
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("status") or "").strip()
+        in {
+            STORAGE_MIGRATION_STATUS_FAILED,
+            STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
+        }
+        and _migration_transaction_evidence_is_present(payload)
+    )
+
+
+def failed_storage_migration_retains_recovery_evidence(
+    payload: dict[str, Any] | None,
+) -> bool:
+    """Compatibility predicate for legacy terminal failed checkpoints."""
+
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("status") or "").strip()
+        == STORAGE_MIGRATION_STATUS_FAILED
+        and _migration_transaction_evidence_is_present(payload)
+    )

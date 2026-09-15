@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import time
@@ -357,6 +358,36 @@ def test_config_manager_recovery_state_persist_failure_is_best_effort(
     assert root_state["current_root"] == str(unavailable_selected_root.resolve())
     assert root_state["last_known_good_root"] == str(unavailable_selected_root.resolve())
     assert root_state["last_migration_result"].startswith("selected_root_unavailable:")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("corrupt_bytes", (b'{"mode":', b"[]"))
+def test_unavailable_selected_root_never_replaces_corrupt_root_state(
+    tmp_path,
+    monkeypatch,
+    corrupt_bytes,
+):
+    monkeypatch.delenv(NEKO_STORAGE_SELECTED_ROOT_ENV, raising=False)
+    monkeypatch.delenv(NEKO_STORAGE_ANCHOR_ROOT_ENV, raising=False)
+
+    initial_manager = _make_config_manager(tmp_path)
+    unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        initial_manager,
+        selected_root=unavailable_selected_root,
+        selection_source="custom",
+    )
+    root_state_path = initial_manager.anchor_root / "state" / "root_state.json"
+    root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    root_state_path.write_bytes(corrupt_bytes)
+
+    reloaded_manager = _make_config_manager(tmp_path)
+
+    assert reloaded_manager.recovery_committed_root_unavailable is True
+    assert reloaded_manager.recovery_committed_root_unavailable_override is True
+    assert root_state_path.read_bytes() == corrupt_bytes
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        reloaded_manager.load_root_state()
 
 
 @pytest.mark.unit

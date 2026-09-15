@@ -12,6 +12,7 @@ from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     STORAGE_MIGRATION_STATUS_PREFLIGHT,
+    STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
     create_pending_storage_migration,
     get_storage_migration_path,
@@ -186,6 +187,101 @@ def test_directory_publish_never_replaces_a_late_empty_directory(tmp_path):
     )
     assert list(target.iterdir()) == []
     assert (source / "data.json").is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exclusive rename contract")
+def test_posix_file_publish_is_one_atomic_no_replace_rename(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "staged.json"
+    target = tmp_path / "published.json"
+    source.write_text("SOURCE", encoding="utf-8")
+
+    storage_migration_module._durable_publish_without_replacing(source, target)
+
+    assert not source.exists()
+    assert target.read_text(encoding="utf-8") == "SOURCE"
+
+    contender = tmp_path / "contender.json"
+    contender.write_text("CONTENDER", encoding="utf-8")
+    with pytest.raises(OSError):
+        storage_migration_module._durable_publish_without_replacing(contender, target)
+    assert contender.read_text(encoding="utf-8") == "CONTENDER"
+    assert target.read_text(encoding="utf-8") == "SOURCE"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="legacy POSIX hard-link recovery")
+@pytest.mark.parametrize("original_target", (False, True))
+def test_rollback_recovers_legacy_file_publish_link_unlink_crash(
+    tmp_path,
+    original_target,
+):
+    from utils import storage_migration as storage_migration_module
+
+    target_root = tmp_path / "target"
+    transaction_root = target_root / ".neko-storage-migration-test"
+    staged_path = transaction_root / "staged" / "config"
+    backup_path = transaction_root / "backup" / "config"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_text("SOURCE", encoding="utf-8")
+    publish_snapshot = storage_migration_module._snapshot_path(staged_path)
+    target_root.mkdir(exist_ok=True)
+    os.link(staged_path, target_root / "config")
+
+    original_entries = []
+    target_baseline = {}
+    if original_target:
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path.write_text("TARGET", encoding="utf-8")
+        original_entries = ["config"]
+        target_baseline = {
+            "config": storage_migration_module._snapshot_path(backup_path)
+        }
+
+    storage_migration_module._rollback_published_entries(
+        target_root,
+        transaction_root,
+        original_entries,
+        ["config"],
+        target_baseline,
+        {"config": publish_snapshot},
+    )
+
+    assert staged_path.read_text(encoding="utf-8") == "SOURCE"
+    if original_target:
+        assert (target_root / "config").read_text(encoding="utf-8") == "TARGET"
+    else:
+        assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_rollback_rejects_equal_file_content_at_different_inode(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    target_root = tmp_path / "target"
+    transaction_root = target_root / ".neko-storage-migration-test"
+    staged_path = transaction_root / "staged" / "config"
+    target_path = target_root / "config"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_text("SOURCE", encoding="utf-8")
+    target_root.mkdir(exist_ok=True)
+    target_path.write_text("SOURCE", encoding="utf-8")
+    publish_snapshot = storage_migration_module._snapshot_path(staged_path)
+
+    with pytest.raises(StorageMigrationError, match="未记录"):
+        storage_migration_module._rollback_published_entries(
+            target_root,
+            transaction_root,
+            [],
+            ["config"],
+            {},
+            {"config": publish_snapshot},
+        )
+
+    assert staged_path.read_text(encoding="utf-8") == "SOURCE"
+    assert target_path.read_text(encoding="utf-8") == "SOURCE"
 
 
 @pytest.mark.unit
@@ -1285,7 +1381,11 @@ def test_recovery_metadata_write_failures_keep_transaction_and_force_source_layo
     real_save_migration = storage_migration_module.save_storage_migration
 
     def fail_terminal_checkpoint(manager, payload, **kwargs):
-        if str(payload.get("status") or "") in {"failed", "rollback_required"}:
+        if str(payload.get("status") or "") in {
+            "failed",
+            "recovery_required",
+            "rollback_required",
+        }:
             raise OSError("terminal checkpoint unavailable")
         return real_save_migration(manager, payload, **kwargs)
 
@@ -1904,20 +2004,22 @@ def test_prepared_transaction_identity_replacement_is_preserved(tmp_path, monkey
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("terminal_status", "cleanup_expected"),
+    ("terminal_status", "attempted", "completed"),
     (
-        (STORAGE_MIGRATION_STATUS_COMPLETED, True),
-        (STORAGE_MIGRATION_STATUS_FAILED, False),
+        (STORAGE_MIGRATION_STATUS_COMPLETED, False, False),
+        (STORAGE_MIGRATION_STATUS_FAILED, True, True),
     ),
 )
 def test_terminal_checkpoint_recovers_interrupted_transaction_quarantine(
     tmp_path,
     terminal_status,
-    cleanup_expected,
+    attempted,
+    completed,
 ):
     from utils import storage_migration as storage_migration_module
 
     config_manager = _make_config_manager(tmp_path)
+    config_manager.app_docs_dir.mkdir(parents=True, exist_ok=True)
     target_root = tmp_path / "target-selected" / "N.E.K.O"
     target_root.mkdir(parents=True)
     payload = create_pending_storage_migration(
@@ -1943,14 +2045,19 @@ def test_terminal_checkpoint_recovers_interrupted_transaction_quarantine(
         transaction_root,
         quarantine,
     )
-    payload.update(status=terminal_status, transaction_root=str(transaction_root))
+    payload.update(
+        status=terminal_status,
+        transaction_root=str(transaction_root),
+        source_runtime_baseline={},
+    )
     storage_migration_module.save_storage_migration(config_manager, payload)
 
     result = run_pending_storage_migration(config_manager)
 
-    assert result["attempted"] is False
+    assert result["attempted"] is attempted
+    assert result["completed"] is completed, result
     assert not transaction_root.exists()
-    assert quarantine.exists() is not cleanup_expected
+    assert not quarantine.exists()
 
 
 @pytest.mark.unit
@@ -2020,16 +2127,34 @@ def test_copying_checkpoint_preserves_staged_data_when_source_disappears(
 
     assert result["completed"] is False
     assert result["error_code"] == expected_error
-    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
     assert (evidence_root / "staged" / "config" / "characters.json").read_text(
         encoding="utf-8"
     ) == "ONLY-COPY"
 
-    # A terminal failed checkpoint still cannot prove this copy is redundant.
-    run_pending_storage_migration(config_manager)
+    # Legacy builds wrote this evidence-owning state as terminal ``failed``.
+    # The next launcher must upgrade it back into an active recovery attempt.
+    legacy_payload = dict(load_storage_migration(config_manager))
+    legacy_payload["status"] = STORAGE_MIGRATION_STATUS_FAILED
+    storage_migration_module.save_storage_migration(config_manager, legacy_payload)
+
+    # The active recovery checkpoint still cannot prove this copy is redundant.
+    retry = run_pending_storage_migration(config_manager)
+    assert retry["payload"]["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
     assert (evidence_root / "staged" / "config" / "characters.json").read_text(
         encoding="utf-8"
     ) == "ONLY-COPY"
+
+    # Once the original source is restored byte-for-byte, the next launcher can
+    # securely retire the owned transaction and retry the migration.
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    recovered = run_pending_storage_migration(config_manager)
+    assert recovered["completed"] is True
+    assert not evidence_root.exists()
+    assert (target_root / "config" / "characters.json").read_text(
+        encoding="utf-8"
+    ) == "SOURCE"
 
 
 @pytest.mark.unit

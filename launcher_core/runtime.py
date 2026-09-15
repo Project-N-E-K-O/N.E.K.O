@@ -60,6 +60,11 @@ sys.path.insert(0, _PROJECT_ROOT)
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
+from utils.internal_http_auth import (
+    get_internal_http_auth_token,
+    install_internal_http_auth_token,
+    rotate_internal_http_auth_token,
+)
 from utils.port_utils import (
     probe_neko_health,
     acquire_startup_lock,
@@ -93,6 +98,7 @@ from utils.storage_layout import (
 )
 from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_FAILED,
+    STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     is_storage_migration_rollback_required,
     is_storage_migration_pending,
     load_storage_migration,
@@ -349,6 +355,11 @@ def _initialize_launcher_context() -> None:
         INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
+
+    # Keep the credential out of the environment: every launcher-owned server
+    # receives it through multiprocessing's private argument channel, while
+    # merged mode shares this process-local value directly.
+    rotate_internal_http_auth_token()
 
     # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
     # httpx 优先读小写 no_proxy，因此大小写都需要设置
@@ -696,7 +707,11 @@ def _resolve_storage_layout_for_launch() -> dict:
     migration_status = str(recovery_payload.get("status") or "").strip()
     durable_recovery_required = (
         root_mode == ROOT_MODE_DEFERRED_INIT
-        or migration_status == STORAGE_MIGRATION_STATUS_FAILED
+        or migration_status
+        in {
+            STORAGE_MIGRATION_STATUS_FAILED,
+            STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
+        }
     )
     restart_handoff_indeterminate = bool(
         root_mode == ROOT_MODE_MAINTENANCE_READONLY
@@ -979,20 +994,26 @@ def _maybe_schedule_storage_restart() -> bool:
             else {}
         )
         if (
-            is_storage_migration_rollback_required(migration_payload)
+            (
+                is_storage_migration_rollback_required(migration_payload)
+                or str(migration_payload.get("status") or "").strip()
+                == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+            )
             and (
                 not pre_restart_migration_known
                 or is_storage_migration_rollback_required(pre_restart_migration)
+                or str((pre_restart_migration or {}).get("status") or "").strip()
+                == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
             )
         ):
             # A fresh user request enters with pending/preflight/etc. and is
             # allowed one handoff so the replacement can expose the recovery UI.
-            # Entering this shutdown with rollback_required means a previous
-            # generation already used that handoff.  Relaunching again would retry
-            # forever and make "exit" impossible.  The checkpoint status is the
-            # authority here; root_state may itself be unwritable and stale.
+            # Entering this shutdown with rollback_required/recovery_required
+            # means a previous generation already used that handoff. Relaunching
+            # again would retry forever and make "exit" impossible. The checkpoint
+            # status is the authority here; root_state may itself be unwritable.
             print(
-                "[Launcher] Storage rollback is still incomplete; "
+                "[Launcher] Storage recovery is still incomplete; "
                 "leaving the recovery checkpoint intact without relaunching",
                 flush=True,
             )
@@ -1790,14 +1811,30 @@ def run_merged_servers() -> int:
     return 0
 
 
+def _consume_internal_control_token(buffer: bytearray | None) -> None:
+    """Install and erase the credential carried by a one-shot process argument."""
+    if buffer is None:
+        return
+    try:
+        token = bytes(buffer).decode("ascii")
+        install_internal_http_auth_token(token)
+    finally:
+        # multiprocessing retains target args for the process lifetime.  All
+        # references point at this mutable object, so an in-place wipe removes
+        # the credential before any application/plugin import or later fork.
+        buffer[:] = b"\0" * len(buffer)
+
+
 def run_memory_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
+    internal_control_buffer=None,
 ):
     """Run the Memory Server"""
     try:
+        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -1909,9 +1946,11 @@ def run_agent_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
+    internal_control_buffer=None,
 ):
     """Run the Agent Server (no need to wait for initialization)"""
     try:
+        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2000,9 +2039,11 @@ def run_main_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
+    internal_control_buffer=None,
 ):
     """Run the Main Server"""
     try:
+        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2510,6 +2551,13 @@ def start_server(server: Dict) -> bool:
         server['shutdown_event'] = Event()
         server['shutdown_complete_event'] = Event()
 
+        # Do not pass an immutable plaintext string: multiprocessing retains
+        # target args for the child lifetime.  The child installs this private
+        # mutable copy first and erases it in place before importing app code.
+        internal_control_buffer = bytearray(
+            get_internal_http_auth_token().encode("ascii")
+        )
+
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
@@ -2519,10 +2567,15 @@ def start_server(server: Dict) -> bool:
                 server['import_event'],
                 server['shutdown_event'],
                 server['shutdown_complete_event'],
+                internal_control_buffer,
             ),
             daemon=False,
         )
-        server['process'].start()
+        try:
+            server['process'].start()
+        finally:
+            # start() has already forked or serialized the child copy.
+            internal_control_buffer[:] = b"\0" * len(internal_control_buffer)
 
         print(f"✓ {server['name']} 已启动 (PID: {server['process'].pid})", flush=True)
         return True

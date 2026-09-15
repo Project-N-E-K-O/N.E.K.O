@@ -305,6 +305,7 @@ def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
 @pytest.mark.asyncio
 async def test_system_status_builds_storage_snapshot_off_event_loop(monkeypatch):
     main_thread = threading.get_ident()
+    observed_managers = []
     observed_threads = []
     config_manager = object()
     monkeypatch.setattr(
@@ -314,8 +315,8 @@ async def test_system_status_builds_storage_snapshot_off_event_loop(monkeypatch)
     )
 
     def _build_snapshot(observed_manager):
+        observed_managers.append(observed_manager)
         observed_threads.append(threading.get_ident())
-        assert observed_manager is config_manager
         return {
             "selection_required": False,
             "migration_pending": False,
@@ -335,6 +336,8 @@ async def test_system_status_builds_storage_snapshot_off_event_loop(monkeypatch)
     await heartbeat
 
     assert payload["ok"] is True
+    assert payload["status"] == "ready"
+    assert observed_managers == [config_manager]
     assert observed_threads and observed_threads[0] != main_thread
 
 

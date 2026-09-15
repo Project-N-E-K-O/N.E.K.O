@@ -1833,7 +1833,7 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
 
 
 @pytest.mark.frontend
-def test_storage_location_failed_maintenance_reloads_bootstrap_and_enters_recovery_selection(
+def test_storage_location_retained_staging_reloads_bootstrap_and_enters_recovery_selection(
     mock_page: Page,
     running_server: str,
 ):
@@ -1875,7 +1875,7 @@ def test_storage_location_failed_maintenance_reloads_bootstrap_and_enters_recove
                     "legacy_sources": [],
                     "anchor_root": "/tmp/recommended/N.E.K.O",
                     "cloudsave_root": "/tmp/recommended/N.E.K.O/cloudsave",
-                    "selection_required": recovery_required,
+                    "selection_required": False,
                     "migration_pending": not recovery_required,
                     "recovery_required": recovery_required,
                     "blocking_reason": "recovery_required" if recovery_required else "migration_pending",
@@ -1883,7 +1883,7 @@ def test_storage_location_failed_maintenance_reloads_bootstrap_and_enters_recove
                     "last_known_good_root": "/tmp/runtime/N.E.K.O",
                     "last_error_summary": "模拟迁移失败" if recovery_required else "",
                     "migration": {
-                        "status": "failed" if recovery_required else "pending",
+                        "status": "recovery_required" if recovery_required else "pending",
                         "source_root": "/tmp/runtime/N.E.K.O",
                         "target_root": "/tmp/recommended/N.E.K.O",
                         "last_error": "模拟迁移失败" if recovery_required else "",
@@ -1907,16 +1907,16 @@ def test_storage_location_failed_maintenance_reloads_bootstrap_and_enters_recove
                     "ready": False,
                     "status": "recovery_required",
                     "lifecycle_state": "recovery_required",
-                    "migration_stage": "failed",
+                    "migration_stage": "recovery_required",
                     "poll_interval_ms": 50,
                     "last_error_summary": "模拟迁移失败",
                     "blocking_reason": "recovery_required",
                     "storage": {
-                        "selection_required": True,
+                        "selection_required": False,
                         "migration_pending": False,
                         "recovery_required": True,
                     },
-                    "migration": {"status": "failed"},
+                    "migration": {"status": "recovery_required"},
                 },
                 ensure_ascii=False,
             ),

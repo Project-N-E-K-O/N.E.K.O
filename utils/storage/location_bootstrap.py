@@ -35,6 +35,7 @@ from .community_private_state import (
     probe_retained_community_state,
 )
 from .migration import (
+    STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
@@ -412,7 +413,17 @@ def _build_storage_location_bootstrap_payload_from_disk(
         current_root=current_root,
         anchor_root=anchor_root,
     )
-    migration_pending = is_storage_migration_pending(migration_checkpoint)
+    migration_status = str((migration_checkpoint or {}).get("status") or "").strip()
+    migration_recovery_required = (
+        migration_status == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+    )
+    # The checkpoint remains active for launcher recovery, but there is no
+    # live migration worker while the limited service is showing the recovery
+    # gate. Expose that distinction so the UI cannot wait forever on progress.
+    migration_pending = (
+        is_storage_migration_pending(migration_checkpoint)
+        and not migration_recovery_required
+    )
     restart_intent_recovery_required = bool(
         recovery_mode == "recovery_required"
         and root_mode == ROOT_MODE_MAINTENANCE_READONLY
@@ -428,6 +439,7 @@ def _build_storage_location_bootstrap_payload_from_disk(
     recovery_required = bool(
         root_mode == ROOT_MODE_DEFERRED_INIT
         or restart_intent_recovery_required
+        or migration_recovery_required
     )
     migration_payload = _build_migration_payload(
         migration_checkpoint,

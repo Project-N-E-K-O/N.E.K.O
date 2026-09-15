@@ -217,7 +217,9 @@ plugin-runtime
 
 原子写和 rename 的掉电顺序是安全合同：POSIX 在文件 `fsync` 后同步父目录；Windows 对目录句柄能力不一致，目录 flush 为 best-effort，但仍依赖同卷原子 replace、检查点和内容摘要在下次启动恢复。运行目录从暂存区公开时还必须拒绝覆盖切换窗口中新出现的名字：Windows 使用拒绝覆盖的 `os.rename`，Linux 使用 `renameat2(RENAME_NOREPLACE)`，macOS 使用 `renameatx_np(RENAME_EXCL)`；缺少原子 no-replace 原语时 fail-closed，不能用会替换空目录的普通 POSIX rename。任何平台都不能把“API 返回成功”当成磁盘已持久化的替代证据。
 
-进程在 `publishing` 或 `committing` 中崩溃时，下次启动先按检查点恢复目标，再从源目录重新执行。一个由普通 pending 进入 `rollback_required` 的启动代次最多交接给宿主一次；若本次启动进入时已经是 `rollback_required`，launcher 不再自动重启，避免失败代次无限循环。此时在线受限服务只提供状态与受控退出；用户安全退出后，下一次显式启动再做一次恢复尝试，不在业务服务在线时执行危险回滚。
+进程在 `publishing` 或 `committing` 中崩溃时，下次启动先按检查点恢复目标，再从源目录重新执行。复制阶段若源目录离线或内容已变化，而事务目录仍可能保有唯一暂存副本，检查点进入活动的 `recovery_required`：HTTP 控制面不得覆盖或删除它；源目录恢复到持久化基线后，下一次显式启动会校验并清理旧事务，再从源重新迁移。旧版本遗留的 `failed` 检查点只要仍映射事务/隔离目录，也必须先升级为该活动恢复态。
+
+一个由普通 pending 进入 `rollback_required` 或 `recovery_required` 的启动代次最多交接给宿主一次；若本次启动进入时已经是其中任一状态，launcher 不再自动重启，避免失败代次无限循环。此时在线受限服务只提供状态与受控退出；用户安全退出后，下一次显式启动再做一次恢复尝试，不在业务服务在线时执行危险回滚。
 
 预检和实际迁移都要求“源数据估算值 + 安全余量”不超过目标卷可用空间；安全余量为 64 MiB 与估算值 5% 中较大者。无法读取磁盘空间不是成功或警告，而是阻断错误。
 
@@ -282,7 +284,7 @@ plugin-runtime
 
 - 主服务只放行存储页面、静态资源、状态/健康检查、存储 API 和调试入口；普通 API 返回 `409 storage_startup_blocked`；
 - 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue` 和 `/internal/storage/startup/block`；Agent 只放行健康检查和同一组存储启动控制端点；其他请求返回 409；
-- 内部 continue/block 端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断；四个 Agent/Memory 控制入口都必须同时验证本次启动实例 token 和安全 Origin/Referer，无来源的原生进程请求仍须携带 token。网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
+- 内部 continue/block 端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断；四个 Agent/Memory 控制入口都必须同时验证 launcher 通过一次性交付缓冲区传给三个服务的独立随机 token 和安全 Origin/Referer，无来源的原生进程请求仍须携带 token。该 token 不得进入环境变量、不可擦除的长期进程参数，也不得复用或暴露为网页可读取的 CSRF token；服务必须在导入应用代码前原位清零交付缓冲区，fork 产生的服务后代还要自动轮换各自副本。网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
 
 完整性恢复代次比普通首次选择更严格：`ConfigManager` 不运行默认配置、旧配置或根目录迁移；launcher 不自动安装 Playwright 浏览器；main 不初始化 voice、Avatar Tool 和后台业务运行时；Agent 不启动 token tracker、插件宿主或 LLM 探测，也不发外部请求。普通 main、memory 和 Agent API 都返回 409，只保留健康检查、存储状态/bootstrap、受控安全退出以及服务间恢复控制所需的最小白名单。退出钩子不得写 token、角色释放、插件状态、记忆状态、`root_state` 或上传 cloudsave；launcher 也不得在三个服务 ready 后把 `root_state` 改回 normal。允许在固定锚点写诊断日志，但受损权威文件和已提交用户数据必须保持逐字节不变。
 
@@ -412,7 +414,7 @@ attached/remote 模式在三个平台都没有本地进程所有权；状态异�
 7. 策略提交必须晚于复制验证。
 8. 目标原有受管入口在任何失败路径上都必须恢复，目标未知入口不得被修改；发布前须复用同一份基线逐项 CAS，最终切换不得覆盖检查后才出现的外部数据。
 9. 清理必须比较请求中的预期旧根与锁内重新读取的当前旧根，并只删除清单入口。
-10. 所有会改变本机状态的 Web 请求必须通过本机来源和 CSRF 校验；Agent/Memory 的内部启动控制还必须携带本次 launcher 实例 token。
+10. 所有会改变本机状态的 Web 请求必须通过本机来源和 CSRF 校验；Agent/Memory 的内部启动控制还必须携带 launcher 通过可擦除的一次性缓冲区交付、且不向网页或服务后代暴露的控制 token。
 11. PC 维护保护必须恢复迁移前真实可见的窗口集合，不能把原本关闭的窗口打开。
 12. PC 只能让当前 polling generation 和当前 launcher generation 改变状态。
 13. 任何旧代退出或 Job holder 缺失都不能自动等价为“所有后端子进程已停止”；只有平台所有权屏障的肯定证据才能启动 replacement。

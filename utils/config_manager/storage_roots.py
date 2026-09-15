@@ -320,14 +320,10 @@ class StorageRootsMixin:
         # migrate=False)），而那一刻变更路由的写序列已经在工作线程上跑了。拿锁外读到
         # 的 pre-image 去存，会把它刚提交的 mode / current_root / 迁移字段整份盖掉。
         with root_state_transaction():
-            state: dict = {}
-            try:
-                loaded = self._load_json_file(self.root_state_path, default_value={})
-                if isinstance(loaded, dict):
-                    state = loaded
-            except Exception:
-                # 读不出来就按空状态重建恢复态——这条路径本来就是给"root 不可用"兜底的
-                state = {}
+            loaded = self._load_json_file(self.root_state_path, default_value={})
+            if not isinstance(loaded, dict):
+                raise ValueError("storage root state is not an object")
+            state = loaded
             self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
@@ -1026,6 +1022,8 @@ class StorageRootsMixin:
             default_value,
             "loading root_state",
         )
+        if not isinstance(state, dict):
+            raise ValueError("storage root state is not an object")
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state

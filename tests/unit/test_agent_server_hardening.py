@@ -22,7 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from utils.internal_http_auth import internal_http_auth_headers
+from config import AUTOSTART_CSRF_TOKEN
+from utils.internal_http_auth import (
+    INTERNAL_HTTP_AUTH_HEADER,
+    internal_http_auth_headers,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +54,11 @@ def test_agent_storage_control_routes_require_internal_auth(
             path,
             json={"reason": "attacker"},
             headers={"X-CSRF-Token": "wrong-token"},
+        ).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "browser-csrf-token"},
+            headers={INTERNAL_HTTP_AUTH_HEADER: AUTOSTART_CSRF_TOKEN},
         ).status_code == 403
         assert client.post(
             path,

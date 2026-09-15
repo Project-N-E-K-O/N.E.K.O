@@ -2646,6 +2646,93 @@ def test_storage_location_select_current_root_recovers_failed_migration_checkpoi
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("restart_to_new_root", (False, True))
+@pytest.mark.parametrize("checkpoint_status", ("failed", "recovery_required"))
+def test_storage_restart_never_orphans_recovery_checkpoint_staged_evidence(
+    tmp_path,
+    restart_to_new_root,
+    checkpoint_status,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_real_config_manager(tmp_path)
+    current_root = config_manager.app_docs_dir
+    selected_root = (
+        tmp_path / "new-selection" / "N.E.K.O"
+        if restart_to_new_root
+        else current_root
+    )
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append(True),
+    ) as client:
+        prepared = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+            },
+        )
+        assert prepared.status_code == 200
+
+        failed_target = tmp_path / "failed-target" / "N.E.K.O"
+        migration_payload = create_pending_storage_migration(
+            config_manager,
+            source_root=current_root,
+            target_root=failed_target,
+            selection_source="custom",
+        )
+        transaction_root = storage_migration_module._transaction_root_for(
+            failed_target.resolve(),
+            migration_payload["txid"],
+        )
+        staged_file = transaction_root / "staged" / "config" / "characters.json"
+        staged_file.parent.mkdir(parents=True)
+        staged_file.write_text("ONLY-COPY", encoding="utf-8")
+        storage_migration_module._write_transaction_owner_marker(
+            migration_payload,
+            transaction_root,
+            migration_payload["txid"],
+        )
+        migration_payload.update(
+            status=checkpoint_status,
+            transaction_root=str(transaction_root),
+            error_code="source_recovery_unverifiable",
+            error_message="source changed after the staged copy was created",
+        )
+        save_storage_migration(config_manager, migration_payload)
+        checkpoint_path = get_storage_migration_path(config_manager)
+        checkpoint_before = checkpoint_path.read_bytes()
+
+        restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+                "restart_operation_id": prepared.json()["restart_operation_id"],
+            },
+        )
+        select_again = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert restart.status_code == 409
+    assert restart.json()["error_code"] == "storage_recovery_evidence_retained"
+    assert select_again.status_code == 409
+    assert select_again.json()["error_code"] == "storage_recovery_evidence_retained"
+    assert shutdown_calls == []
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    assert load_storage_migration(config_manager)["txid"] == migration_payload["txid"]
+    assert staged_file.read_text(encoding="utf-8") == "ONLY-COPY"
+
+
+@pytest.mark.unit
 def test_storage_location_restart_rebinds_original_root_without_creating_migration_checkpoint(tmp_path, monkeypatch):
     config_manager = _make_real_config_manager(tmp_path)
     unavailable_selected_root = tmp_path / "offline-selected" / "N.E.K.O"
@@ -3042,6 +3129,57 @@ def test_storage_location_private_only_retained_root_remains_visible_and_cleanup
     ) == legacy_auth
     assert after.json()["storage"]["legacy_cleanup_pending"] is False
     assert after.json()["completion_notice"]["completed"] is False
+
+
+@pytest.mark.unit
+def test_storage_location_anchor_with_only_private_state_is_cleanupable(tmp_path):
+    if storage_location_router_module.os.name == "nt":
+        pytest.skip("retained cleanup requires POSIX directory handles")
+
+    config_manager = _make_anchor_root_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    source_root.mkdir(parents=True, exist_ok=True)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    legacy_auth = {"access_token": "anchor-private-only"}
+    (source_root / "community_auth.json").write_text(
+        json.dumps(legacy_auth),
+        encoding="utf-8",
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=source_root,
+        selection_source="current",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+
+    reloaded_manager = _make_anchor_root_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        before = client.get("/api/storage/location/status")
+        cleanup = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert before.status_code == 200
+    assert before.json()["completion_notice"]["completed"] is True
+    assert before.json()["completion_notice"]["cleanup_available"] is True
+    assert cleanup.status_code == 200
+    assert cleanup.json()["metadata_persisted"] is True
+    assert source_root.exists(), "the fixed anchor itself must never be removed"
+    assert not (source_root / "community_auth.json").exists()
+    assert json.loads(
+        (reloaded_manager.local_state_dir / "community_auth.json").read_text(
+            encoding="utf-8"
+        )
+    ) == legacy_auth
+    assert (source_root / "state" / "storage_migration.json").exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
 
 
 @pytest.mark.unit

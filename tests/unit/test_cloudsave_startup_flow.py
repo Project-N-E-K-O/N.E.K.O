@@ -7,6 +7,66 @@ import pytest
 
 
 @pytest.mark.unit
+def test_launcher_preserves_corrupt_root_state_when_committed_external_root_is_offline(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+    from utils.config_manager import ConfigManager, reset_config_manager_cache
+    from utils.storage.policy import save_storage_policy
+
+    standard_root = tmp_path / "anchor-base"
+    monkeypatch.setattr(
+        ConfigManager,
+        "_get_documents_directory",
+        lambda _self: tmp_path / "runtime-parent",
+    )
+    monkeypatch.setattr(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        lambda _self: [standard_root],
+    )
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    exported = []
+    monkeypatch.setattr(
+        launcher,
+        "export_storage_layout_to_env",
+        lambda layout: exported.append(layout),
+    )
+
+    initial_manager = ConfigManager("N.E.K.O")
+    unavailable_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        initial_manager,
+        selected_root=unavailable_root,
+        selection_source="custom",
+    )
+    root_state_path = initial_manager.anchor_root / "state" / "root_state.json"
+    root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = b'{"mode":'
+    root_state_path.write_bytes(corrupt_bytes)
+    reset_config_manager_cache()
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        reset_config_manager_cache()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_status_unavailable"
+    assert result["layout"]["source"] == "storage_status_unavailable_recovery"
+    assert exported == [result["layout"]]
+    assert root_state_path.read_bytes() == corrupt_bytes
+
+
+@pytest.mark.unit
 def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatch, tmp_path):
     from launcher_core import runtime as launcher
 
@@ -1251,6 +1311,71 @@ def test_start_server_never_reuses_a_partial_existing_service(monkeypatch):
 
 
 @pytest.mark.unit
+def test_start_server_delivers_internal_control_token_as_private_process_argument(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    captured = {}
+
+    class _Process:
+        pid = 123
+
+        def __init__(self, *, target, args, daemon):
+            captured.update(target=target, args=args, daemon=daemon)
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(launcher, "Process", _Process)
+    monkeypatch.setattr(launcher, "Event", object)
+    monkeypatch.setattr(launcher, "check_port", lambda _port: False)
+    monkeypatch.setattr(launcher, "get_internal_http_auth_token", lambda: "t" * 43)
+
+    server = {
+        "name": "Memory Server",
+        "module": "memory_server",
+        "port": 43112,
+    }
+
+    assert launcher.start_server(server) is True
+    assert captured["target"] is launcher.run_memory_server
+    assert isinstance(captured["args"][-1], bytearray)
+    assert captured["args"][-1] == b"\0" * 43
+    assert captured["daemon"] is False
+    assert captured["started"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "runner_name",
+    ("run_memory_server", "run_agent_server", "run_main_server"),
+)
+def test_launcher_owned_server_installs_control_token_before_child_setup(
+    monkeypatch,
+    runner_name,
+):
+    from launcher_core import runtime as launcher
+
+    class _StopBeforeImports(BaseException):
+        pass
+
+    installed = []
+
+    monkeypatch.setattr(launcher, "install_internal_http_auth_token", installed.append)
+    monkeypatch.setattr(
+        launcher,
+        "_apply_child_process_signal_policy",
+        lambda: (_ for _ in ()).throw(_StopBeforeImports),
+    )
+
+    token_buffer = bytearray(b"c" * 43)
+    with pytest.raises(_StopBeforeImports):
+        getattr(launcher, runner_name)(None, None, None, None, token_buffer)
+
+    assert installed == ["c" * 43]
+    assert token_buffer == b"\0" * 43
+
+
+@pytest.mark.unit
 def test_merged_health_requires_expected_services_and_current_instance(monkeypatch):
     from launcher_core import runtime as launcher
 
@@ -1636,7 +1761,18 @@ def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovere
 
 
 @pytest.mark.unit
-def test_launcher_does_not_relaunch_recovery_generation_when_target_rollback_still_fails(monkeypatch):
+@pytest.mark.parametrize(
+    ("checkpoint_status", "error_code"),
+    (
+        ("rollback_required", "rollback_failed"),
+        ("recovery_required", "source_recovery_unverifiable"),
+    ),
+)
+def test_launcher_does_not_relaunch_recovery_generation_when_recovery_still_fails(
+    monkeypatch,
+    checkpoint_status,
+    error_code,
+):
     from launcher_core import runtime as launcher
 
     released = {"called": False}
@@ -1645,9 +1781,9 @@ def test_launcher_does_not_relaunch_recovery_generation_when_target_rollback_sti
     config_manager = SimpleNamespace(
         load_root_state=lambda: {
             # Even if root_state persistence failed and the old mode survived,
-            # the pre-existing rollback checkpoint must stop another handoff.
+            # the pre-existing recovery checkpoint must stop another handoff.
             "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
-            "last_migration_result": "failed:rollback_failed",
+            "last_migration_result": f"failed:{error_code}",
         }
     )
     monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
@@ -1655,7 +1791,7 @@ def test_launcher_does_not_relaunch_recovery_generation_when_target_rollback_sti
         launcher,
         "load_storage_migration",
         lambda _config_manager: {
-            "status": "rollback_required",
+            "status": checkpoint_status,
             "source_root": "/tmp/source/N.E.K.O",
             "target_root": "/tmp/target/N.E.K.O",
         },
@@ -1668,9 +1804,9 @@ def test_launcher_does_not_relaunch_recovery_generation_when_target_rollback_sti
             "migration_result": {
                 "attempted": True,
                 "completed": False,
-                "error_code": "rollback_failed",
+                "error_code": error_code,
                 "payload": {
-                    "status": "rollback_required",
+                    "status": checkpoint_status,
                     "source_root": "/tmp/source/N.E.K.O",
                     "target_root": "/tmp/target/N.E.K.O",
                 },

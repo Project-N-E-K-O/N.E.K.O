@@ -997,7 +997,7 @@
         }
 
         var blockingReason = String(bootstrapPayload.blocking_reason || '').trim();
-        return blockingReason === 'migration_pending'
+        return (blockingReason === 'migration_pending' && !bootstrapPayload.recovery_required)
             || (!!bootstrapPayload.migration_pending && !bootstrapPayload.recovery_required);
     }
 
@@ -1102,7 +1102,8 @@
             || lifecycle.lifecycleState === 'selection_required'
             || lifecycle.recoveryRequired
             || lifecycle.selectionRequired
-            || lifecycle.migrationStage === 'failed';
+            || lifecycle.migrationStage === 'failed'
+            || lifecycle.migrationStage === 'recovery_required';
     }
 
     async function fetchStorageLocationBootstrap() {
@@ -1602,7 +1603,9 @@
         var isRebindOnly = restartMode === 'rebind_only';
         var hasError = lifecycleState === 'recovery_required'
             || lifecycleState === 'recovery_failed'
+            || lifecycle.recoveryRequired
             || migrationStage === 'failed'
+            || migrationStage === 'recovery_required'
             || migrationStage === 'rollback_required';
         var percent = 14;
         var activeIndex = 0;
@@ -1659,6 +1662,11 @@
                     percent = 100;
                     activeIndex = 2;
                     label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    break;
+                case 'recovery_required':
+                    percent = 100;
+                    activeIndex = 2;
+                    label = translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
                     break;
                 case 'rollback_required':
                     percent = 100;

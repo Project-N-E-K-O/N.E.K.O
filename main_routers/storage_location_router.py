@@ -89,6 +89,7 @@ from utils.storage_migration import (
     is_storage_migration_rollback_required,
     load_storage_migration,
     save_storage_migration,
+    storage_migration_retains_recovery_evidence,
 )
 from utils.storage_policy import (
     StoragePolicyError,
@@ -569,6 +570,16 @@ def _resolve_same_root_restart_plan(
             "error": "当前存储状态仍需恢复或迁移，暂时不能继续当前会话。",
         }
 
+    raw_blocking_migration = load_storage_migration(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+    if storage_migration_retains_recovery_evidence(raw_blocking_migration):
+        return {
+            "error_code": "storage_recovery_evidence_retained",
+            "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
+            "blocking_reason": "recovery_required",
+        }
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
         config_manager,
         current_root=current_root,
@@ -1737,6 +1748,7 @@ def _build_completed_migration_notice(
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
+        anchor_has_managed_private_state=retained_has_private_state,
     ) and not retained_private_state.cleanup_blocked
     if require_existing_retained_root and not cleanup_available:
         return {
@@ -1951,6 +1963,7 @@ def _cleanup_retained_runtime_root(
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
+        anchor_has_managed_private_state=retained_private_state.has_managed_content,
     ):
         raise ValueError("保留目录当前不满足安全清理条件。")
 
@@ -2519,6 +2532,13 @@ async def _post_storage_location_select_locked(
         if isinstance(blocking_bootstrap.get("migration"), dict)
         else None
     )
+    raw_blocking_migration = await _run_locked_storage_job(
+        partial(
+            load_storage_migration,
+            config_manager,
+            anchor_root=anchor_root,
+        )
+    )
     if is_storage_migration_rollback_required(blocking_migration):
         response.status_code = 409
         return {
@@ -2526,6 +2546,14 @@ async def _post_storage_location_select_locked(
             "error_code": "storage_rollback_required",
             "error": "迁移目标尚未完成安全回滚，当前不能更改存储位置。请先安全退出并重新启动应用以重试恢复。",
             "blocking_reason": "migration_pending",
+        }
+    if storage_migration_retains_recovery_evidence(raw_blocking_migration):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "storage_recovery_evidence_retained",
+            "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
+            "blocking_reason": "recovery_required",
         }
     if paths_equal(normalized_selected_root, current_root):
         restart_plan = await _run_locked_storage_job(
@@ -2557,6 +2585,15 @@ async def _post_storage_location_select_locked(
                 restart_plan.get("selection_source") or payload.selection_source
             ),
             **_build_same_root_restart_offer(current_root),
+        }
+
+    if bool(blocking_bootstrap.get("migration_pending")):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "migration_already_pending",
+            "error": "已有存储迁移正在等待执行，请先完成或恢复当前迁移后再发起新的存储位置变更。",
+            "blocking_reason": "migration_pending",
         }
 
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
@@ -2903,6 +2940,13 @@ async def _post_storage_location_restart_locked(
         if isinstance(blocking_bootstrap.get("migration"), dict)
         else None
     )
+    raw_blocking_migration = await _run_locked_storage_job(
+        partial(
+            load_storage_migration,
+            config_manager,
+            anchor_root=anchor_root,
+        )
+    )
     if is_storage_migration_rollback_required(blocking_migration):
         response.status_code = 409
         return {
@@ -2910,6 +2954,14 @@ async def _post_storage_location_restart_locked(
             "error_code": "storage_rollback_required",
             "error": "迁移目标尚未完成安全回滚，当前不能发起新的迁移。请先安全退出并重新启动应用以重试恢复。",
             "blocking_reason": "migration_pending",
+        }
+    if storage_migration_retains_recovery_evidence(raw_blocking_migration):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "storage_recovery_evidence_retained",
+            "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
+            "blocking_reason": "recovery_required",
         }
     if bool(blocking_bootstrap.get("migration_pending")):
         response.status_code = 409

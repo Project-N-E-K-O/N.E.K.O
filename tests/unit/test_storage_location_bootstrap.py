@@ -19,6 +19,7 @@ from utils.storage_migration import (
     delete_storage_migration,
     get_storage_migration_path,
     run_pending_storage_migration,
+    save_storage_migration,
 )
 from utils.storage_policy import save_storage_policy
 
@@ -363,6 +364,39 @@ def test_storage_location_bootstrap_payload_marks_pending_migration_from_checkpo
     assert payload["migration_pending"] is True
     assert payload["blocking_reason"] == "migration_pending"
     assert payload["migration"]["status"] == "pending"
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_presents_retained_staging_as_recovery_not_live_progress(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    checkpoint = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "new-storage" / "N.E.K.O",
+        selection_source="recommended",
+    )
+    checkpoint["status"] = "recovery_required"
+    save_storage_migration(config_manager, checkpoint)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["migration"]["status"] == "recovery_required"
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
 
 
 @pytest.mark.unit

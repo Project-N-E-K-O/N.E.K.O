@@ -45,8 +45,12 @@ from utils.steam_cloud_bundle import (
     upload_cloudsave_bundle_to_steam,
 )
 from utils.config_manager import ConfigManager
+from config import AUTOSTART_CSRF_TOKEN
 from utils.file_utils import atomic_write_json
-from utils.internal_http_auth import internal_http_auth_headers
+from utils.internal_http_auth import (
+    INTERNAL_HTTP_AUTH_HEADER,
+    internal_http_auth_headers,
+)
 from utils.storage_location_bootstrap import clear_runtime_storage_blocking_reason
 
 
@@ -1151,6 +1155,11 @@ def test_memory_storage_control_routes_require_internal_auth(monkeypatch):
             path,
             json={"reason": "attacker"},
             headers={"X-CSRF-Token": "wrong-token"},
+        ).status_code == 403
+        assert client.post(
+            path,
+            json={"reason": "browser-csrf-token"},
+            headers={INTERNAL_HTTP_AUTH_HEADER: AUTOSTART_CSRF_TOKEN},
         ).status_code == 403
         assert client.post(
             path,
