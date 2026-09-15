@@ -12,11 +12,14 @@ from websockets.frames import Close
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
+from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
 from main_logic.omni_realtime_client._transport import _classify_peer_close
 from main_logic.provider_failure_signals import CODES_REQUIRING_MSG_DETAIL
 
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("arbiter_logs_reach_caplog")]
+
+
 
 
 _END = object()
@@ -347,7 +350,7 @@ async def test_arbiter_fail_close_preserves_first_cause_without_user_status(capl
 
     with caplog.at_level(
         "WARNING",
-        logger="main_logic.omni_realtime_client._response_arbiter",
+        logger=_arbiter_module.logger.name,
     ):
         await client._response_arbiter._tear_down_transport(reason)
 

@@ -609,10 +609,11 @@ class _TransportMixin:
             # server-side tool stripping the user mentioned will be
             # lifted, after which our tools propagate naturally.
             # lanlan.app (international free) backs onto Vertex AI
-            # Live; that path is currently TODO (no client→server
-            # tools propagation confirmed). Tools below match the
-            # StepFun shape and become a no-op on lanlan.app until
-            # the proxy supports them.
+            # Live. It forwards the StepFun-shape tools list below and
+            # returns response.function_call_arguments.* events
+            # (observed 2026-09-07: minecraft_task calls in
+            # lanlan_app_gemini voice sessions; 2026-09-12: 29
+            # recall_memory calls in voice mode).
             #
             # MANUAL mode: both proxies receive ``turn_detection: null``
             # via the StepFun-shape websocket session config. lanlan.tech
@@ -928,7 +929,23 @@ class _TransportMixin:
                 transport = self.ws
                 if not transport:
                     return False
+                # 结构化 wire trace（NEKO_REALTIME_WIRE_TRACE，默认关）：写出之后才记，
+                # 只记类型/id/计数；recorder 自己吞掉异常，不会影响发送结果。
+                # generation 必须在 await send 之前同步读：等待期间换上新连接会把
+                # generation 加 1，这条写到旧 socket 上的事件不能记到新连接名下。
+                wire_trace = getattr(self, "_wire_trace", None)
+                trace_generation = (
+                    getattr(self, "_connection_generation", None)
+                    if wire_trace is not None
+                    else None
+                )
                 await transport.send(payload)
+                if wire_trace is not None:
+                    wire_trace.record_send(
+                        event,
+                        generation=trace_generation,
+                        size=len(payload),
+                    )
                 return True
             except _RealtimeEventOwnerRetired:
                 raise
@@ -2824,10 +2841,14 @@ class _TransportMixin:
                 )
                 return True
 
+            # 结构化 wire trace（默认关）：在任何分发/过滤之前记录，陈旧事件也照记。
+            wire_trace = getattr(self, "_wire_trace", None)
             async for message in message_ws:
                 if await retire_if_replaced():
                     return
                 event = json.loads(message)
+                if wire_trace is not None:
+                    wire_trace.record_recv(event, generation=message_generation)
                 event_type = event.get("type")
 
                 # if event_type not in ["response.audio.delta", "response.audio_transcript.delta",  "response.output_audio.delta", "response.output_audio_transcript.delta"]:
