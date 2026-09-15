@@ -460,14 +460,47 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
         # Preserve a link as a link if one appears after the pre-copy scan.  The
         # staged verification will then reject it instead of dereferencing an
         # external path into the migration.
-        shutil.copytree(source_path, target_path, copy_function=shutil.copy2, symlinks=True)
+        shutil.copytree(
+            source_path,
+            target_path,
+            copy_function=_copy_staged_file_durably,
+            symlinks=True,
+        )
         return
 
     if source_path.is_file():
-        shutil.copy2(source_path, target_path)
+        _copy_staged_file_durably(source_path, target_path)
         return
 
     raise StorageMigrationError("source_entry_missing", f"迁移源条目不存在: {source_path}")
+
+
+def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) -> str:
+    """Copy one private staged file and flush data before restoring source metadata."""
+
+    source = Path(source_path)
+    target = Path(target_path)
+    try:
+        # copyfile preserves shutil's prompt rejection of FIFOs/devices. Opening
+        # the source directly can block forever on a late FIFO in a user-owned
+        # runtime tree, leaving the maintenance window stuck indefinitely.
+        shutil.copyfile(source, target)
+    except shutil.SpecialFileError as exc:
+        raise StorageMigrationError(
+            "path_type_unsupported",
+            f"迁移源条目包含不支持的文件类型: {source}",
+        ) from exc
+    with target.open("r+b") as target_handle:
+        try:
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+        except OSError as exc:
+            raise StorageMigrationError(
+                "target_flush_failed",
+                f"迁移数据无法可靠写入目标磁盘: {target}: {exc}",
+            ) from exc
+    shutil.copystat(source, target, follow_symlinks=False)
+    return str(target)
 
 
 def _rewrite_migrated_runtime_config_paths(
@@ -1061,15 +1094,16 @@ def _fsync_staged_tree(path: Path) -> None:
                     )
                 paths.append(staged_file)
 
-    for staged_file in paths:
-        try:
-            with staged_file.open("rb") as handle:
-                os.fsync(handle.fileno())
-        except OSError as exc:
-            raise StorageMigrationError(
-                "target_flush_failed",
-                f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
-            ) from exc
+    if sys.platform != "win32":
+        for staged_file in paths:
+            try:
+                with staged_file.open("rb") as handle:
+                    os.fsync(handle.fileno())
+            except OSError as exc:
+                raise StorageMigrationError(
+                    "target_flush_failed",
+                    f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
+                ) from exc
     for staged_directory in reversed(directories):
         fsync_directory_best_effort(staged_directory)
 

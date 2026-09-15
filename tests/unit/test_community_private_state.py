@@ -1165,12 +1165,27 @@ def test_social_lock_is_not_published_until_its_complete_record_is_durable(
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_social_lock_publish_succeeds_when_platform_has_no_fchmod(tmp_path, monkeypatch):
+    session = tmp_path / "social_session.json"
+    lock = Path(f"{session}.lock")
+    monkeypatch.delattr(C.os, "fchmod", raising=False)
+
+    with C._social_session_lock(session):
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+
+    assert not lock.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.parametrize("replacement_window", ("opening", "after_read"))
 def test_social_lock_snapshot_classifies_name_replacement_as_retryable(
     tmp_path,
     monkeypatch,
     replacement_window,
 ):
+    if os.name == "nt" and replacement_window == "after_read":
+        pytest.skip("Windows cannot replace a lock file while this test keeps it open")
     lock = tmp_path / "social_session.json.lock"
     replacement = tmp_path / "replacement.lock"
     lock.write_text('{"token":"first"}', encoding="utf-8")

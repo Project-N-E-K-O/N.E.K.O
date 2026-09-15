@@ -78,6 +78,60 @@ def test_load_storage_policy_uses_default_only_when_file_is_absent(tmp_path):
 
 
 @pytest.mark.unit
+def test_load_storage_policy_rejects_a_regular_file_in_the_anchor_chain(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager._standard_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "anchor_root_not_directory"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_finds_an_ancestor_file_after_windows_style_missing_child(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    blocked_parent = config_manager._standard_root
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    anchor_root = blocked_parent / config_manager.app_name
+    real_lstat = Path.lstat
+
+    def windows_style_lstat(path):
+        if path == anchor_root:
+            raise FileNotFoundError("simulated Windows child lookup")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", windows_style_lstat)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, anchor_root=anchor_root, default={})
+
+    assert caught.value.reason == "anchor_root_not_directory"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_rechecks_anchor_after_a_missing_file_race(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    anchor_root.mkdir(parents=True)
+
+    def replace_anchor_before_missing_read(_path):
+        anchor_root.rmdir()
+        anchor_root.write_text("replacement", encoding="utf-8")
+        raise FileNotFoundError("simulated Windows child lookup")
+
+    monkeypatch.setattr(storage_policy_module, "read_json", replace_anchor_before_missing_read)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "anchor_root_not_directory"
+
+
+@pytest.mark.unit
 def test_load_storage_policy_fails_closed_for_read_error(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 

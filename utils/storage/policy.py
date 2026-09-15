@@ -362,16 +362,62 @@ def _validate_storage_policy_payload(
     return payload
 
 
+def _validate_storage_policy_anchor(value: Path | str) -> None:
+    """Allow an absent first-run anchor, but never an unsafe existing chain."""
+
+    candidate = Path(value).expanduser()
+    blocked_lookup = False
+    while True:
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            pass
+        except NotADirectoryError:
+            # Continue upward so the existing regular-file ancestor can be
+            # classified explicitly instead of becoming a platform-dependent
+            # "policy absent" result.
+            blocked_lookup = True
+        except OSError as exc:
+            raise StoragePolicyError("anchor_root_uninspectable") from exc
+        else:
+            is_reparse_point = bool(
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                & getattr(metadata, "st_file_attributes", 0)
+            )
+            if stat.S_ISLNK(metadata.st_mode) or is_reparse_point:
+                raise StoragePolicyError("anchor_root_redirect")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise StoragePolicyError("anchor_root_not_directory")
+
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+
+    if blocked_lookup:
+        raise StoragePolicyError("anchor_root_uninspectable")
+
+
 def load_storage_policy(
     config_manager,
     *,
     anchor_root: Path | None = None,
     default: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    configured_anchor_root = anchor_root or compute_anchor_root(config_manager)
+    _validate_storage_policy_anchor(configured_anchor_root)
+
+    policy_path = get_storage_policy_path(
+        config_manager,
+        anchor_root=normalize_runtime_root(configured_anchor_root),
+    )
     try:
         payload = read_json(policy_path)
     except FileNotFoundError:
+        # Windows maps a child lookup below a newly replaced regular file to
+        # FileNotFoundError. Recheck the authority boundary before deciding
+        # this is the legitimate first-run "policy absent" state.
+        _validate_storage_policy_anchor(configured_anchor_root)
         return default
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("Malformed storage_policy at %s: %s", policy_path, exc)

@@ -29,6 +29,12 @@ from config import AUTOSTART_CSRF_TOKEN
 from tests.fake_clock import patch_module_clock
 
 
+_POSIX_RETAINED_CLEANUP_ONLY = pytest.mark.skipif(
+    not storage_location_router_module._secure_retained_cleanup_supported(),
+    reason="automatic retained-root cleanup requires POSIX directory handles",
+)
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_polled_storage_status_builds_off_the_event_loop(monkeypatch):
@@ -2923,7 +2929,9 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
     assert payload["completion_notice"]["source_root"] == str(source_root.resolve())
     assert payload["completion_notice"]["target_root"] == str(target_root.resolve())
     assert payload["completion_notice"]["retained_root"] == str(source_root.resolve())
-    assert payload["completion_notice"]["cleanup_available"] is True
+    assert payload["completion_notice"]["cleanup_available"] is (
+        storage_location_router_module._secure_retained_cleanup_supported()
+    )
 
     migrated_workshop_config = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
     assert migrated_workshop_config["default_workshop_folder"] == str((target_root / "workshop").resolve())
@@ -2932,6 +2940,7 @@ def test_storage_location_status_exposes_completed_migration_notice(tmp_path):
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -2978,6 +2987,7 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_moves_legacy_community_state_before_removing_root(
     tmp_path,
 ):
@@ -3084,6 +3094,7 @@ def test_storage_location_cleanup_reclaims_proven_orphaned_retained_social_lock(
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_private_only_retained_root_remains_visible_and_cleanupable(
     tmp_path,
 ):
@@ -3183,6 +3194,7 @@ def test_storage_location_anchor_with_only_private_state_is_cleanupable(tmp_path
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_checkpoint_write_failure_reconciles_from_filesystem(
     tmp_path,
 ):
@@ -3236,6 +3248,7 @@ def test_storage_location_cleanup_checkpoint_write_failure_reconciles_from_files
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_unknown_only_root_converges_after_both_metadata_writes_fail(
     tmp_path,
     monkeypatch,
@@ -3317,6 +3330,7 @@ def test_storage_location_unknown_only_root_converges_after_both_metadata_writes
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_premark_failure_deletes_nothing(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -3355,6 +3369,7 @@ def test_storage_location_cleanup_premark_failure_deletes_nothing(tmp_path):
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_direct_cleanup_preserves_conflicting_target_and_source_credentials(
     tmp_path,
 ):
@@ -3394,6 +3409,7 @@ def test_storage_location_direct_cleanup_preserves_conflicting_target_and_source
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_in_progress_is_safely_retryable_after_crash(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -3437,6 +3453,7 @@ def test_storage_location_cleanup_in_progress_is_safely_retryable_after_crash(tm
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_completed_cleanup_then_logout_removes_target_witness_but_not_reused_source(
     tmp_path,
     monkeypatch,
@@ -3513,6 +3530,7 @@ def test_completed_cleanup_then_logout_removes_target_witness_but_not_reused_sou
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_preserves_everything_when_credential_anchor_write_fails(
     tmp_path,
     monkeypatch,
@@ -3553,6 +3571,7 @@ def test_storage_location_cleanup_preserves_everything_when_credential_anchor_wr
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_preserves_unknown_files_in_retained_root(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -3582,6 +3601,7 @@ def test_storage_location_cleanup_preserves_unknown_files_in_retained_root(tmp_p
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_rejects_retained_root_replaced_by_symlink(tmp_path):
     retained_root = tmp_path / "retained" / "N.E.K.O"
     external_root = tmp_path / "external"
@@ -3692,6 +3712,7 @@ def test_storage_location_cleanup_dirfd_does_not_follow_swapped_ancestor(
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_rejects_real_directory_replacement_after_premark(
     tmp_path,
     monkeypatch,
@@ -3829,6 +3850,7 @@ def test_storage_location_api_refuses_retained_root_nested_under_current_target(
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_rejects_nested_state_symlink_without_deleting_external_or_local_data(
     tmp_path,
 ):
@@ -3857,6 +3879,7 @@ def test_storage_location_cleanup_rejects_nested_state_symlink_without_deleting_
 
 
 @pytest.mark.unit
+@_POSIX_RETAINED_CLEANUP_ONLY
 def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_only(tmp_path):
     config_manager = _make_anchor_root_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir

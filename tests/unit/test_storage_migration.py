@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import stat
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -156,11 +157,12 @@ def test_owned_transaction_cleanup_never_chmods_a_link_target(tmp_path):
     external_file.write_text("keep", encoding="utf-8")
     original_mode = stat.S_IRUSR | stat.S_IXUSR
     os.chmod(external, original_mode)
+    observed_mode = stat.S_IMODE(external.stat().st_mode)
     (transaction_root / "external-link").symlink_to(external, target_is_directory=True)
 
     try:
         storage_migration_module._remove_existing_path(transaction_root)
-        assert stat.S_IMODE(external.stat().st_mode) == original_mode
+        assert stat.S_IMODE(external.stat().st_mode) == observed_mode
         assert external_file.read_text(encoding="utf-8") == "keep"
     finally:
         os.chmod(external, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
@@ -803,6 +805,99 @@ def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path
     storage_migration_module._fsync_staged_tree(staged_root)
 
     assert flushed_directories == [nested_root, staged_root / "state", staged_root]
+
+
+@pytest.mark.unit
+def test_windows_staged_copy_flushes_before_restoring_read_only_metadata(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source" / "readonly.json"
+    staged_file = tmp_path / "transaction" / "staged" / "config" / "readonly.json"
+    source_file.parent.mkdir(parents=True)
+    staged_file.parent.mkdir(parents=True)
+    source_file.write_text('{"preserved": true}', encoding="utf-8")
+    os.chmod(source_file, stat.S_IRUSR)
+    source_mode = stat.S_IMODE(source_file.stat().st_mode)
+    real_fsync = os.fsync
+    real_copystat = storage_migration_module.shutil.copystat
+    events = []
+
+    def record_windows_style_fsync(fd):
+        os.write(fd, b"")
+        events.append("fsync")
+        real_fsync(fd)
+
+    def record_copystat(source, target, **kwargs):
+        events.append("copystat")
+        return real_copystat(source, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "fsync", record_windows_style_fsync)
+    monkeypatch.setattr(storage_migration_module.shutil, "copystat", record_copystat)
+
+    storage_migration_module._copy_staged_file_durably(source_file, staged_file)
+
+    assert events == ["fsync", "copystat"]
+    assert stat.S_IMODE(staged_file.stat().st_mode) == source_mode
+    assert staged_file.read_text(encoding="utf-8") == '{"preserved": true}'
+
+
+@pytest.mark.unit
+def test_staged_copy_rejects_fifo_without_blocking(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO creation is unavailable")
+    source_fifo = tmp_path / "source.fifo"
+    staged_file = tmp_path / "staged.bin"
+    os.mkfifo(source_fifo)
+    outcome = []
+
+    def copy_fifo():
+        try:
+            storage_migration_module._copy_staged_file_durably(source_fifo, staged_file)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=copy_fifo, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive(), "FIFO copy must fail instead of blocking maintenance"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], StorageMigrationError)
+    assert outcome[0].error_code == "path_type_unsupported"
+    assert not staged_file.exists()
+
+
+@pytest.mark.unit
+def test_windows_fsync_staged_tree_does_not_reopen_durable_copies_read_only(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    staged_root = tmp_path / "transaction" / "staged"
+    staged_root.mkdir(parents=True)
+    staged_file = staged_root / "readonly.json"
+    staged_file.write_text("{}", encoding="utf-8")
+    os.chmod(staged_file, stat.S_IRUSR)
+    flushed_directories = []
+
+    monkeypatch.setattr(storage_migration_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "fsync",
+        lambda _fd: pytest.fail("Windows must not reopen a copied file read-only for fsync"),
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "fsync_directory_best_effort",
+        lambda path: flushed_directories.append(Path(path)),
+    )
+
+    storage_migration_module._fsync_staged_tree(staged_root)
+
+    assert flushed_directories == [staged_root]
 
 
 @pytest.mark.unit
@@ -2117,7 +2212,7 @@ def test_transaction_cleanup_restores_replacement_symlink_without_following_it(t
 
     assert removed is False
     assert transaction_root.is_symlink()
-    assert transaction_root.readlink() == external
+    assert os.path.samefile(transaction_root, external)
     assert external.read_text(encoding="utf-8") == "KEEP"
     assert owned_aside.is_dir()
 

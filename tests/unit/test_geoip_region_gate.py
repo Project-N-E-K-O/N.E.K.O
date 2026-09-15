@@ -1755,24 +1755,48 @@ def test_agent_deduper_is_built_after_the_region_settles():
               / 'app' / 'agent_server' / 'api_runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
-            continue
-        # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
-        # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
-        # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
-        settles = [c.lineno for c in ast.walk(node)
-                   if isinstance(c, ast.Call)
-                   and getattr(c.func, 'attr', None) == 'awarmup_region_check']
-        builds = [c.lineno for c in ast.walk(node)
-                  if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'TaskDeduper']
-        assert builds, '未找到 TaskDeduper 构造，断言失效'
-        assert settles, 'agent_server 启动未落定区域判定'
-        assert min(settles) < min(builds), \
-            f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
-        break
-    else:
-        pytest.fail('未找到 agent_server startup，断言失效')
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    initializer = functions.get('_initialize_agent_runtime_unlocked')
+    ensure = functions.get('ensure_agent_server_runtime_initialized')
+    startup = functions.get('startup')
+    assert initializer is not None, '未找到 agent_server runtime 初始化函数，断言失效'
+    assert ensure is not None, '未找到 agent_server runtime 初始化门，断言失效'
+    assert startup is not None, '未找到 agent_server startup，断言失效'
+
+    # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
+    # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
+    # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
+    settles = [
+        call.lineno
+        for call in ast.walk(initializer)
+        if isinstance(call, ast.Call)
+        and getattr(call.func, 'attr', None) == 'awarmup_region_check'
+    ]
+    builds = [
+        call.lineno
+        for call in ast.walk(initializer)
+        if isinstance(call, ast.Call) and getattr(call.func, 'id', None) == 'TaskDeduper'
+    ]
+    ensure_calls_initializer = any(
+        isinstance(call, ast.Call)
+        and getattr(call.func, 'id', None) == '_initialize_agent_runtime_unlocked'
+        for call in ast.walk(ensure)
+    )
+    startup_calls_ensure = any(
+        isinstance(call, ast.Call)
+        and getattr(call.func, 'id', None) == 'ensure_agent_server_runtime_initialized'
+        for call in ast.walk(startup)
+    )
+    assert builds, '未找到 TaskDeduper 构造，断言失效'
+    assert settles, 'agent_server runtime 初始化未落定区域判定'
+    assert min(settles) < min(builds), \
+        f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
+    assert ensure_calls_initializer, 'runtime 初始化门未调用真实初始化函数'
+    assert startup_calls_ensure, 'agent_server startup 未经过 runtime 初始化门'
 
 
 @pytest.mark.unit

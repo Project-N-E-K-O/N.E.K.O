@@ -1670,8 +1670,10 @@ def _try_publish_social_lock(
                 raise OSError("short social session lock write")
             offset += written
         os.fsync(fd)
-        with suppress(OSError):
-            os.fchmod(fd, 0o600)
+        fchmod = getattr(os, "fchmod", None)
+        if callable(fchmod):
+            with suppress(OSError):
+                fchmod(fd, 0o600)
         os.close(fd)
         fd = -1
         try:
