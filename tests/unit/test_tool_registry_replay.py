@@ -395,4 +395,6 @@ async def test_character_rebuild_replays_remote_tools(monkeypatch):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
+                # The connector stub is cancelled on purpose; how it ends is not
+                # under test, only that no task outlives the test.
                 pass

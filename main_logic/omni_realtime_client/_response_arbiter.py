@@ -382,6 +382,8 @@ class RealtimeResponseArbiter:
                 try:
                     record["gen"] = generation_of()
                 except Exception:
+                    # The generation is optional context; a transport that cannot
+                    # report it must not cost the rest of the record.
                     pass
             record.update(fields)
             logger.info("%s%s", ARBITER_TRACE_PREFIX, trace_json(record))
