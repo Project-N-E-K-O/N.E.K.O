@@ -95,6 +95,11 @@ _TRANSACTION_OWNER_MARKER_FILENAME = ".neko-storage-transaction-owner.json"
 _TRANSACTION_OWNER_MARKER_VERSION = 1
 _TRANSACTION_CAPACITY_ENTRY_RESERVE = 8
 _MIGRATION_ERROR_MESSAGE_MAX_BYTES = 16 * 1024
+# workshop_config.json is written through the desktop backend's bounded JSON
+# request surface. Keep migration-side rebasing within the same 16 MiB memory
+# contract so a damaged on-disk file fails closed instead of exhausting the
+# packaged launcher while it holds the startup gate.
+_WORKSHOP_CONFIG_REWRITE_MAX_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -450,6 +455,7 @@ def _open_windows_directory_rename_guard(
         else:
             native_path = "\\\\?\\" + native_path
 
+    file_list_directory = 0x0001
     file_read_attributes = 0x0080
     file_share_read = 0x00000001
     file_share_write = 0x00000002
@@ -461,7 +467,11 @@ def _open_windows_directory_rename_guard(
     invalid_handle_value = ctypes.c_void_p(-1).value
     handle = kernel32.CreateFileW(
         native_path,
-        file_read_attributes,
+        # Attribute-only access is exempt from normal share accounting on
+        # Windows. Request directory-list access as well so omitting
+        # FILE_SHARE_DELETE actually prevents rename/delete while this guard
+        # is alive, without requiring DELETE access ourselves.
+        file_list_directory | file_read_attributes,
         # Deliberately omit FILE_SHARE_DELETE. Windows then refuses renaming or
         # deleting this directory until the migration releases the guard.
         file_share_read | file_share_write,
@@ -2341,11 +2351,23 @@ def _rewrite_migrated_runtime_config_paths(
                 expected_target_mount_identity,
                 workshop_config_path,
             )
+            if opened_before.st_size > _WORKSHOP_CONFIG_REWRITE_MAX_BYTES:
+                raise StorageMigrationError(
+                    "workshop_config_too_large",
+                    "工坊配置超过迁移重写的安全大小上限，已保留原数据并停止迁移。",
+                )
             chunks: list[bytes] = []
+            total_bytes = 0
             while True:
                 chunk = os.read(source_fd, 1024 * 1024)
                 if not chunk:
                     break
+                total_bytes += len(chunk)
+                if total_bytes > _WORKSHOP_CONFIG_REWRITE_MAX_BYTES:
+                    raise StorageMigrationError(
+                        "workshop_config_too_large",
+                        "工坊配置在迁移读取期间超过安全大小上限，已保留原数据并停止迁移。",
+                    )
                 chunks.append(chunk)
             opened_after = os.fstat(source_fd)
             named_after_read = os.stat(
@@ -2532,7 +2554,15 @@ def _rewrite_migrated_runtime_config_paths(
         return None
 
     try:
-        payload = _read_json_from_verified_regular_file(workshop_config_path)
+        payload = _read_json_from_verified_regular_file(
+            workshop_config_path,
+            max_bytes=_WORKSHOP_CONFIG_REWRITE_MAX_BYTES,
+        )
+    except StorageMigrationError as exc:
+        if exc.error_code == "workshop_config_too_large":
+            raise
+        logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
+        return None
     except Exception as exc:
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return None
@@ -2628,15 +2658,31 @@ def _open_verified_regular_file(path: Path) -> tuple[int, os.stat_result]:
         raise
 
 
-def _read_json_from_verified_regular_file(path: Path) -> Any:
+def _read_json_from_verified_regular_file(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> Any:
     fd = -1
     try:
         fd, opened_before = _open_verified_regular_file(path)
+        if max_bytes is not None and opened_before.st_size > max_bytes:
+            raise StorageMigrationError(
+                "workshop_config_too_large",
+                "工坊配置超过迁移重写的安全大小上限，已保留原数据并停止迁移。",
+            )
         chunks: list[bytes] = []
+        total_bytes = 0
         while True:
             chunk = os.read(fd, 1024 * 1024)
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if max_bytes is not None and total_bytes > max_bytes:
+                raise StorageMigrationError(
+                    "workshop_config_too_large",
+                    "工坊配置在迁移读取期间超过安全大小上限，已保留原数据并停止迁移。",
+                )
             chunks.append(chunk)
         _verify_opened_regular_file(path, fd, opened_before)
         return json.loads(b"".join(chunks).decode("utf-8"))
@@ -3370,6 +3416,30 @@ def _remove_owned_transaction_quarantine(
         # left by a crash after deleting the marker but before rmdir. rmdir is
         # itself the emptiness check, so a concurrent or unrelated entry is
         # preserved rather than recursively deleted.
+        if os.name != "nt":
+            parent_fd = -1
+            try:
+                parent_fd = _open_verified_directory(quarantine.parent)
+                current_identity = os.stat(
+                    quarantine.name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    not os.path.samestat(quarantine_identity, current_identity)
+                    or not stat.S_ISDIR(current_identity.st_mode)
+                    or _is_link_like_metadata(current_identity)
+                ):
+                    return False
+                os.rmdir(quarantine.name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except OSError:
+                return False
+            finally:
+                if parent_fd >= 0:
+                    with suppress(OSError):
+                        os.close(parent_fd)
+            return True
         try:
             current_identity = quarantine.lstat()
             if (
@@ -4710,7 +4780,22 @@ def run_pending_storage_migration(
             # These names are the only destinations for copied data and original
             # target backups. Persist them before advancing to COPYING; the
             # transaction name itself was flushed by _create_owned_transaction_root.
-            _fsync_migration_directory(transaction_root)
+            if os.name != "nt":
+                try:
+                    os.fsync(transaction_root_fd)
+                except OSError as exc:
+                    raise StorageMigrationError(
+                        "target_flush_failed",
+                        f"迁移数据无法可靠写入目标磁盘: {transaction_root}: {exc}",
+                    ) from exc
+                _ensure_opened_directory_still_named(
+                    transaction_root,
+                    transaction_root_fd,
+                    error_code="staging_entry_changed",
+                    message=f"迁移事务目录在持久化期间被替换: {transaction_root}",
+                )
+            else:
+                _fsync_migration_directory(transaction_root)
 
             payload = _persist_migration_payload(
                 config_manager,
@@ -4718,6 +4803,13 @@ def run_pending_storage_migration(
                 anchor_root=normalized_anchor_root,
                 status=STORAGE_MIGRATION_STATUS_COPYING,
             )
+            if os.name != "nt":
+                _ensure_opened_directory_still_named(
+                    transaction_root,
+                    transaction_root_fd,
+                    error_code="staging_entry_changed",
+                    message=f"迁移事务目录在复制检查点持久化期间被替换: {transaction_root}",
+                )
             for entry_name in existing_entries:
                 if path_chain_has_symlink(source_root) or path_chain_has_symlink(target_root):
                     raise StorageMigrationError(

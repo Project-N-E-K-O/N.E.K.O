@@ -1215,6 +1215,92 @@ def test_workshop_rewrite_propagates_staged_file_flush_failure(tmp_path, monkeyp
 
 @pytest.mark.unit
 @pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative config rewrite")
+def test_workshop_rewrite_rejects_oversized_config_before_parsing(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    content_root = tmp_path / "transaction" / "staged"
+    target_root = tmp_path / "target"
+    config_path = content_root / "config" / "workshop_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('{"oversized": true}', encoding="utf-8")
+    content_root_fd = storage_migration_module._open_verified_directory(content_root)
+    target_mount_identity = storage_migration_module._opened_mount_identity(
+        content_root_fd
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_WORKSHOP_CONFIG_REWRITE_MAX_BYTES",
+        4,
+    )
+    try:
+        with pytest.raises(StorageMigrationError) as caught:
+            storage_migration_module._rewrite_migrated_runtime_config_paths(
+                source_root=source_root,
+                content_root=content_root,
+                target_root=target_root,
+                content_root_fd=content_root_fd,
+                expected_target_mount_identity=target_mount_identity,
+            )
+    finally:
+        os.close(content_root_fd)
+
+    assert caught.value.error_code == "workshop_config_too_large"
+    assert config_path.read_text(encoding="utf-8") == '{"oversized": true}'
+
+
+@pytest.mark.unit
+def test_pending_migration_preserves_source_when_workshop_config_is_oversized(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_config = source_root / "config" / "workshop_config.json"
+    source_config.parent.mkdir(parents=True, exist_ok=True)
+    original_bytes = b'{"default_workshop_folder": "oversized"}'
+    source_config.write_bytes(original_bytes)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_WORKSHOP_CONFIG_REWRITE_MAX_BYTES",
+        4,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "workshop_config_too_large"
+    assert source_config.read_bytes() == original_bytes
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_verified_json_reader_enforces_runtime_byte_limit(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text('{"oversized": true}', encoding="utf-8")
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._read_json_from_verified_regular_file(
+            config_path,
+            max_bytes=4,
+        )
+
+    assert caught.value.error_code == "workshop_config_too_large"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative config rewrite")
 def test_workshop_rewrite_rejects_replaced_temporary_name(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -2317,6 +2403,68 @@ def test_launcher_rejects_transaction_root_replaced_after_creation(tmp_path, mon
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned transaction fsync")
+def test_launcher_rejects_transaction_root_replaced_during_pinned_flush(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("source-data", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+    moved_transaction_root = target_root / "moved-owned-transaction"
+    replacement_sentinel = transaction_root / "third-party.txt"
+    real_fsync = storage_migration_module.os.fsync
+    replaced = False
+
+    def replace_during_transaction_flush(fd):
+        nonlocal replaced
+        if (
+            not replaced
+            and transaction_root.is_dir()
+            and (transaction_root / "staged").is_dir()
+            and (transaction_root / "backup").is_dir()
+            and os.path.samestat(os.fstat(fd), transaction_root.lstat())
+        ):
+            real_fsync(fd)
+            transaction_root.rename(moved_transaction_root)
+            transaction_root.mkdir()
+            replacement_sentinel.write_text("keep", encoding="utf-8")
+            replaced = True
+            return None
+        return real_fsync(fd)
+
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "fsync",
+        replace_during_transaction_flush,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert result["error_code"] == "staging_entry_changed"
+    assert replacement_sentinel.read_text(encoding="utf-8") == "keep"
+    assert moved_transaction_root.is_dir()
+    assert source_file.read_text(encoding="utf-8") == "source-data"
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name != "nt", reason="Windows directory rename guard")
 def test_windows_transaction_directory_guard_blocks_rename(tmp_path):
     from utils import storage_migration as storage_migration_module
@@ -2711,7 +2859,10 @@ def test_run_pending_storage_migration_flushes_staged_root_before_verifying_chec
     flush_events = [event for event in events if event[0] == "flush"]
     assert len(flush_events) == 1
     assert flush_events[0][1].name == "staged"
-    assert flush_events[0][2] is not None
+    if os.name == "nt":
+        assert flush_events[0][2] is None
+    else:
+        assert flush_events[0][2] is not None
     assert events.index(flush_events[0]) < events.index(
         ("checkpoint", storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING)
     )
@@ -4443,6 +4594,36 @@ def test_transaction_cleanup_preserves_unowned_markerless_quarantine(
     assert removed is False
     assert sentinel.read_text(encoding="utf-8") == "KEEP"
     assert quarantine.exists() or quarantine.is_symlink()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent directory durability")
+def test_markerless_empty_quarantine_never_reports_success_when_parent_flush_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    quarantine = tmp_path / ".neko-storage-migration-test.deleting"
+    quarantine.mkdir()
+
+    def fail_parent_flush(_fd):
+        raise OSError(errno.EIO, "injected parent flush failure")
+
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "fsync",
+        fail_parent_flush,
+    )
+
+    removed = storage_migration_module._remove_owned_transaction_quarantine(
+        {},
+        quarantine,
+        "a" * 32,
+    )
+
+    assert removed is False
+    assert not quarantine.exists()
 
 
 @pytest.mark.unit
