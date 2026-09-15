@@ -66,6 +66,51 @@ def _make_anchor_root_config_manager(tmp_path: Path):
     return config_manager
 
 
+def _run_fifo_open_replacement(monkeypatch, storage_migration_module, victim, operation):
+    real_open = storage_migration_module.os.open
+    opened_flags = []
+    replaced = False
+    results = []
+    errors = []
+
+    def replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if (
+            not replaced
+            and (
+                Path(path) == victim
+                or (dir_fd is not None and path == victim.name)
+            )
+        ):
+            replaced = True
+            victim.unlink()
+            os.mkfifo(victim)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "open",
+        replace_with_fifo_before_open,
+    )
+
+    def run_operation():
+        try:
+            results.append(operation())
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run_operation, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        writer_fd = real_open(victim, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+
+    return worker, replaced, opened_flags, results, errors
+
+
 @pytest.mark.unit
 def test_create_pending_storage_migration_writes_anchor_checkpoint(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
@@ -444,12 +489,182 @@ def test_load_storage_migration_propagates_read_failure_as_fail_closed_error(tmp
     config_manager = _DummyConfigManager(tmp_path)
 
     with patch(
-        "utils.storage.migration.read_json",
+        "utils.storage.migration.read_fixed_anchor_state_json",
         side_effect=PermissionError("checkpoint permission denied"),
     ), pytest.raises(StorageMigrationError) as caught:
         load_storage_migration(config_manager)
 
     assert caught.value.error_code == "migration_checkpoint_unreadable"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd race injection")
+def test_load_storage_migration_rejects_anchor_replacement_before_handle_open(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    checkpoint_path = get_storage_migration_path(config_manager)
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_path.write_text('{"status": "pending"}', encoding="utf-8")
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_checkpoint = replacement_anchor / "state" / checkpoint_path.name
+    replacement_checkpoint.parent.mkdir(parents=True)
+    replacement_checkpoint.write_text('{"status": "completed"}', encoding="utf-8")
+    detached_anchor = tmp_path / "detached-anchor"
+    real_open = storage_migration_module.os.open
+    replaced = False
+
+    def replace_anchor_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if not replaced and path == anchor_root.name and dir_fd is not None:
+            replaced = True
+            anchor_root.rename(detached_anchor)
+            replacement_anchor.rename(anchor_root)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", replace_anchor_before_open)
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert replaced
+    assert caught.value.error_code == "migration_checkpoint_unreadable"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd race injection")
+def test_load_storage_migration_revalidates_initially_missing_anchor(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    checkpoint_path = get_storage_migration_path(config_manager)
+    real_open = storage_migration_module.os.open
+    published = False
+
+    def publish_checkpoint_after_missing_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal published
+        try:
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+        except FileNotFoundError:
+            if not published:
+                published = True
+                checkpoint_path.parent.mkdir(parents=True)
+                checkpoint_path.write_text('{"status": "pending"}', encoding="utf-8")
+            raise
+
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "open",
+        publish_checkpoint_after_missing_open,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager, default={"status": "absent"})
+
+    assert published
+    assert anchor_root.exists()
+    assert caught.value.error_code == "migration_checkpoint_unreadable"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(os, "mkfifo"),
+    reason="POSIX FIFO replacement is unavailable",
+)
+@pytest.mark.parametrize(
+    ("consumer", "expected_result", "expected_error"),
+    (
+        ("checkpoint", None, "migration_checkpoint_unreadable"),
+        ("owner_marker", False, None),
+        ("staged_fsync", None, "target_flush_failed"),
+        ("workshop_rewrite", None, None),
+    ),
+)
+def test_verified_read_consumers_reject_fifo_replacement_without_blocking(
+    tmp_path,
+    monkeypatch,
+    consumer,
+    expected_result,
+    expected_error,
+):
+    from utils import storage_migration as storage_migration_module
+
+    warnings = []
+    if consumer == "checkpoint":
+        config_manager = _DummyConfigManager(tmp_path)
+        victim = get_storage_migration_path(config_manager)
+        victim.parent.mkdir(parents=True, exist_ok=True)
+        victim.write_text('{"status": "pending"}', encoding="utf-8")
+        operation = lambda: load_storage_migration(config_manager)
+    elif consumer == "owner_marker":
+        txid = "b" * 32
+        payload = {"transaction_owner_token": "a" * 64}
+        transaction_root = tmp_path / "transaction"
+        transaction_root.mkdir()
+        storage_migration_module._write_transaction_owner_marker(
+            payload,
+            transaction_root,
+            txid,
+        )
+        victim = transaction_root / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+        operation = lambda: storage_migration_module._transaction_root_is_owned(
+            payload,
+            transaction_root,
+            txid,
+        )
+    elif consumer == "staged_fsync":
+        staged_root = tmp_path / "transaction" / "staged"
+        staged_root.mkdir(parents=True)
+        victim = staged_root / "state.json"
+        victim.write_text("{}", encoding="utf-8")
+        operation = lambda: storage_migration_module._fsync_staged_tree(staged_root)
+    else:
+        source_root = tmp_path / "source"
+        content_root = tmp_path / "staged"
+        target_root = tmp_path / "target"
+        victim = content_root / "config" / "workshop_config.json"
+        victim.parent.mkdir(parents=True)
+        victim.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            storage_migration_module.logger,
+            "warning",
+            lambda *args, **kwargs: warnings.append((args, kwargs)),
+        )
+        operation = lambda: storage_migration_module._rewrite_migrated_runtime_config_paths(
+            source_root=source_root,
+            content_root=content_root,
+            target_root=target_root,
+        )
+
+    worker, replaced, opened_flags, results, errors = _run_fifo_open_replacement(
+        monkeypatch,
+        storage_migration_module,
+        victim,
+        operation,
+    )
+
+    assert replaced
+    assert not worker.is_alive(), f"{consumer} FIFO replacement must not block"
+    assert opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+    if expected_error:
+        assert not results
+        assert len(errors) == 1
+        assert isinstance(errors[0], StorageMigrationError)
+        assert errors[0].error_code == expected_error
+    else:
+        assert results == [expected_result]
+        assert not errors
+    if consumer == "workshop_rewrite":
+        assert warnings
 
 
 @pytest.mark.unit
@@ -1098,6 +1313,111 @@ def test_staged_copy_does_not_block_when_source_becomes_fifo_before_open(
     assert opened_flags and opened_flags[0] & os.O_NONBLOCK
     assert opened_flags[0] & os.O_NOFOLLOW
     assert not staged_file.exists()
+
+
+@pytest.mark.unit
+def test_snapshot_opens_regular_files_with_platform_safe_flags(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.bin"
+    source_file.write_bytes(b"snapshot")
+    real_open = storage_migration_module.os.open
+    opened_flags = []
+
+    def record_open_flags(path, flags, mode=0o777, *, dir_fd=None):
+        if Path(path) == source_file:
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", record_open_flags)
+
+    snapshot = storage_migration_module._snapshot_path(source_file)
+
+    assert snapshot["kind"] == "file"
+    assert snapshot["total_bytes"] == len(b"snapshot")
+    assert len(opened_flags) == 1
+    if os.name == "nt":
+        assert opened_flags[0] & getattr(os, "O_BINARY", 0)
+        assert opened_flags[0] & getattr(os, "O_NOINHERIT", 0)
+    else:
+        assert opened_flags[0] & os.O_NONBLOCK
+        assert opened_flags[0] & os.O_NOFOLLOW
+
+
+@pytest.mark.unit
+def test_snapshot_rejects_different_opened_file_descriptor(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.bin"
+    other_file = tmp_path / "other.bin"
+    source_file.write_bytes(b"source")
+    other_file.write_bytes(b"other")
+    real_open = storage_migration_module.os.open
+
+    def substitute_opened_file(path, flags, mode=0o777, *, dir_fd=None):
+        opened_path = other_file if Path(path) == source_file else path
+        return real_open(opened_path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", substitute_opened_file)
+
+    with pytest.raises(StorageMigrationError) as exc_info:
+        storage_migration_module._snapshot_path(source_file)
+
+    assert exc_info.value.error_code == "source_changed_during_migration"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(os, "mkfifo"),
+    reason="POSIX FIFO replacement is unavailable",
+)
+def test_snapshot_does_not_block_when_file_becomes_fifo_after_is_file(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_file = tmp_path / "source.bin"
+    source_file.write_bytes(b"regular-before-hash")
+    real_hash_file = storage_migration_module._hash_file
+    real_open = storage_migration_module.os.open
+    replaced = False
+
+    def replace_with_fifo_before_hash(path):
+        nonlocal replaced
+        if Path(path) == source_file and not replaced:
+            replaced = True
+            source_file.unlink()
+            os.mkfifo(source_file)
+        return real_hash_file(path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_hash_file",
+        replace_with_fifo_before_hash,
+    )
+    outcome = []
+
+    def snapshot_raced_source():
+        try:
+            storage_migration_module._snapshot_path(source_file)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=snapshot_raced_source, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        # Make a regressed Path.open reader finish so it cannot leak into later tests.
+        writer_fd = real_open(source_file, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+
+    assert replaced
+    assert not worker.is_alive(), "a FIFO swapped in after is_file must not block"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], StorageMigrationError)
+    assert outcome[0].error_code == "path_type_unsupported"
 
 
 @pytest.mark.unit

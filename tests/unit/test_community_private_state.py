@@ -1045,6 +1045,160 @@ def test_metadata_only_private_inventory_never_probes_a_lock_process(
     assert inventory.cleanup_blocked is True
 
 
+@pytest.mark.skipif(
+    not HAS_SAFE_DIR_FD or not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
+    reason="POSIX non-blocking dirfd reads are unavailable",
+)
+@pytest.mark.parametrize("use_dir_fd", (False, True))
+def test_retained_snapshot_does_not_block_when_credential_becomes_fifo(
+    tmp_path,
+    monkeypatch,
+    use_dir_fd,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    credential = retained_root / private_state.COMMUNITY_AUTH_FILENAME
+    credential.write_bytes(b"regular-before-open")
+    real_open = private_state.os.open
+    opened_flags = []
+    replaced = False
+
+    def _replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        opened_path = retained_root / path if dir_fd is not None else Path(path)
+        if opened_path == credential and not replaced:
+            replaced = True
+            credential.unlink()
+            os.mkfifo(credential)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(private_state.os, "open", _replace_with_fifo_before_open)
+    outcome = []
+    root_fd = (
+        real_open(retained_root, os.O_RDONLY | os.O_DIRECTORY)
+        if use_dir_fd
+        else None
+    )
+
+    def _snapshot_raced_credential():
+        try:
+            private_state.snapshot_retained_community_state(
+                retained_root,
+                dir_fd=root_fd,
+            )
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=_snapshot_raced_credential, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        # Release a regressed blocking reader so it cannot leak into later tests.
+        writer_fd = real_open(credential, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+    if root_fd is not None:
+        os.close(root_fd)
+
+    assert not worker.is_alive(), "opening a raced credential FIFO must be non-blocking"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], OSError)
+    assert "changed while snapshotting" in str(outcome[0])
+    assert opened_flags and opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
+    reason="POSIX non-blocking FIFO reads are unavailable",
+)
+def test_social_lock_snapshot_does_not_block_when_lock_becomes_fifo(
+    tmp_path,
+    monkeypatch,
+):
+    lock = tmp_path / private_state.SOCIAL_SESSION_LOCK_FILENAME
+    lock.write_text(
+        json.dumps({"token": "123:owner", "pid": 123}),
+        encoding="utf-8",
+    )
+    real_open = private_state.os.open
+    opened_flags = []
+    replaced = False
+
+    def _replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if Path(path) == lock and not replaced:
+            replaced = True
+            lock.unlink()
+            os.mkfifo(lock)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(private_state.os, "open", _replace_with_fifo_before_open)
+    outcome = []
+
+    def _read_raced_lock():
+        outcome.append(private_state.read_social_lock_owner_snapshot(lock))
+
+    worker = threading.Thread(target=_read_raced_lock, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        # Release a regressed blocking reader so it cannot leak into later tests.
+        writer_fd = real_open(lock, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+
+    assert not worker.is_alive(), "opening a raced social lock FIFO must be non-blocking"
+    assert outcome == [(private_state.SOCIAL_LOCK_OWNER_UNKNOWN, None)]
+    assert opened_flags and opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+
+
+@pytest.mark.skipif(not HAS_SAFE_DIR_FD, reason="POSIX dirfd reads are unavailable")
+def test_retained_snapshot_validates_opened_identity_before_reading(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    credential = retained_root / private_state.COMMUNITY_AUTH_FILENAME
+    credential.write_bytes(b"original")
+    real_open = private_state.os.open
+    replaced = False
+
+    def _replace_with_regular_file_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == credential.name and dir_fd is not None and not replaced:
+            replaced = True
+            credential.unlink()
+            credential.write_bytes(b"replacement")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        private_state.os,
+        "open",
+        _replace_with_regular_file_before_open,
+    )
+    monkeypatch.setattr(
+        private_state.os,
+        "read",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a replaced credential must not be read")
+        ),
+    )
+    root_fd = real_open(retained_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError, match="changed while snapshotting"):
+            private_state.snapshot_retained_community_state(
+                retained_root,
+                dir_fd=root_fd,
+            )
+    finally:
+        os.close(root_fd)
+
+
 def test_social_lock_owner_identity_reuse_and_unknown_stay_three_state():
     owner = {
         "pid": 123,

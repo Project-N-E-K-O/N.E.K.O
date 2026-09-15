@@ -924,7 +924,7 @@ def test_bootstrap_does_not_self_heal_maintenance_mode_for_checkpoint_read_error
     )
 
     with patch(
-        "utils.storage.migration.read_json",
+        "utils.storage.migration.read_fixed_anchor_state_json",
         side_effect=PermissionError("checkpoint permission denied"),
     ):
         result = bootstrap_local_cloudsave_environment(cm)

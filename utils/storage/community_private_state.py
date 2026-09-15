@@ -235,6 +235,62 @@ def backend_can_recover_social_lock_owner(owner: dict | None) -> bool:
     return bool(owner) and str(owner.get("owner_kind") or "") in {"", "neko"}
 
 
+class _PrivateStateSnapshotChanged(OSError):
+    """The opened private-state name no longer identifies the inspected file."""
+
+
+def _read_stable_regular_file(
+    path: Path,
+    before: os.stat_result,
+    *,
+    dir_fd: int | None = None,
+    max_bytes: int | None = None,
+) -> tuple[bytes, os.stat_result]:
+    """Open and read the same regular file without blocking on a raced FIFO."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if os.name != "nt":
+        flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+    fd = -1
+    try:
+        if dir_fd is None:
+            fd = os.open(path, flags)
+        else:
+            fd = os.open(path.name, flags, dir_fd=dir_fd)
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(before, opened)
+            or (max_bytes is not None and int(opened.st_size) > max_bytes)
+        ):
+            raise _PrivateStateSnapshotChanged
+
+        if max_bytes is None:
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1024 * 1024):
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        else:
+            raw = os.read(fd, max_bytes + 1)
+
+        after = os.fstat(fd)
+        named = (
+            path.lstat()
+            if dir_fd is None
+            else os.stat(path.name, dir_fd=dir_fd, follow_symlinks=False)
+        )
+        if (
+            (max_bytes is not None and len(raw) > max_bytes)
+            or not os.path.samestat(opened, after)
+            or not os.path.samestat(after, named)
+        ):
+            raise _PrivateStateSnapshotChanged
+        return raw, after
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def read_social_lock_owner_snapshot(path: Path) -> tuple[str, dict | None]:
     """Read and classify one stable regular lock snapshot without following it."""
     try:
@@ -245,28 +301,12 @@ def read_social_lock_owner_snapshot(path: Path) -> tuple[str, dict | None]:
         return SOCIAL_LOCK_OWNER_UNKNOWN, None
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         return SOCIAL_LOCK_OWNER_UNKNOWN, None
-    fd = -1
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        opened = os.fstat(fd)
-        if not os.path.samestat(before, opened) or int(opened.st_size) > 4096:
-            return SOCIAL_LOCK_OWNER_UNKNOWN, None
-        raw = os.read(fd, 4097)
-        after = os.fstat(fd)
-        named = path.lstat()
-        if (
-            len(raw) > 4096
-            or not os.path.samestat(opened, after)
-            or not os.path.samestat(after, named)
-        ):
-            return SOCIAL_LOCK_OWNER_UNKNOWN, None
+        raw, _after = _read_stable_regular_file(path, before, max_bytes=4096)
     except FileNotFoundError:
         return "absent", None
     except OSError:
         return SOCIAL_LOCK_OWNER_UNKNOWN, None
-    finally:
-        if fd >= 0:
-            os.close(fd)
     owner = parse_social_lock_owner(raw)
     return classify_social_lock_owner(owner), owner
 
@@ -373,20 +413,13 @@ def snapshot_retained_community_state(
         ):
             raise OSError(f"retained {filename} is unsafe")
         try:
-            if dir_fd is None:
-                content = path.read_bytes()
-                after = path.lstat()
-            else:
-                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                fd = os.open(filename, flags, dir_fd=dir_fd)
-                try:
-                    after = os.fstat(fd)
-                    chunks: list[bytes] = []
-                    while chunk := os.read(fd, 1024 * 1024):
-                        chunks.append(chunk)
-                    content = b"".join(chunks)
-                finally:
-                    os.close(fd)
+            content, after = _read_stable_regular_file(
+                path,
+                before,
+                dir_fd=dir_fd,
+            )
+        except _PrivateStateSnapshotChanged as exc:
+            raise OSError(f"retained {filename} changed while snapshotting") from exc
         except OSError as exc:
             raise OSError(f"retained {filename} is unreadable") from exc
         identity_before = (

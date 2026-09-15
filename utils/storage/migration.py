@@ -34,7 +34,6 @@ from utils.file_utils import (
     atomic_write_json,
     fsync_directory_best_effort,
     publish_without_replacing,
-    read_json,
 )
 from utils.logger_config import get_module_logger
 from .entries import (
@@ -52,6 +51,7 @@ from .policy import (
     path_chain_has_symlink,
     path_is_within,
     paths_equal,
+    read_fixed_anchor_state_json,
     save_storage_policy,
 )
 from .path_rewrite import rebase_runtime_bound_workshop_config_paths
@@ -793,7 +793,7 @@ def _rewrite_migrated_runtime_config_paths(
         return
 
     try:
-        payload = read_json(workshop_config_path)
+        payload = _read_json_from_verified_regular_file(workshop_config_path)
     except Exception as exc:
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return
@@ -809,17 +809,148 @@ def _rewrite_migrated_runtime_config_paths(
     atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
 
 
-def _hash_file(path: Path) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    total_bytes = 0
-    with path.open("rb") as handle:
+def _verify_opened_regular_file(
+    path: Path,
+    fd: int,
+    expected_identity: os.stat_result,
+) -> os.stat_result:
+    try:
+        opened = os.fstat(fd)
+        named = path.lstat()
+    except OSError as exc:
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移只读文件在核验期间已发生变化: {path}: {exc}",
+        ) from exc
+    if _is_link_like_metadata(opened) or _is_link_like_metadata(named):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移只读文件不支持符号链接或重解析点: {path}",
+        )
+    if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(named.st_mode):
+        raise StorageMigrationError(
+            "path_type_unsupported",
+            f"迁移只读文件不支持该文件类型: {path}",
+        )
+    stable_fields = ("st_size", "st_mtime_ns", "st_ctime_ns")
+    if (
+        not os.path.samestat(expected_identity, opened)
+        or not os.path.samestat(opened, named)
+        or any(
+            getattr(expected_identity, field) != getattr(opened, field)
+            for field in stable_fields
+        )
+        or any(getattr(opened, field) != getattr(named, field) for field in stable_fields)
+    ):
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移只读文件在核验期间被替换或修改: {path}",
+        )
+    return opened
+
+
+def _open_verified_regular_file(path: Path) -> tuple[int, os.stat_result]:
+    """Open one named regular file without following or blocking on a late special file."""
+
+    named_before = path.lstat()
+    if _is_link_like_metadata(named_before):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移只读文件不支持符号链接或重解析点: {path}",
+        )
+    if not stat.S_ISREG(named_before.st_mode):
+        raise StorageMigrationError(
+            "path_type_unsupported",
+            f"迁移只读文件不支持该文件类型: {path}",
+        )
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+    )
+    if os.name != "nt":
+        flags |= os.O_NONBLOCK | os.O_NOFOLLOW
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise StorageMigrationError(
+                "path_symlink_unsupported",
+                f"迁移只读文件无法无跟随打开: {path}: {exc}",
+            ) from exc
+        raise
+    try:
+        return fd, _verify_opened_regular_file(path, fd, named_before)
+    except BaseException:
+        with suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _read_json_from_verified_regular_file(path: Path) -> Any:
+    fd = -1
+    try:
+        fd, opened_before = _open_verified_regular_file(path)
+        chunks: list[bytes] = []
         while True:
-            chunk = handle.read(1024 * 1024)
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        _verify_opened_regular_file(path, fd, opened_before)
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    finally:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+
+
+def _hash_file(path: Path) -> tuple[int, str]:
+    source_fd = -1
+    try:
+        try:
+            source_fd, opened_before = _open_verified_regular_file(path)
+        except StorageMigrationError:
+            raise
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移校验文件无法安全打开: {path}: {exc}",
+            ) from exc
+
+        digest = hashlib.sha256()
+        total_bytes = 0
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
             if not chunk:
                 break
             total_bytes += len(chunk)
             digest.update(chunk)
-    return total_bytes, digest.hexdigest()
+
+        try:
+            opened_after = _verify_opened_regular_file(
+                path,
+                source_fd,
+                opened_before,
+            )
+        except StorageMigrationError:
+            raise
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移校验文件在读取期间发生变化: {path}: {exc}",
+            ) from exc
+        if total_bytes != opened_after.st_size:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移校验文件在读取期间发生变化: {path}",
+            )
+        return total_bytes, digest.hexdigest()
+    finally:
+        if source_fd >= 0:
+            with suppress(OSError):
+                os.close(source_fd)
 
 
 def _snapshot_path(path: Path) -> dict[str, int | str]:
@@ -987,27 +1118,17 @@ def _transaction_root_is_owned(
             return False
         if path_chain_has_symlink(transaction_root):
             return False
-        marker_before = marker.lstat()
-        if not stat.S_ISREG(marker_before.st_mode) or _is_link_like_metadata(marker_before):
-            return False
-        fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        marker_opened = os.fstat(fd)
-        if not os.path.samestat(marker_before, marker_opened):
-            return False
+        fd, marker_opened = _open_verified_regular_file(marker)
         raw = os.read(fd, 4097)
-        marker_after = os.fstat(fd)
-        marker_named = marker.lstat()
+        _verify_opened_regular_file(marker, fd, marker_opened)
         root_after = transaction_root.lstat()
         if (
             len(raw) > 4096
-            or _is_link_like_metadata(marker_named)
-            or not os.path.samestat(marker_opened, marker_after)
-            or not os.path.samestat(marker_after, marker_named)
             or not os.path.samestat(root_before, root_after)
         ):
             return False
         marker_payload = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, TypeError):
+    except (OSError, StorageMigrationError, UnicodeError, ValueError, TypeError):
         return False
     finally:
         if fd >= 0:
@@ -1379,14 +1500,20 @@ def _fsync_staged_tree(path: Path) -> None:
 
     if sys.platform != "win32":
         for staged_file in paths:
+            fd = -1
             try:
-                with staged_file.open("rb") as handle:
-                    os.fsync(handle.fileno())
-            except OSError as exc:
+                fd, opened_before = _open_verified_regular_file(staged_file)
+                os.fsync(fd)
+                _verify_opened_regular_file(staged_file, fd, opened_before)
+            except (OSError, StorageMigrationError) as exc:
                 raise StorageMigrationError(
                     "target_flush_failed",
                     f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
                 ) from exc
+            finally:
+                if fd >= 0:
+                    with suppress(OSError):
+                        os.close(fd)
         for staged_directory in reversed(directories):
             _fsync_migration_directory(staged_directory)
     else:
@@ -1460,9 +1587,17 @@ def load_storage_migration(
     anchor_root: Path | str | None = None,
     default: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
+    configured_anchor_root = (
+        anchor_root
+        or getattr(config_manager, "anchor_root", None)
+        or compute_anchor_root(config_manager)
+    )
+    migration_path = Path(configured_anchor_root).expanduser() / "state" / "storage_migration.json"
     try:
-        payload = read_json(migration_path)
+        payload = read_fixed_anchor_state_json(
+            configured_anchor_root,
+            "storage_migration.json",
+        )
     except FileNotFoundError:
         return default
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

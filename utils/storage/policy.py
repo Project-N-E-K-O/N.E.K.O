@@ -471,6 +471,11 @@ def _open_posix_anchor_directory(
         if directory_fd >= 0:
             os.close(directory_fd)
         if expected_anchor is None:
+            # Absence is an authority fact too.  If the anchor appeared after
+            # the failed component open, returning a first-run/default result
+            # could hide a checkpoint published by another process.
+            if _validate_storage_policy_anchor(anchor_root) is not None:
+                raise StoragePolicyError("anchor_root_changed") from exc
             raise
         raise StoragePolicyError("anchor_root_changed") from exc
     except OSError as exc:
@@ -510,8 +515,10 @@ def _open_posix_child_directory(parent_fd: int, name: str) -> int:
     return child_fd
 
 
-def _open_posix_policy_file(state_fd: int) -> tuple[int, os.stat_result]:
-    filename = "storage_policy.json"
+def _open_posix_policy_file(
+    state_fd: int,
+    filename: str,
+) -> tuple[int, os.stat_result]:
     named = os.stat(filename, dir_fd=state_fd, follow_symlinks=False)
     if stat.S_ISLNK(named.st_mode) or not stat.S_ISREG(named.st_mode):
         raise StoragePolicyError("policy_path_redirect")
@@ -534,13 +541,14 @@ def _revalidate_posix_policy_handles(
     state_fd: int,
     policy_fd: int,
     policy_before: os.stat_result,
+    filename: str,
 ) -> None:
     _validate_storage_policy_anchor(anchor_root)
 
     try:
         named_anchor = anchor_root.lstat()
         named_state = (anchor_root / "state").lstat()
-        named_policy = (anchor_root / "state" / "storage_policy.json").lstat()
+        named_policy = (anchor_root / "state" / filename).lstat()
     except OSError as exc:
         raise StoragePolicyError("policy_changed_during_read") from exc
     opened_anchor = os.fstat(anchor_fd)
@@ -570,13 +578,14 @@ def _revalidate_posix_policy_absence(
     anchor_root: Path,
     anchor_fd: int,
     state_fd: int,
+    filename: str,
 ) -> None:
     if state_fd < 0:
         parent_fd = anchor_fd
         missing_name = "state"
     else:
         parent_fd = state_fd
-        missing_name = "storage_policy.json"
+        missing_name = filename
 
     try:
         os.stat(missing_name, dir_fd=parent_fd, follow_symlinks=False)
@@ -618,6 +627,7 @@ def _revalidate_posix_policy_absence(
 def _read_storage_policy_json_posix(
     anchor_root: Path,
     expected_anchor: os.stat_result | None,
+    filename: str,
 ) -> Any:
     anchor_fd = -1
     state_fd = -1
@@ -627,12 +637,12 @@ def _read_storage_policy_json_posix(
         try:
             state_fd = _open_posix_child_directory(anchor_fd, "state")
         except FileNotFoundError:
-            _revalidate_posix_policy_absence(anchor_root, anchor_fd, -1)
+            _revalidate_posix_policy_absence(anchor_root, anchor_fd, -1, filename)
             raise
         try:
-            policy_fd, policy_before = _open_posix_policy_file(state_fd)
+            policy_fd, policy_before = _open_posix_policy_file(state_fd, filename)
         except FileNotFoundError:
-            _revalidate_posix_policy_absence(anchor_root, anchor_fd, state_fd)
+            _revalidate_posix_policy_absence(anchor_root, anchor_fd, state_fd, filename)
             raise
 
         raw = _read_open_file_descriptor(policy_fd)
@@ -642,6 +652,7 @@ def _read_storage_policy_json_posix(
             state_fd,
             policy_fd,
             policy_before,
+            filename,
         )
         return json.loads(raw.decode("utf-8"))
     finally:
@@ -656,6 +667,7 @@ def _read_storage_policy_json_posix(
 def _read_storage_policy_json_windows(
     anchor_root: Path,
     expected_anchor: os.stat_result | None,
+    filename: str,
 ) -> Any:
     """Read through stable Win32 handles and reject every reparse component."""
 
@@ -838,6 +850,8 @@ def _read_storage_policy_json_windows(
                 handle, anchor_snapshot = _open_handle(current, directory=True)
             except FileNotFoundError as exc:
                 if expected_anchor is None:
+                    if _validate_storage_policy_anchor(anchor_root) is not None:
+                        raise StoragePolicyError("anchor_root_changed") from exc
                     raise
                 raise StoragePolicyError("anchor_root_changed") from exc
             handles.append(handle)
@@ -867,7 +881,7 @@ def _read_storage_policy_json_windows(
             raise
         handles.append(state_handle)
 
-        policy_path = state_path / "storage_policy.json"
+        policy_path = state_path / filename
         try:
             policy_handle, policy_before = _open_handle(policy_path, directory=False)
         except FileNotFoundError:
@@ -914,13 +928,38 @@ def _read_storage_policy_json_windows(
             _close_handle(handle)
 
 
+def read_fixed_anchor_state_json(
+    configured_anchor_root: Path | str,
+    filename: str,
+) -> Any:
+    """Read one fixed-anchor state JSON through a verified directory chain."""
+
+    if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+        raise StoragePolicyError("policy_path_uninspectable")
+    expected_anchor = _validate_storage_policy_anchor(configured_anchor_root)
+    anchor_root = normalize_runtime_root(configured_anchor_root)
+    if os.name == "nt":
+        return _read_storage_policy_json_windows(anchor_root, expected_anchor, filename)
+    return _read_storage_policy_json_posix(anchor_root, expected_anchor, filename)
+
+
 def _read_storage_policy_json(
     anchor_root: Path,
     expected_anchor: os.stat_result | None,
 ) -> Any:
+    """Preserve the policy reader seam while sharing its anchored implementation."""
+
     if os.name == "nt":
-        return _read_storage_policy_json_windows(anchor_root, expected_anchor)
-    return _read_storage_policy_json_posix(anchor_root, expected_anchor)
+        return _read_storage_policy_json_windows(
+            anchor_root,
+            expected_anchor,
+            "storage_policy.json",
+        )
+    return _read_storage_policy_json_posix(
+        anchor_root,
+        expected_anchor,
+        "storage_policy.json",
+    )
 
 
 def load_storage_policy(
