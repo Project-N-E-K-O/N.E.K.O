@@ -98,8 +98,11 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   function finishSpeech(completed) {
     const current=speech;
     speech=null;
-    audio.removeAttribute('src');
-    onCue(null);
+    // A line spoken while paused over a reaction borrowed its element and bubble; give both back.
+    const reactionSource = typeof active?.audio === 'string' ? resources.get(active.audio) : null;
+    if (reactionSource) audio.src = reactionSource;
+    else audio.removeAttribute('src');
+    onCue(active || null);
     URL.revokeObjectURL(current.url);
     current.resolve(completed ? 'completed' : current.started ? 'interrupted' : 'skipped');
   }
@@ -155,7 +158,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   listen(video, 'playing', () => {
     waiting = false;
     // A live line started while paused over a reaction hands the moment back when playback resumes.
-    if (speech && active) { stop(); if (!active.audio) onCue(active); }
+    if (speech && active) stop();
     sync();
   });
   // A paused video is a valid moment for a live line, so pausing only stops reactions.
@@ -236,7 +239,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       // while the video plays; a paused reaction is silent until playback resumes.
       const busy = () => disposed || speech || (active && !video.paused);
       if (busy()) return 'skipped';
-      const attemptGeneration = generation;
+      // Admitted for a paused video: if playback resumes during the download, the caller must
+      // recheck the reaction gap, so the line is handed back unstarted.
+      const attemptGeneration = generation, admittedPaused = video.paused && !video.ended;
       // A stalled download must not hold the intermission (and automatic mode) forever.
       const download = new AbortController();
       const deadline = setTimeout(() => download.abort(), 10000);
@@ -256,7 +261,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
       // Playback may have started buffering or seeking during the fetch. Paused and ended
       // videos are valid moments (plugin replies while paused, the automatic-mode intermission).
-      if (busy() || generation !== attemptGeneration || (waiting && !video.paused) || video.seeking) return 'skipped';
+      if (busy() || generation !== attemptGeneration || (waiting && !video.paused) || video.seeking
+          || (admittedPaused && !video.paused)) return 'skipped';
       return new Promise(resolve => {
         speech = { url: URL.createObjectURL(blob), resolve, started: false, cue: { text: String(line.text || ''), live: true } };
         const current = speech;
