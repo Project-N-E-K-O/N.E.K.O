@@ -806,11 +806,19 @@ try {
   const paused=await fixture(false,false,{total_tokens:1});
   const pausedVideo=paused.elements.get('video'),pausedRequests=[],pausedSpoken=[];
   const pausedBase=paused.game.media.request;
-  paused.game.media.mount=async()=>({play:async()=>{pausedVideo.paused=false;},say:async spokenLine=>{pausedSpoken.push(spokenLine.text);return 'completed';},dispose(){}});
+  paused.game.media.mount=async()=>({play:async()=>{pausedVideo.paused=false;},say:async spokenLine=>{
+    pausedSpoken.push(spokenLine.text);
+    if(spokenLine.text==='broken line')throw Error('Live speech unavailable');
+    return 'completed';
+  },dispose(){}});
+  const pausedReplies=[
+    [{text:'paused line',audio:'/paused',duration:6}],
+    [{text:'broken line',audio:'/broken',duration:1},{text:'after broken',audio:'/after',duration:1}],
+  ];
   paused.game.media.request=(action,payload)=>{
     if(action!=='live')return pausedBase(action,payload);
     pausedRequests.push(payload);
-    return Promise.resolve({lines:pausedRequests.length===1?[{text:'paused line',audio:'/paused',duration:6}]:[]});
+    return Promise.resolve({lines:pausedReplies[pausedRequests.length-1] || []});
   };
   await paused.elements.get('play').onclick();
   pausedVideo.duration=60;pausedVideo.currentTime=57;
@@ -824,7 +832,55 @@ try {
   assert.equal(pausedRequests.length,1,'the held line is spoken while paused without a new generation');
   pausedTicks.at(-1)();
   await waitFor(()=>pausedRequests.length===2,()=>'a paused video still asks for held plugin responses');
+  // A line whose audio fails is dropped; the untried lines after it wait for the next poll.
+  await waitFor(()=>pausedSpoken.includes('broken line'));
+  await pause(20);
+  pausedTicks.at(-1)();
+  await waitFor(()=>pausedSpoken.includes('after broken'),()=>'lines after an unplayable one are kept');
+  await pause(20);
+  assert.deepEqual(pausedSpoken,['paused line','broken line','after broken'],'an unplayable line is not retried');
+  assert.equal(pausedRequests.length,2,'kept lines need no new generation');
   paused.handlers['runtime-inactive']();
+} finally {
+  globalThis.setInterval=realInterval;
+}
+// Automatic mode, video finished, next one not ready yet: after the intermission, held responses are spoken.
+const waitingTicks=[];
+globalThis.setInterval=(fn,delay,...args)=>delay===2500?(waitingTicks.push(fn),{liveTick:true}):realInterval(fn,delay,...args);
+try {
+  const waiting=await fixture(false,false,{total_tokens:1});
+  const waitingVideo=waiting.elements.get('video'),waitingRequests=[],waitingSpoken=[];
+  let waitingPlays=0,finishIntermission=null;
+  const waitingBase=waiting.game.media.request;
+  waiting.game.media.mount=async options=>{
+    waiting.emit=options.onEvent;
+    return {play:async()=>{waitingPlays++;waitingVideo.ended=false;waitingVideo.paused=false;},
+      say:async spokenLine=>{waitingSpoken.push(spokenLine.text);return 'completed';},dispose(){}};
+  };
+  waiting.game.media.request=(action,payload)=>{
+    if(action!=='live')return waitingBase(action,payload);
+    waitingRequests.push(payload.action);
+    if(payload.action==='intermission')return new Promise(resolve=>{
+      finishIntermission=()=>resolve({lines:[{text:'summary',audio:'/summary',duration:1}]});
+    });
+    return Promise.resolve({lines:[{text:'waiting line',audio:'/waiting',duration:1}]});
+  };
+  waiting.elements.get('automatic-enabled').checked=true;waiting.elements.get('automatic-enabled').onchange();
+  await waitFor(()=>waitingPlays===1);
+  waitingVideo.duration=60;waitingVideo.currentTime=60;waitingVideo.ended=true;waitingVideo.paused=true;
+  waiting.emit({type:'ended'});
+  await waitFor(()=>finishIntermission);
+  waitingTicks.at(-1)();
+  await pause(20);
+  assert.deepEqual(waitingRequests,['intermission'],'the finished video speaks its intermission first');
+  finishIntermission();
+  await waitFor(()=>waitingSpoken.includes('summary'));
+  await pause(20);
+  waitingTicks.at(-1)();
+  await waitFor(()=>waitingSpoken.includes('waiting line'),()=>JSON.stringify({waitingRequests,waitingSpoken,waitingPlays}));
+  assert.equal(waitingPlays,1,'responses are spoken while the next video is still being prepared');
+  assert.deepEqual(waitingSpoken,['summary','waiting line']);
+  await waiting.elements.get('watch-stop').onclick();
 } finally {
   globalThis.setInterval=realInterval;
 }

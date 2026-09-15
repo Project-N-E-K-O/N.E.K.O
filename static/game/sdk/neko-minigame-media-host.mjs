@@ -152,7 +152,12 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     emit('audio-ended', active?.id); stop(true);
   });
   listen(video, 'waiting', () => { waiting = true; stop(); });
-  listen(video, 'playing', () => { waiting = false; sync(); });
+  listen(video, 'playing', () => {
+    waiting = false;
+    // A live line started while paused over a reaction hands the moment back when playback resumes.
+    if (speech && active) { stop(); if (!active.audio) onCue(active); }
+    sync();
+  });
   // A paused video is a valid moment for a live line, so pausing only stops reactions.
   listen(video, 'pause', () => { if (!speech) stop(); emit('pause'); });
   listen(video, 'play', () => { if (!release) { video.pause(); return; } emit('play'); });
@@ -262,7 +267,8 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
         audio.play().catch(() => { if (speech === current && attempt === playAttempt) stop(); });
       });
     },
-    pause() { video.pause(); stop(); },
+    // Same as the native control: pausing stops reactions but keeps a live line.
+    pause() { video.pause(); if (!speech) stop(); },
     interrupt() { video.pause(); generation++; stop(true); clock.seek(video.currentTime); },
     dispose() {
       if (disposed) return;

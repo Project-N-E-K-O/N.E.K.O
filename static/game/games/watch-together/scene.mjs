@@ -22,6 +22,8 @@ export async function run(game, character) {
     return runtimeStarting;
   }
   let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [], heldEpoch = 0;
+  // The media whose automatic-mode intermission has started; until then its end belongs to the intermission.
+  let intermissionMedia = null;
   let nextRow=null, queuedFor=null, preparing=false;
   let automaticPending=false;
   const automatic=createAutomatic({
@@ -124,12 +126,15 @@ export async function run(game, character) {
   // because the model and TTS take longer than most reaction gaps; it is spoken while playback
   // is paused, or once no reaction is due for LIVE_GAP_SECONDS and the line ends before the next.
   const LIVE_GAP_SECONDS = 5;
-  const liveMoment = (video, duration) => !video.seeking && !(video.ended && automatic.enabled)
+  // In automatic mode a finished video first speaks its intermission; once that has started, the
+  // wait for the next video (still being found or prepared) is an ordinary moment for held lines.
+  const awaitingIntermission = video => video.ended && automatic.enabled && intermissionMedia !== media;
+  // A line that returns while the intermission runs is held for it, so the summary still comes first.
+  const liveMoment = (video, duration) => !intermission && !video.seeking && !awaitingIntermission(video)
     && (video.paused || reactionGap(video.currentTime) >= Math.max(LIVE_GAP_SECONDS, duration + 0.5));
   function pollLive() {
     const current = media, row = selected, video = $('video'), generation = playbackGeneration, epoch = heldEpoch;
-    // Automatic mode answers what is held in the intermission once a video ends.
-    if (liveFlight || intermission || !current || !row || video.seeking || (video.ended && automatic.enabled)
+    if (liveFlight || intermission || !current || !row || video.seeking || awaitingIntermission(video)
         || game.runtime.state !== 'running') return;
     const flight = (async () => {
       let entries = takeHeldLines();
@@ -139,8 +144,15 @@ export async function run(game, character) {
           holdLines(entries.slice(index), epoch);
           return;
         }
+        let outcome;
+        try { outcome = await current.say(entries[index].line); }
+        catch (error) {
+          // A line whose audio cannot be played is dropped; the lines after it were never tried.
+          holdLines(entries.slice(index + 1), epoch);
+          throw error;
+        }
         // A line cut off after it started is not replayed; one that never started is kept.
-        if (await current.say(entries[index].line) === 'skipped') {
+        if (outcome === 'skipped') {
           holdLines(entries.slice(index), epoch);
           return;
         }
@@ -152,6 +164,7 @@ export async function run(game, character) {
   function startIntermission() {
     const current = media, row = selected, epoch = heldEpoch;
     if (!current || !row || intermission) return;
+    intermissionMedia = current;
     const request = () => game.media.request('live', {action:'intermission', job:row.id, version:row.version, render_language:renderLanguage()});
     const task = (async () => {
       if (liveFlight) await Promise.race([liveFlight, new Promise(resolve => setTimeout(resolve, 20000))]);
@@ -164,7 +177,14 @@ export async function run(game, character) {
       const queue = [...freshEntries(summary ? [summary] : []), ...takeHeldLines(), ...freshEntries(replies)];
       for (let index = 0; index < queue.length; index++) {
         if (current !== media || !automatic.enabled) break;
-        if (await current.say(queue[index].line) === 'skipped') {
+        let outcome;
+        try { outcome = await current.say(queue[index].line); }
+        catch (error) {
+          // Same as a gap line: drop the unplayable one, keep the untried replies.
+          holdLines(queue.slice(index + 1).filter(entry => entry.line !== summary), epoch);
+          throw error;
+        }
+        if (outcome === 'skipped') {
           // Stop rather than wait out each remaining line; replies still wait for a gap in
           // the next video, while the summary belongs to this video only.
           holdLines(queue.slice(index).filter(entry => entry.line !== summary), epoch);
