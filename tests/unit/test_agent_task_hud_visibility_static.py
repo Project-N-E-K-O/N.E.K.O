@@ -145,3 +145,31 @@ def test_standalone_hud_uses_window_ownership_instead_of_floating_preference():
         "window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });"
         in template_source
     )
+
+
+@pytest.mark.unit
+def test_standalone_hud_response_versions_its_shared_runtime_and_react_bundle(monkeypatch):
+    import asyncio
+    import re
+    from urllib.parse import parse_qs, urlsplit
+
+    from starlette.requests import Request
+    from starlette.templating import Jinja2Templates
+
+    from main_routers import pages_router
+
+    monkeypatch.setattr(pages_router, 'get_templates', lambda: Jinja2Templates(directory=str(REPO_ROOT)))
+    monkeypatch.setattr(pages_router, '_static_assets_ctx', lambda: {'static_asset_version': 'static-new'})
+    monkeypatch.setattr(pages_router, '_react_chat_assets_ctx', lambda: {'react_chat_asset_version': 'react-new'})
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/agenthud', 'headers': []})
+    response = asyncio.run(pages_router.get_agenthud_page(request))
+    urls = re.findall(r'(?:src|href)="(/static/[^\"]+)"', response.body.decode())
+    paths = {urlsplit(url).path for url in urls}
+    assert {
+        '/static/common-ui-hud.js', '/static/i18n-i18next.js',
+        '/static/css/agent-plugin-views.css', '/static/app/app-plugin-views.js',
+        '/static/react/neko-chat/neko-chat-window.iife.js',
+    } <= paths
+    for url in urls:
+        expected = 'react-new' if '/static/react/neko-chat/' in url else 'static-new'
+        assert parse_qs(urlsplit(url).query) == {'v': [expected]}, url

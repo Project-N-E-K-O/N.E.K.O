@@ -25,6 +25,8 @@ Two orthogonal axes:
 
 Parts are an ordered list of dicts.  Each part has a ``type`` discriminator:
 
+* ``{"type": "html_card", "card_id": str, "operation": "create|update", ...}``
+  – display-only HTML card; prefer ``await ctx.create_card(...)`` / ``card.update(...)``.
 * ``{"type": "text",  "text": str}``
 * ``{"type": "image", "data": bytes, "mime": str}``  (inline)
 * ``{"type": "image", "url":  str,   "mime": str}``  (URL reference;

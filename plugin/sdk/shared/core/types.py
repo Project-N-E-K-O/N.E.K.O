@@ -15,6 +15,8 @@ from typing import (
     TypedDict,
 )
 
+from .cards import ChatCard, PluginView
+
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -150,6 +152,19 @@ class PluginContextProtocol(Protocol):
     logger: LoggerLike | None
     config_path: str | Path | None
     bus: BusProtocol | None
+
+    async def create_card(self, *, html: str, summary: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          target_lanlan: str | None = None) -> "ChatCard": ...
+
+    def get_card(self, card_id: str, *, target_lanlan: str | None = None) -> "ChatCard": ...
+
+    async def create_view(self, *, title: str, html: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          summary: str | None = None,
+                          target_lanlan: str | None = None) -> "PluginView": ...
+
+    def get_view(self, view_id: str, *, target_lanlan: str | None = None) -> "PluginView": ...
 
     async def get_own_config(self, timeout: float = 5.0) -> object: ...
 
