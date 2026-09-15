@@ -3,7 +3,6 @@
  * independent from Compact Chat, while avatar-tool selection delegates to the
  * shared catalog, runtime and visual layer.
  */
-import { WatchTogetherButton } from './WatchTogetherButton';
 import {
   useState,
   useEffect,
@@ -3200,7 +3199,6 @@ export default function FullChatSurface({
             <h1 className="window-title" id="react-chat-window-title">{title}</h1>
           </div>
           {/* Avatar button moved to #react-chat-window-header-actions in host template */}
-          <WatchTogetherButton />
         </header>
 
         {chatBodyNode}
