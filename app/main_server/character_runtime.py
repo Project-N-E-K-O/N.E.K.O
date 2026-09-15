@@ -1890,6 +1890,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 new_mgr.user_language = old_user_language
                 new_mgr._user_language_explicit = True
 
+            # 新 manager 的 ToolRegistry 只有内置工具：把插件等远端注册重放进来，
+            # 否则保存配置 / 改音色之后插件工具会静默消失（见 tool_router 的台账注释）。
+            try:
+                from main_routers.tool_router import replay_remote_tools
+
+                replay_remote_tools(new_mgr, k)
+            except Exception as e:
+                logger.warning(f"重放 {k} 的远端工具注册失败: {e}")
+
             # 恢复websocket引用（如果存在）
             if old_websocket:
                 new_mgr.websocket = old_websocket
@@ -2029,6 +2038,14 @@ def _cleanup_character_dicts(k: str):
         pass
     # 一次 del 原子清掉所有 6 个字段 —— 替代旧代码里 6 张 dict 分别 del 的对称清理
     del role_state[k]
+    # 与重建分支的 replay_remote_tools 对偶：槽位没了，该角色的 scoped 工具记录和
+    # 全局记录上的排除项也得清掉，否则之后同名的新角色（含改名成这个名字）会继承。
+    try:
+        from main_routers.tool_router import forget_role
+
+        forget_role(k)
+    except Exception as e:
+        logger.warning(f"清理 {k} 的远端工具台账失败: {e}")
 
 
 async def _unregister_character_voice_identity_manager(k: str) -> None:

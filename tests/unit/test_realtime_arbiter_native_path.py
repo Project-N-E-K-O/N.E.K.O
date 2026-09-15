@@ -51,6 +51,9 @@ from main_logic.omni_realtime_client._shared import (
 from main_logic.tool_calling import ToolResult
 
 
+pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")
+
+
 def _native_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime"):
     """A client with no independent ASR anywhere in the picture."""
 
@@ -1432,7 +1435,7 @@ async def test_fail_close_logs_initiator_reason_and_lane_state(caplog):
     )
 
     with caplog.at_level(
-        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+        logging.WARNING, logger=_arbiter_module.logger.name
     ):
         # No terminal ever arrives for the cancelled response; cancel_current
         # fails closed and re-raises the timeout to its caller.
@@ -1476,7 +1479,7 @@ async def test_cancel_whose_terminal_arrives_in_time_never_fails_closed(caplog):
     )
 
     with caplog.at_level(
-        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+        logging.WARNING, logger=_arbiter_module.logger.name
     ):
         cancel_task = asyncio.create_task(arbiter.cancel_current(timeout=1))
         await _settle()

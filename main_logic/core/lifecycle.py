@@ -2173,6 +2173,13 @@ class LifecycleMixin:
         # held at connect time. ``set_tools`` keeps it live for
         # later mutations.
         _initial_tool_defs = self.tool_registry.all()
+        logger.info(
+            "[%s] session tools snapshot (input_mode=%s client=%s): %s",
+            self.lanlan_name,
+            input_mode,
+            "offline" if input_mode == 'text' else "realtime",
+            [t.name for t in _initial_tool_defs],
+        )
 
         # 下面两个分支都会在此刻重读配置并把 base_url 冻进 client（text 分支的
         # OmniOfflineClient / realtime 分支的连接配置）。prepare_runtime 虽已落定
@@ -2493,6 +2500,13 @@ class LifecycleMixin:
             # 抓快照前 refresh 一下内置工具的 description。
             self._register_builtin_tools()
             _pending_tool_defs = self.tool_registry.all()
+            logger.info(
+                "[%s] pending session tools snapshot (input_mode=%s client=%s): %s",
+                self.lanlan_name,
+                self.input_mode,
+                "offline" if pending_offline_vlm else "realtime",
+                [t.name for t in _pending_tool_defs],
+            )
             if pending_offline_vlm:
                 # 文本模式：使用 OmniOfflineClient
                 # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
