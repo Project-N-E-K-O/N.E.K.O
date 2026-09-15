@@ -39,6 +39,7 @@ from main_logic.proactive_delivery import (
     CALLBACK_IMAGE_MAX_TOTAL_BYTES,
     approx_base64_decoded_bytes,
 )
+from main_logic.vmc_sender import set_vmc_enabled_callback
 from plugin.sdk.shared.core.images import (
     MAX_SOURCE_IMAGE_PIXELS,
     normalize_image_to_jpeg,
@@ -875,6 +876,37 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
         *(_send_one(n, ws) for n, ws in targets), return_exceptions=False
     )
     return sum(1 for r in results if r is True)
+
+
+async def _broadcast_vmc_enabled(enabled: bool) -> None:
+    """Wake browser samplers after a non-browser client enables VMC.
+
+    The browser only starts sampling once its own ``enable()`` runs, so a
+    plugin calling ``POST /api/vmc/enable`` would otherwise leave the UDP
+    sender running with no frame source. The chat WebSocket carries this
+    one-shot control event; per-frame VMC data stays on ``/api/vmc/ws``.
+
+    Wired here rather than in ``main_routers/vmc_router.py``: the broadcast
+    target is this module's session registry, and a router (L3) importing
+    ``app`` (L6) is both a layer inversion and an import cycle — the thing
+    ``scripts/check_module_layering.py`` rejects. ``set_vmc_enabled_callback``
+    is the seam that lets the app layer own the wiring instead.
+    """
+    if not enabled:
+        return
+    try:
+        delivered = await _broadcast_to_all_connected(
+            {"type": "vmc_state_changed", "enabled": True}
+        )
+        logger.info("VMC enable broadcast delivered to %d session(s)", delivered)
+    except Exception as exc:
+        logger.warning("VMC enable broadcast failed: %s", exc)
+
+
+# Import-time registration, matching the previous behaviour in vmc_router:
+# set_vmc_enabled_callback() deliberately does not construct the VmcSender
+# singleton, so this cannot run before the config manager is ready.
+set_vmc_enabled_callback(_broadcast_vmc_enabled)
 
 
 async def _handle_agent_event(event: dict):

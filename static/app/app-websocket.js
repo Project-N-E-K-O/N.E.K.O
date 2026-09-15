@@ -2351,6 +2351,56 @@
         };
     }
 
+    // Pull the backend VMC state after the chat socket connects, so a page that
+    // missed the one-shot vmc_state_changed broadcast still starts sampling.
+    // The status probe is a plain fetch on purpose: calling into the lazy
+    // facade would pull in the full sender on every VRM page, defeating the
+    // loader's "no VMC work until someone enables it" contract. Only a backend
+    // that reports enabled is worth waking the sender for.
+    var _vmcConnectSyncRetryArmed = false;
+
+    function _syncVmcStateOnConnect() {
+        if (!window.vrmVmcSender
+            || typeof window.vrmVmcSender.syncStatusFromBackend !== 'function') {
+            // vrm-vmc-loader.js 要等 three-ready 之后才开始拉取，聊天 WS 的
+            // onopen 有可能先到。此时不能直接放弃：本次连接周期会永远错过
+            // 恢复窗口。挂一次性监听，等 VRM 模块就绪事件再补一次探测。
+            // 非 VRM 页面不会加载门面，事件也不会来，监听器随页面闲置。
+            //
+            // 标志是模块级的，监听器也只挂一份：门面是全局单例，重连期间
+            // 再挂一份只会对同一个门面重复探测，并让 once 监听器随重连累积。
+            // 待补的那一次探测由已挂的监听器负责，因此这里直接返回。
+            if (!_vmcConnectSyncRetryArmed) {
+                _vmcConnectSyncRetryArmed = true;
+                var retryWhenFacadeReady = function () {
+                    // 先清标志再重入：若门面仍未就绪，重入会重新挂一次监听，
+                    // 否则这条恢复路径在本页面剩余生命周期内彻底失效。
+                    _vmcConnectSyncRetryArmed = false;
+                    window.removeEventListener('vrm-modules-ready', retryWhenFacadeReady);
+                    window.removeEventListener('vrm-modules-failed', retryWhenFacadeReady);
+                    _syncVmcStateOnConnect();
+                };
+                window.addEventListener('vrm-modules-ready', retryWhenFacadeReady, { once: true });
+                window.addEventListener('vrm-modules-failed', retryWhenFacadeReady, { once: true });
+            }
+            return;
+        }
+        fetch('/api/vmc/status', { credentials: 'same-origin' })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || data.success === false || data.enabled !== true) return;
+                // Already sampling: syncStatusFromBackend() is idempotent, but
+                // skipping avoids a redundant status round-trip per reconnect.
+                if (window.__NEKO_VMC_ACTIVE__ === true) return;
+                return window.vrmVmcSender.syncStatusFromBackend();
+            })
+            .catch(function (error) {
+                console.warn('[VMC] connect-time state sync failed:', error);
+            });
+    }
+
     function connectWebSocket() {
         var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
@@ -2430,6 +2480,12 @@
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
             }));
+
+            // Recover a VMC enable that happened while this page was away.
+            // vmc_state_changed is a one-shot broadcast, so a plugin enabling
+            // VMC before the page loaded (or during a reconnect gap) would
+            // otherwise leave the UDP sender running with no frame source.
+            _syncVmcStateOnConnect();
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -4086,6 +4142,20 @@
                         fn();
                     } else {
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
+                    }
+
+                // -------- vmc_state_changed --------
+                } else if (response.type === 'vmc_state_changed') {
+                    // A plugin (or any non-browser client) enabled the backend
+                    // VMC sender. The browser owns the frame source, so wake it
+                    // here; syncStatusFromBackend() lazy-loads the real sender,
+                    // flips __NEKO_VMC_ACTIVE__ and starts its own polling.
+                    if (response.enabled === true && window.vrmVmcSender
+                        && typeof window.vrmVmcSender.syncStatusFromBackend === 'function') {
+                        Promise.resolve(window.vrmVmcSender.syncStatusFromBackend())
+                            .catch(function (error) {
+                                console.warn('[VMC] backend-enable sync failed:', error);
+                            });
                     }
 
                 // -------- agent_status_update --------
