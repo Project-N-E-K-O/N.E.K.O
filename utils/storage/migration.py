@@ -27,6 +27,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,26 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
 MIGRATED_RUNTIME_ENTRY_NAMES = RUNTIME_STORAGE_RELATIVE_PATHS
 _TRANSACTION_OWNER_MARKER_FILENAME = ".neko-storage-transaction-owner.json"
 _TRANSACTION_OWNER_MARKER_VERSION = 1
+_MIGRATION_ERROR_MESSAGE_MAX_BYTES = 16 * 1024
+
+
+@dataclass(frozen=True)
+class _DirectoryModeRestoreEntry:
+    relative_parts: tuple[str, ...]
+    identity: os.stat_result
+    original_mode: int
+
+
+@dataclass
+class _DirectoryModeRestorePlan:
+    root_fd: int = -1
+    entries: list[_DirectoryModeRestoreEntry] = field(default_factory=list)
+
+
+@dataclass
+class _CopyCapacity:
+    required_bytes: int = 0
+    entry_count: int = 0
 
 
 class StorageMigrationError(RuntimeError):
@@ -111,6 +132,17 @@ def _is_link_like_metadata(metadata: os.stat_result) -> bool:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _bounded_migration_error_message(value: Any) -> str:
+    message = str(value or "").strip()
+    encoded = message.encode("utf-8")
+    if len(encoded) <= _MIGRATION_ERROR_MESSAGE_MAX_BYTES:
+        return message
+    suffix = "…[truncated]"
+    suffix_bytes = suffix.encode("utf-8")
+    prefix = encoded[: _MIGRATION_ERROR_MESSAGE_MAX_BYTES - len(suffix_bytes)]
+    return prefix.decode("utf-8", errors="ignore") + suffix
 
 
 def _normalize_optional_path(value: Path | str | None) -> str:
@@ -371,6 +403,56 @@ def _ensure_directory_path_on_mount(
         os.close(fd)
 
 
+def _open_mode_restore_entry(
+    root_fd: int,
+    relative_parts: tuple[str, ...],
+) -> int:
+    """Open one recorded directory below a pinned root without following links."""
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    if not relative_parts:
+        return os.dup(root_fd)
+    current_fd = root_fd
+    owns_current = False
+    try:
+        for part in relative_parts:
+            next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            if owns_current:
+                os.close(current_fd)
+            current_fd = next_fd
+            owns_current = True
+        return current_fd
+    except BaseException:
+        if owns_current:
+            os.close(current_fd)
+        raise
+
+
+def _restore_recorded_directory_modes(
+    root_fd: int,
+    entries: list[_DirectoryModeRestoreEntry],
+    path: Path,
+) -> None:
+    restore_errors: list[OSError] = []
+    for entry in reversed(entries):
+        restore_fd = -1
+        try:
+            restore_fd = _open_mode_restore_entry(root_fd, entry.relative_parts)
+            if not os.path.samestat(entry.identity, os.fstat(restore_fd)):
+                raise OSError("refusing to chmod a replaced migration directory")
+            os.fchmod(restore_fd, entry.original_mode)
+        except OSError as exc:
+            restore_errors.append(exc)
+        finally:
+            if restore_fd >= 0:
+                os.close(restore_fd)
+    if restore_errors:
+        raise StorageMigrationError(
+            "permission_restore_failed",
+            f"迁移清理失败后无法恢复事务目录权限: {path}",
+        )
+
+
 def _preflight_opened_directory_tree_mounts(
     path: Path,
     *,
@@ -378,11 +460,17 @@ def _preflight_opened_directory_tree_mounts(
     expected_mount_identity: tuple[str, int] | None = None,
     expected_root_identity: os.stat_result | None = None,
     make_traversable: bool = False,
-    retained_mode_handles: list[tuple[int, int]] | None = None,
+    retained_mode_plan: _DirectoryModeRestorePlan | None = None,
 ) -> tuple[str, int] | None:
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     tree_mount_identity = expected_mount_identity or _opened_mount_identity(root_fd)
-    modified_modes: list[tuple[int, int]] = []
+    modified_modes: list[_DirectoryModeRestoreEntry] = []
+    retained_root_fd = -1
+
+    if retained_mode_plan is not None and (
+        retained_mode_plan.root_fd >= 0 or retained_mode_plan.entries
+    ):
+        raise ValueError("directory mode restore plan must be empty")
 
     if expected_root_identity is not None and not os.path.samestat(
         expected_root_identity,
@@ -393,24 +481,26 @@ def _preflight_opened_directory_tree_mounts(
             f"迁移目录在安全检查前被替换: {path}",
         )
 
-    def _make_traversable(directory_fd: int) -> None:
-        mode = stat.S_IMODE(os.fstat(directory_fd).st_mode)
+    def _make_traversable(
+        directory_fd: int,
+        relative_parts: tuple[str, ...],
+    ) -> None:
+        identity = os.fstat(directory_fd)
+        mode = stat.S_IMODE(identity.st_mode)
         updated_mode = mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         if updated_mode == mode:
             return
-        restore_fd = os.dup(directory_fd)
-        try:
-            os.fchmod(directory_fd, updated_mode)
-        except BaseException:
-            os.close(restore_fd)
-            raise
-        modified_modes.append((restore_fd, mode))
+        os.fchmod(directory_fd, updated_mode)
+        modified_modes.append(
+            _DirectoryModeRestoreEntry(relative_parts, identity, mode)
+        )
 
     def _open_child_directory(
         directory_fd: int,
         child_name: str,
         before: os.stat_result,
         child_display: Path,
+        relative_parts: tuple[str, ...],
     ) -> int:
         try:
             return os.open(child_name, directory_flags, dir_fd=directory_fd)
@@ -500,23 +590,23 @@ def _preflight_opened_directory_tree_mounts(
                     follow_symlinks=False,
                 )
             raise
-        try:
-            restore_fd = os.dup(child_fd)
-        except BaseException:
-            os.fchmod(child_fd, original_mode)
-            os.close(child_fd)
-            raise
-        modified_modes.append((restore_fd, original_mode))
+        modified_modes.append(
+            _DirectoryModeRestoreEntry(relative_parts, before, original_mode)
+        )
         return child_fd
 
-    def _inspect(directory_fd: int, display_path: Path) -> None:
+    def _inspect(
+        directory_fd: int,
+        display_path: Path,
+        relative_parts: tuple[str, ...],
+    ) -> None:
         _ensure_opened_entry_on_mount(
             directory_fd,
             tree_mount_identity,
             display_path,
         )
         if make_traversable:
-            _make_traversable(directory_fd)
+            _make_traversable(directory_fd, relative_parts)
         with os.scandir(directory_fd) as children:
             child_names = sorted(child.name for child in children)
         for child_name in child_names:
@@ -534,6 +624,7 @@ def _preflight_opened_directory_tree_mounts(
                     child_name,
                     before,
                     child_display,
+                    relative_parts + (child_name,),
                 )
                 try:
                     if not os.path.samestat(before, os.fstat(child_fd)):
@@ -541,12 +632,16 @@ def _preflight_opened_directory_tree_mounts(
                             "migration_path_changed",
                             f"迁移目录在安全检查期间被替换: {child_display}",
                         )
-                    _inspect(child_fd, child_display)
+                    _inspect(
+                        child_fd,
+                        child_display,
+                        relative_parts + (child_name,),
+                    )
                 finally:
                     os.close(child_fd)
 
     try:
-        _inspect(root_fd, path)
+        _inspect(root_fd, path, ())
         if expected_root_identity is not None:
             try:
                 named_root = path.lstat()
@@ -560,27 +655,22 @@ def _preflight_opened_directory_tree_mounts(
                     "migration_path_changed",
                     f"迁移目录在安全检查期间被替换: {path}",
                 )
+        if retained_mode_plan is not None and modified_modes:
+            retained_root_fd = os.dup(root_fd)
     except BaseException as exc:
-        restore_errors: list[OSError] = []
-        for restore_fd, original_mode in reversed(modified_modes):
-            try:
-                os.fchmod(restore_fd, original_mode)
-            except OSError as restore_exc:
-                restore_errors.append(restore_exc)
-            finally:
-                os.close(restore_fd)
-        if restore_errors:
-            raise StorageMigrationError(
-                "permission_restore_failed",
-                f"迁移预检失败后无法恢复事务目录权限: {path}",
-            ) from exc
+        if retained_root_fd >= 0:
+            os.close(retained_root_fd)
+        try:
+            _restore_recorded_directory_modes(root_fd, modified_modes, path)
+        except StorageMigrationError as restore_exc:
+            raise restore_exc from exc
         raise
     else:
-        if retained_mode_handles is None:
-            for restore_fd, _original_mode in modified_modes:
-                os.close(restore_fd)
+        if retained_mode_plan is None:
+            _restore_recorded_directory_modes(root_fd, modified_modes, path)
         else:
-            retained_mode_handles.extend(modified_modes)
+            retained_mode_plan.root_fd = retained_root_fd
+            retained_mode_plan.entries.extend(modified_modes)
         return tree_mount_identity
 
 
@@ -590,7 +680,7 @@ def _preflight_directory_tree_mounts(
     expected_mount_identity: tuple[str, int] | None = None,
     expected_root_identity: os.stat_result | None = None,
     make_traversable: bool = False,
-    retained_mode_handles: list[tuple[int, int]] | None = None,
+    retained_mode_plan: _DirectoryModeRestorePlan | None = None,
 ) -> tuple[str, int] | None:
     """Inspect a complete tree without following links or crossing mounts."""
 
@@ -608,33 +698,25 @@ def _preflight_directory_tree_mounts(
             expected_mount_identity=expected_mount_identity,
             expected_root_identity=expected_root_identity,
             make_traversable=make_traversable,
-            retained_mode_handles=retained_mode_handles,
+            retained_mode_plan=retained_mode_plan,
         )
     finally:
         os.close(root_fd)
 
 
-def _close_mode_restore_handles(handles: list[tuple[int, int]]) -> None:
-    while handles:
-        restore_fd, _original_mode = handles.pop()
-        os.close(restore_fd)
+def _close_mode_restore_plan(plan: _DirectoryModeRestorePlan) -> None:
+    plan.entries.clear()
+    if plan.root_fd >= 0:
+        os.close(plan.root_fd)
+        plan.root_fd = -1
 
 
-def _restore_directory_modes(handles: list[tuple[int, int]], path: Path) -> None:
-    restore_errors: list[OSError] = []
-    while handles:
-        restore_fd, original_mode = handles.pop()
-        try:
-            os.fchmod(restore_fd, original_mode)
-        except OSError as exc:
-            restore_errors.append(exc)
-        finally:
-            os.close(restore_fd)
-    if restore_errors:
-        raise StorageMigrationError(
-            "permission_restore_failed",
-            f"迁移清理失败后无法恢复事务目录权限: {path}",
-        )
+def _restore_directory_modes(plan: _DirectoryModeRestorePlan, path: Path) -> None:
+    try:
+        if plan.root_fd >= 0:
+            _restore_recorded_directory_modes(plan.root_fd, plan.entries, path)
+    finally:
+        _close_mode_restore_plan(plan)
 
 
 def _remove_posix_directory_children(
@@ -709,13 +791,13 @@ def _remove_posix_directory_tree(path: Path) -> None:
     # Complete preflight precedes the first unlink/rmdir. This both preserves
     # all transaction evidence when a mount already exists and repairs only
     # directories already proven to remain on the transaction mount.
-    mode_restore_handles: list[tuple[int, int]] = []
+    mode_restore_plan = _DirectoryModeRestorePlan()
     _preflight_directory_tree_mounts(
         path,
         expected_mount_identity=mount_identity,
         expected_root_identity=root_identity,
         make_traversable=True,
-        retained_mode_handles=mode_restore_handles,
+        retained_mode_plan=mode_restore_plan,
     )
     try:
         root_fd = _open_verified_directory(path)
@@ -740,12 +822,12 @@ def _remove_posix_directory_tree(path: Path) -> None:
         path.rmdir()
     except BaseException as exc:
         try:
-            _restore_directory_modes(mode_restore_handles, path)
+            _restore_directory_modes(mode_restore_plan, path)
         except StorageMigrationError as restore_exc:
             raise restore_exc from exc
         raise
     else:
-        _close_mode_restore_handles(mode_restore_handles)
+        _close_mode_restore_plan(mode_restore_plan)
 
 
 def _remove_existing_path(path: Path) -> None:
@@ -1008,7 +1090,7 @@ def _remove_private_directory_via_quarantine(
         or not os.path.samestat(expected_identity, current_identity)
     ):
         return False
-    mode_restore_handles: list[tuple[int, int]] = []
+    mode_restore_plan = _DirectoryModeRestorePlan()
     if os.name != "nt":
         _preflight_named_mounts_below(path)
         parent_mount_identity = _runtime_root_mount_identity(path.parent)
@@ -1019,11 +1101,11 @@ def _remove_private_directory_via_quarantine(
             expected_mount_identity=parent_mount_identity,
             expected_root_identity=expected_identity,
             make_traversable=True,
-            retained_mode_handles=mode_restore_handles,
+            retained_mode_plan=mode_restore_plan,
         )
     try:
         if not os.path.samestat(expected_identity, path.lstat()):
-            _restore_directory_modes(mode_restore_handles, path)
+            _restore_directory_modes(mode_restore_plan, path)
             return False
         _durable_rename_without_replacing(path, quarantine)
         try:
@@ -1043,18 +1125,197 @@ def _remove_private_directory_via_quarantine(
             removed = True
     except BaseException as exc:
         try:
-            _restore_directory_modes(mode_restore_handles, path)
+            _restore_directory_modes(mode_restore_plan, path)
         except StorageMigrationError as restore_exc:
             raise restore_exc from exc
         raise
     if removed:
-        _close_mode_restore_handles(mode_restore_handles)
+        _close_mode_restore_plan(mode_restore_plan)
     else:
-        _restore_directory_modes(mode_restore_handles, path)
+        _restore_directory_modes(mode_restore_plan, path)
     return removed
 
 
-def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
+def _copy_posix_directory_tree_durably(
+    source_path: Path,
+    target_path: Path,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> None:
+    """Copy one directory through pinned source descriptors without crossing mounts."""
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_root_fd = _open_verified_directory(source_path)
+    except StorageMigrationError:
+        raise
+    except OSError as exc:
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移源目录在复制前发生变化: {source_path}: {exc}",
+        ) from exc
+
+    def _copy_directory(
+        source_fd: int,
+        source_display: Path,
+        target_directory: Path,
+    ) -> None:
+        _ensure_opened_entry_on_mount(
+            source_fd,
+            expected_mount_identity,
+            source_display,
+        )
+        try:
+            target_directory.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise StorageMigrationError(
+                "staging_entry_exists",
+                f"迁移暂存条目已存在，无法安全覆盖: {target_directory}",
+            ) from exc
+
+        target_fd = _open_verified_directory(target_directory)
+        try:
+            with os.scandir(source_fd) as children:
+                child_names = sorted(child.name for child in children)
+            for child_name in child_names:
+                child_display = source_display / child_name
+                target_child = target_directory / child_name
+                try:
+                    named_before = os.stat(
+                        child_name,
+                        dir_fd=source_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    raise StorageMigrationError(
+                        "source_changed_during_migration",
+                        f"迁移源条目在复制前已发生变化: {child_display}: {exc}",
+                    ) from exc
+                if _is_link_like_metadata(named_before):
+                    raise StorageMigrationError(
+                        "path_symlink_unsupported",
+                        f"迁移源条目包含符号链接或重解析点: {child_display}",
+                    )
+                if stat.S_ISDIR(named_before.st_mode):
+                    child_fd = -1
+                    try:
+                        try:
+                            child_fd = os.open(
+                                child_name,
+                                directory_flags,
+                                dir_fd=source_fd,
+                            )
+                        except OSError as exc:
+                            error_code = (
+                                "path_symlink_unsupported"
+                                if exc.errno == errno.ELOOP
+                                else "source_changed_during_migration"
+                            )
+                            raise StorageMigrationError(
+                                error_code,
+                                f"迁移源目录无法安全打开: {child_display}: {exc}",
+                            ) from exc
+                        opened_child = os.fstat(child_fd)
+                        named_after_open = os.stat(
+                            child_name,
+                            dir_fd=source_fd,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            _is_link_like_metadata(opened_child)
+                            or _is_link_like_metadata(named_after_open)
+                            or not stat.S_ISDIR(opened_child.st_mode)
+                            or not stat.S_ISDIR(named_after_open.st_mode)
+                            or not os.path.samestat(named_before, opened_child)
+                            or not os.path.samestat(opened_child, named_after_open)
+                        ):
+                            raise StorageMigrationError(
+                                "source_changed_during_migration",
+                                f"迁移源目录在打开期间被替换: {child_display}",
+                            )
+                        _ensure_opened_entry_on_mount(
+                            child_fd,
+                            expected_mount_identity,
+                            child_display,
+                        )
+                        _copy_directory(child_fd, child_display, target_child)
+                        try:
+                            named_after_copy = os.stat(
+                                child_name,
+                                dir_fd=source_fd,
+                                follow_symlinks=False,
+                            )
+                        except OSError as exc:
+                            raise StorageMigrationError(
+                                "source_changed_during_migration",
+                                f"迁移源目录在复制期间发生变化: {child_display}: {exc}",
+                            ) from exc
+                        if not os.path.samestat(opened_child, named_after_copy):
+                            raise StorageMigrationError(
+                                "source_changed_during_migration",
+                                f"迁移源目录在复制期间被替换: {child_display}",
+                            )
+                    finally:
+                        if child_fd >= 0:
+                            os.close(child_fd)
+                    continue
+                if stat.S_ISREG(named_before.st_mode):
+                    _copy_staged_file_durably(
+                        child_display,
+                        target_child,
+                        source_parent_fd=source_fd,
+                        source_name=child_name,
+                        expected_mount_identity=expected_mount_identity,
+                    )
+                    continue
+                raise StorageMigrationError(
+                    "path_type_unsupported",
+                    f"迁移源条目包含不支持的文件类型: {child_display}",
+                )
+
+            try:
+                _copy_open_file_metadata(
+                    source_fd,
+                    target_fd,
+                    os.fstat(source_fd),
+                )
+            except OSError as exc:
+                raise StorageMigrationError(
+                    "target_flush_failed",
+                    f"迁移目录元数据无法可靠写入目标磁盘: {target_directory}: {exc}",
+                ) from exc
+        finally:
+            os.close(target_fd)
+
+    try:
+        _ensure_opened_entry_on_mount(
+            source_root_fd,
+            expected_mount_identity,
+            source_path,
+        )
+        _copy_directory(source_root_fd, source_path, target_path)
+        try:
+            named_source_after = source_path.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制期间发生变化: {source_path}: {exc}",
+            ) from exc
+        if not os.path.samestat(os.fstat(source_root_fd), named_source_after):
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制期间被替换: {source_path}",
+            )
+    finally:
+        os.close(source_root_fd)
+
+
+def _copy_runtime_entry(
+    source_path: Path,
+    target_path: Path,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> None:
     if path_chain_has_symlink(source_path):
         raise StorageMigrationError("source_symlink_unsupported", "迁移源目录包含符号链接，当前阶段暂不自动迁移。")
 
@@ -1068,9 +1329,23 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
             "staging_entry_exists",
             f"迁移暂存条目已存在，无法安全覆盖: {target_path}",
         )
-    # Re-scan immediately before copy so a nested symlink/junction cannot be
-    # dereferenced by copytree before the later staged verification sees it.
-    _snapshot_path(source_path)
+    copy_mount_identity = expected_mount_identity
+    if os.name != "nt" and copy_mount_identity is None:
+        # Direct callers still bind an entry to its containing storage mount;
+        # production passes the identity captured before the size gate.
+        copy_mount_identity = _runtime_root_mount_identity(source_path.parent)
+        if copy_mount_identity is None:
+            raise StorageMigrationError(
+                "mount_identity_unavailable",
+                f"无法确认迁移源目录的挂载边界: {source_path}",
+            )
+
+    # Re-scan immediately before copy so existing links, reparse points, and
+    # mount crossings are refused before creating staged content.
+    _snapshot_path(
+        source_path,
+        expected_mount_identity=copy_mount_identity,
+    )
     if path_chain_has_symlink(target_path):
         raise StorageMigrationError(
             "target_symlink_unsupported",
@@ -1078,7 +1353,27 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
         )
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if source_path.is_dir():
+    try:
+        source_metadata = source_path.lstat()
+    except OSError as exc:
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移源条目在复制前发生变化: {source_path}: {exc}",
+        ) from exc
+    if _is_link_like_metadata(source_metadata):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移源条目包含符号链接或重解析点: {source_path}",
+        )
+    if stat.S_ISDIR(source_metadata.st_mode):
+        if os.name != "nt":
+            assert copy_mount_identity is not None
+            _copy_posix_directory_tree_durably(
+                source_path,
+                target_path,
+                expected_mount_identity=copy_mount_identity,
+            )
+            return
         # Preserve a link as a link if one appears after the pre-copy scan.  The
         # staged verification will then reject it instead of dereferencing an
         # external path into the migration.
@@ -1090,8 +1385,12 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
         )
         return
 
-    if source_path.is_file():
-        _copy_staged_file_durably(source_path, target_path)
+    if stat.S_ISREG(source_metadata.st_mode):
+        _copy_staged_file_durably(
+            source_path,
+            target_path,
+            expected_mount_identity=copy_mount_identity,
+        )
         return
 
     raise StorageMigrationError("source_entry_missing", f"迁移源条目不存在: {source_path}")
@@ -1226,13 +1525,32 @@ def _copy_open_file_metadata(
         fchflags(target_fd, source_metadata.st_flags)
 
 
-def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) -> str:
+def _copy_staged_file_durably(
+    source_path: Path | str,
+    target_path: Path | str,
+    *,
+    source_parent_fd: int | None = None,
+    source_name: str | None = None,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> str:
     """Copy one private staged file and flush data before restoring source metadata."""
 
     source = Path(source_path)
     target = Path(target_path)
     try:
-        named_source_before = source.lstat()
+        if source_parent_fd is None:
+            named_source_before = source.lstat()
+        else:
+            if not source_name:
+                raise StorageMigrationError(
+                    "source_changed_during_migration",
+                    f"迁移源文件缺少目录内名称: {source}",
+                )
+            named_source_before = os.stat(
+                source_name,
+                dir_fd=source_parent_fd,
+                follow_symlinks=False,
+            )
     except OSError as exc:
         raise StorageMigrationError(
             "source_changed_during_migration",
@@ -1262,7 +1580,11 @@ def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) 
             # thread, and a symlink must not be followed even for an instant.
             source_flags |= os.O_NONBLOCK | os.O_NOFOLLOW
         try:
-            source_fd = os.open(os.fspath(source), source_flags)
+            source_fd = os.open(
+                os.fspath(source) if source_parent_fd is None else source_name,
+                source_flags,
+                dir_fd=source_parent_fd,
+            )
         except OSError as exc:
             error_code = (
                 "path_symlink_unsupported"
@@ -1276,7 +1598,14 @@ def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) 
 
         opened_source = os.fstat(source_fd)
         try:
-            named_source_after = source.lstat()
+            if source_parent_fd is None:
+                named_source_after = source.lstat()
+            else:
+                named_source_after = os.stat(
+                    source_name,
+                    dir_fd=source_parent_fd,
+                    follow_symlinks=False,
+                )
         except OSError as exc:
             raise StorageMigrationError(
                 "source_changed_during_migration",
@@ -1302,6 +1631,12 @@ def _copy_staged_file_durably(source_path: Path | str, target_path: Path | str) 
             raise StorageMigrationError(
                 "source_changed_during_migration",
                 f"迁移源文件在打开期间被替换: {source}",
+            )
+        if expected_mount_identity is not None and os.name != "nt":
+            _ensure_opened_entry_on_mount(
+                source_fd,
+                expected_mount_identity,
+                source,
             )
 
         target_flags = (
@@ -1502,7 +1837,7 @@ def _hash_file(
     path: Path,
     *,
     expected_mount_identity: tuple[str, int] | None = None,
-) -> tuple[int, str]:
+) -> tuple[int, str, int]:
     source_fd = -1
     try:
         try:
@@ -1548,18 +1883,88 @@ def _hash_file(
                 "source_changed_during_migration",
                 f"迁移校验文件在读取期间发生变化: {path}",
             )
-        return total_bytes, digest.hexdigest()
+        allocated_bytes = max(
+            total_bytes,
+            int(getattr(opened_after, "st_blocks", 0) or 0) * 512,
+        )
+        return total_bytes, digest.hexdigest(), allocated_bytes
     finally:
         if source_fd >= 0:
             with suppress(OSError):
                 os.close(source_fd)
 
 
+def _filesystem_allocation_unit(path: Path) -> int:
+    """Return the target filesystem's minimum allocation unit in bytes."""
+
+    if os.name != "nt":
+        filesystem = os.statvfs(path)
+        allocation_unit = int(filesystem.f_frsize or filesystem.f_bsize or 0)
+    else:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_volume_path = kernel32.GetVolumePathNameW
+        get_volume_path.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        get_volume_path.restype = wintypes.BOOL
+        get_disk_free_space = kernel32.GetDiskFreeSpaceW
+        get_disk_free_space.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_disk_free_space.restype = wintypes.BOOL
+
+        volume_path = ctypes.create_unicode_buffer(32768)
+        if not get_volume_path(str(path.resolve()), volume_path, len(volume_path)):
+            error_number = ctypes.get_last_error()
+            raise OSError(error_number, ctypes.FormatError(error_number).strip())
+        sectors_per_cluster = wintypes.DWORD()
+        bytes_per_sector = wintypes.DWORD()
+        free_clusters = wintypes.DWORD()
+        total_clusters = wintypes.DWORD()
+        if not get_disk_free_space(
+            volume_path.value,
+            ctypes.byref(sectors_per_cluster),
+            ctypes.byref(bytes_per_sector),
+            ctypes.byref(free_clusters),
+            ctypes.byref(total_clusters),
+        ):
+            error_number = ctypes.get_last_error()
+            raise OSError(error_number, ctypes.FormatError(error_number).strip())
+        allocation_unit = int(sectors_per_cluster.value) * int(bytes_per_sector.value)
+
+    if allocation_unit <= 0:
+        raise OSError(errno.EIO, "target filesystem returned an invalid allocation unit")
+    return allocation_unit
+
+
+def _filesystem_free_entry_count(path: Path) -> int | None:
+    """Return free inode-like entries when the filesystem reports a fixed pool."""
+
+    if os.name == "nt":
+        return None
+    filesystem = os.statvfs(path)
+    if int(filesystem.f_files) <= 0:
+        return None
+    return max(0, int(filesystem.f_favail))
+
+
 def _snapshot_path(
     path: Path,
     *,
     expected_mount_identity: tuple[str, int] | None = None,
+    copy_capacity: _CopyCapacity | None = None,
+    copy_allocation_unit: int = 0,
 ) -> dict[str, int | str]:
+    if copy_capacity is not None and copy_allocation_unit <= 0:
+        raise ValueError("copy allocation unit must be positive")
     if path_chain_has_symlink(path):
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接路径: {path}")
     if not path.exists():
@@ -1570,18 +1975,22 @@ def _snapshot_path(
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {path}")
     if path.is_file():
         if expected_mount_identity is None:
-            total_bytes, digest = _hash_file(path)
+            total_bytes, digest, allocated_bytes = _hash_file(path)
         else:
-            total_bytes, digest = _hash_file(
+            total_bytes, digest, allocated_bytes = _hash_file(
                 path,
                 expected_mount_identity=expected_mount_identity,
             )
-        return {
+        snapshot = {
             "kind": "file",
             "file_count": 1,
             "total_bytes": total_bytes,
             "sha256": digest,
         }
+        if copy_capacity is not None:
+            copy_capacity.required_bytes += allocated_bytes + copy_allocation_unit
+            copy_capacity.entry_count += 1
+        return snapshot
     if not path.is_dir():
         raise StorageMigrationError("path_type_unsupported", f"迁移校验不支持该文件类型: {path}")
 
@@ -1591,6 +2000,8 @@ def _snapshot_path(
     )
     total_bytes = 0
     file_count = 0
+    copy_required_bytes = copy_allocation_unit if copy_capacity is not None else 0
+    copy_entry_count = 1 if copy_capacity is not None else 0
     manifest_digest = hashlib.sha256()
     for current_root, dirnames, filenames in os.walk(path):
         _ensure_directory_path_on_mount(
@@ -1614,6 +2025,9 @@ def _snapshot_path(
             manifest_digest.update(
                 b"D\0" + (relative_root / dirname).as_posix().encode("utf-8") + b"\0"
             )
+            if copy_capacity is not None:
+                copy_required_bytes += copy_allocation_unit
+                copy_entry_count += 1
         for filename in filenames:
             current_file = Path(current_root) / filename
             if path_chain_has_symlink(current_file):
@@ -1623,7 +2037,7 @@ def _snapshot_path(
                     "path_type_unsupported",
                     f"迁移校验不支持该文件类型: {current_file}",
                 )
-            file_bytes, file_digest = _hash_file(
+            file_bytes, file_digest, allocated_bytes = _hash_file(
                 current_file,
                 expected_mount_identity=tree_mount_identity,
             )
@@ -1639,13 +2053,20 @@ def _snapshot_path(
             )
             total_bytes += file_bytes
             file_count += 1
+            if copy_capacity is not None:
+                copy_required_bytes += allocated_bytes + copy_allocation_unit
+                copy_entry_count += 1
 
-    return {
+    snapshot = {
         "kind": "dir",
         "file_count": file_count,
         "total_bytes": total_bytes,
         "sha256": manifest_digest.hexdigest(),
     }
+    if copy_capacity is not None:
+        copy_capacity.required_bytes += copy_required_bytes
+        copy_capacity.entry_count += copy_entry_count
+    return snapshot
 
 
 def _checked_migration_entry_path(
@@ -1724,15 +2145,23 @@ def validate_storage_migration_preflight_boundaries(
             _checked_migration_entry_path(root, entry)
 
 
-def _snapshot_runtime_entries(root: Path) -> dict[str, dict[str, int | str]]:
+def _snapshot_runtime_entries(
+    root: Path,
+    *,
+    expected_mount_identity: tuple[str, int] | None = None,
+) -> dict[str, dict[str, int | str]]:
     snapshots: dict[str, dict[str, int | str]] = {}
-    expected_mount_identity = _runtime_root_mount_identity(root)
+    runtime_mount_identity = (
+        expected_mount_identity
+        if expected_mount_identity is not None
+        else _runtime_root_mount_identity(root)
+    )
     for entry in RUNTIME_STORAGE_ENTRIES:
         entry_path = _checked_migration_entry_path(root, entry)
         if entry_path.exists() or entry_path.is_symlink():
             snapshots[entry.relative_path] = _snapshot_path(
                 entry_path,
-                expected_mount_identity=expected_mount_identity,
+                expected_mount_identity=runtime_mount_identity,
             )
     return snapshots
 
@@ -2023,13 +2452,13 @@ def _remove_owned_transaction_quarantine_posix(
     parent_mount_identity = _runtime_root_mount_identity(quarantine.parent)
     if parent_mount_identity is None:
         return False
-    mode_restore_handles: list[tuple[int, int]] = []
+    mode_restore_plan = _DirectoryModeRestorePlan()
     _preflight_directory_tree_mounts(
         quarantine,
         expected_mount_identity=parent_mount_identity,
         expected_root_identity=quarantine_identity,
         make_traversable=True,
-        retained_mode_handles=mode_restore_handles,
+        retained_mode_plan=mode_restore_plan,
     )
 
     removed = False
@@ -2099,9 +2528,9 @@ def _remove_owned_transaction_quarantine_posix(
             with suppress(OSError):
                 os.close(parent_fd)
         if removed:
-            _close_mode_restore_handles(mode_restore_handles)
+            _close_mode_restore_plan(mode_restore_plan)
         else:
-            _restore_directory_modes(mode_restore_handles, quarantine)
+            _restore_directory_modes(mode_restore_plan, quarantine)
 
 
 def _remove_owned_transaction_quarantine(
@@ -2614,13 +3043,18 @@ def save_storage_migration(
     anchor_root: Path | str | None = None,
 ) -> dict[str, Any]:
     migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
-    atomic_write_json(migration_path, payload, ensure_ascii=False, indent=2)
+    persisted_payload = dict(payload)
+    if "error_message" in persisted_payload:
+        persisted_payload["error_message"] = _bounded_migration_error_message(
+            persisted_payload.get("error_message")
+        )
+    atomic_write_json(migration_path, persisted_payload, ensure_ascii=False, indent=2)
     # The generic writer is intentionally best-effort for directory handles so
     # ordinary application writes remain portable. Migration checkpoints are
     # recovery authority, so POSIX must not report success until the replace is
     # also durable in its parent directory.
     _fsync_migration_directory(migration_path.parent)
-    return payload
+    return persisted_payload
 
 
 def create_pending_storage_migration(
@@ -2740,6 +3174,7 @@ def run_pending_storage_migration(
         rollback_required: bool = False,
     ) -> dict[str, Any]:
         nonlocal payload, policy_payload
+        error_message = _bounded_migration_error_message(error_message)
         raw_payload_source_root = str(payload.get("source_root") or "").strip()
         if source_root is not None:
             recovery_source_root = str(source_root)
@@ -3117,27 +3552,49 @@ def run_pending_storage_migration(
 
         _ensure_target_root_writable(target_root)
 
+        try:
+            copy_allocation_unit = _filesystem_allocation_unit(target_root)
+        except OSError as exc:
+            raise StorageMigrationError(
+                "disk_space_unavailable",
+                f"无法确认目标卷分配单元，已停止迁移: {exc}",
+            ) from exc
+
+        source_mount_identity = _runtime_root_mount_identity(source_root)
         existing_entries = _iter_existing_runtime_entries(source_root)
-        source_snapshots: dict[str, dict[str, int | str]] = {
-            entry_name: _snapshot_path_within_root(
-                source_root,
+        copy_capacity = _CopyCapacity()
+        source_snapshots: dict[str, dict[str, int | str]] = {}
+        for entry_name in existing_entries:
+            source_snapshots[entry_name] = _snapshot_path(
                 _checked_migration_entry_path(source_root, entry_name),
+                expected_mount_identity=source_mount_identity,
+                copy_capacity=copy_capacity,
+                copy_allocation_unit=copy_allocation_unit,
             )
-            for entry_name in existing_entries
-        }
         source_runtime_baseline = dict(source_snapshots)
-        required_bytes = sum(
-            int(snapshot.get("total_bytes") or 0) for snapshot in source_snapshots.values()
+        required_bytes = copy_capacity.required_bytes
+        safety_margin_bytes = (
+            max(64 * 1024 * 1024, int(required_bytes * 0.05))
+            if copy_capacity.entry_count
+            else 0
         )
-        safety_margin_bytes = max(64 * 1024 * 1024, int(required_bytes * 0.05)) if required_bytes else 0
         try:
             target_free_bytes = int(shutil.disk_usage(str(target_root)).free)
+            target_free_entries = _filesystem_free_entry_count(target_root)
         except OSError as exc:
             raise StorageMigrationError(
                 "disk_space_unavailable",
                 f"无法确认目标卷剩余空间，已停止迁移: {exc}",
             ) from exc
-        if required_bytes + safety_margin_bytes > target_free_bytes:
+        # The transaction root, owner marker, staged/backup roots and atomic
+        # metadata writes need a small fixed number of entries in addition to
+        # the source tree itself.
+        required_entries = copy_capacity.entry_count + 8
+        if required_bytes + safety_margin_bytes > target_free_bytes or (
+            copy_capacity.entry_count
+            and target_free_entries is not None
+            and required_entries > target_free_entries
+        ):
             raise StorageMigrationError(
                 "insufficient_space",
                 "目标卷剩余空间不足，无法安全执行迁移。",
@@ -3187,11 +3644,18 @@ def run_pending_storage_migration(
             source_entry = _checked_migration_entry_path(source_root, entry_name)
             staged_entry = _checked_migration_entry_path(staged_root, entry_name)
             source_snapshot_before = source_snapshots[entry_name]
-            _snapshot_path_within_root(source_root, source_entry)
-            _copy_runtime_entry(source_entry, staged_entry)
-            source_snapshot_after = _snapshot_path_within_root(
-                source_root,
+            _snapshot_path(
                 source_entry,
+                expected_mount_identity=source_mount_identity,
+            )
+            _copy_runtime_entry(
+                source_entry,
+                staged_entry,
+                expected_mount_identity=source_mount_identity,
+            )
+            source_snapshot_after = _snapshot_path(
+                source_entry,
+                expected_mount_identity=source_mount_identity,
             )
             if source_snapshot_after != source_snapshot_before:
                 raise StorageMigrationError(
@@ -3224,7 +3688,10 @@ def run_pending_storage_migration(
         # itself before the VERIFYING checkpoint is written.
         _fsync_staged_tree(staged_root)
 
-        if _snapshot_runtime_entries(source_root) != source_runtime_baseline:
+        if _snapshot_runtime_entries(
+            source_root,
+            expected_mount_identity=source_mount_identity,
+        ) != source_runtime_baseline:
             raise StorageMigrationError(
                 "source_changed_during_migration",
                 "迁移期间源数据清单发生变化，已停止迁移。",

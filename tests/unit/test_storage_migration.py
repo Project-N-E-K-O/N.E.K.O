@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import shutil
@@ -188,6 +189,49 @@ def test_owned_transaction_cleanup_repairs_nested_unsearchable_directories(tmp_p
             os.chmod(locked_file, stat.S_IRUSR | stat.S_IWUSR)
 
     assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound cleanup contract")
+def test_owned_transaction_cleanup_does_not_retain_one_fd_per_repaired_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    transaction_root = tmp_path / ".neko-storage-migration-owned"
+    locked_root = transaction_root / "backup"
+    locked_root.mkdir(parents=True)
+    for index in range(180):
+        locked_dir = locked_root / f"locked-{index:04d}"
+        locked_dir.mkdir()
+        os.chmod(locked_dir, 0)
+
+    real_open = storage_migration_module.os.open
+    real_dup = storage_migration_module.os.dup
+    dup_calls = 0
+
+    def enforce_directory_permissions(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None and str(path).startswith("locked-"):
+            metadata = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_IMODE(metadata.st_mode) & stat.S_IXUSR:
+                raise PermissionError(errno.EACCES, "simulated unsearchable directory")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    def bounded_dup(fd):
+        nonlocal dup_calls
+        dup_calls += 1
+        if dup_calls > 4:
+            raise OSError(errno.EMFILE, "simulated descriptor limit")
+        return real_dup(fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "open", enforce_directory_permissions)
+    monkeypatch.setattr(storage_migration_module.os, "dup", bounded_dup)
+
+    storage_migration_module._remove_existing_path(transaction_root)
+
+    assert not transaction_root.exists()
+    assert dup_calls == 1
 
 
 @pytest.mark.unit
@@ -1631,6 +1675,119 @@ def test_staged_copy_flushes_before_and_after_restoring_open_file_metadata(tmp_p
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative mount contract")
+def test_runtime_directory_copy_rejects_mount_added_after_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    source_entry = source_root / "config"
+    mounted_directory = source_entry / "a-mounted"
+    mounted_file = mounted_directory / "external.bin"
+    staged_entry = tmp_path / "transaction" / "staged" / "config"
+    mounted_directory.mkdir(parents=True)
+    mounted_file.write_bytes(b"external-volume-bytes")
+    staged_entry.parent.mkdir(parents=True)
+    expected_mount_identity = storage_migration_module._runtime_root_mount_identity(
+        source_root
+    )
+    mounted_identity = mounted_directory.lstat()
+    original_snapshot = storage_migration_module._snapshot_path
+    mount_added = False
+
+    def snapshot_then_add_mount(path, *args, **kwargs):
+        nonlocal mount_added
+        snapshot = original_snapshot(path, *args, **kwargs)
+        if Path(path) == source_entry:
+            mount_added = True
+        return snapshot
+
+    def simulated_mount_identity(fd):
+        opened = os.fstat(fd)
+        if mount_added and os.path.samestat(opened, mounted_identity):
+            return "test-mount", 2
+        return expected_mount_identity
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_path",
+        snapshot_then_add_mount,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        simulated_mount_identity,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._copy_runtime_entry(
+            source_entry,
+            staged_entry,
+            expected_mount_identity=expected_mount_identity,
+        )
+
+    assert caught.value.error_code == "nested_mount_unsupported"
+    assert mounted_file.read_bytes() == b"external-volume-bytes"
+    assert not (staged_entry / "a-mounted").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative mount contract")
+def test_runtime_file_copy_rejects_mount_added_after_snapshot(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_entry = source_root / "database.db"
+    source_entry.write_bytes(b"external-volume-bytes")
+    staged_entry = tmp_path / "transaction" / "staged" / "database.db"
+    staged_entry.parent.mkdir(parents=True)
+    expected_mount_identity = storage_migration_module._runtime_root_mount_identity(
+        source_root
+    )
+    mounted_identity = source_entry.lstat()
+    original_snapshot = storage_migration_module._snapshot_path
+    mount_added = False
+
+    def snapshot_then_add_mount(path, *args, **kwargs):
+        nonlocal mount_added
+        snapshot = original_snapshot(path, *args, **kwargs)
+        if Path(path) == source_entry:
+            mount_added = True
+        return snapshot
+
+    def simulated_mount_identity(fd):
+        opened = os.fstat(fd)
+        if mount_added and os.path.samestat(opened, mounted_identity):
+            return "test-mount", 2
+        return expected_mount_identity
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_path",
+        snapshot_then_add_mount,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_opened_mount_identity",
+        simulated_mount_identity,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._copy_runtime_entry(
+            source_entry,
+            staged_entry,
+            expected_mount_identity=expected_mount_identity,
+        )
+
+    assert caught.value.error_code == "nested_mount_unsupported"
+    assert source_entry.read_bytes() == b"external-volume-bytes"
+    assert not staged_entry.exists()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name == "nt", reason="POSIX name replacement injection")
 def test_staged_copy_metadata_never_follows_a_replaced_target_name(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
@@ -2080,6 +2237,123 @@ def test_run_pending_storage_migration_rechecks_space_with_safety_margin(tmp_pat
 
 
 @pytest.mark.unit
+def test_run_pending_storage_migration_reserves_space_for_zero_byte_entries(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    empty_file = source_root / "config" / "empty.json"
+    empty_file.parent.mkdir(parents=True, exist_ok=True)
+    empty_file.touch()
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_allocation_unit",
+        lambda _path: 4096,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_free_entry_count",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        storage_migration_module.shutil,
+        "disk_usage",
+        lambda _path: type("DiskUsage", (), {"free": 64 * 1024 * 1024 + 8191})(),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "insufficient_space"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX free-inode capacity contract")
+def test_run_pending_storage_migration_rejects_insufficient_target_entries(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    empty_file = source_root / "config" / "empty.json"
+    empty_file.parent.mkdir(parents=True, exist_ok=True)
+    empty_file.touch()
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_allocation_unit",
+        lambda _path: 4096,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_free_entry_count",
+        lambda _path: 1,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "insufficient_space"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_unexpected_failure_keeps_persisted_error_message_within_anchor_limit(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("source", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    huge_error = "copy failed: " + "x" * (5 * 1024 * 1024)
+
+    def fail_copy(*_args, **_kwargs):
+        raise OSError(huge_error)
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", fail_copy)
+    monkeypatch.setattr(storage_migration_module.logger, "exception", lambda *_args, **_kwargs: None)
+
+    result = run_pending_storage_migration(config_manager)
+    reloaded = load_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "storage_migration_unexpected"
+    assert result["error_message"] == reloaded["error_message"]
+    assert len(reloaded["error_message"].encode("utf-8")) <= 16 * 1024
+    assert reloaded["error_message"].endswith("…[truncated]")
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_detects_same_size_copy_corruption(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -2091,8 +2365,8 @@ def test_run_pending_storage_migration_detects_same_size_copy_corruption(tmp_pat
     source_file.write_bytes(b"AAAA")
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def corrupt_copy(source_path, target_path):
-        original_copy(source_path, target_path)
+    def corrupt_copy(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         (target_path / "history.bin").write_bytes(b"BBBB")
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", corrupt_copy)
@@ -2860,9 +3134,9 @@ def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeyp
     target_snapshot_calls = 0
     concurrent_file = target_root / "config" / "external.json"
 
-    def _snapshot_then_create_target(root):
+    def _snapshot_then_create_target(root, **kwargs):
         nonlocal target_snapshot_calls
-        snapshot = real_snapshot_entries(root)
+        snapshot = real_snapshot_entries(root, **kwargs)
         if Path(root) == target_root.resolve():
             target_snapshot_calls += 1
             if target_snapshot_calls == 2:
