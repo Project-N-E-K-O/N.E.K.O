@@ -3,7 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const projectRoot = path.resolve(__dirname, '..', '..');
+// The pytest entry point hands this file to node as a temp file, so __dirname
+// is the system temp directory rather than tests/frontend. Fall back to the
+// cwd the wrapper sets, which is the repo root. Same guard the other
+// pytest-driven suites use.
+const fileRoot = path.resolve(__dirname, '..', '..');
+const projectRoot = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
 const vmcSenderPath = path.join(projectRoot, 'static/vrm/vrm-vmc-sender.js');
 const appWebsocketPath = path.join(projectRoot, 'static/app/app-websocket.js');
 
@@ -42,6 +47,40 @@ test('vrm-vmc-sender uses iframe-borrowed WebSocket constructor to avoid Electro
     source.includes('CSP frame-src or sandbox attribute may block same-origin frames'),
     'Must warn when iframe creation fails due to CSP or other restrictions'
   );
+
+  // Contract 5: the CSP fallback must not hand VMC the preload wrapper. When
+  // the iframe borrow fails and the top-level constructor is not native, the
+  // module has to refuse rather than construct a socket that the Electron
+  // preload would register as the desktop chat proxy target. The plain-browser
+  // case (native window.WebSocket, iframe blocked by CSP) must still work, so
+  // the refusal is gated on the nativeness check, not on the borrow failing.
+  assert.ok(
+    /if \(!borrowedFromFrame && !looksNative\(ctor\)\) \{/.test(source),
+    'the fallback must refuse only when the top-level constructor is not native'
+  );
+  assert.ok(
+    source.includes('hijacking the desktop chat channel'),
+    'the refusal must say why VMC is disabled'
+  );
+
+  // Contract 6: every socket-opening path consults the block before acting.
+  // Missing one would either construct from the wrapper anyway or spin a
+  // reconnect timer against a transport that can never become available.
+  // Pinning the `if (...) return` shape rather than a bare mention of the
+  // helper: a substring check stays green if the call is demoted to a dead
+  // `const reason = webSocketTransportBlockedReason();` with the branch
+  // deleted. The runtime consequence of that regression is covered by
+  // vmc_expression_budget.test.cjs, which drives sample() for real; this is
+  // the cheap structural half.
+  for (const caller of ['function ensureWebSocket(', 'function scheduleReconnect(', 'function sample(']) {
+    const start = source.indexOf(caller);
+    assert.ok(start !== -1, `${caller} not found`);
+    const body = source.slice(start, start + 700);
+    assert.ok(
+      /if \(webSocketTransportBlockedReason\(\)\) return/.test(body),
+      `${caller} must bail out when the transport is blocked`
+    );
+  }
 });
 
 test('vrm-vmc-sender does not directly reference window.WebSocket constants after initialization', () => {

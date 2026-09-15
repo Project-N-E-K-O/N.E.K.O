@@ -1515,3 +1515,38 @@ def test_expression_cap_matches_between_sampler_and_sender():
     match = re.search(r"const MAX_EXPRESSIONS_PER_FRAME = (\d+);", source)
     assert match is not None, "sampler lost its named expression cap"
     assert int(match.group(1)) == vmc_sender_module._MAX_EXPRESSIONS_PER_FRAME
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "suite_name",
+    ["vmc_websocket_isolation.test.cjs", "vmc_expression_budget.test.cjs"],
+)
+def test_vmc_frontend_node_suites(suite_name: str) -> None:
+    """pytest entry point for the two node:test suites.
+
+    ``unit-tests.yml`` only runs ``pytest tests/unit``, so a ``.test.cjs`` file
+    with no pytest caller never executes in CI no matter what it asserts. Both
+    of these suites landed without one — they were green locally and dead in the
+    pipeline. Parametrised by file name rather than globbed, because these two
+    are the VMC pair; other suites keep their own entry points next to the code
+    they cover.
+    """
+    import shutil
+
+    from tests.node_harness import run_node_script
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node not found")
+
+    suite_path = Path(__file__).resolve().parents[2] / "tests" / "frontend" / suite_name
+    result = run_node_script(
+        node_path,
+        suite_path.read_text(encoding="utf-8"),
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout

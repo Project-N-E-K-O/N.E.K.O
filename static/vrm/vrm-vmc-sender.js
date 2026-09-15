@@ -162,13 +162,61 @@
     // Borrowing the constructor from a same-origin child frame avoids the
     // wrapper entirely: the preload only installs into the top frame. The
     // probe frame must stay attached, because a detached frame's WebSocket
-    // cannot open connections. Falls back to window.WebSocket, which merely
-    // restores the previous behaviour rather than breaking the browser path
-    // (no preload there, so window.WebSocket is already native).
+    // cannot open connections.
+    //
+    // When the frame cannot be created (CSP frame-src, sandbox), the fallback
+    // depends on whether the top-level constructor reads as native. In a plain
+    // browser it normally does, so falling back costs nothing. Under a preload
+    // wrapper it does not, and falling back would reintroduce exactly the
+    // channel theft this module exists to prevent -- so VMC refuses to connect
+    // instead. A dead VMC output is recoverable; a hijacked chat channel is
+    // not. "Reads as native" is the operative phrase: see looksNative() below
+    // for where that test is wrong in each direction.
     let _wsConstructor = null;
     let _wsConstants = null;
+    let _wsUnavailableReason = null;
+
+    // A native constructor stringifies to "[native code]". A preload wrapper
+    // is a user-defined function, so its source is visible. This is a
+    // heuristic and it errs in BOTH directions, so neither outcome may be
+    // catastrophic:
+    //   false negative -- a wrapper whose source reads as native (anything
+    //     built with .bind() or wrapped in a Proxy stringifies that way). VMC
+    //     then takes the old fallback, i.e. exactly the pre-fix behaviour.
+    //   false positive -- a genuine constructor whose source is visible. This
+    //     is not hypothetical: a WebSocket implemented in JavaScript rather
+    //     than by the engine reads as non-native (Node's undici stringifies as
+    //     "class _WebSocket extends EventTarget"). Chromium's is a native
+    //     binding, so a real browser is very likely fine -- "very likely" is
+    //     not "certainly". Then VMC refuses in a host that had no preload at
+    //     all, and motion output is lost until same-origin frames are allowed.
+    // The false positive is only reachable when the probe iframe ALSO fails,
+    // because a successful borrow skips this check entirely; and it is a dead
+    // output rather than a stolen chat channel. That is the trade being made
+    // here, not an absence of risk.
+    function looksNative(candidate) {
+        if (typeof candidate !== 'function') return false;
+        try {
+            return /\[native code\]/.test(Function.prototype.toString.call(candidate));
+        } catch (_) {
+            // A constructor whose toString throws is not one we can vouch for.
+            return false;
+        }
+    }
+
     function nativeWebSocketCtor() {
         if (_wsConstructor) return _wsConstructor;
+        if (_wsUnavailableReason) return null;
+        if (typeof window.WebSocket !== 'function') {
+            // sample() consults this helper on every frame, so a missing
+            // constructor must not throw into the render loop.
+            _wsUnavailableReason = 'window.WebSocket is not available in this environment.';
+            window.__NEKO_VMC_TRANSPORT_BLOCKED__ = _wsUnavailableReason;
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('[VRM-VMC] ' + _wsUnavailableReason);
+            }
+            return null;
+        }
         let ctor = window.WebSocket;
         let constants = {
             CONNECTING: window.WebSocket.CONNECTING,
@@ -176,6 +224,7 @@
             CLOSING: window.WebSocket.CLOSING,
             CLOSED: window.WebSocket.CLOSED,
         };
+        let borrowedFromFrame = false;
         try {
             const probe = document.createElement('iframe');
             probe.style.display = 'none';
@@ -191,23 +240,48 @@
                     CLOSING: borrowed.CLOSING,
                     CLOSED: borrowed.CLOSED,
                 };
+                borrowedFromFrame = true;
                 window.__nekoNativeWebSocketProbe = probe;
             } else {
                 probe.remove();
             }
         } catch (err) {
             if (typeof console !== 'undefined' && console.warn) {
-                console.warn('[VMC] Failed to borrow native WebSocket from iframe; CSP frame-src or sandbox attribute may block same-origin frames. Falling back to window.WebSocket, which will hit the preload wrapper in Electron.', err);
+                console.warn('[VRM-VMC] Failed to borrow native WebSocket from iframe; CSP frame-src or sandbox attribute may block same-origin frames.', err);
             }
+        }
+        if (!borrowedFromFrame && !looksNative(ctor)) {
+            // Refusing here is the whole point: constructing from the wrapper
+            // would register this socket as the desktop chat proxy target.
+            _wsUnavailableReason =
+                'window.WebSocket is wrapped (Electron preload) and no same-origin '
+                + 'frame is available to borrow a native constructor from. VMC output '
+                + 'is disabled to avoid hijacking the desktop chat channel.';
+            window.__NEKO_VMC_TRANSPORT_BLOCKED__ = _wsUnavailableReason;
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('[VRM-VMC] ' + _wsUnavailableReason);
+            }
+            return null;
         }
         _wsConstructor = ctor;
         _wsConstants = constants;
         window.__nekoNativeWebSocket = ctor;
         return ctor;
     }
+
+    // Resolves the constructor on first use and reports why it is missing.
+    // Callers use this instead of comparing against null so the decision to
+    // stop (rather than retry) lives in one place.
+    function webSocketTransportBlockedReason() {
+        if (!_wsConstructor && !_wsUnavailableReason) nativeWebSocketCtor();
+        return _wsUnavailableReason;
+    }
+
     function wsReadyState() {
         if (!_wsConstants) nativeWebSocketCtor();
-        return _wsConstants;
+        // Every readyState comparison must still resolve once the constructor
+        // is unavailable; the numeric values are fixed by the WebSocket spec.
+        return _wsConstants || { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
     }
 
     function closeWebSocket() {
@@ -331,6 +405,9 @@
 
     function scheduleReconnect(refreshAuth) {
         if (!state.enabled || !state.sourceActive) return;
+        // A blocked transport never becomes available within a page lifetime,
+        // so retrying would just burn timers forever.
+        if (webSocketTransportBlockedReason()) return;
         // An early `error` may be followed by a more informative 4403 close.
         // Preserve the stronger token-refresh request even when a retry timer
         // has already been scheduled.
@@ -365,6 +442,10 @@
 
     function ensureWebSocket(forceTokenRefresh) {
         if (!state.enabled || !state.sourceActive) return Promise.resolve(false);
+        // Bail before touching the network: without a native constructor the
+        // only way to open a socket is through the preload wrapper, and that
+        // is worse than having no VMC output at all.
+        if (webSocketTransportBlockedReason()) return Promise.resolve(false);
         // The render loop calls this function whenever a frame cannot be sent.
         // Respect the scheduled backoff instead of reconnecting on the next
         // animation frame and bypassing scheduleReconnect().
@@ -643,6 +724,10 @@
         if (state.samplingSuspended) return;
         if (!vrm || !vrm.humanoid) return;
         if (!state.enabled) return;
+        // No transport means no receiver for this frame. Bail before the
+        // per-bone/per-expression work rather than sampling 60 times a second
+        // into a socket that will never exist.
+        if (webSocketTransportBlockedReason()) return;
         markSourceActive();
         const nowMs = performance.now();
         const nowSeconds = nowMs / 1000;
@@ -810,6 +895,14 @@
                 state.samplingSuspended = false;
                 resetSampleSchedule();
                 applySendRate(data.send_rate_hz);
+                const blocked = webSocketTransportBlockedReason();
+                if (blocked) {
+                    // The backend is enabled but this page can never publish.
+                    // Say so on the control path, because the per-frame path
+                    // is silent by design.
+                    console.error('[VRM-VMC] enabled on the backend, but this page cannot publish frames: ' + blocked);
+                    return data;
+                }
                 if (state.sourceActive) await ensureWebSocket();
                 return data;
             } catch (error) {

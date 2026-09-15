@@ -88,6 +88,10 @@ terminal VMC state を送信し、UDP client を閉じて disabled state を返�
 
 process-wide publisher は 1 つだけです。server は最新の pending normal frame を 1 件だけ保持し、in-flight frame の後に release を直列化し、10 秒間 valid frame がない publisher を解放します。
 
+browser はこの socket を `window.WebSocket` ではなく、隠し同一 origin iframe から借用した constructor で開きます。desktop build の preload は top-level constructor を差し替え、最後に作られた socket を URL で区別せず chat IPC proxy target として登録するため、そこから作った VMC socket は chat channel を奪ってしまいます。probe iframe を作成できず（CSP `frame-src`、sandbox）**かつ** top-level constructor の source が `[native code]` でない場合、VMC は reconnect を続けずに接続を拒否し、理由を log して sampling を停止します。motion 出力は復旧できますが、奪われた chat channel は復旧できません。
+
+後者は heuristic であり、host についての事実ではありません。通常の browser の constructor は native binding なので iframe が block されても代償はありませんが、WebSocket が engine 内蔵ではなく JavaScript で実装された host では source が読めるため non-native と判定されます（Node の undici `WebSocket` は `class _WebSocket extends EventTarget` と表示されます）。両方の条件が重なった場合の症状は出力が無音になることで、同一 origin frame を許可すれば（`frame-src 'self'`）復旧します。借用が成功すればこの判定自体を通りません。
+
 | Close code | 意味 |
 | --- | --- |
 | `4403` | Origin または authentication 拒否 |
@@ -103,3 +107,4 @@ process-wide publisher は 1 つだけです。server は最新の pending norma
 - full-rate rendering 中は cumulative scheduling により設定 rate に近い平均値になります。active animation や interaction がない VRM は意図的に約 30 Hz へ throttle され、activity の再開後に rate が戻ります。
 - 開発環境では `uv sync` で locked `python-osc` dependency を導入します。
 - sampling error 時は render を保護するため送信を一時停止し、後続の backend status poll 後に再試行します。
+- desktop chat channel を奪う旨の console error が出る場合、同一 origin の probe iframe が block され、**かつ** `window.WebSocket` の source が `[native code]` ではないため native constructor を取得できていません。後者は heuristic なので、preload が全く無い browser でも原理上ここに到達し得ます。いずれの場合も、同一 origin frame を許可する（`frame-src 'self'`）までは frame を送出しません。iframe から借用できればこの判定自体を通りません。

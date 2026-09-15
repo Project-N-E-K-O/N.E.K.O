@@ -4,17 +4,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const projectRoot = path.resolve(__dirname, '..', '..');
+// The pytest entry point hands this file to node as a temp file, so __dirname
+// is the system temp directory rather than tests/frontend. Fall back to the
+// cwd the wrapper sets, which is the repo root. Same guard the other
+// pytest-driven suites use.
+const fileRoot = path.resolve(__dirname, '..', '..');
+const projectRoot = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
 const senderPath = path.join(projectRoot, 'static/vrm/vrm-vmc-sender.js');
 
 // Load the real module in a stubbed window so sample() can be driven directly.
 // The source-shape assertions in vmc_websocket_isolation.test.cjs pin how the
 // expression budget is written; this file pins what it actually emits, which
 // is the only thing a VMC receiver sees.
-function loadSender() {
+function loadSender(options) {
+  const config = options || {};
   const sentFrames = [];
   const ackResolvers = [];
   const warnings = [];
+  const errors = [];
   let now = 0;
 
   const listeners = new Map();
@@ -28,7 +35,15 @@ function loadSender() {
     close() {},
   };
 
-  function FakeWebSocket() { return socket; }
+  // `.bind()` makes the stub stringify as "[native code]", which is how the
+  // module tells a real constructor from an Electron preload wrapper. Without
+  // it every test here would land on the refuse-to-connect path. Pass
+  // `wrappedWebSocket: true` to get a plainly-visible function source, i.e. to
+  // impersonate the wrapper.
+  function FakeWebSocketImpl() { return socket; }
+  const FakeWebSocket = config.wrappedWebSocket
+    ? FakeWebSocketImpl
+    : FakeWebSocketImpl.bind(null);
   FakeWebSocket.CONNECTING = 0;
   FakeWebSocket.OPEN = 1;
   FakeWebSocket.CLOSING = 2;
@@ -56,7 +71,7 @@ function loadSender() {
     console: {
       info() {},
       warn(...args) { warnings.push(args.join(' ')); },
-      error() {},
+      error(...args) { errors.push(args.join(' ')); },
       log() {},
     },
     performance: { now: () => now },
@@ -64,7 +79,15 @@ function loadSender() {
     clearTimeout: () => {},
     setInterval: () => 0,
     clearInterval: () => {},
-    fetch: () => Promise.reject(new Error('no network in this harness')),
+    // Most tests never poll; the ones that do need a real status body, since
+    // syncStatusFromBackend() swallows rejections and would otherwise be a
+    // no-op that proves nothing.
+    fetch: () => (config.statusResponse
+      ? Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(config.statusResponse),
+      })
+      : Promise.reject(new Error('no network in this harness'))),
     JSON,
     Promise,
     Set,
@@ -76,6 +99,8 @@ function loadSender() {
     String,
     Date,
     Error,
+    Function,
+    RegExp,
   });
   context.globalThis = context;
 
@@ -116,6 +141,7 @@ function loadSender() {
     sentFrames,
     ackResolvers,
     warnings,
+    errors,
     advance(ms) { now += ms; },
     // Acking a frame is what lets the module drop names from the retiring set.
     ackLastFrame() {
@@ -302,5 +328,147 @@ test('genuine retirements still drain to zero through the reserved quota', async
     harness.state.retiringExpressionNames.size,
     0,
     'the retiring set must fully drain'
+  );
+});
+
+test('a wrapped window.WebSocket with no iframe escape refuses to publish', async () => {
+  // Electron Pet's preload replaces window.WebSocket and registers the newest
+  // socket as the desktop chat IPC proxy target. If the same-origin iframe
+  // borrow also fails, the only constructor left is that wrapper -- and
+  // building a VMC socket from it would hand the chat channel to /api/vmc/ws.
+  // Refusing is the correct trade: losing VMC output is recoverable, losing
+  // the user's chat channel is not.
+  const harness = loadSender({ wrappedWebSocket: true });
+
+  // loadSender() forces sourceActive so the other tests reach the frame path.
+  // Clear it here: whether sample() bails *before* markSourceActive() is part
+  // of what this test checks, and a pre-set flag would hide the answer.
+  harness.state.sourceActive = false;
+
+  const model = makeVrm(['happy', 'blink']);
+  for (let i = 0; i < 5; i++) {
+    harness.advance(100);
+    harness.api.sample(model);
+    await Promise.resolve();
+  }
+
+  assert.equal(
+    harness.sentFrames.length,
+    0,
+    `no frame may be published through the wrapper, got ${harness.sentFrames.length}`
+  );
+
+  const refusals = harness.errors.filter((line) => line.includes('hijacking the desktop chat channel'));
+  assert.ok(
+    refusals.length >= 1,
+    `the refusal must be logged, got ${JSON.stringify(harness.errors)}`
+  );
+
+  // Silent-by-design on the frame path: at 60Hz a per-frame log would flood.
+  assert.equal(refusals.length, 1, 'the refusal must be logged once, not per frame');
+
+  // And no retry timer is armed, because a wrapped top-level constructor never
+  // becomes native within a page lifetime.
+  assert.equal(harness.state.reconnectTimer, null, 'a blocked transport must not arm reconnects');
+  assert.equal(
+    harness.state.sourceActive,
+    false,
+    'sampling must bail before marking the source active, or the idle timer keeps running'
+  );
+});
+
+test('the refusal survives a model release and a status poll', async () => {
+  // A review of this change argued the refusal is silently clearable:
+  // releaseVrm() falls through to closeWebSocket(), the next status poll
+  // closes again, and from there sample() would quietly retry at 60Hz with the
+  // error re-logged -- "VMC 莫名其妙不动了" with no way to tell why. The latch
+  // is a module-level closure and closeWebSocket() only resets state.* fields,
+  // so it should hold; reading the code is not evidence, so this drives the
+  // exact sequence. Source-shape assertions cannot catch this regression: a
+  // future closeWebSocket() that resets the latch keeps every substring the
+  // isolation suite checks.
+  const harness = loadSender({
+    wrappedWebSocket: true,
+    statusResponse: { success: true, enabled: true, send_rate_hz: 60 },
+  });
+
+  // A page that genuinely refused never built a socket. loadSender() pre-wires
+  // one so the budget tests can reach sendFrameEnvelope; clearing it is what
+  // makes releaseVrm() take the closeWebSocket() branch the review names,
+  // rather than the release-ack branch that needs a live socket.
+  harness.state.ws = null;
+  harness.state.wsReady = false;
+  harness.state.sourceActive = false;
+
+  const refusals = () => harness.errors
+    .filter((line) => line.includes('hijacking the desktop chat channel'))
+    .length;
+
+  const model = makeVrm(['happy', 'blink']);
+  for (let i = 0; i < 3; i++) {
+    harness.advance(100);
+    harness.api.sample(model);
+    await Promise.resolve();
+  }
+  assert.equal(refusals(), 1, 'the refusal must be logged on the first blocked sample');
+
+  // Step 1: the model switch.
+  harness.api.releaseVrm(model);
+  await Promise.resolve();
+  assert.equal(refusals(), 1, 'releasing the model must not re-arm the transport');
+
+  // Step 2: the status poll that follows it.
+  await harness.api.syncStatusFromBackend();
+  assert.equal(
+    harness.state.enabled,
+    true,
+    'the poll must have actually applied a response, or this step proves nothing'
+  );
+  assert.equal(refusals(), 1, 'a status poll must not re-arm the transport');
+
+  // Step 3: half a second of sampling, i.e. the 60Hz silent retry the review
+  // predicts. One log and zero frames is the whole claim, tested.
+  for (let i = 0; i < 30; i++) {
+    harness.advance(16);
+    harness.api.sample(model);
+    await Promise.resolve();
+  }
+
+  assert.equal(
+    refusals(),
+    1,
+    `the refusal must stay logged exactly once, got ${JSON.stringify(harness.errors)}`
+  );
+  assert.equal(
+    harness.sentFrames.length,
+    0,
+    `no frame may be published after the refusal, got ${harness.sentFrames.length}`
+  );
+  assert.equal(
+    harness.state.reconnectTimer,
+    null,
+    'no reconnect may be armed by the release/poll cycle'
+  );
+});
+
+test('an unwrapped window.WebSocket fallback still publishes', async () => {
+  // The mirror image of the refusal: where window.WebSocket does read as
+  // native -- a browser with no preload, whose constructor is an engine
+  // binding -- a CSP-blocked iframe must not disable VMC. This pins the
+  // gating, not a claim that every host reads as native: one whose WebSocket
+  // is written in JavaScript does not, which is the false positive the
+  // looksNative() comment documents.
+  const harness = loadSender();
+
+  harness.api.sample(makeVrm(['happy', 'blink']));
+
+  assert.ok(
+    harness.sentFrames.length > 0,
+    'a native top-level constructor must remain a usable fallback'
+  );
+  assert.equal(
+    harness.errors.filter((line) => line.includes('hijacking the desktop chat channel')).length,
+    0,
+    'a plain browser must not be told its transport is blocked'
   );
 });
