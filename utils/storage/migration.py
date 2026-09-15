@@ -24,7 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from utils.file_utils import atomic_write_json, fsync_directory_best_effort, read_json
+from utils.file_utils import (
+    atomic_write_json,
+    fsync_directory_best_effort,
+    publish_without_replacing,
+    read_json,
+)
 from utils.logger_config import get_module_logger
 from .entries import (
     RUNTIME_STORAGE_ENTRIES,
@@ -188,6 +193,23 @@ def _durable_replace(source: Path, target: Path) -> None:
     """Rename and flush both directory-entry sides where supported."""
 
     os.replace(source, target)
+    fsync_directory_best_effort(source.parent)
+    if source.parent != target.parent:
+        fsync_directory_best_effort(target.parent)
+
+
+def _durable_publish_without_replacing(source: Path, target: Path) -> None:
+    """Publish a staged runtime entry without erasing a late external write."""
+
+    if source.is_dir():
+        # Windows rename is no-replace. POSIX may replace an existing *empty*
+        # directory, but refuses a non-empty directory or any type mismatch;
+        # replacing an empty directory cannot discard user data.
+        os.rename(source, target)
+    else:
+        # Files need an explicit no-replace primitive on POSIX, where rename
+        # would otherwise silently overwrite a file created after our CAS.
+        publish_without_replacing(source, target)
     fsync_directory_best_effort(source.parent)
     if source.parent != target.parent:
         fsync_directory_best_effort(target.parent)
@@ -369,8 +391,49 @@ def _validate_txid(value: Any) -> str:
 
 
 def _transaction_root_for(target_root: Path, txid: str) -> Path:
+    # The selected root may itself be a mount point.  Its parent can therefore
+    # live on a different filesystem, making the publish-time os.replace calls
+    # fail with EXDEV.  Keep stage and backup under the selected root so every
+    # rename remains on the target filesystem.  Runtime snapshots only include
+    # the declared storage entries, so this private transaction directory is
+    # never mistaken for user content.
+    return target_root / f".neko-storage-migration-{txid}"
+
+
+def _legacy_transaction_root_for(target_root: Path, txid: str) -> Path:
+    """Return the version-2 layout used before target-mount staging."""
     safe_name = target_root.name or "root"
     return target_root.parent / f".{safe_name}.neko-storage-migration-{txid}"
+
+
+def _checkpoint_transaction_root(
+    payload: dict[str, Any],
+    target_root: Path,
+    txid: str,
+) -> tuple[Path, bool]:
+    """Resolve a checkpoint-owned transaction directory without trusting an arbitrary path."""
+    current = _transaction_root_for(target_root, txid)
+    raw = str(payload.get("transaction_root") or "").strip()
+    if not raw:
+        return current, False
+
+    candidate = Path(raw).expanduser()
+    if path_chain_has_symlink(candidate):
+        raise StorageMigrationError(
+            "transaction_path_symlink_unsupported",
+            "迁移事务目录或其父路径包含符号链接，无法确认事务归属。",
+        )
+    candidate = Path(os.path.abspath(candidate))
+    allowed = {
+        os.path.normcase(str(Path(os.path.abspath(path))))
+        for path in (current, _legacy_transaction_root_for(target_root, txid))
+    }
+    if os.path.normcase(str(candidate)) not in allowed:
+        raise StorageMigrationError(
+            "invalid_checkpoint",
+            "存储迁移检查点中的事务目录不属于当前迁移。",
+        )
+    return candidate, True
 
 
 def _rollback_published_entries(
@@ -706,10 +769,15 @@ def run_pending_storage_migration(
                     str(migration_payload.get("target_root") or "").strip()
                 )
                 completed_txid = _validate_txid(migration_payload.get("txid"))
-                completed_transaction_root = _transaction_root_for(completed_target, completed_txid)
+                completed_transaction_root, checkpoint_owned = _checkpoint_transaction_root(
+                    migration_payload,
+                    completed_target,
+                    completed_txid,
+                )
                 if (
                     str(migration_payload.get("status") or "").strip()
                     == STORAGE_MIGRATION_STATUS_COMPLETED
+                    and checkpoint_owned
                     and completed_transaction_root.exists()
                 ):
                     _remove_existing_path(completed_transaction_root)
@@ -726,6 +794,7 @@ def run_pending_storage_migration(
     source_root: Path | None = None
     target_root: Path | None = None
     transaction_root: Path | None = None
+    transaction_owned = False
     original_target_entries: list[str] = []
     publish_entry_names: list[str] = []
     source_snapshots: dict[str, dict[str, int | str]] = {}
@@ -842,7 +911,11 @@ def run_pending_storage_migration(
         error_message: str,
     ) -> dict[str, Any]:
         result = _finish_failure(error_code, error_message)
-        if transaction_root is not None and bool(result.get("recovery_checkpoint_persisted")):
+        if (
+            transaction_root is not None
+            and transaction_owned
+            and bool(result.get("recovery_checkpoint_persisted"))
+        ):
             try:
                 _remove_existing_path(transaction_root)
             except Exception as cleanup_exc:
@@ -869,7 +942,11 @@ def run_pending_storage_migration(
         if migration_mode != STORAGE_MIGRATION_MODE_COPY:
             raise StorageMigrationError("invalid_migration_mode", "存储迁移检查点包含不支持的迁移模式。")
         txid = _validate_txid(payload.get("txid"))
-        transaction_root = _transaction_root_for(target_root, txid)
+        transaction_root, transaction_owned = _checkpoint_transaction_root(
+            payload,
+            target_root,
+            txid,
+        )
         original_target_entries = [
             str(value)
             for value in payload.get("original_target_entries", [])
@@ -919,6 +996,11 @@ def run_pending_storage_migration(
                 rollback_required=True,
             )
         if transaction_root.exists():
+            if not transaction_owned:
+                return _finish_failure(
+                    "transaction_path_occupied",
+                    "迁移事务目录已被其他内容占用，已停止迁移以避免删除未知数据。",
+                )
             if publish_started:
                 if target_baseline is None:
                     return _finish_failure(
@@ -1003,7 +1085,7 @@ def run_pending_storage_migration(
         )
         safety_margin_bytes = max(64 * 1024 * 1024, int(required_bytes * 0.05)) if required_bytes else 0
         try:
-            target_free_bytes = int(shutil.disk_usage(str(target_root.parent)).free)
+            target_free_bytes = int(shutil.disk_usage(str(target_root)).free)
         except OSError as exc:
             raise StorageMigrationError(
                 "disk_space_unavailable",
@@ -1015,7 +1097,20 @@ def run_pending_storage_migration(
                 "目标卷剩余空间不足，无法安全执行迁移。",
             )
 
+        # Bind the random transaction path to the durable checkpoint before it
+        # can exist on disk.  A crash after mkdir must not leave an apparently
+        # unowned directory that forces the next launch through recovery.  Keep
+        # transaction_owned false until mkdir succeeds so a pre-existing path
+        # collision is never deleted merely because the checkpoint names it.
+        payload = _persist_migration_payload(
+            config_manager,
+            payload,
+            anchor_root=normalized_anchor_root,
+            status=STORAGE_MIGRATION_STATUS_PREFLIGHT,
+            transaction_root=str(transaction_root),
+        )
         transaction_root.mkdir(parents=False, exist_ok=False)
+        transaction_owned = True
         fsync_directory_best_effort(transaction_root.parent)
         staged_root = transaction_root / "staged"
         backup_root = transaction_root / "backup"
@@ -1028,7 +1123,6 @@ def run_pending_storage_migration(
             payload,
             anchor_root=normalized_anchor_root,
             status=STORAGE_MIGRATION_STATUS_COPYING,
-            transaction_root=str(transaction_root),
         )
         for entry_name in existing_entries:
             if path_chain_has_symlink(source_root) or path_chain_has_symlink(target_root):
@@ -1080,13 +1174,14 @@ def run_pending_storage_migration(
             backup_root=str(source_root),
         )
 
-        if _snapshot_runtime_entries(target_root) != target_baseline:
+        publish_target_snapshot = _snapshot_runtime_entries(target_root)
+        if publish_target_snapshot != target_baseline:
             raise StorageMigrationError(
                 "target_changed_since_confirmation",
                 "目标路径中的数据在迁移期间发生了变化，已停止迁移以避免覆盖新数据。",
             )
 
-        original_target_entries = list(_snapshot_runtime_entries(target_root))
+        original_target_entries = list(publish_target_snapshot)
         publish_entry_names = list(existing_entries)
         payload = _persist_migration_payload(
             config_manager,
@@ -1108,17 +1203,45 @@ def run_pending_storage_migration(
             staged_entry = _checked_migration_entry_path(staged_root, entry_name)
             target_entry = _checked_migration_entry_path(target_root, entry_name)
             backup_entry = _checked_migration_entry_path(backup_root, entry_name)
-            if target_entry.exists() or target_entry.is_symlink():
+            target_exists = target_entry.exists() or target_entry.is_symlink()
+            expected_target_snapshot = publish_target_snapshot.get(entry_name)
+            if expected_target_snapshot is None:
+                target_unchanged = not target_exists
+            else:
+                target_unchanged = bool(
+                    target_exists
+                    and _snapshot_path(target_entry) == expected_target_snapshot
+                )
+            if not target_unchanged:
+                raise StorageMigrationError(
+                    "target_changed_during_publish",
+                    f"目标路径在发布前发生了变化，已停止迁移以保留新数据: {entry_name}",
+                )
+
+            if target_exists:
                 target_entry = _checked_migration_entry_path(target_root, entry_name)
                 backup_entry = _checked_migration_entry_path(backup_root, entry_name)
                 backup_entry.parent.mkdir(parents=True, exist_ok=True)
                 fsync_directory_best_effort(backup_entry.parent.parent)
                 _durable_replace(target_entry, backup_entry)
+                if _snapshot_path(backup_entry) != expected_target_snapshot:
+                    raise StorageMigrationError(
+                        "target_changed_during_publish",
+                        f"目标路径在备份切换窗口发生了变化，已保留事务证据: {entry_name}",
+                    )
             target_entry = _checked_migration_entry_path(target_root, entry_name)
             target_entry.parent.mkdir(parents=True, exist_ok=True)
             fsync_directory_best_effort(target_entry.parent.parent)
             staged_entry = _checked_migration_entry_path(staged_root, entry_name)
-            _durable_replace(staged_entry, target_entry)
+            try:
+                _durable_publish_without_replacing(staged_entry, target_entry)
+            except OSError as exc:
+                if target_entry.exists() or target_entry.is_symlink():
+                    raise StorageMigrationError(
+                        "target_changed_during_publish",
+                        f"目标路径在发布切换窗口出现了新数据，已停止迁移: {entry_name}",
+                    ) from exc
+                raise
 
         for entry_name, expected_snapshot in source_snapshots.items():
             actual_snapshot = _snapshot_path(

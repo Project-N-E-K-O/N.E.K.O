@@ -209,6 +209,26 @@ def _copy_with_heartbeat(beat):
     return _copy
 
 
+def _chmod_without_following(path, mode: int) -> None:
+    """Apply chmod without ever accepting a symlink/reparse point target."""
+
+    if os.chmod in os.supports_follow_symlinks:
+        os.chmod(path, mode, follow_symlinks=False)
+        return
+
+    metadata = os.lstat(path)
+    is_reparse_point = bool(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        & getattr(metadata, "st_file_attributes", 0)
+    )
+    if stat.S_ISLNK(metadata.st_mode) or is_reparse_point:
+        raise OSError("refusing to chmod a linked migration path")
+    # Python 3.11 Linux/Windows may not implement follow_symlinks=False.
+    # This workspace is app-owned and serialized by _MIGRATION_LOCK; after the
+    # lstat check, ordinary chmod is the only portable way to clear read-only.
+    os.chmod(path, mode)
+
+
 def _force_rmtree(path):
     """Remove a tree even when Windows made part of it read-only.
 
@@ -234,10 +254,9 @@ def _force_rmtree(path):
             if target_parent:
                 try:
                     parent_mode = os.stat(target_parent, follow_symlinks=False).st_mode
-                    os.chmod(
+                    _chmod_without_following(
                         target_parent,
                         parent_mode | stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC,
-                        follow_symlinks=False,
                     )
                 except (OSError, NotImplementedError):
                     pass
@@ -252,17 +271,15 @@ def _force_rmtree(path):
                     current = os.stat(target, follow_symlinks=False).st_mode
                 except OSError:
                     current = 0
-                os.chmod(
+                _chmod_without_following(
                     target,
                     current | stat.S_IWRITE | stat.S_IREAD,
-                    follow_symlinks=False,
                 )
                 if os.path.isdir(target):
                     # Traversal, which is what an unwritable directory blocks.
-                    os.chmod(
+                    _chmod_without_following(
                         target,
                         os.stat(target, follow_symlinks=False).st_mode | stat.S_IEXEC,
-                        follow_symlinks=False,
                     )
             _func(target)
         except (OSError, NotImplementedError):

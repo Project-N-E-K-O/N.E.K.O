@@ -67,7 +67,7 @@ def _derive_storage_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
     blocking_reason = str(storage_bootstrap.get("blocking_reason") or "").strip()
     if blocking_reason == "migration_pending":
         return "maintenance"
-    if blocking_reason == "recovery_required":
+    if blocking_reason in {"recovery_required", "startup_release_failed"}:
         return "recovery_required"
     if blocking_reason == "selection_required":
         return "selection_required"

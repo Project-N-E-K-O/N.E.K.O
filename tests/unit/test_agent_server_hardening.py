@@ -13,6 +13,7 @@ Covers the pre-existing defects surfaced by review on the package split:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -35,6 +36,8 @@ async def test_agent_recovery_generation_skips_runtime_startup(monkeypatch: pyte
     start_plugin = AsyncMock(side_effect=AssertionError("plugin host must stay stopped"))
     monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "storage_status_unavailable")
     monkeypatch.setattr(srv, "_start_embedded_user_plugin_server", start_plugin)
+    monkeypatch.setattr(srv, "_agent_runtime_init_completed", False)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", False)
 
     await srv.startup()
 
@@ -42,10 +45,38 @@ async def test_agent_recovery_generation_skips_runtime_startup(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_agent_first_run_derives_durable_selection_gate_without_launcher_marker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_runtime as srv
+
+    # Register this key with monkeypatch even when it starts absent: product
+    # code writes it directly, and the storage-root guard verifies teardown.
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        srv,
+        "get_storage_startup_blocking_reason",
+        lambda _cm: "selection_required",
+    )
+    initialize = AsyncMock(side_effect=AssertionError("first-run Agent must stay stopped"))
+    monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", initialize)
+    monkeypatch.setattr(srv, "_agent_runtime_init_completed", False)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", False)
+
+    await srv.startup()
+
+    initialize.assert_not_awaited()
+    assert os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "selection_required"
+
+
+@pytest.mark.asyncio
 async def test_agent_recovery_generation_allows_only_health(monkeypatch: pytest.MonkeyPatch):
     from app.agent_server import api_runtime as srv
 
     monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "storage_policy_unavailable")
+    monkeypatch.setattr(srv, "_agent_runtime_init_completed", False)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", False)
 
     async def _must_not_run(_request):
         raise AssertionError("blocked request reached a runtime route")
@@ -67,6 +98,85 @@ async def test_agent_recovery_generation_allows_only_health(monkeypatch: pytest.
         _health,
     )
     assert allowed is health_response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "recovery_mode",
+    ["selection_required", "migration_pending", "recovery_required"],
+)
+async def test_agent_recovery_generation_can_initialize_after_storage_is_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_mode: str,
+):
+    from app.agent_server import api_runtime as srv
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", recovery_mode)
+    monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
+    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    initialize = AsyncMock(return_value=True)
+    monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", initialize)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
+
+    response = await srv.continue_storage_startup(None)
+
+    assert response == {"ok": True, "initialized": True}
+    assert "NEKO_STORAGE_RECOVERY_MODE" not in os.environ
+    initialize.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_agent_late_continue_cannot_override_newer_block(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_runtime as srv
+
+    init_started = asyncio.Event()
+    allow_init = asyncio.Event()
+
+    async def _initialize():
+        init_started.set()
+        await allow_init.wait()
+        return True
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "recovery_required")
+    monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
+    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", _initialize)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
+    monkeypatch.setattr(srv, "_agent_storage_admission_generation", 20)
+
+    continue_task = asyncio.create_task(srv.continue_storage_startup(None))
+    await init_started.wait()
+    await srv.block_storage_startup(
+        srv.AgentStorageStartupRequest(
+            reason="compensate",
+            recovery_mode="recovery_required",
+        )
+    )
+    allow_init.set()
+    response = await continue_task
+
+    assert response.status_code == 409
+    assert srv._agent_storage_blocked_after_init is True
+    assert srv._agent_storage_admission_generation == 21
+
+
+@pytest.mark.asyncio
+async def test_agent_blocked_shutdown_skips_runtime_persistence_without_marker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_runtime as srv
+
+    tracker = SimpleNamespace(save=MagicMock())
+    monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
+    monkeypatch.setattr(srv, "_agent_runtime_init_completed", True)
+    monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", lambda: tracker)
+
+    await srv.shutdown()
+
+    tracker.save.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

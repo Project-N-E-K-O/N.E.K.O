@@ -99,6 +99,36 @@ def test_storage_location_bootstrap_payload_exposes_stage3_web_fields(tmp_path):
 
 
 @pytest.mark.unit
+def test_runtime_release_failure_overlays_ready_disk_state_until_cleared(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+    try:
+        payload = build_storage_location_bootstrap_payload(config_manager)
+        assert payload["blocking_reason"] == "startup_release_failed"
+        assert payload["error_code"] == "startup_release_failed"
+        assert payload["recovery_required"] is True
+        assert payload["recovery_action"] == "safe_exit"
+        # Child-service continue gates share this module in packaged merged
+        # mode and must re-evaluate disk authority, not Main's HTTP overlay.
+        assert get_storage_startup_blocking_reason(config_manager) == ""
+        assert is_storage_startup_blocked(config_manager) is False
+    finally:
+        storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
+
+    ready_payload = build_storage_location_bootstrap_payload(config_manager)
+    assert ready_payload["blocking_reason"] == ""
+    assert ready_payload["recovery_required"] is False
+
+
+@pytest.mark.unit
 def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_or_writes(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 

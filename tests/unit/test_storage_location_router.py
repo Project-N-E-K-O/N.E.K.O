@@ -331,23 +331,150 @@ def test_storage_location_preflight_rejects_cross_origin_before_write_probe(tmp_
 
 
 @pytest.mark.unit
-def test_storage_location_select_same_path_persists_policy_and_continues(tmp_path):
+def test_restart_operation_cancel_closes_never_started_unknown_outcome(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    shutdown_calls = []
+    storage_location_router_module._storage_restart_operations.clear()
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        preflight = client.post(
+            "/api/storage/location/preflight",
+            json={"selected_root": str(target_root), "selection_source": "custom"},
+        )
+        operation_id = preflight.json()["restart_operation_id"]
+        prepared = client.get(
+            "/api/storage/location/status",
+            params={"restart_operation_id": operation_id},
+        ).json()["restart_operation"]
+        cancelled = client.post(
+            "/api/storage/location/restart/cancel",
+            json={"restart_operation_id": operation_id},
+        ).json()["restart_operation"]
+        rejected_restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "custom",
+                "restart_operation_id": operation_id,
+            },
+        )
+
+    assert prepared["state"] == "prepared"
+    assert cancelled["state"] == "cancelled"
+    assert rejected_restart.status_code == 409
+    assert rejected_restart.json()["error_code"] == "restart_operation_cancelled"
+    assert shutdown_calls == []
+    assert load_storage_migration(config_manager) is None
+
+
+@pytest.mark.unit
+def test_restart_operation_tracks_accepted_response_by_preflight_id(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    storage_location_router_module._storage_restart_operations.clear()
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+
+    with _build_client(config_manager, request_app_shutdown=lambda: None) as client:
+        preflight = client.post(
+            "/api/storage/location/preflight",
+            json={"selected_root": str(target_root), "selection_source": "custom"},
+        )
+        operation_id = preflight.json()["restart_operation_id"]
+        restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(target_root),
+                "selection_source": "custom",
+                "restart_operation_id": operation_id,
+            },
+        )
+
+    assert restart.status_code == 200
+    assert restart.json()["result"] == "restart_initiated"
+    assert restart.json()["restart_operation"]["state"] == "accepted"
+    assert load_storage_migration(config_manager)["status"] == "pending"
+
+
+@pytest.mark.unit
+def test_restart_operation_cancel_cannot_cancel_in_flight_request(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    storage_location_router_module._storage_restart_operations.clear()
+    operation_id = storage_location_router_module._prepare_storage_restart_operation(target_root)
+    assert storage_location_router_module._begin_storage_restart_operation(
+        operation_id,
+        target_root,
+    ) == ""
 
     with _build_client(config_manager) as client:
         response = client.post(
+            "/api/storage/location/restart/cancel",
+            json={"restart_operation_id": operation_id},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["restart_operation"]["state"] == "in_flight"
+
+
+@pytest.mark.unit
+def test_storage_location_select_same_path_defers_writes_until_correlated_restart(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+    ) as client:
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(config_manager.app_docs_dir),
                 "selection_source": "current",
             },
         )
+        select_payload = select_response.json()
+        assert select_payload["result"] == "restart_required"
+        assert load_storage_policy(config_manager) is None
+        assert shutdown_calls == []
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+                "restart_operation_id": select_payload["restart_operation_id"],
+            },
+        )
 
+    assert select_response.status_code == 200
+    assert select_payload["restart_mode"] == "rebind_only"
+    assert select_payload["selected_root"] == str(config_manager.app_docs_dir)
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["result"] == "continue_current_session"
-    assert payload["selected_root"] == str(config_manager.app_docs_dir)
+    assert response.json()["result"] == "restart_initiated"
 
     policy_path = get_storage_policy_path(config_manager)
     assert policy_path.is_file()
@@ -355,21 +482,58 @@ def test_storage_location_select_same_path_persists_policy_and_continues(tmp_pat
     policy_payload = load_storage_policy(config_manager)
     assert policy_payload["selected_root"] == str(config_manager.app_docs_dir)
     assert policy_payload["selection_source"] == "user_selected"
+    root_state = config_manager.load_root_state()
+    assert root_state["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert root_state["last_migration_result"].startswith("restart_rebind:")
+    assert shutdown_calls == ["shutdown"]
 
 
 @pytest.mark.unit
-def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_path):
+def test_storage_location_select_same_path_never_releases_services_before_phase0(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     release_calls = []
+    shutdown_calls = []
 
     async def release_storage_startup_barrier(*, reason: str):
         release_calls.append(reason)
 
     with _build_client(
         config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
         release_storage_startup_barrier=release_storage_startup_barrier,
     ) as client:
+        select_response = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+            },
+        )
+        select_payload = select_response.json()
         response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+                "restart_operation_id": select_payload["restart_operation_id"],
+            },
+        )
+
+    assert select_response.status_code == 200
+    assert select_payload["result"] == "restart_required"
+    assert response.status_code == 200
+    assert response.json()["result"] == "restart_initiated"
+    assert release_calls == []
+    assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
+def test_storage_location_select_same_path_requires_restart_owner_before_writes(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    previous_root_state = config_manager.load_root_state()
+
+    with _build_client(config_manager) as client:
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(config_manager.app_docs_dir),
@@ -377,8 +541,10 @@ def test_storage_location_select_same_path_releases_limited_startup_barrier(tmp_
             },
         )
 
-    assert response.status_code == 200
-    assert release_calls == ["storage_selection_continue_current_session"]
+    assert select_response.status_code == 503
+    assert select_response.json()["error_code"] == "restart_unavailable"
+    assert load_storage_policy(config_manager) is None
+    assert config_manager.load_root_state() == previous_root_state
 
 
 @pytest.mark.unit
@@ -455,6 +621,42 @@ def test_storage_location_exit_ignores_ready_storage_state(tmp_path):
     assert payload["ok"] is False
     assert payload["error_code"] == "storage_exit_not_required"
     assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_runtime_release_failure_keeps_status_blocked_and_allows_safe_exit(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+    try:
+        with _build_client(
+            config_manager,
+            request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+        ) as client:
+            status_response = client.get("/api/storage/location/status")
+            exit_response = client.post(
+                "/api/storage/location/exit",
+                headers={"X-Neko-Storage-Action": "exit"},
+            )
+    finally:
+        storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
+
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["ready"] is False
+    assert status_payload["lifecycle_state"] == "recovery_required"
+    assert status_payload["blocking_reason"] == "startup_release_failed"
+    assert status_payload["storage"]["recovery_required"] is True
+    assert exit_response.status_code == 200
+    assert exit_response.json()["result"] == "shutdown_initiated"
+    assert shutdown_calls == ["shutdown"]
 
 
 @pytest.mark.unit
@@ -665,30 +867,162 @@ def test_storage_location_mutation_routes_do_not_reject_non_local_state_cloudsav
 
 
 @pytest.mark.unit
-def test_storage_location_select_same_path_rolls_back_when_startup_release_fails(tmp_path):
+def test_storage_location_select_same_path_rolls_back_when_restart_request_fails(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     previous_root_state = config_manager.load_root_state()
 
-    async def release_storage_startup_barrier(*, reason: str):
-        raise RuntimeError("release failed")
+    async def request_app_shutdown():
+        raise RuntimeError("shutdown failed")
 
     with _build_client(
         config_manager,
-        release_storage_startup_barrier=release_storage_startup_barrier,
+        request_app_shutdown=request_app_shutdown,
     ) as client:
-        response = client.post(
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(config_manager.app_docs_dir),
                 "selection_source": "current",
             },
         )
+        select_payload = select_response.json()
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "current",
+                "restart_operation_id": select_payload["restart_operation_id"],
+            },
+        )
 
-    assert response.status_code == 503
+    assert select_response.status_code == 200
+    assert select_payload["result"] == "restart_required"
+    assert response.status_code == 500
     payload = response.json()
-    assert payload["error_code"] == "startup_release_failed"
-    assert load_storage_policy(config_manager) is None
+    assert payload["error_code"] == "restart_schedule_failed"
+    policy = load_storage_policy(config_manager)
+    assert policy is None
     assert config_manager.load_root_state() == previous_root_state
+
+
+@pytest.mark.unit
+def test_storage_location_runtime_release_failure_restarts_without_rewriting_policy(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    release_reasons = []
+    shutdown_calls = []
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    original_policy = load_storage_policy(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    )
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+
+    async def release_storage_startup_barrier(*, reason: str):
+        release_reasons.append(reason)
+
+    try:
+        with _build_client(
+            config_manager,
+            request_app_shutdown=lambda: shutdown_calls.append("shutdown"),
+            release_storage_startup_barrier=release_storage_startup_barrier,
+        ) as client:
+            select_response = client.post(
+                "/api/storage/location/select",
+                json={
+                    "selected_root": str(config_manager.app_docs_dir),
+                    "selection_source": "current",
+                },
+            )
+            select_payload = select_response.json()
+            response = client.post(
+                "/api/storage/location/restart",
+                json={
+                    "selected_root": str(config_manager.app_docs_dir),
+                    "selection_source": "current",
+                    "restart_operation_id": select_payload["restart_operation_id"],
+                },
+            )
+    finally:
+        storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
+
+    assert select_response.status_code == 200
+    assert select_payload["result"] == "restart_required"
+    assert response.status_code == 200
+    assert response.json()["result"] == "restart_initiated"
+    assert release_reasons == []
+    assert shutdown_calls == ["shutdown"]
+    assert load_storage_policy(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    ) == original_policy
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_storage_mutation_write_failure_restores_all_persisted_facts(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+        anchor_root=config_manager.anchor_root,
+    )
+    previous_root_state = config_manager.load_root_state()
+    previous_policy = load_storage_policy(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    )
+    previous_migration = load_storage_migration(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    )
+
+    def _partially_write_then_fail():
+        storage_location_router_module.delete_storage_migration(
+            config_manager,
+            anchor_root=config_manager.anchor_root,
+        )
+        save_storage_policy(
+            config_manager,
+            selected_root=target_root,
+            selection_source="custom",
+            anchor_root=config_manager.anchor_root,
+        )
+        raise OSError("root state write failed")
+
+    snapshot: dict = {}
+    with pytest.raises(OSError, match="root state write failed"):
+        await storage_location_router_module._apply_storage_mutation_writes(
+            config_manager,
+            anchor_root=config_manager.anchor_root,
+            snapshot_out=snapshot,
+            write=_partially_write_then_fail,
+        )
+
+    assert config_manager.load_root_state() == previous_root_state
+    assert load_storage_policy(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    ) == previous_policy
+    assert load_storage_migration(
+        config_manager,
+        anchor_root=config_manager.anchor_root,
+    ) == previous_migration
 
 
 @pytest.mark.unit
@@ -1919,24 +2253,38 @@ def test_storage_location_select_recovery_switch_to_recommended_root_resolves_cu
         False,
     )
 
-    with _build_client(reloaded_manager) as client:
-        response = client.post(
+    with _build_client(
+        reloaded_manager,
+        request_app_shutdown=lambda: None,
+    ) as client:
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(reloaded_manager.anchor_root),
                 "selection_source": "recommended",
             },
         )
+        select_payload = select_response.json()
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(reloaded_manager.anchor_root),
+                "selection_source": "recommended",
+                "restart_operation_id": select_payload["restart_operation_id"],
+            },
+        )
 
+    assert select_response.status_code == 200
+    assert select_payload["result"] == "restart_required"
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["result"] == "continue_current_session"
+    assert payload["result"] == "restart_initiated"
     assert payload["selected_root"] == str(reloaded_manager.anchor_root)
 
     policy_payload = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
     assert policy_payload["selected_root"] == str(reloaded_manager.anchor_root)
-    assert reloaded_manager.load_root_state()["mode"] == "normal"
+    assert reloaded_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
 
 
 @pytest.mark.unit
@@ -1973,27 +2321,41 @@ def test_storage_location_select_current_root_recovers_failed_migration_checkpoi
         False,
     )
 
-    with _build_client(config_manager) as client:
-        response = client.post(
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: None,
+    ) as client:
+        select_response = client.post(
             "/api/storage/location/select",
             json={
                 "selected_root": str(config_manager.app_docs_dir),
                 "selection_source": "recovered",
             },
         )
+        select_payload = select_response.json()
+        response = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(config_manager.app_docs_dir),
+                "selection_source": "recovered",
+                "restart_operation_id": select_payload["restart_operation_id"],
+            },
+        )
 
+    assert select_response.status_code == 200
+    assert select_payload["result"] == "restart_required"
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["result"] == "continue_current_session"
+    assert payload["result"] == "restart_initiated"
     assert payload["selected_root"] == str(config_manager.app_docs_dir)
     assert load_storage_migration(config_manager) is None
 
     policy_payload = load_storage_policy(config_manager, anchor_root=config_manager.anchor_root)
     assert policy_payload["selected_root"] == str(config_manager.app_docs_dir)
     root_state = config_manager.load_root_state()
-    assert root_state["mode"] == "normal"
-    assert root_state["last_migration_result"] == "recovered:failed_migration:target_not_empty"
+    assert root_state["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert root_state["last_migration_result"].startswith("restart_rebind:")
 
 
 @pytest.mark.unit
@@ -2032,6 +2394,7 @@ def test_storage_location_restart_rebinds_original_root_without_creating_migrati
             json={
                 "selected_root": str(unavailable_selected_root),
                 "selection_source": "current",
+                "restart_operation_id": select_response.json()["restart_operation_id"],
             },
         )
 

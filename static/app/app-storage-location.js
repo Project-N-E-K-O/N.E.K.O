@@ -59,6 +59,8 @@
         maintenancePollGeneration: 0,
         maintenanceEntryInstanceId: '',
         maintenanceObservedMigrationBlock: false,
+        maintenanceRestartOperationId: '',
+        maintenanceOutcomeUnknown: false,
         maintenanceRecoveryActionInFlight: false,
         completionPollTimer: null,
         completionPollAttempts: 0,
@@ -823,6 +825,7 @@
         if (!payload || typeof payload !== 'object') {
             return {
                 target_root: String(fallbackTargetPath || '').trim(),
+                restart_operation_id: '',
                 estimated_required_bytes: 0,
                 target_free_bytes: 0,
                 permission_ok: true,
@@ -837,6 +840,7 @@
 
         return {
             target_root: String(payload.target_root || payload.selected_root || fallbackTargetPath || '').trim(),
+            restart_operation_id: String(payload.restart_operation_id || '').trim(),
             estimated_required_bytes: Number(payload.estimated_required_bytes || 0),
             target_free_bytes: Number(payload.target_free_bytes || 0),
             permission_ok: payload.permission_ok !== false,
@@ -1054,15 +1058,39 @@
         if (!payload || payload.ready !== true
             || shouldBlockMainUi(payload)
             || isObservedMigrationBlock(payload)) return false;
+
+        var restartOperation = payload.restart_operation
+            && typeof payload.restart_operation === 'object'
+            ? payload.restart_operation
+            : {};
+        var operationState = String(restartOperation.state || '').trim();
+        var operationId = String(restartOperation.operation_id || '').trim();
+        var operationTarget = String(restartOperation.target_root || '').trim();
+        var operationInstanceId = String(restartOperation.instance_id || '').trim();
+        var payloadInstanceId = String(payload.instance_id || '').trim();
+        var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
+        var readyInstanceId = String(payload.instance_id || '').trim();
+        var restartedInstance = !!entryInstanceId
+            && !!readyInstanceId
+            && entryInstanceId !== readyInstanceId;
+        if (state.maintenanceOutcomeUnknown
+            && state.maintenanceRestartOperationId) {
+            return restartedInstance || (
+                operationId === state.maintenanceRestartOperationId
+                && operationTarget === String(state.pendingSelection.path || '').trim()
+                && operationInstanceId
+                && operationInstanceId === payloadInstanceId
+                && ['cancelled', 'rejected', 'expired'].indexOf(operationState) !== -1
+            );
+        }
+
         if (state.maintenanceObservedMigrationBlock) return true;
 
         // A successful migration/rebind always starts a new backend instance.
         // If the first poll races straight to ready, the instance transition is
         // equivalent to observing the intermediate maintenance generation. A
         // same-instance or identity-less ready can be stale, so keep the gate.
-        var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
-        var readyInstanceId = String(payload.instance_id || '').trim();
-        return !!entryInstanceId && !!readyInstanceId && entryInstanceId !== readyInstanceId;
+        return restartedInstance;
     }
 
     function shouldLeaveMaintenanceForSelection(statusPayload) {
@@ -1099,6 +1127,32 @@
 
     async function leaveMaintenanceForSelection(statusPayload, pollGeneration) {
         if (!shouldLeaveMaintenanceForSelection(statusPayload)) return false;
+
+        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
+            var restartOperation = statusPayload && statusPayload.restart_operation;
+            var operationState = String(restartOperation && restartOperation.state || '').trim();
+            var operationId = String(restartOperation && restartOperation.operation_id || '').trim();
+            var operationTarget = String(restartOperation && restartOperation.target_root || '').trim();
+            var operationInstanceId = String(restartOperation && restartOperation.instance_id || '').trim();
+            var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
+            var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
+            var restartedInstance = !!entryInstanceId
+                && !!payloadInstanceId
+                && entryInstanceId !== payloadInstanceId;
+            var correlatedTerminal = operationId === state.maintenanceRestartOperationId
+                && operationTarget === String(state.pendingSelection.path || '').trim()
+                && !!operationInstanceId
+                && operationInstanceId === payloadInstanceId
+                && ['cancelled', 'rejected', 'expired', 'indeterminate'].indexOf(operationState) !== -1;
+
+            // A prepared/in-flight (or uncorrelated) operation may still mutate
+            // storage after this poll. Do not expose a second selection request
+            // until the same backend proves a terminal outcome, or a new backend
+            // generation proves the old request can no longer run.
+            if (!restartedInstance && !correlatedTerminal) {
+                return false;
+            }
+        }
 
         var bootstrapPayload = await fetchStorageLocationBootstrap();
         if (pollGeneration && pollGeneration !== state.maintenancePollGeneration) {
@@ -1143,7 +1197,12 @@
     }
 
     async function fetchStorageLocationStatus() {
-        var response = await fetchWithTimeout('/api/storage/location/status', {
+        var statusUrl = '/api/storage/location/status';
+        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
+            statusUrl += '?restart_operation_id='
+                + encodeURIComponent(state.maintenanceRestartOperationId);
+        }
+        var response = await fetchWithTimeout(statusUrl, {
             cache: 'no-store',
             headers: {
                 'Accept': 'application/json'
@@ -1161,6 +1220,35 @@
         }
         captureStorageCsrfToken(payload);
         return payload;
+    }
+
+    async function reconcileUnknownRestartOperation(statusPayload) {
+        if (!state.maintenanceOutcomeUnknown || !state.maintenanceRestartOperationId) {
+            return statusPayload;
+        }
+        var operation = statusPayload && statusPayload.restart_operation;
+        if (!operation || String(operation.state || '').trim() !== 'prepared') {
+            return statusPayload;
+        }
+        try {
+            var response = await fetchWithTimeout('/api/storage/location/restart/cancel', {
+                method: 'POST',
+                headers: storageMutationHeaders({
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                }),
+                body: JSON.stringify({
+                    restart_operation_id: state.maintenanceRestartOperationId
+                })
+            }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
+            var payload = await response.json();
+            if (response.ok && payload && payload.ok === true && payload.restart_operation) {
+                statusPayload.restart_operation = payload.restart_operation;
+            }
+        } catch (error) {
+            console.warn('[storage-location] restart operation reconcile failed', error);
+        }
+        return statusPayload;
     }
 
     async function waitForSystemStatus() {
@@ -2043,6 +2131,11 @@
             } catch (_) {}
 
             if (!response.ok) {
+                var selectionErrorCode = String(payload && payload.error_code || '').trim();
+                if (selectionErrorCode === 'restart_schedule_rollback_failed'
+                    || selectionErrorCode === 'restart_outcome_unknown') {
+                    selectionOutcomeUnknown = true;
+                }
                 throw new Error(
                     extractResponseError(
                         payload,
@@ -2074,6 +2167,17 @@
                     String(payload.selected_root || normalizedTargetPath),
                     selectionSource
                 );
+                return;
+            }
+
+            if (payload.result === 'restart_initiated') {
+                state.pendingSelection.path = String(payload.selected_root || normalizedTargetPath).trim();
+                state.pendingSelection.source = String(payload.selection_source || selectionSource).trim();
+                state.pendingSelection.preflight = extractPreflightDetails(
+                    payload,
+                    state.pendingSelection.path
+                );
+                enterMaintenanceMode(payload);
                 return;
             }
 
@@ -2183,6 +2287,8 @@
                 var pollIntervalMs = 0;
                 try {
                     var statusPayload = await fetchStorageLocationStatus();
+                    if (pollGeneration !== state.maintenancePollGeneration) return;
+                    statusPayload = await reconcileUnknownRestartOperation(statusPayload);
                     if (pollGeneration !== state.maintenancePollGeneration) return;
                     failureCount = 0;
                     pollIntervalMs = Number(statusPayload.poll_interval_ms || 0);
@@ -2360,6 +2466,14 @@
             previousSystemStatus.instance_id || payload && payload.instance_id || ''
         ).trim();
         state.maintenanceObservedMigrationBlock = false;
+        state.maintenanceRestartOperationId = String(
+            payload && payload.restart_operation_id || ''
+        ).trim();
+        state.maintenanceOutcomeUnknown = !!(
+            payload
+            && payload.result === 'restart_outcome_unknown'
+            && state.maintenanceRestartOperationId
+        );
         state.maintenanceRollbackRequired = false;
         state.maintenanceStatusUnavailable = false;
         state.maintenanceAwaitingShutdown = false;
@@ -2453,7 +2567,12 @@
                         body: JSON.stringify({
                             selected_root: state.pendingSelection.path,
                             selection_source: state.pendingSelection.source || 'user_selected',
-                            confirm_existing_target_content: confirmExistingTargetContent
+                            confirm_existing_target_content: confirmExistingTargetContent,
+                            restart_operation_id: String(
+                                state.pendingSelection.preflight
+                                && state.pendingSelection.preflight.restart_operation_id
+                                || ''
+                            ).trim()
                         })
                     }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
                 } catch (requestError) {
@@ -2512,6 +2631,11 @@
             if (restartOutcomeUnknown) {
                 enterMaintenanceMode({
                     result: 'restart_outcome_unknown',
+                    restart_operation_id: String(
+                        state.pendingSelection.preflight
+                        && state.pendingSelection.preflight.restart_operation_id
+                        || ''
+                    ).trim(),
                     restart_mode: state.pendingSelection
                         && state.pendingSelection.preflight
                         && state.pendingSelection.preflight.restart_mode,

@@ -2750,7 +2750,10 @@
                     body: JSON.stringify({
                         selected_root: selectedRoot,
                         selection_source: storagePreflightState.selection_source || 'custom',
-                        confirm_existing_target_content: confirmExistingTargetContent
+                        confirm_existing_target_content: confirmExistingTargetContent,
+                        restart_operation_id: String(
+                            storagePreflightState.restart_operation_id || ''
+                        ).trim()
                     })
                 }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
             } catch (requestError) {
@@ -2786,6 +2789,9 @@
                 restartAccepted = true;
                 const unknownPayload = {
                     result: 'restart_outcome_unknown',
+                    restart_operation_id: String(
+                        storagePreflightState && storagePreflightState.restart_operation_id || ''
+                    ).trim(),
                     selected_root: selectedRoot,
                     target_root: selectedRoot,
                     migration: { status: 'pending' }

@@ -235,16 +235,17 @@ if _IS_MAIN_PROCESS:
     from utils.avatar_tool_store import AvatarToolStoreError, get_avatar_tool_store
     from utils.storage.layout import get_storage_recovery_mode
 
-    _config_manager.ensure_live2d_directory()
-    _config_manager.ensure_vrm_directory()
-    _config_manager.ensure_mmd_directory()
-    _config_manager.ensure_pngtuber_directory()
-    if not get_storage_recovery_mode():
+    _storage_recovery_mode = get_storage_recovery_mode()
+    if not _storage_recovery_mode:
+        _config_manager.ensure_live2d_directory()
+        _config_manager.ensure_vrm_directory()
+        _config_manager.ensure_mmd_directory()
+        _config_manager.ensure_pngtuber_directory()
         try:
             get_avatar_tool_store(_config_manager).initialize()
         except AvatarToolStoreError as exc:
             logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
-    _config_manager.ensure_chara_directory()
+        _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
     # 优先从原始 Documents 目录（可读）提供模型文件，

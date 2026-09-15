@@ -21,6 +21,7 @@ import os
 import secrets
 import stat
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import ExitStack, contextmanager, suppress
@@ -923,7 +924,7 @@ def _read_private_json_state(path: Path) -> tuple[str, dict | None]:
         return "absent", None
     except OSError:
         return "unreadable", None
-    if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path):
+    if not stat.S_ISREG(metadata.st_mode) or path_chain_has_symlink(path):
         return "unsafe", None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2134,6 +2135,7 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
 # 可能跨源 GET 它塞入攻击者 token（把用户游客卡 bind 到攻击者账号）。用一次性 pending 标记
 # 把回调限定在「用户刚点过 Steam 登录」的短窗口内，挡掉无端调用。
 _STEAM_PENDING_TTL_SEC = 600  # 点登录后 10 分钟内必须完成回调
+_STEAM_PENDING_CONSUME_LOCK = threading.Lock()
 
 
 def _steam_pending_path() -> Path | None:
@@ -2190,7 +2192,49 @@ def _mark_steam_pending() -> tuple[str, str] | None:
     return state, challenge
 
 
+def _steam_pending_consume_paths() -> list[Path]:
+    paths: list[Path] = []
+    for candidate in [
+        *_steam_pending_paths(),
+        *_legacy_private_conflict_paths(_STEAM_PENDING_FILENAME),
+    ]:
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _drop_matching_steam_pending_copies(expected: dict, candidates: list[Path]) -> bool:
+    """Claim every accepted copy and prove this consumer removed at least one."""
+
+    claimed = False
+    for candidate in candidates:
+        candidate_state, candidate_data = _read_private_json_state(candidate)
+        if candidate_state != "valid" or candidate_data != expected:
+            continue
+        try:
+            candidate.unlink()
+            claimed = True
+            fsync_directory_best_effort(candidate.parent)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.debug("card_drop: consume steam pending failed for %s: %s", candidate, exc)
+
+    if not claimed:
+        return False
+    for candidate in candidates:
+        candidate_state, candidate_data = _read_private_json_state(candidate)
+        if candidate_state == "valid" and candidate_data == expected:
+            return False
+    return True
+
+
 def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
+    with _STEAM_PENDING_CONSUME_LOCK:
+        return _consume_steam_pending_locked(state)
+
+
+def _consume_steam_pending_locked(state: str) -> tuple[bool, str | None]:
     """Consume the one-shot pending marker (exists, fresh, state matches).
 
     Returns ``(ok, code_verifier)``. On success, ``code_verifier`` is the stored
@@ -2203,6 +2247,7 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
     p = _steam_pending_path()
     if not p:
         return False, None
+    consume_paths = _steam_pending_consume_paths()
     data: object = _load_or_migrate_private_json(
         p,
         [candidate for candidate in _steam_pending_paths() if candidate != p],
@@ -2235,10 +2280,7 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
         return False, None
     if not secrets.compare_digest(str(stored_state), state):
         return False, None  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
-    try:
-        p.unlink()
-    except OSError as exc:
-        logger.debug("card_drop: consume steam pending failed: %s", exc)
+    if not _drop_matching_steam_pending_copies(data, consume_paths):
         return False, None
     return True, stored_verifier
 

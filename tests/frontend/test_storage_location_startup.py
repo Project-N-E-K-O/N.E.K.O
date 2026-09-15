@@ -263,27 +263,86 @@ def test_storage_location_error_view_has_no_scrollbars(
 
 
 @pytest.mark.frontend
-def test_storage_location_overlay_blocks_page_config_until_current_path_confirmed(
+def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_restart(
     mock_page: Page,
     running_server: str,
 ):
     page = mock_page
     _mock_selection_required_state(page)
-    page.route(
-        "**/api/storage/location/select",
-        lambda route: route.fulfill(
+    restart_requested = {"value": False}
+    restart_operation_id = "same-root-rebind-operation"
+
+    def handle_select(route):
+        route.fulfill(
             status=200,
             content_type="application/json",
             body="""
             {
               "ok": true,
-              "result": "continue_current_session",
+              "result": "restart_required",
+              "restart_operation_id": "%s",
+              "restart_mode": "rebind_only",
               "selected_root": "/tmp/runtime/N.E.K.O",
-              "selection_source": "user_selected"
+              "selection_source": "user_selected",
+              "migration_phase": "awaiting_shutdown",
+              "shutdown_retry_allowed": true
             }
-            """,
-        ),
+            """ % restart_operation_id,
+        )
+
+    page.route(
+        "**/api/storage/location/select",
+        handle_select,
     )
+
+    def handle_restart(route):
+        request_payload = json.loads(route.request.post_data or "{}")
+        assert request_payload["restart_operation_id"] == restart_operation_id
+        restart_requested["value"] = True
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_initiated",
+                    "restart_operation_id": restart_operation_id,
+                    "restart_mode": "rebind_only",
+                    "selected_root": "/tmp/runtime/N.E.K.O",
+                    "selection_source": "user_selected",
+                    "migration_phase": "awaiting_shutdown",
+                    "shutdown_retry_allowed": True,
+                }
+            ),
+        )
+
+    page.route("**/api/storage/location/restart", handle_restart)
+
+    def handle_maintenance_status(route):
+        if not restart_requested["value"]:
+            route.fallback()
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": "same-generation",
+                    "ready": False,
+                    "status": "migration_required",
+                    "lifecycle_state": "maintenance",
+                    "migration_stage": "awaiting_shutdown",
+                    "blocking_reason": "migration_pending",
+                    "migration_phase": "awaiting_shutdown",
+                    "shutdown_retry_allowed": True,
+                    "storage": {"migration_pending": True},
+                }
+            ),
+        )
+
+    page.route("**/api/system/status", handle_maintenance_status)
+    page.route("**/api/storage/location/status", handle_maintenance_status)
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
@@ -300,12 +359,12 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
     assert _page_config_state(page) == "pending"
 
     page.get_by_role("button", name="推荐存储位置").click()
+    expect(page.get_by_role("button", name="确认并重启到原路径")).to_be_visible(timeout=10_000)
+    page.get_by_role("button", name="确认并重启到原路径").click()
 
-    expect(overlay).to_be_hidden(timeout=10_000)
-    page.wait_for_function(
-        "() => window.__nekoPageConfigResolved === true",
-        timeout=10_000,
-    )
+    expect(overlay).to_be_visible(timeout=10_000)
+    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
+    assert _page_config_state(page) == "pending"
 
 
 @pytest.mark.frontend
@@ -553,6 +612,7 @@ def test_storage_location_maintenance_does_not_reload_on_first_same_instance_rea
 ):
     page = mock_page
     instance_id = "backend-before-restart"
+    restart_operation_id = "restart-op-main-flow"
     status_requests = {"count": 0}
     reported_instance = {"id": instance_id}
     reported_pending = {"value": False}
@@ -611,6 +671,7 @@ def test_storage_location_maintenance_does_not_reload_on_first_same_instance_rea
                     "selected_root": "/tmp/target/N.E.K.O",
                     "selection_source": "custom",
                     "target_root": "/tmp/target/N.E.K.O",
+                    "restart_operation_id": restart_operation_id,
                     "blocking_error_code": "",
                     "blocking_error_message": "",
                     "requires_existing_target_confirmation": False,
@@ -618,9 +679,10 @@ def test_storage_location_maintenance_does_not_reload_on_first_same_instance_rea
             ),
         ),
     )
-    page.route(
-        "**/api/storage/location/restart",
-        lambda route: route.fulfill(
+    def handle_restart(route):
+        restart_payload = json.loads(route.request.post_data or "{}")
+        assert restart_payload["restart_operation_id"] == restart_operation_id
+        route.fulfill(
             status=200,
             content_type="application/json",
             body=json.dumps(
@@ -632,8 +694,9 @@ def test_storage_location_maintenance_does_not_reload_on_first_same_instance_rea
                     "migration": {"status": "pending"},
                 }
             ),
-        ),
-    )
+        )
+
+    page.route("**/api/storage/location/restart", handle_restart)
 
     def handle_storage_status(route):
         status_requests["count"] += 1
@@ -673,6 +736,163 @@ def test_storage_location_maintenance_does_not_reload_on_first_same_instance_rea
     expect(page.locator("#storage-location-overlay")).to_be_visible()
     reported_pending["value"] = False
     expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_unknown_restart_waits_for_backend_operation_terminal_state(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    instance_id = "backend-same-instance"
+    operation_id = "0123456789abcdef0123456789abcdef"
+    target_root = "/tmp/target/N.E.K.O"
+    system_requests = {"count": 0}
+    storage_requests = {"count": 0}
+    storage_request_urls = []
+    cancel_requests = {"count": 0}
+    operation_state = {"value": "in_flight"}
+    lifecycle_state = {"value": "maintenance"}
+
+    def handle_system_status(route):
+        system_requests["count"] += 1
+        ready = system_requests["count"] > 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": instance_id,
+                    "status": "ready" if ready else "migration_required",
+                    "ready": ready,
+                    "storage": {
+                        "selection_required": not ready,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "blocking_reason": "" if ready else "selection_required",
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/system/status", handle_system_status)
+    page.route(
+        "**/api/storage/location/bootstrap",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "autostart_csrf_token": STORAGE_CSRF_TOKEN,
+                    "current_root": "/tmp/current/N.E.K.O",
+                    "recommended_root": target_root,
+                    "selection_required": True,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "selection_required",
+                    "legacy_cleanup_pending": False,
+                    "stage": "stage3_web_restart",
+                }
+            ),
+        ),
+    )
+
+    def handle_storage_status(route):
+        storage_requests["count"] += 1
+        storage_request_urls.append(route.request.url)
+        maintenance_active = lifecycle_state["value"] == "maintenance"
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": instance_id,
+                    "ready": False,
+                    "status": "maintenance" if maintenance_active else "selection_required",
+                    "lifecycle_state": "maintenance" if maintenance_active else "selection_required",
+                    "migration_stage": "pending" if maintenance_active else "",
+                    "blocking_reason": "migration_pending" if maintenance_active else "selection_required",
+                    "poll_interval_ms": 50,
+                    "storage": {
+                        "selection_required": not maintenance_active,
+                        "migration_pending": maintenance_active,
+                        "recovery_required": False,
+                    },
+                    "migration": {},
+                    "restart_operation": {
+                        "operation_id": operation_id,
+                        "state": operation_state["value"],
+                        "target_root": target_root,
+                        "instance_id": instance_id,
+                    },
+                }
+            ),
+        )
+
+    def handle_cancel(route):
+        cancel_requests["count"] += 1
+        assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
+        assert json.loads(route.request.post_data or "{}")["restart_operation_id"] == operation_id
+        operation_state["value"] = "cancelled"
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "restart_operation": {
+                        "operation_id": operation_id,
+                        "state": "cancelled",
+                        "target_root": target_root,
+                        "instance_id": instance_id,
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/storage/location/status**", handle_storage_status)
+    page.route("**/api/storage/location/restart/cancel", handle_cancel)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+
+    page.evaluate(
+        """
+        ([operationId, targetRoot, instanceId]) => {
+            window.appStorageLocation.enterExternalMaintenanceMode({
+                result: 'restart_outcome_unknown',
+                restart_operation_id: operationId,
+                target_root: targetRoot,
+                instance_id: instanceId,
+                migration: { status: 'pending', target_root: targetRoot },
+            });
+        }
+        """,
+        [operation_id, target_root, instance_id],
+    )
+
+    page.wait_for_function("() => document.querySelector('[role=progressbar]') !== null")
+    page.wait_for_timeout(250)
+    assert storage_requests["count"] >= 1
+    assert cancel_requests["count"] == 0
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
+
+    # A different tab's migration can set the sticky observation while this
+    # operation is still queued. Once that other migration rolls back, the
+    # current in-flight operation must still prevent reopening selection.
+    lifecycle_state["value"] = "selection_required"
+    page.wait_for_timeout(250)
+    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible()
+    assert cancel_requests["count"] == 0
+
+    operation_state["value"] = "prepared"
+    expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=10_000)
+    assert cancel_requests["count"] == 1
+    assert any(
+        f"restart_operation_id={operation_id}" in url
+        for url in storage_request_urls
+    )
 
 
 @pytest.mark.frontend

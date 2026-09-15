@@ -26,6 +26,7 @@ NEKO_STORAGE_CLOUDSAVE_ROOT_ENV = "NEKO_STORAGE_CLOUDSAVE_ROOT"
 NEKO_STORAGE_RECOVERY_MODE_ENV = "NEKO_STORAGE_RECOVERY_MODE"
 STORAGE_RECOVERY_MODES = frozenset(
     {
+        "selection_required",
         "migration_pending",
         "recovery_required",
         "storage_policy_unavailable",
@@ -38,6 +39,28 @@ def get_storage_recovery_mode(*, environ: dict[str, str] | None = None) -> str:
     target_env = environ if environ is not None else os.environ
     value = str(target_env.get(NEKO_STORAGE_RECOVERY_MODE_ENV) or "").strip()
     return value if value in STORAGE_RECOVERY_MODES else ""
+
+
+def set_storage_recovery_mode(
+    mode: str,
+    *,
+    environ: dict[str, str] | None = None,
+) -> str:
+    """Set a validated process-local recovery marker and return its value."""
+    normalized = str(mode or "").strip()
+    if normalized not in STORAGE_RECOVERY_MODES:
+        raise ValueError(f"unsupported storage recovery mode: {normalized!r}")
+    target_env = environ if environ is not None else os.environ
+    target_env[NEKO_STORAGE_RECOVERY_MODE_ENV] = normalized
+    return normalized
+
+
+def clear_storage_recovery_mode(*, environ: dict[str, str] | None = None) -> str:
+    """Clear and return the validated process-local recovery marker."""
+    target_env = environ if environ is not None else os.environ
+    previous = get_storage_recovery_mode(environ=target_env)
+    target_env.pop(NEKO_STORAGE_RECOVERY_MODE_ENV, None)
+    return previous
 
 
 def _set_or_clear_env(target_env: dict[str, str], key: str, value: Any) -> None:

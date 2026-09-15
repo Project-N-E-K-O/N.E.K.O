@@ -23,6 +23,17 @@ USER_ID = "11111111-1111-4111-8111-111111111111"
 HAS_SAFE_DIR_FD = hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files are unavailable")
+def test_private_json_reader_rejects_fifo_without_opening_it(tmp_path):
+    fifo_path = tmp_path / "private-state.json"
+    os.mkfifo(fifo_path)
+
+    state, payload = C._read_private_json_state(fifo_path)
+
+    assert state == "unsafe"
+    assert payload is None
+
+
 def _install_roots(monkeypatch, *, anchor_state: Path, selected_root: Path, retained_root: Path | None = None):
     manager = SimpleNamespace(
         app_name="N.E.K.O",
@@ -734,6 +745,101 @@ def test_oauth_and_steam_pending_move_to_anchor_without_copying_lock_files(
     assert steam_verifier == "steam-verifier"
     assert not (retained_root / "community_steam_pending.json").exists()
     assert not (anchor_state / "community_steam_pending.json").exists(), "consumed pending is one-shot"
+
+
+def test_steam_pending_consumption_removes_all_identical_accepted_copies(tmp_path, monkeypatch):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    payload = {
+        "ts": time.time(),
+        "state": "steam-state",
+        "code_verifier": "steam-verifier",
+    }
+    for root in (selected_root, retained_root):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "community_steam_pending.json").write_text(
+            json.dumps(payload),
+            encoding="utf-8",
+        )
+
+    assert C._consume_steam_pending("steam-state") == (True, "steam-verifier")
+    assert C._consume_steam_pending("steam-state") == (False, None)
+    assert not (anchor_state / "community_steam_pending.json").exists()
+    assert not (selected_root / "community_steam_pending.json").exists()
+    assert not (retained_root / "community_steam_pending.json").exists()
+
+
+def test_steam_pending_can_claim_legacy_when_anchor_publish_fails(tmp_path, monkeypatch):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    retained_root.mkdir(parents=True)
+    legacy = retained_root / "community_steam_pending.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "state": "steam-state",
+                "code_verifier": "steam-verifier",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        C,
+        "_write_private_json_no_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("anchor denied")),
+    )
+
+    assert C._consume_steam_pending("steam-state") == (True, "steam-verifier")
+    assert not legacy.exists()
+
+
+def test_steam_pending_reports_failure_when_accepted_copy_cannot_be_deleted(tmp_path, monkeypatch):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    retained_root.mkdir(parents=True)
+    legacy = retained_root / "community_steam_pending.json"
+    legacy.write_text(
+        json.dumps({"ts": time.time(), "state": "steam-state"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        C,
+        "_write_private_json_no_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("anchor denied")),
+    )
+    real_unlink = Path.unlink
+
+    def _deny_legacy_unlink(path, *args, **kwargs):
+        if path == legacy:
+            raise PermissionError("legacy denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _deny_legacy_unlink)
+
+    assert C._consume_steam_pending("steam-state") == (False, None)
+    assert legacy.exists()
 
 
 def test_private_inventory_distinguishes_absent_active_lock_unsafe_and_unreadable(

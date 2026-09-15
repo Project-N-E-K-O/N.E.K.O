@@ -26,7 +26,9 @@ SYSTEM_SOCIAL_CONFIG_ENDPOINT = "/api/system/social/config"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state_after_test():
+    storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
     yield
+    storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
     init_shared_state(
         role_state={},
         steamworks=None,
@@ -295,6 +297,30 @@ def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
     assert payload["storage_status_unavailable"] is False
     assert payload["ready"] is False
     assert payload["storage"]["blocking_reason"] == "runtime_initializing"
+
+
+@pytest.mark.unit
+def test_system_status_exposes_runtime_release_failure_over_ready_disk(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "recovery_required"
+    assert payload["ready"] is False
+    assert payload["blocking_reason"] == "startup_release_failed"
+    assert payload["storage"]["recovery_required"] is True
 
 
 @pytest.mark.unit

@@ -385,6 +385,29 @@ def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_game_scores(
 
 
 @pytest.mark.unit
+def test_runtime_cache_does_not_hide_legacy_user_data_from_seed_repair(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text('{"Version": 3}', encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    (Path(cm.app_docs_dir) / "embedding_models").mkdir(parents=True)
+    (Path(cm.app_docs_dir) / "embedding_models" / "cache.bin").write_bytes(b"cache")
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "missing_live2d"
+    assert (cm.live2d_dir / "legacy-model" / "legacy.model3.json").is_file()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance
@@ -5275,6 +5298,29 @@ def test_clearing_read_only_keeps_a_directory_traversable(tmp_path, monkeypatch)
     for mode in directory_modes:
         assert mode & stat_module.S_IREAD, "a directory was left unreadable"
         assert mode & stat_module.S_IEXEC, "a directory was left untraversable"
+
+
+def test_migration_chmod_falls_back_without_follow_symlinks_support(tmp_path, monkeypatch):
+    import os
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    target = tmp_path / "read-only.bin"
+    target.write_bytes(b"x")
+    calls = []
+    real_chmod = os.chmod
+
+    def _record(path, mode, **kwargs):
+        calls.append((Path(path), mode, kwargs))
+        return real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(migrations_module.os, "chmod", _record)
+    monkeypatch.setattr(migrations_module.os, "supports_follow_symlinks", set())
+
+    migrations_module._chmod_without_following(target, stat_module.S_IREAD | stat_module.S_IWRITE)
+
+    assert calls == [(target, stat_module.S_IREAD | stat_module.S_IWRITE, {})]
 
 
 def test_a_deletion_is_recorded_even_with_cloudsave_disabled(tmp_path, monkeypatch):

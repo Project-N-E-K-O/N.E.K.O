@@ -123,7 +123,7 @@ pending -> preflight -> copying -> verifying -> publishing -> committing
         -> retaining_source -> completed
 ```
 
-恢复相关状态包括 `rollback_required`，终态还包括 `failed`。检查点除源目录、目标目录、选择来源、进度和错误外，还保存事务编号、目标确认时的摘要、发布入口、目标原有入口和保留源目录状态。版本 1 检查点仍可读取，但恢复后统一按复制语义执行。
+恢复相关状态包括 `rollback_required`，终态还包括 `failed`。检查点除源目录、目标目录、选择来源、进度和错误外，还保存事务编号、受约束的事务目录、目标确认时的摘要、发布入口、目标原有入口和保留源目录状态。事务目录只能是当前目标卷内布局，或旧版已经写入检查点的目标同级布局；不得接受任意路径。版本 1 检查点仍可读取，但恢复后统一按复制语义执行。
 
 只要存在活动检查点，启动门禁必须把系统视为 `migration_pending`，而不能同时继续普通业务初始化。
 
@@ -139,7 +139,7 @@ pending -> preflight -> copying -> verifying -> publishing -> committing
 
 另有 `rollback_required`、`storage_policy_unavailable` 和 `storage_status_unavailable` 三类完整性阻塞。它们不能被降级成业务引导或普通启动等待。同时出现多个条件时，优先级为策略/检查点不可用、未完成回滚、迁移、恢复、首次选择。HTTP 的 canonical 生命周期使用 `ready`、`maintenance`、`rollback_required`、`recovery_required`、`selection_required` 和 `storage_policy_unavailable`/`storage_status_unavailable`；`/api/system/status` 的 legacy `status=migration_required` 继续保留给旧调用方，新增逻辑应读取 `lifecycle_state` 及 `storage.*`。每个状态响应还带本进程随机 `instance_id`，宿主在受管代次内必须校验它，不能把复用端口上的另一实例当成本代恢复。前端和 N.E.K.O-PC 不应自行读取策略文件。
 
-launcher 必须在 cloudsave phase-0 和三个服务的业务初始化之前解析策略与迁移检查点；`root_state` 在 phase-0 读取，其失败同样必须先进入恢复代次再启动服务。任一权威损坏或读取失败时，不能直接退出，也不能猜测一个默认业务根继续启动。当前启动代次通过进程内 `NEKO_STORAGE_RECOVERY_MODE` 标记进入受限恢复；合法原因只有 `migration_pending`、`recovery_required`、`storage_policy_unavailable` 和 `storage_status_unavailable`。该标记不写回用户状态，下一次显式启动仍重新检查磁盘事实。坏策略只能使用固定锚点承载恢复 HTTP 表面；坏检查点和坏 `root_state` 保留已提交策略对应的根，但不执行迁移、配置升级或普通业务写入。策略在首次读取后、检查点处理时或最终布局重建时发生变化，也必须落到同一个锚点恢复代次，不能留下先检查后使用的 fail-dead 窗口。
+launcher 必须在 cloudsave phase-0 和三个服务的业务初始化之前解析策略与迁移检查点；`root_state` 在 phase-0 读取，其失败同样必须先进入恢复代次再启动服务。任一权威损坏或读取失败时，不能直接退出，也不能猜测一个默认业务根继续启动。当前启动代次通过进程内 `NEKO_STORAGE_RECOVERY_MODE` 标记进入受限恢复；合法原因只有 `selection_required`、`migration_pending`、`recovery_required`、`storage_policy_unavailable` 和 `storage_status_unavailable`。首次策略缺失也必须在 phase-0 前设置 `selection_required`，确保 Main、Memory、Agent 都不在用户确认运行根之前初始化或写入临时默认根。该标记不写回用户状态，下一次显式启动仍重新检查磁盘事实。坏策略只能使用固定锚点承载恢复 HTTP 表面；坏检查点和坏 `root_state` 保留已提交策略对应的根，但不执行迁移、配置升级或普通业务写入。策略在首次读取后、检查点处理时或最终布局重建时发生变化，也必须落到同一个锚点恢复代次，不能留下先检查后使用的 fail-dead 窗口。受限代次不能在网页选择后直接依次释放 Memory、Agent、Main：Cloud Save 导入和配置迁移尚未执行时，先初始化任一子服务都会缓存导入前状态，甚至制造本地内容而改变云快照判定。有效选择必须在同一事务中提交策略和 `restart_rebind` 交接状态，再请求受控退出；launcher 在任何 phase-0 之前统一核对策略根、交接目标和迁移状态并原子消费该标记，正常接力和旧代崩溃/断电后的显式冷启动使用同一入口。只有消费成功，下一代才按标准顺序执行 phase-0、初始化三个服务；目标不一致或写入失败必须保留 maintenance 证据并只启动固定恢复表面。退出请求未被接受时恢复策略、检查点和根状态前像。`startup_release_failed` 仅作为旧代/异常嵌入路径的防御性进程覆盖层，不能污染 Memory/Agent 对持久化状态的重新检查。受限状态下的 shutdown 必须跳过普通持久化和云导出。
 
 `maintenance` 还有一个可操作的子阶段 `migration_phase=awaiting_shutdown`：迁移检查点已经建立，但当前服务尚未完成受控退出，迁移 worker 还没有开始。此时仅允许再次调用 `/exit`，并暴露 `shutdown_retry_allowed=true`、`recovery_action=retry_safe_exit`；不得关闭桌面壳、启动本地 replacement 或把状态翻回 ready。一旦 launcher 报告 processing/copying，安全关闭重试权限永久撤销。
 
@@ -196,7 +196,7 @@ plugin-runtime
 - 不位于锚点的 `state`、`cloudsave`、`.cloudsave_staging` 或 `cloudsave_backups` 保留区域内；
 - 用户在原生选择器中选择父目录时，若末级名称不是 `N.E.K.O`，规范化逻辑会追加应用目录名。
 
-同一路径可以在首次选择 `/select` 中用于继续当前会话，但常驻入口 `/restart` 会返回 `restart_not_required`，不会建立迁移。
+同一路径在首次选择 `/select` 中不写策略、不建立复制检查点，也不直接关闭；它只返回 `restart_required + restart_operation_id + rebind_only`。用户确认后由 `/restart` 在互斥锁内重新读取当前事实、建立 `restart_rebind` 受控接力并请求关闭，让下一代在任何业务服务初始化前完成 Cloud Save/config phase-0。这样 `/select` 的响应丢失不会留下一个仍可能迟到落盘的一阶段变更。普通 ready 会话的 `/preflight` 对同根仍返回 `restart_not_required`。
 
 ### 6.4 提交、失败与旧目录
 
@@ -205,7 +205,7 @@ plugin-runtime
 1. 在锁内重新预检并记录写入前快照；
 2. 写入迁移检查点，并把根状态切到 `maintenance_readonly`；
 3. 请求当前服务受控退出；
-4. launcher 再次实际探测目标可写性和磁盘空间，在目标同一卷的隐藏事务目录中完整暂存并核验数据；
+4. launcher 再次实际探测目标可写性和磁盘空间，在目标根内部的隐藏事务目录中完整暂存并核验数据，确保目标根本身是挂载点时仍与发布入口同卷；若该随机事务路径已经存在但检查点不能证明归属，必须停止而不能递归删除未知内容；
 5. 先 flush 暂存文件和目录，再记录并持久化 `publishing` 检查点；把目标同名入口原子移入事务备份，再把已验证的暂存入口逐项原子发布；每次 replace 后 flush 对应父目录；
 6. 对最终目标再次做内容摘要核验，之后才提交策略和正常根状态；
 7. N.E.K.O-PC 关闭旧一代 launcher/Job/supervisor 所有权后启动新一代服务；没有桌面属主时 launcher 才走 self relaunch 回退；
@@ -247,7 +247,7 @@ plugin-runtime
 | `GET /retained-source` | 查询可清理的旧目录 | 否 |
 | `POST /pick-directory` | 浏览器环境下的原生/后端目录选择回退 | 只调用选择器，不提交策略 |
 | `POST /open-current` | 打开后端当前运行根目录 | 不改变存储状态 |
-| `POST /select` | 首次启动或恢复阶段选择；同一路径可直接解除门禁 | 是 |
+| `POST /select` | 首次启动或恢复阶段校验选择并生成一次性重启预检；不提交持久状态 | 是 |
 | `POST /preflight` | 常驻入口迁移预检 | 否；只做临时写探测并立即删除，不持久化业务状态 |
 | `POST /restart` | 建立迁移或 `rebind_only` 意图，并请求受控重启 | 是，必须串行化和可回滚 |
 | `POST /retained-source/cleanup` | 清理预期旧目录 | 是，必须在锁内重新验证目标 |
@@ -274,8 +274,8 @@ plugin-runtime
 首次选择、迁移和恢复期间，主服务与记忆服务可以先以受限模式启动：
 
 - 主服务只放行存储页面、静态资源、状态/健康检查、存储 API 和调试入口；普通 API 返回 `409 storage_startup_blocked`；
-- 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue` 和 `/internal/storage/startup/block`；其他请求返回 409；
-- 解除门禁时，主服务先通知记忆服务继续，再完成自身初始化；任一步失败都会重新阻塞记忆服务并恢复受限模式。
+- 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue` 和 `/internal/storage/startup/block`；Agent 只放行健康检查和同一组存储启动控制端点；其他请求返回 409；
+- 内部 continue/block 端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断；网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
 
 完整性恢复代次比普通首次选择更严格：`ConfigManager` 不运行默认配置、旧配置或根目录迁移；launcher 不自动安装 Playwright 浏览器；main 不初始化 voice、Avatar Tool 和后台业务运行时；Agent 不启动 token tracker、插件宿主或 LLM 探测，也不发外部请求。普通 main、memory 和 Agent API 都返回 409，只保留健康检查、存储状态/bootstrap、受控安全退出以及服务间恢复控制所需的最小白名单。退出钩子不得写 token、角色释放、插件状态、记忆状态、`root_state` 或上传 cloudsave；launcher 也不得在三个服务 ready 后把 `root_state` 改回 normal。允许在固定锚点写诊断日志，但受损权威文件和已提交用户数据必须保持逐字节不变。
 
@@ -292,7 +292,7 @@ plugin-runtime
 - 维护遮罩和 `/status` 轮询；
 - 完成提示、打开新/旧目录和旧目录清理。
 
-维护轮询同时兼容 `/storage/location/status` 顶层字段与 `/system/status` 的 `storage.*` 字段。每次重启轮询都分配 generation，旧请求、旧 bootstrap 和旧定时器不能覆盖新的外部维护事件。维护页不能因第一拍同实例、缺失身份或字段互相矛盾的 `ready` 立即 reload；必须先观察到明确迁移阻塞，或确认响应来自不同 `instance_id`，且当前响应没有任何 pending/publishing/阻塞字段。进入 `failed`、`recovery_required` 或 `selection_required` 时必须重新读取 bootstrap 后再切换选择页，不能复用迁移前快照；`rollback_required` 则保持业务门禁，显示真实错误和“安全退出并在下次启动恢复”，不能画成仍会自动重启的假进度。
+维护轮询同时兼容 `/storage/location/status` 顶层字段与 `/system/status` 的 `storage.*` 字段。每次重启轮询都分配 generation，旧请求、旧 bootstrap 和旧定时器不能覆盖新的外部维护事件。维护页不能因第一拍同实例、缺失身份或字段互相矛盾的 `ready` 立即 reload；必须先观察到明确迁移阻塞，或确认响应来自不同 `instance_id`，且当前响应没有任何 pending/publishing/阻塞字段。预检还要生成单次 `restart_operation_id`：`/restart` 在进入互斥队列前认领为 `in_flight`，状态轮询按该 ID 读取权威阶段；结果未知时只允许取消仍为 `prepared` 的预约，已在途或已受理的操作不能由网页猜测取消。结果未知且带操作 ID 时，其他标签页产生的迁移阻塞不能替当前操作背书：同一实例只允许当前 ID、目标和实例完全匹配且状态为 `cancelled/rejected/expired` 后恢复 ready，或在 `indeterminate` 等终态下进入相应恢复/选择面；成功请求则必须看到新的 `instance_id`。进入 `failed`、`recovery_required` 或 `selection_required` 时必须重新读取 bootstrap 后再切换选择页，不能复用迁移前快照；`rollback_required` 则保持业务门禁，显示真实错误和“安全退出并在下次启动恢复”，不能画成仍会自动重启的假进度。
 
 所有状态、退出和迁移变更请求都必须有界；截止时间覆盖 `fetch()`、响应体读取和 JSON 解析，而不只覆盖响应头。`/select` 或 `/restart` 在网络超时后属于“结果未知”，前端必须查询当前状态确认事实，不能直接重试一次可能已经成功的变更。
 
@@ -401,7 +401,7 @@ attached/remote 模式在三个平台都没有本地进程所有权；状态异�
 5. 只读轮询不能持久化 reconcile，避免覆盖并发失败恢复。
 6. 受控退出未被接受时必须恢复所有已写状态。
 7. 策略提交必须晚于复制验证。
-8. 目标原有受管入口在任何失败路径上都必须恢复，目标未知入口不得被修改。
+8. 目标原有受管入口在任何失败路径上都必须恢复，目标未知入口不得被修改；发布前须复用同一份基线逐项 CAS，最终切换不得覆盖检查后才出现的外部数据。
 9. 清理必须比较请求中的预期旧根与锁内重新读取的当前旧根，并只删除清单入口。
 10. 所有会改变本机状态的 Web 请求必须通过本机来源和 CSRF 校验。
 11. PC 维护保护必须恢复迁移前真实可见的窗口集合，不能把原本关闭的窗口打开。
@@ -410,10 +410,10 @@ attached/remote 模式在三个平台都没有本地进程所有权；状态异�
 14. Web 在宿主 `active/transient` 时不得先请求后端 `/exit`；宿主明确拒绝关闭时也不得回落到 `window.close()`。
 15. attached/remote 后端永远不能被 PC 当作本地所有权恢复对象。
 16. ConfigManager、launcher、两个状态 API 与 PC 状态轮询都不能把坏策略、坏检查点或错误实例降级成默认 ready。
-17. 维护页只有在见过迁移阻塞或确认后端实例已更换后，才能接受无矛盾字段的 ready。
+17. 维护页只有在见过迁移阻塞、确认后端实例已更换，或同一预检操作被后端明确终结且当前无检查点后，才能接受无矛盾字段的 ready；连续 ready 次数不是操作终态证据。
 18. stdout 中的 launcher 控制事件必须绑定 launcher source、活动 ChildProcess 和随机 launch ID；POSIX supervisor 的 child-exit 证据只能走真实 backend 无法继承的专用控制 FD，普通日志永远不是退出控制通道。
 19. 交互式退出在迁移活动期一律阻止并聚焦维护界面；OS 关机/注销和进程信号不能无限阻塞系统，只执行有界、所有权感知的清算。
-20. 社区凭据、会话和一次性 PKCE 状态不能随 selected root 漂移；兼容旧文件时必须先无覆盖发布并验证新权威，再删除旧副本，且不得迁移活动 lock。
+20. 社区凭据、会话和一次性 PKCE 状态不能随 selected root 漂移；兼容旧文件时必须先无覆盖发布并验证新权威，再删除旧副本，且不得迁移活动 lock；一次性 pending 消费成功前必须删除所有已接受的同记录副本，并证明本次至少实际 claim 一份。
 21. 清理状态必须由旧根中仍存在的受管数据推导；未知文件应保留，但不能单独制造永久的假待清理状态。
 22. 旧根清理必须先持久化私有摘要和物理目录身份，再以固定目录句柄执行；原路径被复用、身份不符或平台缺少安全删除能力时一律零删除。
 23. 存在路径的相等与包含关系以物理身份为准；macOS 默认 APFS 的大小写别名不能绕过同源、嵌套和当前根保护，Linux 不得被无条件大小写折叠。

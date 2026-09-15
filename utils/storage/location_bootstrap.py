@@ -55,10 +55,33 @@ STORAGE_STARTUP_BLOCKING_REASONS = frozenset(
         "selection_required",
         "migration_pending",
         "recovery_required",
+        "startup_release_failed",
         "storage_policy_unavailable",
         "storage_status_unavailable",
     }
 )
+
+# Disk state is the durable authority for storage selection and migration.  One
+# failure is intentionally process-local, though: a same-session release may
+# fail *after* the validated root was committed and after one child runtime
+# already observed it.  Rolling the root back would split storage authority,
+# while reporting the now-normal disk state as ready would reopen business
+# traffic.  This overlay keeps status/bootstrap/exit aligned with the admission
+# gate until a retry succeeds or the process exits.
+_runtime_storage_blocking_reason = ""
+
+
+def set_runtime_storage_blocking_reason(reason: str) -> None:
+    global _runtime_storage_blocking_reason
+    _runtime_storage_blocking_reason = str(reason or "").strip()
+
+
+def clear_runtime_storage_blocking_reason() -> None:
+    set_runtime_storage_blocking_reason("")
+
+
+def get_runtime_storage_blocking_reason() -> str:
+    return _runtime_storage_blocking_reason
 
 
 def _normalize_path(value: Path | str) -> str:
@@ -291,7 +314,7 @@ def _should_require_selection(config_manager, *, current_root: Path, anchor_root
     )
 
 
-def build_storage_location_bootstrap_payload(
+def _build_storage_location_bootstrap_payload_from_disk(
     config_manager,
     *,
     persist_reconcile: bool = False,
@@ -443,7 +466,48 @@ def build_storage_location_bootstrap_payload(
     }
 
 
+def build_storage_location_bootstrap_payload(
+    config_manager,
+    *,
+    persist_reconcile: bool = False,
+) -> dict[str, Any]:
+    payload = _build_storage_location_bootstrap_payload_from_disk(
+        config_manager,
+        persist_reconcile=persist_reconcile,
+    )
+    runtime_blocking_reason = get_runtime_storage_blocking_reason()
+    if not runtime_blocking_reason:
+        return payload
+
+    # Preserve paths and the durable migration evidence from disk, but never
+    # let a committed normal root masquerade as an initialized runtime.
+    overlaid = dict(payload)
+    overlaid.update(
+        {
+            "selection_required": False,
+            "migration_pending": False,
+            "recovery_required": True,
+            "blocking_reason": runtime_blocking_reason,
+            "last_error_summary": (
+                "存储位置已安全保存，但当前会话未能完成运行时初始化。"
+                "可以重试继续，或安全退出后重新启动。"
+            ),
+            "migration_phase": "",
+            "shutdown_retry_allowed": False,
+            "recovery_action": "safe_exit",
+            "runtime_startup_blocked": True,
+            "error_code": runtime_blocking_reason,
+        }
+    )
+    return overlaid
+
+
 def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
+    # Admission rechecks in Memory/Agent must use durable storage authority.
+    # In the packaged merged topology they share this module with Main, whose
+    # process-local release-failure overlay intentionally keeps only the HTTP
+    # recovery surface blocked.  Letting that overlay enter this disk gate
+    # would make the next continue request reject itself forever.
     recovery_mode = get_storage_recovery_mode()
     if recovery_mode:
         return recovery_mode

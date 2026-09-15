@@ -26,6 +26,7 @@ from tests import storage_root_env_guard as guard
 from utils.storage.layout import (
     NEKO_STORAGE_ANCHOR_ROOT_ENV,
     NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
     NEKO_STORAGE_SELECTED_ROOT_ENV,
 )
 
@@ -39,6 +40,7 @@ def test_guarded_keys_are_exactly_the_layout_exporter_keys():
         NEKO_STORAGE_SELECTED_ROOT_ENV,
         NEKO_STORAGE_ANCHOR_ROOT_ENV,
         NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+        NEKO_STORAGE_RECOVERY_MODE_ENV,
     }
 
 

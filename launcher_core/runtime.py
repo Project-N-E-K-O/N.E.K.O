@@ -441,6 +441,128 @@ def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:
     }
 
 
+def _storage_status_unavailable_recovery_bootstrap(
+    config_manager,
+    exc: Exception,
+    *,
+    error_code: str = "storage_status_unavailable",
+) -> dict:
+    """Start the desktop recovery surface from the fixed anchor only."""
+
+    os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
+    anchor_root = compute_anchor_root(
+        config_manager,
+        current_root=Path(config_manager.app_docs_dir),
+    )
+    layout = build_storage_layout(
+        selected_root=anchor_root,
+        anchor_root=anchor_root,
+        source="storage_status_unavailable_recovery",
+    )
+    export_storage_layout_to_env(layout)
+    reset_config_manager_cache()
+    emit_frontend_event(
+        "storage_migration_failed",
+        {
+            "error_code": error_code,
+            "error_message": "无法安全确定存储恢复来源。",
+        },
+    )
+    return {
+        "layout": layout,
+        "migration_result": {
+            "attempted": False,
+            "completed": False,
+            "error_code": error_code,
+            "error_message": str(exc),
+        },
+        "startup_blocked": True,
+        "startup_limited": True,
+        "limited_mode_reason": "storage_status_unavailable",
+    }
+
+
+def _consume_storage_rebind_handoff(
+    config_manager,
+    *,
+    layout: dict,
+    migration_pending: bool,
+) -> dict | None:
+    """Consume one durable same-root handoff before phase-0 may run.
+
+    The normal shutdown path reaches this helper from
+    ``_maybe_schedule_storage_restart``. More importantly, the next explicit
+    launch reaches the same helper after a crash or power loss, so an
+    unconsumed marker cannot be overwritten by Cloud Save phase-0.
+    """
+
+    load_root_state = getattr(config_manager, "load_root_state", None)
+    if not callable(load_root_state):
+        return None
+
+    try:
+        with root_state_transaction():
+            root_state = load_root_state()
+            if not isinstance(root_state, dict):
+                raise RuntimeError("storage root state is not an object")
+
+            root_mode = str(root_state.get("mode") or "").strip()
+            last_result = str(root_state.get("last_migration_result") or "").strip()
+            if (
+                root_mode != ROOT_MODE_MAINTENANCE_READONLY
+                or not last_result.startswith("restart_rebind:")
+            ):
+                return None
+
+            if migration_pending:
+                raise RuntimeError("storage migration is still pending")
+
+            marker_target = last_result.removeprefix("restart_rebind:").strip()
+            selected_root = str(layout.get("selected_root") or "").strip()
+            migration_source = str(root_state.get("last_migration_source") or "").strip()
+            if (
+                not marker_target
+                or not selected_root
+                or str(layout.get("source") or "").strip() != "policy"
+                or not paths_equal(marker_target, selected_root)
+                or not migration_source
+                or not paths_equal(migration_source, marker_target)
+            ):
+                raise RuntimeError("storage rebind marker does not match committed policy")
+
+            # set_root_mode nests in this transaction. The validated marker and
+            # its atomic replacement therefore form one commit; failed replace
+            # leaves the durable handoff untouched for the recovery surface.
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=selected_root,
+                last_known_good_root=selected_root,
+                last_migration_source=selected_root,
+                last_migration_result=f"completed_rebind:{selected_root}",
+            )
+            return {
+                "attempted": True,
+                "completed": True,
+                "target_root": selected_root,
+            }
+    except Exception as exc:
+        print(f"[Launcher] Failed to consume storage rebind handoff: {exc}", flush=True)
+        emit_frontend_event(
+            "storage_migration_failed",
+            {
+                "error_code": "storage_rebind_finalize_failed",
+                "error_message": "无法安全完成存储位置重绑定。",
+            },
+        )
+        return {
+            "attempted": True,
+            "completed": False,
+            "error_code": "storage_rebind_finalize_failed",
+            "error_message": str(exc),
+        }
+
+
 def _resolve_storage_layout_for_launch() -> dict:
     clear_storage_layout_env()
     reset_config_manager_cache()
@@ -542,7 +664,11 @@ def _resolve_storage_layout_for_launch() -> dict:
             or ""
         ).strip()
         if not recovery_source_root:
-            raise RuntimeError("storage migration recovery source is unavailable")
+            return _storage_status_unavailable_recovery_bootstrap(
+                resolved_config_manager,
+                RuntimeError("storage migration recovery source is unavailable"),
+                error_code="storage_recovery_source_unavailable",
+            )
         layout = build_storage_layout(
             selected_root=recovery_source_root,
             anchor_root=compute_anchor_root(resolved_config_manager),
@@ -553,11 +679,35 @@ def _resolve_storage_layout_for_launch() -> dict:
             layout = resolve_storage_layout(resolved_config_manager)
         except StoragePolicyError as exc:
             return _policy_unavailable_recovery_bootstrap(exc)
+    rebind_result = _consume_storage_rebind_handoff(
+        resolved_config_manager,
+        layout=layout,
+        migration_pending=migration_was_pending,
+    )
+    if isinstance(rebind_result, dict) and not bool(rebind_result.get("completed")):
+        os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
+        export_storage_layout_to_env(layout)
+        reset_config_manager_cache()
+        return {
+            "layout": layout,
+            "migration_result": migration_result,
+            "startup_blocked": True,
+            "startup_limited": True,
+            "limited_mode_reason": "storage_status_unavailable",
+        }
     limited_mode_reason = ""
     if force_recovery_layout:
         limited_mode_reason = "recovery_required"
     elif migration_incomplete:
         limited_mode_reason = "migration_pending"
+    elif str(layout.get("source") or "").strip() == "recovery_runtime":
+        limited_mode_reason = "recovery_required"
+    elif str(layout.get("source") or "").strip() == "runtime_default":
+        # A missing policy is an intentional first-run gate, not permission to
+        # initialize Cloud Save and Agent against the provisional default root.
+        # Promote it to the same generation marker consumed by all three
+        # services before phase-0 is allowed to write anything.
+        limited_mode_reason = "selection_required"
     if limited_mode_reason:
         os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = limited_mode_reason
     export_storage_layout_to_env(layout)

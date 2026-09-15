@@ -835,6 +835,111 @@ def test_run_pending_storage_migration_does_not_follow_symlinked_transaction_roo
 
 
 @pytest.mark.unit
+def test_transaction_staging_lives_on_selected_target_filesystem(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    target_root = tmp_path / "mounted-volume" / "N.E.K.O"
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        "a" * 32,
+    )
+
+    assert transaction_root.parent == target_root
+
+
+@pytest.mark.unit
+def test_pending_migration_never_deletes_unowned_transaction_path(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("SOURCE", encoding="utf-8")
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    transaction_root.mkdir(parents=True)
+    sentinel = transaction_root / "user-content.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_path_occupied"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+def test_pending_migration_recovers_transaction_created_before_copying_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("SOURCE", encoding="utf-8")
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+    interrupted = {"value": False}
+
+    def interrupt_before_copying_checkpoint(*args, **kwargs):
+        if (
+            kwargs.get("status") == storage_migration_module.STORAGE_MIGRATION_STATUS_COPYING
+            and not interrupted["value"]
+        ):
+            interrupted["value"] = True
+            raise SimulatedProcessLoss
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_persist_migration_payload",
+        interrupt_before_copying_checkpoint,
+    )
+    with pytest.raises(SimulatedProcessLoss):
+        run_pending_storage_migration(config_manager)
+
+    crashed_checkpoint = load_storage_migration(config_manager)
+    assert crashed_checkpoint["status"] == "preflight"
+    assert crashed_checkpoint["transaction_root"] == str(transaction_root)
+    assert transaction_root.is_dir()
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_persist_migration_payload",
+        original_persist,
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "SOURCE"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_restores_existing_target_when_commit_fails(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -960,6 +1065,51 @@ def test_run_pending_storage_migration_rejects_target_changed_after_confirmation
 
 
 @pytest.mark.unit
+def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    real_snapshot_entries = storage_migration_module._snapshot_runtime_entries
+    target_snapshot_calls = 0
+    concurrent_file = target_root / "config" / "external.json"
+
+    def _snapshot_then_create_target(root):
+        nonlocal target_snapshot_calls
+        snapshot = real_snapshot_entries(root)
+        if Path(root) == target_root.resolve():
+            target_snapshot_calls += 1
+            if target_snapshot_calls == 2:
+                concurrent_file.parent.mkdir(parents=True, exist_ok=True)
+                concurrent_file.write_text("EXTERNAL", encoding="utf-8")
+        return snapshot
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_runtime_entries",
+        _snapshot_then_create_target,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+    assert concurrent_file.read_text(encoding="utf-8") == "EXTERNAL"
+    assert not (target_root / "config" / "characters.json").exists()
+
+
+@pytest.mark.unit
 def test_jukebox_only_target_requires_overwrite_confirmation(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -1061,7 +1211,7 @@ def test_interrupted_publish_is_rolled_back_before_retry(tmp_path, monkeypatch):
     assert not transaction_root.exists()
 
 
-def _prepare_interrupted_publish(tmp_path):
+def _prepare_interrupted_publish(tmp_path, *, legacy_transaction_layout=False):
     from utils import storage_migration as storage_migration_module
 
     config_manager = _make_config_manager(tmp_path)
@@ -1080,7 +1230,11 @@ def _prepare_interrupted_publish(tmp_path):
         selection_source="custom",
         confirmed_existing_target_content=True,
     )
-    transaction_root = storage_migration_module._transaction_root_for(target_root, payload["txid"])
+    transaction_root = (
+        storage_migration_module._legacy_transaction_root_for(target_root, payload["txid"])
+        if legacy_transaction_layout
+        else storage_migration_module._transaction_root_for(target_root, payload["txid"])
+    )
     staged_file = transaction_root / "staged" / "config" / "characters.json"
     backup_entry = transaction_root / "backup" / "config"
     staged_file.parent.mkdir(parents=True)
@@ -1101,6 +1255,27 @@ def _prepare_interrupted_publish(tmp_path):
     )
     storage_migration_module.save_storage_migration(config_manager, payload)
     return config_manager, target_root, target_file, transaction_root, backup_entry, payload
+
+
+@pytest.mark.unit
+def test_interrupted_publish_from_legacy_transaction_layout_is_recovered(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _, target_file, transaction_root, _, _ = _prepare_interrupted_publish(
+        tmp_path,
+        legacy_transaction_layout=True,
+    )
+
+    def fail_retry_copy(*args, **kwargs):
+        raise StorageMigrationError("copy_failed", "stop after legacy rollback")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", fail_retry_copy)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "copy_failed"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not transaction_root.exists()
 
 
 @pytest.mark.unit
