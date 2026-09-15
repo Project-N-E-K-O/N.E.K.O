@@ -516,6 +516,13 @@ function _getNekoIdleCat1EdgePeekButton(containerOrButton) {
 function _clearNekoIdleCat1EdgePeek(containerOrButton) {
     const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
     if (!button) return;
+    // Keep the unified edge controller in sync with the legacy visual classes.
+    // Clearing the classes without clearing controller state leaves the drag
+    // guard out of sync and can either block a later drag or allow stale lock
+    // state to survive a cancelled edge peek.
+    if (window.NekoEdgePeekController && typeof window.NekoEdgePeekController.clear === 'function') {
+        window.NekoEdgePeekController.clear(button);
+    }
     _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
         button.classList.remove(className);
     });
@@ -639,6 +646,7 @@ function _applyNekoIdleCat1EdgePeek(container, placement) {
     if (!container || !button || !placement || !placement.edge) return false;
     _clearNekoIdleCat1EdgePeek(button);
     button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+    if (window.NekoEdgePeekController) window.NekoEdgePeekController.begin({ button: button, container: container, mode: 'drag-edge', edge: placement.edge, phase: 'peeking', sourceRunner: 'idle-drag-and-subactions' });
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);
     _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
     container.style.left = `${placement.left}px`;

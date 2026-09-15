@@ -5,13 +5,14 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
   const failures=new Map();
   const publish=(token,state)=>{if(!disposed && token===generation)changed(state);};
   // A transient failure may retry once; a candidate that keeps failing is excluded.
-  const failed=bvid=>{
-    if(!bvid || disposed || game.disposed)return;
+  const failed=(token,bvid)=>{
+    if(!bvid || disposed || game.disposed || token!==generation)return;
     const count=(failures.get(bvid) || 0)+1;
     failures.delete(bvid);
-    if(count>=MAX_CANDIDATE_FAILURES){changed({candidate:bvid});return;}
+    if(count>=MAX_CANDIDATE_FAILURES){publish(token,{candidate:bvid});return true;}
     failures.set(bvid,count);
     if(failures.size>128)failures.delete(failures.keys().next().value);
+    return true;
   };
   return {
     get busy(){return busy;},
@@ -51,7 +52,10 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
           }
           await delay();
         }
-      } catch(error) {failed(candidate);publish(token,{status:'error',error:error.message,busy:true});}
+      } catch(error) {
+        const retry=failed(token,candidate)===true;
+        publish(token,{status:'error',error:error.message,busy:true,retry});
+      }
       finally {busy=false;if(!disposed)changed({busy:false,released:true});}
     }
   };

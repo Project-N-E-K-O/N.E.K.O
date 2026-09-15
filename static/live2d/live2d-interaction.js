@@ -1070,6 +1070,72 @@ Live2DManager.prototype.isLive2DPeekActive = function () {
     return !!(state && state.active && state.model && !state.model.destroyed);
 };
 
+Live2DManager.prototype.isLive2DEffectiveLocked = function () {
+    const state = this._live2DPeekState;
+    const edgeLocked = window.edgePeekLockEnabled === true
+        && !!state && state.active === true && state.phase === 'peeking'
+        && (!state.model || (state.model === this.currentModel
+            && !state.model.destroyed && state.model.visible !== false));
+    return this.isLocked === true || edgeLocked;
+};
+
+Live2DManager.prototype.syncLive2DEffectiveInputLock = function () {
+    if (!this._edgePeekLockChangedListener) {
+        this._edgePeekLockChangedListener = () => {
+            const state = this._live2DPeekState;
+            if (state && state.active && state.phase === 'revealing'
+                && state.model && state.model === this.currentModel && !state.model.destroyed) {
+                state.model.interactive = window.edgePeekLockEnabled !== true
+                    ? state.baseInteractive : false;
+            }
+            this.syncLive2DEffectiveInputLock();
+        };
+        window.addEventListener('neko-edge-peek-lock-changed', this._edgePeekLockChangedListener);
+    }
+    const rendererView = this.pixi_app && this.pixi_app.renderer && this.pixi_app.renderer.view;
+    const canvas = rendererView || document.getElementById('live2d-canvas');
+    const container = (canvas && canvas.closest && canvas.closest('#live2d-container'))
+        || (canvas && canvas.parentElement)
+        || document.getElementById('live2d-container');
+    if (!canvas || !canvas.style) {
+        if (!this.isLive2DEffectiveLocked() && container && container.classList) {
+            typeof container.classList.toggle === 'function' ? container.classList.toggle('locked-hover-fade', false) : container.classList.remove('locked-hover-fade');
+        }
+        return;
+    }
+    const key = '_edgePeekInputSnapshot';
+    const effectiveLocked = this.isLive2DEffectiveLocked();
+    if (!effectiveLocked) {
+        if (typeof this._resetStationaryHoverFade === 'function') {
+            this._resetStationaryHoverFade();
+        } else if (typeof this._clearStationaryFadeTimer === 'function') {
+            this._clearStationaryFadeTimer();
+            this._hasEnteredHoverRange = false;
+        }
+    }
+    if (effectiveLocked) {
+        if (!this[key]) this[key] = {
+            pointerEvents: canvas.style.pointerEvents || canvas.style.getPropertyValue('pointer-events'),
+            cursor: canvas.style.cursor || canvas.style.getPropertyValue('cursor')
+        };
+        canvas.style.pointerEvents = 'none';
+        canvas.style.cursor = 'default';
+        return;
+    }
+    const snapshot = this[key];
+    if (!snapshot) {
+        if (container && container.classList) typeof container.classList.toggle === 'function' ? container.classList.toggle('locked-hover-fade', false) : container.classList.remove('locked-hover-fade');
+        return;
+    }
+    if (canvas.style.pointerEvents === 'none') canvas.style.pointerEvents = snapshot.pointerEvents || '';
+    if ((canvas.style.cursor || canvas.style.getPropertyValue('cursor')) === 'default') {
+        if ('cursor' in canvas.style) canvas.style.cursor = snapshot.cursor || '';
+        else canvas.style.setProperty('cursor', snapshot.cursor || '');
+    }
+    if (container && container.classList) typeof container.classList.toggle === 'function' ? container.classList.toggle('locked-hover-fade', false) : container.classList.remove('locked-hover-fade');
+    this[key] = null;
+};
+
 Live2DManager.prototype._setLive2DPeekControlsSuppressed = function (active) {
     const ids = ['live2d-floating-buttons', 'live2d-lock-icon'];
     ids.forEach((id) => {
@@ -1150,6 +1216,7 @@ Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options =
         model.interactive = state.baseInteractive;
     }
     this._live2DPeekState = null;
+    this.syncLive2DEffectiveInputLock();
     if (document.body) {
         document.body.classList.remove('neko-live2d-peek');
     }
@@ -1169,6 +1236,7 @@ Live2DManager.prototype.restoreLive2DPeek = async function (reason = 'manual-res
     this._live2DPeekTransitionId = transitionId;
     state.transitionId = transitionId;
     state.phase = 'hiding';
+    this.syncLive2DEffectiveInputLock();
     model.interactive = false;
     const stillCurrent = () => {
         const activeState = this._live2DPeekState;
@@ -1201,7 +1269,11 @@ Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reas
     this._live2DPeekTransitionId = transitionId;
     state.transitionId = transitionId;
     state.phase = shouldReveal ? 'revealing' : 'hiding';
-    model.interactive = shouldReveal ? state.baseInteractive : false;
+    this.syncLive2DEffectiveInputLock();
+    // The reveal animation owns the transform until it settles. Keep input
+    // disabled during that transition when Edge Peek lock is enabled.
+    model.interactive = shouldReveal && window.edgePeekLockEnabled !== true
+        ? state.baseInteractive : false;
 
     const target = shouldReveal
         ? {
@@ -1239,6 +1311,7 @@ Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reas
     model.rotation = target.rotation;
     if (model.scale) model.scale.x = target.scaleX;
     state.phase = shouldReveal ? 'peeking' : 'hidden';
+    this.syncLive2DEffectiveInputLock();
     model.interactive = shouldReveal ? state.baseInteractive : false;
     try {
         window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
@@ -2021,7 +2094,29 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     model.on('pointerdown', (event) => {
         if (!this._isModelReadyForInteraction) return;
-        if (this.isLocked) return;
+        // Edge Peek lock is renderer-local and must block the model canvas
+        // drag before _isDraggingModel is set. This intentionally does not
+        // mutate the manager's ordinary blue-lock state.
+        const edgePeekBlocked = this.isLive2DEffectiveLocked();
+        if (window.NekoEdgePeekController && typeof window.NekoEdgePeekController.record === 'function') {
+            window.NekoEdgePeekController.record('live2d-pointerdown', {
+                edgePeekLockEnabled: window.edgePeekLockEnabled === true,
+                edgePeekBlocked,
+                peekActive: typeof this.isLive2DPeekActive === 'function' && this.isLive2DPeekActive(),
+                managerLocked: this.isLocked === true
+            });
+        }
+        if (edgePeekBlocked) return;
+        const edgeContainer = this._returnButtonContainer;
+        const edgeButton = edgeContainer && edgeContainer.classList
+            && edgeContainer.classList.contains('neko-idle-return-btn')
+            ? edgeContainer
+            : (edgeContainer && edgeContainer.querySelector
+                ? edgeContainer.querySelector('.neko-idle-return-btn')
+                : null);
+        if (window.NekoEdgePeekController && edgeContainer
+            && (window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, edgeContainer)
+                || (this === window.live2dManager && window.NekoEdgePeekController.isAnyLocked()))) return;
         if (isYuiGuideDragLocked()) return;
 
         // 检测是否为触摸事件，且是多点触摸（双指缩放）
@@ -2292,12 +2387,13 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
     };
 
     const onWheelScroll = (event) => {
-        if (this.isLocked || !this.currentModel) return;
-        if (this.isLive2DPeekActive()) {
-            if (isWheelPointOnCurrentModel(event)) {
-                event.preventDefault();
+        if (!this.currentModel) return;
+        if ((typeof this.isLive2DEffectiveLocked === 'function' ? this.isLive2DEffectiveLocked() : this.isLocked === true) || this.isLive2DPeekActive()) {
+            if (this.isLive2DPeekActive()) {
+                if (isWheelPointOnCurrentModel(event)) event.preventDefault();
+                return; // edge peek ignores wheel zoom
             }
-            return; // edge peek ignores wheel zoom
+            return;
         }
         if (!isWheelPointOnCurrentModel(event)) return;
         event.preventDefault();
@@ -2343,13 +2439,14 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
     };
 
     const onTouchStart = (event) => {
-        if (this.isLocked || !this.currentModel) return;
-        if (this.isLive2DPeekActive()) {
-            if (event.touches && event.touches.length === 2) {
-                event.preventDefault();
+        if (!this.currentModel) return;
+        if ((typeof this.isLive2DEffectiveLocked === 'function' ? this.isLive2DEffectiveLocked() : this.isLocked === true) || this.isLive2DPeekActive()) {
+            if (this.isLive2DPeekActive()) {
+                if (event.touches && event.touches.length === 2) event.preventDefault();
+                isTouchZooming = false;
+                return; // edge peek ignores touch zoom start
             }
-            isTouchZooming = false;
-            return; // edge peek ignores touch zoom start
+            return;
         }
 
         // 检测双指触摸
@@ -2362,13 +2459,14 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
     };
 
     const onTouchMove = (event) => {
-        if (this.isLocked || !this.currentModel || !isTouchZooming) return;
-        if (this.isLive2DPeekActive()) {
-            if (event.touches && event.touches.length === 2) {
-                event.preventDefault();
+        if (!this.currentModel || !isTouchZooming) return;
+        if ((typeof this.isLive2DEffectiveLocked === 'function' ? this.isLive2DEffectiveLocked() : this.isLocked === true) || this.isLive2DPeekActive()) {
+            if (this.isLive2DPeekActive()) {
+                if (event.touches && event.touches.length === 2) event.preventDefault();
+                isTouchZooming = false;
+                return; // edge peek ignores touch zoom move
             }
-            isTouchZooming = false;
-            return; // edge peek ignores touch zoom move
+            return;
         }
 
         // 双指缩放
@@ -2388,7 +2486,7 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
     const onTouchEnd = async (event) => {
         // 当手指数量小于2时，停止缩放
         if (event.touches.length < 2) {
-            if (this.isLive2DPeekActive()) {
+            if (this.isLive2DEffectiveLocked()) {
                 isTouchZooming = false;
                 return; // edge peek ignores touch zoom end without saving peek state
             }
@@ -2523,10 +2621,16 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }, delay);
     };
 
-    const live2dContainer = document.getElementById('live2d-container');
+    const getLive2DContainer = () => {
+        const view = this.pixi_app && this.pixi_app.renderer && this.pixi_app.renderer.view;
+        return (view && view.closest && view.closest('#live2d-container'))
+            || (view && view.parentElement)
+            || document.getElementById('live2d-container');
+    };
     let ctrlFadeActive = false;      // Ctrl 按住淡化
     let stationaryFadeActive = false; // 静止1秒淡化
     const applyFade = () => {
+        const live2dContainer = getLive2DContainer();
         if (!live2dContainer) return;
         const shouldFade = (ctrlFadeActive || stationaryFadeActive) && window.lockedHoverFadeEnabled !== false;
         live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
@@ -2559,6 +2663,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             clearTimeout(this._stationaryFadeTimer);
             this._stationaryFadeTimer = null;
         }
+    };
+    this._resetStationaryHoverFade = () => {
+        clearStationaryFadeTimer();
+        stationaryFadeActive = false;
+        this._hasEnteredHoverRange = false;
+        applyFade();
     };
     this._clearStationaryFadeTimer = clearStationaryFadeTimer;
 
@@ -2781,12 +2891,18 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
             // 静止时启动定时器，移出范围时清除（移动端无鼠标悬停，跳过）
             const isMobileDevice = (window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile()) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-            if (!isMobileDevice && this.isLocked && isNearModel && !isOverUi) {
+            if (!isMobileDevice && this.isLive2DEffectiveLocked() && isNearModel && !isOverUi) {
                 // 首次进入范围：设置标志并启动定时器
                 if (!this._hasEnteredHoverRange) {
                     this._hasEnteredHoverRange = true;
                     if (this._stationaryFadeTimer === null && !stationaryFadeActive) {
                         this._stationaryFadeTimer = setTimeout(() => {
+                            this._stationaryFadeTimer = null;
+                            if (!this.isLive2DEffectiveLocked() || !this._hasEnteredHoverRange) {
+                                stationaryFadeActive = false;
+                                applyFade();
+                                return;
+                            }
                             stationaryFadeActive = true;
                             applyFade();
                         }, STATIONARY_FADE_DELAY);
@@ -2804,7 +2920,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // Ctrl 淡化：锁定 + Ctrl + 在模型范围内（独立于静止淡化，移动端跳过，UI 上时跳过）
-            ctrlFadeActive = !isMobileDevice && this.isLocked && ctrlKeyPressed && isNearModel && !isOverUi;
+            ctrlFadeActive = !isMobileDevice && this.isLive2DEffectiveLocked() && ctrlKeyPressed && isNearModel && !isOverUi;
             applyFade();
 
             const canvasEl = document.getElementById('live2d-canvas');
@@ -2834,7 +2950,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     this.boostLinuxX11InteractiveFPS();
                 }
                 showButtons();
-                if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
+                if (canvasEl && !this.isLive2DEffectiveLocked() && !(model.interactive && model.dragging)) {
                     // hitTest + 椭圆内部判定（0.3w × 0.45h），不外扩
                     let isOnModel = false;
                     try {
@@ -2862,7 +2978,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 if (pointerMoved && typeof this.boostLinuxX11InteractiveFPS === 'function') {
                     this.boostLinuxX11InteractiveFPS();
                 }
-                if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
+                if (canvasEl && !this.isLive2DEffectiveLocked() && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = 'grab';
                 }
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
@@ -3780,8 +3896,26 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         this._lockedHoverFadeChangedListener = null;
     }
 
+    this.syncLive2DEffectiveInputLock();
+    if (this._edgePeekInputSnapshot && this.isLocked !== true) {
+        const edgeCanvas = document.getElementById('live2d-canvas');
+        if (edgeCanvas && edgeCanvas.style) {
+            if (edgeCanvas.style.pointerEvents === 'none') edgeCanvas.style.pointerEvents = this._edgePeekInputSnapshot.pointerEvents || '';
+            if (edgeCanvas.style.cursor === 'default') edgeCanvas.style.cursor = this._edgePeekInputSnapshot.cursor || '';
+        }
+        this._edgePeekInputSnapshot = null;
+    }
+    if (this._edgePeekLockChangedListener) {
+        window.removeEventListener('neko-edge-peek-lock-changed', this._edgePeekLockChangedListener);
+        this._edgePeekLockChangedListener = null;
+    }
+
     // 清理静止淡化定时器
-    if (this._clearStationaryFadeTimer) {
+    if (this._resetStationaryHoverFade) {
+        this._resetStationaryHoverFade();
+        this._resetStationaryHoverFade = null;
+        this._clearStationaryFadeTimer = null;
+    } else if (this._clearStationaryFadeTimer) {
         this._clearStationaryFadeTimer();
         this._clearStationaryFadeTimer = null;
     }

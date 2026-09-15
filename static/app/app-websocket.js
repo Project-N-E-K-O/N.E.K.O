@@ -3385,6 +3385,14 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_INPUT_READY') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
+                        return;
+                    }
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -3418,6 +3426,9 @@
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
+                        if (statusDetails && statusDetails.session_epoch != null) {
+                            S.voiceSessionEpoch = statusDetails.session_epoch;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
@@ -4713,6 +4724,17 @@
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
+                    if (response.session_epoch != null) {
+                        S.voiceSessionEpoch = response.session_epoch;
+                    }
+                    // The session acknowledgement is the authoritative route
+                    // for this session. Clear stale independent-ASR state when
+                    // a new native realtime session replaces an old ASR one.
+                    if (response.input_mode !== 'text'
+                            && (response.microphone_route === 'native'
+                                || response.microphone_route === 'independent')) {
+                        S.independentAsrActive = response.microphone_route === 'independent';
+                    }
                     if (_ackAnswersThisWindow) S.voiceStartPending = false;
                     // NOTE: the fail-closed latch is deliberately NOT cleared
                     // here. lifecycle.py runs _start_independent_asr_if_enabled
