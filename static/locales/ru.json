@@ -1063,6 +1063,7 @@
     "imageModelApiKeyPlaceholder": "Ключ своего сервера; провайдеры используют книгу ключей API",
     "imageDisabled": "Не настроено",
         "settings": "Настройки API Key",
+        "pluginApiSettings": "Настройки Plugin API ↗",
         "settingsTitle": "Настройки API Key — Project Lanlan",
         "quickStart": "Быстрый старт",
         "freeVersion": "Бесплатная версия (Рекомендуется для начинающих)",
