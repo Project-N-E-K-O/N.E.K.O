@@ -12,6 +12,8 @@ Two kinds of test here, on purpose:
 """
 
 import atexit
+import io
+import json
 import os
 import re
 import signal
@@ -37,6 +39,38 @@ def _preset_event() -> threading.Event:
     event = threading.Event()
     event.set()
     return event
+
+
+@pytest.mark.unit
+def test_frontend_event_is_one_framed_write_after_unterminated_worker_output(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    class RecordingStdout(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        def write(self, text):
+            self.writes.append(text)
+            return super().write(text)
+
+    stdout = RecordingStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    stdout.write("unterminated worker output")
+    writes_before_event = len(stdout.writes)
+    launcher.emit_frontend_event("startup_begin", {"instance_id": "framed-instance"})
+
+    event_writes = stdout.writes[writes_before_event:]
+    assert len(event_writes) == 1
+    assert event_writes[0].startswith("\nNEKO_EVENT ")
+    assert event_writes[0].endswith("\n")
+    lines = stdout.getvalue().splitlines()
+    assert lines[0] == "unterminated worker output"
+    assert lines[1].startswith("NEKO_EVENT ")
+    envelope = json.loads(lines[1].removeprefix("NEKO_EVENT "))
+    assert envelope["source"] == "neko_launcher"
+    assert envelope["event"] == "startup_begin"
+    assert envelope["payload"]["instance_id"] == "framed-instance"
 
 @pytest.fixture(autouse=True)
 def restore_launcher_module_state():

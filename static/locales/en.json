@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "Safely quit app",
         "storageStatusUnavailableAction": "Storage state files cannot be read reliably. The app will stay blocked; quit safely, repair the files or reconnect the storage, then launch again.",
         "maintenanceSafeQuitFailed": "Safe quit could not start. Try again; the app will not force quit while migration state is uncertain.",
+        "manualWindowCloseRequired": "Controlled shutdown was requested, but the browser could not close this window automatically. Close it with the browser or system control; you do not need to request shutdown again.",
         "maintenanceReconnectStatus": "Keep this page open. The home page will recover automatically.",
         "maintenanceReconnectSubtitle": "The service is back. Reconnecting the app...",
         "maintenanceTitle": "Optimizing storage layout...",

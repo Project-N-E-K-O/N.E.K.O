@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "Salir de forma segura",
         "storageStatusUnavailableAction": "Los archivos de estado de almacenamiento no se pueden leer de forma fiable. La app seguirá bloqueada; sal de forma segura, repara los archivos o vuelve a conectar el almacenamiento y ábrela de nuevo.",
         "maintenanceSafeQuitFailed": "No se pudo iniciar la salida segura. Inténtalo de nuevo; la app no se cerrará por la fuerza mientras el estado de migración sea incierto.",
+        "manualWindowCloseRequired": "Se solicitó el cierre controlado, pero el navegador no pudo cerrar esta ventana automáticamente. Ciérrala con el control del navegador o del sistema; no es necesario volver a solicitar el cierre.",
         "maintenanceReconnectStatus": "Mantén esta página abierta. La página principal se recuperará automáticamente.",
         "maintenanceReconnectSubtitle": "El servicio ha vuelto. Reconectando la aplicación...",
         "maintenanceTitle": "Optimizando la distribución del almacenamiento...",

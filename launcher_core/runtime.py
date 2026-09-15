@@ -409,7 +409,15 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
         "launch_id": LAUNCH_ID,
         "payload": payload or {},
     }
-    print(f"NEKO_EVENT {json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))}", flush=True)
+    # stdout is shared with workers that may leave an unterminated text fragment.
+    # Start every control envelope on a fresh line so Electron can keep its strict
+    # line-start parser instead of accepting forgeable embedded markers.
+    frame = f"\nNEKO_EVENT {json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))}\n"
+    # Keep the complete control frame in one Python-level write.  ``print``
+    # writes its payload and trailing newline separately, which lets another
+    # thread sharing stdout splice text into the JSON line in unbuffered mode.
+    sys.stdout.write(frame)
+    sys.stdout.flush()
 
 
 def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:

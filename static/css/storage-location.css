@@ -148,6 +148,17 @@ body.storage-location-modal-open #storage-location-overlay * {
     color: #104c81;
 }
 
+.storage-location-host-close-feedback {
+    position: absolute;
+    z-index: 5;
+    top: 56px;
+    right: 20px;
+    width: min(420px, calc(100% - 40px));
+    box-sizing: border-box;
+    pointer-events: none;
+    box-shadow: 0 12px 32px rgba(119, 44, 44, 0.18);
+}
+
 .storage-location-view[hidden] {
     display: none !important;
 }

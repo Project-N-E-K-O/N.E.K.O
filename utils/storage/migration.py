@@ -976,6 +976,7 @@ def _fsync_staged_tree(path: Path) -> None:
     directories: list[Path] = []
     if path.is_file():
         paths.append(path)
+        directories.append(path.parent)
     elif path.is_dir():
         for current_root, dirnames, filenames in os.walk(path):
             directories.append(Path(current_root))
@@ -1729,8 +1730,10 @@ def run_pending_storage_migration(
             source_snapshots["config"] = _snapshot_path(
                 _checked_migration_entry_path(staged_root, "config")
             )
-        for entry_name in existing_entries:
-            _fsync_staged_tree(_checked_migration_entry_path(staged_root, entry_name))
+        # Flush the complete staging tree once so durability is requested from
+        # each copied leaf through nested runtime parents and the staging root
+        # itself before the VERIFYING checkpoint is written.
+        _fsync_staged_tree(staged_root)
 
         if _snapshot_runtime_entries(source_root) != source_runtime_baseline:
             raise StorageMigrationError(

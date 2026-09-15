@@ -784,6 +784,71 @@ def test_run_pending_storage_migration_copies_every_selected_root_data_class(tmp
 
 
 @pytest.mark.unit
+def test_fsync_staged_tree_flushes_nested_directories_from_leaf_to_root(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    staged_root = tmp_path / "transaction" / "staged"
+    nested_root = staged_root / "state" / "game_scores"
+    nested_root.mkdir(parents=True)
+    (staged_root / "top-level-state.json").write_text("{}", encoding="utf-8")
+    (nested_root / "scores.db").write_bytes(b"score")
+    flushed_directories = []
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "fsync_directory_best_effort",
+        lambda path: flushed_directories.append(Path(path)),
+    )
+
+    storage_migration_module._fsync_staged_tree(staged_root)
+
+    assert flushed_directories == [nested_root, staged_root / "state", staged_root]
+
+
+@pytest.mark.unit
+def test_run_pending_storage_migration_flushes_staged_root_before_verifying_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "state" / "game_scores" / "scores.db"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_bytes(b"score")
+    events = []
+    real_persist = storage_migration_module._persist_migration_payload
+
+    def record_staged_flush(path):
+        events.append(("flush", Path(path)))
+
+    def record_persist(*args, **kwargs):
+        events.append(("checkpoint", kwargs.get("status")))
+        return real_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_fsync_staged_tree", record_staged_flush)
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", record_persist)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    flush_events = [event for event in events if event[0] == "flush"]
+    assert len(flush_events) == 1
+    assert flush_events[0][1].name == "staged"
+    assert events.index(flush_events[0]) < events.index(
+        ("checkpoint", storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING)
+    )
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_rechecks_space_with_safety_margin(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 

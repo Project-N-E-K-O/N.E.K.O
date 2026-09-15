@@ -2743,47 +2743,70 @@
         setStoragePreflightBusy(true);
         setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
         try {
-            let resp;
-            try {
-                resp = await storageFetchWithTimeout('/api/storage/location/restart', {
-                    method: 'POST',
-                    headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({
-                        selected_root: selectedRoot,
-                        selection_source: storagePreflightState.selection_source || 'custom',
-                        confirm_existing_target_content: confirmExistingTargetContent,
-                        restart_operation_id: String(
-                            storagePreflightState.restart_operation_id || ''
-                        ).trim()
-                    })
-                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
-            } catch (requestError) {
-                restartOutcomeUnknown = true;
-                throw requestError;
+            while (true) {
+                let resp;
+                try {
+                    resp = await storageFetchWithTimeout('/api/storage/location/restart', {
+                        method: 'POST',
+                        headers: storageLocationMutationHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            selected_root: selectedRoot,
+                            selection_source: storagePreflightState.selection_source || 'custom',
+                            confirm_existing_target_content: confirmExistingTargetContent,
+                            restart_operation_id: String(
+                                storagePreflightState.restart_operation_id || ''
+                            ).trim()
+                        })
+                    }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+                } catch (requestError) {
+                    restartOutcomeUnknown = true;
+                    throw requestError;
+                }
+                const payload = await readJsonResponse(resp);
+                const responseErrorCode = String(payload && payload.error_code || '').trim();
+                if (resp.ok && (!payload || payload.ok !== true)) {
+                    restartOutcomeUnknown = true;
+                }
+                if (!resp.ok && ['restart_schedule_rollback_failed', 'restart_outcome_unknown'].includes(
+                    responseErrorCode
+                )) {
+                    restartOutcomeUnknown = true;
+                }
+                if (
+                    !resp.ok
+                    && payload
+                    && responseErrorCode === 'target_confirmation_required'
+                    && !confirmExistingTargetContent
+                ) {
+                    storagePreflightState = Object.assign({}, storagePreflightState, payload, {
+                        result: 'restart_required'
+                    });
+                    const message = payload.existing_target_confirmation_message
+                        || storageErrorMessage(payload, translate('memory.storageExistingTargetWarning', '目标位置已经包含现有数据，后续确认迁移前需要二次确认。'));
+                    setStoragePreflightResult(message, 'error');
+                    renderStorageRestartButton();
+                    if (!window.confirm(message)) {
+                        return false;
+                    }
+                    confirmExistingTargetContent = true;
+                    setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
+                    continue;
+                }
+                if (!resp.ok || !payload || payload.ok !== true) {
+                    throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '重启请求失败')));
+                }
+                restartAccepted = true;
+                setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求重启。应用即将进入维护状态，请等待重启完成。'), 'success');
+                notifyStorageRestartInitiated(payload, selectedRoot);
+                storagePreflightState = null;
+                const input = document.getElementById('storage-target-root-input');
+                if (input) {
+                    input.disabled = true;
+                }
+                renderStorageRestartButton();
+                await closeStorageManagerAfterRestartNotice(payload);
+                return true;
             }
-            const payload = await readJsonResponse(resp);
-            if (resp.ok && (!payload || payload.ok !== true)) {
-                restartOutcomeUnknown = true;
-            }
-            if (!resp.ok && ['restart_schedule_rollback_failed', 'restart_outcome_unknown'].includes(
-                String(payload && payload.error_code || '').trim()
-            )) {
-                restartOutcomeUnknown = true;
-            }
-            if (!resp.ok || !payload || payload.ok !== true) {
-                throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '重启请求失败')));
-            }
-            restartAccepted = true;
-            setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求重启。应用即将进入维护状态，请等待重启完成。'), 'success');
-            notifyStorageRestartInitiated(payload, selectedRoot);
-            storagePreflightState = null;
-            const input = document.getElementById('storage-target-root-input');
-            if (input) {
-                input.disabled = true;
-            }
-            renderStorageRestartButton();
-            await closeStorageManagerAfterRestartNotice(payload);
-            return true;
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
             if (restartOutcomeUnknown) {

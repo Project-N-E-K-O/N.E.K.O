@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "安全退出应用",
         "storageStatusUnavailableAction": "存储状态文件当前无法可靠读取。应用会保持阻断；你可以安全退出，修复文件或挂载后再重新启动。",
         "maintenanceSafeQuitFailed": "安全退出未能启动，请重试；应用不会在迁移状态不明时强制关闭。",
+        "manualWindowCloseRequired": "受控关闭已请求，但浏览器无法自动关闭此窗口。请使用浏览器或系统的关闭按钮；无需再次请求退出。",
         "maintenanceReconnectStatus": "请保持当前页面打开，主页会自动恢复。",
         "maintenanceReconnectSubtitle": "检测到服务已经恢复，正在重新连接应用。",
         "maintenanceTitle": "正在优化存储布局...",

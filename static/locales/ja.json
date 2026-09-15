@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "アプリを安全に終了",
         "storageStatusUnavailableAction": "ストレージ状態ファイルを安全に読み取れません。アプリはブロック状態を維持します。安全に終了し、ファイルを修復するかストレージを再接続してから再起動してください。",
         "maintenanceSafeQuitFailed": "安全な終了を開始できませんでした。再試行してください。移行状態が不明な間は強制終了しません。",
+        "manualWindowCloseRequired": "制御された終了を要求しましたが、ブラウザーはこのウィンドウを自動で閉じられませんでした。ブラウザーまたはシステムの閉じるボタンを使用してください。終了を再度要求する必要はありません。",
         "maintenanceReconnectStatus": "このページを開いたままにしてください。ホーム画面は自動で復旧します。",
         "maintenanceReconnectSubtitle": "サービスが復旧しました。アプリを再接続しています...",
         "maintenanceTitle": "ストレージ構成を最適化しています...",

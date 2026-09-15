@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "安全退出應用程式",
         "storageStatusUnavailableAction": "目前無法可靠讀取儲存狀態檔案。應用程式會保持阻擋；你可以安全退出，修復檔案或重新掛載後再啟動。",
         "maintenanceSafeQuitFailed": "安全退出未能啟動，請重試；應用程式不會在遷移狀態不明時強制關閉。",
+        "manualWindowCloseRequired": "已請求受控關閉，但瀏覽器無法自動關閉此視窗。請使用瀏覽器或系統的關閉按鈕；無需再次請求退出。",
         "maintenanceReconnectStatus": "請保持目前頁面開啟，首頁會自動恢復。",
         "maintenanceReconnectSubtitle": "檢測到服務已恢復，正在重新連線應用。",
         "maintenanceTitle": "正在優化存儲布局...",

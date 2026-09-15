@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "Sair com segurança",
         "storageStatusUnavailableAction": "Não foi possível ler os arquivos de estado do armazenamento com segurança. O app continuará bloqueado; saia com segurança, repare os arquivos ou reconecte o armazenamento e abra novamente.",
         "maintenanceSafeQuitFailed": "Não foi possível iniciar a saída segura. Tente novamente; o app não será encerrado à força enquanto o estado da migração for incerto.",
+        "manualWindowCloseRequired": "O encerramento controlado foi solicitado, mas o navegador não conseguiu fechar esta janela automaticamente. Feche-a pelo navegador ou pelo sistema; não é necessário solicitar o encerramento novamente.",
         "maintenanceReconnectStatus": "Mantenha esta página aberta. A página inicial será recuperada automaticamente.",
         "maintenanceReconnectSubtitle": "O serviço voltou. Reconectando o aplicativo...",
         "maintenanceTitle": "Otimizando a organização do armazenamento...",

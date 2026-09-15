@@ -247,19 +247,316 @@ def test_storage_location_error_view_has_no_scrollbars(
     running_server: str,
 ):
     page = mock_page
-    page.route(
-        "**/api/system/status",
-        lambda route: route.fulfill(
+    status_requests = {"count": 0}
+
+    def handle_status_error(route):
+        status_requests["count"] += 1
+        route.fulfill(
             status=503,
             content_type="application/json",
             body=json.dumps({"ok": False, "error": "temporary unavailable"}),
+        )
+
+    page.route(
+        "**/api/system/status",
+        handle_status_error,
+    )
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "autostart_csrf_token": STORAGE_CSRF_TOKEN}),
         ),
+    )
+    page.route(
+        "**/api/storage/location/exit",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+        ),
+    )
+    page.add_init_script(
+        """
+        window.nekoHost = {
+            closeWindow: async () => ({ ok: false, error: 'simulated close failure' }),
+        };
+        """
     )
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     expect(page.get_by_role("heading", name="暂时无法读取存储位置引导信息")).to_be_visible(timeout=15_000)
     _expect_storage_migration_has_no_scrollbars(page)
+    _arm_page_config_resolution_probe(page)
+    page.locator(".storage-location-modal > .storage-location-close").click()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    status_count_after_shutdown = status_requests["count"]
+    page.get_by_role("button", name="重试", exact=True).click(force=True)
+    page.wait_for_timeout(300)
+    assert status_requests["count"] == status_count_after_shutdown
+    assert _page_config_state(page) == "pending"
+
+
+@pytest.mark.frontend
+def test_storage_location_error_retry_is_invalidated_by_controlled_shutdown(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    retry_probe_routes = []
+    exit_requests = {"count": 0}
+    initial_probe_finished = {"value": False}
+
+    def handle_system_status(route):
+        if initial_probe_finished["value"]:
+            retry_probe_routes.append(route)
+            return
+        route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "temporary unavailable"}),
+        )
+
+    def handle_exit(route):
+        exit_requests["count"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+        )
+
+    page.route("**/api/system/status", handle_system_status)
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "autostart_csrf_token": STORAGE_CSRF_TOKEN}),
+        ),
+    )
+    page.route("**/api/storage/location/exit", handle_exit)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return { ok: false, error: 'simulated close failure' };
+            },
+        };
+        """
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.get_by_role("heading", name="暂时无法读取存储位置引导信息")).to_be_visible(
+        timeout=15_000
+    )
+    _arm_page_config_resolution_probe(page)
+    initial_probe_finished["value"] = True
+
+    retry_button = page.get_by_role("button", name="重试", exact=True)
+    retry_button.click()
+    expect(retry_button).to_be_disabled(timeout=5_000)
+    page.wait_for_timeout(100)
+    assert len(retry_probe_routes) == 1
+
+    page.locator(".storage-location-modal > .storage-location-close").click(force=True)
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    assert exit_requests["count"] == 1
+    assert page.evaluate("window.__nekoHostCloseCalls") == 1
+    assert _page_config_state(page) == "pending"
+
+    retry_probe_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "status": "ready",
+                "ready": True,
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                },
+            }
+        ),
+    )
+    page.wait_for_timeout(300)
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
+    assert _page_config_state(page) == "pending"
+
+
+@pytest.mark.frontend
+def test_storage_location_failed_close_resumes_probe_without_stale_state_pollution(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    retry_probe_routes = []
+    initial_probe_finished = {"value": False}
+    select_requests = []
+
+    def handle_system_status(route):
+        if initial_probe_finished["value"]:
+            retry_probe_routes.append(route)
+            return
+        route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "temporary unavailable"}),
+        )
+
+    page.route("**/api/system/status", handle_system_status)
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "autostart_csrf_token": "close-token"}),
+        ),
+    )
+    page.route(
+        "**/api/storage/location/exit",
+        lambda route: route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "shutdown unavailable"}),
+        ),
+    )
+    page.route(
+        "**/api/storage/location/bootstrap",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "autostart_csrf_token": "new-generation-token",
+                    "current_root": "/tmp/new-current/N.E.K.O",
+                    "recommended_root": "/tmp/new-target/N.E.K.O",
+                    "legacy_sources": [],
+                    "anchor_root": "/tmp/new-target/N.E.K.O",
+                    "cloudsave_root": "/tmp/new-target/N.E.K.O/cloudsave",
+                    "selection_required": True,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "selection_required",
+                    "legacy_cleanup_pending": False,
+                    "last_known_good_root": "/tmp/new-current/N.E.K.O",
+                    "last_error_summary": "",
+                    "migration": {},
+                    "stage": "stage3_web_restart",
+                    "poll_interval_ms": 1200,
+                }
+            ),
+        ),
+    )
+
+    def handle_select(route):
+        select_requests.append(
+            {
+                "headers": route.request.headers,
+                "payload": json.loads(route.request.post_data or "{}"),
+            }
+        )
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_required",
+                    "restart_operation_id": "new-generation-operation",
+                    "restart_mode": "migrate_after_shutdown",
+                    "selected_root": "/tmp/new-target/N.E.K.O",
+                    "selection_source": "recommended",
+                    "permission_ok": True,
+                    "warning_codes": [],
+                    "target_has_existing_content": False,
+                    "requires_existing_target_confirmation": False,
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                }
+            ),
+        )
+
+    page.route("**/api/storage/location/select", handle_select)
+    page.add_init_script(
+        """
+        window.nekoHost = {
+            getBackendRecoveryState: async () => ({
+                state: 'ready',
+                reason: 'backend_ready',
+                generation: 1,
+            }),
+            closeWindow: async () => ({ ok: false, error: 'simulated close failure' }),
+        };
+        """
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.get_by_role("heading", name="暂时无法读取存储位置引导信息")).to_be_visible(
+        timeout=15_000
+    )
+    initial_probe_finished["value"] = True
+    page.get_by_role("button", name="重试", exact=True).click()
+    page.wait_for_timeout(100)
+    assert len(retry_probe_routes) == 1
+
+    page.locator(".storage-location-modal > .storage-location-close").click(force=True)
+    page.wait_for_timeout(300)
+    assert len(retry_probe_routes) == 2
+
+    retry_probe_routes[1].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "status": "migration_required",
+                "ready": False,
+                "autostart_csrf_token": "new-generation-token",
+                "storage": {
+                    "selection_required": True,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "selection_required",
+                },
+            }
+        ),
+    )
+    expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=10_000)
+
+    retry_probe_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "status": "ready",
+                "ready": True,
+                "autostart_csrf_token": "stale-generation-token",
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                },
+            }
+        ),
+    )
+    page.wait_for_timeout(200)
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
+
+    page.get_by_role("button", name="其他位置").click()
+    page.get_by_role("button", name="使用推荐路径").click()
+    page.wait_for_timeout(200)
+    assert len(select_requests) == 1
+    assert select_requests[0]["payload"]["selected_root"] == "/tmp/new-target/N.E.K.O"
+    assert select_requests[0]["headers"].get("x-csrf-token") == "new-generation-token"
 
 
 @pytest.mark.frontend
@@ -368,12 +665,17 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("close_phase", ["selection_intro", "selection_required", "preview"])
 def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
     mock_page: Page,
     running_server: str,
+    close_phase: str,
 ):
     page = mock_page
     exit_requests = {"count": 0}
+    select_requests = {"count": 0}
+    restart_requests = {"count": 0}
+    pending_exit_routes = []
     _mock_selection_required_state(page)
     page.add_init_script(
         """
@@ -391,22 +693,77 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
         exit_requests["count"] += 1
         assert route.request.headers.get("x-neko-storage-action") == "exit"
         assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
+        pending_exit_routes.append(route)
+
+    def handle_select(route):
+        select_requests["count"] += 1
         route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": "restart_required",
+                    "restart_operation_id": "close-freeze-operation",
+                    "restart_mode": "rebind_only",
+                    "selected_root": "/tmp/runtime/N.E.K.O",
+                    "selection_source": "recommended",
+                    "permission_ok": True,
+                    "warning_codes": [],
+                    "target_has_existing_content": False,
+                    "requires_existing_target_confirmation": False,
+                    "blocking_error_code": "",
+                    "blocking_error_message": "",
+                }
+            ),
         )
 
+    def handle_restart(route):
+        restart_requests["count"] += 1
+        route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+
     page.route("**/api/storage/location/exit", handle_exit)
+    page.route("**/api/storage/location/select", handle_select)
+    page.route("**/api/storage/location/restart", handle_restart)
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
     expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
+    if close_phase != "selection_intro":
+        _continue_storage_intro(page)
+    if close_phase == "preview":
+        page.get_by_role("button", name="使用推荐路径").click()
+        expect(page.get_by_role("button", name="确认并重启到原路径")).to_be_visible(
+            timeout=10_000
+        )
+        select_requests["count"] = 0
+
+    if close_phase == "selection_intro":
+        mutation_button = page.get_by_role("button", name="推荐存储位置")
+    elif close_phase == "selection_required":
+        mutation_button = page.get_by_role("button", name="使用推荐路径")
+    else:
+        mutation_button = page.get_by_role("button", name="确认并重启到原路径")
 
     page.locator(".storage-location-modal > .storage-location-close").click()
+    expect(mutation_button).to_be_disabled(timeout=5_000)
+    assert len(pending_exit_routes) == 1
+    page.evaluate("window.dispatchEvent(new Event('localechange'))")
+    expect(mutation_button).to_be_disabled()
+    mutation_button.click(force=True)
+    page.wait_for_timeout(100)
+    assert select_requests["count"] == 0
+    assert restart_requests["count"] == 0
+
+    pending_exit_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+    )
     page.wait_for_function("() => window.__nekoHostCloseCalls === 1", timeout=10_000)
 
     assert exit_requests["count"] == 1
+    expect(mutation_button).to_be_disabled()
     assert _page_config_state(page) == "pending"
 
 
@@ -448,6 +805,9 @@ def test_storage_location_close_keeps_window_open_when_app_shutdown_request_fail
     assert exit_requests["count"] == 1
     assert page.evaluate("window.__nekoHostCloseCalls") == 0
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    page.get_by_role("button", name="其他位置").click()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_hidden()
 
 
 @pytest.mark.frontend
@@ -492,9 +852,11 @@ def test_storage_location_close_uses_verified_host_for_non_maintenance_failure(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("close_phase", ["selection_intro", "selection_required"])
 def test_storage_location_rejected_host_close_does_not_fall_through_to_window_close(
     mock_page: Page,
     running_server: str,
+    close_phase: str,
 ):
     page = mock_page
     _mock_selection_required_state(page)
@@ -522,11 +884,22 @@ def test_storage_location_rejected_host_close_does_not_fall_through_to_window_cl
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+    if close_phase == "selection_required":
+        _continue_storage_intro(page)
+        expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=10_000)
     page.locator(".storage-location-modal > .storage-location-close").click()
-    page.wait_for_timeout(500)
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
 
     assert page.evaluate("window.__nekoWindowCloseCalls") == 0
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    expect(page.locator("#storage-location-host-close-feedback")).to_contain_text(
+        "安全退出未能启动"
+    )
+    _expect_storage_migration_has_no_scrollbars(page)
+    if close_phase == "selection_intro":
+        expect(page.get_by_role("button", name="其他位置")).to_be_disabled()
+    else:
+        expect(page.get_by_role("button", name="选择文件夹")).to_be_disabled()
 
 
 @pytest.mark.frontend
@@ -2002,6 +2375,8 @@ def test_storage_location_awaiting_shutdown_offers_only_controlled_exit_retry(
     expect(retry_shutdown).to_be_enabled(timeout=15_000)
     expect(page.get_by_role("button", name="安全退出应用")).to_be_hidden()
     retry_shutdown.click()
+    expect(retry_shutdown).to_be_disabled(timeout=5_000)
+    retry_shutdown.click(force=True)
     page.wait_for_timeout(300)
 
     assert exit_requests["count"] == 1
@@ -2010,9 +2385,11 @@ def test_storage_location_awaiting_shutdown_offers_only_controlled_exit_retry(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("host_close_mode", ["ok", "rejected", "throws"])
 def test_storage_location_unreadable_checkpoint_offers_evidence_preserving_safe_exit(
     mock_page: Page,
     running_server: str,
+    host_close_mode: str,
 ):
     page = mock_page
     exit_requests = {"count": 0}
@@ -2064,6 +2441,7 @@ def test_storage_location_unreadable_checkpoint_offers_evidence_preserving_safe_
     page.route("**/api/storage/location/exit", handle_exit)
     page.add_init_script(
         """
+        window.__nekoHostCloseMode = %s;
         window.__nekoHostCloseCalls = 0;
         window.__nekoSafeQuitCalls = 0;
         window.nekoHost = {
@@ -2080,10 +2458,14 @@ def test_storage_location_unreadable_checkpoint_offers_evidence_preserving_safe_
             },
             closeWindow: async () => {
                 window.__nekoHostCloseCalls += 1;
-                return { ok: true };
+                if (window.__nekoHostCloseMode === 'throws') {
+                    throw new Error('simulated host close failure');
+                }
+                return { ok: window.__nekoHostCloseMode === 'ok' };
             },
         };
         """
+        % json.dumps(host_close_mode)
     )
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -2101,6 +2483,15 @@ def test_storage_location_unreadable_checkpoint_offers_evidence_preserving_safe_
     assert exit_requests["count"] == 1
     assert page.evaluate("window.__nekoSafeQuitCalls") == 0
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    if host_close_mode != "ok":
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_visible()
+        expect(page.locator("#storage-location-host-close-feedback")).to_contain_text(
+            "安全退出未能启动",
+            timeout=5_000,
+        )
+        _expect_storage_migration_has_no_scrollbars(page)
+    else:
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_hidden()
 
 
 @pytest.mark.frontend
@@ -2156,6 +2547,255 @@ def test_storage_location_unreadable_checkpoint_safe_exit_without_host_bridge(
 
     assert exit_requests["count"] == 1
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    expect(page.locator("#storage-location-host-close-feedback")).to_contain_text(
+        "受控关闭已请求，但浏览器无法自动关闭此窗口"
+    )
+    safe_quit.click()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    assert exit_requests["count"] == 1
+
+
+@pytest.mark.frontend
+def test_storage_location_shutdown_invalidates_pending_maintenance_ready_reload(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    pending_status_routes = []
+    exit_requests = {"count": 0}
+    document_requests = []
+    unavailable_payload = {
+        "ok": True,
+        "instance_id": "pre-shutdown-instance",
+        "autostart_csrf_token": STORAGE_CSRF_TOKEN,
+        "status": "storage_status_unavailable",
+        "lifecycle_state": "storage_status_unavailable",
+        "ready": False,
+        "blocking_reason": "storage_status_unavailable",
+        "storage_status_unavailable": True,
+        "error_code": "migration_checkpoint_malformed",
+        "storage": {
+            "status_unavailable": True,
+            "blocking_reason": "storage_status_unavailable",
+            "error_code": "migration_checkpoint_malformed",
+        },
+    }
+
+    page.on(
+        "request",
+        lambda request: document_requests.append(request.url)
+        if request.resource_type == "document"
+        else None,
+    )
+    page.route(
+        "**/api/system/status",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(unavailable_payload),
+        ),
+    )
+    page.route(
+        "**/api/storage/location/status",
+        lambda route: pending_status_routes.append(route),
+    )
+
+    def handle_exit(route):
+        exit_requests["count"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
+        )
+
+    page.route("**/api/storage/location/exit", handle_exit)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.nekoHost = {
+            getBackendRecoveryState: async () => ({
+                state: 'ready',
+                reason: 'backend_ready',
+                generation: 1,
+                retry_allowed: false,
+                quit_allowed: false,
+            }),
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return { ok: false, error: 'simulated close failure' };
+            },
+        };
+        """
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    safe_quit = page.get_by_role("button", name="安全退出应用")
+    expect(safe_quit).to_be_enabled(timeout=15_000)
+    page.wait_for_function("() => document.visibilityState === 'visible'")
+    assert len(pending_status_routes) == 1
+
+    safe_quit.click()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+    assert exit_requests["count"] == 1
+    assert page.evaluate("window.__nekoHostCloseCalls") == 1
+
+    pending_status_routes[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body=json.dumps(
+            {
+                "ok": True,
+                "instance_id": "post-migration-instance",
+                "status": "ready",
+                "lifecycle_state": "ready",
+                "ready": True,
+                "blocking_reason": "",
+                "storage": {
+                    "selection_required": False,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "",
+                },
+            }
+        ),
+    )
+    page.wait_for_timeout(500)
+    assert len(document_requests) == 1
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
+    assert _page_config_state(page) == "pending"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("shutdown_accepted", [True, False])
+def test_storage_location_external_maintenance_during_close_obeys_close_outcome(
+    mock_page: Page,
+    running_server: str,
+    shutdown_accepted: bool,
+):
+    page = mock_page
+    _mock_selection_required_state(page)
+    pending_exit_routes = []
+    maintenance_status_requests = {"count": 0}
+    document_requests = []
+
+    page.on(
+        "request",
+        lambda request: document_requests.append(request.url)
+        if request.resource_type == "document"
+        else None,
+    )
+    page.route(
+        "**/api/storage/location/exit",
+        lambda route: pending_exit_routes.append(route),
+    )
+
+    def handle_maintenance_status(route):
+        maintenance_status_requests["count"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": "external-maintenance-instance",
+                    "status": "maintenance",
+                    "lifecycle_state": "maintenance",
+                    "ready": False,
+                    "blocking_reason": "migration_pending",
+                    "migration_stage": "copying",
+                    "poll_interval_ms": 1000,
+                    "storage": {"migration_pending": True},
+                }
+            ),
+        )
+
+    page.route("**/api/storage/location/status", handle_maintenance_status)
+    page.add_init_script(
+        """
+        window.__nekoHostCloseCalls = 0;
+        window.__nekoHostCloseShouldSucceed = false;
+        window.nekoHost = {
+            getBackendRecoveryState: async () => ({
+                state: 'ready',
+                reason: 'backend_ready',
+                generation: 1,
+            }),
+            closeWindow: async () => {
+                window.__nekoHostCloseCalls += 1;
+                return window.__nekoHostCloseShouldSucceed
+                    ? { ok: true }
+                    : { ok: false, error: 'simulated close failure' };
+            },
+        };
+        """
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
+    _arm_page_config_resolution_probe(page)
+    page.locator(".storage-location-modal > .storage-location-close").click()
+    page.wait_for_timeout(100)
+    assert len(pending_exit_routes) == 1
+
+    page.evaluate(
+        """
+        () => window.appStorageLocation.enterExternalMaintenanceMode({
+            result: 'restart_initiated',
+            restart_mode: 'migrate_after_shutdown',
+            target_root: '/tmp/external/N.E.K.O',
+            selection_source: 'recommended',
+            instance_id: 'external-maintenance-instance',
+            status: 'maintenance',
+            lifecycle_state: 'maintenance',
+            blocking_reason: 'migration_pending',
+            migration_stage: 'copying',
+            storage: { migration_pending: true },
+            migration: { status: 'copying' },
+        })
+        """
+    )
+    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible()
+    assert maintenance_status_requests["count"] == 0
+
+    pending_exit_routes[0].fulfill(
+        status=200 if shutdown_accepted else 503,
+        content_type="application/json",
+        body=json.dumps(
+            {"ok": True, "result": "shutdown_initiated"}
+            if shutdown_accepted
+            else {"ok": False, "error": "shutdown unavailable"}
+        ),
+    )
+    page.wait_for_timeout(500)
+
+    assert len(document_requests) == 1
+    assert _page_config_state(page) == "pending"
+    expect(page.locator("#storage-location-overlay")).to_be_visible()
+    if shutdown_accepted:
+        assert maintenance_status_requests["count"] == 0
+        assert page.evaluate("window.__nekoHostCloseCalls") == 1
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_visible()
+        page.evaluate(
+            """
+            () => window.appStorageLocation.enterExternalMaintenanceMode({
+                result: 'restart_initiated',
+                target_root: '/tmp/late/N.E.K.O',
+                status: 'maintenance',
+                storage: { migration_pending: true },
+            })
+            """
+        )
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_visible()
+        assert maintenance_status_requests["count"] == 0
+        page.evaluate("window.__nekoHostCloseShouldSucceed = true")
+        page.locator(".storage-location-modal > .storage-location-close").click(force=True)
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__nekoHostCloseCalls") == 2
+        assert len(pending_exit_routes) == 1
+    else:
+        assert maintenance_status_requests["count"] >= 1
+        assert page.evaluate("window.__nekoHostCloseCalls") == 0
 
 
 @pytest.mark.frontend
@@ -2316,9 +2956,11 @@ def test_storage_location_status_body_timeout_reaches_terminal_host_fallback(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("safe_quit_mode", ["ok", "rejected", "throws", "pending"])
 def test_storage_location_terminal_host_failure_offers_verified_safe_quit(
     mock_page: Page,
     running_server: str,
+    safe_quit_mode: str,
 ):
     page = mock_page
     system_requests = {"count": 0}
@@ -2380,7 +3022,12 @@ def test_storage_location_terminal_host_failure_offers_verified_safe_quit(
     )
     page.add_init_script(
         """
+        window.__nekoSafeQuitMode = %s;
         window.__nekoSafeQuitCalls = 0;
+        window.__nekoRetryRecoveryCalls = 0;
+        window.__resolveNekoSafeQuit = null;
+        window.__nekoRetryRecoveryPending = false;
+        window.__resolveNekoRetryRecovery = null;
         window.__nekoHostCloseCalls = 0;
         window.nekoHost = {
             getBackendRecoveryState: async () => ({
@@ -2390,16 +3037,35 @@ def test_storage_location_terminal_host_failure_offers_verified_safe_quit(
                 retry_allowed: true,
                 quit_allowed: true,
             }),
-            retryBackendRecovery: async () => ({
-                state: 'transient',
-                reason: 'retry_started',
-                generation: 3,
-                retry_allowed: false,
-                quit_allowed: false,
-            }),
+            retryBackendRecovery: async () => {
+                window.__nekoRetryRecoveryCalls += 1;
+                if (window.__nekoRetryRecoveryPending) {
+                    return await new Promise(resolve => {
+                        window.__resolveNekoRetryRecovery = resolve;
+                    });
+                }
+                return {
+                    state: 'transient',
+                    reason: 'retry_started',
+                    generation: 3,
+                    retry_allowed: false,
+                    quit_allowed: false,
+                };
+            },
             requestSafeQuit: async () => {
                 window.__nekoSafeQuitCalls += 1;
-                return { ok: true, action: 'quit_app' };
+                if (window.__nekoSafeQuitMode === 'throws') {
+                    throw new Error('simulated safe quit failure');
+                }
+                if (window.__nekoSafeQuitMode === 'pending') {
+                    return await new Promise(resolve => {
+                        window.__resolveNekoSafeQuit = resolve;
+                    });
+                }
+                return {
+                    ok: window.__nekoSafeQuitMode === 'ok',
+                    action: window.__nekoSafeQuitMode === 'ok' ? 'quit_app' : 'rejected',
+                };
             },
             closeWindow: async () => {
                 window.__nekoHostCloseCalls += 1;
@@ -2407,6 +3073,7 @@ def test_storage_location_terminal_host_failure_offers_verified_safe_quit(
             },
         };
         """
+        % json.dumps(safe_quit_mode)
     )
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -2416,8 +3083,47 @@ def test_storage_location_terminal_host_failure_offers_verified_safe_quit(
     expect(safe_quit).to_be_enabled(timeout=10_000)
     safe_quit.click()
     page.wait_for_function("() => window.__nekoSafeQuitCalls === 1", timeout=10_000)
+    if safe_quit_mode == "pending":
+        expect(safe_quit).to_be_disabled()
+        retry_recovery = page.get_by_role("button", name="重试恢复服务")
+        expect(retry_recovery).to_be_disabled()
+        retry_recovery.click(force=True)
+        page.locator(".storage-location-modal > .storage-location-close").click(force=True)
+        page.wait_for_timeout(100)
+        assert page.evaluate("window.__nekoSafeQuitCalls") == 1
+        assert page.evaluate("window.__nekoRetryRecoveryCalls") == 0
+        page.evaluate("window.__resolveNekoSafeQuit({ ok: false, action: 'rejected' })")
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+        expect(retry_recovery).to_be_enabled(timeout=5_000)
+        page.evaluate("window.__nekoRetryRecoveryPending = true")
+        retry_recovery.click()
+        page.wait_for_function("() => window.__nekoRetryRecoveryCalls === 1", timeout=5_000)
+        expect(safe_quit).to_be_disabled()
+        safe_quit.click(force=True)
+        page.locator(".storage-location-modal > .storage-location-close").click(force=True)
+        page.wait_for_timeout(100)
+        assert page.evaluate("window.__nekoSafeQuitCalls") == 1
+        assert page.evaluate("window.__nekoRetryRecoveryCalls") == 1
+        page.evaluate(
+            """
+            window.__resolveNekoRetryRecovery({
+                state: 'transient',
+                reason: 'retry_started',
+                generation: 3,
+                retry_allowed: false,
+                quit_allowed: false,
+            })
+            """
+        )
     assert page.evaluate("window.__nekoHostCloseCalls") == 0
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    if safe_quit_mode == "ok":
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_hidden()
+    else:
+        expect(page.locator("#storage-location-host-close-feedback")).to_be_visible(timeout=5_000)
+        expect(page.locator("#storage-location-host-close-feedback")).to_contain_text(
+            "安全退出未能启动"
+        )
 
 
 @pytest.mark.frontend

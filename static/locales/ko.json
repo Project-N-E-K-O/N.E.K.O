@@ -2259,6 +2259,7 @@
         "maintenanceSafeQuit": "앱 안전하게 종료",
         "storageStatusUnavailableAction": "저장소 상태 파일을 신뢰할 수 있게 읽을 수 없습니다. 앱은 차단 상태를 유지합니다. 안전하게 종료한 뒤 파일을 복구하거나 저장소를 다시 연결하고 재실행하세요.",
         "maintenanceSafeQuitFailed": "안전한 종료를 시작하지 못했습니다. 다시 시도하세요. 이전 상태가 불확실한 동안 강제 종료하지 않습니다.",
+        "manualWindowCloseRequired": "제어된 종료를 요청했지만 브라우저가 이 창을 자동으로 닫지 못했습니다. 브라우저 또는 시스템 닫기 버튼을 사용하세요. 종료를 다시 요청할 필요는 없습니다.",
         "maintenanceReconnectStatus": "이 페이지를 그대로 열어 두세요. 홈 화면이 자동으로 복구됩니다.",
         "maintenanceReconnectSubtitle": "서비스가 돌아왔습니다. 앱을 다시 연결하는 중...",
         "maintenanceTitle": "저장소 구성을 최적화하는 중...",
