@@ -31,6 +31,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 import array
 import json
 import math
+import re
 import struct
 import sys
 import uuid
@@ -65,6 +66,24 @@ _VOICE_BINARY_HEADER_BYTES = 8
 # control: the sibling JSON branch below carries the same materialization and
 # is bounded separately (MIC_PCM_FRAME_TOO_LONG in the Core bridge).
 _VOICE_BINARY_MAX_DURATION_MS = 120
+
+
+def _log_voice_lifecycle_request(message, *, connection_id, is_current):
+    """Record control-message provenance without logging arbitrary client data."""
+    action = message.get("action")
+    if action not in ("start_session", "pause_session", "end_session"):
+        return
+    trace = message.get("lifecycle_trace")
+    if not (
+        isinstance(trace, str)
+        and len(trace) <= 256
+        and re.fullmatch(r"app-[a-z-]+\.js:\d{1,6}:\d{1,6}(;app-[a-z-]+\.js:\d{1,6}:\d{1,6}){0,3}", trace)
+    ):
+        trace = "unavailable"
+    logger.info(
+        "Voice lifecycle received action=%s connection=%s current=%s client_sites=%s",
+        action, connection_id, is_current, trace,
+    )
 
 
 def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
@@ -783,6 +802,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 兼容只实现 receive_text 的测试 double。
                 data = await websocket.receive_text()
                 message = json.loads(data)
+            _log_voice_lifecycle_request(
+                message,
+                connection_id=this_session_id,
+                is_current=session_id.get(lanlan_name) == this_session_id,
+            )
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
             if lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
