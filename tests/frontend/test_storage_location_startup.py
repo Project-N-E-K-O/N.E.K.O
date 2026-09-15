@@ -976,6 +976,10 @@ def test_storage_location_maintenance_refuses_active_and_stale_ready_close(
     assert page.evaluate("window.__nekoHostCloseCalls") == 0
     assert page.evaluate("window.__nekoSafeQuitCalls") == 0
     expect(page.locator("#storage-location-overlay")).to_be_visible()
+    expect(page.locator("#storage-location-host-close-feedback")).to_be_visible()
+    expect(page.locator("#storage-location-host-close-feedback")).to_contain_text(
+        "安全退出未能启动"
+    )
 
 
 @pytest.mark.frontend

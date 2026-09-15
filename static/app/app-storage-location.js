@@ -503,6 +503,7 @@
                 // A just-entered maintenance page may beat the main-process phase
                 // notification by one IPC turn. Fail closed unless the backend has
                 // explicitly reported that migration stopped at rollback_required.
+                reportHostCloseFailure();
                 return;
             }
             if (shouldRequestAppShutdownBeforeClose() && !state.shutdownRequested) {
