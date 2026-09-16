@@ -642,6 +642,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
         return None
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", record(True))
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -655,7 +656,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     result = await O.oauth_logout_endpoint(object())
 
     assert result == {"ok": True}
-    assert len(worker_threads) == 3
+    assert len(worker_threads) == 4
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
@@ -697,6 +698,7 @@ async def test_oauth_logout_revokes_against_saved_issuer(
         revoked.append(kwargs)
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -779,6 +781,7 @@ def test_oauth_logout_reports_local_credential_clear_failure(oauth_app, monkeypa
         return None
 
     monkeypatch.setattr(O, "_revoke_tokens_best_effort", no_revoke)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
     response = client.post("/api/card-drop/oauth/logout")
@@ -1168,6 +1171,7 @@ def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     real_write = C._write_private_json
 
@@ -1264,12 +1268,12 @@ def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
     repair_read = threading.Event()
     continue_repair = threading.Event()
     worker_ids = {}
-    real_lock = C._social_session_lock
+    real_locks = C._social_session_locks
     real_read = C._read_json_dict
 
     @contextmanager
-    def pause_after_cleanup_unlock(path):
-        with real_lock(path):
+    def pause_after_cleanup_unlock(paths, **kwargs):
+        with real_locks(paths, **kwargs):
             yield
         if threading.get_ident() == worker_ids.get("cleanup"):
             cleanup_unlocked.set()
@@ -1290,7 +1294,7 @@ def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
         worker_ids["repair"] = threading.get_ident()
         C._persist_repaired_bind("rejected-token", {"bound": True})
 
-    monkeypatch.setattr(C, "_social_session_lock", pause_after_cleanup_unlock)
+    monkeypatch.setattr(C, "_social_session_locks", pause_after_cleanup_unlock)
     monkeypatch.setattr(C, "_read_json_dict", pause_after_repair_read)
     with ThreadPoolExecutor(max_workers=2) as pool:
         cleanup = pool.submit(clear_rejected)

@@ -1,8 +1,69 @@
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+
+@pytest.mark.unit
+def test_launcher_preserves_corrupt_root_state_when_committed_external_root_is_offline(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+    from utils.config_manager import ConfigManager, reset_config_manager_cache
+    from utils.storage.policy import save_storage_policy
+
+    standard_root = tmp_path / "anchor-base"
+    monkeypatch.setattr(
+        ConfigManager,
+        "_get_documents_directory",
+        lambda _self: tmp_path / "runtime-parent",
+    )
+    monkeypatch.setattr(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        lambda _self: [standard_root],
+    )
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    exported = []
+    monkeypatch.setattr(
+        launcher,
+        "export_storage_layout_to_env",
+        lambda layout: exported.append(layout),
+    )
+
+    initial_manager = ConfigManager("N.E.K.O")
+    unavailable_root = tmp_path / "offline-selected" / "N.E.K.O"
+    save_storage_policy(
+        initial_manager,
+        selected_root=unavailable_root,
+        selection_source="custom",
+    )
+    root_state_path = initial_manager.anchor_root / "state" / "root_state.json"
+    root_state_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_bytes = b'{"mode":'
+    root_state_path.write_bytes(corrupt_bytes)
+    reset_config_manager_cache()
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        reset_config_manager_cache()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_status_unavailable"
+    assert result["layout"]["source"] == "storage_status_unavailable_recovery"
+    assert exported == [result["layout"]]
+    assert root_state_path.read_bytes() == corrupt_bytes
 
 
 @pytest.mark.unit
@@ -129,6 +190,62 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
 
 
 @pytest.mark.unit
+def test_launcher_phase0_state_failure_starts_recovery_surface_without_rewriting_state(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    started = []
+    set_root_mode_calls = []
+    reported_failures = []
+    events = []
+    browser_checks = []
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setenv("NEKO_LAUNCH_MODE", "")
+    monkeypatch.setattr(launcher.os, "_exit", lambda _code: None)
+    monkeypatch.setattr(launcher, "freeze_support", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+    monkeypatch.setattr(launcher, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(launcher, "_acquire_single_instance_ownership", lambda: True)
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: None)
+    monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
+    monkeypatch.setattr(launcher, "publish_single_instance_state", lambda **_kwargs: None)
+    monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
+    monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
+    monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
+    monkeypatch.setattr(
+        launcher,
+        "_prepare_cloudsave_runtime_for_launch",
+        lambda: (_ for _ in ()).throw(ValueError("malformed root state")),
+    )
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "set_root_mode",
+        lambda *_args, **_kwargs: set_root_mode_calls.append((_args, _kwargs)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "report_startup_failure",
+        lambda message, show_dialog=True: reported_failures.append((message, show_dialog)),
+    )
+    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: browser_checks.append(True))
+    monkeypatch.setattr(launcher, "_select_launcher_mode", lambda: ("merged", "configured_merged"))
+    monkeypatch.setattr(launcher, "run_merged_servers", lambda: started.append(True) or 0)
+
+    assert launcher.main() == 0
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_status_unavailable"
+    assert started == [True]
+    assert set_root_mode_calls == []
+    assert browser_checks == []
+    assert reported_failures == []
+    assert events[-1][0] == "storage_migration_failed"
+    assert events[-1][1]["error_code"] == "storage_status_unavailable"
+
+
+@pytest.mark.unit
 def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch, tmp_path):
     from launcher_core import runtime as launcher
 
@@ -143,6 +260,7 @@ def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch,
     monkeypatch.delenv("NEKO_STORAGE_SELECTED_ROOT", raising=False)
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
     monkeypatch.delenv("NEKO_STORAGE_CLOUDSAVE_ROOT", raising=False)
+    monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
 
     monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: reset_calls.append("reset"))
     monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
@@ -189,6 +307,729 @@ def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch,
             launcher.os.environ.pop("NEKO_STORAGE_CLOUDSAVE_ROOT", None)
         else:
             launcher.os.environ["NEKO_STORAGE_CLOUDSAVE_ROOT"] = original_cloudsave_env
+
+
+@pytest.mark.unit
+def test_launcher_promotes_first_run_layout_to_pre_phase0_limited_generation(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+
+    default_root = (tmp_path / "default" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(app_docs_dir=default_root)
+    layout = {
+        "selected_root": str(default_root),
+        "anchor_root": str(anchor_root),
+        "cloudsave_root": str(anchor_root / "cloudsave"),
+        "source": "runtime_default",
+    }
+    # Register this key with monkeypatch even when it starts absent: launcher
+    # code writes it directly, and the storage-root guard verifies teardown.
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "get_config_manager",
+        lambda _app_name, **_kwargs: config_manager,
+    )
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda _manager: None)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is False
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "selection_required"
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "selection_required"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("checkpoint_status", (None, "completed", "failed"))
+def test_launcher_blocks_phase0_when_restart_intent_lost_its_checkpoint(
+    monkeypatch,
+    tmp_path,
+    checkpoint_status,
+):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "last_known_good_root": str(selected_root),
+        "last_migration_result": f"restart_pending:{selected_root}",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        load_root_state=lambda: dict(root_state),
+    )
+    layout = launcher.build_storage_layout(
+        selected_root=selected_root,
+        anchor_root=anchor_root,
+        source="policy",
+    )
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "get_config_manager",
+        lambda *_args, **_kwargs: config_manager,
+    )
+    old_checkpoint = (
+        None
+        if checkpoint_status is None
+        else {
+            "status": checkpoint_status,
+            "source_root": str(selected_root),
+            "target_root": str(tmp_path / "old-target" / "N.E.K.O"),
+        }
+    )
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _manager: old_checkpoint,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(
+        launcher,
+        "_consume_storage_rebind_handoff",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
+
+
+@pytest.mark.unit
+def test_launcher_consumes_cold_rebind_handoff_before_normal_startup(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "current_root": str(selected_root),
+        "last_migration_source": str(selected_root),
+        "last_migration_result": f"restart_rebind:{selected_root}",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        load_root_state=lambda: dict(root_state),
+        save_root_state=lambda payload: (root_state.clear(), root_state.update(payload)),
+    )
+    layout = {
+        "selected_root": str(selected_root),
+        "anchor_root": str(anchor_root),
+        "cloudsave_root": str(anchor_root / "cloudsave"),
+        "source": "policy",
+    }
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda _manager: None)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is False
+    assert result["startup_limited"] is False
+    assert root_state["mode"] == launcher.ROOT_MODE_NORMAL
+    assert root_state["current_root"] == str(selected_root)
+    assert root_state["last_known_good_root"] == str(selected_root)
+    assert root_state["last_migration_result"] == f"completed_rebind:{selected_root}"
+
+
+@pytest.mark.unit
+def test_launcher_keeps_cold_rebind_handoff_limited_when_consume_fails(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_source": str(selected_root),
+        "last_migration_result": f"restart_rebind:{selected_root}",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        load_root_state=lambda: dict(root_state),
+        save_root_state=lambda _payload: (_ for _ in ()).throw(OSError("read only")),
+    )
+    layout = {
+        "selected_root": str(selected_root),
+        "anchor_root": str(anchor_root),
+        "cloudsave_root": str(anchor_root / "cloudsave"),
+        "source": "policy",
+    }
+    events = []
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda _manager: None)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_status_unavailable"
+    assert root_state["mode"] == launcher.ROOT_MODE_MAINTENANCE_READONLY
+    assert root_state["last_migration_result"] == f"restart_rebind:{selected_root}"
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_status_unavailable"
+    assert events[-1][1]["error_code"] == "storage_rebind_finalize_failed"
+
+
+@pytest.mark.unit
+def test_launcher_policy_corruption_starts_anchor_only_recovery_generation(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+    from utils.storage_policy import StoragePolicyError
+
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    recovery_manager = SimpleNamespace(
+        app_docs_dir=anchor_root,
+        app_name="N.E.K.O",
+    )
+    manager_calls = []
+
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        "NEKO_STORAGE_RECOVERY_MODE",
+    ):
+        monkeypatch.setenv(key, "")
+
+    def _get_manager(*_args, **_kwargs):
+        manager_calls.append(True)
+        if len(manager_calls) == 1:
+            raise StoragePolicyError("malformed")
+        return recovery_manager
+
+    monkeypatch.setattr(launcher, "get_config_manager", _get_manager)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "compute_anchor_root", lambda *_args, **_kwargs: anchor_root)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not read a checkpoint through an untrusted policy")
+        ),
+    )
+    events = []
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_policy_unavailable"
+    assert result["layout"]["selected_root"] == str(anchor_root)
+    assert result["layout"]["anchor_root"] == str(anchor_root)
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_policy_unavailable"
+    assert launcher.os.environ["NEKO_STORAGE_SELECTED_ROOT"] == str(anchor_root)
+    assert events[-1][0] == "storage_migration_failed"
+    assert events[-1][1]["error_code"] == "storage_policy_unavailable"
+
+
+@pytest.mark.unit
+def test_launcher_checkpoint_corruption_starts_committed_layout_recovery_generation(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(app_docs_dir=selected_root)
+    layout = {
+        "selected_root": str(selected_root),
+        "anchor_root": str(anchor_root),
+        "cloudsave_root": str(anchor_root / "cloudsave"),
+        "source": "policy",
+    }
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        "NEKO_STORAGE_RECOVERY_MODE",
+    ):
+        monkeypatch.setenv(key, "")
+
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("malformed checkpoint")),
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda _manager: layout)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not execute an unreadable checkpoint")
+        ),
+    )
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_status_unavailable"
+    assert result["layout"] == layout
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_status_unavailable"
+    assert launcher.os.environ["NEKO_STORAGE_SELECTED_ROOT"] == str(selected_root)
+
+
+@pytest.mark.unit
+def test_launcher_policy_corruption_during_checkpoint_recovery_uses_anchor_only_generation(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+    from utils.storage_policy import StoragePolicyError
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    committed_manager = SimpleNamespace(app_docs_dir=selected_root)
+    recovery_manager = SimpleNamespace(app_docs_dir=anchor_root, app_name="N.E.K.O")
+    manager_calls = []
+
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        "NEKO_STORAGE_RECOVERY_MODE",
+    ):
+        monkeypatch.setenv(key, "")
+
+    def _get_manager(*_args, **_kwargs):
+        manager_calls.append(True)
+        return committed_manager if len(manager_calls) == 1 else recovery_manager
+
+    monkeypatch.setattr(launcher, "get_config_manager", _get_manager)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "compute_anchor_root", lambda *_args, **_kwargs: anchor_root)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("malformed checkpoint")),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: (_ for _ in ()).throw(StoragePolicyError("changed after first read")),
+    )
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["limited_mode_reason"] == "storage_policy_unavailable"
+    assert result["layout"]["selected_root"] == str(anchor_root)
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_policy_unavailable"
+
+
+@pytest.mark.unit
+def test_launcher_policy_corruption_during_final_layout_resolution_uses_anchor_only_generation(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+    from utils.storage_policy import StoragePolicyError
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    committed_manager = SimpleNamespace(app_docs_dir=selected_root)
+    recovery_manager = SimpleNamespace(app_docs_dir=anchor_root, app_name="N.E.K.O")
+    managers = iter((committed_manager, committed_manager, recovery_manager))
+
+    for key in (
+        "NEKO_STORAGE_SELECTED_ROOT",
+        "NEKO_STORAGE_ANCHOR_ROOT",
+        "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        "NEKO_STORAGE_RECOVERY_MODE",
+    ):
+        monkeypatch.setenv(key, "")
+
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: next(managers))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "compute_anchor_root", lambda *_args, **_kwargs: anchor_root)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda *_args, **_kwargs: {"attempted": False, "completed": False},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: (_ for _ in ()).throw(StoragePolicyError("changed before final routing")),
+    )
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["limited_mode_reason"] == "storage_policy_unavailable"
+    assert result["layout"]["selected_root"] == str(anchor_root)
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_policy_unavailable"
+
+
+@pytest.mark.unit
+def test_launcher_forces_source_layout_when_recovery_metadata_is_degraded(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    source_root = (tmp_path / "source" / "N.E.K.O").resolve()
+    target_root = (tmp_path / "target" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(
+        app_name="N.E.K.O",
+        app_docs_dir=target_root,
+        _get_standard_data_directory_candidates=lambda: [anchor_root.parent],
+    )
+    exported = []
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _manager: {
+            "status": "committing",
+            "source_root": str(source_root),
+            "target_root": str(target_root),
+        },
+    )
+    monkeypatch.setattr(launcher, "is_storage_migration_pending", lambda _payload: True)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {
+            "attempted": True,
+            "completed": False,
+            "source_root": str(source_root),
+            "target_root": str(target_root),
+            "force_recovery_layout": True,
+            "payload": {
+                "status": "failed",
+                "source_root": str(source_root),
+                "target_root": str(target_root),
+                "recovery_metadata_degraded": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: (_ for _ in ()).throw(AssertionError("must not select stale target policy")),
+    )
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda layout: exported.append(layout))
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert result["layout"]["selected_root"] == str(source_root)
+    assert result["layout"]["source"] == "migration_failure_recovery"
+    assert exported == [result["layout"]]
+
+
+@pytest.mark.unit
+def test_launcher_keeps_terminal_migration_failure_behind_recovery_gate(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    source_root = (tmp_path / "source" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    checkpoint = {
+        "status": "failed",
+        "source_root": str(source_root),
+        "target_root": str(tmp_path / "target" / "N.E.K.O"),
+        "recovery_metadata_degraded": False,
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=source_root,
+        load_root_state=lambda: {"mode": launcher.ROOT_MODE_DEFERRED_INIT},
+    )
+    exported = []
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda *_args, **_kwargs: checkpoint)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda *_args, **_kwargs: {
+            "attempted": False,
+            "completed": False,
+            "payload": checkpoint,
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: launcher.build_storage_layout(
+            selected_root=source_root,
+            anchor_root=anchor_root,
+            source="policy",
+        ),
+    )
+    monkeypatch.setattr(launcher, "_consume_storage_rebind_handoff", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda layout: exported.append(layout))
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is False
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert result["layout"]["selected_root"] == str(source_root)
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
+    assert exported == [result["layout"]]
+
+
+@pytest.mark.unit
+def test_launcher_does_not_relaunch_when_recovery_metadata_is_degraded(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    config_manager = SimpleNamespace(load_root_state=lambda: {"mode": launcher.ROOT_MODE_NORMAL})
+    released = []
+    spawned = []
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda _manager: None)
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "startup_blocked": True,
+            "layout": {"selected_root": "/source/N.E.K.O"},
+            "migration_result": {"attempted": True, "force_recovery_layout": True},
+        },
+    )
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: released.append(True))
+    monkeypatch.setattr(launcher, "_spawn_restarted_launcher", lambda: spawned.append(True))
+
+    assert launcher._maybe_schedule_storage_restart() is False
+    assert released == []
+    assert spawned == []
+
+
+@pytest.mark.unit
+def test_launcher_missing_recovery_source_starts_anchor_only_limited_generation(
+    monkeypatch,
+    tmp_path,
+):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(app_docs_dir=selected_root)
+    exported = []
+    events = []
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _manager: {"status": "failed", "recovery_metadata_degraded": True},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager: {
+            "attempted": False,
+            "completed": False,
+            "force_recovery_layout": True,
+            "payload": {"status": "failed", "recovery_metadata_degraded": True},
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: (_ for _ in ()).throw(
+            AssertionError("must not select an unproven policy root")
+        ),
+    )
+    monkeypatch.setattr(launcher, "compute_anchor_root", lambda *_args, **_kwargs: anchor_root)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda layout: exported.append(layout))
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is True
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "storage_status_unavailable"
+    assert result["layout"]["selected_root"] == str(anchor_root)
+    assert result["layout"]["source"] == "storage_status_unavailable_recovery"
+    assert exported == [result["layout"]]
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_status_unavailable"
+    assert events[-1][1]["error_code"] == "storage_recovery_source_unavailable"
+
+
+@pytest.mark.unit
+def test_launcher_starts_only_recovery_surface_when_recovery_metadata_is_degraded(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    prepared = []
+    started = []
+    failures = []
+    monkeypatch.setenv("NEKO_LAUNCH_MODE", "")
+    monkeypatch.setattr(launcher.os, "_exit", lambda _code: None)
+    monkeypatch.setattr(launcher, "_cleanup_done", False)
+    monkeypatch.setattr(launcher, "_owner_death_in_progress", False)
+    monkeypatch.setattr(launcher, "freeze_support", lambda: None)
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(launcher, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(launcher, "_acquire_single_instance_ownership", lambda: True)
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: None)
+    monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
+    monkeypatch.setattr(launcher, "publish_single_instance_state", lambda **_kwargs: None)
+    monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
+    monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "startup_blocked": True,
+            "startup_limited": True,
+            "limited_mode_reason": "recovery_required",
+            "layout": {"selected_root": "/source/N.E.K.O"},
+        },
+    )
+    monkeypatch.setattr(launcher, "_prepare_cloudsave_runtime_for_launch", lambda: prepared.append(True))
+    monkeypatch.setattr(launcher, "_select_launcher_mode", lambda: ("merged", "configured_merged"))
+    monkeypatch.setattr(launcher, "run_merged_servers", lambda: started.append("recovery") or 0)
+    monkeypatch.setattr(launcher, "report_startup_failure", lambda message, **_kwargs: failures.append(message))
+    monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
+    monkeypatch.setattr(launcher, "SERVERS", [])
+
+    assert launcher.main() == 0
+    assert prepared == []
+    assert started == ["recovery"]
+    assert failures == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("migration_result", "terminal_event", "terminal_field"),
+    [
+        (
+            {
+                "attempted": True,
+                "completed": True,
+                "source_root": "/source/N.E.K.O",
+                "target_root": "/target/N.E.K.O",
+            },
+            "storage_migration_completed",
+            ("source_root", "/source/N.E.K.O"),
+        ),
+        (
+            {
+                "attempted": True,
+                "completed": False,
+                "error_code": "verification_failed",
+                "error_message": "digest mismatch",
+            },
+            "storage_migration_failed",
+            ("error_message", "digest mismatch"),
+        ),
+    ],
+)
+def test_launcher_reports_pending_storage_migration_progress(
+    monkeypatch,
+    migration_result,
+    terminal_event,
+    terminal_field,
+):
+    from launcher_core import runtime as launcher
+
+    config_manager = SimpleNamespace(app_docs_dir=Path("/source/N.E.K.O"))
+    events = []
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "clear_storage_layout_env", lambda: None)
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _config_manager: {
+            "status": "pending",
+            "source_root": "/source/N.E.K.O",
+            "target_root": "/target/N.E.K.O",
+        },
+    )
+    monkeypatch.setattr(launcher, "is_storage_migration_pending", lambda _payload: True)
+    monkeypatch.setattr(launcher, "run_pending_storage_migration", lambda _manager: migration_result)
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: {
+            "selected_root": "/target/N.E.K.O",
+            "anchor_root": "/anchor/N.E.K.O",
+            "cloudsave_root": "/anchor/N.E.K.O/cloudsave",
+        },
+    )
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda _layout: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+
+    launcher._resolve_storage_layout_for_launch()
+
+    assert [event for event, _payload in events] == [
+        "storage_migration_processing",
+        terminal_event,
+    ]
+    assert events[1][1][terminal_field[0]] == terminal_field[1]
 
 
 @pytest.mark.unit
@@ -470,6 +1311,71 @@ def test_start_server_never_reuses_a_partial_existing_service(monkeypatch):
 
 
 @pytest.mark.unit
+def test_start_server_delivers_internal_control_token_as_private_process_argument(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    captured = {}
+
+    class _Process:
+        pid = 123
+
+        def __init__(self, *, target, args, daemon):
+            captured.update(target=target, args=args, daemon=daemon)
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(launcher, "Process", _Process)
+    monkeypatch.setattr(launcher, "Event", object)
+    monkeypatch.setattr(launcher, "check_port", lambda _port: False)
+    monkeypatch.setattr(launcher, "get_internal_http_auth_token", lambda: "t" * 43)
+
+    server = {
+        "name": "Memory Server",
+        "module": "memory_server",
+        "port": 43112,
+    }
+
+    assert launcher.start_server(server) is True
+    assert captured["target"] is launcher.run_memory_server
+    assert isinstance(captured["args"][-1], bytearray)
+    assert captured["args"][-1] == b"\0" * 43
+    assert captured["daemon"] is False
+    assert captured["started"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "runner_name",
+    ("run_memory_server", "run_agent_server", "run_main_server"),
+)
+def test_launcher_owned_server_installs_control_token_before_child_setup(
+    monkeypatch,
+    runner_name,
+):
+    from launcher_core import runtime as launcher
+
+    class _StopBeforeImports(BaseException):
+        pass
+
+    installed = []
+
+    monkeypatch.setattr(launcher, "install_internal_http_auth_token", installed.append)
+    monkeypatch.setattr(
+        launcher,
+        "_apply_child_process_signal_policy",
+        lambda: (_ for _ in ()).throw(_StopBeforeImports),
+    )
+
+    token_buffer = bytearray(b"c" * 43)
+    with pytest.raises(_StopBeforeImports):
+        getattr(launcher, runner_name)(None, None, None, None, token_buffer)
+
+    assert installed == ["c" * 43]
+    assert token_buffer == b"\0" * 43
+
+
+@pytest.mark.unit
 def test_merged_health_requires_expected_services_and_current_instance(monkeypatch):
     from launcher_core import runtime as launcher
 
@@ -681,18 +1587,28 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
     emitted_events = []
     released = {"called": False}
     spawned = {"called": False}
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_result": "restart_rebind:/tmp/original-root/N.E.K.O",
+    }
 
     config_manager = SimpleNamespace(
-        load_root_state=lambda: {
-            "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
-            "last_migration_result": "restart_rebind:/tmp/original-root/N.E.K.O",
-        }
+        app_docs_dir=Path("/tmp/original-root/N.E.K.O"),
+        anchor_root=Path("/tmp/anchor-root/N.E.K.O"),
+        load_root_state=lambda: dict(root_state),
+        save_root_state=lambda payload: (root_state.clear(), root_state.update(payload)),
     )
 
-    monkeypatch.setattr(
-        launcher,
-        "_resolve_storage_layout_for_launch",
-        lambda: {
+    def _resolve_after_consuming_rebind():
+        root_state.update(
+            {
+                "mode": launcher.ROOT_MODE_NORMAL,
+                "current_root": "/tmp/original-root/N.E.K.O",
+                "last_known_good_root": "/tmp/original-root/N.E.K.O",
+                "last_migration_result": "completed_rebind:/tmp/original-root/N.E.K.O",
+            }
+        )
+        return {
             "layout": {
                 "selected_root": "/tmp/original-root/N.E.K.O",
                 "anchor_root": "/tmp/anchor-root/N.E.K.O",
@@ -702,9 +1618,15 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
                 "attempted": False,
                 "completed": False,
             },
-        },
+        }
+
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        _resolve_after_consuming_rebind,
     )
     monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         launcher,
         "emit_frontend_event",
@@ -718,6 +1640,8 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
     assert result is True
     assert released["called"] is True
     assert spawned["called"] is True
+    assert root_state["mode"] == launcher.ROOT_MODE_NORMAL
+    assert root_state["last_migration_result"] == "completed_rebind:/tmp/original-root/N.E.K.O"
     assert emitted_events == [
         (
             "storage_migration_restart",
@@ -735,6 +1659,60 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
             },
         )
     ]
+
+
+@pytest.mark.unit
+def test_launcher_keeps_rebind_blocked_when_handoff_resolution_fails(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    emitted_events = []
+    released = {"called": False}
+    spawned = {"called": False}
+    root_state = {
+        "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+        "last_migration_result": "restart_rebind:/tmp/runtime/N.E.K.O",
+        "last_migration_source": "/tmp/runtime/N.E.K.O",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/runtime/N.E.K.O"),
+        anchor_root=Path("/tmp/anchor/N.E.K.O"),
+        load_root_state=lambda: dict(root_state),
+    )
+
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "load_storage_migration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "layout": {"selected_root": "/tmp/runtime/N.E.K.O"},
+            "migration_result": {"attempted": False, "completed": False},
+            "startup_blocked": True,
+            "startup_limited": True,
+            "limited_mode_reason": "storage_status_unavailable",
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event_type, payload=None: emitted_events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "release_single_instance_ownership",
+        lambda: released.__setitem__("called", True),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_spawn_restarted_launcher",
+        lambda: spawned.__setitem__("called", True),
+    )
+
+    assert launcher._maybe_schedule_storage_restart() is False
+    assert root_state["mode"] == launcher.ROOT_MODE_MAINTENANCE_READONLY
+    assert released["called"] is False
+    assert spawned["called"] is False
+    assert emitted_events == []
 
 
 @pytest.mark.unit
@@ -778,6 +1756,133 @@ def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovere
     result = launcher._maybe_schedule_storage_restart()
 
     assert result is True
+    assert released["called"] is True
+    assert spawned["called"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("checkpoint_status", "error_code"),
+    (
+        ("rollback_required", "rollback_failed"),
+        ("recovery_required", "source_recovery_unverifiable"),
+    ),
+)
+def test_launcher_does_not_relaunch_recovery_generation_when_recovery_still_fails(
+    monkeypatch,
+    checkpoint_status,
+    error_code,
+):
+    from launcher_core import runtime as launcher
+
+    released = {"called": False}
+    spawned = {"called": False}
+    events = []
+    config_manager = SimpleNamespace(
+        load_root_state=lambda: {
+            # Even if root_state persistence failed and the old mode survived,
+            # the pre-existing recovery checkpoint must stop another handoff.
+            "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+            "last_migration_result": f"failed:{error_code}",
+        }
+    )
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _config_manager: {
+            "status": checkpoint_status,
+            "source_root": "/tmp/source/N.E.K.O",
+            "target_root": "/tmp/target/N.E.K.O",
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "layout": {"selected_root": "/tmp/source/N.E.K.O"},
+            "migration_result": {
+                "attempted": True,
+                "completed": False,
+                "error_code": error_code,
+                "payload": {
+                    "status": checkpoint_status,
+                    "source_root": "/tmp/source/N.E.K.O",
+                    "target_root": "/tmp/target/N.E.K.O",
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *args: events.append(args))
+    monkeypatch.setattr(
+        launcher,
+        "release_single_instance_ownership",
+        lambda: released.__setitem__("called", True),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_spawn_restarted_launcher",
+        lambda: spawned.__setitem__("called", True),
+    )
+
+    assert launcher._maybe_schedule_storage_restart() is False
+    assert released["called"] is False
+    assert spawned["called"] is False
+    assert events == []
+
+
+@pytest.mark.unit
+def test_launcher_allows_one_recovery_handoff_after_requested_migration_rollback_fails(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    released = {"called": False}
+    spawned = {"called": False}
+    config_manager = SimpleNamespace(
+        load_root_state=lambda: {
+            "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+            "last_migration_result": "restart_pending:/tmp/target/N.E.K.O",
+        }
+    )
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda _config_manager: {
+            "status": "pending",
+            "source_root": "/tmp/source/N.E.K.O",
+            "target_root": "/tmp/target/N.E.K.O",
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "layout": {"selected_root": "/tmp/source/N.E.K.O"},
+            "migration_result": {
+                "attempted": True,
+                "completed": False,
+                "error_code": "rollback_failed",
+                "payload": {
+                    "status": "rollback_required",
+                    "source_root": "/tmp/source/N.E.K.O",
+                    "target_root": "/tmp/target/N.E.K.O",
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        launcher,
+        "release_single_instance_ownership",
+        lambda: released.__setitem__("called", True),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_spawn_restarted_launcher",
+        lambda: spawned.__setitem__("called", True),
+    )
+
+    assert launcher._maybe_schedule_storage_restart() is True
     assert released["called"] is True
     assert spawned["called"] is True
 

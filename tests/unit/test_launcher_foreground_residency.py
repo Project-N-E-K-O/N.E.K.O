@@ -12,6 +12,8 @@ Two kinds of test here, on purpose:
 """
 
 import atexit
+import io
+import json
 import os
 import re
 import signal
@@ -37,6 +39,38 @@ def _preset_event() -> threading.Event:
     event = threading.Event()
     event.set()
     return event
+
+
+@pytest.mark.unit
+def test_frontend_event_is_one_framed_write_after_unterminated_worker_output(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    class RecordingStdout(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        def write(self, text):
+            self.writes.append(text)
+            return super().write(text)
+
+    stdout = RecordingStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    stdout.write("unterminated worker output")
+    writes_before_event = len(stdout.writes)
+    launcher.emit_frontend_event("startup_begin", {"instance_id": "framed-instance"})
+
+    event_writes = stdout.writes[writes_before_event:]
+    assert len(event_writes) == 1
+    assert event_writes[0].startswith("\nNEKO_EVENT ")
+    assert event_writes[0].endswith("\n")
+    lines = stdout.getvalue().splitlines()
+    assert lines[0] == "unterminated worker output"
+    assert lines[1].startswith("NEKO_EVENT ")
+    envelope = json.loads(lines[1].removeprefix("NEKO_EVENT "))
+    assert envelope["source"] == "neko_launcher"
+    assert envelope["event"] == "startup_begin"
+    assert envelope["payload"]["instance_id"] == "framed-instance"
 
 @pytest.fixture(autouse=True)
 def restore_launcher_module_state():
@@ -1055,8 +1089,10 @@ def test_single_instance_acquisition_publishes_the_winner(monkeypatch):
 
     try:
         assert launcher._acquire_single_instance_ownership() is True
+        assert os.environ["NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"] == launcher.INSTANCE_ID
     finally:
         launcher._single_instance_handle = None
+        os.environ.pop("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", None)
 
     role = [p["role"] for e, p in events if e == "single_instance"]
     assert role == ["owner"]
@@ -1078,8 +1114,10 @@ def test_losing_the_lock_hands_the_frontend_the_winner_instead_of_a_hint(monkeyp
                         lambda: (launcher.single_instance.OWNER_OWNED, winner))
     monkeypatch.setattr(launcher.single_instance, "read_owner_record", lambda: winner)
     monkeypatch.setattr(launcher, "_parent_death_guard", None)
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "stale-proof")
 
     assert launcher._acquire_single_instance_ownership() is False
+    assert "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN" not in os.environ
 
     by_event = {e: p for e, p in events}
     assert by_event["single_instance"]["role"] == "duplicate"
@@ -1101,6 +1139,8 @@ def test_unreadable_lock_does_not_block_startup(monkeypatch):
 
     monkeypatch.setattr(launcher.single_instance, "acquire_single_instance", _raise)
     monkeypatch.setattr(launcher, "_parent_death_guard", None)
+    monkeypatch.setenv("NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN", "stale-proof")
 
     assert launcher._acquire_single_instance_ownership() is True
+    assert "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN" not in os.environ
     assert [p["role"] for e, p in events if e == "single_instance"] == ["unverified"]

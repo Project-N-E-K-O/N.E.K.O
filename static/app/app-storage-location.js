@@ -6,6 +6,11 @@
     var STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
     var STORAGE_COMPLETION_NOTICE_DISMISSED_KEY = 'neko.storageLocation.completionNoticeDismissedKey.v1';
     var HOME_TUTORIAL_STARTUP_RELEASE_EVENT = 'neko:startup-greeting-release';
+    var STORAGE_STATUS_REQUEST_TIMEOUT_MS = 4000;
+    var STORAGE_EXIT_REQUEST_TIMEOUT_MS = 8000;
+    var STORAGE_MUTATION_REQUEST_TIMEOUT_MS = 15000;
+    var STORAGE_DIRECTORY_PICKER_TIMEOUT_MS = 125000;
+    var STORAGE_HOST_CAPABILITY_TIMEOUT_MS = 3000;
     var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
         'storage-location-' + Date.now() + '-' + Math.random().toString(36).slice(2)
     );
@@ -19,8 +24,13 @@
         initialized: false,
         initPromise: null,
         submitting: false,
+        sentinelFlowInFlight: false,
+        sentinelFlowGeneration: 0,
+        closeAttemptInFlight: false,
+        shutdownRequested: false,
         phase: 'hidden',
         systemStatus: null,
+        csrfToken: '',
         startupDecision: null,
         bootstrap: null,
         overlay: null,
@@ -35,6 +45,13 @@
         maintenanceProgressLabel: null,
         maintenanceProgressValue: null,
         maintenanceProgressSteps: [],
+        maintenanceFallback: null,
+        maintenanceFallbackMessage: null,
+        maintenanceRetryButton: null,
+        maintenanceQuitButton: null,
+        maintenanceRollbackRequired: false,
+        maintenanceStatusUnavailable: false,
+        maintenanceAwaitingShutdown: false,
         lastMaintenanceProgressPayload: null,
         // 记录最近一次 setSelectionStatus / showError 时使用的 i18n key（如有）。
         // rebuildModalForLocale 在切语言后会优先按 key 重新翻译，避免快照里塞回旧 locale 的字面文案。
@@ -44,11 +61,18 @@
         errorTextI18nKey: '',
         errorTextI18nFallback: '',
         maintenancePollPromise: null,
+        maintenancePollGeneration: 0,
+        maintenanceEntryInstanceId: '',
+        maintenanceObservedMigrationBlock: false,
+        maintenanceRestartOperationId: '',
+        maintenanceOutcomeUnknown: false,
+        maintenanceRecoveryActionInFlight: false,
         completionPollTimer: null,
         completionPollAttempts: 0,
         completionNotice: null,
         completionNoticeStartupReleased: false,
         completionNoticeDeferredKey: '',
+        completionCleanupBlockedKey: '',
         completionCard: null,
         completionTitle: null,
         completionTarget: null,
@@ -60,6 +84,9 @@
         selectionIntroView: null,
         selectionView: null,
         errorView: null,
+        hostCloseFeedback: null,
+        hostCloseFeedbackVisible: false,
+        hostCloseFeedbackKind: '',
         banner: null,
         recommendedPath: null,
         currentPath: null,
@@ -106,6 +133,75 @@
     }
 
     state.startupDecision = createDeferred();
+
+    function storageRequestTimeoutError() {
+        var error = new Error('storage request timed out');
+        error.name = 'TimeoutError';
+        return error;
+    }
+
+    function waitBeforeDeadline(promise, deadline, controller) {
+        var remainingMs = deadline - Date.now();
+        if (!(remainingMs > 0)) {
+            if (controller) controller.abort();
+            return Promise.reject(storageRequestTimeoutError());
+        }
+
+        var timer = null;
+        var timeoutPromise = new Promise(function (_, reject) {
+            timer = window.setTimeout(function () {
+                if (controller) controller.abort();
+                reject(storageRequestTimeoutError());
+            }, remainingMs);
+        });
+        return Promise.race([promise, timeoutPromise]).finally(function () {
+            if (timer !== null) window.clearTimeout(timer);
+        });
+    }
+
+    async function fetchWithTimeout(url, options, timeoutMs) {
+        if (!(timeoutMs > 0)) return fetch(url, options);
+
+        var deadline = Date.now() + timeoutMs;
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var requestOptions = Object.assign({}, options || {});
+        if (controller) requestOptions.signal = controller.signal;
+        var response = await waitBeforeDeadline(fetch(url, requestOptions), deadline, controller);
+
+        // fetch() resolves as soon as the response headers arrive. Keep the same absolute
+        // deadline for response-body parsing so a half-open backend cannot freeze the gate.
+        if (response && typeof response.json === 'function') {
+            var parseJson = response.json.bind(response);
+            response.json = function () {
+                return waitBeforeDeadline(parseJson(), deadline, controller);
+            };
+        }
+        return response;
+    }
+
+    function captureStorageCsrfToken(payload) {
+        var token = payload && typeof payload.autostart_csrf_token === 'string'
+            ? payload.autostart_csrf_token.trim()
+            : '';
+        if (token) state.csrfToken = token;
+    }
+
+    function storageMutationHeaders(headers) {
+        var result = Object.assign({}, headers || {});
+        if (state.csrfToken) result['X-CSRF-Token'] = state.csrfToken;
+        return result;
+    }
+
+    async function ensureStorageCsrfToken() {
+        if (state.csrfToken) return;
+        var response = await fetchWithTimeout('/api/storage/location/status', {
+            cache: 'no-store',
+            headers: { 'Accept': 'application/json' }
+        }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
+        if (!response.ok) throw new Error('storage csrf bootstrap failed: ' + response.status);
+        captureStorageCsrfToken(await response.json());
+        if (!state.csrfToken) throw new Error('storage csrf token is unavailable');
+    }
 
     function translate(key, fallback) {
         try {
@@ -249,14 +345,15 @@
     }
 
     async function requestStorageLocationAppShutdown() {
-        var response = await fetch('/api/storage/location/exit', {
+        await ensureStorageCsrfToken();
+        var response = await fetchWithTimeout('/api/storage/location/exit', {
             method: 'POST',
             cache: 'no-store',
-            headers: {
+            headers: storageMutationHeaders({
                 'Accept': 'application/json',
                 'X-Neko-Storage-Action': 'exit'
-            }
-        });
+            })
+        }, STORAGE_EXIT_REQUEST_TIMEOUT_MS);
 
         var payload = null;
         try {
@@ -271,33 +368,425 @@
                 )
             );
         }
+        state.shutdownRequested = true;
+        setSubmitting(state.submitting);
     }
 
     async function closeHostWindowOnly() {
         var host = window.nekoHost || {};
         if (host && typeof host.closeWindow === 'function') {
             try {
-                var result = await host.closeWindow();
-                if (result && result.ok === true) return;
-            } catch (_) {}
+                var result = await waitBeforeDeadline(
+                    Promise.resolve(host.closeWindow()),
+                    Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                    null
+                );
+                return !!(result && result.ok === true);
+            } catch (error) {
+                console.warn('[storage-location] host close failed', error);
+                return false;
+            }
         }
 
         try {
             window.close();
-        } catch (_) {}
+            return window.closed === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function renderHostCloseFeedback() {
+        if (!state.hostCloseFeedback) return;
+        state.hostCloseFeedback.hidden = !state.hostCloseFeedbackVisible;
+        if (!state.hostCloseFeedbackVisible) return;
+        var manualCloseRequired = state.hostCloseFeedbackKind === 'manual_close_required';
+        state.hostCloseFeedback.textContent = translate(
+            manualCloseRequired
+                ? 'storage.manualWindowCloseRequired'
+                : 'storage.maintenanceSafeQuitFailed',
+            manualCloseRequired
+                ? '受控关闭已请求，但浏览器无法自动关闭此窗口。请使用浏览器或系统的关闭按钮；无需再次请求退出。'
+                : '安全退出未能启动，请重试；应用不会在迁移状态不明时强制关闭。'
+        );
+    }
+
+    function clearHostCloseFailure() {
+        state.hostCloseFeedbackVisible = false;
+        state.hostCloseFeedbackKind = '';
+        renderHostCloseFeedback();
+    }
+
+    function reportHostCloseFailure(manualCloseRequired) {
+        state.hostCloseFeedbackVisible = true;
+        state.hostCloseFeedbackKind = manualCloseRequired
+            ? 'manual_close_required'
+            : 'host_close_failed';
+        renderHostCloseFeedback();
     }
 
     async function requestHostWindowClose() {
-        if (state.submitting) return;
-        if (shouldRequestAppShutdownBeforeClose()) {
-            try {
-                await requestStorageLocationAppShutdown();
-            } catch (error) {
-                console.warn('[storage-location] app shutdown request before close failed', error);
+        if (state.submitting
+            || state.closeAttemptInFlight
+            || state.maintenanceRecoveryActionInFlight) return;
+        var closingPhase = state.phase;
+        var resumeSentinelAfterClose = state.sentinelFlowInFlight
+            && closingPhase !== 'maintenance';
+        if (state.sentinelFlowInFlight) {
+            // Closing has priority over a slow startup probe. Invalidate the old
+            // generation synchronously so its eventual response cannot publish a
+            // ready state after shutdown starts.
+            state.sentinelFlowGeneration += 1;
+            state.sentinelFlowInFlight = false;
+        }
+        var closingMaintenanceView = state.phase === 'maintenance';
+        if (closingMaintenanceView) {
+            // Invalidate every in-flight maintenance response before querying the
+            // host or backend. A response that was issued before a close attempt
+            // must never reload the page or reopen selection after shutdown begins.
+            state.maintenancePollGeneration += 1;
+        }
+        state.closeAttemptInFlight = true;
+        var closeAccepted = false;
+        setSubmitting(state.submitting);
+        try {
+            clearHostCloseFailure();
+            var host = window.nekoHost || {};
+            var hasHostRecoveryCapability = typeof host.getBackendRecoveryState === 'function';
+            var hostRecoveryState = await getHostBackendRecoveryState();
+            if (state.phase === 'maintenance' && hasHostRecoveryCapability && !hostRecoveryState) {
+                // An installed host bridge that cannot report ownership is an
+                // unknown state, not permission to interrupt a possible migration.
+                reportHostCloseFailure();
                 return;
             }
+            if (hostRecoveryState && (
+                hostRecoveryState.state === 'active'
+                || hostRecoveryState.state === 'transient'
+            )) {
+                // Do not ask the backend to exit while a migration generation is
+                // active. The intentionally non-dismissible gate protects the copy
+                // and owner handoff from a renderer-triggered interruption.
+                setMaintenanceFallbackState(hostRecoveryState);
+                return;
+            }
+            if (hostRecoveryState && hostRecoveryState.state === 'terminal') {
+                closeAccepted = await requestTerminalHostQuit();
+                return;
+            }
+            if (state.shutdownRequested
+                && hostRecoveryState
+                && hostRecoveryState.state === 'ready') {
+                // The backend already accepted its controlled shutdown. A later
+                // ready host snapshot can only authorize another window-close
+                // attempt; never resend /exit or let the stale maintenance phase
+                // turn the recovery gate into a permanent trap.
+                closeAccepted = await closeHostWindowOnly();
+                if (!closeAccepted) {
+                    reportHostCloseFailure(typeof host.closeWindow !== 'function');
+                }
+                return;
+            }
+            if (hostRecoveryState && hostRecoveryState.state === 'ready'
+                && hostRecoveryState.reason === 'unmanaged_backend') {
+                // Attached/remote backends are not owned by this PC shell.
+                closeAccepted = await closeHostWindowOnly();
+                if (!closeAccepted) {
+                    reportHostCloseFailure(typeof host.closeWindow !== 'function');
+                }
+                return;
+            }
+            if (hostRecoveryState && hostRecoveryState.state === 'ready'
+                && state.phase === 'maintenance'
+                && !normalizeStorageLifecycle(state.lastMaintenanceProgressPayload).rollbackRequired
+                && !state.maintenanceStatusUnavailable) {
+                // A just-entered maintenance page may beat the main-process phase
+                // notification by one IPC turn. Fail closed unless the backend has
+                // explicitly reported that migration stopped at rollback_required.
+                reportHostCloseFailure();
+                return;
+            }
+            if (shouldRequestAppShutdownBeforeClose() && !state.shutdownRequested) {
+                try {
+                    await requestStorageLocationAppShutdown();
+                } catch (error) {
+                    console.warn('[storage-location] app shutdown request before close failed', error);
+                    closeAccepted = await requestTerminalHostQuit();
+                    return;
+                }
+            }
+            closeAccepted = await closeHostWindowOnly();
+            if (!closeAccepted) {
+                reportHostCloseFailure(typeof host.closeWindow !== 'function');
+            }
+        } finally {
+            if (closeAccepted) {
+                state.shutdownRequested = true;
+            }
+            if (state.shutdownRequested || closeAccepted) {
+                // A close accepted by either layer is a sticky terminal fact for
+                // this renderer. Invalidate generations again so work started by
+                // a cross-window message during an await cannot publish afterward.
+                state.sentinelFlowGeneration += 1;
+                state.sentinelFlowInFlight = false;
+                state.maintenancePollGeneration += 1;
+            }
+            state.closeAttemptInFlight = false;
+            setSubmitting(state.submitting);
+            if (state.phase === 'maintenance') {
+                setMaintenanceFallbackState(hostRecoveryState);
+                if (!state.shutdownRequested && !closeAccepted) {
+                    restartMaintenancePolling();
+                }
+            }
+            if (state.phase !== 'maintenance'
+                && resumeSentinelAfterClose
+                && !state.shutdownRequested
+                && !closeAccepted) {
+                beginSentinelFlow();
+            }
         }
-        await closeHostWindowOnly();
+    }
+
+    async function getHostBackendRecoveryState() {
+        var host = window.nekoHost || {};
+        if (!host || typeof host.getBackendRecoveryState !== 'function') return null;
+        try {
+            var result = await waitBeforeDeadline(
+                Promise.resolve(host.getBackendRecoveryState()),
+                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                null
+            );
+            return result && typeof result === 'object' ? result : null;
+        } catch (error) {
+            console.warn('[storage-location] host backend recovery state failed', error);
+            return null;
+        }
+    }
+
+    function resetMaintenanceFallbackState() {
+        state.maintenanceRollbackRequired = false;
+        state.maintenanceStatusUnavailable = false;
+        setMaintenanceFallbackState(null);
+    }
+
+    function setMaintenanceFallbackState(recoveryState, message) {
+        var isTerminal = !!(recoveryState && recoveryState.state === 'terminal');
+        var isRollbackRequired = state.maintenanceRollbackRequired;
+        var isStatusUnavailable = state.maintenanceStatusUnavailable;
+        var isAwaitingShutdown = state.maintenanceAwaitingShutdown;
+        var isUnmanagedRollback = isRollbackRequired
+            && recoveryState
+            && recoveryState.reason === 'unmanaged_backend';
+        if (state.maintenanceFallback) {
+            state.maintenanceFallback.hidden = !isTerminal
+                && !isRollbackRequired
+                && !isStatusUnavailable
+                && !isAwaitingShutdown;
+        }
+        if (!isTerminal && !isRollbackRequired && !isStatusUnavailable && !isAwaitingShutdown) return;
+
+        if (state.maintenanceFallbackMessage) {
+            state.maintenanceFallbackMessage.textContent = String(message || '').trim() || translate(
+                isStatusUnavailable
+                    ? 'storage.storageStatusUnavailableAction'
+                    : (isAwaitingShutdown
+                    ? 'storage.awaitingShutdownFallback'
+                    : (isUnmanagedRollback
+                        ? 'storage.rollbackRequiredUnmanagedAction'
+                        : (isRollbackRequired
+                        ? 'storage.rollbackRequiredAction'
+                        : 'storage.maintenanceRecoveryFallback'))),
+                isStatusUnavailable
+                    ? '存储状态文件当前无法可靠读取。应用会保持阻断；你可以安全退出，修复文件或挂载后再重新启动。'
+                    : (isAwaitingShutdown
+                    ? '当前服务尚未完成受控关闭，数据迁移还没有开始。你可以安全地重试关闭请求。'
+                    : (isUnmanagedRollback
+                        ? '当前后端不由桌面端管理。关闭桌面端不会停止迁移服务；请在后端所在主机安全重启并恢复。'
+                        : (isRollbackRequired
+                        ? '迁移已经停止，不会继续自动重启；请安全退出，并在下次启动时重试恢复。'
+                        : '存储服务未能自动恢复。你可以重试恢复服务，或在确认迁移已经停止后安全退出应用。')))
+            );
+        }
+        if (state.maintenanceRetryButton) {
+            state.maintenanceRetryButton.hidden = isRollbackRequired || isStatusUnavailable;
+            state.maintenanceRetryButton.textContent = translate(
+                isAwaitingShutdown
+                    ? 'storage.retryControlledShutdown'
+                    : 'storage.maintenanceRetryService',
+                isAwaitingShutdown ? '重试安全关闭' : '重试恢复服务'
+            );
+            state.maintenanceRetryButton.disabled = state.maintenanceRecoveryActionInFlight
+                || state.closeAttemptInFlight
+                || state.shutdownRequested
+                || (!isAwaitingShutdown && (
+                    !recoveryState
+                    || recoveryState.retry_allowed !== true
+                ));
+        }
+        if (state.maintenanceQuitButton) {
+            state.maintenanceQuitButton.hidden = isAwaitingShutdown;
+            state.maintenanceQuitButton.textContent = translate(
+                isUnmanagedRollback
+                    ? 'storage.rollbackRequiredUnmanagedQuit'
+                    : (isRollbackRequired
+                        ? 'storage.rollbackRequiredQuit'
+                        : 'storage.maintenanceSafeQuit'),
+                isUnmanagedRollback
+                    ? '仅关闭桌面端'
+                    : (isRollbackRequired ? '安全退出并在下次启动恢复' : '安全退出应用')
+            );
+            var hostBlocksStatusExit = isStatusUnavailable && !!(
+                recoveryState && (
+                    recoveryState.state === 'active'
+                    || recoveryState.state === 'transient'
+                    || (recoveryState.state === 'terminal' && recoveryState.quit_allowed !== true)
+                )
+            );
+            var hostStateIsUnknown = isStatusUnavailable
+                && !recoveryState
+                && typeof (window.nekoHost || {}).getBackendRecoveryState === 'function';
+            state.maintenanceQuitButton.disabled = state.maintenanceRecoveryActionInFlight
+                || state.closeAttemptInFlight
+                || hostBlocksStatusExit
+                || hostStateIsUnknown
+                || (!isRollbackRequired && !isStatusUnavailable && !isAwaitingShutdown && (
+                    !recoveryState
+                    || recoveryState.quit_allowed !== true
+                ));
+        }
+    }
+
+    async function refreshHostRecoveryFallback(pollGeneration, message) {
+        var recoveryState = await getHostBackendRecoveryState();
+        if (pollGeneration && shouldAbortMaintenancePoll(pollGeneration)) {
+            return null;
+        }
+        setMaintenanceFallbackState(
+            recoveryState,
+            message || recoveryState && recoveryState.message
+        );
+        return recoveryState;
+    }
+
+    async function requestTerminalHostQuit() {
+        clearHostCloseFailure();
+        var host = window.nekoHost || {};
+        var recoveryState = await getHostBackendRecoveryState();
+        if (recoveryState && recoveryState.state === 'ready' && (
+            recoveryState.reason === 'unmanaged_backend' || state.phase !== 'maintenance'
+        )) {
+            const closed = await closeHostWindowOnly();
+            if (!closed) {
+                reportHostCloseFailure(typeof host.closeWindow !== 'function');
+            }
+            return closed;
+        }
+        if (!recoveryState || recoveryState.state !== 'terminal' || recoveryState.quit_allowed !== true) {
+            setMaintenanceFallbackState(recoveryState);
+            reportHostCloseFailure();
+            return false;
+        }
+        if (typeof host.requestSafeQuit !== 'function') {
+            reportHostCloseFailure();
+            return false;
+        }
+
+        try {
+            var result = await waitBeforeDeadline(
+                Promise.resolve(host.requestSafeQuit()),
+                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                null
+            );
+            if (result && result.ok === true) return true;
+        } catch (error) {
+            console.warn('[storage-location] safe host quit failed', error);
+        }
+        setMaintenanceFallbackState(recoveryState, translate(
+            'storage.maintenanceSafeQuitFailed',
+            '安全退出未能启动，请重试；应用不会在迁移状态不明时强制关闭。'
+        ));
+        reportHostCloseFailure();
+        return false;
+    }
+
+    async function retryTerminalBackendRecovery() {
+        if (state.maintenanceRecoveryActionInFlight
+            || state.closeAttemptInFlight
+            || state.shutdownRequested) return;
+        var host = window.nekoHost || {};
+        if (!host || typeof host.retryBackendRecovery !== 'function') return;
+
+        state.maintenanceRecoveryActionInFlight = true;
+        if (state.maintenanceRetryButton) state.maintenanceRetryButton.disabled = true;
+        if (state.maintenanceQuitButton) state.maintenanceQuitButton.disabled = true;
+        var recoveryState = null;
+        try {
+            recoveryState = await getHostBackendRecoveryState();
+            if (!recoveryState
+                || recoveryState.state !== 'terminal'
+                || recoveryState.retry_allowed !== true) {
+                setMaintenanceFallbackState(recoveryState);
+                return;
+            }
+            setMaintenanceFallbackState(recoveryState);
+            var result = await waitBeforeDeadline(
+                Promise.resolve(host.retryBackendRecovery()),
+                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                null
+            );
+            if (!result || typeof result !== 'object') {
+                throw new Error('host backend retry returned an invalid result');
+            }
+            setMaintenanceFallbackState(result, result.message);
+        } catch (error) {
+            console.warn('[storage-location] host backend recovery retry failed', error);
+            setMaintenanceFallbackState(recoveryState, translate(
+                'storage.maintenanceRetryFailed',
+                '恢复服务仍未成功，请稍后重试或安全退出应用。'
+            ));
+        } finally {
+            state.maintenanceRecoveryActionInFlight = false;
+            var latestState = await getHostBackendRecoveryState();
+            setMaintenanceFallbackState(latestState || recoveryState);
+        }
+    }
+
+    async function retryMaintenanceRecoveryAction() {
+        if (state.maintenanceRecoveryActionInFlight
+            || state.closeAttemptInFlight
+            || state.shutdownRequested) return;
+        if (!state.maintenanceAwaitingShutdown) {
+            await retryTerminalBackendRecovery();
+            return;
+        }
+
+        state.maintenanceRecoveryActionInFlight = true;
+        var resultMessage = '';
+        setMaintenanceFallbackState(null, translate(
+            'storage.awaitingShutdownRetrying',
+            '正在重新请求服务安全关闭；迁移开始后页面会继续显示真实进度。'
+        ));
+        try {
+            await requestStorageLocationAppShutdown();
+            resultMessage = translate(
+                'storage.awaitingShutdownAccepted',
+                '安全关闭请求已接受，正在等待迁移进程接管。'
+            );
+        } catch (error) {
+            console.warn('[storage-location] controlled shutdown retry failed', error);
+            resultMessage = translate(
+                'storage.awaitingShutdownRetryFailed',
+                '安全关闭请求仍未完成；应用保持阻断，你可以稍后再次重试。'
+            );
+        } finally {
+            state.maintenanceRecoveryActionInFlight = false;
+            setMaintenanceFallbackState(null, resultMessage);
+        }
+    }
+
+    async function requestMaintenanceSafeQuit() {
+        await requestHostWindowClose();
     }
 
     function buildStorageLocationCloseButton(onClick) {
@@ -368,6 +857,16 @@
                 return translate('storage.restartNotRequired', '目标路径与当前路径一致，不需要重启。');
             case 'restart_schedule_failed':
                 return translate('storage.restartScheduleFailed', '受控重启启动失败，请稍后重试。');
+            case 'restart_schedule_rollback_failed':
+                return translate(
+                    'storage.restartScheduleRollbackFailed',
+                    '无法确认受控重启是否已撤销，正在重新读取实际存储状态。'
+                );
+            case 'restart_outcome_unknown':
+                return translate(
+                    'storage.restartOutcomeUnknown',
+                    '无法确认受控重启结果，正在重新读取实际存储状态。'
+                );
             case 'restart_unavailable':
                 return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
@@ -384,6 +883,11 @@
                 return translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。');
             case 'storage_bootstrap_blocking':
                 return translate('storage.storageBootstrapBlocking', '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。');
+            case 'storage_rollback_required':
+                return translate(
+                    'storage.rollbackRequiredMessage',
+                    '迁移未能安全回滚。应用已停止继续迁移；请使用下方恢复操作，或安全退出后重新启动。'
+                );
             case 'target_confirmation_required':
                 return existingTargetConfirmationText();
             case 'target_not_empty':
@@ -404,12 +908,23 @@
     }
 
     function translateMaintenanceSubtitle(statusPayload, fallbackText) {
-        var blockingReason = String(
-            statusPayload && (
-                statusPayload.blocking_reason
-                || (statusPayload.storage && statusPayload.storage.blocking_reason)
-            ) || ''
-        ).trim();
+        var lifecycle = normalizeStorageLifecycle(statusPayload);
+        if (lifecycle.rollbackRequired) {
+            var storage = statusPayload && typeof statusPayload.storage === 'object'
+                ? statusPayload.storage
+                : {};
+            return String(
+                statusPayload && statusPayload.maintenance_message
+                || statusPayload && statusPayload.last_error_summary
+                || storage.last_error_summary
+                || ''
+            ).trim() || translate(
+                'storage.rollbackRequiredMessage',
+                '迁移未能安全回滚。应用已停止继续迁移；请使用下方恢复操作，或安全退出后重新启动。'
+            );
+        }
+
+        var blockingReason = lifecycle.blockingReason;
 
         switch (blockingReason) {
             case 'migration_pending':
@@ -427,7 +942,9 @@
         if (!payload || typeof payload !== 'object') {
             return {
                 target_root: String(fallbackTargetPath || '').trim(),
+                restart_operation_id: '',
                 estimated_required_bytes: 0,
+                estimated_required_bytes_available: false,
                 target_free_bytes: 0,
                 permission_ok: true,
                 warning_codes: [],
@@ -441,7 +958,11 @@
 
         return {
             target_root: String(payload.target_root || payload.selected_root || fallbackTargetPath || '').trim(),
+            restart_operation_id: String(payload.restart_operation_id || '').trim(),
             estimated_required_bytes: Number(payload.estimated_required_bytes || 0),
+            // Old backends supplied a real estimate without the availability
+            // flag, so only an explicit false means that the value is unknown.
+            estimated_required_bytes_available: payload.estimated_required_bytes_available !== false,
             target_free_bytes: Number(payload.target_free_bytes || 0),
             permission_ok: payload.permission_ok !== false,
             warning_codes: normalizeWarningCodes(payload.warning_codes),
@@ -471,6 +992,9 @@
     }
 
     function setPhase(phase) {
+        if (state.phase !== phase) {
+            clearHostCloseFailure();
+        }
         state.phase = phase;
         if (!state.overlay) return;
 
@@ -484,6 +1008,13 @@
         state.errorView.hidden = phase !== 'error';
     }
 
+    function isStorageMutationFrozen() {
+        return state.submitting
+            || state.sentinelFlowInFlight
+            || state.closeAttemptInFlight
+            || state.shutdownRequested;
+    }
+
     function hideOverlay() {
         // 正常模式下，覆盖层关闭后是否再次出现由后端状态决定：
         // 首次未完成、存在待迁移检查点或恢复态时仍会阻断，其余情况直接放行。
@@ -493,10 +1024,14 @@
     function setSubmitting(submitting) {
         state.submitting = !!submitting;
         state.actionButtons.forEach(function (button) {
-            button.disabled = state.submitting || !!button.dataset.forceDisabled;
+            button.disabled = isStorageMutationFrozen() || !!button.dataset.forceDisabled;
         });
         if (state.customInput) {
-            state.customInput.disabled = state.submitting;
+            state.customInput.disabled = isStorageMutationFrozen();
+        }
+        if (state.closeAttemptInFlight) {
+            if (state.maintenanceRetryButton) state.maintenanceRetryButton.disabled = true;
+            if (state.maintenanceQuitButton) state.maintenanceQuitButton.disabled = true;
         }
     }
 
@@ -596,17 +1131,192 @@
         }
 
         var blockingReason = String(bootstrapPayload.blocking_reason || '').trim();
-        return blockingReason === 'migration_pending'
+        return (blockingReason === 'migration_pending' && !bootstrapPayload.recovery_required)
             || (!!bootstrapPayload.migration_pending && !bootstrapPayload.recovery_required);
     }
 
-    async function fetchSystemStatus() {
-        var response = await fetch('/api/system/status', {
+    function normalizeStorageLifecycle(payload) {
+        var source = payload && typeof payload === 'object' ? payload : {};
+        var storage = source.storage && typeof source.storage === 'object' ? source.storage : {};
+        var migration = source.migration && typeof source.migration === 'object' ? source.migration : {};
+        return {
+            blockingReason: String(source.blocking_reason || storage.blocking_reason || '').trim(),
+            lifecycleState: String(source.lifecycle_state || source.status || '').trim(),
+            migrationStage: String(source.migration_stage || migration.status || '').trim(),
+            selectionRequired: !!(source.selection_required || storage.selection_required),
+            migrationPending: !!(source.migration_pending || storage.migration_pending),
+            recoveryRequired: !!(source.recovery_required || storage.recovery_required),
+            rollbackRequired: !!(
+                source.rollback_required
+                || storage.rollback_required
+                || source.lifecycle_state === 'rollback_required'
+                || source.status === 'rollback_required'
+                || migration.status === 'rollback_required'
+            ),
+            migrationPhase: String(
+                source.migration_phase
+                || storage.migration_phase
+                || ''
+            ).trim(),
+            shutdownRetryAllowed: !!(
+                source.shutdown_retry_allowed
+                || storage.shutdown_retry_allowed
+            ),
+            storageStatusUnavailable: !!(
+                source.storage_status_unavailable
+                || storage.status_unavailable
+                || source.error_code === 'storage_status_unavailable'
+                || storage.error_code === 'storage_status_unavailable'
+            )
+        };
+    }
+
+    function isObservedMigrationBlock(payload) {
+        var lifecycle = normalizeStorageLifecycle(payload);
+        return lifecycle.migrationPending
+            || lifecycle.blockingReason === 'migration_pending'
+            || lifecycle.lifecycleState === 'maintenance'
+            || lifecycle.migrationPhase === 'awaiting_shutdown'
+            || lifecycle.migrationStage === 'pending'
+            || lifecycle.migrationStage === 'copying'
+            || lifecycle.migrationStage === 'verifying'
+            || lifecycle.migrationStage === 'publishing';
+    }
+
+    function recordMaintenanceObservation(payload) {
+        if (isObservedMigrationBlock(payload)) {
+            state.maintenanceObservedMigrationBlock = true;
+        }
+    }
+
+    function isConfirmedMaintenanceReady(payload) {
+        if (!payload || payload.ready !== true
+            || shouldBlockMainUi(payload)
+            || isObservedMigrationBlock(payload)) return false;
+
+        var restartOperation = payload.restart_operation
+            && typeof payload.restart_operation === 'object'
+            ? payload.restart_operation
+            : {};
+        var operationState = String(restartOperation.state || '').trim();
+        var operationId = String(restartOperation.operation_id || '').trim();
+        var operationTarget = String(restartOperation.target_root || '').trim();
+        var operationInstanceId = String(restartOperation.instance_id || '').trim();
+        var payloadInstanceId = String(payload.instance_id || '').trim();
+        var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
+        var readyInstanceId = String(payload.instance_id || '').trim();
+        var restartedInstance = !!entryInstanceId
+            && !!readyInstanceId
+            && entryInstanceId !== readyInstanceId;
+        if (state.maintenanceOutcomeUnknown
+            && state.maintenanceRestartOperationId) {
+            return restartedInstance || (
+                operationId === state.maintenanceRestartOperationId
+                && operationTarget === String(state.pendingSelection.path || '').trim()
+                && operationInstanceId
+                && operationInstanceId === payloadInstanceId
+                && ['cancelled', 'rejected', 'expired'].indexOf(operationState) !== -1
+            );
+        }
+
+        if (state.maintenanceObservedMigrationBlock) return true;
+
+        // A successful migration/rebind always starts a new backend instance.
+        // If the first poll races straight to ready, the instance transition is
+        // equivalent to observing the intermediate maintenance generation. A
+        // same-instance or identity-less ready can be stale, so keep the gate.
+        return restartedInstance;
+    }
+
+    function shouldLeaveMaintenanceForSelection(statusPayload) {
+        var lifecycle = normalizeStorageLifecycle(statusPayload);
+        return lifecycle.blockingReason === 'recovery_required'
+            || lifecycle.blockingReason === 'selection_required'
+            || lifecycle.lifecycleState === 'recovery_required'
+            || lifecycle.lifecycleState === 'selection_required'
+            || lifecycle.recoveryRequired
+            || lifecycle.selectionRequired
+            || lifecycle.migrationStage === 'failed'
+            || lifecycle.migrationStage === 'recovery_required';
+    }
+
+    async function fetchStorageLocationBootstrap() {
+        var response = await fetchWithTimeout('/api/storage/location/bootstrap', {
             cache: 'no-store',
             headers: {
                 'Accept': 'application/json'
             }
-        });
+        }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
+        if (!response.ok) {
+            throw new Error('bootstrap request failed: ' + response.status);
+        }
+
+        var payload = await response.json();
+        if (!payload || typeof payload !== 'object') {
+            throw new Error(
+                translate('storage.bootstrapError', '无法读取存储位置初始化信息，请重试。')
+            );
+        }
+        return payload;
+    }
+
+    async function leaveMaintenanceForSelection(statusPayload, pollGeneration) {
+        if (!shouldLeaveMaintenanceForSelection(statusPayload)) return false;
+
+        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
+            var restartOperation = statusPayload && statusPayload.restart_operation;
+            var operationState = String(restartOperation && restartOperation.state || '').trim();
+            var operationId = String(restartOperation && restartOperation.operation_id || '').trim();
+            var operationTarget = String(restartOperation && restartOperation.target_root || '').trim();
+            var operationInstanceId = String(restartOperation && restartOperation.instance_id || '').trim();
+            var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
+            var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
+            var restartedInstance = !!entryInstanceId
+                && !!payloadInstanceId
+                && entryInstanceId !== payloadInstanceId;
+            var correlatedTerminal = operationId === state.maintenanceRestartOperationId
+                && operationTarget === String(state.pendingSelection.path || '').trim()
+                && !!operationInstanceId
+                && operationInstanceId === payloadInstanceId
+                && ['cancelled', 'rejected', 'expired', 'indeterminate'].indexOf(operationState) !== -1;
+
+            // A prepared/in-flight (or uncorrelated) operation may still mutate
+            // storage after this poll. Do not expose a second selection request
+            // until the same backend proves a terminal outcome, or a new backend
+            // generation proves the old request can no longer run.
+            if (!restartedInstance && !correlatedTerminal) {
+                return false;
+            }
+        }
+
+        var bootstrapPayload = await fetchStorageLocationBootstrap();
+        if (pollGeneration && shouldAbortMaintenancePoll(pollGeneration)) {
+            return false;
+        }
+        captureStorageCsrfToken(bootstrapPayload);
+        if (shouldShowMaintenanceView(bootstrapPayload) || !shouldShowSelectionView(bootstrapPayload)) {
+            return false;
+        }
+
+        state.bootstrap = bootstrapPayload;
+        resetPreviewState();
+        updateSelectionSummary();
+        var lastError = String(
+            bootstrapPayload.last_error_summary || statusPayload.last_error_summary || ''
+        ).trim();
+        setSelectionStatus(lastError, !!lastError);
+        resetMaintenanceFallbackState();
+        setPhase('selection_required');
+        return true;
+    }
+
+    async function fetchSystemStatus() {
+        var response = await fetchWithTimeout('/api/system/status', {
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json'
+            }
+        }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
         if (!response.ok) {
             throw new Error('system status request failed: ' + response.status);
         }
@@ -617,17 +1327,21 @@
                 translate('storage.systemStatusUnexpected', '存储启动状态接口返回了未识别的结果。')
             );
         }
-        state.systemStatus = payload;
         return payload;
     }
 
     async function fetchStorageLocationStatus() {
-        var response = await fetch('/api/storage/location/status', {
+        var statusUrl = '/api/storage/location/status';
+        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
+            statusUrl += '?restart_operation_id='
+                + encodeURIComponent(state.maintenanceRestartOperationId);
+        }
+        var response = await fetchWithTimeout(statusUrl, {
             cache: 'no-store',
             headers: {
                 'Accept': 'application/json'
             }
-        });
+        }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
         if (!response.ok) {
             throw new Error('storage location status request failed: ' + response.status);
         }
@@ -641,12 +1355,43 @@
         return payload;
     }
 
-    async function waitForSystemStatus() {
+    async function reconcileUnknownRestartOperation(statusPayload) {
+        if (!state.maintenanceOutcomeUnknown || !state.maintenanceRestartOperationId) {
+            return statusPayload;
+        }
+        var operation = statusPayload && statusPayload.restart_operation;
+        if (!operation || String(operation.state || '').trim() !== 'prepared') {
+            return statusPayload;
+        }
+        try {
+            var response = await fetchWithTimeout('/api/storage/location/restart/cancel', {
+                method: 'POST',
+                headers: storageMutationHeaders({
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                }),
+                body: JSON.stringify({
+                    restart_operation_id: state.maintenanceRestartOperationId
+                })
+            }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
+            var payload = await response.json();
+            if (response.ok && payload && payload.ok === true && payload.restart_operation) {
+                statusPayload.restart_operation = payload.restart_operation;
+            }
+        } catch (error) {
+            console.warn('[storage-location] restart operation reconcile failed', error);
+        }
+        return statusPayload;
+    }
+
+    async function waitForSystemStatus(flowGeneration) {
         var lastError = null;
 
         for (var attempt = 0; attempt < 20; attempt += 1) {
+            if (shouldAbortSentinelFlow(flowGeneration)) return null;
             try {
                 var payload = await fetchSystemStatus();
+                if (shouldAbortSentinelFlow(flowGeneration)) return null;
                 if (payload.status !== 'starting') {
                     return payload;
                 }
@@ -654,6 +1399,7 @@
                 lastError = error;
             }
 
+            if (shouldAbortSentinelFlow(flowGeneration)) return null;
             setLoadingCopy(
                 translate('storage.loadingTitle', '正在确认存储布局状态'),
                 translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
@@ -695,7 +1441,7 @@
         if (state.recommendedButton) {
             var recommendedDisabled = !String(recommendedRoot || '').trim();
             state.recommendedButton.dataset.forceDisabled = recommendedDisabled ? '1' : '';
-            state.recommendedButton.disabled = state.submitting || recommendedDisabled;
+            state.recommendedButton.disabled = isStorageMutationFrozen() || recommendedDisabled;
             state.recommendedButton.title = recommendedDisabled ? '' : recommendedRoot;
         }
 
@@ -720,7 +1466,7 @@
         if (!state.useOtherButton) return;
         var disabled = !String(state.otherSelection.path || '').trim();
         state.useOtherButton.dataset.forceDisabled = disabled ? '1' : '';
-        state.useOtherButton.disabled = state.submitting || disabled;
+        state.useOtherButton.disabled = isStorageMutationFrozen() || disabled;
     }
 
     function backToSelection() {
@@ -798,16 +1544,16 @@
     }
 
     async function pickDirectoryWithBackend(startPath) {
-        var response = await fetch('/api/storage/location/pick-directory', {
+        var response = await fetchWithTimeout('/api/storage/location/pick-directory', {
             method: 'POST',
-            headers: {
+            headers: storageMutationHeaders({
                 'Accept': 'application/json',
                 'Content-Type': 'application/json'
-            },
+            }),
             body: JSON.stringify({
                 start_path: startPath
             })
-        });
+        }, STORAGE_DIRECTORY_PICKER_TIMEOUT_MS);
 
         var payload = null;
         try {
@@ -902,7 +1648,9 @@
             state.previewText.textContent = buildRestartPreviewReminder(preflight);
         }
         if (state.previewEstimated) {
-            state.previewEstimated.textContent = formatBytes(preflight.estimated_required_bytes);
+            state.previewEstimated.textContent = preflight.estimated_required_bytes_available === false
+                ? '—'
+                : formatBytes(preflight.estimated_required_bytes);
         }
         if (state.previewFreeSpace) {
             state.previewFreeSpace.textContent = formatBytes(preflight.target_free_bytes);
@@ -919,7 +1667,8 @@
         }
         if (state.previewConfirmButton) {
             state.previewConfirmButton.dataset.forceDisabled = preflight.blocking_error_code ? '1' : '';
-            state.previewConfirmButton.disabled = state.submitting || !!state.previewConfirmButton.dataset.forceDisabled;
+            state.previewConfirmButton.disabled = isStorageMutationFrozen()
+                || !!state.previewConfirmButton.dataset.forceDisabled;
         }
     }
 
@@ -966,26 +1715,35 @@
             return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
         }
 
-        if (String(statusPayload.blocking_reason || '').trim() === 'recovery_required') {
+        var lifecycle = normalizeStorageLifecycle(statusPayload);
+        if (lifecycle.rollbackRequired) {
+            return translate(
+                'storage.rollbackRequiredAction',
+                '迁移已经停止，不会继续自动重启；请选择恢复服务或安全退出。'
+            );
+        }
+        if (lifecycle.blockingReason === 'recovery_required' || lifecycle.recoveryRequired) {
             return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
         }
         return translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。');
     }
 
     function buildMaintenanceProgressModel(statusPayload) {
-        var lifecycleState = String(
-            statusPayload && (statusPayload.lifecycle_state || statusPayload.status) || ''
-        ).trim();
-        var migrationStage = String(
-            statusPayload && (statusPayload.migration_stage || (statusPayload.migration && statusPayload.migration.status)) || ''
-        ).trim();
+        var lifecycle = normalizeStorageLifecycle(statusPayload);
+        var lifecycleState = lifecycle.lifecycleState;
+        var migrationStage = lifecycle.migrationStage;
         var restartMode = String(
             statusPayload && statusPayload.restart_mode
             || state.pendingSelection && state.pendingSelection.preflight && state.pendingSelection.preflight.restart_mode
             || ''
         ).trim();
         var isRebindOnly = restartMode === 'rebind_only';
-        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
+        var hasError = lifecycleState === 'recovery_required'
+            || lifecycleState === 'recovery_failed'
+            || lifecycle.recoveryRequired
+            || migrationStage === 'failed'
+            || migrationStage === 'recovery_required'
+            || migrationStage === 'rollback_required';
         var percent = 14;
         var activeIndex = 0;
         var label = translate('storage.progressWaitingShutdown', '正在关闭');
@@ -994,6 +1752,10 @@
             percent = 100;
             activeIndex = 3;
             label = translate('storage.progressRecovered', '服务已恢复，正在重新连接页面');
+        } else if (lifecycleState === 'recovery_failed') {
+            percent = 100;
+            activeIndex = 3;
+            label = translate('storage.progressRecoveryFailed', '服务未能自动恢复');
         } else {
             switch (migrationStage) {
                 case 'pending':
@@ -1034,10 +1796,19 @@
                     label = translate('storage.progressCompleted', '迁移已完成，正在恢复服务');
                     break;
                 case 'failed':
-                case 'rollback_required':
                     percent = 100;
                     activeIndex = 2;
                     label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    break;
+                case 'recovery_required':
+                    percent = 100;
+                    activeIndex = 2;
+                    label = translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
+                    break;
+                case 'rollback_required':
+                    percent = 100;
+                    activeIndex = 2;
+                    label = translate('storage.progressRollbackRequired', '迁移已停止，需要恢复处理');
                     break;
                 default:
                     percent = isRebindOnly ? 38 : 14;
@@ -1209,8 +1980,15 @@
     }
 
     function applyCompletionNotice(notice) {
-        state.completionNotice = notice && typeof notice === 'object' ? notice : null;
+        var nextNotice = notice && typeof notice === 'object' ? notice : null;
+        var nextNoticeKey = buildCompletionNoticeDismissKey(nextNotice);
+        if (state.completionCleanupBlockedKey
+            && state.completionCleanupBlockedKey !== nextNoticeKey) {
+            state.completionCleanupBlockedKey = '';
+        }
+        state.completionNotice = nextNotice;
         if (!state.completionNotice || state.completionNotice.completed !== true || !state.completionNotice.retained_root_exists) {
+            state.completionCleanupBlockedKey = '';
             if (state.completionCard) {
                 state.completionCard.hidden = true;
             }
@@ -1241,6 +2019,9 @@
         state.completionOpenTargetButton.hidden = !String(state.completionNotice.target_root || '').trim();
         state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
+        state.completionCleanupButton.disabled = (
+            !!nextNoticeKey && state.completionCleanupBlockedKey === nextNoticeKey
+        );
         card.hidden = false;
     }
 
@@ -1266,6 +2047,8 @@
     async function checkReadyStateCompletionNotice() {
         try {
             var statusPayload = await fetchStorageLocationStatus();
+            if (state.shutdownRequested || state.closeAttemptInFlight) return false;
+            captureStorageCsrfToken(statusPayload);
             if (statusPayload && statusPayload.ready === true) {
                 applyCompletionNotice(statusPayload.completion_notice);
                 return !!(
@@ -1304,6 +2087,60 @@
         state.completionPollTimer = window.setTimeout(tick, 0);
     }
 
+    async function reconcileRetainedCleanupOutcome(retainedRoot) {
+        var consecutiveUnknown = 0;
+        while (consecutiveUnknown < 6) {
+            await sleep(400);
+            try {
+                var response = await fetchWithTimeout('/api/storage/location/retained-source', {
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
+                if (!response.ok) {
+                    consecutiveUnknown += 1;
+                    continue;
+                }
+                var payload = await response.json();
+                if (!payload || payload.ok !== true) {
+                    consecutiveUnknown += 1;
+                    continue;
+                }
+                if (payload.completed !== true || payload.retained_root_exists === false) {
+                    return 'cleaned';
+                }
+                if (pathEquals(payload.retained_root, retainedRoot)
+                    && payload.retained_root_exists === true) {
+                    if (payload.cleanup_in_progress === false) {
+                        return 'present';
+                    }
+                    if (payload.cleanup_in_progress === true) {
+                        consecutiveUnknown = 0;
+                        continue;
+                    }
+                }
+                consecutiveUnknown += 1;
+                // True means the original request still owns the server-side
+                // mutation lock. A missing field is an older backend and is
+                // intentionally treated as unknown, never as permission to
+                // submit a second delete.
+            } catch (_) {
+                consecutiveUnknown += 1;
+            }
+        }
+        return 'unknown';
+    }
+
+    function finishRetainedCleanupUi() {
+        state.completionCleanupBlockedKey = '';
+        applyCompletionNotice({ completed: false });
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                4000
+            );
+        }
+    }
+
     async function cleanupRetainedSourceRoot() {
         if (!state.completionNotice || state.completionNotice.cleanup_available !== true) {
             return;
@@ -1318,21 +2155,23 @@
             return;
         }
 
+        state.completionCleanupBlockedKey = buildCompletionNoticeDismissKey(state.completionNotice);
         if (state.completionCleanupButton) {
             state.completionCleanupButton.disabled = true;
         }
 
+        var cleanupError = null;
         try {
-            var response = await fetch('/api/storage/location/retained-source/cleanup', {
+            var response = await fetchWithTimeout('/api/storage/location/retained-source/cleanup', {
                 method: 'POST',
-                headers: {
+                headers: storageMutationHeaders({
                     'Accept': 'application/json',
                     'Content-Type': 'application/json'
-                },
+                }),
                 body: JSON.stringify({
                     retained_root: retainedRoot
                 })
-            });
+            }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
             var payload = null;
             try {
                 payload = await response.json();
@@ -1341,20 +2180,36 @@
                 throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
             }
 
-            applyCompletionNotice({ completed: false });
-            if (typeof window.showStatusToast === 'function') {
-                window.showStatusToast(
-                    translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
-                    4000
-                );
-            }
+            finishRetainedCleanupUi();
+            return;
         } catch (error) {
-            if (state.completionCleanupButton) {
-                state.completionCleanupButton.disabled = false;
-            }
-            if (typeof window.showStatusToast === 'function') {
+            cleanupError = error;
+        }
+
+        // A timeout, truncated body, or late 5xx can arrive after the delete
+        // actually committed. Query the authoritative retained-source state
+        // before enabling a second destructive request.
+        var reconciledOutcome = await reconcileRetainedCleanupOutcome(retainedRoot);
+        if (reconciledOutcome === 'cleaned') {
+            finishRetainedCleanupUi();
+            return;
+        }
+        if (reconciledOutcome === 'present' && state.completionCleanupButton) {
+            state.completionCleanupBlockedKey = '';
+            state.completionCleanupButton.disabled = false;
+        }
+        if (typeof window.showStatusToast === 'function') {
+            if (reconciledOutcome === 'unknown') {
                 window.showStatusToast(
-                    String((error && error.message) || error || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
+                    translate(
+                        'storage.cleanupRetainedRootOutcomeUnknown',
+                        '暂时无法确认旧数据是否已清理。为避免重复删除，按钮会保持锁定；请刷新状态后再操作。'
+                    ),
+                    6000
+                );
+            } else {
+                window.showStatusToast(
+                    String((cleanupError && cleanupError.message) || cleanupError || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
                     5000
                 );
             }
@@ -1416,19 +2271,26 @@
 
         setSubmitting(true);
         setSelectionStatus('', false);
+        var selectionOutcomeUnknown = false;
 
         try {
-            var response = await fetch('/api/storage/location/select', {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    selected_root: normalizedTargetPath,
-                    selection_source: selectionSource
-                })
-            });
+            var response = null;
+            try {
+                response = await fetchWithTimeout('/api/storage/location/select', {
+                    method: 'POST',
+                    headers: storageMutationHeaders({
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }),
+                    body: JSON.stringify({
+                        selected_root: normalizedTargetPath,
+                        selection_source: selectionSource
+                    })
+                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+            } catch (requestError) {
+                selectionOutcomeUnknown = true;
+                throw requestError;
+            }
 
             var payload = null;
             try {
@@ -1436,6 +2298,11 @@
             } catch (_) {}
 
             if (!response.ok) {
+                var selectionErrorCode = String(payload && payload.error_code || '').trim();
+                if (selectionErrorCode === 'restart_schedule_rollback_failed'
+                    || selectionErrorCode === 'restart_outcome_unknown') {
+                    selectionOutcomeUnknown = true;
+                }
                 throw new Error(
                     extractResponseError(
                         payload,
@@ -1445,6 +2312,7 @@
             }
 
             if (!payload || payload.ok !== true) {
+                selectionOutcomeUnknown = true;
                 throw new Error(
                     translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。')
                 );
@@ -1469,11 +2337,31 @@
                 return;
             }
 
+            if (payload.result === 'restart_initiated') {
+                state.pendingSelection.path = String(payload.selected_root || normalizedTargetPath).trim();
+                state.pendingSelection.source = String(payload.selection_source || selectionSource).trim();
+                state.pendingSelection.preflight = extractPreflightDetails(
+                    payload,
+                    state.pendingSelection.path
+                );
+                enterMaintenanceMode(payload);
+                return;
+            }
+
             throw new Error(
                 translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。')
             );
         } catch (error) {
             console.warn('[storage-location] select failed', error);
+            if (selectionOutcomeUnknown) {
+                setPhase('loading');
+                setLoadingCopy(
+                    translate('storage.loadingTitle', '正在确认存储布局状态'),
+                    translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
+                );
+                beginSentinelFlow();
+                return;
+            }
             resetPreviewState();
             setSelectionStatus(
                 String((error && error.message) || error || translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。')),
@@ -1485,22 +2373,115 @@
         }
     }
 
+    async function renderRollbackRequiredState(statusPayload, pollGeneration) {
+        if (!normalizeStorageLifecycle(statusPayload).rollbackRequired) return false;
+
+        state.maintenanceRollbackRequired = true;
+        state.maintenanceStatusUnavailable = false;
+        state.maintenanceAwaitingShutdown = false;
+        await refreshHostRecoveryFallback(pollGeneration);
+        if (shouldAbortMaintenancePoll(pollGeneration)) return true;
+        setMaintenanceCopy(
+            translate('storage.rollbackRequiredTitle', '存储迁移需要恢复'),
+            translateMaintenanceSubtitle(statusPayload),
+            buildMaintenanceStatusText(statusPayload)
+        );
+        applyMaintenanceProgress(statusPayload);
+        return true;
+    }
+
+    async function renderStorageStatusUnavailableState(statusPayload, pollGeneration) {
+        if (!normalizeStorageLifecycle(statusPayload).storageStatusUnavailable) return false;
+
+        state.maintenanceRollbackRequired = false;
+        state.maintenanceStatusUnavailable = true;
+        state.maintenanceAwaitingShutdown = false;
+        var actionMessage = translate(
+            'storage.storageStatusUnavailableAction',
+            '存储状态文件当前无法可靠读取。应用会保持阻断；你可以安全退出，修复文件或挂载后再重新启动。'
+        );
+        setMaintenanceFallbackState(null, actionMessage);
+        setMaintenanceCopy(
+            translate('storage.errorTitle', '暂时无法读取存储位置引导信息'),
+            translate('storage.systemStatusUnavailable', '暂时无法确认本地服务状态，请重试。'),
+            String(
+                statusPayload && (
+                    statusPayload.last_error_summary
+                    || statusPayload.storage && statusPayload.storage.last_error_summary
+                ) || ''
+            ).trim()
+        );
+        applyMaintenanceProgress({
+            status: 'storage_status_unavailable',
+            lifecycle_state: 'storage_status_unavailable',
+            storage_status_unavailable: true,
+            error_code: statusPayload && statusPayload.error_code || 'storage_status_unavailable'
+        });
+        var recoveryState = await getHostBackendRecoveryState();
+        if (pollGeneration && shouldAbortMaintenancePoll(pollGeneration)) return true;
+        setMaintenanceFallbackState(recoveryState, actionMessage);
+        return true;
+    }
+
+    function shouldAbortMaintenancePoll(pollGeneration) {
+        return pollGeneration !== state.maintenancePollGeneration
+            || state.closeAttemptInFlight
+            || state.shutdownRequested;
+    }
+
+    function renderAwaitingShutdownState(statusPayload) {
+        var lifecycle = normalizeStorageLifecycle(statusPayload);
+        if (lifecycle.migrationPhase !== 'awaiting_shutdown'
+            || lifecycle.shutdownRetryAllowed !== true) {
+            state.maintenanceAwaitingShutdown = false;
+            return false;
+        }
+
+        state.maintenanceRollbackRequired = false;
+        state.maintenanceStatusUnavailable = false;
+        state.maintenanceAwaitingShutdown = true;
+        setMaintenanceFallbackState(null, translate(
+            'storage.awaitingShutdownFallback',
+            '当前服务尚未完成受控关闭，数据迁移还没有开始。你可以安全地重试关闭请求。'
+        ));
+        return true;
+    }
+
     async function startMaintenancePolling() {
+        if (state.closeAttemptInFlight || state.shutdownRequested) return;
         if (state.maintenancePollPromise) {
             return state.maintenancePollPromise;
         }
 
-        state.maintenancePollPromise = (async function () {
+        var pollGeneration = ++state.maintenancePollGeneration;
+        var pollPromise = (async function () {
             var failureCount = 0;
 
-            while (state.phase === 'maintenance') {
+            while (state.phase === 'maintenance' && !shouldAbortMaintenancePoll(pollGeneration)) {
                 var pollIntervalMs = 0;
                 try {
                     var statusPayload = await fetchStorageLocationStatus();
+                    if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                    captureStorageCsrfToken(statusPayload);
+                    statusPayload = await reconcileUnknownRestartOperation(statusPayload);
+                    if (shouldAbortMaintenancePoll(pollGeneration)) return;
                     failureCount = 0;
                     pollIntervalMs = Number(statusPayload.poll_interval_ms || 0);
+                    if (await renderStorageStatusUnavailableState(statusPayload, pollGeneration)) {
+                        if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                        await sleep(pollIntervalMs > 0 ? pollIntervalMs : 900);
+                        continue;
+                    }
+                    if (await renderRollbackRequiredState(statusPayload, pollGeneration)) {
+                        if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                        await sleep(pollIntervalMs > 0 ? pollIntervalMs : 900);
+                        continue;
+                    }
+                    recordMaintenanceObservation(statusPayload);
+                    renderAwaitingShutdownState(statusPayload);
+                    resetMaintenanceFallbackState();
 
-                    if (statusPayload.ready === true) {
+                    if (isConfirmedMaintenanceReady(statusPayload)) {
                         setMaintenanceCopy(
                             translate('storage.maintenanceTitle', '正在优化存储布局...'),
                             translate('storage.maintenanceReconnectSubtitle', '检测到服务已经恢复，正在重新连接应用。'),
@@ -1516,6 +2497,11 @@
                         return;
                     }
 
+                    if (await leaveMaintenanceForSelection(statusPayload, pollGeneration)) {
+                        return;
+                    }
+                    if (shouldAbortMaintenancePoll(pollGeneration)) return;
+
                     setMaintenanceCopy(
                         translate('storage.maintenanceTitle', '正在优化存储布局...'),
                         translateMaintenanceSubtitle(statusPayload),
@@ -1525,8 +2511,32 @@
                 } catch (_) {
                     try {
                         var fallbackStatusPayload = await fetchSystemStatus();
+                        if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                        state.systemStatus = fallbackStatusPayload;
+                        captureStorageCsrfToken(fallbackStatusPayload);
+                        var fallbackLifecycle = normalizeStorageLifecycle(fallbackStatusPayload);
+                        if (fallbackLifecycle.storageStatusUnavailable) {
+                            if (await renderStorageStatusUnavailableState(
+                                fallbackStatusPayload,
+                                pollGeneration
+                            )) {
+                                if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                                await sleep(pollIntervalMs > 0 ? pollIntervalMs : 900);
+                                continue;
+                            }
+                        }
                         failureCount = 0;
-                        if (!shouldBlockMainUi(fallbackStatusPayload)) {
+                        pollIntervalMs = Number(fallbackStatusPayload.poll_interval_ms || 0);
+                        if (await renderRollbackRequiredState(fallbackStatusPayload, pollGeneration)) {
+                            if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                            await sleep(pollIntervalMs > 0 ? pollIntervalMs : 900);
+                            continue;
+                        }
+                        recordMaintenanceObservation(fallbackStatusPayload);
+                        renderAwaitingShutdownState(fallbackStatusPayload);
+                        resetMaintenanceFallbackState();
+                        if (!shouldBlockMainUi(fallbackStatusPayload)
+                            && isConfirmedMaintenanceReady(fallbackStatusPayload)) {
                             setMaintenanceCopy(
                                 translate('storage.maintenanceTitle', '正在优化存储布局...'),
                                 translate('storage.maintenanceReconnectSubtitle', '检测到服务已经恢复，正在重新连接应用。'),
@@ -1542,26 +2552,52 @@
                             return;
                         }
 
+                        if (await leaveMaintenanceForSelection(fallbackStatusPayload, pollGeneration)) {
+                            return;
+                        }
+                        if (shouldAbortMaintenancePoll(pollGeneration)) return;
+
                         setMaintenanceCopy(
                             translate('storage.maintenanceTitle', '正在优化存储布局...'),
-                            translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'),
+                            translateMaintenanceSubtitle(
+                                fallbackStatusPayload,
+                                translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。')
+                            ),
                             buildMaintenanceStatusText(fallbackStatusPayload)
                         );
                         applyMaintenanceProgress(fallbackStatusPayload);
                     } catch (error) {
                         failureCount += 1;
-                        setMaintenanceCopy(
-                            translate('storage.maintenanceTitle', '正在优化存储布局...'),
-                            translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'),
-                            failureCount <= 1
-                                ? translate('storage.maintenanceClosingStatus', '正在关闭...')
-                                : translate('storage.maintenanceOfflineStatus', '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。')
-                        );
-                        applyMaintenanceProgress({
-                            status: 'maintenance',
-                            lifecycle_state: 'maintenance',
-                            restart_mode: state.pendingSelection && state.pendingSelection.preflight && state.pendingSelection.preflight.restart_mode
-                        });
+                        state.maintenanceAwaitingShutdown = false;
+                        var hostRecoveryState = await refreshHostRecoveryFallback(pollGeneration);
+                        if (shouldAbortMaintenancePoll(pollGeneration)) return;
+                        if (hostRecoveryState && hostRecoveryState.state === 'terminal') {
+                            setMaintenanceCopy(
+                                translate('storage.maintenanceRecoveryTitle', '存储服务需要恢复'),
+                                translate(
+                                    'storage.maintenanceRecoveryFallback',
+                                    '存储服务未能自动恢复。你可以重试恢复服务，或在确认迁移已经停止后安全退出应用。'
+                                ),
+                                ''
+                            );
+                            applyMaintenanceProgress({
+                                status: 'recovery_failed',
+                                lifecycle_state: 'recovery_failed'
+                            });
+                        } else {
+                            setMaintenanceCopy(
+                                translate('storage.maintenanceTitle', '正在优化存储布局...'),
+                                translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'),
+                                failureCount <= 1
+                                    ? translate('storage.maintenanceClosingStatus', '正在关闭...')
+                                    : translate('storage.maintenanceOfflineStatus', '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。')
+                            );
+                            applyMaintenanceProgress({
+                                status: 'maintenance',
+                                lifecycle_state: 'maintenance',
+                                restart_mode: state.pendingSelection && state.pendingSelection.preflight && state.pendingSelection.preflight.restart_mode
+                            });
+                        }
                     }
                 }
 
@@ -1572,10 +2608,56 @@
             }
         })();
 
-        return state.maintenancePollPromise;
+        state.maintenancePollPromise = pollPromise;
+        try {
+            await pollPromise;
+        } finally {
+            if (state.maintenancePollPromise === pollPromise) {
+                state.maintenancePollPromise = null;
+            }
+        }
     }
 
-    function enterMaintenanceMode(payload) {
+    function restartMaintenancePolling() {
+        var previousPoll = state.maintenancePollPromise;
+        state.maintenancePollGeneration += 1;
+        if (!previousPoll) {
+            startMaintenancePolling();
+            return;
+        }
+        var startSuccessor = function () {
+            window.setTimeout(function () {
+                if (state.phase === 'maintenance'
+                    && !state.maintenancePollPromise
+                    && !state.closeAttemptInFlight
+                    && !state.shutdownRequested) {
+                    startMaintenancePolling();
+                }
+            }, 0);
+        };
+        previousPoll.then(startSuccessor, startSuccessor);
+    }
+
+    function enterMaintenanceMode(payload, options) {
+        var previousSystemStatus = state.systemStatus && typeof state.systemStatus === 'object'
+            ? state.systemStatus
+            : {};
+        state.maintenanceEntryInstanceId = String(
+            previousSystemStatus.instance_id || payload && payload.instance_id || ''
+        ).trim();
+        state.maintenanceObservedMigrationBlock = false;
+        state.maintenanceRestartOperationId = String(
+            payload && payload.restart_operation_id || ''
+        ).trim();
+        state.maintenanceOutcomeUnknown = !!(
+            payload
+            && payload.result === 'restart_outcome_unknown'
+            && state.maintenanceRestartOperationId
+        );
+        state.maintenanceRollbackRequired = false;
+        state.maintenanceStatusUnavailable = false;
+        state.maintenanceAwaitingShutdown = false;
+        resetMaintenanceFallbackState();
         setMaintenanceCopy(
             translate('storage.maintenanceTitle', '正在优化存储布局...'),
             translateMaintenanceSubtitle(payload),
@@ -1583,10 +2665,15 @@
         );
         applyMaintenanceProgress(payload || {});
         setPhase('maintenance');
-        startMaintenancePolling();
+        if (options && options.restartPolling) {
+            restartMaintenancePolling();
+        } else {
+            startMaintenancePolling();
+        }
     }
 
     function enterExternalMaintenanceMode(payload) {
+        if (state.shutdownRequested) return;
         var normalizedPayload = payload && typeof payload === 'object' ? payload : {};
         var migration = normalizedPayload.migration && typeof normalizedPayload.migration === 'object'
             ? normalizedPayload.migration
@@ -1609,11 +2696,10 @@
         buildModalDom();
         clearCompletionNoticePolling();
         state.externalMaintenanceNoticeKey = noticeKey;
-        state.maintenancePollPromise = null;
         state.pendingSelection.path = targetRoot;
         state.pendingSelection.source = String(normalizedPayload.selection_source || 'custom').trim();
         state.pendingSelection.preflight = extractPreflightDetails(normalizedPayload, targetRoot);
-        enterMaintenanceMode(normalizedPayload);
+        enterMaintenanceMode(normalizedPayload, { restartPolling: true });
     }
 
     function handleExternalStorageRestartMessage(message) {
@@ -1638,6 +2724,7 @@
 
         setSubmitting(true);
         setSelectionStatus('', false);
+        var restartOutcomeUnknown = false;
 
         try {
             var confirmExistingTargetContent = false;
@@ -1650,18 +2737,29 @@
                     confirmExistingTargetContent = true;
                 }
 
-                var response = await fetch('/api/storage/location/restart', {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        selected_root: state.pendingSelection.path,
-                        selection_source: state.pendingSelection.source || 'user_selected',
-                        confirm_existing_target_content: confirmExistingTargetContent
-                    })
-                });
+                var response = null;
+                try {
+                    response = await fetchWithTimeout('/api/storage/location/restart', {
+                        method: 'POST',
+                        headers: storageMutationHeaders({
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        }),
+                        body: JSON.stringify({
+                            selected_root: state.pendingSelection.path,
+                            selection_source: state.pendingSelection.source || 'user_selected',
+                            confirm_existing_target_content: confirmExistingTargetContent,
+                            restart_operation_id: String(
+                                state.pendingSelection.preflight
+                                && state.pendingSelection.preflight.restart_operation_id
+                                || ''
+                            ).trim()
+                        })
+                    }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+                } catch (requestError) {
+                    restartOutcomeUnknown = true;
+                    throw requestError;
+                }
 
                 var payload = null;
                 try {
@@ -1669,6 +2767,11 @@
                 } catch (_) {}
 
                 if (!response.ok) {
+                    var responseErrorCode = String(payload && payload.error_code || '').trim();
+                    if (responseErrorCode === 'restart_schedule_rollback_failed'
+                        || responseErrorCode === 'restart_outcome_unknown') {
+                        restartOutcomeUnknown = true;
+                    }
                     if (payload && state.previewPanel) {
                         state.pendingSelection.preflight = extractPreflightDetails(payload, state.pendingSelection.path);
                         updateRestartPreviewPreflight(state.pendingSelection.preflight);
@@ -1695,6 +2798,7 @@
                 }
 
                 if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
+                    restartOutcomeUnknown = true;
                     throw new Error(
                         translate('storage.restartRequestUnexpected', '重启和迁移准备接口返回了未识别的结果。')
                     );
@@ -1705,6 +2809,26 @@
             }
         } catch (error) {
             console.warn('[storage-location] restart failed', error);
+            if (restartOutcomeUnknown) {
+                enterMaintenanceMode({
+                    result: 'restart_outcome_unknown',
+                    restart_operation_id: String(
+                        state.pendingSelection.preflight
+                        && state.pendingSelection.preflight.restart_operation_id
+                        || ''
+                    ).trim(),
+                    restart_mode: state.pendingSelection
+                        && state.pendingSelection.preflight
+                        && state.pendingSelection.preflight.restart_mode,
+                    target_root: state.pendingSelection.path,
+                    selection_source: state.pendingSelection.source,
+                    migration: {
+                        status: 'pending',
+                        target_root: state.pendingSelection.path
+                    }
+                });
+                return;
+            }
             setSelectionStatus(
                 String((error && error.message) || error || translate('storage.restartRequestFailed', '准备重启与迁移失败，请稍后重试。')),
                 true
@@ -2023,6 +3147,37 @@
         });
         maintenanceProgress.appendChild(progressSteps);
 
+        var maintenanceFallback = createElement('section', 'storage-location-maintenance-fallback');
+        maintenanceFallback.hidden = true;
+        var maintenanceFallbackMessage = createElement(
+            'p',
+            'storage-location-note storage-location-note--error',
+            translate(
+                'storage.maintenanceRecoveryFallback',
+                '存储服务未能自动恢复。你可以重试恢复服务，或在确认迁移已经停止后安全退出应用。'
+            )
+        );
+        var maintenanceFallbackActions = createElement('div', 'storage-location-error-actions');
+        var maintenanceRetryButton = createElement(
+            'button',
+            'storage-location-btn storage-location-btn--primary',
+            translate('storage.maintenanceRetryService', '重试恢复服务')
+        );
+        maintenanceRetryButton.type = 'button';
+        maintenanceRetryButton.addEventListener('click', retryMaintenanceRecoveryAction);
+        var maintenanceQuitButton = createElement(
+            'button',
+            'storage-location-btn',
+            translate('storage.maintenanceSafeQuit', '安全退出应用')
+        );
+        maintenanceQuitButton.type = 'button';
+        maintenanceQuitButton.addEventListener('click', requestMaintenanceSafeQuit);
+        maintenanceFallbackActions.appendChild(maintenanceRetryButton);
+        maintenanceFallbackActions.appendChild(maintenanceQuitButton);
+        maintenanceFallback.appendChild(maintenanceFallbackMessage);
+        maintenanceFallback.appendChild(maintenanceFallbackActions);
+        maintenanceProgress.appendChild(maintenanceFallback);
+
         state.maintenanceTitle = maintenanceTitle;
         state.maintenanceSubtitle = maintenanceSubtitle;
         state.maintenanceProgressBar = progressTrack;
@@ -2030,6 +3185,10 @@
         state.maintenanceProgressLabel = progressLabel;
         state.maintenanceProgressValue = progressValue;
         state.maintenanceProgressSteps = maintenanceStepItems;
+        state.maintenanceFallback = maintenanceFallback;
+        state.maintenanceFallbackMessage = maintenanceFallbackMessage;
+        state.maintenanceRetryButton = maintenanceRetryButton;
+        state.maintenanceQuitButton = maintenanceQuitButton;
 
         hero.appendChild(maintenanceTitle);
         hero.appendChild(maintenanceSubtitle);
@@ -2054,7 +3213,9 @@
         shell.appendChild(hero);
 
         var actions = createElement('div', 'storage-location-error-actions');
-        var retryButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('common.retry', '重试'));
+        var retryButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('common.retry', '重试'))
+        );
         retryButton.type = 'button';
         retryButton.addEventListener('click', function () {
             beginSentinelFlow();
@@ -2080,6 +3241,16 @@
         modal.setAttribute('aria-label', translate('storage.dialogLabel', '存储位置选择'));
 
         modal.appendChild(buildStorageLocationCloseButton());
+        var hostCloseFeedback = createElement(
+            'p',
+            'storage-location-note storage-location-note--error storage-location-host-close-feedback'
+        );
+        hostCloseFeedback.id = 'storage-location-host-close-feedback';
+        hostCloseFeedback.setAttribute('role', 'alert');
+        hostCloseFeedback.hidden = true;
+        state.hostCloseFeedback = hostCloseFeedback;
+        modal.appendChild(hostCloseFeedback);
+        renderHostCloseFeedback();
         modal.appendChild(buildLoadingView());
         modal.appendChild(buildMaintenanceView());
         modal.appendChild(buildSelectionIntroView());
@@ -2115,6 +3286,10 @@
             // 直接抓 DOM 文案先把视觉占住，避免重建瞬间退回构建期默认值。
             maintenanceTitleText: state.maintenanceTitle ? state.maintenanceTitle.textContent : '',
             maintenanceSubtitleText: state.maintenanceSubtitle ? state.maintenanceSubtitle.textContent : '',
+            maintenanceFallbackVisible: !!(state.maintenanceFallback && !state.maintenanceFallback.hidden),
+            maintenanceFallbackMessage: state.maintenanceFallbackMessage
+                ? state.maintenanceFallbackMessage.textContent
+                : '',
             lastMaintenanceProgressPayload: state.lastMaintenanceProgressPayload,
             pendingSelection: {
                 path: state.pendingSelection.path,
@@ -2140,6 +3315,7 @@
         state.selectionIntroView = null;
         state.selectionView = null;
         state.errorView = null;
+        state.hostCloseFeedback = null;
         state.banner = null;
         state.recommendedPath = null;
         state.currentPath = null;
@@ -2166,6 +3342,10 @@
         state.maintenanceProgressLabel = null;
         state.maintenanceProgressValue = null;
         state.maintenanceProgressSteps = [];
+        state.maintenanceFallback = null;
+        state.maintenanceFallbackMessage = null;
+        state.maintenanceRetryButton = null;
+        state.maintenanceQuitButton = null;
         state.actionButtons = [];
 
         if (state.completionCard && state.completionCard.parentNode) {
@@ -2240,6 +3420,13 @@
             if (snapshot.lastMaintenanceProgressPayload) {
                 applyMaintenanceProgress(snapshot.lastMaintenanceProgressPayload);
             }
+            if (snapshot.maintenanceFallbackVisible && state.maintenanceFallback) {
+                state.maintenanceFallback.hidden = false;
+                if (state.maintenanceFallbackMessage) {
+                    state.maintenanceFallbackMessage.textContent = snapshot.maintenanceFallbackMessage;
+                }
+                void refreshHostRecoveryFallback();
+            }
         }
 
         setPhase(snapshot.phase);
@@ -2267,11 +3454,18 @@
         window.addEventListener('localechange', handleLocaleChange);
     }
 
-    async function fetchBootstrap(flowStartTime) {
+    function shouldAbortSentinelFlow(flowGeneration) {
+        return flowGeneration !== state.sentinelFlowGeneration
+            || state.shutdownRequested
+            || state.closeAttemptInFlight;
+    }
+
+    async function fetchBootstrap(flowStartTime, flowGeneration) {
         // 延迟显示 loading overlay，避免从状态确认到 bootstrap 请求整体很快完成时闪屏
         var elapsedTime = Date.now() - flowStartTime;
         var remainingDelay = Math.max(0, 150 - elapsedTime);
         var showTimer = setTimeout(function () {
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
             setPhase('loading');
             setLoadingCopy(
                 translate('storage.loadingTitle', '正在确认存储布局状态'),
@@ -2279,18 +3473,11 @@
             );
         }, remainingDelay);
         try {
-            var response = await fetch('/api/storage/location/bootstrap', {
-                cache: 'no-store',
-                headers: {
-                    'Accept': 'application/json'
-                }
-            });
+            var bootstrapPayload = await fetchStorageLocationBootstrap();
             clearTimeout(showTimer);
-            if (!response.ok) {
-                throw new Error('bootstrap request failed: ' + response.status);
-            }
-
-            state.bootstrap = await response.json();
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
+            state.bootstrap = bootstrapPayload;
+            captureStorageCsrfToken(bootstrapPayload);
             if (shouldShowMaintenanceView(state.bootstrap)) {
                 enterMaintenanceMode(state.bootstrap);
                 return;
@@ -2309,17 +3496,25 @@
             scheduleCompletionNoticePolling();
         } catch (error) {
             clearTimeout(showTimer);
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
             console.warn('[storage-location] bootstrap failed', error);
             showError(error);
         }
     }
 
     async function beginSentinelFlow() {
+        if (state.sentinelFlowInFlight
+            || state.closeAttemptInFlight
+            || state.shutdownRequested) return;
+        var flowGeneration = ++state.sentinelFlowGeneration;
+        state.sentinelFlowInFlight = true;
+        setSubmitting(state.submitting);
         buildModalDom();
         attachLocaleListener();
         // 延迟显示 loading overlay，避免 waitForSystemStatus 很快完成时闪屏
         var flowStartTime = Date.now();
         var showTimer = setTimeout(function () {
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
             setPhase('loading');
             setLoadingCopy(
                 translate('storage.loadingTitle', '正在确认存储布局状态'),
@@ -2328,8 +3523,11 @@
         }, 150);
 
         try {
-            var statusPayload = await waitForSystemStatus();
+            var statusPayload = await waitForSystemStatus(flowGeneration);
             clearTimeout(showTimer);
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
+            state.systemStatus = statusPayload;
+            captureStorageCsrfToken(statusPayload);
             if (!shouldBlockMainUi(statusPayload)) {
                 hideOverlay();
                 resolveStartupDecision({
@@ -2340,11 +3538,28 @@
                 return;
             }
 
-            await fetchBootstrap(flowStartTime);
+            if (normalizeStorageLifecycle(statusPayload).storageStatusUnavailable) {
+                enterExternalMaintenanceMode(statusPayload);
+                await renderStorageStatusUnavailableState(
+                    statusPayload,
+                    state.maintenancePollGeneration
+                );
+                if (shouldAbortSentinelFlow(flowGeneration)) return;
+                return;
+            }
+
+            await fetchBootstrap(flowStartTime, flowGeneration);
         } catch (error) {
             clearTimeout(showTimer);
+            if (shouldAbortSentinelFlow(flowGeneration)) return;
             console.warn('[storage-location] sentinel init failed', error);
             showError(error);
+        } finally {
+            clearTimeout(showTimer);
+            if (flowGeneration === state.sentinelFlowGeneration) {
+                state.sentinelFlowInFlight = false;
+                setSubmitting(state.submitting);
+            }
         }
     }
 

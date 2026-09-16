@@ -102,6 +102,7 @@ from datetime import datetime, timezone  # noqa
 from config import (
     MAIN_SERVER_PORT,
     MONITOR_SERVER_PORT,
+    TOOL_SERVER_PORT,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
     USER_PLUGIN_BASE,
 )  # noqa
@@ -118,8 +119,18 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved  # noqa
+from utils.internal_http_auth import internal_http_auth_headers
 from utils.root_state_lock import root_state_transaction
-from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.storage_location_bootstrap import (
+    clear_runtime_storage_blocking_reason,
+    get_storage_startup_blocking_reason,
+    set_runtime_storage_blocking_reason,
+)
+from utils.storage.layout import (
+    clear_storage_recovery_mode,
+    get_storage_recovery_mode,
+    set_storage_recovery_mode,
+)
 
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging  # noqa: E402
@@ -408,6 +419,7 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/continue",
             json={"reason": reason},
+            headers=internal_http_auth_headers(),
             timeout=60.0,
         )
         if response.status_code == 409:
@@ -437,7 +449,35 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         ) from e
 
 
-async def _request_memory_server_block_startup(reason: str = "") -> None:
+async def _request_agent_server_continue_startup(reason: str = "") -> None:
+    """Release agent_server from limited mode after storage state is committed."""
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/continue",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server continue-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to release agent_server limited-mode startup: {exc}"
+        ) from exc
+
+
+async def _request_memory_server_block_startup(
+    reason: str = "",
+    *,
+    recovery_mode: str = "",
+) -> None:
     """Return memory_server to limited mode when main_server cannot finish startup."""
     try:
         from config import MEMORY_SERVER_PORT
@@ -446,7 +486,8 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
-            json={"reason": reason},
+            json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
             timeout=10.0,
         )
         response.raise_for_status()
@@ -459,6 +500,53 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
         raise RuntimeError(
             f"failed to restore memory_server limited-mode startup: {e}"
         ) from e
+
+
+async def _request_agent_server_block_startup(
+    reason: str = "",
+    *,
+    recovery_mode: str = "",
+) -> None:
+    """Compensate a failed same-session release in agent_server."""
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/block",
+            json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server block-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to restore agent_server limited-mode startup: {exc}"
+        ) from exc
+
+
+async def _request_runtime_services_block_startup(
+    reason: str,
+    *,
+    recovery_mode: str,
+) -> None:
+    """Restore both child-service admission guards after a failed release."""
+    results = await asyncio.gather(
+        _request_agent_server_block_startup(reason, recovery_mode=recovery_mode),
+        _request_memory_server_block_startup(reason, recovery_mode=recovery_mode),
+        return_exceptions=True,
+    )
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if failures:
+        raise RuntimeError(
+            "failed to restore one or more storage startup guards: "
+            + "; ".join(str(failure) for failure in failures)
+        )
 
 
 agent_event_bridge: MainServerAgentBridge | None = None
@@ -546,6 +634,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/memory_browser",
     "/cookies_login",
     "/chat",
+    "/chat_full",
     "/web_chat_compact",
     "/subtitle",
     "/agenthud",
@@ -569,12 +658,15 @@ def _enable_main_storage_limited_mode(reason: str) -> None:
     _main_runtime_limited_mode_reason = (
         str(reason or "runtime_initializing").strip() or "runtime_initializing"
     )
+    if _main_runtime_limited_mode_reason == "startup_release_failed":
+        set_runtime_storage_blocking_reason(_main_runtime_limited_mode_reason)
 
 
 def _disable_main_storage_limited_mode() -> None:
     global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
     _main_runtime_limited_mode_enabled = False
     _main_runtime_limited_mode_reason = ""
+    clear_runtime_storage_blocking_reason()
 
 
 def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
@@ -590,7 +682,7 @@ def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
 
 @app.middleware("http")
 async def main_storage_limited_mode_guard(request: Request, call_next):
-    if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
+    if not _main_runtime_limited_mode_enabled:
         return await call_next(request)
 
     if _is_main_limited_mode_allowed_path(request.url.path, request.method):
@@ -1074,29 +1166,45 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 async def release_storage_startup_barrier(
     *, reason: str = "storage_selection_continue_current_session"
 ) -> dict[str, Any]:
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode in {
+        "selection_required",
+        "migration_pending",
+        "recovery_required",
+    }:
+        # The storage router has already committed a normal, validated state.
+        # Clear this process's boot-generation marker before asking the child
+        # services to re-evaluate disk authority.  In merged mode the three
+        # apps share os.environ; in multi-process mode each child clears its own
+        # marker in the loopback continue endpoint below.
+        clear_storage_recovery_mode()
     try:
         # The continue request has an ambiguous cancellation outcome: memory_server
         # may have applied it even when this client never receives the response.
         # Keep the request itself inside the compensation boundary so every failed
         # exit re-establishes both admission guards before storage state rolls back.
         await _request_memory_server_continue_startup(reason)
+        await _request_agent_server_continue_startup(reason)
         initialized = await _ensure_main_server_runtime_initialized(reason=reason)
     except BaseException:
-        # Once memory_server may have accepted continue-startup, every failed exit
-        # must put its admission guard back before the storage router restores a
-        # blocking root_state snapshot. CancelledError is a BaseException, so an
-        # Exception-only handler leaves initialized memory writable against the
-        # rolled-back storage state.
-        _enable_main_storage_limited_mode("runtime_initialization_failed")
+        # Once either child service may have accepted continue-startup, every
+        # failed exit must put both admission guards back while the router keeps
+        # the already-validated root committed. CancelledError is a BaseException,
+        # so an Exception-only handler can leave initialized children writable
+        # after the caller has been told startup release failed.
+        _enable_main_storage_limited_mode("startup_release_failed")
 
         # Re-blocking is compensating work, not part of the cancelled request.  A
         # second cancellation (for example server shutdown following a client
         # disconnect) must not interrupt it halfway through.  Keep the request in
         # this handler until the HTTP call has really finished, then re-raise the
         # original exception below.
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
         block_task = asyncio.ensure_future(
-            _request_memory_server_block_startup(
-                f"{reason}:main_server_init_failed"
+            _request_runtime_services_block_startup(
+                f"{reason}:main_server_init_failed",
+                recovery_mode=recovery_mode,
             )
         )
         try:
@@ -1109,7 +1217,7 @@ async def release_storage_startup_barrier(
                     continue
         except Exception as revert_exc:
             logger.warning(
-                "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
+                "main_server 初始化失败后恢复子服务 limited-mode 失败: %s",
                 revert_exc,
                 exc_info=True,
             )
@@ -1126,7 +1234,7 @@ async def release_storage_startup_barrier(
                 block_task.result()
             except Exception as revert_exc:
                 logger.warning(
-                    "main_server 初始化取消后恢复 memory_server limited-mode 失败: %s",
+                    "main_server 初始化取消后恢复子服务 limited-mode 失败: %s",
                     revert_exc,
                     exc_info=True,
                 )
@@ -1167,6 +1275,23 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        # Keep diagnostics alive in storage limited-mode as well. The watchdog
+        # only samples counters (and optionally the fixed-anchor JSONL); it does
+        # not initialize business state or write through the selected root.
+        try:
+            _start_debug_health_watchdog()
+        except Exception as _e:
+            logger.debug(f"[debug_health] start watchdog failed: {_e}")
+
+        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+        if blocking_reason:
+            _enable_main_storage_limited_mode(blocking_reason)
+            logger.info(
+                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
+                blocking_reason,
+            )
+            return
+
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1210,23 +1335,6 @@ async def on_startup():
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
 
-        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
-        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
-        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
-        try:
-            _start_debug_health_watchdog()
-        except Exception as _e:
-            logger.debug(f"[debug_health] start watchdog failed: {_e}")
-
-        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
-        if blocking_reason:
-            _enable_main_storage_limited_mode(blocking_reason)
-            logger.info(
-                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
-                blocking_reason,
-            )
-            return
-
         await _ensure_main_server_runtime_initialized(reason="startup")
         _start_neko_servers_integration_workers()
 
@@ -1236,6 +1344,14 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        persistence_blocked = bool(
+            get_storage_recovery_mode()
+            or _main_runtime_limited_mode_enabled
+        )
+        if persistence_blocked:
+            logger.info(
+                "存储恢复会话关闭：跳过运行态持久化、角色释放和云存档导出，继续释放资源"
+            )
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 
@@ -1304,12 +1420,13 @@ async def on_shutdown():
             logger.debug(f"Translation service cleanup failed: {e}")
 
         # 保存 Token 用量数据
-        try:
-            from utils.token_tracker import TokenTracker
+        if not persistence_blocked:
+            try:
+                from utils.token_tracker import TokenTracker
 
-            TokenTracker.get_instance().save()
-        except Exception as e:
-            logger.debug(f"Token usage save on shutdown failed: {e}")
+                TokenTracker.get_instance().save()
+            except Exception as e:
+                logger.debug(f"Token usage save on shutdown failed: {e}")
 
         # 关闭音乐爬虫连接池
         try:
@@ -1329,9 +1446,12 @@ async def on_shutdown():
         any_release_failed = False
         failed_release_characters: list[str] = []
         try:
-            from main_routers.characters_router import release_memory_server_character
+            if persistence_blocked:
+                releasable_names = []
+            else:
+                from main_routers.characters_router import release_memory_server_character
 
-            releasable_names = sorted(name for name, _mgr in _iter_session_managers())
+                releasable_names = sorted(name for name, _mgr in _iter_session_managers())
 
             # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
             # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
@@ -1391,7 +1511,9 @@ async def on_shutdown():
                 f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
             )
 
-        if any_release_failed:
+        if persistence_blocked:
+            logger.info("存储恢复会话关闭：未释放角色或上传 cloudsave 快照")
+        elif any_release_failed:
             logger.warning(
                 "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
                 ", ".join(sorted(set(failed_release_characters)))

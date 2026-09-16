@@ -102,6 +102,8 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
         if name in NON_RUNTIME_CONTENT_DIR_NAMES:
             continue
         candidate = root / name
+        if candidate.is_symlink():
+            return True
         if candidate.is_file():
             return True
         if candidate.is_dir():
@@ -150,6 +152,7 @@ def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> lis
         if not source_path.exists():
             continue
         destination_path = destination_root / name
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
         if source_path.is_dir():
             shutil.copytree(source_path, destination_path, dirs_exist_ok=True)
         else:

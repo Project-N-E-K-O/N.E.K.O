@@ -209,6 +209,26 @@ def _copy_with_heartbeat(beat):
     return _copy
 
 
+def _chmod_without_following(path, mode: int) -> None:
+    """Apply chmod without ever accepting a symlink/reparse point target."""
+
+    if os.chmod in os.supports_follow_symlinks:
+        os.chmod(path, mode, follow_symlinks=False)
+        return
+
+    metadata = os.lstat(path)
+    is_reparse_point = bool(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        & getattr(metadata, "st_file_attributes", 0)
+    )
+    if stat.S_ISLNK(metadata.st_mode) or is_reparse_point:
+        raise OSError("refusing to chmod a linked migration path")
+    # Python 3.11 Linux/Windows may not implement follow_symlinks=False.
+    # This workspace is app-owned and serialized by _MIGRATION_LOCK; after the
+    # lstat check, ordinary chmod is the only portable way to clear read-only.
+    os.chmod(path, mode)
+
+
 def _force_rmtree(path):
     """Remove a tree even when Windows made part of it read-only.
 
@@ -225,22 +245,44 @@ def _force_rmtree(path):
     """
     def _clear_read_only(_func, target, _exc):
         try:
+            # POSIX unlink/rmdir permission belongs to the parent directory,
+            # not to the leaf.  A copied read-only directory therefore has to
+            # be made writable/traversable before retrying removal of a child.
+            # shutil only reports the child that failed; waiting for a later
+            # callback on the parent leaves that first child stranded.
+            target_parent = os.path.dirname(os.fspath(target))
+            if target_parent:
+                try:
+                    parent_mode = os.stat(target_parent, follow_symlinks=False).st_mode
+                    _chmod_without_following(
+                        target_parent,
+                        parent_mode | stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC,
+                    )
+                except (OSError, NotImplementedError):
+                    pass
             # ADD the write bit; do not replace the mode with it. Setting
             # S_IWRITE alone is 0o200, which on POSIX takes read and execute
             # off a directory and leaves it untraversable -- so the retry
             # cannot unlink what is inside and the tree stays. Windows only
             # reads the write bit here, so keeping the rest costs nothing
             # there.
-            try:
-                current = os.stat(target).st_mode
-            except OSError:
-                current = 0
-            os.chmod(target, current | stat.S_IWRITE | stat.S_IREAD)
-            if os.path.isdir(target):
-                # Traversal, which is what an unwritable parent was blocking.
-                os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC)
+            if not os.path.islink(target):
+                try:
+                    current = os.stat(target, follow_symlinks=False).st_mode
+                except OSError:
+                    current = 0
+                _chmod_without_following(
+                    target,
+                    current | stat.S_IWRITE | stat.S_IREAD,
+                )
+                if os.path.isdir(target):
+                    # Traversal, which is what an unwritable directory blocks.
+                    _chmod_without_following(
+                        target,
+                        os.stat(target, follow_symlinks=False).st_mode | stat.S_IEXEC,
+                    )
             _func(target)
-        except OSError:
+        except (OSError, NotImplementedError):
             # The caller checks whether the tree actually went; a
             # cleanup that raises would replace the real failure.
             pass

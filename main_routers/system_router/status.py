@@ -18,13 +18,17 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
+import asyncio
 import os
 from typing import Any
 
+import config as config_module
 from fastapi import Request
 from fastapi.responses import Response
 from main_logic import client_registration
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
+from utils.storage_migration import is_storage_migration_rollback_required
+from utils.storage_policy import StoragePolicyError
 
 from ._shared import (
     _get_system_config_manager,
@@ -52,6 +56,27 @@ def _derive_system_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
     return "ready"
 
 
+def _derive_storage_lifecycle_state(storage_bootstrap: dict[str, Any]) -> str:
+    """Expose the actionable storage state without changing the legacy status."""
+    if not isinstance(storage_bootstrap, dict):
+        return "starting"
+
+    migration = storage_bootstrap.get("migration")
+    if is_storage_migration_rollback_required(migration if isinstance(migration, dict) else None):
+        return "rollback_required"
+
+    blocking_reason = str(storage_bootstrap.get("blocking_reason") or "").strip()
+    if blocking_reason == "migration_pending":
+        return "maintenance"
+    if blocking_reason in {"recovery_required", "startup_release_failed"}:
+        return "recovery_required"
+    if blocking_reason == "selection_required":
+        return "selection_required"
+    if blocking_reason:
+        return "starting"
+    return "ready"
+
+
 @router.get("/system/status")
 async def get_system_status(response: Response):
     """Return a lightweight readiness snapshot for the web bootstrap sentinel."""
@@ -59,36 +84,97 @@ async def get_system_status(response: Response):
 
     try:
         config_manager = _get_system_config_manager()
-        storage_bootstrap = build_storage_location_bootstrap_payload(config_manager)
-        lifecycle_state = _derive_system_lifecycle_state(storage_bootstrap)
+        storage_bootstrap = await asyncio.to_thread(
+            build_storage_location_bootstrap_payload,
+            config_manager,
+        )
+        blocking_reason = str(storage_bootstrap.get("blocking_reason") or "")
+        storage_status_unavailable = blocking_reason in {
+            "storage_policy_unavailable",
+            "storage_status_unavailable",
+        }
+        system_status = (
+            "storage_status_unavailable"
+            if storage_status_unavailable
+            else _derive_system_lifecycle_state(storage_bootstrap)
+        )
+        storage_lifecycle_state = (
+            "storage_status_unavailable"
+            if storage_status_unavailable
+            else _derive_storage_lifecycle_state(storage_bootstrap)
+        )
+        migration = storage_bootstrap.get("migration")
+        migration_stage = str(
+            migration.get("status") if isinstance(migration, dict) else ""
+        ).strip()
+        rollback_required = is_storage_migration_rollback_required(
+            migration if isinstance(migration, dict) else None
+        )
+        migration_phase = str(storage_bootstrap.get("migration_phase") or "").strip()
+        shutdown_retry_allowed = bool(storage_bootstrap.get("shutdown_retry_allowed"))
         return {
             "ok": True,
-            "status": lifecycle_state,
-            "ready": lifecycle_state == "ready",
+            "instance_id": str(config_module.INSTANCE_ID),
+            # Keep `status=migration_required` for existing lightweight-status
+            # consumers; lifecycle_state is the canonical actionable state.
+            "status": system_status,
+            "lifecycle_state": storage_lifecycle_state,
+            "ready": storage_lifecycle_state == "ready",
+            "blocking_reason": blocking_reason,
+            "migration_stage": migration_stage,
+            "migration_phase": migration_phase,
+            "shutdown_retry_allowed": shutdown_retry_allowed,
+            "recovery_action": str(storage_bootstrap.get("recovery_action") or ""),
+            "storage_status_unavailable": storage_status_unavailable,
+            "error_code": blocking_reason if storage_status_unavailable else "",
             "storage": {
                 "selection_required": bool(storage_bootstrap.get("selection_required")),
                 "migration_pending": bool(storage_bootstrap.get("migration_pending")),
                 "recovery_required": bool(storage_bootstrap.get("recovery_required")),
+                "rollback_required": rollback_required,
                 "legacy_cleanup_pending": bool(storage_bootstrap.get("legacy_cleanup_pending")),
-                "blocking_reason": str(storage_bootstrap.get("blocking_reason") or ""),
+                "blocking_reason": blocking_reason,
                 "last_error_summary": str(storage_bootstrap.get("last_error_summary") or ""),
                 "stage": storage_bootstrap.get("stage") or "",
+                "status_unavailable": storage_status_unavailable,
+                "error_code": blocking_reason if storage_status_unavailable else "",
+                "migration_phase": migration_phase,
+                "shutdown_retry_allowed": shutdown_retry_allowed,
             },
         }
     except Exception as exc:
         logger.warning("system status probe unavailable during startup: %s", exc)
+        error_code = (
+            exc.error_code
+            if isinstance(exc, StoragePolicyError)
+            else "storage_status_unavailable"
+        )
         return {
             "ok": True,
-            "status": "starting",
+            "instance_id": str(config_module.INSTANCE_ID),
+            "status": "storage_status_unavailable",
+            "lifecycle_state": "storage_status_unavailable",
             "ready": False,
+            "blocking_reason": "storage_status_unavailable",
+            "migration_stage": "",
+            "migration_phase": "",
+            "shutdown_retry_allowed": False,
+            "recovery_action": "safe_exit",
+            "storage_status_unavailable": True,
+            "error_code": error_code,
             "storage": {
                 "selection_required": False,
                 "migration_pending": False,
                 "recovery_required": False,
+                "rollback_required": False,
                 "legacy_cleanup_pending": False,
-                "blocking_reason": "",
-                "last_error_summary": "",
+                "blocking_reason": "storage_status_unavailable",
+                "last_error_summary": "暂时无法读取存储状态，主界面将继续保持阻断。",
                 "stage": "",
+                "status_unavailable": True,
+                "error_code": error_code,
+                "migration_phase": "",
+                "shutdown_retry_allowed": False,
             },
         }
 

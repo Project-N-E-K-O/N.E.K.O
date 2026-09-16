@@ -14,6 +14,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Deep topic hooks](./deep-topic-hooks)
 - [LLM prompt budget](./llm-prompt-budget)
 - [Proactive reason-code guide](./proactive-reason-code-guide.zh-CN)
+- [Storage location migration architecture and maintenance](./storage-location-persistent-entry-design)
 - [User activity tracker](./user-activity-tracker)
 - [Voice design architecture](./voice-design-architecture)
 

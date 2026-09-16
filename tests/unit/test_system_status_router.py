@@ -1,16 +1,24 @@
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from main_routers.system_router import status as system_router_module
 from main_routers.system_router import _shared as system_router_shared
 from main_routers.shared_state import init_shared_state
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
-from utils.storage_migration import create_pending_storage_migration
+from utils.storage_migration import (
+    create_pending_storage_migration,
+    get_storage_migration_path,
+    load_storage_migration,
+    save_storage_migration,
+)
 from utils.storage_policy import save_storage_policy
+from utils.storage_policy import get_storage_policy_path
 
 
 SYSTEM_STATUS_ENDPOINT = "/api/system/status"
@@ -20,7 +28,9 @@ SYSTEM_SOCIAL_CONFIG_ENDPOINT = "/api/system/social/config"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state_after_test():
+    storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
     yield
+    storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
     init_shared_state(
         role_state={},
         steamworks=None,
@@ -138,6 +148,7 @@ def test_system_status_reports_migration_required_when_storage_selection_is_bloc
     payload = response.json()
     assert payload["ok"] is True
     assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "selection_required"
     assert payload["ready"] is False
     assert payload["storage"]["selection_required"] is True
     assert payload["storage"]["legacy_cleanup_pending"] is False
@@ -170,6 +181,7 @@ def test_system_status_uses_runtime_config_manager_fallback_when_shared_state_is
 @pytest.mark.unit
 def test_system_status_reports_ready_after_storage_policy_when_dev_override_disabled(tmp_path, monkeypatch):
     config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setattr(system_router_module.config_module, "INSTANCE_ID", "system-generation")
     save_storage_policy(
         config_manager,
         selected_root=config_manager.app_docs_dir,
@@ -187,7 +199,9 @@ def test_system_status_reports_ready_after_storage_policy_when_dev_override_disa
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
+    assert payload["instance_id"] == "system-generation"
     assert payload["status"] == "ready"
+    assert payload["lifecycle_state"] == "ready"
     assert payload["ready"] is True
     assert payload["storage"]["selection_required"] is False
     assert payload["storage"]["legacy_cleanup_pending"] is False
@@ -218,6 +232,7 @@ def test_system_status_reports_migration_required_for_recovery_state_even_withou
     payload = response.json()
     assert payload["ok"] is True
     assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "recovery_required"
     assert payload["ready"] is False
     assert payload["storage"]["selection_required"] is False
     assert payload["storage"]["recovery_required"] is True
@@ -251,6 +266,7 @@ def test_system_status_reports_migration_required_when_checkpoint_is_pending(tmp
     payload = response.json()
     assert payload["ok"] is True
     assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "maintenance"
     assert payload["ready"] is False
     assert payload["storage"]["migration_pending"] is True
     assert payload["storage"]["blocking_reason"] == "migration_pending"
@@ -279,8 +295,211 @@ def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "starting"
+    assert payload["storage_status_unavailable"] is False
     assert payload["ready"] is False
     assert payload["storage"]["blocking_reason"] == "runtime_initializing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_system_status_builds_storage_snapshot_off_event_loop(monkeypatch):
+    main_thread = threading.get_ident()
+    observed_managers = []
+    observed_threads = []
+    config_manager = object()
+    monkeypatch.setattr(
+        system_router_module,
+        "_get_system_config_manager",
+        lambda: config_manager,
+    )
+
+    def _build_snapshot(observed_manager):
+        observed_managers.append(observed_manager)
+        observed_threads.append(threading.get_ident())
+        return {
+            "selection_required": False,
+            "migration_pending": False,
+            "recovery_required": False,
+            "blocking_reason": "",
+            "migration": {},
+        }
+
+    monkeypatch.setattr(
+        system_router_module,
+        "build_storage_location_bootstrap_payload",
+        _build_snapshot,
+    )
+
+    heartbeat = asyncio.create_task(asyncio.sleep(0))
+    payload = await system_router_module.get_system_status(Response())
+    await heartbeat
+
+    assert payload["ok"] is True
+    assert payload["status"] == "ready"
+    assert observed_managers == [config_manager]
+    assert observed_threads and observed_threads[0] != main_thread
+
+
+@pytest.mark.unit
+def test_system_status_exposes_runtime_release_failure_over_ready_disk(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "recovery_required"
+    assert payload["ready"] is False
+    assert payload["blocking_reason"] == "startup_release_failed"
+    assert payload["storage"]["recovery_required"] is True
+
+
+@pytest.mark.unit
+def test_system_status_reports_storage_status_unavailable_instead_of_starting_on_probe_error(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with patch.object(
+        system_router_module.config_module,
+        "INSTANCE_ID",
+        "unavailable-generation",
+    ), patch.object(
+        system_router_module,
+        "build_storage_location_bootstrap_payload",
+        side_effect=OSError("private storage path is unavailable"),
+    ):
+        with _build_client(config_manager) as client:
+            response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["instance_id"] == "unavailable-generation"
+    assert payload["ready"] is False
+    assert payload["status"] == "storage_status_unavailable"
+    assert payload["lifecycle_state"] == "storage_status_unavailable"
+    assert payload["storage_status_unavailable"] is True
+    assert payload["error_code"] == "storage_status_unavailable"
+    assert payload["storage"]["status_unavailable"] is True
+    assert payload["storage"]["rollback_required"] is False
+    assert "private storage path" not in response.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "recovery_mode",
+    ["storage_status_unavailable", "storage_policy_unavailable"],
+)
+def test_system_status_honors_launcher_unavailable_generation_with_normal_disk_state(
+    monkeypatch,
+    tmp_path,
+    recovery_mode,
+):
+    config_manager = _DummyConfigManager(tmp_path, root_mode="normal")
+    config_manager.load_root_state = lambda: (_ for _ in ()).throw(
+        AssertionError("unavailable generation must not re-read persisted root state")
+    )
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", recovery_mode)
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "storage_status_unavailable"
+    assert payload["lifecycle_state"] == "storage_status_unavailable"
+    assert payload["blocking_reason"] == recovery_mode
+    assert payload["recovery_action"] == "safe_exit"
+    assert payload["storage_status_unavailable"] is True
+    assert payload["error_code"] == recovery_mode
+    assert payload["storage"]["status_unavailable"] is True
+
+
+@pytest.mark.unit
+def test_system_status_reports_unavailable_for_real_malformed_migration_checkpoint(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    checkpoint_path = get_storage_migration_path(config_manager)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('{"status":', encoding="utf-8")
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "storage_status_unavailable"
+    assert payload["lifecycle_state"] == "storage_status_unavailable"
+    assert payload["ready"] is False
+    assert payload["storage"]["status_unavailable"] is True
+
+
+@pytest.mark.unit
+def test_system_status_reports_policy_unavailable_without_leaking_policy_contents(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text('{"selected_root":"/private/sensitive/path"', encoding="utf-8")
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "storage_status_unavailable"
+    assert payload["lifecycle_state"] == "storage_status_unavailable"
+    assert payload["ready"] is False
+    assert payload["error_code"] == "storage_policy_unavailable"
+    assert payload["storage"]["error_code"] == "storage_policy_unavailable"
+    assert "/private/sensitive/path" not in response.text
+
+
+@pytest.mark.unit
+def test_system_status_preserves_rollback_required_as_actionable_lifecycle(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path, root_mode="deferred_init")
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="recommended",
+    )
+    checkpoint = load_storage_migration(config_manager)
+    save_storage_migration(
+        config_manager,
+        {**checkpoint, "status": "rollback_required", "error_code": "rollback_failed"},
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get(SYSTEM_STATUS_ENDPOINT)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "migration_required"
+    assert payload["lifecycle_state"] == "rollback_required"
+    assert payload["migration_stage"] == "rollback_required"
+    assert payload["storage"]["migration_pending"] is True
+    assert payload["storage"]["rollback_required"] is True
 
 
 @pytest.mark.unit

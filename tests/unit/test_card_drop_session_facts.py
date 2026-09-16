@@ -627,6 +627,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
     # Keep the suite off the developer's real credential file.
     monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     async def current_desktop_status():
         snapshot = await asyncio.to_thread(C._desktop_session_snapshot)
@@ -1657,7 +1658,14 @@ def test_social_session_init_repairs_a_failed_desktop_bind(
     monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1691,7 +1699,14 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
 
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1876,6 +1891,7 @@ def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     # 一个 repaired-bind 写者在持有 social-session 锁：clear 必须在锁上等到
     # 超时并报告失败，而不是绕过锁把镜像删掉（约 2 秒锁超时）。
@@ -1902,7 +1918,10 @@ def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
     legacy.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(primary.parent))
-    assert C._social_session_paths() == [primary, legacy]
+    session_paths = C._social_session_paths()
+    assert session_paths[0] == primary
+    assert legacy in session_paths
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     writing = threading.Event()
     release = threading.Event()
@@ -1957,6 +1976,7 @@ def test_clear_auth_preserves_tickets_issued_after_unlock(client, tmp_path, monk
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     old_ticket = C._issue_sync_ticket_for_session()
     unlocked = threading.Event()
     issued = threading.Event()
@@ -2306,6 +2326,7 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     legacy_auth = tmp_path / "documents" / "N.E.K.O" / "community_auth.json"
     electron_root = tmp_path / "electron-user-data"
     monkeypatch.setattr(C, "_auth_path", lambda: legacy_auth)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
 
     assert C._save_auth({"access_token": "token-a"})
@@ -2417,6 +2438,7 @@ def test_sync_session_clear_is_origin_restricted_and_private_network_aware(
     monkeypatch.setattr(C, "_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_access_token", lambda: "token-a")
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     denied = client.post(
         "/api/card-drop/sync-session",

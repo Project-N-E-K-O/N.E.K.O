@@ -14,6 +14,7 @@ green" cannot mean "the guard never ran":
 """
 import ast
 import asyncio
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -920,6 +921,59 @@ def test_empty_snapshot_never_deletes_storage_state(tmp_path):
 
     assert policy_path.exists(), "空快照回滚把存储策略文件 unlink 了"
     assert migration_path.exists(), "空快照回滚把迁移检查点删了"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("previous_policy_exists", (False, True))
+def test_storage_snapshot_restore_propagates_policy_directory_flush_failure(
+    tmp_path,
+    monkeypatch,
+    previous_policy_exists,
+):
+    from utils.storage import policy as storage_policy_module
+    from utils.storage_policy import StoragePolicyError
+
+    config_manager = _make_real_config_manager(tmp_path)
+    anchor_root = Path(config_manager.anchor_root)
+    if previous_policy_exists:
+        save_storage_policy(
+            config_manager,
+            selected_root=config_manager.app_docs_dir,
+            anchor_root=anchor_root,
+            selection_source="custom",
+        )
+    snapshot = router_module._snapshot_storage_mutation_state(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+    changed_root = tmp_path / "changed-root" / "N.E.K.O"
+    save_storage_policy(
+        config_manager,
+        selected_root=changed_root,
+        anchor_root=anchor_root,
+        selection_source="custom",
+    )
+
+    def fail_required_flush(_fd):
+        raise StoragePolicyError("policy_flush_failed")
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        (
+            "_fsync_policy_directory_required"
+            if os.name == "nt"
+            else "_fsync_opened_policy_directory_required"
+        ),
+        fail_required_flush,
+    )
+    with pytest.raises(StoragePolicyError) as caught:
+        router_module._restore_storage_mutation_state(
+            config_manager,
+            snapshot,
+            anchor_root=anchor_root,
+        )
+
+    assert caught.value.reason == "policy_flush_failed"
 
 
 # ── 4. 写序列保持原子（不许被 await 切开） ────────────────────────────

@@ -35,7 +35,7 @@ import asyncio
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -61,8 +61,14 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.internal_http_auth import is_internal_http_request_authorized
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.storage.layout import (
+    clear_storage_recovery_mode,
+    get_storage_recovery_mode,
+    set_storage_recovery_mode,
+)
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
 
@@ -72,6 +78,7 @@ from ._shared import logger, validate_lanlan_name
 
 class ContinueStorageStartupRequest(BaseModel):
     reason: str = ""
+    recovery_mode: str = ""
 
 
 app = FastAPI()
@@ -248,7 +255,11 @@ async def character_publication_guard(request: Request, call_next):
 
 @app.middleware("http")
 async def storage_limited_mode_guard(request: Request, call_next):
-    if _memory_runtime_init_completed and not _memory_storage_blocked_after_init:
+    if (
+        _memory_runtime_init_completed
+        and not _memory_storage_blocked_after_init
+        and not get_storage_recovery_mode()
+    ):
         return await call_next(request)
 
     if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
@@ -353,6 +364,7 @@ _deferred_time_managers: list[TimeIndexedMemory] = []
 _memory_runtime_init_lock = asyncio.Lock()
 _memory_runtime_init_completed = False
 _memory_storage_blocked_after_init = False
+_memory_storage_admission_generation = 0
 _memory_background_tasks_started = False
 
 
@@ -1160,11 +1172,29 @@ async def startup_event_handler():
     await ensure_memory_server_runtime_initialized(reason="startup")
 
 
-@app.post("/internal/storage/startup/continue")
+def _require_storage_startup_control_auth(request: Request) -> None:
+    if not is_internal_http_request_authorized(request.scope, request.headers):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post(
+    "/internal/storage/startup/continue",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
     global _memory_storage_blocked_after_init
+    admission_generation = _memory_storage_admission_generation
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode in {
+        "selection_required",
+        "migration_pending",
+        "recovery_required",
+    }:
+        clear_storage_recovery_mode()
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
         return JSONResponse(
             status_code=409,
             content={
@@ -1179,12 +1209,25 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         initialized = await ensure_memory_server_runtime_initialized(
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
+        if admission_generation != _memory_storage_admission_generation:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "storage_startup_reblocked",
+                    "blocking_reason": "storage_startup_blocked_after_init",
+                    "error": "Memory server 初始化期间存储启动闸门已重新关闭。",
+                },
+            )
         _memory_storage_blocked_after_init = False
         return {
             "ok": True,
             "initialized": bool(initialized),
         }
     except Exception as e:
+        _memory_storage_blocked_after_init = True
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
         logger.error(f"[Memory] 释放 limited-mode 启动失败: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
@@ -1195,10 +1238,23 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         )
 
 
-@app.post("/internal/storage/startup/block")
+@app.post(
+    "/internal/storage/startup/block",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
 async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
-    global _memory_storage_blocked_after_init
+    global _memory_storage_blocked_after_init, _memory_storage_admission_generation
     reason = str(getattr(payload, "reason", "") or "").strip()
+    recovery_mode = str(getattr(payload, "recovery_mode", "") or "").strip()
+    if recovery_mode:
+        try:
+            set_storage_recovery_mode(recovery_mode)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "invalid storage recovery mode"},
+            )
+    _memory_storage_admission_generation += 1
     _memory_storage_blocked_after_init = True
     logger.warning("[Memory] limited-mode restored after main_server startup failure: %s", reason or "-")
     return {
@@ -1232,13 +1288,21 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        # Best-effort final flush — the shutdown path must never fail on
-        # tracker IO, and the periodic save loop already persisted recent data.
-        pass
+    persistence_blocked = bool(
+        not _memory_runtime_init_completed
+        or get_storage_recovery_mode()
+        or _memory_storage_blocked_after_init
+    )
+    if persistence_blocked:
+        logger.info("[Memory] 存储恢复会话关闭：跳过运行态持久化，继续释放资源")
+    else:
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception:
+            # Best-effort final flush — the shutdown path must never fail on
+            # tracker IO, and the periodic save loop already persisted recent data.
+            pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.

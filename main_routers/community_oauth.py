@@ -26,6 +26,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from utils.storage.community_private_state import (
+    COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
+)
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -33,7 +36,6 @@ router = APIRouter(prefix="/api/card-drop", tags=["community-oauth"])
 callback_router = APIRouter(tags=["community-oauth"])
 
 _OAUTH_SCOPE = "openid email profile offline"
-_OAUTH_PENDING_FILENAME = "community_oauth_pending.json"
 _OAUTH_PENDING_TTL_SEC = 600
 _OAUTH_REDIRECT_PATH = "/oauth/callback"
 _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
@@ -121,13 +123,16 @@ def _oauth_redirect_uri(request: Request | None = None) -> str:
 
 
 def _oauth_pending_path() -> Path | None:
-    auth_path = C._auth_path()
-    if auth_path is not None:
-        return auth_path.parent / _OAUTH_PENDING_FILENAME
-    social = C._social_session_path()
-    if social is not None:
-        return social.parent / _OAUTH_PENDING_FILENAME
-    return None
+    return C._community_state_path(_OAUTH_PENDING_FILENAME)
+
+
+def _oauth_pending_paths() -> list[Path]:
+    canonical = _oauth_pending_path()
+    paths = [canonical] if canonical is not None else []
+    for candidate in C._legacy_private_file_paths(_OAUTH_PENDING_FILENAME):
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
 
 
 def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
@@ -141,13 +146,12 @@ def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLR
 
 
 def _unlink_pending() -> None:
-    path = _oauth_pending_path()
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        logger.debug("community_oauth: pending unlink failed: %s", exc)
+    paths = _oauth_pending_paths() + C._logout_private_file_paths(_OAUTH_PENDING_FILENAME)
+    for path in dict.fromkeys(paths):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("community_oauth: pending unlink failed: %s", exc)
 
 
 def _load_oauth_status_records() -> tuple[dict | None, dict]:
@@ -476,7 +480,15 @@ def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
 def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     """Resolve and read the pending OAuth record on a worker thread."""
     path = _oauth_pending_path()
-    return path, C._read_json_dict(path) if path else None
+    if path is None:
+        return None, None
+    pending = C._load_or_migrate_private_json(
+        path,
+        [candidate for candidate in _oauth_pending_paths() if candidate != path],
+        validator=C._oauth_pending_record_is_fresh,
+        conflict_paths=C._legacy_private_conflict_paths(_OAUTH_PENDING_FILENAME),
+    )
+    return path, pending
 
 
 def _persist_oauth_credentials(
@@ -585,7 +597,7 @@ async def oauth_start_endpoint(request: Request):
     reused_pending = False
     async with _oauth_start_lock:
         now = time.time()
-        pending = await asyncio.to_thread(C._read_json_dict, pending_path)
+        _resolved_pending_path, pending = await asyncio.to_thread(_load_oauth_pending)
         try:
             pending_expires_at = float((pending or {}).get("expires_at") or 0)
         except (TypeError, ValueError):
@@ -685,6 +697,8 @@ async def oauth_status_endpoint(request: Request):
 async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not await asyncio.to_thread(C._logout_storage_ready):
+        raise HTTPException(status_code=503, detail="local_clear_deferred")
 
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (

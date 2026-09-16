@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+from fastapi import Depends, Request
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -146,6 +148,58 @@ from .api_shared import (  # noqa: F401
     timezone,
     uuid,
 )
+from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.internal_http_auth import is_internal_http_request_authorized
+from utils.storage.layout import (
+    clear_storage_recovery_mode,
+    get_storage_recovery_mode,
+    set_storage_recovery_mode,
+)
+
+
+_AGENT_STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
+    "/health",
+    "/internal/storage/startup/continue",
+    "/internal/storage/startup/block",
+}
+_agent_runtime_init_lock = asyncio.Lock()
+_agent_runtime_init_completed = False
+_agent_storage_blocked_after_init = False
+_agent_storage_admission_generation = 0
+
+
+@app.middleware("http")
+async def storage_recovery_mode_guard(request, call_next):
+    if (
+        _agent_runtime_init_completed
+        and not _agent_storage_blocked_after_init
+        and not get_storage_recovery_mode()
+    ):
+        return await call_next(request)
+    recovery_mode = get_storage_recovery_mode()
+    if request.url.path in _AGENT_STORAGE_LIMITED_MODE_ALLOWED_PATHS:
+        return await call_next(request)
+    if not recovery_mode and not _agent_storage_blocked_after_init:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_runtime_initializing",
+                "blocking_reason": "runtime_initializing",
+                "limited_mode": True,
+                "error": "Agent server 正在完成运行态初始化。",
+            },
+        )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error_code": "storage_startup_blocked",
+            "blocking_reason": recovery_mode or "storage_startup_blocked_after_init",
+            "limited_mode": True,
+            "error": "Agent server 正处于存储受限启动状态。",
+        },
+    )
 
 class ToolCorrectionPayload(BaseModel):
     correct_tool: str = Field(min_length=1)
@@ -677,8 +731,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         except Exception:
             logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
 
-@app.on_event("startup")
-async def startup():
+async def _initialize_agent_runtime_unlocked() -> None:
     # Install token tracking hooks for this process
     try:
         from utils.token_tracker import TokenTracker, install_hooks
@@ -852,16 +905,146 @@ async def startup():
     _bump_state_revision()
 
 
+async def ensure_agent_server_runtime_initialized() -> bool:
+    """Initialize a recovery-started agent exactly once after storage is safe."""
+    global _agent_runtime_init_completed
+    if _agent_runtime_init_completed:
+        return False
+    async with _agent_runtime_init_lock:
+        if _agent_runtime_init_completed:
+            return False
+        await _initialize_agent_runtime_unlocked()
+        _agent_runtime_init_completed = True
+        return True
+
+
+@app.on_event("startup")
+async def startup():
+    global _agent_storage_blocked_after_init
+    recovery_mode = get_storage_recovery_mode()
+    blocking_reason = recovery_mode
+    if not blocking_reason:
+        # Defence in depth for non-launcher embeddings: Agent must derive the
+        # same durable first-run gate as Main and Memory instead of relying
+        # solely on an inherited process marker.
+        blocking_reason = get_storage_startup_blocking_reason(get_config_manager())
+        if blocking_reason:
+            set_storage_recovery_mode(blocking_reason)
+    if blocking_reason:
+        logger.info(
+            "[Agent] Storage recovery generation; runtime initialization skipped: %s",
+            blocking_reason,
+        )
+        return
+    await ensure_agent_server_runtime_initialized()
+    _agent_storage_blocked_after_init = False
+
+
+class AgentStorageStartupRequest(BaseModel):
+    reason: str = ""
+    recovery_mode: str = ""
+
+
+def _require_storage_startup_control_auth(request: Request) -> None:
+    if not is_internal_http_request_authorized(request.scope, request.headers):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post(
+    "/internal/storage/startup/continue",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
+async def continue_storage_startup(payload: AgentStorageStartupRequest | None = None):
+    global _agent_storage_blocked_after_init
+    admission_generation = _agent_storage_admission_generation
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode in {
+        "selection_required",
+        "migration_pending",
+        "recovery_required",
+    }:
+        clear_storage_recovery_mode()
+    blocking_reason = get_storage_startup_blocking_reason(get_config_manager())
+    if blocking_reason:
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+                "error": "当前存储状态仍需选择、迁移或恢复，暂时不能释放 agent server 启动闸门。",
+            },
+        )
+    try:
+        initialized = await ensure_agent_server_runtime_initialized()
+        if admission_generation != _agent_storage_admission_generation:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "error_code": "storage_startup_reblocked",
+                    "blocking_reason": "storage_startup_blocked_after_init",
+                    "error": "Agent server 初始化期间存储启动闸门已重新关闭。",
+                },
+            )
+        _agent_storage_blocked_after_init = False
+        return {"ok": True, "initialized": bool(initialized)}
+    except Exception as exc:
+        _agent_storage_blocked_after_init = True
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
+        logger.error("[Agent] 释放 limited-mode 启动失败: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": str(exc)},
+        )
+
+
+@app.post(
+    "/internal/storage/startup/block",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
+async def block_storage_startup(payload: AgentStorageStartupRequest | None = None):
+    global _agent_storage_blocked_after_init, _agent_storage_admission_generation
+    reason = str(getattr(payload, "reason", "") or "").strip()
+    recovery_mode = str(getattr(payload, "recovery_mode", "") or "").strip()
+    if recovery_mode:
+        try:
+            set_storage_recovery_mode(recovery_mode)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "invalid storage recovery mode"},
+            )
+    _agent_storage_admission_generation += 1
+    _agent_storage_blocked_after_init = True
+    logger.warning(
+        "[Agent] limited-mode restored after main_server startup failure: %s",
+        reason or "-",
+    )
+    return {"ok": True, "blocked": True}
+
+
 @app.on_event("shutdown")
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
 
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        pass
+    persistence_blocked = bool(
+        not _agent_runtime_init_completed
+        or _agent_storage_blocked_after_init
+        or get_storage_recovery_mode()
+    )
+    if persistence_blocked:
+        logger.info("[Agent] Recovery generation shutdown skips runtime persistence")
+    else:
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception:
+            pass
 
     if Modules.computer_use:
         Modules.computer_use.cancel_running()
