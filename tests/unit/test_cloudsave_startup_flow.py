@@ -2,7 +2,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -2147,6 +2147,112 @@ async def test_main_server_startup_import_fails_when_memory_reload_is_not_confir
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_retries_memory_reload_after_imported_reload_failure(
+    monkeypatch,
+):
+    from app import main_server
+
+    class _RetryAdvancedPastReload(RuntimeError):
+        pass
+
+    import_results = iter(
+        [
+            {"success": True, "action": "imported"},
+            {
+                "success": True,
+                "action": "skipped",
+                "reason": "already_applied",
+            },
+        ]
+    )
+
+    async def _run_import(*_args, **_kwargs):
+        return next(import_results)
+
+    successful_reload = SimpleNamespace(
+        status_code=200,
+        json=lambda: {"status": "success"},
+    )
+    reload_post = AsyncMock(
+        side_effect=[
+            TimeoutError("first reload timed out"),
+            successful_reload,
+        ]
+    )
+
+    monkeypatch.setattr(main_server, "_runtime_startup_init_completed", False)
+    monkeypatch.setattr(main_server, "is_cloudsave_disabled", lambda: False)
+    monkeypatch.setattr(
+        main_server,
+        "bootstrap_local_cloudsave_environment",
+        lambda _config_manager: None,
+    )
+    monkeypatch.setattr(main_server, "_run_cloudsave_manager_action", _run_import)
+    monkeypatch.setattr(
+        main_server,
+        "initialize_character_data",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        main_server,
+        "initialize_steamworks",
+        Mock(side_effect=_RetryAdvancedPastReload("retry passed reload gate")),
+    )
+    monkeypatch.setattr(
+        main_server,
+        "_rollback_partial_main_runtime_startup",
+        AsyncMock(return_value=None),
+    )
+
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=SimpleNamespace(post=reload_post),
+    ):
+        with pytest.raises(RuntimeError, match="reload request failed"):
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="storage_recovery",
+                release_admission=False,
+            )
+
+        with pytest.raises(_RetryAdvancedPastReload, match="passed reload gate"):
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="storage_recovery_retry",
+                release_admission=False,
+            )
+
+    assert reload_post.await_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "skip_reason",
+    ["no_snapshot", "manual_download_required", "cloudsave_disabled"],
+)
+async def test_main_server_recovery_does_not_reload_other_skipped_imports(
+    skip_reason,
+):
+    from app import main_server
+
+    client = SimpleNamespace(post=AsyncMock())
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=client,
+    ):
+        await main_server._sync_memory_server_after_startup_import(
+            {
+                "success": True,
+                "action": "skipped",
+                "reason": skip_reason,
+            },
+            reload_already_applied=True,
+        )
+
+    client.post.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_main_server_skips_memory_reload_when_startup_import_did_not_run():
     from app import main_server
 
@@ -2155,7 +2261,9 @@ async def test_main_server_skips_memory_reload_when_startup_import_did_not_run()
         "utils.internal_http_client.get_internal_http_client",
         return_value=client,
     ):
-        await main_server._sync_memory_server_after_startup_import({"action": "skipped"})
+        await main_server._sync_memory_server_after_startup_import(
+            {"action": "skipped", "reason": "already_applied"}
+        )
 
     client.post.assert_not_awaited()
 

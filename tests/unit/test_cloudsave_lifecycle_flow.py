@@ -440,7 +440,10 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
             budget_seconds=10.0,
         )
         mock_init_chars.assert_awaited_once_with()
-        mock_sync_reload.assert_awaited_once_with(fake_import_result)
+        mock_sync_reload.assert_awaited_once_with(
+            fake_import_result,
+            reload_already_applied=False,
+        )
         mock_set_root_mode.assert_called_once()
         mock_init_steam.assert_called_once_with()
         # set_steamworks is wired twice on startup: init_shared_state seeds the
@@ -642,7 +645,10 @@ async def test_main_server_startup_aborts_when_root_state_cannot_publish_normal(
             await main_server.on_startup()
 
     mock_init_chars.assert_awaited_once_with()
-    mock_sync_reload.assert_awaited_once_with(fake_import_result)
+    mock_sync_reload.assert_awaited_once_with(
+        fake_import_result,
+        reload_already_applied=False,
+    )
     mock_init_steam.assert_called_once_with()
     mock_mount_workshop.assert_awaited_once_with()
     cleanup_expired_sessions.assert_not_called()

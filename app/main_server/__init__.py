@@ -924,9 +924,21 @@ _main_runtime_background_tasks_started = False
 from .preload import _background_preload, _sync_preload_modules  # noqa: F401
 
 
-async def _sync_memory_server_after_startup_import(import_result):
-    """Keep memory_server aligned when main_server applies a cloud snapshot on startup."""
-    if not isinstance(import_result, dict) or import_result.get("action") != "imported":
+async def _sync_memory_server_after_startup_import(
+    import_result,
+    *,
+    reload_already_applied: bool = False,
+):
+    """Keep prepared memory state aligned with the durable cloud snapshot."""
+    if not isinstance(import_result, dict):
+        return
+    action = import_result.get("action")
+    reload_required = action == "imported" or (
+        reload_already_applied
+        and action == "skipped"
+        and import_result.get("reason") == "already_applied"
+    )
+    if not reload_required:
         return
 
     from config import MEMORY_SERVER_PORT
@@ -1220,7 +1232,14 @@ async def _ensure_main_server_runtime_initialized(
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
-            await _sync_memory_server_after_startup_import(import_result)
+            await _sync_memory_server_after_startup_import(
+                import_result,
+                # A failed recovery release can retry after the import became
+                # durable but before Memory confirmed its reload. Ordinary
+                # startup initializes Memory from disk after launcher phase-0
+                # and must not add an unnecessary hot reload.
+                reload_already_applied=not release_admission,
+            )
 
             logger.info("正在初始化 Steamworks...")
             steamworks = initialize_steamworks()
