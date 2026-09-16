@@ -1629,6 +1629,7 @@ def test_memory_activation_fails_closed_when_normal_state_cannot_be_persisted(
     )
     monkeypatch.setattr(runtime, "_config_manager", config_manager)
     monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "is_cloudsave_disabled", lambda: False)
     monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
     monkeypatch.setattr(runtime, "_memory_runtime_bootstrap_ok", True)
     monkeypatch.setattr(runtime, "_memory_runtime_prepared_generation", 60)

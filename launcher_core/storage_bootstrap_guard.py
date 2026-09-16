@@ -243,7 +243,7 @@ class StorageBootstrapGuardChannel:
             if remaining <= 0:
                 raise StorageBootstrapGuardError("timeout")
 
-            line = self._read_line(remaining)
+            line = self._read_line(deadline)
             try:
                 response = json.loads(line)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -274,7 +274,7 @@ class StorageBootstrapGuardChannel:
                 raise StorageBootstrapGuardError("aborted")
             return
 
-    def _read_line(self, timeout: float) -> str:
+    def _read_line(self, deadline: float) -> str:
         while True:
             newline_index = self._buffer.find(b"\n")
             if newline_index >= 0:
@@ -295,6 +295,9 @@ class StorageBootstrapGuardChannel:
             fd = self._fd
             if fd is None:
                 raise StorageBootstrapGuardError("channel_unavailable")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise StorageBootstrapGuardError("timeout")
             result_queue: queue.Queue[bytes | BaseException] = queue.Queue(maxsize=1)
 
             def _read_once() -> None:
@@ -310,7 +313,7 @@ class StorageBootstrapGuardChannel:
             )
             reader.start()
             try:
-                chunk = result_queue.get(timeout=max(0.001, timeout))
+                chunk = result_queue.get(timeout=remaining)
             except queue.Empty as exc:
                 raise StorageBootstrapGuardError("timeout") from exc
             if isinstance(chunk, BaseException):

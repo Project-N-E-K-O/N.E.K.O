@@ -106,7 +106,10 @@ from config import (
     USER_NOTIFICATION_ERROR_MAX_CHARS,
     USER_PLUGIN_BASE,
 )  # noqa
-from utils.cloudsave_autocloud import get_cloudsave_manager  # noqa
+from utils.cloudsave_autocloud import (  # noqa
+    CloudsaveImportAppliedStatusError,
+    get_cloudsave_manager,
+)
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
     MaintenanceModeError,
@@ -1199,6 +1202,16 @@ async def _ensure_main_server_runtime_initialized(
                         budget_seconds=10.0,
                     )
                     logger.info("Steam Auto-Cloud startup import: %s", import_result)
+                except CloudsaveImportAppliedStatusError as exc:
+                    # The snapshot is already durable, but its follow-up status
+                    # could not be rebuilt.  Memory may still hold managers from
+                    # before that apply.  Refresh it first, then fail startup so
+                    # the outer recovery path re-blocks every service rather than
+                    # admitting business work under an ambiguous storage state.
+                    await _sync_memory_server_after_startup_import(
+                        exc.import_result
+                    )
+                    raise
                 except CloudsaveDeadlineExceeded:
                     logger.warning(
                         "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"

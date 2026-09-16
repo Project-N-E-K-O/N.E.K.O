@@ -2048,6 +2048,75 @@ async def test_main_server_syncs_memory_server_after_startup_import():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_reloads_memory_then_fails_closed_after_applied_import_status_error(
+    monkeypatch,
+):
+    from app import main_server
+    from config import MEMORY_SERVER_PORT
+    from utils.cloudsave_autocloud import CloudsaveImportAppliedStatusError
+    from utils.internal_http_auth import internal_http_auth_headers
+
+    applied_error = CloudsaveImportAppliedStatusError(
+        requested_reason="main_server_startup"
+    )
+
+    async def _raise_applied_error(*_args, **_kwargs):
+        raise applied_error
+
+    initialize_character_data = AsyncMock(
+        side_effect=AssertionError("character initialization must remain blocked")
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {"status": "success"},
+    )
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
+
+    monkeypatch.setattr(main_server, "_runtime_startup_init_completed", False)
+    monkeypatch.setattr(main_server, "is_cloudsave_disabled", lambda: False)
+    monkeypatch.setattr(
+        main_server,
+        "bootstrap_local_cloudsave_environment",
+        lambda _config_manager: None,
+    )
+    monkeypatch.setattr(
+        main_server,
+        "_run_cloudsave_manager_action",
+        _raise_applied_error,
+    )
+    monkeypatch.setattr(
+        main_server,
+        "initialize_character_data",
+        initialize_character_data,
+    )
+    monkeypatch.setattr(
+        main_server,
+        "_rollback_partial_main_runtime_startup",
+        AsyncMock(),
+    )
+
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=client,
+    ):
+        with pytest.raises(CloudsaveImportAppliedStatusError) as error:
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="storage_recovery",
+                release_admission=False,
+            )
+
+    assert error.value is applied_error
+    initialize_character_data.assert_not_awaited()
+    client.post.assert_awaited_once_with(
+        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+        json={},
+        headers=internal_http_auth_headers(),
+        timeout=5.0,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("response", "request_error"),
     [

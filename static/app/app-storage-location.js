@@ -1189,20 +1189,42 @@
         }
     }
 
+    function correlatedTerminalRestartOperationState(statusPayload) {
+        var restartOperation = statusPayload && statusPayload.restart_operation;
+        var operationState = String(restartOperation && restartOperation.state || '').trim();
+        if (['cancelled', 'rejected', 'expired', 'indeterminate'].indexOf(operationState) === -1) {
+            return '';
+        }
+
+        var operationId = String(restartOperation && restartOperation.operation_id || '').trim();
+        var operationTarget = String(restartOperation && restartOperation.target_root || '').trim();
+        var operationInstanceId = String(restartOperation && restartOperation.instance_id || '').trim();
+        var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
+        if (!state.maintenanceRestartOperationId
+            || operationId !== state.maintenanceRestartOperationId
+            || !operationInstanceId
+            || operationInstanceId !== payloadInstanceId) {
+            return '';
+        }
+
+        var expectedTarget = String(state.pendingSelection.path || '').trim();
+        if (operationTarget && expectedTarget && operationTarget === expectedTarget) {
+            return operationState;
+        }
+        var operationErrorCode = String(restartOperation && restartOperation.error_code || '').trim();
+        if (!operationTarget
+            && operationState === 'expired'
+            && operationErrorCode === 'restart_operation_retired') {
+            return operationState;
+        }
+        return '';
+    }
+
     function isConfirmedMaintenanceReady(payload) {
         if (!payload || payload.ready !== true
             || shouldBlockMainUi(payload)
             || isObservedMigrationBlock(payload)) return false;
 
-        var restartOperation = payload.restart_operation
-            && typeof payload.restart_operation === 'object'
-            ? payload.restart_operation
-            : {};
-        var operationState = String(restartOperation.state || '').trim();
-        var operationId = String(restartOperation.operation_id || '').trim();
-        var operationTarget = String(restartOperation.target_root || '').trim();
-        var operationInstanceId = String(restartOperation.instance_id || '').trim();
-        var payloadInstanceId = String(payload.instance_id || '').trim();
         var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
         var readyInstanceId = String(payload.instance_id || '').trim();
         var restartedInstance = !!entryInstanceId
@@ -1210,13 +1232,9 @@
             && entryInstanceId !== readyInstanceId;
         if (state.maintenanceOutcomeUnknown
             && state.maintenanceRestartOperationId) {
-            return restartedInstance || (
-                operationId === state.maintenanceRestartOperationId
-                && operationTarget === String(state.pendingSelection.path || '').trim()
-                && operationInstanceId
-                && operationInstanceId === payloadInstanceId
-                && ['cancelled', 'rejected', 'expired'].indexOf(operationState) !== -1
-            );
+            return restartedInstance || ['cancelled', 'rejected', 'expired'].indexOf(
+                correlatedTerminalRestartOperationState(payload)
+            ) !== -1;
         }
 
         if (state.maintenanceObservedMigrationBlock) return true;
@@ -1264,21 +1282,12 @@
         if (!shouldLeaveMaintenanceForSelection(statusPayload)) return false;
 
         if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
-            var restartOperation = statusPayload && statusPayload.restart_operation;
-            var operationState = String(restartOperation && restartOperation.state || '').trim();
-            var operationId = String(restartOperation && restartOperation.operation_id || '').trim();
-            var operationTarget = String(restartOperation && restartOperation.target_root || '').trim();
-            var operationInstanceId = String(restartOperation && restartOperation.instance_id || '').trim();
             var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
             var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
             var restartedInstance = !!entryInstanceId
                 && !!payloadInstanceId
                 && entryInstanceId !== payloadInstanceId;
-            var correlatedTerminal = operationId === state.maintenanceRestartOperationId
-                && operationTarget === String(state.pendingSelection.path || '').trim()
-                && !!operationInstanceId
-                && operationInstanceId === payloadInstanceId
-                && ['cancelled', 'rejected', 'expired', 'indeterminate'].indexOf(operationState) !== -1;
+            var correlatedTerminal = !!correlatedTerminalRestartOperationState(statusPayload);
 
             // A prepared/in-flight (or uncorrelated) operation may still mutate
             // storage after this poll. Do not expose a second selection request

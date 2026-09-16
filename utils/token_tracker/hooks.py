@@ -264,9 +264,12 @@ def _install_crash_excepthook():
 
                 tracker = TokenTracker.get_existing_instance()
                 if tracker is None:
-                    from utils.event_logger import EventLogger
+                    from utils.storage.layout import get_storage_recovery_mode
 
-                    EventLogger.get_instance().flush()
+                    if not get_storage_recovery_mode():
+                        from utils.event_logger import EventLogger
+
+                        EventLogger.get_instance().flush()
                 else:
                     tracker.flush_event_logger_if_persistence_active()
         except Exception:

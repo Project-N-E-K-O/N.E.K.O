@@ -1273,6 +1273,208 @@ def test_unknown_restart_waits_for_backend_operation_terminal_state(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("operation_overrides", "should_release"),
+    [
+        ({}, True),
+        ({"operation_id": "different-operation"}, False),
+        ({"instance_id": "different-instance"}, False),
+        ({"state": "not_found"}, False),
+        ({"error_code": ""}, False),
+    ],
+    ids=(
+        "exact-retired-proof",
+        "different-operation",
+        "different-instance",
+        "non-terminal-state",
+        "missing-retired-proof",
+    ),
+)
+def test_unknown_restart_targetless_retired_proof_releases_only_exact_same_instance_operation(
+    mock_page: Page,
+    running_server: str,
+    operation_overrides: dict,
+    should_release: bool,
+):
+    page = mock_page
+    instance_id = "backend-same-instance"
+    operation_id = "retired-operation"
+    target_root = "/tmp/retired-target/N.E.K.O"
+    storage_requests = {"count": 0}
+    _mock_selection_required_state(page)
+
+    restart_operation = {
+        "operation_id": operation_id,
+        "state": "expired",
+        "instance_id": instance_id,
+        "error_code": "restart_operation_retired",
+    }
+    restart_operation.update(operation_overrides)
+
+    def handle_storage_status(route):
+        storage_requests["count"] += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": instance_id,
+                    "ready": False,
+                    "status": "selection_required",
+                    "lifecycle_state": "selection_required",
+                    "migration_stage": "",
+                    "blocking_reason": "selection_required",
+                    "poll_interval_ms": 50,
+                    "storage": {
+                        "selection_required": True,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                    },
+                    "migration": {},
+                    "restart_operation": restart_operation,
+                }
+            ),
+        )
+
+    page.route("**/api/storage/location/status**", handle_storage_status)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+
+    page.evaluate(
+        """
+        ([operationId, targetRoot, instanceId]) => {
+            window.appStorageLocation.enterExternalMaintenanceMode({
+                result: 'restart_outcome_unknown',
+                restart_operation_id: operationId,
+                target_root: targetRoot,
+                instance_id: instanceId,
+                migration: { status: 'pending', target_root: targetRoot },
+            });
+        }
+        """,
+        [operation_id, target_root, instance_id],
+    )
+
+    page.wait_for_function("() => document.querySelector('[role=progressbar]') !== null")
+    if should_release:
+        expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_hidden()
+    else:
+        page.wait_for_timeout(250)
+        expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible()
+        expect(page.get_by_role("heading", name="存储位置选择")).to_be_hidden()
+    assert storage_requests["count"] >= 1
+
+
+@pytest.mark.frontend
+def test_unknown_restart_targetless_retired_proof_accepts_same_instance_ready(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    instance_id = "backend-same-instance"
+    operation_id = "retired-operation"
+    target_root = "/tmp/retired-target/N.E.K.O"
+    system_requests = {"count": 0}
+
+    def handle_system_status(route):
+        system_requests["count"] += 1
+        ready = system_requests["count"] > 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": instance_id,
+                    "status": "ready" if ready else "migration_required",
+                    "ready": ready,
+                    "storage": {
+                        "selection_required": not ready,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                        "blocking_reason": "" if ready else "selection_required",
+                    },
+                }
+            ),
+        )
+
+    page.route("**/api/system/status", handle_system_status)
+    page.route(
+        "**/api/storage/location/bootstrap",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "autostart_csrf_token": STORAGE_CSRF_TOKEN,
+                    "current_root": "/tmp/current/N.E.K.O",
+                    "recommended_root": target_root,
+                    "selection_required": True,
+                    "migration_pending": False,
+                    "recovery_required": False,
+                    "blocking_reason": "selection_required",
+                    "legacy_cleanup_pending": False,
+                    "stage": "stage3_web_restart",
+                }
+            ),
+        ),
+    )
+    page.route(
+        "**/api/storage/location/status**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "instance_id": instance_id,
+                    "ready": True,
+                    "status": "ready",
+                    "lifecycle_state": "ready",
+                    "migration_stage": "",
+                    "blocking_reason": "",
+                    "poll_interval_ms": 50,
+                    "storage": {
+                        "selection_required": False,
+                        "migration_pending": False,
+                        "recovery_required": False,
+                    },
+                    "migration": {},
+                    "restart_operation": {
+                        "operation_id": operation_id,
+                        "state": "expired",
+                        "instance_id": instance_id,
+                        "error_code": "restart_operation_retired",
+                    },
+                }
+            ),
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
+    page.evaluate(
+        """
+        ([operationId, targetRoot, instanceId]) => {
+            window.appStorageLocation.enterExternalMaintenanceMode({
+                result: 'restart_outcome_unknown',
+                restart_operation_id: operationId,
+                target_root: targetRoot,
+                instance_id: instanceId,
+                migration: { status: 'pending', target_root: targetRoot },
+            });
+        }
+        """,
+        [operation_id, target_root, instance_id],
+    )
+
+    expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
+    assert system_requests["count"] >= 2
+
+
+@pytest.mark.frontend
 def test_storage_location_unmanaged_rollback_closes_shell_without_stopping_backend(
     mock_page: Page,
     running_server: str,

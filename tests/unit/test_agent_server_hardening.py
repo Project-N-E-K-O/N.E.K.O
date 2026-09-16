@@ -178,6 +178,9 @@ async def test_agent_cancelled_bridge_start_is_still_owned_and_stopped(
         def resume_persistence(self, owner):
             tracker_events.append(("resume", owner))
 
+        def suspend_persistence(self, owner):
+            tracker_events.append(("suspend", owner))
+
         def start_periodic_save(self):
             tracker_events.append(("start", None))
             return None
@@ -200,8 +203,12 @@ async def test_agent_cancelled_bridge_start_is_still_owned_and_stopped(
     monkeypatch.setattr(srv, "get_config_manager", lambda **_kwargs: config_manager)
     monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "")
     monkeypatch.setattr("utils.token_tracker.install_hooks", Mock())
+    tracker = _Tracker()
     monkeypatch.setattr(
-        "utils.token_tracker.TokenTracker.get_instance", lambda: _Tracker()
+        "utils.token_tracker.TokenTracker.get_instance", lambda: tracker
+    )
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_existing_instance", lambda: tracker
     )
     monkeypatch.setattr(srv, "_agent_runtime_init_completed", True)
     monkeypatch.setattr(srv, "_agent_runtime_prepared_generation", 43)
@@ -228,6 +235,7 @@ async def test_agent_cancelled_bridge_start_is_still_owned_and_stopped(
         await activation_task
     assert bridge_stopped.is_set()
     assert srv.Modules.agent_bridge is None
+    assert tracker_events[-1] == ("suspend", "agent_server")
 
 
 @pytest.mark.asyncio

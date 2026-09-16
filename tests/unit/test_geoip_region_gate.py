@@ -2408,9 +2408,7 @@ def test_memory_server_warms_the_region_before_outbox_replay():
 
     def _calls(node):
         result = {}
-        for call_node in ast.walk(node):
-            if not isinstance(call_node, ast.Call):
-                continue
+        for call_node in _calls_in_own_function_scope(node):
             name = (
                 getattr(call_node.func, 'attr', None)
                 or getattr(call_node.func, 'id', None)

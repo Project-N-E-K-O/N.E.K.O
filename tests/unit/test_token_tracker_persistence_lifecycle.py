@@ -189,17 +189,19 @@ async def test_suspend_waits_for_inflight_periodic_event_flush(tmp_path, monkeyp
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("tracker_state", "expected_flushes"),
+    ("tracker_state", "recovery_mode", "expected_flushes"),
     [
-        ("suspended", 0),
-        ("active", 1),
-        ("missing", 1),
+        ("suspended", "", 0),
+        ("active", "", 1),
+        ("missing", "", 1),
+        ("missing", "recovery_required", 0),
     ],
 )
 def test_crash_hook_respects_existing_tracker_persistence_gate(
     tmp_path,
     monkeypatch,
     tracker_state,
+    recovery_mode,
     expected_flushes,
 ):
     import utils.instrument as instrument
@@ -211,6 +213,10 @@ def test_crash_hook_respects_existing_tracker_persistence_gate(
         tracker = _make_tracker(tmp_path, monkeypatch)
         if tracker_state == "suspended":
             tracker.suspend_persistence("agent_server")
+    if recovery_mode:
+        monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", recovery_mode)
+    else:
+        monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
 
     flush = Mock()
     original_hook = Mock()

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -271,6 +273,42 @@ def test_guard_timeout_is_bounded_and_fails_closed():
                 emit_event=lambda *_args: None,
             )
     finally:
+        os.close(write_fd)
+        channel.close()
+
+
+@pytest.mark.unit
+def test_guard_fragmented_response_cannot_extend_request_deadline():
+    channel, write_fd = _pipe_channel(timeout=0.25)
+    writer_thread = None
+
+    def _emit(_event, payload):
+        nonlocal writer_thread
+        wire_payload = _response(_exact_response(payload))
+        chunks = (wire_payload[:1], wire_payload[1:2], wire_payload[2:])
+
+        def _write_fragments():
+            try:
+                for index, chunk in enumerate(chunks):
+                    if index:
+                        time.sleep(0.15)
+                    os.write(write_fd, chunk)
+            except OSError:
+                pass
+
+        writer_thread = threading.Thread(target=_write_fragments, daemon=True)
+        writer_thread.start()
+
+    try:
+        with pytest.raises(StorageBootstrapGuardError, match="timeout"):
+            channel.request(
+                phase="initial_bootstrap",
+                launch_id=LAUNCH_ID,
+                emit_event=_emit,
+            )
+    finally:
+        if writer_thread is not None:
+            writer_thread.join(timeout=1)
         os.close(write_fd)
         channel.close()
 
