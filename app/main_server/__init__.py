@@ -1225,10 +1225,17 @@ async def _ensure_main_server_runtime_initialized(
                     )
                     raise
                 except CloudsaveDeadlineExceeded:
+                    if not release_admission:
+                        # Memory was prepared before this recovery import. If
+                        # the durable import fact cannot be rebuilt, continuing
+                        # could activate managers from the pre-import snapshot.
+                        raise
                     logger.warning(
                         "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
                     )
                 except Exception as e:
+                    if not release_admission:
+                        raise
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()

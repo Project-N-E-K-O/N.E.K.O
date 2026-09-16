@@ -2226,6 +2226,95 @@ async def test_main_server_retries_memory_reload_after_imported_reload_failure(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "retry_error",
+    [
+        OSError("post-import status remains unavailable"),
+        pytest.param(
+            "deadline",
+            id="deadline",
+        ),
+    ],
+)
+async def test_main_server_recovery_retry_fails_closed_but_ordinary_startup_stays_best_effort(
+    monkeypatch,
+    retry_error,
+):
+    from app import main_server
+    from utils.cloudsave_runtime import CloudsaveDeadlineExceeded
+
+    class _OrdinaryStartupContinued(RuntimeError):
+        pass
+
+    if retry_error == "deadline":
+        retry_error = CloudsaveDeadlineExceeded("import", "build_status")
+
+    import_attempt = 0
+
+    async def _run_import(*_args, **_kwargs):
+        nonlocal import_attempt
+        import_attempt += 1
+        if import_attempt == 1:
+            return {"success": True, "action": "imported"}
+        raise retry_error
+
+    initialize_character_data = AsyncMock(return_value=None)
+    monkeypatch.setattr(main_server, "_runtime_startup_init_completed", False)
+    monkeypatch.setattr(main_server, "is_cloudsave_disabled", lambda: False)
+    monkeypatch.setattr(
+        main_server,
+        "bootstrap_local_cloudsave_environment",
+        lambda _config_manager: None,
+    )
+    monkeypatch.setattr(main_server, "_run_cloudsave_manager_action", _run_import)
+    monkeypatch.setattr(
+        main_server,
+        "initialize_character_data",
+        initialize_character_data,
+    )
+    monkeypatch.setattr(
+        main_server,
+        "initialize_steamworks",
+        Mock(side_effect=_OrdinaryStartupContinued("ordinary startup continued")),
+    )
+    monkeypatch.setattr(
+        main_server,
+        "_rollback_partial_main_runtime_startup",
+        AsyncMock(return_value=None),
+    )
+
+    reload_post = AsyncMock(side_effect=TimeoutError("first reload timed out"))
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=SimpleNamespace(post=reload_post),
+    ):
+        with pytest.raises(RuntimeError, match="reload request failed"):
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="storage_recovery",
+                release_admission=False,
+            )
+
+        with pytest.raises(type(retry_error), match=str(retry_error)):
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="storage_recovery_retry",
+                release_admission=False,
+            )
+
+        with pytest.raises(
+            _OrdinaryStartupContinued,
+            match="ordinary startup continued",
+        ):
+            await main_server._ensure_main_server_runtime_initialized(
+                reason="startup",
+                release_admission=True,
+            )
+
+    assert initialize_character_data.await_count == 2
+    assert reload_post.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "skip_reason",
     ["no_snapshot", "manual_download_required", "cloudsave_disabled"],
 )
