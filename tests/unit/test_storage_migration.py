@@ -2637,13 +2637,13 @@ def test_windows_workshop_rewrite_guards_config_directory_and_releases_it(
     attempted = False
     write_blocked_during_snapshot = False
 
-    def assert_config_guarded(fd, target_path):
+    def assert_config_guarded(fd, target_name, **kwargs):
         nonlocal attempted
         if not attempted:
             with pytest.raises(OSError):
                 config_directory.rename(config_directory.with_name("config-moved"))
             attempted = True
-        return original_rename(fd, target_path)
+        return original_rename(fd, target_name, **kwargs)
 
     monkeypatch.setattr(
         storage_migration_module,
@@ -2700,10 +2700,10 @@ def test_windows_workshop_rewrite_preserves_concurrent_name_winner(
     original_rename = storage_migration_module._rename_windows_open_file
     injected = False
 
-    def inject_winner_after_exact_source_rename(fd, target_path):
+    def inject_winner_after_exact_source_rename(fd, target_name, **kwargs):
         nonlocal injected
-        original_rename(fd, target_path)
-        if not injected and target_path.suffix == ".old":
+        original_rename(fd, target_name, **kwargs)
+        if not injected and target_name.endswith(".old"):
             injected = True
             config_path.write_bytes(rival_bytes)
 
@@ -2779,10 +2779,10 @@ def test_windows_workshop_rewrite_preserves_backup_when_publish_and_restore_fail
     config_path.write_bytes(original_bytes)
     original_rename = storage_migration_module._rename_windows_open_file
 
-    def fail_public_name(fd, target_path):
-        if target_path == config_path:
+    def fail_public_name(fd, target_name, **kwargs):
+        if target_name == config_path.name:
             raise OSError("injected public-name failure")
-        return original_rename(fd, target_path)
+        return original_rename(fd, target_name, **kwargs)
 
     monkeypatch.setattr(
         storage_migration_module,
@@ -5679,14 +5679,173 @@ def test_markerless_empty_quarantine_never_reports_success_when_parent_flush_fai
         fail_parent_flush,
     )
 
-    removed = storage_migration_module._remove_owned_transaction_quarantine(
-        {},
-        quarantine,
-        "a" * 32,
+    with pytest.raises(storage_migration_module._TransactionCleanupDurabilityUnknown):
+        storage_migration_module._remove_owned_transaction_quarantine(
+            {},
+            quarantine,
+            "a" * 32,
+        )
+
+    assert not quarantine.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX transaction marker contract")
+def test_transaction_owner_marker_rejects_same_inode_rewrite_during_read(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    txid = "a" * 32
+    payload = {"transaction_owner_token": "b" * 64}
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        txid,
+    )
+    marker = transaction_root / storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME
+    replacement = marker.read_text(encoding="utf-8").replace("b" * 64, "c" * 64)
+    old_timestamp = marker.stat().st_mtime - 60
+    os.utime(marker, (old_timestamp, old_timestamp))
+    original_identity = marker.stat()
+    real_read = storage_migration_module.os.read
+    replaced = False
+
+    def rewrite_after_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            marker.write_text(replacement, encoding="utf-8")
+            os.utime(marker, (old_timestamp, old_timestamp))
+        return chunk
+
+    monkeypatch.setattr(storage_migration_module.os, "read", rewrite_after_read)
+    directory_fd = os.open(transaction_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        owned = storage_migration_module._transaction_directory_fd_is_owned(
+            payload,
+            directory_fd,
+            txid,
+        )
+    finally:
+        os.close(directory_fd)
+
+    assert replaced is True
+    assert os.path.samestat(original_identity, marker.stat())
+    assert owned is False
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent directory durability")
+def test_transaction_cleanup_flush_failure_remains_recoverable_until_absence_is_durable(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _, target_file, transaction_root, _, _ = _prepare_interrupted_publish(
+        tmp_path
+    )
+    quarantine = storage_migration_module._private_directory_quarantine_path(
+        transaction_root
+    )
+    real_rmdir = storage_migration_module.os.rmdir
+    real_fsync = storage_migration_module.os.fsync
+    awaiting_parent_flush = False
+    injected = False
+    intent_seen_before_rmdir = False
+
+    def track_transaction_rmdir(path, *args, **kwargs):
+        nonlocal awaiting_parent_flush, intent_seen_before_rmdir
+        if path == quarantine.name and kwargs.get("dir_fd") is not None:
+            checkpoint = load_storage_migration(config_manager)
+            intent_seen_before_rmdir = bool(
+                checkpoint and checkpoint.get("transaction_cleanup_pending")
+            )
+        result = real_rmdir(path, *args, **kwargs)
+        if path == quarantine.name and kwargs.get("dir_fd") is not None:
+            awaiting_parent_flush = True
+        return result
+
+    def fail_cleanup_parent_flush_once(fd):
+        nonlocal awaiting_parent_flush, injected
+        if awaiting_parent_flush and not injected:
+            awaiting_parent_flush = False
+            injected = True
+            raise OSError(errno.EIO, "injected transaction parent flush failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(storage_migration_module.os, "rmdir", track_transaction_rmdir)
+    monkeypatch.setattr(storage_migration_module.os, "fsync", fail_cleanup_parent_flush_once)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert injected is True
+    assert intent_seen_before_rmdir is True
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_cleanup_durability_unknown"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+    assert result["payload"]["transaction_cleanup_pending"] is True
+    assert not transaction_root.exists()
+    assert not quarantine.exists()
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+
+    monkeypatch.setattr(storage_migration_module.os, "rmdir", real_rmdir)
+    monkeypatch.setattr(storage_migration_module.os, "fsync", real_fsync)
+    original_confirm = storage_migration_module._confirm_transaction_names_absent_durably
+    confirmed = False
+
+    def record_absence_confirmation(path):
+        nonlocal confirmed
+        original_confirm(path)
+        confirmed = True
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_confirm_transaction_names_absent_durably",
+        record_absence_confirmation,
+    )
+    shutil.rmtree(config_manager.app_docs_dir)
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert confirmed is True
+    assert retry["error_code"] == "source_root_missing"
+    assert retry["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert retry["payload"]["transaction_cleanup_pending"] is False
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX transaction cleanup intent")
+def test_publishing_checkpoint_never_confirms_an_unexpected_missing_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _, _, transaction_root, _, _ = _prepare_interrupted_publish(
+        tmp_path
+    )
+    parked_transaction = transaction_root.with_name(f"{transaction_root.name}.parked")
+    transaction_root.rename(parked_transaction)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_confirm_transaction_names_absent_durably",
+        lambda *_args, **_kwargs: pytest.fail(
+            "publishing evidence must not be made durably absent"
+        ),
     )
 
-    assert removed is False
-    assert not quarantine.exists()
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "rollback_transaction_missing"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+    assert parked_transaction.is_dir()
 
 
 @pytest.mark.unit

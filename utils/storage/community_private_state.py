@@ -240,6 +240,16 @@ class _PrivateStateSnapshotChanged(OSError):
     """The opened private-state name no longer identifies the inspected file."""
 
 
+def _stable_private_state_fields(metadata: os.stat_result) -> tuple[int, int, int]:
+    """Return metadata that must not change while private state is read."""
+
+    return (
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+    )
+
+
 def _read_stable_regular_file(
     path: Path,
     before: os.stat_result,
@@ -262,6 +272,8 @@ def _read_stable_regular_file(
         if (
             not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(before, opened)
+            or _stable_private_state_fields(before)
+            != _stable_private_state_fields(opened)
             or (max_bytes is not None and int(opened.st_size) > max_bytes)
         ):
             raise _PrivateStateSnapshotChanged
@@ -291,8 +303,13 @@ def _read_stable_regular_file(
         )
         if (
             (max_bytes is not None and len(raw) > max_bytes)
+            or len(raw) != int(after.st_size)
             or not os.path.samestat(opened, after)
             or not os.path.samestat(after, named)
+            or _stable_private_state_fields(opened)
+            != _stable_private_state_fields(after)
+            or _stable_private_state_fields(after)
+            != _stable_private_state_fields(named)
         ):
             raise _PrivateStateSnapshotChanged
         return raw, after

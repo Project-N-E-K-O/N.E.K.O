@@ -1158,6 +1158,84 @@ def test_retained_snapshot_accepts_bounded_regular_file_short_reads(
     }
 
 
+def test_social_lock_snapshot_rejects_same_inode_rewrite_during_read(
+    tmp_path,
+    monkeypatch,
+):
+    lock = tmp_path / private_state.SOCIAL_SESSION_LOCK_FILENAME
+    original = json.dumps(
+        {"pid": 123, "start_token": "old", "start_token_scheme": "test"},
+        sort_keys=True,
+    ).encode("utf-8")
+    replacement = json.dumps(
+        {"pid": 123, "start_token": "new", "start_token_scheme": "test"},
+        sort_keys=True,
+    ).encode("utf-8")
+    assert len(original) == len(replacement)
+    lock.write_bytes(original)
+    old_timestamp = time.time() - 60
+    os.utime(lock, (old_timestamp, old_timestamp))
+    original_identity = lock.stat()
+    real_read = private_state.os.read
+    replaced = False
+
+    def rewrite_after_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            lock.write_bytes(replacement)
+            os.utime(lock, (old_timestamp, old_timestamp))
+        return chunk
+
+    monkeypatch.setattr(private_state.os, "read", rewrite_after_read)
+    monkeypatch.setattr(
+        private_state,
+        "classify_social_lock_owner",
+        lambda *_args, **_kwargs: pytest.fail("an unstable lock must not be classified"),
+    )
+
+    state, owner = private_state.read_social_lock_owner_snapshot(lock)
+
+    assert replaced is True
+    assert os.path.samestat(original_identity, lock.stat())
+    assert (state, owner) == (private_state.SOCIAL_LOCK_OWNER_UNKNOWN, None)
+
+
+def test_retained_snapshot_rejects_same_inode_rewrite_during_read(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained"
+    retained_root.mkdir()
+    credential = retained_root / private_state.COMMUNITY_AUTH_FILENAME
+    original = b'{"credential":"old"}'
+    replacement = b'{"credential":"new"}'
+    credential.write_bytes(original)
+    old_timestamp = time.time() - 60
+    os.utime(credential, (old_timestamp, old_timestamp))
+    original_identity = credential.stat()
+    real_read = private_state.os.read
+    replaced = False
+
+    def rewrite_after_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            credential.write_bytes(replacement)
+            os.utime(credential, (old_timestamp, old_timestamp))
+        return chunk
+
+    monkeypatch.setattr(private_state.os, "read", rewrite_after_read)
+
+    with pytest.raises(OSError, match="changed while snapshotting"):
+        private_state.snapshot_retained_community_state(retained_root)
+
+    assert replaced is True
+    assert os.path.samestat(original_identity, credential.stat())
+
+
 @pytest.mark.skipif(
     not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
     reason="POSIX non-blocking FIFO reads are unavailable",

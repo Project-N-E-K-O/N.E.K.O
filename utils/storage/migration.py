@@ -150,6 +150,10 @@ class StorageMigrationError(RuntimeError):
         self.message = str(message or "Storage migration failed.").strip() or "Storage migration failed."
 
 
+class _TransactionCleanupDurabilityUnknown(OSError):
+    """The transaction name was removed but its parent flush did not complete."""
+
+
 def _is_link_like_metadata(metadata: os.stat_result) -> bool:
     return bool(
         stat.S_ISLNK(metadata.st_mode)
@@ -2108,6 +2112,9 @@ def _remove_private_directory_via_quarantine(
         else:
             _remove_existing_path(quarantine)
             removed = True
+    except _TransactionCleanupDurabilityUnknown:
+        _close_mode_restore_plan(mode_restore_plan)
+        raise
     except BaseException as exc:
         try:
             _restore_directory_modes(mode_restore_plan, path)
@@ -3432,6 +3439,7 @@ def _rewrite_migrated_runtime_config_paths(
                 content_root=content_root,
                 target_root=target_root,
                 workshop_config_path=workshop_config_path,
+                config_directory_handle=windows_config_guard,
             )
         finally:
             _close_windows_directory_rename_guard(windows_config_guard)
@@ -3798,8 +3806,13 @@ def _open_windows_rewrite_file(
         raise
 
 
-def _rename_windows_open_file(fd: int, target_path: Path) -> None:
-    """Rename the exact open file to an absent absolute target name."""
+def _rename_windows_open_file(
+    fd: int,
+    target_name: str,
+    *,
+    target_directory_handle: int,
+) -> None:
+    """Rename the exact open file to an absent name in one pinned directory."""
 
     if os.name != "nt":
         raise OSError("Windows handle rename is unavailable on this platform")
@@ -3814,13 +3827,22 @@ def _rename_windows_open_file(fd: int, target_path: Path) -> None:
             ("file_name", wintypes.WCHAR * 1),
         ]
 
-    encoded_name = _native_windows_path(target_path).encode("utf-16-le")
+    if not target_name or target_name in {".", ".."} or any(
+        separator in target_name for separator in ("/", "\\")
+    ):
+        raise ValueError("Windows handle rename requires one relative file name")
+    # FILE_RENAME_INFO officially accepts a normal absolute DOS path or a
+    # RootDirectory handle plus a relative name. Use the latter so resolution
+    # stays anchored to the directory that the caller has already pinned.
+    encoded_name = target_name.encode("utf-16-le")
     filename_offset = _FileRenameInfo.file_name.offset
-    buffer_size = max(ctypes.sizeof(_FileRenameInfo), filename_offset + len(encoded_name))
+    # Microsoft requires the fixed structure size plus FileNameLength bytes;
+    # the structure already includes its one-WCHAR placeholder and alignment.
+    buffer_size = ctypes.sizeof(_FileRenameInfo) + len(encoded_name)
     buffer = ctypes.create_string_buffer(buffer_size)
     header = _FileRenameInfo.from_buffer(buffer)
     header.flags = 0  # ReplaceIfExists = FALSE
-    header.root_directory = None
+    header.root_directory = target_directory_handle
     header.file_name_length = len(encoded_name)
     ctypes.memmove(ctypes.addressof(buffer) + filename_offset, encoded_name, len(encoded_name))
 
@@ -3841,8 +3863,8 @@ def _rename_windows_open_file(fd: int, target_path: Path) -> None:
         error = ctypes.get_last_error()
         message = ctypes.FormatError(error).strip()
         if error in {80, 183}:
-            raise FileExistsError(error, message, str(target_path))
-        raise OSError(error, message, str(target_path))
+            raise FileExistsError(error, message, target_name)
+        raise OSError(error, message, target_name)
 
 
 def _delete_windows_open_file_on_close(fd: int) -> None:
@@ -3919,6 +3941,7 @@ def _rewrite_windows_workshop_config_paths(
     content_root: Path,
     target_root: Path,
     workshop_config_path: Path,
+    config_directory_handle: int,
 ) -> dict[str, int | str] | None:
     """CAS-rewrite the staged config without overwriting a concurrent winner."""
 
@@ -4000,10 +4023,18 @@ def _rewrite_windows_workshop_config_paths(
                 f"迁移暂存配置临时文件在发布前被替换: {temp_path}",
             )
 
-        _rename_windows_open_file(source_fd, backup_path)
+        _rename_windows_open_file(
+            source_fd,
+            backup_path.name,
+            target_directory_handle=config_directory_handle,
+        )
         source_renamed = True
         try:
-            _rename_windows_open_file(temp_fd, workshop_config_path)
+            _rename_windows_open_file(
+                temp_fd,
+                workshop_config_path.name,
+                target_directory_handle=config_directory_handle,
+            )
         except FileExistsError as exc:
             raise StorageMigrationError(
                 "staging_entry_changed",
@@ -4067,7 +4098,11 @@ def _rewrite_windows_workshop_config_paths(
                 except FileNotFoundError:
                     public_name_exists = False
                     try:
-                        _rename_windows_open_file(source_fd, workshop_config_path)
+                        _rename_windows_open_file(
+                            source_fd,
+                            workshop_config_path.name,
+                            target_directory_handle=config_directory_handle,
+                        )
                         source_renamed = False
                     except OSError:
                         # The exact old file remains under the private backup
@@ -4535,9 +4570,11 @@ def _transaction_directory_fd_is_owned(
             dir_fd=directory_fd,
         )
         opened = os.fstat(marker_fd)
+        stable_fields = ("st_size", "st_mtime_ns", "st_ctime_ns")
         if (
             not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(before, opened)
+            or any(getattr(before, field) != getattr(opened, field) for field in stable_fields)
             or int(opened.st_size) > 4096
         ):
             return False
@@ -4553,6 +4590,8 @@ def _transaction_directory_fd_is_owned(
             or not os.path.samestat(opened, after)
             or not os.path.samestat(after, named)
             or int(after.st_size) != len(raw)
+            or any(getattr(opened, field) != getattr(after, field) for field in stable_fields)
+            or any(getattr(after, field) != getattr(named, field) for field in stable_fields)
         ):
             return False
         marker_payload = json.loads(raw.decode("utf-8"))
@@ -4861,6 +4900,7 @@ def _remove_owned_transaction_quarantine_posix(
     )
 
     removed = False
+    namespace_removed = False
     parent_fd = -1
     root_fd = -1
     try:
@@ -4914,9 +4954,18 @@ def _remove_owned_transaction_quarantine_posix(
         if not os.path.samestat(opened_root, named_root):
             return False
         os.rmdir(quarantine.name, dir_fd=parent_fd)
-        os.fsync(parent_fd)
+        namespace_removed = True
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise _TransactionCleanupDurabilityUnknown(
+                errno.EIO,
+                f"transaction quarantine removal is not durable: {quarantine}",
+            ) from exc
         removed = True
         return True
+    except _TransactionCleanupDurabilityUnknown:
+        raise
     except OSError:
         return False
     finally:
@@ -4926,7 +4975,7 @@ def _remove_owned_transaction_quarantine_posix(
         if parent_fd >= 0:
             with suppress(OSError):
                 os.close(parent_fd)
-        if removed:
+        if removed or namespace_removed:
             _close_mode_restore_plan(mode_restore_plan)
         else:
             _restore_directory_modes(mode_restore_plan, quarantine)
@@ -4971,7 +5020,15 @@ def _remove_owned_transaction_quarantine(
                 ):
                     return False
                 os.rmdir(quarantine.name, dir_fd=parent_fd)
-                os.fsync(parent_fd)
+                try:
+                    os.fsync(parent_fd)
+                except OSError as exc:
+                    raise _TransactionCleanupDurabilityUnknown(
+                        errno.EIO,
+                        f"empty transaction quarantine removal is not durable: {quarantine}",
+                    ) from exc
+            except _TransactionCleanupDurabilityUnknown:
+                raise
             except OSError:
                 return False
             finally:
@@ -5076,6 +5133,56 @@ def _remove_transaction_root_if_owned(
             txid,
         ),
     )
+
+
+def _confirm_transaction_names_absent_durably(transaction_root: Path) -> None:
+    """Make a prior uncertain POSIX cleanup durable before reusing its name."""
+
+    if os.name == "nt":
+        return
+    quarantine = _private_directory_quarantine_path(transaction_root)
+    parent_fd = -1
+
+    def _require_absent(name: str, display_path: Path) -> None:
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise StorageMigrationError(
+                "transaction_cleanup_durability_unknown",
+                f"无法确认迁移事务清理状态: {display_path}: {exc}",
+            ) from exc
+        raise StorageMigrationError(
+            "transaction_cleanup_durability_unknown",
+            f"迁移事务目录在清理确认期间重新出现: {display_path}",
+        )
+
+    try:
+        parent_fd = _open_verified_directory(transaction_root.parent)
+        parent_identity = os.fstat(parent_fd)
+        for candidate in (transaction_root, quarantine):
+            _require_absent(candidate.name, candidate)
+        os.fsync(parent_fd)
+        for candidate in (transaction_root, quarantine):
+            _require_absent(candidate.name, candidate)
+        named_parent = transaction_root.parent.lstat()
+        if not os.path.samestat(parent_identity, named_parent):
+            raise StorageMigrationError(
+                "transaction_cleanup_durability_unknown",
+                f"迁移事务父目录在清理确认期间被替换: {transaction_root.parent}",
+            )
+    except StorageMigrationError:
+        raise
+    except OSError as exc:
+        raise StorageMigrationError(
+            "transaction_cleanup_durability_unknown",
+            f"迁移事务目录清理无法可靠写入磁盘: {transaction_root.parent}: {exc}",
+        ) from exc
+    finally:
+        if parent_fd >= 0:
+            with suppress(OSError):
+                os.close(parent_fd)
 
 
 def _publish_posix_runtime_entry(
@@ -5913,6 +6020,7 @@ def build_pending_storage_migration_payload(
         "version": STORAGE_MIGRATION_VERSION,
         "txid": str(txid or uuid.uuid4().hex),
         "transaction_owner_token": secrets.token_hex(32),
+        "transaction_cleanup_pending": False,
         "status": STORAGE_MIGRATION_STATUS_PENDING,
         "source_root": str(normalized_source_root),
         "target_root": str(normalized_target_root),
@@ -6068,6 +6176,15 @@ def run_pending_storage_migration(
     posix_publish_roots: _PosixPublishRoots | None = None
     expected_target_identity: os.stat_result | None = None
     pinned_target_root_fd = -1
+    cleanup_durability_pending = os.name != "nt" and (
+        bool(payload.get("transaction_cleanup_pending"))
+        or (
+            str(payload.get("status") or "").strip()
+            == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+            and str(payload.get("error_code") or "").strip()
+            == "transaction_cleanup_durability_unknown"
+        )
+    )
 
     def _release_windows_directory_guards() -> None:
         while windows_directory_guards:
@@ -6138,11 +6255,34 @@ def run_pending_storage_migration(
                 os.close(pinned_target_root_fd)
             pinned_target_root_fd = -1
 
+    def _arm_transaction_cleanup_intent() -> None:
+        nonlocal payload, cleanup_durability_pending
+        # Windows has no corresponding strict directory-fsync obligation.
+        # Journaling this POSIX-only uncertainty there would leave no recovery
+        # transition able to clear it after a process dies between rmdir and
+        # the in-memory completion mark.
+        if os.name == "nt" or cleanup_durability_pending:
+            return
+        payload = _persist_migration_payload(
+            config_manager,
+            payload,
+            anchor_root=normalized_anchor_root,
+            transaction_cleanup_pending=True,
+        )
+        cleanup_durability_pending = True
+
+    def _mark_transaction_cleanup_durable() -> None:
+        nonlocal payload, cleanup_durability_pending
+        cleanup_durability_pending = False
+        payload = dict(payload)
+        payload["transaction_cleanup_pending"] = False
+
     def _finish_failure(
         error_code: str,
         error_message: str,
         *,
         rollback_required: bool = False,
+        force_recovery_required: bool = False,
     ) -> dict[str, Any]:
         nonlocal payload, policy_payload
         error_message = _bounded_migration_error_message(error_message)
@@ -6189,11 +6329,15 @@ def run_pending_storage_migration(
             logger.warning("Failed to persist recovery root_state after migration failure: %s", root_state_exc)
 
         next_payload = dict(payload)
+        transaction_cleanup_pending = (
+            cleanup_durability_pending or force_recovery_required
+        )
         next_status = (
             STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
             if rollback_required
             else STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
-            if _migration_transaction_evidence_is_present(next_payload)
+            if transaction_cleanup_pending
+            or _migration_transaction_evidence_is_present(next_payload)
             else STORAGE_MIGRATION_STATUS_FAILED
         )
         next_payload.update(
@@ -6204,6 +6348,7 @@ def run_pending_storage_migration(
                 "error_message": error_message,
                 "failed_at": _utc_now_iso(),
                 "updated_at": _utc_now_iso(),
+                "transaction_cleanup_pending": transaction_cleanup_pending,
                 "recovery_policy_persisted": policy_persisted,
                 "recovery_root_state_persisted": root_state_persisted,
                 "recovery_metadata_degraded": not (policy_persisted and root_state_persisted),
@@ -6271,6 +6416,8 @@ def run_pending_storage_migration(
             and _source_matches_recovery_baseline()
         ):
             try:
+                _arm_transaction_cleanup_intent()
+                result["payload"] = payload
                 removed = _remove_transaction_root_if_owned(
                     payload,
                     transaction_root,
@@ -6282,6 +6429,7 @@ def run_pending_storage_migration(
                         transaction_root,
                     )
                 elif str(payload.get("status") or "").strip() == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED:
+                    _mark_transaction_cleanup_durable()
                     # The durable failed checkpoint existed before destructive
                     # cleanup.  Only after the owned transaction is gone may it
                     # become a replaceable terminal failure.
@@ -6299,22 +6447,12 @@ def run_pending_storage_migration(
     try:
         raw_source_root = Path(str(payload.get("source_root") or "").strip()).expanduser()
         raw_target_root = Path(str(payload.get("target_root") or "").strip()).expanduser()
-        if path_chain_has_symlink(raw_source_root):
-            raise StorageMigrationError(
-                "source_path_symlink_unsupported",
-                "迁移源路径或其父路径已变为符号链接，已停止迁移。",
-            )
         if path_chain_has_symlink(raw_target_root):
             raise StorageMigrationError(
                 "target_path_symlink_unsupported",
                 "迁移目标路径或其父路径已变为符号链接，已停止迁移。",
             )
-        source_root = normalize_runtime_root(raw_source_root)
         target_root = normalize_runtime_root(raw_target_root)
-        selection_source = _normalize_selection_source(str(payload.get("selection_source") or ""))
-        migration_mode = str(payload.get("migration_mode") or STORAGE_MIGRATION_MODE_COPY).strip()
-        if migration_mode != STORAGE_MIGRATION_MODE_COPY:
-            raise StorageMigrationError("invalid_migration_mode", "存储迁移检查点包含不支持的迁移模式。")
         txid = _validate_txid(payload.get("txid"))
         transaction_root, transaction_checkpoint_bound = _checkpoint_transaction_root(
             payload,
@@ -6326,6 +6464,41 @@ def run_pending_storage_migration(
             and transaction_root.exists()
             and _transaction_root_is_owned(payload, transaction_root, txid)
         )
+        transaction_quarantine = _private_directory_quarantine_path(transaction_root)
+        if (
+            os.name != "nt"
+            and cleanup_durability_pending
+            and str(payload.get("status") or "").strip()
+            in {
+                STORAGE_MIGRATION_STATUS_PREFLIGHT,
+                STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
+            }
+            and transaction_checkpoint_bound
+            and not transaction_root.exists()
+            and not transaction_root.is_symlink()
+            and not transaction_quarantine.exists()
+            and not transaction_quarantine.is_symlink()
+        ):
+            try:
+                _confirm_transaction_names_absent_durably(transaction_root)
+            except StorageMigrationError as cleanup_exc:
+                return _finish_failure(
+                    cleanup_exc.error_code,
+                    cleanup_exc.message,
+                    force_recovery_required=True,
+                )
+            _mark_transaction_cleanup_durable()
+
+        if path_chain_has_symlink(raw_source_root):
+            raise StorageMigrationError(
+                "source_path_symlink_unsupported",
+                "迁移源路径或其父路径已变为符号链接，已停止迁移。",
+            )
+        source_root = normalize_runtime_root(raw_source_root)
+        selection_source = _normalize_selection_source(str(payload.get("selection_source") or ""))
+        migration_mode = str(payload.get("migration_mode") or STORAGE_MIGRATION_MODE_COPY).strip()
+        if migration_mode != STORAGE_MIGRATION_MODE_COPY:
+            raise StorageMigrationError("invalid_migration_mode", "存储迁移检查点包含不支持的迁移模式。")
         original_target_entries = [
             str(value)
             for value in payload.get("original_target_entries", [])
@@ -6379,7 +6552,6 @@ def run_pending_storage_migration(
                 rollback_required=publish_started,
             )
 
-        transaction_quarantine = _private_directory_quarantine_path(transaction_root)
         if transaction_root.is_symlink():
             return _finish_failure(
                 "transaction_path_symlink_unsupported",
@@ -6506,15 +6678,25 @@ def run_pending_storage_migration(
                     "source_recovery_unverifiable",
                     "无法证明迁移源仍与事务暂存前一致；已保留事务副本。",
                 )
-            if not _remove_transaction_root_if_owned(
-                payload,
-                transaction_root,
-                txid,
-            ):
+            _arm_transaction_cleanup_intent()
+            try:
+                transaction_removed = _remove_transaction_root_if_owned(
+                    payload,
+                    transaction_root,
+                    txid,
+                )
+            except _TransactionCleanupDurabilityUnknown as cleanup_exc:
+                return _finish_failure(
+                    "transaction_cleanup_durability_unknown",
+                    f"迁移事务目录已清理，但无法确认目录项已可靠写入磁盘: {cleanup_exc}",
+                    force_recovery_required=True,
+                )
+            if not transaction_removed:
                 return _finish_failure(
                     "transaction_ownership_changed",
                     "迁移事务目录的所有权标记在清理前发生变化，已停止迁移。",
                 )
+            _mark_transaction_cleanup_durable()
         elif transaction_quarantine.exists() or transaction_quarantine.is_symlink():
             if not transaction_checkpoint_bound:
                 return _finish_failure(
@@ -6526,15 +6708,25 @@ def run_pending_storage_migration(
                     "source_recovery_unverifiable",
                     "无法证明迁移源仍与事务暂存前一致；已保留隔离副本。",
                 )
-            if not _remove_transaction_root_if_owned(
-                payload,
-                transaction_root,
-                txid,
-            ):
+            _arm_transaction_cleanup_intent()
+            try:
+                transaction_removed = _remove_transaction_root_if_owned(
+                    payload,
+                    transaction_root,
+                    txid,
+                )
+            except _TransactionCleanupDurabilityUnknown as cleanup_exc:
+                return _finish_failure(
+                    "transaction_cleanup_durability_unknown",
+                    f"迁移事务隔离目录已清理，但无法确认目录项已可靠写入磁盘: {cleanup_exc}",
+                    force_recovery_required=True,
+                )
+            if not transaction_removed:
                 return _finish_failure(
                     "transaction_ownership_changed",
                     "迁移事务隔离目录的所有权在清理前发生变化，已停止迁移。",
                 )
+            _mark_transaction_cleanup_durable()
 
         # Once legacy recovery evidence is safely retired, start the retry in
         # the current target-contained layout. Descriptor-relative creation
