@@ -32,17 +32,18 @@ _library_lock = Lock()
 
 
 def _probe_media(path, size, modified, role):
-    return _probe_media_cached(path, size, modified, role)
+    try:
+        return _probe_media_cached(path, size, modified, role)
+    except (OSError, ValueError, RuntimeError, TimeoutError):
+        # Transient worker failures must be retried even if the file is unchanged.
+        return False
 
 
 @lru_cache(maxsize=4096)
 def _probe_media_cached(path, size, modified, role):
     """Probe immutable objects once; stat keys invalidate damaged files."""
     from . import media
-    try:
-        return media.run("probe", path, role, timeout=10)
-    except (OSError, ValueError, RuntimeError, TimeoutError):
-        return False
+    return media.run("probe", path, role, timeout=10)
 
 
 @lru_cache(maxsize=8)

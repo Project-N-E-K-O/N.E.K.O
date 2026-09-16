@@ -82,10 +82,19 @@ def _frame(path, at, output):
     return False
 
 
+def _packet_time(packet):
+    timestamp = packet.dts if packet.dts is not None else packet.pts
+    if timestamp is None or packet.time_base is None:
+        raise ValueError("Media packet has no usable timestamp")
+    return timestamp * packet.time_base
+
+
 def _packets(container, stream, output, copy):
     if copy:
         for packet in container.demux(stream):
-            if packet.dts is not None:
+            if packet.size:
+                # Demux flush packets are empty; missing DTS alone is not EOF.
+                _packet_time(packet)
                 packet.stream = output
                 yield packet
         return
@@ -132,7 +141,7 @@ def _mux(video, audio, target):
                 dest.layout = "mono" if stream.codec_context.channels == 1 else "stereo"
                 dest.bit_rate = 128000
             iterators.append(_packets(source, stream, dest, copy))
-        for packet in heapq.merge(*iterators, key=lambda p: float(p.dts * p.time_base)):
+        for packet in heapq.merge(*iterators, key=_packet_time):
             out.mux(packet)
 
 

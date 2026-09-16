@@ -19,3 +19,14 @@ def test_probe_failure_is_unavailable(tmp_path, monkeypatch, error):
     library._probe_media_cached.cache_clear()
     monkeypatch.setattr(media, 'run', Mock(side_effect=error))
     assert not library._probe_media(tmp_path / 'object', 4, 123, 'audio')
+
+@pytest.mark.parametrize('error', [TimeoutError(), RuntimeError('worker exited'), OSError(), ValueError()])
+def test_probe_recovers_without_file_change(tmp_path, monkeypatch, error):
+    library._probe_media_cached.cache_clear()
+    run = Mock(side_effect=[error, True])
+    monkeypatch.setattr(media, 'run', run)
+    args = (tmp_path / 'object', 4, 123, 'video')
+    assert not library._probe_media(*args)
+    assert library._probe_media(*args)
+    assert library._probe_media(*args)
+    assert run.call_count == 2
