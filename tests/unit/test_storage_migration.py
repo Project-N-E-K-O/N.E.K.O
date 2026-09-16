@@ -2212,6 +2212,221 @@ def test_run_pending_storage_migration_requires_confirmation_for_existing_target
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory descriptor semantics")
+def test_existing_target_confirmation_scans_the_pinned_target_root(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    target_file = target_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_file.write_text("TARGET", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+
+    moved_target = tmp_path / "moved-pinned-target"
+    real_probe = (
+        storage_migration_module._snapshot_posix_runtime_entries_with_user_content
+    )
+    swapped = False
+
+    def swap_named_target_while_scanning(root_fd, root_display, **kwargs):
+        nonlocal swapped
+        target_root.rename(moved_target)
+        target_root.mkdir()
+        swapped = True
+        try:
+            return real_probe(root_fd, root_display, **kwargs)
+        finally:
+            target_root.rmdir()
+            moved_target.rename(target_root)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_posix_runtime_entries_with_user_content",
+        swap_named_target_while_scanning,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert swapped is True
+    assert result["completed"] is False
+    assert result["error_code"] == "target_confirmation_required"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scanner", ("path", "posix"))
+def test_pristine_content_fact_is_bound_to_the_target_baseline(
+    tmp_path,
+    monkeypatch,
+    scanner,
+):
+    from utils import cloudsave_runtime as cloudsave_runtime_module
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    target_file = target_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_bytes(b"SOURCE")
+    target_file.write_bytes(b"TARGET-USER-DATA")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+
+    monkeypatch.setattr(
+        cloudsave_runtime_module,
+        "_runtime_config_bytes_match_pristine_default",
+        lambda _manager, _name, payload: payload == b"PRISTINE",
+    )
+    observed_pristine = False
+    if scanner == "path":
+        target_file.write_bytes(b"PRISTINE")
+        try:
+            observed_snapshot, has_user_content = (
+                storage_migration_module._snapshot_runtime_entries_with_user_content(
+                    target_root,
+                    config_manager=config_manager,
+                )
+            )
+        finally:
+            target_file.write_bytes(b"TARGET-USER-DATA")
+        assert has_user_content is False
+        assert observed_snapshot != pending["target_baseline"]
+        assert target_file.read_bytes() == b"TARGET-USER-DATA"
+        assert not transaction_root.exists()
+        return
+    else:
+        if os.name == "nt":
+            pytest.skip("POSIX directory descriptor semantics")
+        real_snapshot = (
+            storage_migration_module._snapshot_posix_runtime_entries_with_user_content
+        )
+
+        def expose_pristine_only_during_snapshot(root_fd, root_display, **kwargs):
+            nonlocal observed_pristine
+            target_file.write_bytes(b"PRISTINE")
+            try:
+                snapshot, has_user_content = real_snapshot(
+                    root_fd,
+                    root_display,
+                    **kwargs,
+                )
+                observed_pristine = has_user_content is False
+                return snapshot, has_user_content
+            finally:
+                target_file.write_bytes(b"TARGET-USER-DATA")
+
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_snapshot_posix_runtime_entries_with_user_content",
+            expose_pristine_only_during_snapshot,
+        )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert observed_pristine is True
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_since_confirmation"
+    assert target_file.read_bytes() == b"TARGET-USER-DATA"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("scanner", ("path", "posix"))
+@pytest.mark.parametrize(
+    ("relative_path", "payload", "expected"),
+    (
+        ("embedding_models/model.bin", b"CACHE", False),
+        ("memory/.DS_Store", b"NOISE", False),
+        (
+            "avatar_tools/.local-12345678-1234-4123-8123-123456789abc.backup/record.json",
+            b"RECOVERY",
+            True,
+        ),
+        ("jukebox/library.json", b"USER", True),
+        ("config/characters.json", b"DEFAULT", False),
+        ("config/characters.json", b"CUSTOM", True),
+    ),
+)
+def test_target_content_fact_preserves_runtime_semantics(
+    tmp_path,
+    monkeypatch,
+    scanner,
+    relative_path,
+    payload,
+    expected,
+):
+    from utils import cloudsave_runtime as cloudsave_runtime_module
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    target_root = tmp_path / "target"
+    candidate = target_root / relative_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(payload)
+    monkeypatch.setattr(
+        cloudsave_runtime_module,
+        "_runtime_config_bytes_match_pristine_default",
+        lambda _manager, _name, content: content == b"DEFAULT",
+    )
+    if scanner == "path":
+        snapshot, has_user_content = (
+            storage_migration_module._snapshot_runtime_entries_with_user_content(
+                target_root,
+                config_manager=config_manager,
+            )
+        )
+    else:
+        if os.name == "nt":
+            pytest.skip("POSIX directory descriptor semantics")
+        root_fd = storage_migration_module._open_verified_directory(target_root)
+        try:
+            snapshot, has_user_content = (
+                storage_migration_module._snapshot_posix_runtime_entries_with_user_content(
+                    root_fd,
+                    target_root,
+                    expected_mount_identity=storage_migration_module._opened_mount_identity(
+                        root_fd
+                    ),
+                    config_manager=config_manager,
+                )
+            )
+        finally:
+            os.close(root_fd)
+
+    assert snapshot
+    assert has_user_content is expected
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_rejects_nested_source_and_target_paths(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -3881,9 +4096,61 @@ def test_run_pending_storage_migration_rechecks_space_with_safety_margin(tmp_pat
         selection_source="custom",
     )
     monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_free_byte_count",
+        lambda _path: source_file.stat().st_size,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "insufficient_space"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned target capacity")
+def test_posix_capacity_gate_reads_the_pinned_target_filesystem(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_bytes(b"source")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    roomy = os.statvfs(tmp_path)
+    pinned_full = SimpleNamespace(
+        f_bsize=roomy.f_bsize,
+        f_frsize=roomy.f_frsize,
+        f_blocks=roomy.f_blocks,
+        f_bfree=0,
+        f_bavail=0,
+        f_files=roomy.f_files,
+        f_ffree=0,
+        f_favail=0,
+        f_flag=roomy.f_flag,
+        f_namemax=roomy.f_namemax,
+    )
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "fstatvfs",
+        lambda fd: pinned_full if isinstance(fd, int) else pytest.fail("expected fd"),
+    )
+    monkeypatch.setattr(
         storage_migration_module.shutil,
         "disk_usage",
-        lambda _path: type("DiskUsage", (), {"free": source_file.stat().st_size})(),
+        lambda _path: type("DiskUsage", (), {"free": 1024**4})(),
     )
 
     result = run_pending_storage_migration(config_manager)
@@ -3918,13 +4185,9 @@ def test_empty_source_still_reserves_transaction_metadata_space(tmp_path, monkey
         lambda _path: None,
     )
     monkeypatch.setattr(
-        storage_migration_module.shutil,
-        "disk_usage",
-        lambda _path: type(
-            "DiskUsage",
-            (),
-            {"free": 64 * 1024 * 1024 + 8 * 4096 - 1},
-        )(),
+        storage_migration_module,
+        "_filesystem_free_byte_count",
+        lambda _path: 64 * 1024 * 1024 + 8 * 4096 - 1,
     )
 
     result = run_pending_storage_migration(config_manager)
@@ -3959,9 +4222,9 @@ def test_empty_source_still_reserves_transaction_metadata_entries(tmp_path, monk
         lambda _path: 7,
     )
     monkeypatch.setattr(
-        storage_migration_module.shutil,
-        "disk_usage",
-        lambda _path: type("DiskUsage", (), {"free": 1024 * 1024 * 1024})(),
+        storage_migration_module,
+        "_filesystem_free_byte_count",
+        lambda _path: 1024 * 1024 * 1024,
     )
 
     result = run_pending_storage_migration(config_manager)
@@ -4000,9 +4263,9 @@ def test_run_pending_storage_migration_reserves_space_for_zero_byte_entries(
         lambda _path: None,
     )
     monkeypatch.setattr(
-        storage_migration_module.shutil,
-        "disk_usage",
-        lambda _path: type("DiskUsage", (), {"free": 64 * 1024 * 1024 + 8191})(),
+        storage_migration_module,
+        "_filesystem_free_byte_count",
+        lambda _path: 64 * 1024 * 1024 + 8191,
     )
 
     result = run_pending_storage_migration(config_manager)
@@ -5066,8 +5329,17 @@ def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeyp
             _snapshot_then_create_target,
         )
     else:
+        real_initial_snapshot = (
+            storage_migration_module._snapshot_runtime_entries_with_user_content
+        )
         real_snapshot_entries = storage_migration_module._snapshot_runtime_entries
         target_snapshot_calls = 0
+
+        def _record_initial_target_snapshot(root, **kwargs):
+            nonlocal target_snapshot_calls
+            if Path(root) == target_root.resolve():
+                target_snapshot_calls += 1
+            return real_initial_snapshot(root, **kwargs)
 
         def _snapshot_then_create_target(root, **kwargs):
             nonlocal target_snapshot_calls
@@ -5083,6 +5355,11 @@ def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeyp
                 concurrent_file.write_text("EXTERNAL", encoding="utf-8")
             return snapshot
 
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_snapshot_runtime_entries_with_user_content",
+            _record_initial_target_snapshot,
+        )
         monkeypatch.setattr(
             storage_migration_module,
             "_snapshot_runtime_entries",
@@ -5176,21 +5453,24 @@ def test_posix_target_root_replaced_after_pinned_baseline_never_stages_data(
     )
     moved_target = tmp_path / "moved-original-target"
     sentinel = target_root / "external-sentinel.txt"
-    real_has_user_content = storage_migration_module._root_has_user_content
+    real_snapshot = (
+        storage_migration_module._snapshot_posix_runtime_entries_with_user_content
+    )
     replaced = False
 
-    def _replace_target_before_content_check(root, **kwargs):
+    def _replace_target_after_pinned_snapshot(root_fd, root_display, **kwargs):
         nonlocal replaced
+        result = real_snapshot(root_fd, root_display, **kwargs)
         target_root.rename(moved_target)
         target_root.mkdir()
         sentinel.write_text("KEEP", encoding="utf-8")
         replaced = True
-        return real_has_user_content(root, **kwargs)
+        return result
 
     monkeypatch.setattr(
         storage_migration_module,
-        "_root_has_user_content",
-        _replace_target_before_content_check,
+        "_snapshot_posix_runtime_entries_with_user_content",
+        _replace_target_after_pinned_snapshot,
     )
     monkeypatch.setattr(
         storage_migration_module,

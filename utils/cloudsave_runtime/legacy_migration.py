@@ -361,6 +361,38 @@ def recover_abandoned_legacy_import_preparation(config_manager) -> None:
     _clear_legacy_import_preparation(config_manager, attempt_id)
 
 
+def _runtime_config_bytes_match_pristine_default(
+    config_manager,
+    runtime_name: str,
+    runtime_bytes: bytes,
+) -> bool:
+    source_path = None
+    if runtime_name == "characters.json":
+        localized_source = getattr(config_manager, "_get_localized_characters_source", lambda: None)()
+        if localized_source:
+            source_path = Path(localized_source)
+    if source_path is None:
+        project_config_dir = getattr(config_manager, "project_config_dir", None)
+        if project_config_dir is not None:
+            candidate = Path(project_config_dir) / runtime_name
+            if candidate.exists():
+                source_path = candidate
+
+    if source_path is not None and source_path.exists():
+        try:
+            return runtime_bytes == source_path.read_bytes()
+        except Exception:
+            return False
+
+    default_payload = DEFAULT_CONFIG_DATA.get(runtime_name)
+    if default_payload is None:
+        return False
+    try:
+        return json.loads(runtime_bytes.decode("utf-8")) == default_payload
+    except Exception:
+        return False
+
+
 def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: Path) -> bool:
     try:
         runtime_metadata = runtime_path.lstat()
@@ -379,31 +411,11 @@ def _runtime_config_path_matches_pristine_default(config_manager, runtime_path: 
     except OSError:
         return False
 
-    source_path = None
-    if runtime_path.name == "characters.json":
-        localized_source = getattr(config_manager, "_get_localized_characters_source", lambda: None)()
-        if localized_source:
-            source_path = Path(localized_source)
-    if source_path is None:
-        project_config_dir = getattr(config_manager, "project_config_dir", None)
-        if project_config_dir is not None:
-            candidate = Path(project_config_dir) / runtime_path.name
-            if candidate.exists():
-                source_path = candidate
-
-    if source_path is not None and source_path.exists():
-        try:
-            return runtime_bytes == source_path.read_bytes()
-        except Exception:
-            return False
-
-    default_payload = DEFAULT_CONFIG_DATA.get(runtime_path.name)
-    if default_payload is None:
-        return False
-    try:
-        return json.loads(runtime_bytes.decode("utf-8")) == default_payload
-    except Exception:
-        return False
+    return _runtime_config_bytes_match_pristine_default(
+        config_manager,
+        runtime_path.name,
+        runtime_bytes,
+    )
 
 
 def _runtime_config_dir_has_user_content(

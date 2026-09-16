@@ -41,6 +41,7 @@ from utils.file_utils import (
 )
 from utils.logger_config import get_module_logger
 from .entries import (
+    RUNTIME_ENTRY_KIND_RUNTIME_CACHE,
     RUNTIME_STORAGE_ENTRIES,
     RUNTIME_STORAGE_RELATIVE_PATHS,
     RuntimeStorageEntry,
@@ -996,6 +997,9 @@ def _snapshot_posix_entry_at(
     *,
     expected_mount_identity: tuple[str, int],
     include_directory_count: bool = False,
+    user_content_entry: str | None = None,
+    config_manager=None,
+    user_content_result: list[bool] | None = None,
 ) -> dict[str, int | str]:
     """Hash one entry without resolving any replaceable ancestor path."""
 
@@ -1016,7 +1020,12 @@ def _snapshot_posix_entry_at(
             f"迁移校验不支持符号链接: {display_path}",
         )
 
-    def _hash_opened_file(file_fd: int, file_display: Path) -> tuple[int, str]:
+    def _hash_opened_file(
+        file_fd: int,
+        file_display: Path,
+        *,
+        capture_limit: int | None = None,
+    ) -> tuple[int, str, bytes | None]:
         _ensure_opened_entry_on_mount(
             file_fd,
             expected_mount_identity,
@@ -1024,13 +1033,23 @@ def _snapshot_posix_entry_at(
         )
         digest = hashlib.sha256()
         total = 0
+        captured = bytearray() if capture_limit is not None else None
         while True:
             chunk = os.read(file_fd, 1024 * 1024)
             if not chunk:
                 break
             total += len(chunk)
             digest.update(chunk)
-        return total, digest.hexdigest()
+            if captured is not None:
+                if total <= capture_limit:
+                    captured.extend(chunk)
+                else:
+                    captured = None
+        return (
+            total,
+            digest.hexdigest(),
+            bytes(captured) if captured is not None else None,
+        )
 
     def _stable_file_fields(metadata: os.stat_result) -> tuple[int, int, int]:
         return (
@@ -1057,7 +1076,7 @@ def _snapshot_posix_entry_at(
                     "migration_path_changed",
                     f"迁移校验文件在打开期间被替换: {display_path}",
                 )
-            total_bytes, digest = _hash_opened_file(file_fd, display_path)
+            total_bytes, digest, _captured = _hash_opened_file(file_fd, display_path)
             named_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             opened_after = os.fstat(file_fd)
             if (
@@ -1080,6 +1099,8 @@ def _snapshot_posix_entry_at(
             }
             if include_directory_count:
                 snapshot["directory_count"] = 0
+            if user_content_result is not None:
+                user_content_result[0] = True
             return snapshot
         finally:
             if file_fd >= 0:
@@ -1112,6 +1133,22 @@ def _snapshot_posix_entry_at(
         total_bytes = 0
         file_count = 0
         directory_count = 1
+        if user_content_entry is not None:
+            from utils.cloudsave_runtime import (
+                _is_ignorable_runtime_entry,
+                _runtime_config_bytes_match_pristine_default,
+            )
+            from utils.cloudsave_runtime._shared import (
+                TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
+            )
+
+            transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(
+                user_content_entry
+            )
+        else:
+            _is_ignorable_runtime_entry = None
+            _runtime_config_bytes_match_pristine_default = None
+            transactional_pattern = None
 
         def _walk(directory_fd: int, relative_root: Path, directory_display: Path) -> None:
             nonlocal total_bytes, file_count, directory_count
@@ -1145,8 +1182,32 @@ def _snapshot_posix_entry_at(
                 manifest_digest.update(
                     b"D\0" + os.fsencode((relative_root / child_name).as_posix()) + b"\0"
                 )
+                if (
+                    relative_root == Path()
+                    and user_content_result is not None
+                    and _is_ignorable_runtime_entry is not None
+                    and not _is_ignorable_runtime_entry(
+                        Path(child_name),
+                        transactional_pattern=transactional_pattern,
+                    )
+                ):
+                    user_content_result[0] = True
             for child_name, child_metadata in files:
                 child_display = directory_display / child_name
+                classify_file = (
+                    relative_root == Path()
+                    and user_content_result is not None
+                    and _is_ignorable_runtime_entry is not None
+                    and not _is_ignorable_runtime_entry(
+                        Path(child_name),
+                        transactional_pattern=transactional_pattern,
+                    )
+                )
+                capture_limit = (
+                    16 * 1024 * 1024
+                    if classify_file and user_content_entry == "config"
+                    else None
+                )
                 file_fd = -1
                 try:
                     file_fd = os.open(
@@ -1166,7 +1227,11 @@ def _snapshot_posix_entry_at(
                             "migration_path_changed",
                             f"迁移校验文件在打开期间被替换: {child_display}",
                         )
-                    file_bytes, file_digest = _hash_opened_file(file_fd, child_display)
+                    file_bytes, file_digest, captured_bytes = _hash_opened_file(
+                        file_fd,
+                        child_display,
+                        capture_limit=capture_limit,
+                    )
                     named_after = os.stat(
                         child_name,
                         dir_fd=directory_fd,
@@ -1201,6 +1266,26 @@ def _snapshot_posix_entry_at(
                 )
                 total_bytes += file_bytes
                 file_count += 1
+                if classify_file:
+                    if user_content_entry != "config":
+                        user_content_result[0] = True
+                    else:
+                        try:
+                            is_pristine = bool(
+                                captured_bytes is not None
+                                and config_manager is not None
+                                and _runtime_config_bytes_match_pristine_default
+                                is not None
+                                and _runtime_config_bytes_match_pristine_default(
+                                    config_manager,
+                                    child_name,
+                                    captured_bytes,
+                                )
+                            )
+                        except Exception:
+                            is_pristine = False
+                        if not is_pristine:
+                            user_content_result[0] = True
             for child_name, child_metadata in directories:
                 child_fd = -1
                 child_display = directory_display / child_name
@@ -1326,6 +1411,9 @@ def _snapshot_posix_relative_entry(
     *,
     expected_mount_identity: tuple[str, int],
     include_directory_count: bool = False,
+    user_content_entry: str | None = None,
+    config_manager=None,
+    user_content_result: list[bool] | None = None,
 ) -> dict[str, int | str]:
     opened_parent = _open_posix_existing_relative_parent(
         root_fd,
@@ -1350,6 +1438,9 @@ def _snapshot_posix_relative_entry(
             parent_display / name,
             expected_mount_identity=expected_mount_identity,
             include_directory_count=include_directory_count,
+            user_content_entry=user_content_entry,
+            config_manager=config_manager,
+            user_content_result=user_content_result,
         )
     finally:
         os.close(parent_fd)
@@ -1403,6 +1494,35 @@ def _snapshot_posix_runtime_entries_at(
         if snapshot["kind"] != "missing":
             snapshots[entry.relative_path] = snapshot
     return snapshots
+
+
+def _snapshot_posix_runtime_entries_with_user_content(
+    root_fd: int,
+    root_display: Path,
+    *,
+    expected_mount_identity: tuple[str, int],
+    config_manager,
+) -> tuple[dict[str, dict[str, int | str]], bool]:
+    """Bind overwrite-confirmation facts to the exact bytes in the baseline."""
+
+    snapshots: dict[str, dict[str, int | str]] = {}
+    user_content_result = [False]
+    for entry in RUNTIME_STORAGE_ENTRIES:
+        is_cache = entry.kind == RUNTIME_ENTRY_KIND_RUNTIME_CACHE
+        snapshot = _snapshot_posix_relative_entry(
+            root_fd,
+            root_display,
+            entry.relative_path,
+            expected_mount_identity=expected_mount_identity,
+            user_content_entry=None if is_cache else entry.relative_path,
+            config_manager=config_manager,
+            user_content_result=None if is_cache else user_content_result,
+        )
+        if snapshot["kind"] != "missing":
+            snapshots[entry.relative_path] = snapshot
+        if is_cache and snapshot["kind"] not in {"missing", "dir"}:
+            user_content_result[0] = True
+    return snapshots, user_content_result[0]
 
 
 def _snapshot_posix_runtime_entries(
@@ -3939,7 +4059,7 @@ def _snapshot_windows_config_with_open_workshop(
                         "path_type_unsupported",
                         f"迁移校验不支持该文件类型: {current_file}",
                     )
-                file_bytes, file_digest, _allocated_bytes = _hash_file(
+                file_bytes, file_digest, _allocated_bytes, _captured = _hash_file(
                     current_file,
                     expected_mount_identity=tree_mount_identity,
                 )
@@ -4375,7 +4495,8 @@ def _hash_file(
     path: Path,
     *,
     expected_mount_identity: tuple[str, int] | None = None,
-) -> tuple[int, str, int]:
+    capture_limit: int | None = None,
+) -> tuple[int, str, int, bytes | None]:
     source_fd = -1
     try:
         try:
@@ -4396,12 +4517,18 @@ def _hash_file(
 
         digest = hashlib.sha256()
         total_bytes = 0
+        captured = bytearray() if capture_limit is not None else None
         while True:
             chunk = os.read(source_fd, 1024 * 1024)
             if not chunk:
                 break
             total_bytes += len(chunk)
             digest.update(chunk)
+            if captured is not None:
+                if total_bytes <= capture_limit:
+                    captured.extend(chunk)
+                else:
+                    captured = None
 
         try:
             opened_after = _verify_opened_regular_file(
@@ -4425,18 +4552,31 @@ def _hash_file(
             total_bytes,
             int(getattr(opened_after, "st_blocks", 0) or 0) * 512,
         )
-        return total_bytes, digest.hexdigest(), allocated_bytes
+        return (
+            total_bytes,
+            digest.hexdigest(),
+            allocated_bytes,
+            bytes(captured) if captured is not None else None,
+        )
     finally:
         if source_fd >= 0:
             with suppress(OSError):
                 os.close(source_fd)
 
 
-def _filesystem_allocation_unit(path: Path) -> int:
+def _filesystem_statvfs(path_or_fd: Path | int):
+    """Read filesystem facts from an already pinned POSIX directory when given one."""
+
+    if isinstance(path_or_fd, int):
+        return os.fstatvfs(path_or_fd)
+    return os.statvfs(path_or_fd)
+
+
+def _filesystem_allocation_unit(path: Path | int) -> int:
     """Return the target filesystem's minimum allocation unit in bytes."""
 
     if os.name != "nt":
-        filesystem = os.statvfs(path)
+        filesystem = _filesystem_statvfs(path)
         allocation_unit = int(filesystem.f_frsize or filesystem.f_bsize or 0)
     else:
         from ctypes import wintypes
@@ -4483,12 +4623,24 @@ def _filesystem_allocation_unit(path: Path) -> int:
     return allocation_unit
 
 
-def _filesystem_free_entry_count(path: Path) -> int | None:
+def _filesystem_free_byte_count(path: Path | int) -> int:
+    """Return user-available bytes from the pinned target filesystem."""
+
+    if os.name == "nt":
+        return int(shutil.disk_usage(str(path)).free)
+    filesystem = _filesystem_statvfs(path)
+    fragment_size = int(filesystem.f_frsize or filesystem.f_bsize or 0)
+    if fragment_size <= 0:
+        raise OSError(errno.EIO, "target filesystem returned an invalid fragment size")
+    return max(0, int(filesystem.f_bavail) * fragment_size)
+
+
+def _filesystem_free_entry_count(path: Path | int) -> int | None:
     """Return free inode-like entries when the filesystem reports a fixed pool."""
 
     if os.name == "nt":
         return None
-    filesystem = os.statvfs(path)
+    filesystem = _filesystem_statvfs(path)
     if int(filesystem.f_files) <= 0:
         return None
     return max(0, int(filesystem.f_favail))
@@ -4501,6 +4653,9 @@ def _snapshot_path(
     copy_capacity: _CopyCapacity | None = None,
     copy_allocation_unit: int = 0,
     include_directory_count: bool = False,
+    user_content_entry: str | None = None,
+    config_manager=None,
+    user_content_result: list[bool] | None = None,
 ) -> dict[str, int | str]:
     if copy_capacity is not None and copy_allocation_unit <= 0:
         raise ValueError("copy allocation unit must be positive")
@@ -4521,9 +4676,9 @@ def _snapshot_path(
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {path}")
     if path.is_file():
         if expected_mount_identity is None:
-            total_bytes, digest, allocated_bytes = _hash_file(path)
+            total_bytes, digest, allocated_bytes, _captured = _hash_file(path)
         else:
-            total_bytes, digest, allocated_bytes = _hash_file(
+            total_bytes, digest, allocated_bytes, _captured = _hash_file(
                 path,
                 expected_mount_identity=expected_mount_identity,
             )
@@ -4538,6 +4693,8 @@ def _snapshot_path(
             copy_capacity.entry_count += 1
         if include_directory_count:
             snapshot["directory_count"] = 0
+        if user_content_result is not None:
+            user_content_result[0] = True
         return snapshot
     if not path.is_dir():
         raise StorageMigrationError("path_type_unsupported", f"迁移校验不支持该文件类型: {path}")
@@ -4552,6 +4709,22 @@ def _snapshot_path(
     copy_required_bytes = copy_allocation_unit if copy_capacity is not None else 0
     copy_entry_count = 1 if copy_capacity is not None else 0
     manifest_digest = hashlib.sha256()
+    if user_content_entry is not None:
+        from utils.cloudsave_runtime import (
+            _is_ignorable_runtime_entry,
+            _runtime_config_bytes_match_pristine_default,
+        )
+        from utils.cloudsave_runtime._shared import (
+            TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
+        )
+
+        transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(
+            user_content_entry
+        )
+    else:
+        _is_ignorable_runtime_entry = None
+        _runtime_config_bytes_match_pristine_default = None
+        transactional_pattern = None
     for current_root, dirnames, filenames in os.walk(path):
         _ensure_directory_path_on_mount(
             Path(current_root),
@@ -4575,11 +4748,35 @@ def _snapshot_path(
             manifest_digest.update(
                 b"D\0" + os.fsencode((relative_root / dirname).as_posix()) + b"\0"
             )
+            if (
+                relative_root == Path()
+                and user_content_result is not None
+                and _is_ignorable_runtime_entry is not None
+                and not _is_ignorable_runtime_entry(
+                    Path(dirname),
+                    transactional_pattern=transactional_pattern,
+                )
+            ):
+                user_content_result[0] = True
             if copy_capacity is not None:
                 copy_required_bytes += copy_allocation_unit
                 copy_entry_count += 1
         for filename in filenames:
             current_file = Path(current_root) / filename
+            classify_file = (
+                relative_root == Path()
+                and user_content_result is not None
+                and _is_ignorable_runtime_entry is not None
+                and not _is_ignorable_runtime_entry(
+                    Path(filename),
+                    transactional_pattern=transactional_pattern,
+                )
+            )
+            capture_limit = (
+                16 * 1024 * 1024
+                if classify_file and user_content_entry == "config"
+                else None
+            )
             if path_chain_has_symlink(current_file):
                 raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {current_file}")
             if not current_file.is_file():
@@ -4587,9 +4784,10 @@ def _snapshot_path(
                     "path_type_unsupported",
                     f"迁移校验不支持该文件类型: {current_file}",
                 )
-            file_bytes, file_digest, allocated_bytes = _hash_file(
+            file_bytes, file_digest, allocated_bytes, captured_bytes = _hash_file(
                 current_file,
                 expected_mount_identity=tree_mount_identity,
+                capture_limit=capture_limit,
             )
             relative_file = (relative_root / filename).as_posix()
             manifest_digest.update(
@@ -4603,6 +4801,26 @@ def _snapshot_path(
             )
             total_bytes += file_bytes
             file_count += 1
+            if classify_file:
+                if user_content_entry != "config":
+                    user_content_result[0] = True
+                else:
+                    try:
+                        is_pristine = bool(
+                            captured_bytes is not None
+                            and config_manager is not None
+                            and _runtime_config_bytes_match_pristine_default
+                            is not None
+                            and _runtime_config_bytes_match_pristine_default(
+                                config_manager,
+                                filename,
+                                captured_bytes,
+                            )
+                        )
+                    except Exception:
+                        is_pristine = False
+                    if not is_pristine:
+                        user_content_result[0] = True
             if copy_capacity is not None:
                 copy_required_bytes += allocated_bytes + copy_allocation_unit
                 copy_entry_count += 1
@@ -4716,6 +4934,34 @@ def _snapshot_runtime_entries(
                 expected_mount_identity=runtime_mount_identity,
             )
     return snapshots
+
+
+def _snapshot_runtime_entries_with_user_content(
+    root: Path,
+    *,
+    config_manager,
+) -> tuple[dict[str, dict[str, int | str]], bool]:
+    """Bind Windows overwrite-confirmation facts to the snapshot generation."""
+
+    snapshots: dict[str, dict[str, int | str]] = {}
+    user_content_result = [False]
+    runtime_mount_identity = _runtime_root_mount_identity(root)
+    for entry in RUNTIME_STORAGE_ENTRIES:
+        entry_path = _checked_migration_entry_path(root, entry)
+        if not (entry_path.exists() or entry_path.is_symlink()):
+            continue
+        is_cache = entry.kind == RUNTIME_ENTRY_KIND_RUNTIME_CACHE
+        snapshot = _snapshot_path(
+            entry_path,
+            expected_mount_identity=runtime_mount_identity,
+            user_content_entry=None if is_cache else entry.relative_path,
+            config_manager=config_manager,
+            user_content_result=None if is_cache else user_content_result,
+        )
+        snapshots[entry.relative_path] = snapshot
+        if is_cache and snapshot["kind"] != "dir":
+            user_content_result[0] = True
+    return snapshots, user_content_result[0]
 
 
 def _runtime_root_mount_identity(root: Path) -> tuple[str, int] | None:
@@ -6127,20 +6373,6 @@ def _iter_existing_runtime_entries(root: Path) -> list[str]:
         if entry_path.exists() or entry_path.is_symlink():
             entries.append(entry.relative_path)
     return entries
-
-
-def _root_has_user_content(root: Path, *, config_manager) -> bool:
-    try:
-        from utils.cloudsave_runtime import runtime_root_has_user_content
-
-        return bool(runtime_root_has_user_content(root, config_manager=config_manager))
-    except Exception:
-        if not root.exists() or not root.is_dir():
-            return False
-        try:
-            return any(root.iterdir())
-        except OSError:
-            return False
 
 
 def _ensure_target_root_writable(target_root: Path) -> os.stat_result:
@@ -7625,6 +7857,7 @@ def _run_pending_storage_migration_locked(
         )
 
         writable_target_identity = _ensure_target_root_writable(target_root)
+        pinned_target_has_user_content: bool | None = None
         if preserve_existing_layout and (
             int(writable_target_identity.st_dev),
             int(writable_target_identity.st_ino),
@@ -7641,7 +7874,13 @@ def _run_pending_storage_migration_locked(
                 message="迁移目标根在 Windows 预检固定期间发生变化。",
                 expected_identity=expected_target_identity,
             )
-            current_target_snapshot = _snapshot_runtime_entries(target_root)
+            (
+                current_target_snapshot,
+                pinned_target_has_user_content,
+            ) = _snapshot_runtime_entries_with_user_content(
+                target_root,
+                config_manager=config_manager,
+            )
         else:
             pinned_target_root_fd = _open_verified_directory(target_root)
             expected_target_identity = os.fstat(pinned_target_root_fd)
@@ -7656,10 +7895,14 @@ def _run_pending_storage_migration_locked(
             pinned_target_mount_identity = _opened_mount_identity(
                 pinned_target_root_fd
             )
-            current_target_snapshot = _snapshot_posix_runtime_entries_at(
+            (
+                current_target_snapshot,
+                pinned_target_has_user_content,
+            ) = _snapshot_posix_runtime_entries_with_user_content(
                 pinned_target_root_fd,
                 target_root,
                 expected_mount_identity=pinned_target_mount_identity,
+                config_manager=config_manager,
             )
             _ensure_opened_directory_still_named(
                 target_root,
@@ -7685,7 +7928,12 @@ def _run_pending_storage_migration_locked(
                 migration_mode=STORAGE_MIGRATION_MODE_COPY,
             )
 
-        target_has_user_content = _root_has_user_content(target_root, config_manager=config_manager)
+        if pinned_target_has_user_content is None:
+            raise StorageMigrationError(
+                "target_inspection_unavailable",
+                "无法确认目标路径中的现有用户数据，已停止迁移。",
+            )
+        target_has_user_content = pinned_target_has_user_content
         confirmed_existing_target_content = bool(payload.get("confirmed_existing_target_content"))
 
         if target_has_user_content and not confirmed_existing_target_content:
@@ -7694,8 +7942,13 @@ def _run_pending_storage_migration_locked(
                 "目标路径已经包含现有数据，需要先确认覆盖目标中的同名运行时数据目录。",
             )
 
+        capacity_target: Path | int = (
+            pinned_target_root_fd
+            if pinned_target_root_fd >= 0
+            else target_root
+        )
         try:
-            copy_allocation_unit = _filesystem_allocation_unit(target_root)
+            copy_allocation_unit = _filesystem_allocation_unit(capacity_target)
         except OSError as exc:
             raise StorageMigrationError(
                 "disk_space_unavailable",
@@ -7778,8 +8031,8 @@ def _run_pending_storage_migration_locked(
         # cannot pass preflight and then strand startup while writing metadata.
         safety_margin_bytes = max(64 * 1024 * 1024, int(required_bytes * 0.05))
         try:
-            target_free_bytes = int(shutil.disk_usage(str(target_root)).free)
-            target_free_entries = _filesystem_free_entry_count(target_root)
+            target_free_bytes = _filesystem_free_byte_count(capacity_target)
+            target_free_entries = _filesystem_free_entry_count(capacity_target)
         except OSError as exc:
             raise StorageMigrationError(
                 "disk_space_unavailable",

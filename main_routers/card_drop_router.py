@@ -55,7 +55,13 @@ from utils.storage.community_private_state import (
     read_private_json_state,
     retained_community_snapshot_matches,
 )
-from utils.storage_policy import path_chain_has_symlink, paths_equal
+from utils.storage_policy import (
+    StoragePolicyError,
+    path_chain_has_symlink,
+    paths_equal,
+    publish_fixed_anchor_state_json,
+    read_fixed_anchor_state_json,
+)
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -1469,33 +1475,66 @@ def _read_private_json_state_at(dir_fd: int, filename: str) -> tuple[str, dict |
     return read_private_json_state(filename, dir_fd=dir_fd)
 
 
+def _read_fixed_anchor_private_json_state(path: Path) -> tuple[str, dict | None]:
+    """Read canonical private state through the fixed anchor directory chain."""
+
+    if path.parent.name != "state":
+        return _read_private_json_state(path)
+    try:
+        payload = read_fixed_anchor_state_json(path.parent.parent, path.name)
+    except FileNotFoundError:
+        return "absent", None
+    except StoragePolicyError:
+        return "unreadable", None
+    except (UnicodeError, ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(payload, dict):
+        return "invalid", None
+    return "valid", payload
+
+
 def _write_private_json_no_replace(path: Path, data: dict) -> bool:
     """Atomically publish a private JSON file without replacing a race winner."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path_chain_has_symlink(path.parent):
-        raise OSError("unsafe private state directory")
-    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp = Path(raw_tmp)
+    if path.parent.name != "state":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path_chain_has_symlink(path.parent):
+            raise OSError("unsafe private state directory")
+        fd, raw_tmp = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        tmp = Path(raw_tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
+            try:
+                publish_without_replacing(tmp, path)
+            except FileExistsError:
+                return False
+            fsync_directory_best_effort(path.parent)
+            return True
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            pass
-        try:
-            publish_without_replacing(tmp, path)
-        except FileExistsError:
-            return False
-        fsync_directory_best_effort(path.parent)
-        return True
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        return publish_fixed_anchor_state_json(
+            path.parent.parent,
+            path.name,
+            data,
+            ensure_ascii=False,
+            indent=2,
+        )
+    except StoragePolicyError as exc:
+        raise OSError("unsafe private state directory") from exc
 
 
 def _load_or_migrate_private_json(
@@ -1526,7 +1565,9 @@ def _load_or_migrate_private_json(
             and _private_record_epoch(data) == logout_epoch
         )
 
-    canonical_state, canonical_data = _read_private_json_state(canonical_path)
+    canonical_state, canonical_data = _read_fixed_anchor_private_json_state(
+        canonical_path
+    )
     if canonical_state != "absent":
         if canonical_state == "valid" and _usable(canonical_data or {}):
             return canonical_data
@@ -1572,14 +1613,18 @@ def _load_or_migrate_private_json(
         logger.warning("card_drop: private state migration failed for %s: %s", canonical_path.name, exc)
         return legacy_data
     if not published:
-        winner_state, winner_data = _read_private_json_state(canonical_path)
+        winner_state, winner_data = _read_fixed_anchor_private_json_state(
+            canonical_path
+        )
         return (
             winner_data
             if winner_state == "valid" and _usable(winner_data or {})
             else None
         )
 
-    winner_state, winner_data = _read_private_json_state(canonical_path)
+    winner_state, winner_data = _read_fixed_anchor_private_json_state(
+        canonical_path
+    )
     if winner_state != "valid" or not _usable(winner_data or {}):
         return None
     # Delete only the exact record copied. A concurrent refresh must remain.
@@ -1870,12 +1915,18 @@ def _prepare_retained_community_state_cleanup_locked(
         if canonical_path is None or canonical_path == legacy_path:
             raise OSError(f"canonical {filename} is unavailable")
 
-        canonical_state, canonical_data = _read_private_json_state(canonical_path)
+        canonical_state, canonical_data = _read_fixed_anchor_private_json_state(
+            canonical_path
+        )
         if canonical_state == "absent":
             if not _write_private_json_no_replace(canonical_path, legacy_data or {}):
-                canonical_state, canonical_data = _read_private_json_state(canonical_path)
+                canonical_state, canonical_data = _read_fixed_anchor_private_json_state(
+                    canonical_path
+                )
             else:
-                canonical_state, canonical_data = _read_private_json_state(canonical_path)
+                canonical_state, canonical_data = _read_fixed_anchor_private_json_state(
+                    canonical_path
+                )
         if (
             canonical_state != "valid"
             or not validator(canonical_data or {})
@@ -1913,7 +1964,9 @@ def _prepare_retained_community_state_cleanup_locked(
             raise OSError(f"legacy {legacy_path.name} changed during cleanup")
         if canonical_path is None or validator is None:
             continue
-        canonical_state, canonical_data = _read_private_json_state(canonical_path)
+        canonical_state, canonical_data = _read_fixed_anchor_private_json_state(
+            canonical_path
+        )
         if (
             canonical_state != "valid"
             or not validator(canonical_data or {})

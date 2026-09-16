@@ -598,7 +598,18 @@ def test_restart_operation_unknown_id_is_not_treated_as_retired_terminal():
 
 
 @pytest.mark.unit
-def test_restart_operation_registry_is_bounded_without_losing_retired_fact(tmp_path):
+def test_restart_operation_registry_is_bounded_without_losing_retired_fact(
+    monkeypatch,
+    tmp_path,
+):
+    # Windows monotonic clocks can return the same tick for a whole burst.  The
+    # registry must still retire the oldest issued operation, not whichever
+    # random authenticated id happens to sort first.
+    patch_module_clock(
+        monkeypatch,
+        storage_location_router_module,
+        monotonic=lambda: 100.0,
+    )
     storage_location_router_module._storage_restart_operations.clear()
     operation_ids = [
         storage_location_router_module._prepare_storage_restart_operation(

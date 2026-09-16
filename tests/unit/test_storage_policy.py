@@ -204,6 +204,75 @@ def test_windows_fixed_anchor_state_writer_holds_directory_guards_around_publish
 
 
 @pytest.mark.unit
+def test_windows_fixed_anchor_no_replace_publish_holds_directory_guards(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    state_root = anchor_root / "state"
+    state_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    expected_state = state_root.lstat()
+    events = []
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        lambda *_args: events.append("open") or [301, 302],
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_revalidate_windows_state_directories",
+        lambda *_args: events.append("revalidate"),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "atomic_write_json",
+        lambda path, payload, **_kwargs: (
+            path.write_text(json.dumps(payload), encoding="utf-8"),
+            events.append(("write-temp", path.name)),
+        ),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "publish_without_replacing",
+        lambda source, target: events.append(
+            ("publish", Path(source).name, Path(target).name)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_fsync_policy_directory_required",
+        lambda path: events.append(("fsync", path.name)),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    assert storage_policy_module._write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        "community_auth.json",
+        {"access_token": "token"},
+        replace=False,
+    ) is True
+
+    assert events[0:2] == ["open", "revalidate"]
+    assert events[2][0] == "write-temp"
+    assert events[3][0] == "publish"
+    assert events[3][2] == "community_auth.json"
+    assert events[4:] == [
+        ("fsync", "state"),
+        "revalidate",
+        ("close", (301, 302)),
+    ]
+
+
+@pytest.mark.unit
 def test_windows_absent_state_delete_is_proved_while_anchor_guard_is_held(
     tmp_path,
     monkeypatch,

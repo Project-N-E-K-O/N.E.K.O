@@ -1089,7 +1089,7 @@ async def test_deferred_append_failure_preserves_locale_admission_order(tmp_path
 
 
 def _startup_function_ast():
-    """AST of ensure_memory_server_runtime_initialized (the startup sequencer)."""
+    """AST of the core startup sequencer."""
     import ast
     import pathlib
 
@@ -1098,14 +1098,17 @@ def _startup_function_ast():
     tree = ast.parse(source.read_text(encoding='utf-8'))
     for node in ast.walk(tree):
         if (isinstance(node, ast.AsyncFunctionDef)
-                and node.name == 'ensure_memory_server_runtime_initialized'):
+                and node.name == '_initialize_memory_server_runtime'):
             return ast, node
-    raise AssertionError('未找到 ensure_memory_server_runtime_initialized，断言失效')
+    raise AssertionError('未找到 _initialize_memory_server_runtime，断言失效')
 
 
 def _calls_named(ast, node, name):
     return [c for c in ast.walk(node)
-            if isinstance(c, ast.Call) and getattr(c.func, 'attr', None) == name]
+            if isinstance(c, ast.Call)
+            and (
+                getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
+            ) == name]
 
 
 def _reconcile_gathers(ast, node):
@@ -1132,7 +1135,7 @@ def test_startup_reconciles_before_it_resumes_the_outbox():
     """
     ast, fn = _startup_function_ast()
 
-    replay_calls = _calls_named(ast, fn, '_replay_pending_outbox')
+    replay_calls = _calls_named(ast, fn, '_replay_startup_outbox_to_completion')
     assert replay_calls, 'startup 里找不到 outbox 补跑调用，断言失效'
     gathers = _reconcile_gathers(ast, fn)
     assert gathers, 'startup 里找不到 per-character reconcile 的 gather，断言失效'

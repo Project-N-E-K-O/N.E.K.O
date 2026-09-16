@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, publish_without_replacing
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
@@ -1051,7 +1051,9 @@ def _write_fixed_anchor_state_json_posix(
     anchor_root: Path,
     filename: str,
     encoded_payload: bytes,
-) -> None:
+    *,
+    replace: bool = True,
+) -> bool:
     anchor_fd = -1
     state_fd = -1
     temp_fd = -1
@@ -1100,12 +1102,30 @@ def _write_fixed_anchor_state_json_posix(
         ):
             raise StoragePolicyError("policy_path_changed")
         _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
-        os.replace(
-            temp_name,
-            filename,
-            src_dir_fd=state_fd,
-            dst_dir_fd=state_fd,
-        )
+        if replace:
+            os.replace(
+                temp_name,
+                filename,
+                src_dir_fd=state_fd,
+                dst_dir_fd=state_fd,
+            )
+        else:
+            try:
+                os.link(
+                    temp_name,
+                    filename,
+                    src_dir_fd=state_fd,
+                    dst_dir_fd=state_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                _revalidate_posix_state_directories(
+                    anchor_root,
+                    anchor_fd,
+                    state_fd,
+                )
+                return False
+            os.unlink(temp_name, dir_fd=state_fd)
         temp_created = False
         published = os.stat(
             filename,
@@ -1116,6 +1136,7 @@ def _write_fixed_anchor_state_json_posix(
             raise StoragePolicyError("policy_path_changed")
         _fsync_opened_policy_directory_required(state_fd)
         _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+        return True
     except StoragePolicyError:
         raise
     except OSError as exc:
@@ -1142,7 +1163,8 @@ def _write_fixed_anchor_state_json_windows(
     *,
     ensure_ascii: bool = False,
     indent: int | None = 2,
-) -> None:
+    replace: bool = True,
+) -> bool:
     handles = _open_windows_policy_directory_guards(
         anchor_root,
         expected_anchor,
@@ -1150,6 +1172,7 @@ def _write_fixed_anchor_state_json_windows(
     )
     state_path = anchor_root / "state"
     target_path = state_path / filename
+    temp_path: Path | None = None
     try:
         _revalidate_windows_state_directories(
             anchor_root,
@@ -1173,23 +1196,47 @@ def _write_fixed_anchor_state_json_windows(
                 or not stat.S_ISREG(existing.st_mode)
             ):
                 raise StoragePolicyError("policy_path_redirect")
-        atomic_write_json(
-            target_path,
-            payload,
-            ensure_ascii=ensure_ascii,
-            indent=indent,
-        )
+            if not replace:
+                return False
+        if replace:
+            atomic_write_json(
+                target_path,
+                payload,
+                ensure_ascii=ensure_ascii,
+                indent=indent,
+            )
+        else:
+            temp_path = state_path / f".neko-state-{uuid.uuid4().hex}.tmp"
+            atomic_write_json(
+                temp_path,
+                payload,
+                ensure_ascii=ensure_ascii,
+                indent=indent,
+            )
+            try:
+                publish_without_replacing(temp_path, target_path)
+            except FileExistsError:
+                _revalidate_windows_state_directories(
+                    anchor_root,
+                    expected_anchor,
+                    expected_state,
+                )
+                return False
         _fsync_policy_directory_required(state_path)
         _revalidate_windows_state_directories(
             anchor_root,
             expected_anchor,
             expected_state,
         )
+        return True
     except StoragePolicyError:
         raise
     except OSError as exc:
         raise StoragePolicyError("policy_write_failed") from exc
     finally:
+        if temp_path is not None:
+            with suppress(OSError):
+                temp_path.unlink(missing_ok=True)
         _close_windows_policy_directory_guards(handles)
 
 
@@ -1249,6 +1296,66 @@ def write_fixed_anchor_state_json(
         payload,
         ensure_ascii=ensure_ascii,
         indent=indent,
+    )
+
+
+def publish_fixed_anchor_state_json(
+    configured_anchor_root: Path | str,
+    filename: str,
+    payload: Any,
+    *,
+    ensure_ascii: bool = False,
+    indent: int | None = 2,
+) -> bool:
+    """Durably publish one fixed-anchor JSON file without replacing a winner."""
+
+    filename = _validate_fixed_anchor_state_filename(filename)
+    raw_anchor_root = Path(configured_anchor_root).expanduser()
+    _validate_storage_policy_anchor(raw_anchor_root)
+    anchor_root = Path(os.path.abspath(os.fspath(raw_anchor_root)))
+    encoded_payload = json.dumps(
+        payload,
+        ensure_ascii=ensure_ascii,
+        indent=indent,
+    ).encode("utf-8")
+    _validate_fixed_anchor_json_size(len(encoded_payload))
+    if os.name != "nt":
+        return _write_fixed_anchor_state_json_posix(
+            anchor_root,
+            filename,
+            encoded_payload,
+            replace=False,
+        )
+
+    anchor_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state_path = anchor_root / "state"
+    state_path.mkdir(mode=0o700, exist_ok=True)
+    expected_anchor = _validate_storage_policy_anchor(anchor_root)
+    if expected_anchor is None:
+        raise StoragePolicyError("anchor_root_changed")
+    try:
+        expected_state = state_path.lstat()
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    is_reparse_point = bool(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        & getattr(expected_state, "st_file_attributes", 0)
+    )
+    if (
+        stat.S_ISLNK(expected_state.st_mode)
+        or is_reparse_point
+        or not stat.S_ISDIR(expected_state.st_mode)
+    ):
+        raise StoragePolicyError("policy_path_redirect")
+    return _write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        filename,
+        payload,
+        ensure_ascii=ensure_ascii,
+        indent=indent,
+        replace=False,
     )
 
 

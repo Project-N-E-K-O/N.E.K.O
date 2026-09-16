@@ -18,6 +18,7 @@ import main_routers.community_oauth as O
 from utils import config_manager as config_manager_module
 from utils import storage_migration as storage_migration_module
 from utils.storage import community_private_state as private_state
+from utils.storage import policy as storage_policy_module
 from utils.storage.community_private_state import probe_retained_community_state
 
 
@@ -1126,6 +1127,51 @@ def test_anchor_permission_failure_keeps_last_legacy_credential_usable(
     assert C._load_auth() == {"access_token": "only-copy"}
     assert legacy.exists()
     assert not (anchor_state / "community_auth.json").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fixed-anchor descriptor race")
+def test_private_state_publish_rejects_replaced_fixed_anchor_directory(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    retained_root.mkdir(parents=True)
+    legacy = retained_root / "community_auth.json"
+    payload = {"access_token": "only-copy"}
+    legacy.write_text(json.dumps(payload), encoding="utf-8")
+
+    moved_state = tmp_path / "moved-state"
+    redirected_state = tmp_path / "redirected-state"
+    redirected_state.mkdir()
+    real_open = storage_policy_module.os.open
+    replaced = False
+
+    def _replace_state_before_descriptor_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == "state" and dir_fd is not None and not replaced:
+            replaced = True
+            anchor_state.rename(moved_state)
+            anchor_state.symlink_to(redirected_state, target_is_directory=True)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        storage_policy_module.os,
+        "open",
+        _replace_state_before_descriptor_open,
+    )
+
+    assert C._load_auth() == payload
+    assert replaced is True
+    assert legacy.exists(), "unpublished legacy authority must remain recoverable"
+    assert not (redirected_state / "community_auth.json").exists()
 
 
 def test_oauth_claim_and_start_reject_unpublished_legacy_pending_generation(

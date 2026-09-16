@@ -287,9 +287,12 @@ def _bound_storage_restart_operations() -> None:
             raise RuntimeError("storage restart operation registry is unavailable")
         oldest_id, _oldest = min(
             evictable,
-            key=lambda item: (
-                float(item[1].get("updated_at") or item[1].get("created_at") or 0.0),
-                str(item[0]),
+            # ``min`` keeps the first item on equal keys, and dict iteration is
+            # insertion ordered.  That matters on Windows where a burst can
+            # share one monotonic-clock tick: an operation id is random and
+            # therefore cannot be used as an age tie-breaker.
+            key=lambda item: float(
+                item[1].get("updated_at") or item[1].get("created_at") or 0.0
             ),
         )
         _storage_restart_operations.pop(oldest_id, None)

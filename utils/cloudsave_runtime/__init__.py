@@ -147,6 +147,7 @@ from .legacy_migration import (  # noqa: F401
     _normalize_preferences_payload,
     _preferences_entry_key,
     _runtime_config_dir_has_user_content,
+    _runtime_config_bytes_match_pristine_default,
     _runtime_config_path_matches_pristine_default,
     _runtime_root_has_user_content,
     _runtime_root_summary,

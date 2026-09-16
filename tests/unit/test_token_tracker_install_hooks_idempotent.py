@@ -127,6 +127,40 @@ async def test_install_hooks_idempotent_async_path(restore_openai_create):
     assert rec.call_count == 1, f"expected 1 record, got {rec.call_count}（async wrapper 叠层）"
 
 
+@pytest.mark.asyncio
+async def test_install_hooks_repairs_a_missing_async_hook(restore_openai_create):
+    """A pre-existing sync hook must not hide a missing async hook."""
+    Completions, AsyncCompletions = restore_openai_create
+
+    def already_hooked_sync(self, *args, **kwargs):
+        return _fake_usage_response()
+
+    already_hooked_sync._neko_token_tracker_hooked = True
+
+    async def unhooked_async(self, *args, **kwargs):
+        return _fake_usage_response()
+
+    Completions.create = already_hooked_sync
+    AsyncCompletions.create = unhooked_async
+    rec = MagicMock()
+
+    with patch.object(
+        tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)
+    ):
+        tt.install_hooks()
+        assert Completions.create is already_hooked_sync
+        assert AsyncCompletions.create is not unhooked_async
+        assert (
+            getattr(AsyncCompletions.create, "_neko_token_tracker_hooked", False)
+            is True
+        )
+        await AsyncCompletions.create(
+            SimpleNamespace(), model="fake-model", stream=False
+        )
+
+    assert rec.call_count == 1
+
+
 def test_record_anthropic_usage_maps_messages_usage_fields():
     rec = MagicMock()
 
