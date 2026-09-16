@@ -588,9 +588,11 @@ async function removeProfile() {
     )
     if (!alive || id !== props.pluginId || name !== selected.value) return
     await drafts.deleteProfile(name)
+    if (!alive || id !== props.pluginId) return
     ElMessage.success(t('common.success'))
   } catch (err) {
-    if (err !== 'cancel' && err !== 'close') operationError.value = errorText(err)
+    if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
+      operationError.value = errorText(err)
   }
 }
 async function activate() {

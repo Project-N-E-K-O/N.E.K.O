@@ -48,7 +48,14 @@ export async function checkConfigLayout(tab, viewport, cases) {
       if (stable < 2) throw new Error('Layout did not settle after resizing')
       // Exercise real focus/scroll behavior rather than only measuring offscreen DOM.
       for (const name of ['search.max_results', 'search.duckduckgo_fallback_delay_seconds']) {
-        await tab.playwright.getByRole('spinbutton', { name, exact: true }).click()
+        await tab.playwright.evaluate((label) => {
+          const input = document.querySelector(`input[aria-label="${label}"]`)
+          if (!input) throw new Error(`Missing field ${label}`)
+          input.blur()
+          input.focus({ preventScroll: true })
+          if (document.activeElement !== input) throw new Error(`Cannot focus field ${label}`)
+        }, name)
+        await tab.playwright.evaluate(() => new Promise(requestAnimationFrame))
         const field = await tab.playwright.evaluate((label) => {
           const input = document.querySelector(`input[aria-label="${label}"]`)
           const rect = input.getBoundingClientRect()

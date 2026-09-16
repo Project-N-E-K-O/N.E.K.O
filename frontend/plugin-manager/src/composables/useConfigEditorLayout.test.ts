@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, h, ref } from 'vue'
+import { createApp, h, nextTick, ref } from 'vue'
 import { needsPageScroll, useConfigEditorLayout } from './useConfigEditorLayout'
 
 const cleanup: (() => void)[] = []
@@ -68,7 +68,15 @@ describe('available configuration editing space', () => {
       window.dispatchEvent(new Event('resize'))
     }
     resize(height)
-    return { layout, host, footer: footer.value!, resize, pageReset, innerReset }
+    return {
+      layout,
+      host,
+      content: content.value!,
+      footer: footer.value!,
+      resize,
+      pageReset,
+      innerReset,
+    }
   }
 
   it('responds to actual chrome height and resets the active page scroll when switching profiles', async () => {
@@ -85,6 +93,40 @@ describe('available configuration editing space', () => {
     f.resize(600)
     await vi.waitFor(() => expect(f.layout.pageScroll.value).toBe(false))
   })
+
+  it.each([false, true])(
+    'reveals focus without native scrolling (page mode: %s)',
+    async (pageMode) => {
+      const f = await fixture()
+      f.resize(pageMode ? 400 : 600)
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      await nextTick()
+      expect(f.layout.pageScroll.value).toBe(pageMode)
+      Object.defineProperty(f.content, 'clientHeight', { value: 200 })
+      vi.spyOn(f.content, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 100, 800, 200))
+      const input = document.createElement('input')
+      f.content.append(input)
+      const scroller = pageMode ? f.host : f.content
+      const scroll = pageMode ? f.pageReset : f.innerReset
+      const top = pageMode ? 0 : 100
+      let inputTop = top + scroller.clientHeight + 50
+      vi.spyOn(input, 'getBoundingClientRect').mockImplementation(
+        () => new DOMRect(0, inputTop, 100, 30)
+      )
+      scroll.mockClear()
+      input.focus({ preventScroll: true })
+      await nextTick()
+      expect(document.activeElement).toBe(input)
+      expect(scroll).toHaveBeenLastCalledWith({ top: 80, behavior: 'auto' })
+
+      input.blur()
+      inputTop = top - 40
+      scroll.mockClear()
+      input.focus({ preventScroll: true })
+      await nextTick()
+      expect(scroll).toHaveBeenLastCalledWith({ top: -40, behavior: 'auto' })
+    }
+  )
 
   it('degrades when wrapped save actions grow without changing viewport size', async () => {
     const f = await fixture()

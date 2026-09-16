@@ -2,6 +2,16 @@
 
 const hasOwn = (value: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(value, key)
 
+// Configuration keys are data, including the literal key "__proto__".
+function setOwn(target: object, key: PropertyKey, value: any) {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  })
+}
+
 export type ConfigObject = Record<string, any>
 export type ConfigFilter = 'all' | 'dirty' | 'configured'
 export interface ConfigChange {
@@ -106,14 +116,15 @@ export function restoreConfigPath(
   const next = deepClone(draft)
   function restore(target: any, source: any, depth: number) {
     const key = path[depth]!
+    const sourceHasKey = source != null && hasOwn(source, key)
     if (depth === path.length - 1) {
-      if (source && hasOwn(source, key)) target[key] = deepClone(source[key])
+      if (sourceHasKey) setOwn(target, key, deepClone(source[key]))
       else delete target[key]
       return
     }
-    if (!isConfigObject(target[key])) target[key] = {}
-    restore(target[key], source?.[key], depth + 1)
-    if (!Object.keys(target[key]).length && !(source && hasOwn(source, key))) delete target[key]
+    if (!hasOwn(target, key) || !isConfigObject(target[key])) setOwn(target, key, {})
+    restore(target[key], sourceHasKey ? source[key] : undefined, depth + 1)
+    if (!Object.keys(target[key]).length && !sourceHasKey) delete target[key]
   }
   if (path.length) restore(next, original, 0)
   return next
@@ -216,7 +227,7 @@ function deepMerge(base: any, updates: any): any {
   // 对象递归合并；数组和原始值直接替换（不做逐项合并）
   const out: any = Array.isArray(base) ? [...base] : { ...base }
   for (const [k, v] of Object.entries(updates)) {
-    const cur = (out as any)[k]
+    const cur = hasOwn(out, k) ? out[k] : undefined
     if (
       cur &&
       typeof cur === 'object' &&
@@ -225,9 +236,9 @@ function deepMerge(base: any, updates: any): any {
       typeof v === 'object' &&
       !Array.isArray(v)
     ) {
-      ;(out as any)[k] = deepMerge(cur, v)
+      setOwn(out, k, deepMerge(cur, v))
     } else {
-      ;(out as any)[k] = v
+      setOwn(out, k, v)
     }
   }
   return out
@@ -241,7 +252,7 @@ export function applyProfileOverlay(base: any, overlay: any): any {
   for (const [k, v] of Object.entries(overlay)) {
     // Profile cannot modify the 'plugin' section; skip it — shown only in JSON preview
     if (k === 'plugin') continue
-    const cur = (result as any)[k]
+    const cur = hasOwn(result, k) ? result[k] : undefined
     if (
       cur &&
       typeof cur === 'object' &&
@@ -250,9 +261,9 @@ export function applyProfileOverlay(base: any, overlay: any): any {
       typeof v === 'object' &&
       !Array.isArray(v)
     ) {
-      ;(result as any)[k] = deepMerge(cur, v)
+      setOwn(result, k, deepMerge(cur, v))
     } else {
-      ;(result as any)[k] = v
+      setOwn(result, k, v)
     }
   }
   return result
