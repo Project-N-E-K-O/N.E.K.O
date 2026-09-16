@@ -27,7 +27,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 async function mountEditor() {
-  const host = document.createElement('div')
+  const host = document.createElement('main')
+  host.dataset.yuiGuideId = 'plugin-main'
+  Object.defineProperty(host, 'clientHeight', { value: 1000 })
   document.body.append(host)
   const app = createApp(PluginConfigEditor, { pluginId: 'test' })
   app.use(ElementPlus)
@@ -76,6 +78,7 @@ describe('configuration navigation boundaries', () => {
     const scroll = vi.spyOn(pane, 'scrollTo').mockImplementation(() => {})
     const row = host.querySelector<HTMLElement>('[data-config-path="search"]')!
     vi.spyOn(row, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList)
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 120, 100, 50))
     host.querySelector<HTMLButtonElement>('.config-nav button')!.click()
     await nextTick()
     await nextTick()

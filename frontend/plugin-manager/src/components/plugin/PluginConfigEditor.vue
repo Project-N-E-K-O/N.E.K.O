@@ -2,10 +2,11 @@
   <div
     ref="container"
     class="plugin-config-editor"
+    :class="{ 'page-scroll': pageScroll }"
     :id="editorId"
     :aria-busy="loading || saving || applying"
   >
-    <div class="config-toolbar">
+    <div ref="toolbar" class="config-toolbar">
       <el-input
         v-model="search"
         :prefix-icon="Search"
@@ -136,9 +137,10 @@
       </template>
     </el-dialog>
 
-    <div class="config-workspace">
+    <div ref="workspace" class="config-workspace">
       <nav
         v-if="current?.loaded && sectionNames.length"
+        ref="navigation"
         class="config-nav"
         :aria-label="t('plugins.configUi.jumpSection')"
       >
@@ -231,7 +233,7 @@
       </section>
     </el-dialog>
 
-    <footer v-if="current?.loaded" class="config-footer">
+    <footer v-if="current?.loaded" ref="footer" class="config-footer">
       <div class="footer-status" role="status" aria-live="polite">
         <strong
           ><span class="status-dot" :class="{ dirty }" />{{
@@ -322,7 +324,7 @@ import { computed, nextTick, onBeforeUnmount, ref, toRef, useId, watch } from 'v
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useResizeObserver } from '@vueuse/core'
+import { useEventListener, useResizeObserver } from '@vueuse/core'
 import {
   ArrowDown,
   Check,
@@ -336,6 +338,7 @@ import {
 } from '@element-plus/icons-vue'
 import { hotUpdatePluginConfig } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
+import { useConfigEditorLayout } from '@/composables/useConfigEditorLayout'
 import { usePluginConfigDrafts } from '@/composables/usePluginConfigDrafts'
 import {
   applyProfileOverlay,
@@ -351,6 +354,7 @@ import { isAxiosError } from 'axios'
 import PluginConfigForm from './PluginConfigForm.vue'
 
 const props = defineProps<{ pluginId: string }>()
+const emit = defineEmits<{ (event: 'layout-mode-change', pageScroll: boolean): void }>()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
 const drafts = usePluginConfigDrafts(toRef(props, 'pluginId'))
@@ -397,13 +401,26 @@ let alive = true
 const container = ref<HTMLElement | null>(null)
 const contentScroll = ref<HTMLElement | null>(null)
 const activeSection = ref('')
+const toolbar = ref<HTMLElement | null>(null)
+const workspace = ref<HTMLElement | null>(null)
+const navigation = ref<HTMLElement | null>(null)
+const footer = ref<HTMLElement | null>(null)
+const { pageScroll, scrollContainer, scrollToElement, resetScroll } = useConfigEditorLayout({
+  editor: container,
+  content: contentScroll,
+  toolbar,
+  workspace,
+  navigation,
+  footer,
+})
+watch(pageScroll, (value) => emit('layout-mode-change', value), { flush: 'sync' })
 function sectionRows() {
   return [
     ...(contentScroll.value?.querySelectorAll<HTMLElement>('.cve.is-root > .obj > .row') || []),
   ].filter((row) => row.getClientRects().length > 0)
 }
 function updateActiveSection() {
-  const pane = contentScroll.value
+  const pane = scrollContainer()
   if (!pane) return
   const rows = sectionRows()
   const top = pane.getBoundingClientRect().top
@@ -415,6 +432,14 @@ function updateActiveSection() {
   activeSection.value = (atBottom ? rows.at(-1) : current)?.dataset.configPath || ''
 }
 useResizeObserver(contentScroll, updateActiveSection)
+useEventListener(
+  document,
+  'scroll',
+  () => {
+    if (pageScroll.value) updateActiveSection()
+  },
+  { capture: true, passive: true }
+)
 const configuredCount = computed(() =>
   current.value && Object.keys(current.value.draft).length
     ? configuredFieldCount(current.value.draft, true)
@@ -443,23 +468,15 @@ const visibleSections = computed(() =>
 )
 async function jumpSection(name: string) {
   await nextTick()
-  const pane = contentScroll.value
   const target = sectionRows().find((row) => row.dataset.configPath === name)
-  if (!pane || !target) return
-  // Scroll only the editor, never the outer page or the fixed headings.
-  pane.scrollTo({
-    top: pane.scrollTop + target.getBoundingClientRect().top - pane.getBoundingClientRect().top,
-    behavior: 'auto',
-  })
+  if (target) scrollToElement(target, true)
   updateActiveSection()
 }
 watch([visibleSections, selected, () => props.pluginId, loading], async () => {
   await nextTick()
   updateActiveSection()
 })
-watch([selected, () => props.pluginId], () => {
-  contentScroll.value?.scrollTo({ top: 0 })
-})
+watch([selected, () => props.pluginId], resetScroll)
 const filterOptions = computed(() => [
   { value: 'all' as const, label: t('plugins.configUi.all') },
   { value: 'dirty' as const, label: t('plugins.configUi.unsaved'), count: changes.value.length },
@@ -818,6 +835,7 @@ onBeforeUnmount(() => {
 }
 .config-nav {
   flex: 0 0 180px;
+  max-width: 100%;
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -905,6 +923,7 @@ onBeforeUnmount(() => {
 }
 .search-scope {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
@@ -919,8 +938,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 12px 0;
   flex-shrink: 0;
-  max-height: 40%;
-  overflow-y: auto;
+
   background: var(--el-bg-color);
   border-top: 1px solid var(--el-border-color-lighter);
 }
@@ -959,12 +977,18 @@ onBeforeUnmount(() => {
   color: var(--el-color-warning);
 }
 .footer-actions {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 .footer-actions .el-button {
+  max-width: 100%;
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
   margin-left: 0;
   border-radius: 7px;
 }
@@ -1061,6 +1085,7 @@ onBeforeUnmount(() => {
     flex-basis: 100%;
   }
   .profile-entry {
+    max-width: calc(100% - 40px);
     margin-left: -12px;
   }
   .config-footer {
@@ -1078,5 +1103,23 @@ onBeforeUnmount(() => {
   .change-row code {
     grid-column: 1 / -1;
   }
+}
+.plugin-config-editor.page-scroll {
+  height: auto;
+  overflow: visible;
+}
+.page-scroll .config-workspace {
+  flex: none;
+  overflow: visible;
+}
+.page-scroll .config-content {
+  overflow: visible;
+}
+.page-scroll .config-nav {
+  max-height: 200px;
+  max-width: 100%;
+}
+.page-scroll .config-footer {
+  overflow: visible;
 }
 </style>

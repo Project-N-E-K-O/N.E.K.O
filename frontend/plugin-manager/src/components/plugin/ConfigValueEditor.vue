@@ -113,7 +113,12 @@
         </div>
       </div>
 
-      <el-dialog v-model="addKeyDialog" :title="t('plugins.addField')" width="420px">
+      <el-dialog
+        v-model="addKeyDialog"
+        :title="t('plugins.addField')"
+        width="min(420px, 94vw)"
+        append-to-body
+      >
         <el-form label-position="top">
           <el-form-item :label="t('plugins.fieldName')">
             <el-input v-model="newKey" />
@@ -809,6 +814,8 @@ function confirmAddKey() {
   padding: 0;
 }
 .field-value-line {
+  position: relative;
+  padding-right: 36px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -824,7 +831,7 @@ function confirmAddKey() {
 .field-value-line > :deep(.field-actions:not(.has-direct-actions)) {
   position: absolute;
   right: 0;
-  top: -4px;
+  top: 0;
 }
 .field-value-line > :deep(.has-direct-actions) {
   padding-top: 2px;
@@ -832,10 +839,7 @@ function confirmAddKey() {
 .field-value-line > :deep(.has-direct-actions .more-actions) {
   position: absolute;
   right: 0;
-  top: -4px;
-}
-.compact > .obj > .row:not(.section-row):not(.table-row) > .k {
-  padding-right: 30px;
+  top: 0;
 }
 .compact .input-wrap :deep(.el-input),
 .compact .input-wrap :deep(.el-textarea),
@@ -919,6 +923,7 @@ function confirmAddKey() {
   display: contents;
 }
 .boolean-row .field-value-line {
+  padding-right: 0;
   justify-content: flex-end;
 }
 .boolean-row .field-input {
@@ -1013,6 +1018,23 @@ function confirmAddKey() {
   min-width: 0;
 }
 @container config-fields (max-width: 520px) {
+  .compact > .arr > .row {
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .compact > .arr > .row > .ops {
+    grid-column: 2;
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .compact > .arr > .row > .ops .el-button {
+    max-width: 100%;
+    margin-left: 0;
+    height: auto;
+    min-height: 28px;
+    white-space: normal;
+  }
+
   .compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
