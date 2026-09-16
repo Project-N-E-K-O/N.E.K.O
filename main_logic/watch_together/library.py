@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -33,24 +32,16 @@ _library_lock = Lock()
 
 
 def _probe_media(path, size, modified, role):
-    from main_logic.watch_together.engine import media_binary
-    try:
-        binary = media_binary('ffprobe')
-    except FileNotFoundError:
-        return None  # Keep the archive, but unknown media is not playback-ready.
-    return _probe_media_cached(binary, path, size, modified, role)
+    return _probe_media_cached(path, size, modified, role)
 
 
 @lru_cache(maxsize=4096)
-def _probe_media_cached(binary, path, size, modified, role):
-    """Probe immutable objects once; stat keys invalidate externally damaged files."""
+def _probe_media_cached(path, size, modified, role):
+    """Probe immutable objects once; stat keys invalidate damaged files."""
+    from . import media
     try:
-        result = subprocess.run([binary, '-v', 'error', '-show_streams',
-            '-of', 'json', str(path)], capture_output=True, timeout=10,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        streams = json.loads(result.stdout).get('streams', []) if result.returncode == 0 else []
-        return any(stream.get('codec_type') == role and stream.get('codec_name') not in (None, 'unknown') for stream in streams)
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return media.run("probe", path, role, timeout=10)
+    except (OSError, ValueError, RuntimeError, TimeoutError):
         return False
 
 
