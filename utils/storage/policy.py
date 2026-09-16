@@ -1108,6 +1108,46 @@ def save_storage_policy(
     return policy_payload
 
 
+def restore_storage_policy_snapshot(
+    config_manager,
+    policy_payload: dict[str, Any] | None,
+    *,
+    anchor_root: Path | str | None = None,
+) -> None:
+    """Restore an exact pre-mutation policy fact with a required directory barrier."""
+
+    normalized_anchor_root = normalize_runtime_root(
+        anchor_root or compute_anchor_root(config_manager)
+    )
+    policy_path = get_storage_policy_path(
+        config_manager,
+        anchor_root=normalized_anchor_root,
+    )
+    if isinstance(policy_payload, dict):
+        _validate_storage_policy_payload(
+            config_manager,
+            policy_payload,
+            anchor_root=normalized_anchor_root,
+        )
+        atomic_write_json(
+            policy_path,
+            policy_payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+        _fsync_policy_directory_required(policy_path.parent)
+        return
+    if policy_payload is not None:
+        raise StoragePolicyError("invalid_policy_snapshot")
+    try:
+        os.unlink(policy_path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise StoragePolicyError("policy_restore_delete_failed") from exc
+    _fsync_policy_directory_required(policy_path.parent)
+
+
 def should_require_storage_selection(
     config_manager,
     *,

@@ -96,13 +96,13 @@ from utils.storage_policy import (
     StoragePolicyError,
     StorageSelectionValidationError,
     compute_anchor_root,
-    get_storage_policy_path,
     is_runtime_root_available,
     load_storage_policy,
     normalize_runtime_root,
     path_chain_has_symlink,
     paths_equal,
     save_storage_policy,
+    restore_storage_policy_snapshot,
     validate_selected_root,
 )
 from utils.config_manager import get_config_manager as get_runtime_config_manager
@@ -394,17 +394,12 @@ def _restore_storage_mutation_state(
     else:
         delete_storage_migration(config_manager, anchor_root=anchor_root)
 
-    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
     previous_policy = snapshot.get("policy")
-    if isinstance(previous_policy, dict):
-        from utils.file_utils import atomic_write_json
-
-        atomic_write_json(policy_path, previous_policy, ensure_ascii=False, indent=2)
-    else:
-        try:
-            os.unlink(policy_path)
-        except FileNotFoundError:
-            pass
+    restore_storage_policy_snapshot(
+        config_manager,
+        previous_policy if isinstance(previous_policy, dict) else None,
+        anchor_root=anchor_root,
+    )
 
     previous_root_state = snapshot.get("root_state")
     if isinstance(previous_root_state, dict):

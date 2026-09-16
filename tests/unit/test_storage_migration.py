@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -776,6 +777,7 @@ def test_rollback_recovers_legacy_file_publish_link_unlink_crash(
     staged_path = transaction_root / "staged" / "config"
     backup_path = transaction_root / "backup" / "config"
     staged_path.parent.mkdir(parents=True)
+    backup_path.parent.mkdir(parents=True)
     staged_path.write_text("SOURCE", encoding="utf-8")
     publish_snapshot = storage_migration_module._snapshot_path(staged_path)
     target_root.mkdir(exist_ok=True)
@@ -784,13 +786,19 @@ def test_rollback_recovers_legacy_file_publish_link_unlink_crash(
     original_entries = []
     target_baseline = {}
     if original_target:
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
         backup_path.write_text("TARGET", encoding="utf-8")
         original_entries = ["config"]
         target_baseline = {
             "config": storage_migration_module._snapshot_path(backup_path)
         }
 
+    txid = "a" * 32
+    payload = {"transaction_owner_token": "b" * 64}
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        txid,
+    )
     storage_migration_module._rollback_published_entries(
         target_root,
         transaction_root,
@@ -798,6 +806,8 @@ def test_rollback_recovers_legacy_file_publish_link_unlink_crash(
         ["config"],
         target_baseline,
         {"config": publish_snapshot},
+        payload=payload,
+        txid=txid,
     )
 
     assert staged_path.read_text(encoding="utf-8") == "SOURCE"
@@ -816,11 +826,19 @@ def test_rollback_rejects_equal_file_content_at_different_inode(tmp_path):
     staged_path = transaction_root / "staged" / "config"
     target_path = target_root / "config"
     staged_path.parent.mkdir(parents=True)
+    (transaction_root / "backup").mkdir(parents=True)
     staged_path.write_text("SOURCE", encoding="utf-8")
     target_root.mkdir(exist_ok=True)
     target_path.write_text("SOURCE", encoding="utf-8")
     publish_snapshot = storage_migration_module._snapshot_path(staged_path)
 
+    txid = "a" * 32
+    payload = {"transaction_owner_token": "b" * 64}
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        txid,
+    )
     with pytest.raises(StorageMigrationError, match="未记录"):
         storage_migration_module._rollback_published_entries(
             target_root,
@@ -829,6 +847,8 @@ def test_rollback_rejects_equal_file_content_at_different_inode(tmp_path):
             ["config"],
             {},
             {"config": publish_snapshot},
+            payload=payload,
+            txid=txid,
         )
 
     assert staged_path.read_text(encoding="utf-8") == "SOURCE"
@@ -2357,6 +2377,7 @@ def test_nested_runtime_entry_never_restarts_from_replaced_staging_root(tmp_path
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows path-based transaction creation")
 def test_launcher_rejects_transaction_root_replaced_after_creation(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -2485,6 +2506,294 @@ def test_windows_transaction_directory_guard_blocks_rename(tmp_path):
 
     transaction_root.rename(moved_root)
     assert moved_root.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows nested staging guards")
+def test_windows_nested_staging_directory_is_guarded_only_during_copy(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "source" / "config"
+    source_file = source / "nested" / "characters.json"
+    target = tmp_path / "transaction" / "staged" / "config"
+    source_file.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    original_copy = storage_migration_module._copy_staged_file_durably
+    attempted = False
+
+    def assert_parent_guarded(source_path, target_path, **kwargs):
+        nonlocal attempted
+        target_parent = Path(target_path).parent
+        moved_parent = target_parent.with_name(target_parent.name + "-moved")
+        with pytest.raises(OSError):
+            target_parent.rename(moved_parent)
+        attempted = True
+        return original_copy(source_path, target_path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_staged_file_durably",
+        assert_parent_guarded,
+    )
+    storage_migration_module._copy_runtime_entry(source, target)
+
+    assert attempted is True
+    moved_nested = target / "nested-moved"
+    (target / "nested").rename(moved_nested)
+    assert (moved_nested / "characters.json").read_text(encoding="utf-8") == "SOURCE"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows single-pass staging copy")
+def test_windows_late_source_directory_is_not_copied_unguarded(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "source" / "config"
+    source_file = source / "characters.json"
+    target = tmp_path / "transaction" / "staged" / "config"
+    source.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    original_copy = storage_migration_module._copy_staged_file_durably
+    injected = False
+
+    def inject_late_directory(source_path, target_path, **kwargs):
+        nonlocal injected
+        if not injected:
+            late_file = source / "late" / "outside.json"
+            late_file.parent.mkdir()
+            late_file.write_text("LATE", encoding="utf-8")
+            injected = True
+        return original_copy(source_path, target_path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_staged_file_durably",
+        inject_late_directory,
+    )
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._copy_runtime_entry(source, target)
+
+    assert injected is True
+    assert caught.value.error_code == "source_changed_during_migration"
+    assert not (target / "late").exists()
+    target.rename(target.with_name("config-moved"))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows staging guard release")
+def test_windows_nested_staging_guards_release_after_copy_failure(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "source" / "config"
+    source_file = source / "nested" / "characters.json"
+    target = tmp_path / "transaction" / "staged" / "config"
+    source_file.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+
+    def fail_copy(*_args, **_kwargs):
+        raise StorageMigrationError("copy_failed", "injected copy failure")
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_staged_file_durably",
+        fail_copy,
+    )
+    with pytest.raises(StorageMigrationError, match="injected copy failure"):
+        storage_migration_module._copy_runtime_entry(source, target)
+
+    moved_nested = target / "nested-moved"
+    (target / "nested").rename(moved_nested)
+    target.rename(target.with_name("config-moved"))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows workshop config guard")
+def test_windows_workshop_rewrite_guards_config_directory_and_releases_it(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    content_root = tmp_path / "transaction" / "staged"
+    target_root = tmp_path / "target"
+    config_directory = content_root / "config"
+    config_path = config_directory / "workshop_config.json"
+    config_directory.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"default_workshop_folder": str(source_root / "workshop")}),
+        encoding="utf-8",
+    )
+    original_write = storage_migration_module.atomic_write_json
+    attempted = False
+
+    def assert_config_guarded(path, payload, **kwargs):
+        nonlocal attempted
+        with pytest.raises(OSError):
+            config_directory.rename(config_directory.with_name("config-moved"))
+        attempted = True
+        return original_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "atomic_write_json",
+        assert_config_guarded,
+    )
+    snapshot = storage_migration_module._rewrite_migrated_runtime_config_paths(
+        source_root=source_root,
+        content_root=content_root,
+        target_root=target_root,
+    )
+
+    assert attempted is True
+    assert snapshot is not None
+    moved_config = config_directory.with_name("config-moved")
+    config_directory.rename(moved_config)
+    rewritten = json.loads((moved_config / "workshop_config.json").read_text(encoding="utf-8"))
+    assert rewritten["default_workshop_folder"] == str(target_root / "workshop")
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows publication guards")
+def test_windows_publication_guards_target_root_and_nested_parent(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    score_file = source_root / "state" / "game_scores" / "score.json"
+    score_file.parent.mkdir(parents=True)
+    score_file.write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    original_publish = storage_migration_module._durable_publish_without_replacing
+    checked = False
+
+    def assert_publish_parents_guarded(source, target):
+        nonlocal checked
+        source = Path(source)
+        target = Path(target)
+        if target == target_root / "state" / "game_scores":
+            with pytest.raises(OSError):
+                target_root.rename(target_root.with_name("N.E.K.O-moved"))
+            with pytest.raises(OSError):
+                target_root.parent.rename(
+                    target_root.parent.with_name("target-selected-moved")
+                )
+            with pytest.raises(OSError):
+                target.parent.rename(target.parent.with_name("state-moved"))
+            checked = True
+        return original_publish(source, target)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_publish_without_replacing",
+        assert_publish_parents_guarded,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert checked is True
+    moved_state = target_root / "state-moved"
+    (target_root / "state").rename(moved_state)
+    assert (moved_state / "game_scores" / "score.json").read_text(encoding="utf-8") == "SOURCE"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows declared-entry parent guards")
+def test_windows_copy_guards_declared_entry_parent_from_first_write(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    score_file = source_root / "state" / "game_scores" / "score.json"
+    score_file.parent.mkdir(parents=True)
+    score_file.write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    original_copy = storage_migration_module._copy_windows_directory_tree_durably
+    checked = False
+
+    def assert_declared_parent_guarded(source_path, target_path, source_identity):
+        nonlocal checked
+        target_path = Path(target_path)
+        if target_path.parts[-2:] == ("state", "game_scores"):
+            with pytest.raises(OSError):
+                target_path.parent.rename(
+                    target_path.parent.with_name("state-moved")
+                )
+            checked = True
+        return original_copy(source_path, target_path, source_identity)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_windows_directory_tree_durably",
+        assert_declared_parent_guarded,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert checked is True
+    assert (target_root / "state" / "game_scores" / "score.json").read_text(
+        encoding="utf-8"
+    ) == "SOURCE"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="BSD flag filtering is POSIX-only")
+def test_copy_metadata_filters_blocking_bsd_flags(monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    blocking_flags = 0
+    for name in (
+        "UF_IMMUTABLE",
+        "SF_IMMUTABLE",
+        "UF_APPEND",
+        "SF_APPEND",
+        "UF_NOUNLINK",
+        "SF_NOUNLINK",
+    ):
+        blocking_flags |= int(getattr(stat, name, 0) or 0)
+    if blocking_flags == 0:
+        pytest.skip("platform exposes no BSD blocking flags")
+    harmless_flag = 1 << 29
+    captured = []
+    monkeypatch.setattr(storage_migration_module, "_copy_open_file_xattrs", lambda *_: None)
+    monkeypatch.setattr(storage_migration_module.os, "utime", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(storage_migration_module.os, "fchmod", lambda *_: None)
+    monkeypatch.setattr(
+        storage_migration_module.os,
+        "fchflags",
+        lambda _fd, flags: captured.append(flags),
+        raising=False,
+    )
+    metadata = SimpleNamespace(
+        st_atime_ns=1,
+        st_mtime_ns=2,
+        st_mode=stat.S_IFREG | 0o600,
+        st_flags=blocking_flags | harmless_flag,
+    )
+
+    storage_migration_module._copy_open_file_metadata(10, 11, metadata)
+
+    assert captured == [harmless_flag]
 
 
 @pytest.mark.unit
@@ -3276,23 +3585,31 @@ def test_run_pending_storage_migration_rejects_source_state_symlink_with_missing
     external_marker = external_state / "keep.txt"
     external_marker.write_text("KEEP", encoding="utf-8")
     source_state = source_root / "state"
+    source_root.mkdir(parents=True, exist_ok=True)
     if source_state.exists():
         shutil.rmtree(source_state)
     try:
         source_state.symlink_to(external_state, target_is_directory=True)
-    except (OSError, NotImplementedError):
+    except NotImplementedError:
         pytest.skip("symbolic links are unavailable on this platform")
+    except OSError as exc:
+        if exc.errno in {
+            errno.EACCES,
+            errno.EPERM,
+            getattr(errno, "ENOTSUP", errno.EPERM),
+        }:
+            pytest.skip("symbolic links are unavailable on this platform")
+        raise
 
-    create_pending_storage_migration(
-        config_manager,
-        source_root=source_root,
-        target_root=target_root,
-        selection_source="custom",
-    )
-    result = run_pending_storage_migration(config_manager)
+    with pytest.raises(StorageMigrationError) as caught:
+        create_pending_storage_migration(
+            config_manager,
+            source_root=source_root,
+            target_root=target_root,
+            selection_source="custom",
+        )
 
-    assert result["completed"] is False
-    assert result["error_code"] == "runtime_entry_path_unsafe"
+    assert caught.value.error_code == "runtime_entry_path_unsafe"
     assert external_marker.read_text(encoding="utf-8") == "KEEP"
     assert not (external_state / "game_scores").exists()
     assert not (target_root / "state" / "game_scores").exists()
@@ -3582,11 +3899,18 @@ def test_transaction_marker_write_failure_never_publishes_unowned_root(
         target_root,
         payload["txid"],
     )
-    monkeypatch.setattr(
-        storage_migration_module,
-        "_write_transaction_owner_marker",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
-    )
+    if os.name == "nt":
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_write_transaction_owner_marker",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
+        )
+    else:
+        monkeypatch.setattr(
+            storage_migration_module.os,
+            "write",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
+        )
 
     result = run_pending_storage_migration(config_manager)
 
@@ -3595,6 +3919,70 @@ def test_transaction_marker_write_failure_never_publishes_unowned_root(
     assert not transaction_root.exists()
     assert source_file.read_text(encoding="utf-8") == "SOURCE"
     assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX prepared-directory binding")
+def test_posix_prepared_transaction_replacement_with_unknown_content_is_preserved(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+    real_open_child = storage_migration_module._open_or_create_posix_child_directory
+    injected: dict[str, Path] = {}
+
+    def _replace_prepared_before_open(parent_fd, name, display_path, **kwargs):
+        display_path = Path(display_path)
+        if (
+            not injected
+            and display_path.parent == target_root
+            and name.startswith(f".{transaction_root.name}.")
+            and name.endswith(".tmp")
+        ):
+            created_aside = display_path.with_name(f"{display_path.name}.created-aside")
+            display_path.rename(created_aside)
+            display_path.mkdir()
+            sentinel = display_path / "third-party.txt"
+            sentinel.write_text("KEEP", encoding="utf-8")
+            injected.update(
+                prepared=display_path,
+                aside=created_aside,
+                sentinel=sentinel,
+            )
+        return real_open_child(parent_fd, name, display_path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_open_or_create_posix_child_directory",
+        _replace_prepared_before_open,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert injected
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_ownership_changed"
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert injected["sentinel"].read_text(encoding="utf-8") == "KEEP"
+    assert injected["aside"].is_dir()
+    assert not transaction_root.exists()
 
 
 @pytest.mark.unit
@@ -3952,25 +4340,44 @@ def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeyp
         selection_source="custom",
     )
 
-    real_snapshot_entries = storage_migration_module._snapshot_runtime_entries
-    target_snapshot_calls = 0
     concurrent_file = target_root / "config" / "external.json"
+    if os.name != "nt":
+        real_snapshot_entries = storage_migration_module._snapshot_posix_runtime_entries
 
-    def _snapshot_then_create_target(root, **kwargs):
-        nonlocal target_snapshot_calls
-        snapshot = real_snapshot_entries(root, **kwargs)
-        if Path(root) == target_root.resolve():
-            target_snapshot_calls += 1
-            if target_snapshot_calls == 2:
+        def _snapshot_then_create_target(roots, root):
+            snapshot = real_snapshot_entries(roots, root)
+            concurrent_file.parent.mkdir(parents=True, exist_ok=True)
+            concurrent_file.write_text("EXTERNAL", encoding="utf-8")
+            return snapshot
+
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_snapshot_posix_runtime_entries",
+            _snapshot_then_create_target,
+        )
+    else:
+        real_snapshot_entries = storage_migration_module._snapshot_runtime_entries
+        target_snapshot_calls = 0
+
+        def _snapshot_then_create_target(root, **kwargs):
+            nonlocal target_snapshot_calls
+            is_target_snapshot = Path(root) == target_root.resolve()
+            if is_target_snapshot:
+                target_snapshot_calls += 1
+                if target_snapshot_calls == 2:
+                    with pytest.raises(OSError):
+                        target_root.rename(target_root.with_name("N.E.K.O-moved"))
+            snapshot = real_snapshot_entries(root, **kwargs)
+            if is_target_snapshot and target_snapshot_calls == 2:
                 concurrent_file.parent.mkdir(parents=True, exist_ok=True)
                 concurrent_file.write_text("EXTERNAL", encoding="utf-8")
-        return snapshot
+            return snapshot
 
-    monkeypatch.setattr(
-        storage_migration_module,
-        "_snapshot_runtime_entries",
-        _snapshot_then_create_target,
-    )
+        monkeypatch.setattr(
+            storage_migration_module,
+            "_snapshot_runtime_entries",
+            _snapshot_then_create_target,
+        )
 
     result = run_pending_storage_migration(config_manager)
 
@@ -3978,6 +4385,229 @@ def test_publish_preserves_target_created_after_final_snapshot(tmp_path, monkeyp
     assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
     assert concurrent_file.read_text(encoding="utf-8") == "EXTERNAL"
     assert not (target_root / "config" / "characters.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX target-root identity binding")
+def test_posix_target_root_replaced_between_writable_probe_and_open_is_rejected(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    moved_target = tmp_path / "moved-probed-target"
+    sentinel = target_root / "external-sentinel.txt"
+    real_open_directory = storage_migration_module._open_verified_directory
+    replaced = False
+
+    def _replace_target_before_open(path):
+        nonlocal replaced
+        if Path(path) == target_root and not replaced:
+            target_root.rename(moved_target)
+            target_root.mkdir()
+            sentinel.write_text("KEEP", encoding="utf-8")
+            replaced = True
+        return real_open_directory(path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_open_verified_directory",
+        _replace_target_before_open,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_create_owned_posix_transaction_root_at",
+        lambda *_args, **_kwargs: pytest.fail(
+            "replaced target root must be rejected before transaction creation"
+        ),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_path_changed"
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert moved_target.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX target-root identity binding")
+def test_posix_target_root_replaced_after_pinned_baseline_never_stages_data(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    moved_target = tmp_path / "moved-original-target"
+    sentinel = target_root / "external-sentinel.txt"
+    real_has_user_content = storage_migration_module._root_has_user_content
+    replaced = False
+
+    def _replace_target_before_content_check(root, **kwargs):
+        nonlocal replaced
+        target_root.rename(moved_target)
+        target_root.mkdir()
+        sentinel.write_text("KEEP", encoding="utf-8")
+        replaced = True
+        return real_has_user_content(root, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_root_has_user_content",
+        _replace_target_before_content_check,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_create_owned_transaction_root",
+        lambda *_args, **_kwargs: pytest.fail(
+            "replaced target root must be rejected before transaction creation"
+        ),
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_path_changed"
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert moved_target.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX target-root identity binding")
+def test_posix_transaction_creation_stays_on_pinned_target_after_path_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    moved_target = tmp_path / "moved-pinned-target"
+    sentinel = target_root / "external-sentinel.txt"
+    real_create = storage_migration_module._create_owned_posix_transaction_root_at
+    replaced = False
+
+    def _replace_named_target_then_create(*args, **kwargs):
+        nonlocal replaced
+        target_root.rename(moved_target)
+        target_root.mkdir()
+        sentinel.write_text("KEEP", encoding="utf-8")
+        replaced = True
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_create_owned_posix_transaction_root_at",
+        _replace_named_target_then_create,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert not (target_root / "config").exists()
+    assert (
+        moved_target
+        / storage_migration_module._transaction_root_for(
+            target_root,
+            pending["txid"],
+        ).name
+    ).is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX target-root identity binding")
+def test_posix_publish_rejects_target_root_replaced_before_descriptor_pin(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+    moved_target = tmp_path / "moved-original-target"
+    sentinel = target_root / "external-sentinel.txt"
+    real_open_publish_roots = storage_migration_module._open_posix_publish_roots
+    replaced = False
+
+    def _replace_target_then_open(*args, **kwargs):
+        nonlocal replaced
+        target_root.rename(moved_target)
+        target_root.mkdir()
+        (moved_target / transaction_root.name).rename(transaction_root)
+        sentinel.write_text("KEEP", encoding="utf-8")
+        replaced = True
+        return real_open_publish_roots(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_open_posix_publish_roots",
+        _replace_target_then_open,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_path_changed"
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert not (target_root / "config" / "characters.json").exists()
+    assert moved_target.is_dir()
 
 
 @pytest.mark.unit
@@ -4287,27 +4917,67 @@ def test_interrupted_publish_rollback_rename_steps_are_crash_recoverable(
         _prepare_interrupted_publish(tmp_path)
     )
     staged_entry = transaction_root / "staged" / "config"
-    original_publish = storage_migration_module._durable_publish_without_replacing
     interrupted = {"value": False}
+    if os.name == "nt":
+        original_publish = storage_migration_module._durable_publish_without_replacing
 
-    def _interrupt_rollback_rename(source, target):
-        original_publish(source, target)
-        is_selected_step = (
-            crash_step == "published_to_staged"
-            and source == target_root / "config"
-            and target == staged_entry
-        ) or (
-            crash_step == "backup_to_target"
-            and source == backup_entry
-            and target == target_root / "config"
-        )
-        if is_selected_step and not interrupted["value"]:
-            interrupted["value"] = True
-            raise SimulatedProcessLoss
+        def _interrupt_rollback_rename(source, target):
+            original_publish(source, target)
+            is_selected_step = (
+                crash_step == "published_to_staged"
+                and source == target_root / "config"
+                and target == staged_entry
+            ) or (
+                crash_step == "backup_to_target"
+                and source == backup_entry
+                and target == target_root / "config"
+            )
+            if is_selected_step and not interrupted["value"]:
+                interrupted["value"] = True
+                raise SimulatedProcessLoss
+
+        publish_helper_name = "_durable_publish_without_replacing"
+    else:
+        original_publish = storage_migration_module._durable_publish_without_replacing_at
+
+        def _interrupt_rollback_rename(
+            source_parent_fd,
+            source_name,
+            source_parent_display,
+            target_parent_fd,
+            target_name,
+            target_parent_display,
+        ):
+            original_publish(
+                source_parent_fd,
+                source_name,
+                source_parent_display,
+                target_parent_fd,
+                target_name,
+                target_parent_display,
+            )
+            is_selected_step = (
+                crash_step == "published_to_staged"
+                and source_parent_display == target_root
+                and source_name == "config"
+                and target_parent_display == staged_entry.parent
+                and target_name == "config"
+            ) or (
+                crash_step == "backup_to_target"
+                and source_parent_display == backup_entry.parent
+                and source_name == "config"
+                and target_parent_display == target_root
+                and target_name == "config"
+            )
+            if is_selected_step and not interrupted["value"]:
+                interrupted["value"] = True
+                raise SimulatedProcessLoss
+
+        publish_helper_name = "_durable_publish_without_replacing_at"
 
     monkeypatch.setattr(
         storage_migration_module,
-        "_durable_publish_without_replacing",
+        publish_helper_name,
         _interrupt_rollback_rename,
     )
     with pytest.raises(SimulatedProcessLoss):
@@ -4324,7 +4994,7 @@ def test_interrupted_publish_rollback_rename_steps_are_crash_recoverable(
 
     monkeypatch.setattr(
         storage_migration_module,
-        "_durable_publish_without_replacing",
+        publish_helper_name,
         original_publish,
     )
     monkeypatch.setattr(
@@ -4339,6 +5009,177 @@ def test_interrupted_publish_rollback_rename_steps_are_crash_recoverable(
     assert result["error_code"] == "copy_failed"
     assert target_file.read_text(encoding="utf-8") == "TARGET"
     assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound publication")
+@pytest.mark.parametrize("replace_after", ("target_to_backup", "staged_to_target"))
+def test_posix_publish_root_replacement_rolls_back_without_external_writes(
+    tmp_path,
+    monkeypatch,
+    replace_after,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_file = source_root / "config" / "characters.json"
+    target_file = target_root / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_file.write_text("TARGET", encoding="utf-8")
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    moved_transaction = target_root / "detached-transaction"
+    external = tmp_path / "external-transaction"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+    original_publish = storage_migration_module._durable_publish_without_replacing_at
+    replaced = False
+
+    def replace_transaction_name_after_rename(
+        source_parent_fd,
+        source_name,
+        source_parent_display,
+        target_parent_fd,
+        target_name,
+        target_parent_display,
+    ):
+        nonlocal replaced
+        original_publish(
+            source_parent_fd,
+            source_name,
+            source_parent_display,
+            target_parent_fd,
+            target_name,
+            target_parent_display,
+        )
+        is_selected_step = (
+            replace_after == "target_to_backup"
+            and source_parent_display == target_root
+            and target_parent_display == transaction_root / "backup"
+        ) or (
+            replace_after == "staged_to_target"
+            and source_parent_display == transaction_root / "staged"
+            and target_parent_display == target_root
+        )
+        if is_selected_step and not replaced:
+            transaction_root.rename(moved_transaction)
+            transaction_root.symlink_to(external, target_is_directory=True)
+            replaced = True
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_publish_without_replacing_at",
+        replace_transaction_name_after_rename,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert replaced is True
+    assert result["completed"] is False
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+    assert source_file.read_text(encoding="utf-8") == "SOURCE"
+    assert target_file.read_text(encoding="utf-8") == "TARGET"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+    assert moved_transaction.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound roots")
+def test_posix_publish_root_check_rejects_symlinked_ancestor(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    parent = tmp_path / "selected-parent"
+    target_root = parent / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    payload = {
+        "transaction_owner_token": "b" * 64,
+    }
+    txid = "a" * 32
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        txid,
+    )
+    transaction_root.mkdir()
+    (transaction_root / "staged").mkdir()
+    (transaction_root / "backup").mkdir()
+    storage_migration_module._write_transaction_owner_marker(
+        payload,
+        transaction_root,
+        txid,
+    )
+    roots = storage_migration_module._open_posix_publish_roots(
+        payload,
+        target_root,
+        transaction_root,
+        txid,
+    )
+    moved_parent = tmp_path / "selected-parent-moved"
+    try:
+        parent.rename(moved_parent)
+        parent.symlink_to(moved_parent, target_is_directory=True)
+        with pytest.raises(StorageMigrationError) as caught:
+            storage_migration_module._ensure_posix_publish_roots_still_named(
+                roots,
+                target_root,
+                transaction_root,
+            )
+    finally:
+        roots.close()
+
+    assert caught.value.error_code == "migration_path_changed"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux surrogateescape filename contract",
+)
+def test_linux_invalid_utf8_filename_migrates_without_digest_failure(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_config = source_root / "config"
+    source_config.mkdir(parents=True, exist_ok=True)
+    raw_name = b"invalid-\xff.json"
+    source_bytes = os.fsencode(source_config)
+    target_bytes = os.fsencode(target_root / "config")
+    file_fd = os.open(
+        source_bytes + b"/" + raw_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        os.write(file_fd, b"SOURCE")
+    finally:
+        os.close(file_fd)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    with open(target_bytes + b"/" + raw_name, "rb") as migrated:
+        assert migrated.read() == b"SOURCE"
+    with open(source_bytes + b"/" + raw_name, "rb") as retained:
+        assert retained.read() == b"SOURCE"
 
 
 @pytest.mark.unit

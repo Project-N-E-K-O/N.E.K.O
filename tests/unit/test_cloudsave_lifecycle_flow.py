@@ -786,6 +786,24 @@ def test_card_drop_active_character_is_allowed_during_limited_mode(method):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    (("GET", True), ("HEAD", True), ("POST", False)),
+)
+def test_chat_full_shell_is_available_during_limited_mode(method, expected):
+    from app import main_server
+
+    assert (
+        main_server._is_main_limited_mode_allowed_path("/chat_full", method)
+        is expected
+    )
+    assert not main_server._is_main_limited_mode_allowed_path(
+        "/api/config/page_config",
+        method,
+    )
+
+
+@pytest.mark.unit
 def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     from app import main_server
 

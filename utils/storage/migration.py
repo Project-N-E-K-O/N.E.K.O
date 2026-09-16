@@ -121,6 +121,28 @@ class _CopyCapacity:
     entry_count: int = 0
 
 
+@dataclass
+class _PosixPublishRoots:
+    target_root_fd: int
+    transaction_root_fd: int
+    staged_root_fd: int
+    backup_root_fd: int
+    mount_identity: tuple[str, int]
+
+    def close(self) -> None:
+        for field_name in (
+            "backup_root_fd",
+            "staged_root_fd",
+            "transaction_root_fd",
+            "target_root_fd",
+        ):
+            fd = int(getattr(self, field_name))
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+                setattr(self, field_name, -1)
+
+
 class StorageMigrationError(RuntimeError):
     def __init__(self, error_code: str, message: str):
         super().__init__(message)
@@ -627,6 +649,7 @@ def _open_or_create_posix_directory_chain(
     relative_parts: tuple[str, ...],
     *,
     expected_mount_identity: tuple[str, int],
+    create_missing: bool = True,
 ) -> int:
     """Return a pinned parent below a trusted staging root, creating safe parents."""
 
@@ -646,6 +669,7 @@ def _open_or_create_posix_directory_chain(
                 child_display,
                 expected_mount_identity=expected_mount_identity,
                 allow_existing=True,
+                create_missing=create_missing,
             )
             os.close(current_fd)
             current_fd = child_fd
@@ -654,6 +678,588 @@ def _open_or_create_posix_directory_chain(
     except BaseException:
         os.close(current_fd)
         raise
+
+
+def _open_posix_publish_roots(
+    payload: dict[str, Any],
+    target_root: Path,
+    transaction_root: Path,
+    txid: str,
+    *,
+    expected_target_identity: os.stat_result | None = None,
+    expected_transaction_identity: os.stat_result | None = None,
+) -> _PosixPublishRoots:
+    """Pin every root used by POSIX publication and rollback."""
+
+    if os.name == "nt":
+        raise OSError("POSIX publish roots are unavailable on Windows")
+    target_root_fd = -1
+    transaction_root_fd = -1
+    staged_root_fd = -1
+    backup_root_fd = -1
+    try:
+        target_root_fd = _open_verified_directory(target_root)
+        opened_target = os.fstat(target_root_fd)
+        if (
+            expected_target_identity is not None
+            and not os.path.samestat(expected_target_identity, opened_target)
+        ):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                "迁移目标根在发布固定前被替换。",
+            )
+        target_mount_identity = _opened_mount_identity(target_root_fd)
+        if transaction_root.parent == target_root:
+            transaction_root_fd = _open_or_create_posix_child_directory(
+                target_root_fd,
+                transaction_root.name,
+                transaction_root,
+                expected_mount_identity=target_mount_identity,
+                allow_existing=True,
+                create_missing=False,
+            )
+        else:
+            # Recovery compatibility for version-2 checkpoints whose private
+            # transaction was a sibling of the selected target root.
+            transaction_root_fd = _open_verified_directory(transaction_root)
+        opened_transaction = os.fstat(transaction_root_fd)
+        if (
+            expected_transaction_identity is not None
+            and not os.path.samestat(
+                expected_transaction_identity,
+                opened_transaction,
+            )
+        ):
+            raise StorageMigrationError(
+                "transaction_ownership_changed",
+                "迁移事务目录在发布固定前被替换。",
+            )
+        if not _transaction_directory_fd_is_owned(
+            payload,
+            transaction_root_fd,
+            txid,
+        ):
+            raise StorageMigrationError(
+                "transaction_ownership_changed",
+                "迁移事务目录在发布固定时无法证明所有权。",
+            )
+        transaction_mount_identity = _opened_mount_identity(transaction_root_fd)
+        if target_mount_identity != transaction_mount_identity:
+            raise StorageMigrationError(
+                "nested_mount_unsupported",
+                "迁移事务目录与目标根不在同一挂载边界。",
+            )
+        staged_root = transaction_root / "staged"
+        backup_root = transaction_root / "backup"
+        staged_root_fd = _open_or_create_posix_child_directory(
+            transaction_root_fd,
+            "staged",
+            staged_root,
+            expected_mount_identity=transaction_mount_identity,
+            allow_existing=True,
+            create_missing=False,
+        )
+        backup_root_fd = _open_or_create_posix_child_directory(
+            transaction_root_fd,
+            "backup",
+            backup_root,
+            expected_mount_identity=transaction_mount_identity,
+            allow_existing=True,
+            create_missing=False,
+        )
+        return _PosixPublishRoots(
+            target_root_fd=target_root_fd,
+            transaction_root_fd=transaction_root_fd,
+            staged_root_fd=staged_root_fd,
+            backup_root_fd=backup_root_fd,
+            mount_identity=transaction_mount_identity,
+        )
+    except BaseException:
+        for fd in (
+            backup_root_fd,
+            staged_root_fd,
+            transaction_root_fd,
+            target_root_fd,
+        ):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+        raise
+
+
+def _ensure_posix_publish_roots_still_named(
+    roots: _PosixPublishRoots,
+    target_root: Path,
+    transaction_root: Path,
+) -> None:
+    if path_chain_has_symlink(target_root) or path_chain_has_symlink(transaction_root):
+        raise StorageMigrationError(
+            "migration_path_changed",
+            "迁移目标或事务路径的祖先在发布期间被替换为符号链接。",
+        )
+    _ensure_opened_directory_still_named(
+        target_root,
+        roots.target_root_fd,
+        error_code="migration_path_changed",
+        message=f"迁移目标根在发布或回滚期间被替换: {target_root}",
+    )
+    _ensure_opened_directory_still_named(
+        transaction_root,
+        roots.transaction_root_fd,
+        error_code="transaction_ownership_changed",
+        message=f"迁移事务目录在发布或回滚期间被替换: {transaction_root}",
+    )
+    _ensure_opened_directory_still_named(
+        transaction_root / "staged",
+        roots.staged_root_fd,
+        error_code="staging_entry_changed",
+        message=f"迁移暂存根在发布或回滚期间被替换: {transaction_root / 'staged'}",
+    )
+    _ensure_opened_directory_still_named(
+        transaction_root / "backup",
+        roots.backup_root_fd,
+        error_code="staging_entry_changed",
+        message=f"迁移备份根在发布或回滚期间被替换: {transaction_root / 'backup'}",
+    )
+
+
+def _open_posix_relative_parent(
+    root_fd: int,
+    root_display: Path,
+    relative_path: str,
+    *,
+    expected_mount_identity: tuple[str, int],
+    create_missing: bool,
+) -> tuple[int, str, Path]:
+    parts = Path(relative_path).parts
+    if not parts:
+        raise StorageMigrationError(
+            "migration_path_changed",
+            "迁移发布条目名称为空。",
+        )
+    parent_fd = _open_or_create_posix_directory_chain(
+        root_fd,
+        root_display,
+        parts[:-1],
+        expected_mount_identity=expected_mount_identity,
+        create_missing=create_missing,
+    )
+    return parent_fd, parts[-1], root_display.joinpath(*parts[:-1])
+
+
+def _posix_named_entry_exists(parent_fd: int, name: str) -> bool:
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if _is_link_like_metadata(metadata):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移发布条目被替换为符号链接或重解析点: {name}",
+        )
+    return True
+
+
+def _snapshot_posix_entry_at(
+    parent_fd: int,
+    name: str,
+    display_path: Path,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> dict[str, int | str]:
+    """Hash one entry without resolving any replaceable ancestor path."""
+
+    try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return {"kind": "missing", "file_count": 0, "total_bytes": 0}
+    if _is_link_like_metadata(named):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移校验不支持符号链接: {display_path}",
+        )
+
+    def _hash_opened_file(file_fd: int, file_display: Path) -> tuple[int, str]:
+        _ensure_opened_entry_on_mount(
+            file_fd,
+            expected_mount_identity,
+            file_display,
+        )
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(file_fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            digest.update(chunk)
+        return total, digest.hexdigest()
+
+    def _stable_file_fields(metadata: os.stat_result) -> tuple[int, int, int]:
+        return (
+            int(metadata.st_size),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+        )
+
+    if stat.S_ISREG(named.st_mode):
+        file_fd = -1
+        try:
+            file_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not os.path.samestat(named, opened)
+                or _stable_file_fields(named) != _stable_file_fields(opened)
+            ):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移校验文件在打开期间被替换: {display_path}",
+                )
+            total_bytes, digest = _hash_opened_file(file_fd, display_path)
+            named_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            opened_after = os.fstat(file_fd)
+            if (
+                not os.path.samestat(opened, opened_after)
+                or not os.path.samestat(opened_after, named_after)
+                or _stable_file_fields(opened) != _stable_file_fields(opened_after)
+                or _stable_file_fields(opened_after)
+                != _stable_file_fields(named_after)
+                or total_bytes != opened_after.st_size
+            ):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移校验文件在读取期间发生变化: {display_path}",
+                )
+            return {
+                "kind": "file",
+                "file_count": 1,
+                "total_bytes": total_bytes,
+                "sha256": digest,
+            }
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+    if not stat.S_ISDIR(named.st_mode):
+        raise StorageMigrationError(
+            "path_type_unsupported",
+            f"迁移校验不支持该文件类型: {display_path}",
+        )
+
+    root_fd = -1
+    try:
+        root_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        opened_root = os.fstat(root_fd)
+        if not os.path.samestat(named, opened_root):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                f"迁移校验目录在打开期间被替换: {display_path}",
+            )
+        _ensure_opened_entry_on_mount(
+            root_fd,
+            expected_mount_identity,
+            display_path,
+        )
+        manifest_digest = hashlib.sha256()
+        total_bytes = 0
+        file_count = 0
+
+        def _walk(directory_fd: int, relative_root: Path, directory_display: Path) -> None:
+            nonlocal total_bytes, file_count
+            with os.scandir(directory_fd) as scanned:
+                names = sorted(entry.name for entry in scanned)
+            directories: list[tuple[str, os.stat_result]] = []
+            files: list[tuple[str, os.stat_result]] = []
+            for child_name in names:
+                child_metadata = os.stat(
+                    child_name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                child_display = directory_display / child_name
+                if _is_link_like_metadata(child_metadata):
+                    raise StorageMigrationError(
+                        "path_symlink_unsupported",
+                        f"迁移校验不支持符号链接: {child_display}",
+                    )
+                if stat.S_ISDIR(child_metadata.st_mode):
+                    directories.append((child_name, child_metadata))
+                elif stat.S_ISREG(child_metadata.st_mode):
+                    files.append((child_name, child_metadata))
+                else:
+                    raise StorageMigrationError(
+                        "path_type_unsupported",
+                        f"迁移校验不支持该文件类型: {child_display}",
+                    )
+            for child_name, _child_metadata in directories:
+                manifest_digest.update(
+                    b"D\0" + os.fsencode((relative_root / child_name).as_posix()) + b"\0"
+                )
+            for child_name, child_metadata in files:
+                child_display = directory_display / child_name
+                file_fd = -1
+                try:
+                    file_fd = os.open(
+                        child_name,
+                        os.O_RDONLY
+                        | os.O_NONBLOCK
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=directory_fd,
+                    )
+                    opened_file = os.fstat(file_fd)
+                    if (
+                        not os.path.samestat(child_metadata, opened_file)
+                        or _stable_file_fields(child_metadata)
+                        != _stable_file_fields(opened_file)
+                    ):
+                        raise StorageMigrationError(
+                            "migration_path_changed",
+                            f"迁移校验文件在打开期间被替换: {child_display}",
+                        )
+                    file_bytes, file_digest = _hash_opened_file(file_fd, child_display)
+                    named_after = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    opened_after = os.fstat(file_fd)
+                    if (
+                        not os.path.samestat(opened_file, opened_after)
+                        or not os.path.samestat(opened_after, named_after)
+                        or _stable_file_fields(opened_file)
+                        != _stable_file_fields(opened_after)
+                        or _stable_file_fields(opened_after)
+                        != _stable_file_fields(named_after)
+                        or file_bytes != opened_after.st_size
+                    ):
+                        raise StorageMigrationError(
+                            "migration_path_changed",
+                            f"迁移校验文件在读取期间发生变化: {child_display}",
+                        )
+                finally:
+                    if file_fd >= 0:
+                        os.close(file_fd)
+                relative_file = (relative_root / child_name).as_posix()
+                manifest_digest.update(
+                    b"F\0"
+                    + os.fsencode(relative_file)
+                    + b"\0"
+                    + str(file_bytes).encode("ascii")
+                    + b"\0"
+                    + file_digest.encode("ascii")
+                    + b"\0"
+                )
+                total_bytes += file_bytes
+                file_count += 1
+            for child_name, child_metadata in directories:
+                child_fd = -1
+                child_display = directory_display / child_name
+                try:
+                    child_fd = os.open(
+                        child_name,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=directory_fd,
+                    )
+                    opened_child = os.fstat(child_fd)
+                    if not os.path.samestat(child_metadata, opened_child):
+                        raise StorageMigrationError(
+                            "migration_path_changed",
+                            f"迁移校验目录在打开期间被替换: {child_display}",
+                        )
+                    _ensure_opened_entry_on_mount(
+                        child_fd,
+                        expected_mount_identity,
+                        child_display,
+                    )
+                    _walk(
+                        child_fd,
+                        relative_root / child_name,
+                        child_display,
+                    )
+                    named_after = os.stat(
+                        child_name,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    if not os.path.samestat(opened_child, named_after):
+                        raise StorageMigrationError(
+                            "migration_path_changed",
+                            f"迁移校验目录在遍历期间被替换: {child_display}",
+                        )
+                finally:
+                    if child_fd >= 0:
+                        os.close(child_fd)
+
+            with os.scandir(directory_fd) as final_scanned:
+                final_names = sorted(entry.name for entry in final_scanned)
+            if final_names != names:
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    f"迁移校验目录在遍历期间发生变化: {directory_display}",
+                )
+
+        _walk(root_fd, Path(), display_path)
+        named_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not os.path.samestat(opened_root, named_after):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                f"迁移校验目录在遍历期间被替换: {display_path}",
+            )
+        return {
+            "kind": "dir",
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+            "sha256": manifest_digest.hexdigest(),
+        }
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def _open_posix_existing_relative_parent(
+    root_fd: int,
+    root_display: Path,
+    relative_path: str,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> tuple[int, str, Path] | None:
+    """Pin an existing entry parent, or return ``None`` when a parent is absent."""
+
+    parts = Path(relative_path).parts
+    if not parts:
+        raise StorageMigrationError(
+            "migration_path_changed",
+            "迁移发布条目名称为空。",
+        )
+    current_fd = os.dup(root_fd)
+    current_display = root_display
+    try:
+        _ensure_opened_entry_on_mount(
+            current_fd,
+            expected_mount_identity,
+            current_display,
+        )
+        for part in parts[:-1]:
+            if not _posix_named_entry_exists(current_fd, part):
+                os.close(current_fd)
+                current_fd = -1
+                return None
+            child_display = current_display / part
+            child_fd = _open_or_create_posix_child_directory(
+                current_fd,
+                part,
+                child_display,
+                expected_mount_identity=expected_mount_identity,
+                allow_existing=True,
+                create_missing=False,
+            )
+            os.close(current_fd)
+            current_fd = child_fd
+            current_display = child_display
+        result = (current_fd, parts[-1], current_display)
+        current_fd = -1
+        return result
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
+
+
+def _snapshot_posix_relative_entry(
+    root_fd: int,
+    root_display: Path,
+    relative_path: str,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> dict[str, int | str]:
+    opened_parent = _open_posix_existing_relative_parent(
+        root_fd,
+        root_display,
+        relative_path,
+        expected_mount_identity=expected_mount_identity,
+    )
+    if opened_parent is None:
+        return {"kind": "missing", "file_count": 0, "total_bytes": 0}
+    parent_fd, name, parent_display = opened_parent
+    try:
+        return _snapshot_posix_entry_at(
+            parent_fd,
+            name,
+            parent_display / name,
+            expected_mount_identity=expected_mount_identity,
+        )
+    finally:
+        os.close(parent_fd)
+
+
+def _stat_posix_relative_entry(
+    root_fd: int,
+    root_display: Path,
+    relative_path: str,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> os.stat_result | None:
+    opened_parent = _open_posix_existing_relative_parent(
+        root_fd,
+        root_display,
+        relative_path,
+        expected_mount_identity=expected_mount_identity,
+    )
+    if opened_parent is None:
+        return None
+    parent_fd, name, _parent_display = opened_parent
+    try:
+        try:
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if _is_link_like_metadata(metadata):
+            raise StorageMigrationError(
+                "path_symlink_unsupported",
+                f"迁移发布条目被替换为符号链接或重解析点: {relative_path}",
+            )
+        return metadata
+    finally:
+        os.close(parent_fd)
+
+
+def _snapshot_posix_runtime_entries_at(
+    root_fd: int,
+    root_display: Path,
+    *,
+    expected_mount_identity: tuple[str, int],
+) -> dict[str, dict[str, int | str]]:
+    snapshots: dict[str, dict[str, int | str]] = {}
+    for entry in RUNTIME_STORAGE_ENTRIES:
+        snapshot = _snapshot_posix_relative_entry(
+            root_fd,
+            root_display,
+            entry.relative_path,
+            expected_mount_identity=expected_mount_identity,
+        )
+        if snapshot["kind"] != "missing":
+            snapshots[entry.relative_path] = snapshot
+    return snapshots
+
+
+def _snapshot_posix_runtime_entries(
+    roots: _PosixPublishRoots,
+    target_root: Path,
+) -> dict[str, dict[str, int | str]]:
+    return _snapshot_posix_runtime_entries_at(
+        roots.target_root_fd,
+        target_root,
+        expected_mount_identity=roots.mount_identity,
+    )
 
 
 def _ensure_directory_path_on_mount(
@@ -1235,6 +1841,100 @@ def _fsync_migration_directory(path: Path) -> None:
                 os.close(handle)
 
 
+def _fsync_opened_migration_directory(fd: int, path: Path) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        raise StorageMigrationError(
+            "target_flush_failed",
+            f"迁移数据无法可靠写入目标磁盘: {path}: {exc}",
+        ) from exc
+
+
+def _rename_entry_without_replacing_at(
+    source_parent_fd: int,
+    source_name: str,
+    target_parent_fd: int,
+    target_name: str,
+    *,
+    target_display: Path,
+) -> None:
+    """POSIX no-replace rename rooted at already verified parent descriptors."""
+
+    if os.name == "nt":
+        raise OSError(errno.ENOTSUP, "descriptor-relative rename is unavailable")
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source_name)
+    target_bytes = os.fsencode(target_name)
+    if sys.platform.startswith("linux"):
+        renameat2 = getattr(library, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOTSUP, "atomic no-replace rename unavailable")
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            source_parent_fd,
+            source_bytes,
+            target_parent_fd,
+            target_bytes,
+            1,  # RENAME_NOREPLACE
+        )
+    elif sys.platform == "darwin":
+        renameatx_np = getattr(library, "renameatx_np", None)
+        if renameatx_np is None:
+            raise OSError(errno.ENOTSUP, "atomic exclusive rename unavailable")
+        renameatx_np.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameatx_np.restype = ctypes.c_int
+        result = renameatx_np(
+            source_parent_fd,
+            source_bytes,
+            target_parent_fd,
+            target_bytes,
+            0x00000004,  # RENAME_EXCL
+        )
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename unavailable")
+    if result != 0:
+        error_number = ctypes.get_errno() or errno.EIO
+        raise OSError(
+            error_number,
+            os.strerror(error_number),
+            os.fspath(target_display),
+        )
+
+
+def _durable_publish_without_replacing_at(
+    source_parent_fd: int,
+    source_name: str,
+    source_parent_display: Path,
+    target_parent_fd: int,
+    target_name: str,
+    target_parent_display: Path,
+) -> None:
+    _rename_entry_without_replacing_at(
+        source_parent_fd,
+        source_name,
+        target_parent_fd,
+        target_name,
+        target_display=target_parent_display / target_name,
+    )
+    _fsync_opened_migration_directory(target_parent_fd, target_parent_display)
+    if source_parent_fd != target_parent_fd:
+        _fsync_opened_migration_directory(source_parent_fd, source_parent_display)
+
+
 def _durable_replace(source: Path, target: Path) -> None:
     """Rename and flush both directory-entry sides where supported."""
 
@@ -1643,6 +2343,134 @@ def _copy_posix_directory_tree_durably(
         os.close(source_root_fd)
 
 
+def _copy_windows_directory_tree_durably(
+    source_path: Path,
+    target_path: Path,
+    source_identity: os.stat_result,
+) -> None:
+    """Copy one directory tree while every created target directory is pinned."""
+
+    if os.name != "nt":
+        raise OSError(errno.ENOTSUP, "Windows directory guards are unavailable")
+    owned_guards: list[int] = []
+
+    def _guard_created_directory(path: Path) -> None:
+        identity = path.lstat()
+        handle = _open_windows_directory_rename_guard(path, identity)
+        try:
+            owned_guards.append(handle)
+        except BaseException:
+            _close_windows_directory_rename_guard(handle)
+            raise
+
+    def _copy_directory(
+        source_directory: Path,
+        target_directory: Path,
+        expected_source_identity: os.stat_result,
+    ) -> None:
+        try:
+            named_before = source_directory.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制前发生变化: {source_directory}: {exc}",
+            ) from exc
+        if (
+            _is_link_like_metadata(named_before)
+            or not stat.S_ISDIR(named_before.st_mode)
+            or not os.path.samestat(expected_source_identity, named_before)
+        ):
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制前被替换: {source_directory}",
+            )
+
+        try:
+            with os.scandir(source_directory) as scanned:
+                names = sorted(entry.name for entry in scanned)
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录无法安全枚举: {source_directory}: {exc}",
+            ) from exc
+
+        children: list[tuple[str, os.stat_result]] = []
+        for name in names:
+            child = source_directory / name
+            try:
+                child_identity = child.lstat()
+            except OSError as exc:
+                raise StorageMigrationError(
+                    "source_changed_during_migration",
+                    f"迁移源条目在枚举期间发生变化: {child}: {exc}",
+                ) from exc
+            if _is_link_like_metadata(child_identity):
+                raise StorageMigrationError(
+                    "path_symlink_unsupported",
+                    f"迁移源条目包含符号链接或重解析点: {child}",
+                )
+            if not (
+                stat.S_ISDIR(child_identity.st_mode)
+                or stat.S_ISREG(child_identity.st_mode)
+            ):
+                raise StorageMigrationError(
+                    "path_type_unsupported",
+                    f"迁移源条目包含不支持的文件类型: {child}",
+                )
+            children.append((name, child_identity))
+
+        for name, child_identity in children:
+            source_child = source_directory / name
+            target_child = target_directory / name
+            if stat.S_ISDIR(child_identity.st_mode):
+                try:
+                    target_child.mkdir()
+                except FileExistsError as exc:
+                    raise StorageMigrationError(
+                        "staging_entry_exists",
+                        f"迁移暂存条目已存在，无法安全覆盖: {target_child}",
+                    ) from exc
+                _guard_created_directory(target_child)
+                _copy_directory(source_child, target_child, child_identity)
+            else:
+                _copy_staged_file_durably(source_child, target_child)
+
+        try:
+            with os.scandir(source_directory) as final_scanned:
+                final_names = sorted(entry.name for entry in final_scanned)
+            named_after = source_directory.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制期间发生变化: {source_directory}: {exc}",
+            ) from exc
+        if (
+            final_names != names
+            or _is_link_like_metadata(named_after)
+            or not stat.S_ISDIR(named_after.st_mode)
+            or not os.path.samestat(named_before, named_after)
+        ):
+            raise StorageMigrationError(
+                "source_changed_during_migration",
+                f"迁移源目录在复制期间被替换或修改: {source_directory}",
+            )
+        try:
+            shutil.copystat(source_directory, target_directory, follow_symlinks=False)
+        except OSError as exc:
+            raise StorageMigrationError(
+                "target_flush_failed",
+                f"迁移目录元数据无法可靠写入目标磁盘: {target_directory}: {exc}",
+            ) from exc
+
+    try:
+        target_path.mkdir()
+        _guard_created_directory(target_path)
+        _copy_directory(source_path, target_path, source_identity)
+    finally:
+        while owned_guards:
+            _close_windows_directory_rename_guard(owned_guards.pop())
+
+
 def _copy_runtime_entry(
     source_path: Path,
     target_path: Path,
@@ -1718,14 +2546,10 @@ def _copy_runtime_entry(
                 expected_target_mount_identity=expected_target_mount_identity,
             )
             return
-        # Preserve a link as a link if one appears after the pre-copy scan.  The
-        # staged verification will then reject it instead of dereferencing an
-        # external path into the migration.
-        shutil.copytree(
+        _copy_windows_directory_tree_durably(
             source_path,
             target_path,
-            copy_function=_copy_staged_file_durably,
-            symlinks=True,
+            source_metadata,
         )
         return
 
@@ -1869,7 +2693,21 @@ def _copy_open_file_metadata(
     os.fchmod(target_fd, stat.S_IMODE(source_metadata.st_mode))
     fchflags = getattr(os, "fchflags", None)
     if callable(fchflags) and hasattr(source_metadata, "st_flags"):
-        fchflags(target_fd, source_metadata.st_flags)
+        # Staged entries must remain movable and removable until commit and
+        # rollback are both impossible. Copy harmless BSD flags, but never
+        # make private staging data immutable, append-only, or unlink-proof;
+        # those flags would make publication and recovery permanently fail.
+        blocking_flags = 0
+        for flag_name in (
+            "UF_IMMUTABLE",
+            "SF_IMMUTABLE",
+            "UF_APPEND",
+            "SF_APPEND",
+            "UF_NOUNLINK",
+            "SF_NOUNLINK",
+        ):
+            blocking_flags |= int(getattr(stat, flag_name, 0) or 0)
+        fchflags(target_fd, int(source_metadata.st_flags) & ~blocking_flags)
 
 
 def _copy_staged_file_durably(
@@ -2553,30 +3391,50 @@ def _rewrite_migrated_runtime_config_paths(
     if not workshop_config_path.is_file():
         return None
 
+    windows_config_guard = -1
     try:
+        if os.name == "nt":
+            config_directory = workshop_config_path.parent
+            config_identity = config_directory.lstat()
+            if (
+                _is_link_like_metadata(config_identity)
+                or not stat.S_ISDIR(config_identity.st_mode)
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置目录不是可固定的真实目录: {config_directory}",
+                )
+            windows_config_guard = _open_windows_directory_rename_guard(
+                config_directory,
+                config_identity,
+            )
         payload = _read_json_from_verified_regular_file(
             workshop_config_path,
             max_bytes=_WORKSHOP_CONFIG_REWRITE_MAX_BYTES,
         )
     except StorageMigrationError as exc:
+        _close_windows_directory_rename_guard(windows_config_guard)
         if exc.error_code == "workshop_config_too_large":
             raise
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return None
     except Exception as exc:
+        _close_windows_directory_rename_guard(windows_config_guard)
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return None
 
-    rewritten_payload = rebase_runtime_bound_workshop_config_paths(
-        payload,
-        source_root=source_root,
-        target_root=target_root,
-    )
-    if rewritten_payload is payload:
-        return None
-
-    atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
-    return _snapshot_path(content_root / "config")
+    try:
+        rewritten_payload = rebase_runtime_bound_workshop_config_paths(
+            payload,
+            source_root=source_root,
+            target_root=target_root,
+        )
+        if rewritten_payload is payload:
+            return None
+        atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
+        return _snapshot_path(content_root / "config")
+    finally:
+        _close_windows_directory_rename_guard(windows_config_guard)
 
 
 def _verify_opened_regular_file(
@@ -2882,7 +3740,7 @@ def _snapshot_path(
                 tree_mount_identity,
             )
             manifest_digest.update(
-                b"D\0" + (relative_root / dirname).as_posix().encode("utf-8") + b"\0"
+                b"D\0" + os.fsencode((relative_root / dirname).as_posix()) + b"\0"
             )
             if copy_capacity is not None:
                 copy_required_bytes += copy_allocation_unit
@@ -2903,7 +3761,7 @@ def _snapshot_path(
             relative_file = (relative_root / filename).as_posix()
             manifest_digest.update(
                 b"F\0"
-                + relative_file.encode("utf-8")
+                + os.fsencode(relative_file)
                 + b"\0"
                 + str(file_bytes).encode("ascii")
                 + b"\0"
@@ -3218,6 +4076,156 @@ def _transaction_root_is_owned(
         owner_token=owner_token,
         txid=txid,
     )
+
+
+def _create_owned_posix_transaction_root_at(
+    payload: dict[str, Any],
+    target_root_fd: int,
+    target_root: Path,
+    transaction_name: str,
+    txid: str,
+) -> os.stat_result:
+    """Create and publish a marked transaction below one pinned target root."""
+
+    if os.name == "nt":
+        raise OSError("descriptor-relative transaction creation is unavailable")
+    if Path(transaction_name).name != transaction_name:
+        raise StorageMigrationError(
+            "invalid_checkpoint",
+            "迁移事务目录名称无效。",
+        )
+    owner_token = _transaction_owner_token(payload)
+    if not owner_token:
+        raise StorageMigrationError(
+            "transaction_owner_missing",
+            "迁移检查点缺少事务目录所有权凭据，已停止迁移。",
+        )
+
+    mount_identity = _opened_mount_identity(target_root_fd)
+    prepared_name = f".{transaction_name}.{uuid.uuid4().hex}.tmp"
+    prepared_display = target_root / prepared_name
+    prepared_fd = -1
+    prepared_identity: os.stat_result | None = None
+    marker_fd = -1
+    try:
+        os.mkdir(prepared_name, mode=0o700, dir_fd=target_root_fd)
+        prepared_identity = os.stat(
+            prepared_name,
+            dir_fd=target_root_fd,
+            follow_symlinks=False,
+        )
+        prepared_fd = _open_or_create_posix_child_directory(
+            target_root_fd,
+            prepared_name,
+            prepared_display,
+            expected_mount_identity=mount_identity,
+            allow_existing=True,
+            create_missing=False,
+        )
+        opened_prepared_identity = os.fstat(prepared_fd)
+        if not os.path.samestat(prepared_identity, opened_prepared_identity):
+            raise StorageMigrationError(
+                "transaction_ownership_changed",
+                "迁移准备目录在创建后被替换。",
+            )
+        with os.scandir(prepared_fd) as initial_entries:
+            if next(initial_entries, None) is not None:
+                raise StorageMigrationError(
+                    "transaction_path_occupied",
+                    "迁移准备目录在所有权标记写入前已包含未知内容。",
+                )
+        marker_payload = {
+            "version": _TRANSACTION_OWNER_MARKER_VERSION,
+            "txid": txid,
+            "owner_token": owner_token,
+        }
+        marker_bytes = (
+            json.dumps(marker_payload, ensure_ascii=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        marker_fd = os.open(
+            _TRANSACTION_OWNER_MARKER_FILENAME,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=prepared_fd,
+        )
+        view = memoryview(marker_bytes)
+        while view:
+            written = os.write(marker_fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "short transaction marker write")
+            view = view[written:]
+        os.fsync(marker_fd)
+        os.close(marker_fd)
+        marker_fd = -1
+        _fsync_opened_migration_directory(prepared_fd, prepared_display)
+        if not _transaction_directory_fd_is_owned(payload, prepared_fd, txid):
+            raise OSError("migration preparation directory ownership is unverifiable")
+        _durable_publish_without_replacing_at(
+            target_root_fd,
+            prepared_name,
+            target_root,
+            target_root_fd,
+            transaction_name,
+            target_root,
+        )
+        published_identity = os.stat(
+            transaction_name,
+            dir_fd=target_root_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _is_link_like_metadata(published_identity)
+            or not stat.S_ISDIR(published_identity.st_mode)
+            or not os.path.samestat(prepared_identity, published_identity)
+            or not _transaction_directory_fd_is_owned(payload, prepared_fd, txid)
+        ):
+            raise OSError("published migration transaction ownership is unverifiable")
+        return prepared_identity
+    except BaseException:
+        if prepared_fd >= 0 and prepared_identity is not None:
+            try:
+                named = os.stat(
+                    prepared_name,
+                    dir_fd=target_root_fd,
+                    follow_symlinks=False,
+                )
+                with os.scandir(prepared_fd) as scanned:
+                    entries = list(scanned)
+                removable = not entries
+                if (
+                    len(entries) == 1
+                    and entries[0].name == _TRANSACTION_OWNER_MARKER_FILENAME
+                    and entries[0].is_file(follow_symlinks=False)
+                ):
+                    os.unlink(
+                        _TRANSACTION_OWNER_MARKER_FILENAME,
+                        dir_fd=prepared_fd,
+                    )
+                    _fsync_opened_migration_directory(prepared_fd, prepared_display)
+                    removable = True
+                if os.path.samestat(prepared_identity, named) and removable:
+                    os.rmdir(prepared_name, dir_fd=target_root_fd)
+                    _fsync_opened_migration_directory(target_root_fd, target_root)
+            except FileNotFoundError:
+                pass
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Failed to clean migration preparation directory %s: %s",
+                    prepared_display,
+                    cleanup_exc,
+                )
+        raise
+    finally:
+        if marker_fd >= 0:
+            with suppress(OSError):
+                os.close(marker_fd)
+        if prepared_fd >= 0:
+            with suppress(OSError):
+                os.close(prepared_fd)
 
 
 def _create_owned_transaction_root(
@@ -3539,6 +4547,127 @@ def _remove_transaction_root_if_owned(
     )
 
 
+def _publish_posix_runtime_entry(
+    roots: _PosixPublishRoots,
+    target_root: Path,
+    transaction_root: Path,
+    relative_path: str,
+    expected_target_snapshot: dict[str, int | str] | None,
+) -> None:
+    staged_root = transaction_root / "staged"
+    backup_root = transaction_root / "backup"
+    _ensure_posix_publish_roots_still_named(roots, target_root, transaction_root)
+    target_parent_fd = -1
+    staged_parent_fd = -1
+    backup_parent_fd = -1
+    try:
+        target_parent_fd, target_name, target_parent_display = (
+            _open_posix_relative_parent(
+                roots.target_root_fd,
+                target_root,
+                relative_path,
+                expected_mount_identity=roots.mount_identity,
+                create_missing=True,
+            )
+        )
+        staged_parent_fd, staged_name, staged_parent_display = (
+            _open_posix_relative_parent(
+                roots.staged_root_fd,
+                staged_root,
+                relative_path,
+                expected_mount_identity=roots.mount_identity,
+                create_missing=False,
+            )
+        )
+        backup_parent_fd, backup_name, backup_parent_display = (
+            _open_posix_relative_parent(
+                roots.backup_root_fd,
+                backup_root,
+                relative_path,
+                expected_mount_identity=roots.mount_identity,
+                create_missing=True,
+            )
+        )
+        target_exists = _posix_named_entry_exists(target_parent_fd, target_name)
+        if expected_target_snapshot is None:
+            target_unchanged = not target_exists
+        else:
+            target_unchanged = bool(
+                target_exists
+                and _snapshot_posix_entry_at(
+                    target_parent_fd,
+                    target_name,
+                    target_parent_display / target_name,
+                    expected_mount_identity=roots.mount_identity,
+                )
+                == expected_target_snapshot
+            )
+        if not target_unchanged:
+            raise StorageMigrationError(
+                "target_changed_during_publish",
+                f"目标路径在发布前发生了变化，已停止迁移以保留新数据: {relative_path}",
+            )
+        if target_exists:
+            _durable_publish_without_replacing_at(
+                target_parent_fd,
+                target_name,
+                target_parent_display,
+                backup_parent_fd,
+                backup_name,
+                backup_parent_display,
+            )
+            if _snapshot_posix_entry_at(
+                backup_parent_fd,
+                backup_name,
+                backup_parent_display / backup_name,
+                expected_mount_identity=roots.mount_identity,
+            ) != expected_target_snapshot:
+                raise StorageMigrationError(
+                    "target_changed_during_publish",
+                    f"目标路径在备份切换窗口发生了变化，已保留事务证据: {relative_path}",
+                )
+        try:
+            _durable_publish_without_replacing_at(
+                staged_parent_fd,
+                staged_name,
+                staged_parent_display,
+                target_parent_fd,
+                target_name,
+                target_parent_display,
+            )
+        except OSError as exc:
+            if _posix_named_entry_exists(target_parent_fd, target_name):
+                raise StorageMigrationError(
+                    "target_changed_during_publish",
+                    f"目标路径在发布切换窗口出现了新数据，已停止迁移: {relative_path}",
+                ) from exc
+            raise
+        _ensure_opened_directory_still_named(
+            target_parent_display,
+            target_parent_fd,
+            error_code="migration_path_changed",
+            message=f"迁移目标父目录在发布期间被替换: {target_parent_display}",
+        )
+        _ensure_opened_directory_still_named(
+            staged_parent_display,
+            staged_parent_fd,
+            error_code="staging_entry_changed",
+            message=f"迁移暂存父目录在发布期间被替换: {staged_parent_display}",
+        )
+        _ensure_opened_directory_still_named(
+            backup_parent_display,
+            backup_parent_fd,
+            error_code="staging_entry_changed",
+            message=f"迁移备份父目录在发布期间被替换: {backup_parent_display}",
+        )
+    finally:
+        for fd in (backup_parent_fd, staged_parent_fd, target_parent_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+    _ensure_posix_publish_roots_still_named(roots, target_root, transaction_root)
+
+
 def _rollback_published_entries(
     target_root: Path,
     transaction_root: Path,
@@ -3546,8 +4675,54 @@ def _rollback_published_entries(
     publish_entry_names: list[str],
     target_baseline: dict[str, dict[str, int | str]],
     publish_entry_snapshots: dict[str, dict[str, int | str]],
+    *,
+    payload: dict[str, Any] | None = None,
+    txid: str | None = None,
+    posix_roots: _PosixPublishRoots | None = None,
 ) -> None:
-    if path_chain_has_symlink(target_root) or path_chain_has_symlink(transaction_root):
+    owned_roots: _PosixPublishRoots | None = None
+    if os.name != "nt" and posix_roots is None:
+        if payload is None or txid is None:
+            raise StorageMigrationError(
+                "rollback_checkpoint_inconsistent",
+                "迁移回滚缺少事务所有权凭据。",
+            )
+        owned_roots = _open_posix_publish_roots(
+            payload,
+            target_root,
+            transaction_root,
+            txid,
+        )
+        posix_roots = owned_roots
+    try:
+        _rollback_published_entries_impl(
+            target_root,
+            transaction_root,
+            original_target_entries,
+            publish_entry_names,
+            target_baseline,
+            publish_entry_snapshots,
+            posix_roots=posix_roots,
+        )
+    finally:
+        if owned_roots is not None:
+            owned_roots.close()
+
+
+def _rollback_published_entries_impl(
+    target_root: Path,
+    transaction_root: Path,
+    original_target_entries: list[str],
+    publish_entry_names: list[str],
+    target_baseline: dict[str, dict[str, int | str]],
+    publish_entry_snapshots: dict[str, dict[str, int | str]],
+    *,
+    posix_roots: _PosixPublishRoots | None,
+) -> None:
+    if posix_roots is None and (
+        path_chain_has_symlink(target_root)
+        or path_chain_has_symlink(transaction_root)
+    ):
         raise StorageMigrationError(
             "rollback_path_symlink_unsupported",
             "迁移路径已被符号链接替换，无法安全自动回滚。",
@@ -3568,15 +4743,136 @@ def _rollback_published_entries(
             "迁移回滚检查点缺少已发布数据清单，无法排除目标数据被并发改写。",
         )
 
+    def _root_descriptor(scope: str) -> tuple[int, Path]:
+        assert posix_roots is not None
+        if scope == "target":
+            return posix_roots.target_root_fd, target_root
+        if scope == "staged":
+            return posix_roots.staged_root_fd, staged_root
+        if scope == "backup":
+            return posix_roots.backup_root_fd, backup_root
+        raise ValueError(f"unknown migration root scope: {scope}")
+
+    def _move_without_replacing(
+        source_scope: str,
+        source_path: Path,
+        target_scope: str,
+        target_path: Path,
+        relative_path: str,
+    ) -> None:
+        if posix_roots is None:
+            _durable_publish_without_replacing(source_path, target_path)
+            return
+        source_root_fd, source_root_display = _root_descriptor(source_scope)
+        target_root_fd, target_root_display = _root_descriptor(target_scope)
+        source_parent_fd = -1
+        target_parent_fd = -1
+        try:
+            source_parent_fd, source_name, source_parent_display = (
+                _open_posix_relative_parent(
+                    source_root_fd,
+                    source_root_display,
+                    relative_path,
+                    expected_mount_identity=posix_roots.mount_identity,
+                    create_missing=False,
+                )
+            )
+            target_parent_fd, target_name, target_parent_display = (
+                _open_posix_relative_parent(
+                    target_root_fd,
+                    target_root_display,
+                    relative_path,
+                    expected_mount_identity=posix_roots.mount_identity,
+                    create_missing=True,
+                )
+            )
+            _durable_publish_without_replacing_at(
+                source_parent_fd,
+                source_name,
+                source_parent_display,
+                target_parent_fd,
+                target_name,
+                target_parent_display,
+            )
+        finally:
+            if target_parent_fd >= 0:
+                os.close(target_parent_fd)
+            if source_parent_fd >= 0:
+                os.close(source_parent_fd)
+
+    def _unlink_staged(relative_path: str, staged_path: Path) -> None:
+        if posix_roots is None:
+            staged_path.unlink()
+            fsync_directory_best_effort(staged_path.parent)
+            return
+        parent_fd = -1
+        try:
+            parent_fd, name, parent_display = _open_posix_relative_parent(
+                posix_roots.staged_root_fd,
+                staged_root,
+                relative_path,
+                expected_mount_identity=posix_roots.mount_identity,
+                create_missing=False,
+            )
+            os.unlink(name, dir_fd=parent_fd)
+            _fsync_opened_migration_directory(parent_fd, parent_display)
+        finally:
+            if parent_fd >= 0:
+                os.close(parent_fd)
+
+    def _entry_snapshot(
+        scope: str,
+        relative_path: str,
+        path: Path,
+    ) -> dict[str, int | str]:
+        if posix_roots is None:
+            root = target_root if scope == "target" else transaction_root
+            return _snapshot_path_within_root(root, path)
+        root_fd, root_display = _root_descriptor(scope)
+        return _snapshot_posix_relative_entry(
+            root_fd,
+            root_display,
+            relative_path,
+            expected_mount_identity=posix_roots.mount_identity,
+        )
+
+    def _entry_stat(
+        scope: str,
+        relative_path: str,
+        path: Path,
+    ) -> os.stat_result | None:
+        if posix_roots is None:
+            try:
+                return path.lstat()
+            except FileNotFoundError:
+                return None
+        root_fd, root_display = _root_descriptor(scope)
+        return _stat_posix_relative_entry(
+            root_fd,
+            root_display,
+            relative_path,
+            expected_mount_identity=posix_roots.mount_identity,
+        )
+
     for entry in reversed(RUNTIME_STORAGE_ENTRIES):
         relative_path = entry.relative_path
         if relative_path not in publish_entries:
             continue
-        target_path = _checked_migration_entry_path(target_root, relative_path)
-        staged_path = _checked_migration_entry_path(staged_root, relative_path)
-        backup_path = _checked_migration_entry_path(backup_root, relative_path)
-        target_exists = target_path.exists() or target_path.is_symlink()
-        staged_exists = staged_path.exists() or staged_path.is_symlink()
+        if posix_roots is None:
+            target_path = _checked_migration_entry_path(target_root, relative_path)
+            staged_path = _checked_migration_entry_path(staged_root, relative_path)
+            backup_path = _checked_migration_entry_path(backup_root, relative_path)
+        else:
+            # Display-only paths: all POSIX I/O below is rooted at pinned FDs.
+            target_path = target_root / relative_path
+            staged_path = staged_root / relative_path
+            backup_path = backup_root / relative_path
+        target_snapshot = _entry_snapshot("target", relative_path, target_path)
+        staged_snapshot = _entry_snapshot("staged", relative_path, staged_path)
+        backup_snapshot = _entry_snapshot("backup", relative_path, backup_path)
+        target_exists = target_snapshot["kind"] != "missing"
+        staged_exists = staged_snapshot["kind"] != "missing"
+        backup_exists = backup_snapshot["kind"] != "missing"
         if target_exists and staged_exists:
             # Compatibility with checkpoints created by the earlier POSIX
             # link-then-unlink publisher.  A process loss between those two
@@ -3584,29 +4880,30 @@ def _rollback_published_entries(
             # only that exact same-inode state; equal content at a different
             # inode remains an external collision and stays fail-closed.
             try:
-                target_metadata = target_path.lstat()
-                staged_metadata = staged_path.lstat()
+                target_metadata = _entry_stat("target", relative_path, target_path)
+                staged_metadata = _entry_stat("staged", relative_path, staged_path)
                 interrupted_file_publish = bool(
-                    stat.S_ISREG(target_metadata.st_mode)
+                    target_metadata is not None
+                    and staged_metadata is not None
+                    and stat.S_ISREG(target_metadata.st_mode)
                     and stat.S_ISREG(staged_metadata.st_mode)
                     and os.path.samestat(target_metadata, staged_metadata)
-                    and _snapshot_path_within_root(target_root, target_path)
-                    == publish_entry_snapshots[relative_path]
-                    and _snapshot_path_within_root(transaction_root, staged_path)
-                    == publish_entry_snapshots[relative_path]
+                    and target_snapshot == publish_entry_snapshots[relative_path]
+                    and staged_snapshot == publish_entry_snapshots[relative_path]
                 )
             except OSError:
                 interrupted_file_publish = False
             if interrupted_file_publish:
-                staged_path.unlink()
-                fsync_directory_best_effort(staged_path.parent)
+                _unlink_staged(relative_path, staged_path)
                 staged_exists = False
+                staged_snapshot = {
+                    "kind": "missing",
+                    "file_count": 0,
+                    "total_bytes": 0,
+                }
         if relative_path in original_entries:
-            if backup_path.exists() or backup_path.is_symlink():
-                if (
-                    _snapshot_path_within_root(transaction_root, backup_path)
-                    != target_baseline[relative_path]
-                ):
+            if backup_exists:
+                if backup_snapshot != target_baseline[relative_path]:
                     raise StorageMigrationError(
                         "rollback_backup_mismatch",
                         f"迁移回滚备份与目标基线不一致，已保留事务目录: {relative_path}",
@@ -3617,40 +4914,44 @@ def _rollback_published_entries(
                             "rollback_target_changed",
                             f"迁移发布中断窗口出现未记录的目标数据，无法安全回滚: {relative_path}",
                         )
-                    if (
-                        _snapshot_path_within_root(transaction_root, staged_path)
-                        != publish_entry_snapshots[relative_path]
-                    ):
+                    if staged_snapshot != publish_entry_snapshots[relative_path]:
                         raise StorageMigrationError(
                             "rollback_target_changed",
                             f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
                         )
                 else:
-                    if (
-                        not target_exists
-                        or _snapshot_path_within_root(target_root, target_path)
-                        != publish_entry_snapshots[relative_path]
+                    if not target_exists or (
+                        target_snapshot != publish_entry_snapshots[relative_path]
                     ):
                         raise StorageMigrationError(
                             "rollback_target_changed",
                             f"迁移已发布数据被改写或缺失，无法安全覆盖: {relative_path}",
                         )
-                    staged_path.parent.mkdir(parents=True, exist_ok=True)
-                    _durable_publish_without_replacing(target_path, staged_path)
-                    if (
-                        _snapshot_path_within_root(transaction_root, staged_path)
-                        != publish_entry_snapshots[relative_path]
-                    ):
+                    _move_without_replacing(
+                        "target",
+                        target_path,
+                        "staged",
+                        staged_path,
+                        relative_path,
+                    )
+                    staged_snapshot = _entry_snapshot(
+                        "staged",
+                        relative_path,
+                        staged_path,
+                    )
+                    if staged_snapshot != publish_entry_snapshots[relative_path]:
                         raise StorageMigrationError(
                             "rollback_target_changed",
                             f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
                         )
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                _durable_publish_without_replacing(backup_path, target_path)
-            elif (
-                _snapshot_path_within_root(target_root, target_path)
-                != target_baseline[relative_path]
-            ):
+                _move_without_replacing(
+                    "backup",
+                    backup_path,
+                    "target",
+                    target_path,
+                    relative_path,
+                )
+            elif target_snapshot != target_baseline[relative_path]:
                 # A prior rollback attempt may already have restored this entry
                 # and then crashed before deleting the transaction directory. A
                 # missing backup is only safe in that idempotent, baseline-equal
@@ -3665,10 +4966,7 @@ def _rollback_published_entries(
                     "rollback_target_changed",
                     f"迁移发布前目标位置出现了未记录的数据，无法安全回滚: {relative_path}",
                 )
-            if (
-                _snapshot_path_within_root(transaction_root, staged_path)
-                != publish_entry_snapshots[relative_path]
-            ):
+            if staged_snapshot != publish_entry_snapshots[relative_path]:
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
@@ -3678,26 +4976,35 @@ def _rollback_published_entries(
             # instead of deleting it in place. Both the pre- and post-move
             # snapshots are required so a replacement race is preserved as
             # recovery evidence rather than recursively erased.
-            if (
-                _snapshot_path_within_root(target_root, target_path)
-                != publish_entry_snapshots[relative_path]
-            ):
+            if target_snapshot != publish_entry_snapshots[relative_path]:
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移已发布数据被并发改写，无法安全删除: {relative_path}",
                 )
-            staged_path.parent.mkdir(parents=True, exist_ok=True)
-            _durable_publish_without_replacing(target_path, staged_path)
-            if (
-                _snapshot_path_within_root(transaction_root, staged_path)
-                != publish_entry_snapshots[relative_path]
-            ):
+            _move_without_replacing(
+                "target",
+                target_path,
+                "staged",
+                staged_path,
+                relative_path,
+            )
+            staged_snapshot = _entry_snapshot(
+                "staged",
+                relative_path,
+                staged_path,
+            )
+            if staged_snapshot != publish_entry_snapshots[relative_path]:
                 raise StorageMigrationError(
                     "rollback_target_changed",
                     f"迁移回滚暂存内容与已发布摘要不一致: {relative_path}",
                 )
 
-    if _snapshot_runtime_entries(target_root) != target_baseline:
+    restored_target = (
+        _snapshot_posix_runtime_entries(posix_roots, target_root)
+        if posix_roots is not None
+        else _snapshot_runtime_entries(target_root)
+    )
+    if restored_target != target_baseline:
         raise StorageMigrationError(
             "rollback_verification_failed",
             "目标路径回滚后的数据清单与迁移前基线不一致，已保留事务目录等待恢复。",
@@ -3929,7 +5236,7 @@ def _root_has_user_content(root: Path, *, config_manager) -> bool:
             return False
 
 
-def _ensure_target_root_writable(target_root: Path) -> None:
+def _ensure_target_root_writable(target_root: Path) -> os.stat_result:
     missing_directories: list[Path] = []
     candidate = target_root
     while not candidate.exists() and candidate.parent != candidate:
@@ -3938,6 +5245,14 @@ def _ensure_target_root_writable(target_root: Path) -> None:
     target_root.mkdir(parents=True, exist_ok=True)
     for created_directory in missing_directories:
         _fsync_migration_directory(created_directory.parent)
+    target_identity = target_root.lstat()
+    if _is_link_like_metadata(target_identity) or not stat.S_ISDIR(
+        target_identity.st_mode
+    ):
+        raise StorageMigrationError(
+            "target_not_writable",
+            "目标路径不是可安全固定的目录。",
+        )
     probe_path = target_root / f".neko-storage-migration-write-probe-{uuid.uuid4().hex}.tmp"
     try:
         probe_path.write_bytes(b"")
@@ -3948,6 +5263,23 @@ def _ensure_target_root_writable(target_root: Path) -> None:
         except OSError:
             pass
         raise StorageMigrationError("target_not_writable", "目标路径当前不可写，无法执行关闭后的迁移。")
+    try:
+        verified_identity = target_root.lstat()
+    except OSError as exc:
+        raise StorageMigrationError(
+            "migration_path_changed",
+            "目标路径在可写性检查期间发生变化。",
+        ) from exc
+    if (
+        _is_link_like_metadata(verified_identity)
+        or not stat.S_ISDIR(verified_identity.st_mode)
+        or not os.path.samestat(target_identity, verified_identity)
+    ):
+        raise StorageMigrationError(
+            "migration_path_changed",
+            "目标路径在可写性检查期间被替换。",
+        )
+    return verified_identity
 
 
 def get_storage_migration_path(
@@ -4201,10 +5533,79 @@ def run_pending_storage_migration(
     publish_started = False
     policy_payload: dict[str, Any] | None = None
     windows_directory_guards: list[int] = []
+    windows_guarded_directory_paths: set[str] = set()
+    posix_publish_roots: _PosixPublishRoots | None = None
+    expected_target_identity: os.stat_result | None = None
+    pinned_target_root_fd = -1
 
     def _release_windows_directory_guards() -> None:
         while windows_directory_guards:
             _close_windows_directory_rename_guard(windows_directory_guards.pop())
+        windows_guarded_directory_paths.clear()
+
+    def _retain_windows_directory_guard(
+        path: Path,
+        *,
+        error_code: str,
+        message: str,
+        expected_identity: os.stat_result | None = None,
+    ) -> None:
+        if os.name != "nt":
+            return
+        key = os.path.normcase(os.path.abspath(os.fspath(path)))
+        if key in windows_guarded_directory_paths:
+            return
+        try:
+            identity = path.lstat()
+        except OSError as exc:
+            raise StorageMigrationError(error_code, f"{message}: {exc}") from exc
+        if (
+            _is_link_like_metadata(identity)
+            or not stat.S_ISDIR(identity.st_mode)
+            or (
+                expected_identity is not None
+                and not os.path.samestat(expected_identity, identity)
+            )
+        ):
+            raise StorageMigrationError(error_code, message)
+        handle = _open_windows_directory_rename_guard(path, identity)
+        try:
+            windows_directory_guards.append(handle)
+            windows_guarded_directory_paths.add(key)
+        except BaseException:
+            _close_windows_directory_rename_guard(handle)
+            raise
+
+    def _retain_windows_relative_parent_guards(
+        root: Path,
+        relative_path: str,
+        *,
+        create_missing: bool,
+        error_code: str,
+    ) -> None:
+        current = root
+        for part in Path(relative_path).parts[:-1]:
+            current = current / part
+            if create_missing:
+                current.mkdir(exist_ok=True)
+            _retain_windows_directory_guard(
+                current,
+                error_code=error_code,
+                message=f"迁移发布父目录在 Windows 固定期间发生变化: {current}",
+            )
+
+    def _release_posix_publish_roots() -> None:
+        nonlocal posix_publish_roots
+        if posix_publish_roots is not None:
+            posix_publish_roots.close()
+            posix_publish_roots = None
+
+    def _release_pinned_target_root() -> None:
+        nonlocal pinned_target_root_fd
+        if pinned_target_root_fd >= 0:
+            with suppress(OSError):
+                os.close(pinned_target_root_fd)
+            pinned_target_root_fd = -1
 
     def _finish_failure(
         error_code: str,
@@ -4491,6 +5892,11 @@ def run_pending_storage_migration(
                     )
                 try:
                     if os.name == "nt":
+                        _retain_windows_directory_guard(
+                            target_root,
+                            error_code="rollback_target_changed",
+                            message="迁移目标根在 Windows 回滚固定期间发生变化。",
+                        )
                         recovery_transaction_identity = transaction_root.lstat()
                         windows_directory_guards.append(
                             _open_windows_directory_rename_guard(
@@ -4518,6 +5924,24 @@ def run_pending_storage_migration(
                                 "rollback_transaction_unowned",
                                 "迁移事务目录在 Windows 回滚固定后失去所有权。",
                             )
+                        recovery_staged_root = transaction_root / "staged"
+                        recovery_backup_root = transaction_root / "backup"
+                        for relative_path in publish_entry_names:
+                            for root in (
+                                target_root,
+                                recovery_staged_root,
+                                recovery_backup_root,
+                            ):
+                                parent = root.joinpath(*Path(relative_path).parts[:-1])
+                                if parent == root:
+                                    continue
+                                if parent.exists() or parent.is_symlink():
+                                    _retain_windows_relative_parent_guards(
+                                        root,
+                                        relative_path,
+                                        create_missing=False,
+                                        error_code="rollback_target_changed",
+                                    )
                     _rollback_published_entries(
                         target_root,
                         transaction_root,
@@ -4525,6 +5949,8 @@ def run_pending_storage_migration(
                         publish_entry_names,
                         target_baseline,
                         publish_entry_snapshots,
+                        payload=payload,
+                        txid=txid,
                     )
                 except Exception as rollback_exc:
                     return _finish_failure(
@@ -4579,6 +6005,12 @@ def run_pending_storage_migration(
                     "迁移事务隔离目录的所有权在清理前发生变化，已停止迁移。",
                 )
 
+        # Once legacy recovery evidence is safely retired, start the retry in
+        # the current target-contained layout. Descriptor-relative creation
+        # deliberately cannot recreate the old sibling transaction path.
+        transaction_root = _transaction_root_for(target_root, txid)
+        transaction_checkpoint_bound = False
+
         payload = _persist_migration_payload(
             config_manager,
             payload,
@@ -4591,7 +6023,41 @@ def run_pending_storage_migration(
             error_message="",
         )
 
-        current_target_snapshot = _snapshot_runtime_entries(target_root)
+        writable_target_identity = _ensure_target_root_writable(target_root)
+        if os.name == "nt":
+            expected_target_identity = writable_target_identity
+            _retain_windows_directory_guard(
+                target_root,
+                error_code="migration_path_changed",
+                message="迁移目标根在 Windows 预检固定期间发生变化。",
+                expected_identity=expected_target_identity,
+            )
+            current_target_snapshot = _snapshot_runtime_entries(target_root)
+        else:
+            pinned_target_root_fd = _open_verified_directory(target_root)
+            expected_target_identity = os.fstat(pinned_target_root_fd)
+            if not os.path.samestat(
+                writable_target_identity,
+                expected_target_identity,
+            ):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    "迁移目标根在可写性检查后被替换。",
+                )
+            pinned_target_mount_identity = _opened_mount_identity(
+                pinned_target_root_fd
+            )
+            current_target_snapshot = _snapshot_posix_runtime_entries_at(
+                pinned_target_root_fd,
+                target_root,
+                expected_mount_identity=pinned_target_mount_identity,
+            )
+            _ensure_opened_directory_still_named(
+                target_root,
+                pinned_target_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移目标根在预检快照期间被替换: {target_root}",
+            )
         if isinstance(target_baseline, dict) and current_target_snapshot != target_baseline:
             raise StorageMigrationError(
                 "target_changed_since_confirmation",
@@ -4618,8 +6084,6 @@ def run_pending_storage_migration(
                 "target_confirmation_required",
                 "目标路径已经包含现有数据，需要先确认覆盖目标中的同名运行时数据目录。",
             )
-
-        _ensure_target_root_writable(target_root)
 
         try:
             copy_allocation_unit = _filesystem_allocation_unit(target_root)
@@ -4686,12 +6150,30 @@ def run_pending_storage_migration(
             transaction_root=str(transaction_root),
             source_runtime_baseline=source_runtime_baseline,
         )
-        try:
-            created_transaction_identity = _create_owned_transaction_root(
-                payload,
-                transaction_root,
-                txid,
+        if pinned_target_root_fd >= 0:
+            _ensure_opened_directory_still_named(
+                target_root,
+                pinned_target_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移目标根在事务创建前被替换: {target_root}",
             )
+        try:
+            if pinned_target_root_fd >= 0:
+                created_transaction_identity = (
+                    _create_owned_posix_transaction_root_at(
+                        payload,
+                        pinned_target_root_fd,
+                        target_root,
+                        transaction_root.name,
+                        txid,
+                    )
+                )
+            else:
+                created_transaction_identity = _create_owned_transaction_root(
+                    payload,
+                    transaction_root,
+                    txid,
+                )
         except FileExistsError as exc:
             raise StorageMigrationError(
                 "transaction_path_occupied",
@@ -4705,7 +6187,18 @@ def run_pending_storage_migration(
         staged_target_mount_identity: tuple[str, int] | None = None
         try:
             if os.name != "nt":
-                transaction_root_fd = _open_verified_directory(transaction_root)
+                assert pinned_target_root_fd >= 0
+                pinned_target_mount_identity = _opened_mount_identity(
+                    pinned_target_root_fd
+                )
+                transaction_root_fd = _open_or_create_posix_child_directory(
+                    pinned_target_root_fd,
+                    transaction_root.name,
+                    transaction_root,
+                    expected_mount_identity=pinned_target_mount_identity,
+                    allow_existing=True,
+                    create_missing=False,
+                )
                 if (
                     not os.path.samestat(
                         created_transaction_identity,
@@ -4844,6 +6337,12 @@ def run_pending_storage_migration(
                             expected_target_mount_identity=staged_target_mount_identity,
                         )
                     else:
+                        _retain_windows_relative_parent_guards(
+                            staged_root,
+                            entry_name,
+                            create_missing=True,
+                            error_code="staging_entry_changed",
+                        )
                         _copy_runtime_entry(
                             source_entry,
                             staged_entry,
@@ -4868,10 +6367,18 @@ def run_pending_storage_migration(
                         error_code="staging_entry_changed",
                         message=f"迁移暂存根在复制期间被替换: {staged_root}",
                     )
-                staged_snapshot = _snapshot_path_within_root(
-                    transaction_root,
-                    staged_entry,
-                )
+                    assert staged_target_mount_identity is not None
+                    staged_snapshot = _snapshot_posix_relative_entry(
+                        staged_root_fd,
+                        staged_root,
+                        entry_name,
+                        expected_mount_identity=staged_target_mount_identity,
+                    )
+                else:
+                    staged_snapshot = _snapshot_path_within_root(
+                        transaction_root,
+                        staged_entry,
+                    )
                 if staged_snapshot != source_snapshot_before:
                     raise StorageMigrationError(
                         "verification_failed",
@@ -4908,9 +6415,12 @@ def run_pending_storage_migration(
                         error_code="staging_entry_changed",
                         message=f"迁移暂存根在配置校验前被替换: {staged_root}",
                     )
-                    current_rewritten_snapshot = _snapshot_path_within_root(
-                        transaction_root,
-                        _checked_migration_entry_path(staged_root, "config"),
+                    assert staged_target_mount_identity is not None
+                    current_rewritten_snapshot = _snapshot_posix_relative_entry(
+                        staged_root_fd,
+                        staged_root,
+                        "config",
+                        expected_mount_identity=staged_target_mount_identity,
                     )
                     if current_rewritten_snapshot != rewritten_config_snapshot:
                         raise StorageMigrationError(
@@ -4967,7 +6477,38 @@ def run_pending_storage_migration(
             backup_root=str(source_root),
         )
 
-        publish_target_snapshot = _snapshot_runtime_entries(target_root)
+        if os.name != "nt":
+            posix_publish_roots = _open_posix_publish_roots(
+                payload,
+                target_root,
+                transaction_root,
+                txid,
+                expected_target_identity=expected_target_identity,
+                expected_transaction_identity=created_transaction_identity,
+            )
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
+                target_root,
+                transaction_root,
+            )
+            _release_pinned_target_root()
+            publish_target_snapshot = _snapshot_posix_runtime_entries(
+                posix_publish_roots,
+                target_root,
+            )
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
+                target_root,
+                transaction_root,
+            )
+        else:
+            _retain_windows_directory_guard(
+                target_root,
+                error_code="migration_path_changed",
+                message="迁移目标根在 Windows 发布固定期间发生变化。",
+                expected_identity=expected_target_identity,
+            )
+            publish_target_snapshot = _snapshot_runtime_entries(target_root)
         if publish_target_snapshot != target_baseline:
             raise StorageMigrationError(
                 "target_changed_since_confirmation",
@@ -4988,6 +6529,15 @@ def run_pending_storage_migration(
         publish_started = True
 
         for entry_name in existing_entries:
+            if posix_publish_roots is not None:
+                _publish_posix_runtime_entry(
+                    posix_publish_roots,
+                    target_root,
+                    transaction_root,
+                    entry_name,
+                    publish_target_snapshot.get(entry_name),
+                )
+                continue
             if path_chain_has_symlink(target_root) or path_chain_has_symlink(transaction_root):
                 raise StorageMigrationError(
                     "migration_path_changed",
@@ -4996,6 +6546,24 @@ def run_pending_storage_migration(
             staged_entry = _checked_migration_entry_path(staged_root, entry_name)
             target_entry = _checked_migration_entry_path(target_root, entry_name)
             backup_entry = _checked_migration_entry_path(backup_root, entry_name)
+            _retain_windows_relative_parent_guards(
+                staged_root,
+                entry_name,
+                create_missing=False,
+                error_code="staging_entry_changed",
+            )
+            _retain_windows_relative_parent_guards(
+                target_root,
+                entry_name,
+                create_missing=True,
+                error_code="target_changed_during_publish",
+            )
+            _retain_windows_relative_parent_guards(
+                backup_root,
+                entry_name,
+                create_missing=True,
+                error_code="staging_entry_changed",
+            )
             target_exists = target_entry.exists() or target_entry.is_symlink()
             expected_target_snapshot = publish_target_snapshot.get(entry_name)
             if expected_target_snapshot is None:
@@ -5017,7 +6585,7 @@ def run_pending_storage_migration(
                 backup_entry = _checked_migration_entry_path(backup_root, entry_name)
                 backup_entry.parent.mkdir(parents=True, exist_ok=True)
                 fsync_directory_best_effort(backup_entry.parent.parent)
-                _durable_replace(target_entry, backup_entry)
+                _durable_publish_without_replacing(target_entry, backup_entry)
                 if (
                     _snapshot_path_within_root(transaction_root, backup_entry)
                     != expected_target_snapshot
@@ -5040,11 +6608,25 @@ def run_pending_storage_migration(
                     ) from exc
                 raise
 
-        for entry_name, expected_snapshot in source_snapshots.items():
-            actual_snapshot = _snapshot_path_within_root(
+        if posix_publish_roots is not None:
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
                 target_root,
-                _checked_migration_entry_path(target_root, entry_name),
+                transaction_root,
             )
+        for entry_name, expected_snapshot in source_snapshots.items():
+            if posix_publish_roots is not None:
+                actual_snapshot = _snapshot_posix_relative_entry(
+                    posix_publish_roots.target_root_fd,
+                    target_root,
+                    entry_name,
+                    expected_mount_identity=posix_publish_roots.mount_identity,
+                )
+            else:
+                actual_snapshot = _snapshot_path_within_root(
+                    target_root,
+                    _checked_migration_entry_path(target_root, entry_name),
+                )
             if actual_snapshot != expected_snapshot:
                 logger.warning(
                     "Storage migration verification failed for %s: expected=%s actual=%s",
@@ -5056,6 +6638,13 @@ def run_pending_storage_migration(
                     "verification_failed",
                     f"迁移校验失败：{entry_name} 未完整发布到目标路径。",
                 )
+
+        if posix_publish_roots is not None:
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
+                target_root,
+                transaction_root,
+            )
 
         payload = _persist_migration_payload(
             config_manager,
@@ -5070,6 +6659,12 @@ def run_pending_storage_migration(
             selection_source=selection_source,
             anchor_root=normalized_anchor_root,
         )
+        if posix_publish_roots is not None:
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
+                target_root,
+                transaction_root,
+            )
 
         from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
 
@@ -5091,6 +6686,12 @@ def run_pending_storage_migration(
             last_migration_backup=str(source_root),
             legacy_cleanup_pending=legacy_cleanup_pending,
         )
+        if posix_publish_roots is not None:
+            _ensure_posix_publish_roots_still_named(
+                posix_publish_roots,
+                target_root,
+                transaction_root,
+            )
 
         completed_at = _utc_now_iso()
         payload = _persist_migration_payload(
@@ -5107,6 +6708,8 @@ def run_pending_storage_migration(
             completed_at=completed_at,
         )
         _release_windows_directory_guards()
+        _release_posix_publish_roots()
+        _release_pinned_target_root()
         try:
             if not _remove_transaction_root_if_owned(
                 payload,
@@ -5133,11 +6736,18 @@ def run_pending_storage_migration(
         if (
             target_root is not None
             and transaction_root is not None
-            and (transaction_root.exists() or transaction_root.is_symlink())
+            and (
+                posix_publish_roots is not None
+                or transaction_root.exists()
+                or transaction_root.is_symlink()
+            )
         ):
             try:
                 if publish_started:
-                    if not _transaction_root_is_owned(payload, transaction_root, txid):
+                    if (
+                        posix_publish_roots is None
+                        and not _transaction_root_is_owned(payload, transaction_root, txid)
+                    ):
                         raise StorageMigrationError(
                             "rollback_transaction_unowned",
                             "迁移事务目录所有权无法验证，已停止自动回滚。",
@@ -5149,11 +6759,16 @@ def run_pending_storage_migration(
                         publish_entry_names,
                         target_baseline or {},
                         publish_entry_snapshots or source_snapshots,
+                        payload=payload,
+                        txid=txid,
+                        posix_roots=posix_publish_roots,
                     )
             except Exception as caught_rollback_error:
                 rollback_error = caught_rollback_error
                 logger.exception("Failed to roll back storage migration target")
         _release_windows_directory_guards()
+        _release_posix_publish_roots()
+        _release_pinned_target_root()
         if rollback_error is not None:
             return _finish_failure(
                 "rollback_failed",
@@ -5167,11 +6782,18 @@ def run_pending_storage_migration(
         if (
             target_root is not None
             and transaction_root is not None
-            and (transaction_root.exists() or transaction_root.is_symlink())
+            and (
+                posix_publish_roots is not None
+                or transaction_root.exists()
+                or transaction_root.is_symlink()
+            )
         ):
             try:
                 if publish_started:
-                    if not _transaction_root_is_owned(payload, transaction_root, txid):
+                    if (
+                        posix_publish_roots is None
+                        and not _transaction_root_is_owned(payload, transaction_root, txid)
+                    ):
                         raise StorageMigrationError(
                             "rollback_transaction_unowned",
                             "迁移事务目录所有权无法验证，已停止自动回滚。",
@@ -5183,11 +6805,16 @@ def run_pending_storage_migration(
                         publish_entry_names,
                         target_baseline or {},
                         publish_entry_snapshots or source_snapshots,
+                        payload=payload,
+                        txid=txid,
+                        posix_roots=posix_publish_roots,
                     )
             except Exception as caught_rollback_error:
                 rollback_error = caught_rollback_error
                 logger.exception("Failed to roll back unexpected storage migration failure")
         _release_windows_directory_guards()
+        _release_posix_publish_roots()
+        _release_pinned_target_root()
         if rollback_error is not None:
             return _finish_failure(
                 "rollback_failed",
@@ -5201,6 +6828,8 @@ def run_pending_storage_migration(
         # process loss also relies on the OS to release these handles. Keep the
         # in-process semantics equivalent so a retry can recover immediately.
         _release_windows_directory_guards()
+        _release_posix_publish_roots()
+        _release_pinned_target_root()
 
 
 def delete_storage_migration(
