@@ -559,8 +559,8 @@ def test_restart_operation_cancel_cannot_cancel_in_flight_request(tmp_path):
 
 
 @pytest.mark.unit
-def test_restart_operation_terminal_tombstone_survives_for_process_lifetime(monkeypatch):
-    operation_id = "terminal-operation"
+def test_restart_operation_terminal_tombstone_retires_without_losing_recovery_fact(monkeypatch):
+    operation_id = storage_location_router_module._new_storage_restart_operation_id()
     ttl = storage_location_router_module._STORAGE_RESTART_OPERATION_TTL_SECONDS
     storage_location_router_module._storage_restart_operations.clear()
     storage_location_router_module._storage_restart_operations[operation_id] = {
@@ -578,14 +578,46 @@ def test_restart_operation_terminal_tombstone_survives_for_process_lifetime(monk
         monotonic=lambda: 100.0 + ttl * 3,
     )
 
+    storage_location_router_module._prune_storage_restart_operations()
+    operation = storage_location_router_module._public_storage_restart_operation(operation_id)
+
+    assert operation_id not in storage_location_router_module._storage_restart_operations
+    assert operation["state"] == "expired"
+    assert operation["error_code"] == "restart_operation_retired"
+
+
+@pytest.mark.unit
+def test_restart_operation_unknown_id_is_not_treated_as_retired_terminal():
+    storage_location_router_module._storage_restart_operations.clear()
+
     operation = storage_location_router_module._public_storage_restart_operation(
-        operation_id
+        "not-issued-by-this-process"
     )
 
-    assert operation["state"] == "rejected"
-    assert operation["error_code"] == "restart_schedule_failed"
+    assert operation["state"] == "not_found"
 
 
+@pytest.mark.unit
+def test_restart_operation_registry_is_bounded_without_losing_retired_fact(tmp_path):
+    storage_location_router_module._storage_restart_operations.clear()
+    operation_ids = [
+        storage_location_router_module._prepare_storage_restart_operation(
+            tmp_path / f"target-{index}" / "N.E.K.O"
+        )
+        for index in range(
+            storage_location_router_module._STORAGE_RESTART_OPERATION_MAX_ENTRIES + 1
+        )
+    ]
+
+    assert len(storage_location_router_module._storage_restart_operations) == (
+        storage_location_router_module._STORAGE_RESTART_OPERATION_MAX_ENTRIES
+    )
+    assert operation_ids[0] not in storage_location_router_module._storage_restart_operations
+    retired = storage_location_router_module._public_storage_restart_operation(
+        operation_ids[0]
+    )
+    assert retired["state"] == "expired"
+    assert retired["error_code"] == "restart_operation_retired"
 @pytest.mark.unit
 def test_storage_location_select_same_path_defers_writes_until_correlated_restart(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
@@ -2391,26 +2423,43 @@ def test_restart_checkpoint_unlink_barrier_failure_is_not_reported_as_rolled_bac
 
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "new-storage" / "N.E.K.O"
-    real_fsync_directory = storage_policy_module._fsync_opened_policy_directory_required
-    checkpoint_barrier_calls = 0
+    if os.name == "nt":
+        real_fsync_directory = storage_policy_module._fsync_policy_directory_required
 
-    def fail_rollback_unlink_barrier(directory_fd):
-        nonlocal checkpoint_barrier_calls
-        checkpoint_barrier_calls += 1
-        # The pending checkpoint write is the first strict barrier. Let it
-        # commit, then fail the rollback unlink barrier after shutdown is
-        # rejected.
-        if checkpoint_barrier_calls == 2:
-            raise storage_policy_module.StoragePolicyError(
-                "policy_flush_failed"
-            )
-        return real_fsync_directory(directory_fd)
+        def fail_rollback_unlink_barrier(directory):
+            checkpoint_path = Path(directory) / "storage_migration.json"
+            if not checkpoint_path.exists():
+                raise storage_policy_module.StoragePolicyError(
+                    "policy_flush_failed"
+                )
+            return real_fsync_directory(directory)
 
-    monkeypatch.setattr(
-        storage_policy_module,
-        "_fsync_opened_policy_directory_required",
-        fail_rollback_unlink_barrier,
-    )
+        monkeypatch.setattr(
+            storage_policy_module,
+            "_fsync_policy_directory_required",
+            fail_rollback_unlink_barrier,
+        )
+    else:
+        real_fsync_directory = storage_policy_module._fsync_opened_policy_directory_required
+        checkpoint_barrier_calls = 0
+
+        def fail_rollback_unlink_barrier(directory_fd):
+            nonlocal checkpoint_barrier_calls
+            checkpoint_barrier_calls += 1
+            # The pending checkpoint write is the first strict barrier. Let it
+            # commit, then fail the rollback unlink barrier after shutdown is
+            # rejected.
+            if checkpoint_barrier_calls == 2:
+                raise storage_policy_module.StoragePolicyError(
+                    "policy_flush_failed"
+                )
+            return real_fsync_directory(directory_fd)
+
+        monkeypatch.setattr(
+            storage_policy_module,
+            "_fsync_opened_policy_directory_required",
+            fail_rollback_unlink_barrier,
+        )
 
     with _build_client(
         config_manager,

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import asyncio
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -363,6 +364,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
     mock_bootstrap = Mock()
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
     fake_tracker = SimpleNamespace(
+        resume_persistence=Mock(),
         start_periodic_save=Mock(),
         record_app_start=Mock(),
     )
@@ -381,6 +383,9 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(
+            patch.object(main_server, "_main_runtime_background_tasks_started", False)
+        )
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
         stack.enter_context(patch.object(main_server, "steamworks", None))
@@ -449,6 +454,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         mock_mount_workshop.assert_awaited_once_with()
         mock_start_workers.assert_called_once_with()
         fake_tracker.start_periodic_save.assert_called_once_with()
+        fake_tracker.resume_persistence.assert_called_once_with("main_server")
         fake_tracker.record_app_start.assert_called_once_with(process="main_server")
         assert main_server._preload_task is not None
 
@@ -546,12 +552,22 @@ async def test_main_server_startup_does_not_mark_normal_when_character_init_fail
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_startup_aborts_when_root_mode_persist_fails():
+@pytest.mark.parametrize(
+    ("root_states", "set_root_error"),
+    [
+        ([{"mode": "normal"}, {"mode": "normal"}], RuntimeError("root write failed")),
+        ([{"mode": "normal"}, {"mode": "maintenance_readonly"}], None),
+    ],
+)
+async def test_main_server_startup_aborts_when_root_state_cannot_publish_normal(
+    root_states,
+    set_root_error,
+):
     from app import main_server
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/neko"),
-        load_root_state=Mock(return_value={"mode": "normal"}),
+        load_root_state=Mock(side_effect=root_states),
     )
     fake_import_result = {"success": True, "action": "imported"}
     run_cloudsave_action = AsyncMock(return_value=fake_import_result)
@@ -560,6 +576,7 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
         record_app_start=Mock(),
     )
     bridge_start = AsyncMock(return_value=None)
+    schedule_workshop_sync = Mock()
 
     async def _fake_background_preload():
         return None
@@ -583,7 +600,7 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
         stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
         stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
         stack.enter_context(
-            patch.object(main_server, "set_root_mode", Mock(side_effect=RuntimeError("root write failed")))
+            patch.object(main_server, "set_root_mode", Mock(side_effect=set_root_error))
         )
         mock_init_chars = stack.enter_context(
             patch.object(main_server, "initialize_character_data", AsyncMock(return_value=None))
@@ -606,7 +623,13 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
             patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None))
         )
         stack.enter_context(
+            patch.object(main_server, "_schedule_workshop_sync", schedule_workshop_sync)
+        )
+        stack.enter_context(
             patch("main_routers.shared_state.set_steamworks", Mock())
+        )
+        cleanup_expired_sessions = stack.enter_context(
+            patch("main_routers.game_router.cleanup_expired_sessions", AsyncMock())
         )
         stack.enter_context(patch("utils.token_tracker.install_hooks", Mock()))
         stack.enter_context(
@@ -622,6 +645,10 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
     mock_sync_reload.assert_awaited_once_with(fake_import_result)
     mock_init_steam.assert_called_once_with()
     mock_mount_workshop.assert_awaited_once_with()
+    cleanup_expired_sessions.assert_not_called()
+    schedule_workshop_sync.assert_not_called()
+    fake_tracker.start_periodic_save.assert_not_called()
+    fake_tracker.record_app_start.assert_not_called()
 
 
 @pytest.mark.unit
@@ -654,6 +681,12 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
 async def test_release_storage_startup_barrier_starts_integration_workers_after_runtime_init():
     from app import main_server
 
+    activation_order: list[str] = []
+
+    def _observe_activation(name: str) -> None:
+        assert main_server._main_runtime_limited_mode_enabled is True
+        activation_order.append(name)
+
     with patch.object(
         main_server,
         "_request_memory_server_continue_startup",
@@ -668,6 +701,20 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
         AsyncMock(return_value=True),
     ) as mock_ensure, patch.object(
         main_server,
+        "_request_memory_server_activate_startup",
+        AsyncMock(side_effect=lambda _reason: _observe_activation("memory")),
+    ) as mock_memory_activate, patch.object(
+        main_server,
+        "_request_agent_server_activate_startup",
+        AsyncMock(side_effect=lambda _reason: _observe_activation("agent")),
+        create=True,
+    ) as mock_agent_activate, patch.object(
+        main_server,
+        "_activate_main_runtime_background_tasks",
+        Mock(side_effect=lambda: _observe_activation("main")),
+        create=True,
+    ) as mock_main_activate, patch.object(
+        main_server,
         "_start_neko_servers_integration_workers",
         Mock(),
     ) as mock_start_workers:
@@ -676,7 +723,14 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
     assert result == {"ok": True, "initialized": True}
     mock_memory_continue.assert_awaited_once_with("unit_test")
     mock_agent_continue.assert_awaited_once_with("unit_test")
-    mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_ensure.assert_awaited_once_with(
+        reason="unit_test",
+        release_admission=False,
+    )
+    mock_agent_activate.assert_awaited_once_with("unit_test")
+    mock_memory_activate.assert_awaited_once_with("unit_test")
+    mock_main_activate.assert_called_once_with()
+    assert activation_order == ["agent", "memory", "main"]
     mock_start_workers.assert_called_once_with()
 
 
@@ -709,6 +763,14 @@ async def test_release_storage_startup_barrier_clears_recovery_marker_before_all
         side_effect=_observe_marker,
     ), patch.object(
         main_server,
+        "_request_agent_server_activate_startup",
+        side_effect=_observe_marker,
+    ), patch.object(
+        main_server,
+        "_request_memory_server_activate_startup",
+        side_effect=_observe_marker,
+    ), patch.object(
+        main_server,
         "_start_neko_servers_integration_workers",
         Mock(),
     ):
@@ -716,7 +778,7 @@ async def test_release_storage_startup_barrier_clears_recovery_marker_before_all
         assert os.environ.get("NEKO_STORAGE_RECOVERY_MODE", "") == ""
 
     assert result == {"ok": True, "initialized": True}
-    assert observed_markers == ["", "", ""]
+    assert observed_markers == ["", "", "", "", ""]
 
 
 @pytest.mark.unit
@@ -981,7 +1043,9 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
     with patch.object(main_server, "_request_memory_server_continue_startup", AsyncMock(return_value=None)) as mock_continue, \
          patch.object(main_server, "_request_agent_server_continue_startup", AsyncMock(return_value=None)) as mock_agent_continue, \
          patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock(side_effect=init_error)) as mock_ensure, \
+         patch.object(main_server, "_request_memory_server_activate_startup", AsyncMock()) as mock_activate, \
          patch.object(main_server, "_request_runtime_services_block_startup", AsyncMock(return_value=None)) as mock_block, \
+         patch.object(main_server, "_rollback_partial_main_runtime_startup", AsyncMock(return_value=None)), \
          patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
          patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
         with pytest.raises(RuntimeError, match="main init failed"):
@@ -991,7 +1055,11 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
 
     mock_continue.assert_awaited_once_with("unit_test")
     mock_agent_continue.assert_awaited_once_with("unit_test")
-    mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_ensure.assert_awaited_once_with(
+        reason="unit_test",
+        release_admission=False,
+    )
+    mock_activate.assert_not_awaited()
     mock_block.assert_awaited_once_with(
         "unit_test:main_server_init_failed",
         recovery_mode="",
@@ -1022,6 +1090,10 @@ async def test_release_storage_startup_barrier_restores_recovery_marker_on_failu
         AsyncMock(),
     ) as mock_main_init, patch.object(
         main_server,
+        "_request_memory_server_activate_startup",
+        AsyncMock(),
+    ) as mock_activate, patch.object(
+        main_server,
         "_request_runtime_services_block_startup",
         AsyncMock(return_value=None),
     ) as mock_block:
@@ -1031,10 +1103,81 @@ async def test_release_storage_startup_barrier_restores_recovery_marker_on_failu
         assert os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
 
     mock_main_init.assert_not_awaited()
+    mock_activate.assert_not_awaited()
     mock_block.assert_awaited_once_with(
         "unit_test:main_server_init_failed",
         recovery_mode="recovery_required",
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_reblocks_after_activation_failure():
+    from app import main_server
+
+    activation_error = RuntimeError("activation response lost")
+    async def _mark_main_initialized(**_kwargs):
+        main_server._runtime_startup_init_completed = True
+        return True
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        main_server,
+        "_request_agent_server_continue_startup",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        AsyncMock(side_effect=_mark_main_initialized),
+    ), patch.object(
+        main_server,
+        "_request_agent_server_activate_startup",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        main_server,
+        "_request_memory_server_activate_startup",
+        AsyncMock(side_effect=activation_error),
+    ), patch.object(
+        main_server,
+        "_activate_main_runtime_background_tasks",
+        Mock(),
+        create=True,
+    ) as mock_main_activate, patch.object(
+        main_server,
+        "_request_runtime_services_block_startup",
+        AsyncMock(return_value=None),
+    ) as mock_block, patch.object(
+        main_server,
+        "_rollback_partial_main_runtime_startup",
+        AsyncMock(return_value=None),
+    ) as mock_rollback, patch.object(
+        main_server,
+        "_runtime_startup_init_completed",
+        False,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_enabled",
+        True,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_reason",
+        "",
+    ):
+        with pytest.raises(RuntimeError, match="activation response lost"):
+            await main_server.release_storage_startup_barrier(reason="unit_test")
+
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._runtime_startup_init_completed is False
+
+    mock_block.assert_awaited_once_with(
+        "unit_test:main_server_init_failed",
+        recovery_mode="",
+    )
+    mock_rollback.assert_awaited_once_with()
+    mock_main_activate.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1047,7 +1190,8 @@ async def test_release_storage_startup_barrier_reblocks_memory_before_propagatin
     block_started = asyncio.Event()
     allow_block = asyncio.Event()
 
-    async def _wait_for_cancel(*, reason: str):
+    async def _wait_for_cancel(*, reason: str, release_admission: bool):
+        assert release_admission is False
         init_started.set()
         await asyncio.Event().wait()
 
@@ -1073,6 +1217,10 @@ async def test_release_storage_startup_barrier_reblocks_memory_before_propagatin
         "_request_runtime_services_block_startup",
         side_effect=_block_services,
     ) as mock_block, patch.object(
+        main_server,
+        "_rollback_partial_main_runtime_startup",
+        AsyncMock(return_value=None),
+    ) as mock_rollback, patch.object(
         main_server,
         "_main_runtime_limited_mode_enabled",
         False,
@@ -1102,6 +1250,7 @@ async def test_release_storage_startup_barrier_reblocks_memory_before_propagatin
         "unit_test:main_server_init_failed",
         recovery_mode="",
     )
+    mock_rollback.assert_awaited_once_with()
 
 
 @pytest.mark.unit
@@ -1196,6 +1345,7 @@ async def test_memory_server_continue_startup_preserves_409_blocking_payload():
     ("method_name", "args", "kwargs"),
     [
         ("_request_memory_server_continue_startup", ("unit_test",), {}),
+        ("_request_memory_server_activate_startup", ("unit_test",), {}),
         ("_request_agent_server_continue_startup", ("unit_test",), {}),
         (
             "_request_memory_server_block_startup",
@@ -1239,6 +1389,34 @@ async def test_main_storage_control_calls_include_internal_auth(
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_activation_timeout_precedes_first_persistent_background_write():
+    import httpx
+    from app import main_server, memory_server
+
+    observed_timeout = None
+
+    class _Client:
+        async def post(self, url, **request_kwargs):
+            nonlocal observed_timeout
+            observed_timeout = request_kwargs["timeout"]
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request("POST", url),
+            )
+
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=_Client(),
+    ):
+        await main_server._request_memory_server_activate_startup("unit_test")
+
+    assert observed_timeout == 10.0
+    assert memory_server.gates._INITIAL_DELAY_IDLE_MAINT >= 20
+
+
+@pytest.mark.unit
 def test_memory_storage_control_routes_require_internal_auth(monkeypatch):
     from app import memory_server
 
@@ -1250,6 +1428,7 @@ def test_memory_storage_control_routes_require_internal_auth(monkeypatch):
     for path in (
         "/internal/storage/startup/block",
         "/internal/storage/startup/continue",
+        "/internal/storage/startup/activate",
     ):
         assert client.post(path, json={"reason": "attacker"}).status_code == 403
         assert client.post(
@@ -1290,7 +1469,8 @@ def test_memory_storage_control_routes_require_internal_auth(monkeypatch):
         headers=internal_http_auth_headers(),
     )
     assert response.status_code == 200
-    assert runtime._memory_storage_blocked_after_init is False
+    assert runtime._memory_storage_blocked_after_init is True
+    assert runtime._memory_runtime_prepared_generation == 71
     initialize.assert_awaited_once_with(reason="main_server")
 
 
@@ -1383,6 +1563,557 @@ async def test_memory_server_late_continue_cannot_override_newer_block(monkeypat
         assert response.status_code == 409
         assert memory_server.runtime._memory_storage_blocked_after_init is True
         assert memory_server.runtime._memory_storage_admission_generation == 11
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_late_startup_cannot_activate_a_newer_block_generation(
+    monkeypatch,
+):
+    from app import memory_server
+
+    init_started = asyncio.Event()
+    allow_init = asyncio.Event()
+
+    async def _initialize(*, reason: str):
+        assert reason == "startup"
+        init_started.set()
+        await allow_init.wait()
+        return True
+
+    activate = Mock(return_value=True)
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "get_storage_startup_blocking_reason",
+        lambda _cm: "",
+    )
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "ensure_memory_server_runtime_initialized",
+        _initialize,
+    )
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "_activate_memory_runtime_background_tasks",
+        activate,
+    )
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_task", None)
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_prepared_generation", None)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_blocked_after_init", False)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_admission_generation", 50)
+
+    startup_task = asyncio.create_task(memory_server.runtime.startup_event_handler())
+    await init_started.wait()
+    await memory_server.block_storage_startup(
+        memory_server.runtime.ContinueStorageStartupRequest(reason="compensate")
+    )
+    allow_init.set()
+    await startup_task
+
+    activate.assert_not_called()
+    assert memory_server.runtime._memory_runtime_prepared_generation is None
+    assert memory_server.runtime._memory_storage_blocked_after_init is True
+    assert memory_server.runtime._memory_storage_admission_generation == 51
+
+
+@pytest.mark.unit
+def test_memory_activation_fails_closed_when_normal_state_cannot_be_persisted(
+    monkeypatch,
+):
+    from app import memory_server
+
+    runtime = memory_server.runtime
+    config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
+    monkeypatch.setattr(runtime, "_config_manager", config_manager)
+    monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_bootstrap_ok", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_prepared_generation", 60)
+    monkeypatch.setattr(runtime, "_memory_storage_admission_generation", 60)
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", True)
+    monkeypatch.setattr(runtime, "_memory_background_tasks_started", False)
+    monkeypatch.setattr(runtime, "_memory_activation_tasks", set())
+    monkeypatch.setattr(
+        runtime,
+        "set_root_mode",
+        Mock(side_effect=OSError("disk full")),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to persist ROOT_MODE_NORMAL"):
+        runtime._activate_memory_runtime_background_tasks(expected_generation=60)
+
+    assert runtime._memory_storage_blocked_after_init is True
+    assert runtime._memory_background_tasks_started is False
+    assert runtime._memory_activation_tasks == set()
+
+
+@pytest.mark.unit
+def test_memory_activation_does_not_reopen_a_blocking_root_mode(monkeypatch):
+    from app import memory_server
+
+    runtime = memory_server.runtime
+    config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+        load_root_state=Mock(return_value={"mode": "maintenance_readonly"}),
+    )
+    monkeypatch.setattr(runtime, "_config_manager", config_manager)
+    monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "is_cloudsave_disabled", lambda: False)
+    monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_bootstrap_ok", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_prepared_generation", 61)
+    monkeypatch.setattr(runtime, "_memory_storage_admission_generation", 61)
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", True)
+    monkeypatch.setattr(runtime, "_memory_background_tasks_started", True)
+
+    activated = runtime._activate_memory_runtime_background_tasks(
+        expected_generation=61
+    )
+
+    assert activated is False
+    assert runtime._memory_storage_blocked_after_init is True
+
+
+@pytest.mark.unit
+def test_memory_activation_skips_root_state_when_cloudsave_is_disabled(monkeypatch):
+    from app import memory_server
+
+    runtime = memory_server.runtime
+    config_manager = SimpleNamespace(
+        load_root_state=Mock(
+            side_effect=AssertionError("disabled session must not read root_state")
+        ),
+    )
+    monkeypatch.setattr(runtime, "_config_manager", config_manager)
+    monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "is_cloudsave_disabled", lambda: True)
+    monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_prepared_generation", 611)
+    monkeypatch.setattr(runtime, "_memory_storage_admission_generation", 611)
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", True)
+    monkeypatch.setattr(runtime, "_memory_background_tasks_started", True)
+
+    assert runtime._activate_memory_runtime_background_tasks(
+        expected_generation=611
+    ) is True
+    assert runtime._memory_storage_blocked_after_init is False
+    config_manager.load_root_state.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_root_writer_cannot_enter_between_check_and_activation_publish(
+    monkeypatch,
+):
+    from app import memory_server
+    from utils.root_state_lock import root_state_transaction
+
+    runtime = memory_server.runtime
+    config_manager = SimpleNamespace(
+        app_docs_dir=Path("/tmp/neko"),
+        load_root_state=Mock(return_value={"mode": "normal"}),
+    )
+    writer_acquired = threading.Event()
+    writer_thread = None
+    acquired_during_publish: list[bool] = []
+    real_spawn = runtime._spawn_background_task
+
+    def _observe_first_publish(coro):
+        nonlocal writer_thread
+        if writer_thread is None:
+            def _writer():
+                with root_state_transaction():
+                    writer_acquired.set()
+
+            writer_thread = threading.Thread(target=_writer, daemon=True)
+            writer_thread.start()
+            acquired_during_publish.append(writer_acquired.wait(timeout=0.2))
+        return real_spawn(coro)
+
+    monkeypatch.setattr(runtime, "_config_manager", config_manager)
+    monkeypatch.setattr(runtime, "get_storage_recovery_mode", lambda: "")
+    monkeypatch.setattr(runtime, "is_cloudsave_disabled", lambda: False)
+    monkeypatch.setattr(runtime, "set_root_mode", Mock())
+    monkeypatch.setattr(runtime, "_spawn_background_task", _observe_first_publish)
+    monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_bootstrap_ok", True)
+    monkeypatch.setattr(runtime, "_memory_runtime_prepared_generation", 62)
+    monkeypatch.setattr(runtime, "_memory_storage_admission_generation", 62)
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", True)
+    monkeypatch.setattr(runtime, "_memory_background_tasks_started", False)
+    monkeypatch.setattr(runtime, "_memory_activation_tasks", set())
+    monkeypatch.setattr(runtime, "_memory_token_tracker_task", None)
+    monkeypatch.setattr(runtime, "embedding_warmup_worker", None)
+
+    assert runtime._activate_memory_runtime_background_tasks(
+        expected_generation=62
+    ) is True
+    assert writer_thread is not None
+    writer_thread.join(timeout=2)
+    assert writer_acquired.is_set()
+    assert acquired_during_publish == [False]
+
+    # Let the admitted wrappers take ownership of their inner coroutine before
+    # cancellation so teardown does not leave never-awaited coroutine objects.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await runtime._quiesce_memory_activation_tasks()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_initializer_survives_cancelled_continue_waiter(monkeypatch):
+    from app import memory_server
+
+    init_started = asyncio.Event()
+    allow_init = asyncio.Event()
+    init_finished = asyncio.Event()
+
+    async def _initialize(*, reason: str):
+        assert reason == "cancelled-waiter"
+        init_started.set()
+        try:
+            await allow_init.wait()
+            return True
+        finally:
+            init_finished.set()
+
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_completed", False)
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_task", None)
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "_initialize_memory_server_runtime",
+        _initialize,
+    )
+
+    waiter = asyncio.create_task(
+        memory_server.runtime.ensure_memory_server_runtime_initialized(
+            reason="cancelled-waiter"
+        )
+    )
+    await init_started.wait()
+    initializer_task = memory_server.runtime._memory_runtime_init_task
+    assert initializer_task is not None
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert not initializer_task.cancelled()
+    assert not initializer_task.done()
+    allow_init.set()
+    assert await initializer_task is True
+    assert init_finished.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_block_waits_for_inflight_to_thread_without_cancelling(
+    monkeypatch,
+):
+    from app import memory_server
+
+    worker_started = threading.Event()
+    allow_worker = threading.Event()
+    worker_finished = threading.Event()
+    init_lock = asyncio.Lock()
+
+    def _write_in_thread():
+        worker_started.set()
+        allow_worker.wait(timeout=5)
+        worker_finished.set()
+
+    async def _initialize():
+        async with init_lock:
+            await asyncio.to_thread(_write_in_thread)
+
+    initializer_task = asyncio.create_task(_initialize())
+    assert await asyncio.to_thread(worker_started.wait, 2)
+
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_lock", init_lock)
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "_memory_runtime_init_task",
+        initializer_task,
+    )
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_blocked_after_init", False)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_admission_generation", 20)
+
+    block_task = asyncio.create_task(
+        memory_server.block_storage_startup(
+            memory_server.runtime.ContinueStorageStartupRequest(reason="compensate")
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert not block_task.done()
+    assert not initializer_task.cancelled()
+    assert not worker_finished.is_set()
+
+    allow_worker.set()
+    response = await asyncio.wait_for(block_task, timeout=2)
+
+    assert response["ok"] is True
+    assert worker_finished.is_set()
+    assert initializer_task.done()
+    assert not initializer_task.cancelled()
+    assert memory_server.runtime._memory_storage_blocked_after_init is True
+    assert memory_server.runtime._memory_storage_admission_generation == 21
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_block_cancelled_during_quiesce_still_waits_for_initializer(
+    monkeypatch,
+):
+    from app import memory_server
+
+    quiesce_started = asyncio.Event()
+    allow_quiesce = asyncio.Event()
+    initializer_started = asyncio.Event()
+    allow_initializer = asyncio.Event()
+    init_lock = asyncio.Lock()
+
+    async def _quiesce():
+        quiesce_started.set()
+        await allow_quiesce.wait()
+
+    async def _initialize():
+        async with init_lock:
+            initializer_started.set()
+            await allow_initializer.wait()
+
+    initializer_task = asyncio.create_task(_initialize())
+    await initializer_started.wait()
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "_quiesce_memory_activation_tasks",
+        _quiesce,
+    )
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_lock", init_lock)
+    monkeypatch.setattr(
+        memory_server.runtime,
+        "_memory_runtime_init_task",
+        initializer_task,
+    )
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_prepared_generation", 70)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_blocked_after_init", False)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_admission_generation", 70)
+
+    block_task = asyncio.create_task(
+        memory_server.block_storage_startup(
+            memory_server.runtime.ContinueStorageStartupRequest(reason="cancelled")
+        )
+    )
+    await quiesce_started.wait()
+    block_task.cancel()
+    allow_quiesce.set()
+    await asyncio.sleep(0)
+
+    assert not block_task.done()
+    assert not initializer_task.done()
+
+    allow_initializer.set()
+    with pytest.raises(asyncio.CancelledError):
+        await block_task
+    assert initializer_task.done()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_block_quiesces_activated_background_tasks(monkeypatch):
+    from app import memory_server
+
+    worker_started = asyncio.Event()
+    worker_stopped = asyncio.Event()
+
+    async def _long_lived_worker():
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            worker_stopped.set()
+
+    worker = asyncio.create_task(_long_lived_worker())
+    await worker_started.wait()
+    monkeypatch.setattr(memory_server.runtime, "_memory_activation_tasks", {worker})
+    monkeypatch.setattr(memory_server.runtime, "_memory_background_tasks_started", True)
+    monkeypatch.setattr(memory_server.runtime, "_memory_runtime_init_task", None)
+    monkeypatch.setattr(memory_server.runtime, "embedding_warmup_worker", None)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_blocked_after_init", False)
+    monkeypatch.setattr(memory_server.runtime, "_memory_storage_admission_generation", 30)
+
+    response = await memory_server.block_storage_startup(
+        memory_server.runtime.ContinueStorageStartupRequest(reason="compensate")
+    )
+
+    assert response["ok"] is True
+    assert worker.cancelled()
+    assert worker_stopped.is_set()
+    assert memory_server.runtime._memory_background_tasks_started is False
+    assert memory_server.runtime._memory_storage_blocked_after_init is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_tracker_activation_resumes_before_start_and_record(monkeypatch):
+    from app import memory_server
+
+    events = []
+    tracker = SimpleNamespace(_save_task=None)
+
+    def _resume(owner):
+        events.append(("resume", owner))
+
+    def _start():
+        events.append(("start", None))
+
+    def _record(**_kwargs):
+        events.append(("record", None))
+
+    tracker.resume_persistence = _resume
+    tracker.start_periodic_save = _start
+    tracker.record_app_start = _record
+    monkeypatch.setattr("utils.token_tracker.install_hooks", Mock())
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_instance",
+        lambda: tracker,
+    )
+    monkeypatch.setattr(memory_server.runtime, "_memory_token_tracker_task", None)
+
+    await memory_server.runtime._bootstrap_memory_token_tracker()
+
+    assert events == [
+        ("resume", "memory_server"),
+        ("start", None),
+        ("record", None),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_block_suspends_tracker_without_cancelling_another_service_task(
+    monkeypatch,
+):
+    from app import memory_server
+
+    async def _foreign_periodic_save():
+        await asyncio.Event().wait()
+
+    foreign_task = asyncio.create_task(_foreign_periodic_save())
+    tracker = SimpleNamespace(
+        _save_task=foreign_task,
+        suspend_persistence=Mock(),
+    )
+    runtime = memory_server.runtime
+    monkeypatch.setattr(runtime, "_memory_activation_tasks", set())
+    monkeypatch.setattr(runtime, "_memory_token_tracker_task", None)
+    monkeypatch.setattr(runtime, "embedding_warmup_worker", None)
+    monkeypatch.setattr(runtime, "_memory_background_tasks_started", True)
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_existing_instance",
+        lambda: tracker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_instance",
+        Mock(side_effect=AssertionError("block must not construct TokenTracker")),
+    )
+
+    await runtime._quiesce_memory_activation_tasks()
+
+    tracker.suspend_persistence.assert_called_once_with("memory_server")
+    assert not foreign_task.cancelled()
+    assert not foreign_task.done()
+    foreign_task.cancel()
+    await asyncio.gather(foreign_task, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_rollback_suspends_tracker_without_cancelling_another_service_task(
+    monkeypatch,
+):
+    from app import main_server
+
+    async def _foreign_periodic_save():
+        await asyncio.Event().wait()
+
+    foreign_task = asyncio.create_task(_foreign_periodic_save())
+    tracker = SimpleNamespace(
+        _save_task=foreign_task,
+        suspend_persistence=Mock(),
+    )
+    monkeypatch.setattr(main_server, "_preload_task", None)
+    monkeypatch.setattr(main_server, "_game_cleanup_task", None)
+    monkeypatch.setattr(main_server, "_main_token_tracker_task", None)
+    monkeypatch.setattr(main_server, "agent_event_bridge", None)
+    monkeypatch.setattr(main_server, "steamworks", None)
+    monkeypatch.setattr(
+        main_server,
+        "_cancel_workshop_background_tasks_for_startup_rollback",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(main_server, "cleanup", Mock())
+    monkeypatch.setattr(main_server, "join_sync_connector_threads", AsyncMock())
+    monkeypatch.setattr(main_server, "_reset_sync_connector_shutdown_events", Mock())
+    monkeypatch.setattr(
+        "main_routers.shared_state.set_steamworks",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_existing_instance",
+        lambda: tracker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "utils.token_tracker.TokenTracker.get_instance",
+        Mock(side_effect=AssertionError("rollback must not construct TokenTracker")),
+    )
+
+    await main_server._rollback_partial_main_runtime_startup()
+
+    tracker.suspend_persistence.assert_called_once_with("main_server")
+    assert not foreign_task.cancelled()
+    assert not foreign_task.done()
+    foreign_task.cancel()
+    await asyncio.gather(foreign_task, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_server_core_joins_spawned_startup_replay_tasks(monkeypatch):
+    from app import memory_server
+
+    replay_started = asyncio.Event()
+    allow_replay = asyncio.Event()
+    replay_finished = asyncio.Event()
+
+    async def _replay_write():
+        replay_started.set()
+        await allow_replay.wait()
+        replay_finished.set()
+
+    replay_task = asyncio.create_task(_replay_write())
+    monkeypatch.setattr(
+        memory_server.outbox_infra,
+        "_replay_pending_outbox",
+        AsyncMock(return_value=[replay_task]),
+    )
+
+    join_task = asyncio.create_task(
+        memory_server.runtime._replay_startup_outbox_to_completion()
+    )
+    await replay_started.wait()
+    await asyncio.sleep(0)
+    assert not join_task.done()
+
+    allow_replay.set()
+    await join_task
+    assert replay_finished.is_set()
 
 
 @pytest.mark.unit

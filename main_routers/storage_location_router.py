@@ -28,8 +28,11 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
+import secrets
 import shutil
 import stat
 import sys
@@ -122,6 +125,12 @@ _TARGET_CONFIRMATION_SNAPSHOT_KEY = "_target_confirmation_snapshot"
 _storage_mutation_lock = asyncio.Lock()
 _retained_cleanup_requests_in_flight = 0
 _STORAGE_RESTART_OPERATION_TTL_SECONDS = 10 * 60
+_STORAGE_RESTART_OPERATION_MAX_ENTRIES = 256
+_STORAGE_RESTART_OPERATION_TOKEN_SECRET = secrets.token_bytes(32)
+_STORAGE_RESTART_OPERATION_RETIRED_STATES = frozenset(
+    {"cancelled", "expired", "indeterminate", "rejected"}
+)
+_STORAGE_RESTART_OPERATION_PROTECTED_STATES = frozenset({"in_flight"})
 _storage_restart_operations: dict[str, dict[str, Any]] = {}
 
 # _STORAGE_MUTATION_OFFLOAD_CONTRACT
@@ -216,13 +225,74 @@ def _set_no_cache_headers(response: Response) -> None:
     response.headers["Expires"] = "0"
 
 
+def _storage_restart_operation_token_tag(nonce: str) -> str:
+    return hmac.new(
+        _STORAGE_RESTART_OPERATION_TOKEN_SECRET,
+        nonce.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+
+
+def _new_storage_restart_operation_id() -> str:
+    nonce = secrets.token_hex(16)
+    return f"{nonce}.{_storage_restart_operation_token_tag(nonce)}"
+
+
+def _is_authentic_storage_restart_operation_id(operation_id: str) -> bool:
+    nonce, separator, supplied_tag = str(operation_id or "").partition(".")
+    if separator != "." or len(nonce) != 32 or len(supplied_tag) != 24:
+        return False
+    try:
+        bytes.fromhex(nonce)
+        bytes.fromhex(supplied_tag)
+    except ValueError:
+        return False
+    return hmac.compare_digest(
+        supplied_tag,
+        _storage_restart_operation_token_tag(nonce),
+    )
+
+
 def _prune_storage_restart_operations() -> None:
     now = time.monotonic()
-    for _operation_id, operation in list(_storage_restart_operations.items()):
+    for operation_id, operation in list(_storage_restart_operations.items()):
         age = now - float(operation.get("created_at") or now)
         if operation.get("state") == "prepared" and age >= _STORAGE_RESTART_OPERATION_TTL_SECONDS:
             operation["state"] = "expired"
             operation["updated_at"] = now
+            continue
+        terminal_age = now - float(operation.get("updated_at") or now)
+        if (
+            operation.get("state") in _STORAGE_RESTART_OPERATION_RETIRED_STATES
+            and terminal_age >= _STORAGE_RESTART_OPERATION_TTL_SECONDS
+        ):
+            # The authenticated operation id remains a bounded, self-contained
+            # proof that this process issued the now-terminal request.  A late
+            # status poll can therefore still distinguish it from an unknown
+            # id after the detailed tombstone is released.
+            _storage_restart_operations.pop(operation_id, None)
+
+
+def _bound_storage_restart_operations() -> None:
+    while len(_storage_restart_operations) >= _STORAGE_RESTART_OPERATION_MAX_ENTRIES:
+        evictable = [
+            (operation_id, operation)
+            for operation_id, operation in _storage_restart_operations.items()
+            if operation.get("state")
+            not in _STORAGE_RESTART_OPERATION_PROTECTED_STATES
+        ]
+        if not evictable:
+            # The registry is already bounded. Refuse to mint another token
+            # rather than forgetting an operation that may still mutate data.
+            raise RuntimeError("storage restart operation registry is unavailable")
+        oldest_id, _oldest = min(
+            evictable,
+            key=lambda item: (
+                float(item[1].get("updated_at") or item[1].get("created_at") or 0.0),
+                str(item[0]),
+            ),
+        )
+        _storage_restart_operations.pop(oldest_id, None)
 
 
 def _prepare_storage_restart_operation(
@@ -231,7 +301,8 @@ def _prepare_storage_restart_operation(
     target_confirmation_snapshot: dict[str, Any] | None = None,
 ) -> str:
     _prune_storage_restart_operations()
-    operation_id = uuid.uuid4().hex
+    _bound_storage_restart_operations()
+    operation_id = _new_storage_restart_operation_id()
     now = time.monotonic()
     _storage_restart_operations[operation_id] = {
         "operation_id": operation_id,
@@ -289,6 +360,13 @@ def _public_storage_restart_operation(operation_id: str) -> dict[str, Any]:
     _prune_storage_restart_operations()
     operation = _storage_restart_operations.get(normalized_id)
     if not isinstance(operation, dict):
+        if _is_authentic_storage_restart_operation_id(normalized_id):
+            return {
+                "operation_id": normalized_id,
+                "state": "expired",
+                "instance_id": str(config_module.INSTANCE_ID),
+                "error_code": "restart_operation_retired",
+            }
         return {
             "operation_id": normalized_id,
             "state": "not_found",
@@ -421,6 +499,34 @@ def _snapshot_storage_mutation_state(config_manager, *, anchor_root: Path) -> di
     }
 
 
+def _merge_root_state_rollback(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+    committed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Undo only fields still equal to this mutation's committed post-image."""
+
+    if not isinstance(committed, dict):
+        # Used only by the immediate in-transaction rollback path: the write
+        # failed before a post-image could be captured and no other writer can
+        # enter the transaction in between.
+        return dict(previous)
+
+    missing = object()
+    restored = dict(current)
+    for key in previous.keys() | committed.keys():
+        current_value = current.get(key, missing)
+        committed_value = committed.get(key, missing)
+        if current_value != committed_value:
+            # Another writer changed this field after our commit. Preserve it.
+            continue
+        if key in previous:
+            restored[key] = previous[key]
+        else:
+            restored.pop(key, None)
+    return restored
+
+
 def _restore_storage_mutation_state(
     config_manager,
     snapshot: dict[str, Any],
@@ -471,7 +577,14 @@ def _restore_storage_mutation_state(
 
         previous_root_state = snapshot.get("root_state")
         if isinstance(previous_root_state, dict):
-            config_manager.save_root_state(previous_root_state)
+            current_root_state = config_manager.load_root_state()
+            restored_root_state = _merge_root_state_rollback(
+                current_root_state,
+                previous_root_state,
+                snapshot.get("committed_root_state"),
+            )
+            if restored_root_state != current_root_state:
+                config_manager.save_root_state(restored_root_state)
 
 
 def _restore_restart_schedule_state(
@@ -533,7 +646,18 @@ def _restore_restart_schedule_state_locked(
 
     try:
         if isinstance(previous_root_state, dict):
-            config_manager.save_root_state(previous_root_state)
+            # This helper is also statically audited in isolation. Keep its
+            # read/merge/write visibly in one transaction even though the
+            # public wrapper already holds the same re-entrant lock.
+            with root_state_transaction():
+                current_root_state = config_manager.load_root_state()
+                restored_root_state = _merge_root_state_rollback(
+                    current_root_state,
+                    previous_root_state,
+                    snapshot.get("committed_root_state"),
+                )
+                if restored_root_state != current_root_state:
+                    config_manager.save_root_state(restored_root_state)
     except Exception:
         logger.exception(
             "failed to restore root_state during restart-schedule rollback"
@@ -648,6 +772,7 @@ async def _apply_storage_mutation_writes(
                     config_manager,
                     anchor_root=anchor_root,
                 )
+                snapshot_out["committed_root_state"] = config_manager.load_root_state()
                 return result
             except BaseException:
                 # The write order spans three independent files.  Keep their
@@ -3617,6 +3742,7 @@ async def _post_storage_location_restart_locked(
                 last_migration_source=str(current_root),
                 last_migration_result=f"restart_pending:{normalized_selected_root}",
             )
+            rollback_state["committed_root_state"] = config_manager.load_root_state()
             return pending_payload
 
     migration_payload = None

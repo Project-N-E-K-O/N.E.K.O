@@ -2024,14 +2024,56 @@ def test_spawn_restarted_launcher_clears_main_server_init_marker_from_relaunch_e
 @pytest.mark.asyncio
 async def test_main_server_syncs_memory_server_after_startup_import():
     from app import main_server
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_auth import internal_http_auth_headers
 
+    response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {"status": "success"},
+    )
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
     with patch(
-        "main_routers.characters_router.notify_memory_server_reload",
-        AsyncMock(return_value=True),
-    ) as mock_reload:
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=client,
+    ):
         await main_server._sync_memory_server_after_startup_import({"action": "imported"})
 
-    mock_reload.assert_awaited_once_with(reason="Steam Auto-Cloud startup import")
+    client.post.assert_awaited_once_with(
+        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+        json={},
+        headers=internal_http_auth_headers(),
+        timeout=5.0,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "request_error"),
+    [
+        (SimpleNamespace(status_code=503, json=lambda: {"status": "error"}), None),
+        (SimpleNamespace(status_code=200, json=lambda: {"status": "error"}), None),
+        (None, TimeoutError("reload timed out")),
+    ],
+)
+async def test_main_server_startup_import_fails_when_memory_reload_is_not_confirmed(
+    response,
+    request_error,
+):
+    from app import main_server
+
+    post = AsyncMock(
+        return_value=response,
+        side_effect=request_error,
+    )
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=SimpleNamespace(post=post),
+    ):
+        with pytest.raises(RuntimeError, match="memory_server reload"):
+            await main_server._sync_memory_server_after_startup_import(
+                {"action": "imported"}
+            )
 
 
 @pytest.mark.unit
@@ -2039,13 +2081,14 @@ async def test_main_server_syncs_memory_server_after_startup_import():
 async def test_main_server_skips_memory_reload_when_startup_import_did_not_run():
     from app import main_server
 
+    client = SimpleNamespace(post=AsyncMock())
     with patch(
-        "main_routers.characters_router.notify_memory_server_reload",
-        AsyncMock(return_value=True),
-    ) as mock_reload:
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=client,
+    ):
         await main_server._sync_memory_server_after_startup_import({"action": "skipped"})
 
-    mock_reload.assert_not_called()
+    client.post.assert_not_awaited()
 
 
 @pytest.mark.unit

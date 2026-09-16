@@ -260,8 +260,15 @@ def _install_crash_excepthook():
                 _c("crash", error_class=exc_type.__name__)
                 # 强制 flush event_logger —— 进程接下来可能立刻 die，不 flush
                 # 就丢了。flush 自身有 try/except 不会再抛。
-                from utils.event_logger import EventLogger
-                EventLogger.get_instance().flush()
+                from utils.token_tracker import TokenTracker
+
+                tracker = TokenTracker.get_existing_instance()
+                if tracker is None:
+                    from utils.event_logger import EventLogger
+
+                    EventLogger.get_instance().flush()
+                else:
+                    tracker.flush_event_logger_if_persistence_active()
         except Exception:
             # crash hook 自己绝不能 raise —— 否则原始 traceback 被它的异常
             # 替换，用户看不到真正 crash 在哪。telemetry 失败相比之下不值一提。

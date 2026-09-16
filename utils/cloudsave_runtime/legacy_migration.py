@@ -3256,7 +3256,9 @@ def _snapshot_staged_cloudsave_fact(
                 )
             manifest_fd = os.open(
                 "manifest.json",
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
                 dir_fd=cloud_fd,
             )
             opened_manifest = os.fstat(manifest_fd)
@@ -3417,7 +3419,6 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
             staged_cloudsave_fact: dict[str, Any] | None = None
             merged_config_snapshot: Path | None = None
             target_backup_snapshot: Path | None = None
-            published = False
             attempt_id = uuid.uuid4().hex
             prepared_paths = {
                 role: workspace_parent
@@ -3559,7 +3560,11 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
                             "result": "target_root_preserves_staged_cloudsave_snapshot",
                         }
 
-                assert target_summary is not None
+                if target_summary is None:
+                    raise _unsafe_legacy_runtime_entry(
+                        target_root,
+                        "missing_target_snapshot_summary",
+                    )
                 if _legacy_source_was_already_imported(
                     existing_root_state,
                     source_root=source_root,
@@ -3772,7 +3777,6 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
                         if str(snapshot.get("kind") or "") != "missing"
                     },
                 )
-                published = True
                 return legacy_import
             finally:
                 recover_abandoned_legacy_import_preparation(config_manager)

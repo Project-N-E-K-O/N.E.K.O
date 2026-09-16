@@ -868,6 +868,7 @@ async def test_storage_snapshot_waits_for_cloud_fence_transaction(tmp_path, monk
             config_manager,
             anchor_root=anchor_root,
             snapshot_out=snapshot,
+            expected_migration=None,
             write=lambda: set_root_mode(config_manager, ROOT_MODE_MAINTENANCE_READONLY),
         )
     )
@@ -921,6 +922,39 @@ def test_empty_snapshot_never_deletes_storage_state(tmp_path):
 
     assert policy_path.exists(), "空快照回滚把存储策略文件 unlink 了"
     assert migration_path.exists(), "空快照回滚把迁移检查点删了"
+
+
+@pytest.mark.unit
+def test_storage_snapshot_restore_preserves_later_root_state_fields(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    anchor_root = Path(config_manager.anchor_root)
+    snapshot = router_module._snapshot_storage_mutation_state(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+    committed = dict(snapshot["root_state"])
+    committed["mode"] = ROOT_MODE_MAINTENANCE_READONLY
+    committed["last_migration_result"] = "restart_pending:test"
+    config_manager.save_root_state(committed)
+    snapshot["committed_root_state"] = committed
+    snapshot["committed_migration"] = snapshot["migration"]
+
+    later = dict(committed)
+    later["cloud_fence_generation"] = 42
+    config_manager.save_root_state(later)
+
+    router_module._restore_storage_mutation_state(
+        config_manager,
+        snapshot,
+        anchor_root=anchor_root,
+    )
+
+    restored = config_manager.load_root_state()
+    assert restored["mode"] == snapshot["root_state"]["mode"]
+    assert restored["last_migration_result"] == snapshot["root_state"][
+        "last_migration_result"
+    ]
+    assert restored["cloud_fence_generation"] == 42
 
 
 @pytest.mark.unit

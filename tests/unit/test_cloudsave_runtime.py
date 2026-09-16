@@ -1616,6 +1616,7 @@ def test_bootstrap_repairs_legacy_root_while_launcher_fence_is_active(tmp_path):
     cm = _make_config_manager(new_root_base)
 
     from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, bootstrap_local_cloudsave_environment, cloud_apply_fence
+    from utils.cloudsave_runtime import fence as fence_module
     from utils.storage.policy import get_storage_policy_path, save_storage_policy
 
     legacy_config_dir = legacy_root / "config"
@@ -1648,13 +1649,17 @@ def test_bootstrap_repairs_legacy_root_while_launcher_fence_is_active(tmp_path):
     unknown_sentinel.write_text("keep", encoding="utf-8")
 
     with cloud_apply_fence(cm, mode=ROOT_MODE_BOOTSTRAP_IMPORTING, reason="launcher_phase0_bootstrap"):
-        lock_path = Path(cm.local_state_dir) / "cloud_apply.lock"
-        lock_identity_before = lock_path.stat()
+        assert fence_module._process_holds_cloud_apply_lock()
+        if os.name != "nt":
+            lock_path = Path(cm.local_state_dir) / "cloud_apply.lock"
+            lock_identity_before = lock_path.stat()
         result = bootstrap_local_cloudsave_environment(cm)
         assert result["legacy_import"]["migrated"] is True
         assert result["root_state"]["mode"] == ROOT_MODE_BOOTSTRAP_IMPORTING
-        lock_identity_after = lock_path.stat()
-        assert os.path.samestat(lock_identity_before, lock_identity_after)
+        assert fence_module._process_holds_cloud_apply_lock()
+        if os.name != "nt":
+            lock_identity_after = lock_path.stat()
+            assert os.path.samestat(lock_identity_before, lock_identity_after)
 
     assert cm.load_characters()["当前猫娘"] == "旧角色"
     assert policy_path.read_bytes() == policy_before
@@ -2093,14 +2098,16 @@ def test_legacy_publish_rejects_same_content_staged_source_replacement(
     cm.migrate_config_files()
     cm.migrate_memory_files()
     real_iter_entries = storage_migration_module._iter_existing_runtime_entries
+    replacement_attempted = False
     replaced = False
     moved_source = None
 
     def replace_staged_source_with_same_content(root):
-        nonlocal moved_source, replaced
+        nonlocal moved_source, replaced, replacement_attempted
         root = Path(root)
         if ".legacy-source-" in root.name and not replaced:
             moved_source = root.with_name(f"{root.name}.original-generation")
+            replacement_attempted = True
             root.rename(moved_source)
             shutil.copytree(moved_source, root)
             replaced = True
@@ -2116,8 +2123,12 @@ def test_legacy_publish_rejects_same_content_staged_source_replacement(
         bootstrap_local_cloudsave_environment(cm)
 
     assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
-    assert replaced is True
-    assert moved_source is not None and moved_source.is_dir()
+    assert replacement_attempted is True
+    if os.name == "nt":
+        assert replaced is False
+    else:
+        assert replaced is True
+        assert moved_source is not None and moved_source.is_dir()
     assert not (Path(cm.live2d_dir) / "legacy-model").exists()
 
 
@@ -2264,11 +2275,12 @@ def test_legacy_publish_rejects_staged_source_replacement_during_copy(
     cm.migrate_config_files()
     cm.migrate_memory_files()
     real_copy = storage_migration_module._copy_runtime_entry
+    replacement_attempted = False
     replaced = False
     moved_source = None
 
     def replace_source_when_shared_copy_starts(source, target, **kwargs):
-        nonlocal moved_source, replaced
+        nonlocal moved_source, replaced, replacement_attempted
         source = Path(source)
         source_root = next(
             (
@@ -2282,6 +2294,7 @@ def test_legacy_publish_rejects_staged_source_replacement_during_copy(
             moved_source = source_root.with_name(
                 f"{source_root.name}.original-generation"
             )
+            replacement_attempted = True
             source_root.rename(moved_source)
             shutil.copytree(moved_source, source_root)
             replaced = True
@@ -2297,8 +2310,12 @@ def test_legacy_publish_rejects_staged_source_replacement_during_copy(
         bootstrap_local_cloudsave_environment(cm)
 
     assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
-    assert replaced is True
-    assert moved_source is not None and moved_source.is_dir()
+    assert replacement_attempted is True
+    if os.name == "nt":
+        assert replaced is False
+    else:
+        assert replaced is True
+        assert moved_source is not None and moved_source.is_dir()
     assert not (Path(cm.live2d_dir) / "legacy-model").exists()
 
 
@@ -2396,6 +2413,53 @@ def test_empty_cloudsave_fact_rejects_same_content_directory_replacement(
     assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
     assert cloud_stat_calls >= 2
     assert moved_cloudsave.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX named-pipe open semantics")
+def test_cloudsave_manifest_swap_to_fifo_cannot_block_startup(tmp_path, monkeypatch):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    anchor_root = tmp_path / "anchor"
+    cloudsave_root = anchor_root / "cloudsave"
+    cloudsave_root.mkdir(parents=True)
+    manifest_path = cloudsave_root / "manifest.json"
+    manifest_path.write_text('{"files": {}}', encoding="utf-8")
+    anchor_identity = anchor_root.lstat()
+    real_open = legacy_migration_module.os.open
+    swapped = False
+
+    def replace_manifest_with_fifo_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if (
+            path == "manifest.json"
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+        ):
+            assert flags & os.O_NONBLOCK, "manifest open can block after a FIFO swap"
+            swapped = True
+            os.unlink(manifest_path)
+            os.mkfifo(manifest_path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_migration_module.os,
+        "open",
+        replace_manifest_with_fifo_before_open,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        legacy_migration_module._snapshot_staged_cloudsave_fact(
+            anchor_root,
+            expected_root_identity=(
+                int(anchor_identity.st_dev),
+                int(anchor_identity.st_ino),
+            ),
+        )
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert swapped is True
 
 
 @pytest.mark.unit
@@ -3205,6 +3269,11 @@ def test_cloud_apply_lock_api_failure_fails_closed(monkeypatch, tmp_path):
         ensure_local_state_directory=lambda: True,
     )
     monkeypatch.setattr(fence_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        fence_module,
+        "_configure_win32_mutex_apis",
+        lambda _kernel32: (_ for _ in ()).throw(OSError("injected Win32 API failure")),
+    )
 
     assert fence_module.acquire_cloud_apply_lock(cm) is False
 

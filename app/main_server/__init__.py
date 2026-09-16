@@ -449,6 +449,32 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         ) from e
 
 
+async def _request_memory_server_activate_startup(reason: str = "") -> None:
+    """Commit memory background writers after every runtime initialized."""
+
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/activate",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"memory_server activate-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to activate memory_server runtime: {exc}"
+        ) from exc
+
+
 async def _request_agent_server_continue_startup(reason: str = "") -> None:
     """Release agent_server from limited mode after storage state is committed."""
     try:
@@ -473,6 +499,30 @@ async def _request_agent_server_continue_startup(reason: str = "") -> None:
         ) from exc
 
 
+async def _request_agent_server_activate_startup(reason: str = "") -> None:
+    """Commit agent admission after all recoverable runtime cores are ready."""
+
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/activate",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server activate-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to activate agent_server runtime: {exc}"
+        ) from exc
+
+
 async def _request_memory_server_block_startup(
     reason: str = "",
     *,
@@ -488,7 +538,7 @@ async def _request_memory_server_block_startup(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
             json={"reason": reason, "recovery_mode": recovery_mode},
             headers=internal_http_auth_headers(),
-            timeout=10.0,
+            timeout=60.0,
         )
         response.raise_for_status()
         payload = response.json()
@@ -516,7 +566,7 @@ async def _request_agent_server_block_startup(
             f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/block",
             json={"reason": reason, "recovery_mode": recovery_mode},
             headers=internal_http_auth_headers(),
-            timeout=10.0,
+            timeout=60.0,
         )
         response.raise_for_status()
         payload = response.json()
@@ -864,6 +914,8 @@ _facts_sync_worker_task: asyncio.Task = None
 _client_registration_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
+_main_token_tracker_task: asyncio.Task | None = None
+_main_runtime_background_tasks_started = False
 
 
 from .preload import _background_preload, _sync_preload_modules  # noqa: F401
@@ -874,20 +926,64 @@ async def _sync_memory_server_after_startup_import(import_result):
     if not isinstance(import_result, dict) or import_result.get("action") != "imported":
         return
 
-    try:
-        from main_routers.characters_router import notify_memory_server_reload
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
 
-        reloaded = await notify_memory_server_reload(
-            reason="Steam Auto-Cloud startup import",
+    try:
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+            json={},
+            headers=internal_http_auth_headers(),
+            timeout=5.0,
         )
-        if not reloaded:
-            logger.warning(
-                "Steam Auto-Cloud startup import applied, but memory_server reload did not succeed"
-            )
-    except Exception as e:
-        logger.warning(
-            f"Steam Auto-Cloud startup import could not sync memory_server: {e}"
+    except Exception as exc:
+        raise RuntimeError("memory_server reload request failed after startup import") from exc
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError("memory_server reload returned an invalid response") from exc
+    if response.status_code != 200 or not isinstance(payload, dict) or payload.get(
+        "status"
+    ) != "success":
+        raise RuntimeError(
+            "memory_server reload was not confirmed after startup import"
         )
+
+
+def _activate_main_runtime_background_tasks() -> None:
+    """Start persistent Main writers only after every runtime is activated."""
+
+    global _game_cleanup_task, _main_token_tracker_task
+    global _main_runtime_background_tasks_started
+
+    if _main_runtime_background_tasks_started:
+        return
+
+    from main_routers.game_router import cleanup_expired_sessions
+
+    if _game_cleanup_task is None or _game_cleanup_task.done():
+        _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
+
+    _schedule_workshop_sync(steamworks)
+
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+
+        install_hooks()
+        tracker = TokenTracker.get_instance()
+        tracker.resume_persistence("main_server")
+        previous_save_task = getattr(tracker, "_save_task", None)
+        tracker.start_periodic_save()
+        current_save_task = getattr(tracker, "_save_task", None)
+        if current_save_task is not previous_save_task:
+            _main_token_tracker_task = current_save_task
+        tracker.record_app_start(process="main_server")
+        logger.info("Token usage tracker initialized")
+    except Exception as exc:
+        logger.warning("Token tracker initialization failed (non-critical): %s", exc)
+
+    _main_runtime_background_tasks_started = True
 
 
 def _start_neko_servers_integration_workers() -> None:
@@ -1002,6 +1098,21 @@ async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
 
 async def _rollback_partial_main_runtime_startup() -> None:
     global steamworks, _preload_task, _game_cleanup_task, agent_event_bridge
+    global _main_token_tracker_task, _main_runtime_background_tasks_started
+
+    tracker = None
+    try:
+        from utils.token_tracker import TokenTracker
+
+        tracker = TokenTracker.get_existing_instance()
+        if tracker is not None:
+            tracker.suspend_persistence("main_server")
+    except Exception as exc:
+        logger.debug(
+            "Token tracker rollback suspension failed: %s",
+            exc,
+            exc_info=True,
+        )
 
     await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
     _preload_task = None
@@ -1009,6 +1120,20 @@ async def _rollback_partial_main_runtime_startup() -> None:
     _game_cleanup_task = None
 
     await _cancel_workshop_background_tasks_for_startup_rollback()
+
+    token_task = _main_token_tracker_task
+    if token_task is not None:
+        await _cancel_task_if_running(token_task, name="token tracker", timeout=1.0)
+        try:
+            if tracker is not None and getattr(tracker, "_save_task", None) is token_task:
+                tracker._save_task = None
+        except Exception as exc:
+            logger.debug(
+                "Token tracker rollback reference cleanup failed: %s",
+                exc,
+                exc_info=True,
+            )
+        _main_token_tracker_task = None
 
     if agent_event_bridge is not None:
         bridge = agent_event_bridge
@@ -1039,13 +1164,15 @@ async def _rollback_partial_main_runtime_startup() -> None:
         logger.debug("Sync connector rollback failed: %s", exc, exc_info=True)
     finally:
         _reset_sync_connector_shutdown_events()
+        _main_runtime_background_tasks_started = False
 
 
-async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
+async def _ensure_main_server_runtime_initialized(
+    *, reason: str, release_admission: bool = True
+) -> bool:
     global \
         steamworks, \
         _preload_task, \
-        _game_cleanup_task, \
         agent_event_bridge, \
         _runtime_startup_init_completed
 
@@ -1091,11 +1218,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             get_default_steam_info()
 
             _preload_task = asyncio.create_task(_background_preload())
-            # 启动游戏 session 超时清理后台任务
-            from main_routers.game_router import cleanup_expired_sessions
-
-            if _game_cleanup_task is None or _game_cleanup_task.done():
-                _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
             try:
                 agent_event_bridge = MainServerAgentBridge(
                     on_agent_event=_handle_agent_event
@@ -1109,20 +1231,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
             # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
             await _init_and_mount_workshop()
-            _schedule_workshop_sync(steamworks)
-
-            try:
-                from utils.token_tracker import TokenTracker, install_hooks
-
-                install_hooks()
-                TokenTracker.get_instance().start_periodic_save()
-                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
-                TokenTracker.get_instance().record_app_start(process="main_server")
-                logger.info("Token usage tracker initialized")
-            except Exception as e:
-                logger.warning(
-                    f"Token tracker initialization failed (non-critical): {e}"
-                )
 
             logger.info(
                 "Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason
@@ -1144,8 +1252,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             if current_root_state is None:
                 if not is_cloudsave_disabled():
-                    logger.warning(
-                        "跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败"
+                    raise RuntimeError(
+                        "main_server failed to persist ROOT_MODE_NORMAL state: "
+                        "root_state is missing or unreadable"
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
                 # 挪进工作线程有两个理由，缺一不可：
@@ -1182,8 +1291,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
                 try:
                     if not await asyncio.to_thread(_mark_startup_successful):
-                        logger.info(
-                            "跳过 ROOT_MODE_NORMAL 写入：落盘前 root_state 已被改成阻断态"
+                        raise RuntimeError(
+                            "root_state became blocking before NORMAL publication"
                         )
                 except Exception as e:
                     logger.error(
@@ -1193,9 +1302,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         "main_server failed to persist ROOT_MODE_NORMAL state"
                     ) from e
             else:
-                logger.info(
-                    "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                raise RuntimeError(
+                    "main_server failed to persist ROOT_MODE_NORMAL state: "
+                    f"root_state is blocking ({current_root_state.get('mode') or ROOT_MODE_NORMAL})"
                 )
 
             # GeoIP 预热必须在放开会话准入之前完成：会话的线路在 start_session 时
@@ -1212,7 +1321,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                 logger.debug("[GeoIP] 预热失败，留给后续调用重试", exc_info=True)
 
             _runtime_startup_init_completed = True
-            _disable_main_storage_limited_mode()
+            if release_admission:
+                _activate_main_runtime_background_tasks()
+                _disable_main_storage_limited_mode()
 
             # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
             # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
@@ -1239,6 +1350,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 async def release_storage_startup_barrier(
     *, reason: str = "storage_selection_continue_current_session"
 ) -> dict[str, Any]:
+    global _runtime_startup_init_completed
+
     recovery_mode = get_storage_recovery_mode()
     if recovery_mode in {
         "selection_required",
@@ -1251,6 +1364,11 @@ async def release_storage_startup_barrier(
         # apps share os.environ; in multi-process mode each child clears its own
         # marker in the loopback continue endpoint below.
         clear_storage_recovery_mode()
+    # Recovery release is a two-phase operation. Main admission stays closed
+    # until both child activations have acknowledged the same prepared state.
+    _enable_main_storage_limited_mode("runtime_initializing")
+    main_initialization_started = False
+    main_initialization_completed = False
     try:
         # The continue request has an ambiguous cancellation outcome: memory_server
         # may have applied it even when this client never receives the response.
@@ -1258,8 +1376,18 @@ async def release_storage_startup_barrier(
         # exit re-establishes both admission guards before storage state rolls back.
         await _request_memory_server_continue_startup(reason)
         await _request_agent_server_continue_startup(reason)
-        initialized = await _ensure_main_server_runtime_initialized(reason=reason)
-    except BaseException:
+        main_initialization_started = True
+        initialized = await _ensure_main_server_runtime_initialized(
+            reason=reason,
+            release_admission=False,
+        )
+        main_initialization_completed = True
+        # Final commit: Agent first establishes the event/plugin side, then
+        # Memory publishes its long-lived writers. Main opens only after both.
+        await _request_agent_server_activate_startup(reason)
+        await _request_memory_server_activate_startup(reason)
+        _activate_main_runtime_background_tasks()
+    except BaseException as release_exc:
         # Once either child service may have accepted continue-startup, every
         # failed exit must put both admission guards back while the router keeps
         # the already-validated root committed. CancelledError is a BaseException,
@@ -1274,12 +1402,37 @@ async def release_storage_startup_barrier(
         # original exception below.
         if recovery_mode:
             set_storage_recovery_mode(recovery_mode)
-        block_task = asyncio.ensure_future(
-            _request_runtime_services_block_startup(
-                f"{reason}:main_server_init_failed",
-                recovery_mode=recovery_mode,
+        async def _compensate_failed_release() -> None:
+            global _runtime_startup_init_completed
+
+            operations = [
+                _request_runtime_services_block_startup(
+                    f"{reason}:main_server_init_failed",
+                    recovery_mode=recovery_mode,
+                )
+            ]
+            rollback_main = bool(
+                main_initialization_completed
+                or (
+                    main_initialization_started
+                    and not isinstance(release_exc, Exception)
+                )
             )
-        )
+            if rollback_main:
+                operations.append(_rollback_partial_main_runtime_startup())
+            results = await asyncio.gather(*operations, return_exceptions=True)
+            if rollback_main:
+                _runtime_startup_init_completed = False
+            failures = [
+                result for result in results if isinstance(result, BaseException)
+            ]
+            if failures:
+                raise RuntimeError(
+                    "failed to compensate storage startup release: "
+                    + "; ".join(str(failure) for failure in failures)
+                )
+
+        block_task = asyncio.ensure_future(_compensate_failed_release())
         try:
             await asyncio.shield(block_task)
         except asyncio.CancelledError:

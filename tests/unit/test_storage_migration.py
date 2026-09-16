@@ -4568,6 +4568,7 @@ def test_transaction_marker_write_failure_never_publishes_unowned_root(
 
         def fail_marker_write(fd, data):
             if fd in marker_fds:
+                marker_fds.discard(fd)
                 raise OSError("marker denied")
             return real_write(fd, data)
 

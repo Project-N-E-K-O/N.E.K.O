@@ -1815,9 +1815,11 @@ def test_agent_deduper_is_built_after_the_region_settles():
         if isinstance(node, ast.AsyncFunctionDef)
     }
     initializer = functions.get('_initialize_agent_runtime_unlocked')
+    initializer_once = functions.get('_initialize_agent_runtime_once')
     ensure = functions.get('ensure_agent_server_runtime_initialized')
     startup = functions.get('startup')
     assert initializer is not None, '未找到 agent_server runtime 初始化函数，断言失效'
+    assert initializer_once is not None, '未找到 agent_server process-owned 初始化函数，断言失效'
     assert ensure is not None, '未找到 agent_server runtime 初始化门，断言失效'
     assert startup is not None, '未找到 agent_server startup，断言失效'
 
@@ -1834,8 +1836,12 @@ def test_agent_deduper_is_built_after_the_region_settles():
         for call in _calls_in_own_function_scope(initializer)
         if getattr(call.func, 'id', None) == 'TaskDeduper'
     ]
-    ensure_calls_initializer = any(
+    once_calls_initializer = any(
         getattr(call.func, 'id', None) == '_initialize_agent_runtime_unlocked'
+        for call in _calls_in_own_function_scope(initializer_once)
+    )
+    ensure_calls_once = any(
+        getattr(call.func, 'id', None) == '_initialize_agent_runtime_once'
         for call in _calls_in_own_function_scope(ensure)
     )
     startup_calls_ensure = any(
@@ -1846,7 +1852,8 @@ def test_agent_deduper_is_built_after_the_region_settles():
     assert settles, 'agent_server runtime 初始化未落定区域判定'
     assert min(settles) < min(builds), \
         f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
-    assert ensure_calls_initializer, 'runtime 初始化门未调用真实初始化函数'
+    assert once_calls_initializer, 'process-owned 初始化任务未调用真实初始化函数'
+    assert ensure_calls_once, 'runtime 初始化门未创建 process-owned 初始化任务'
     assert startup_calls_ensure, 'agent_server startup 未经过 runtime 初始化门'
 
 
@@ -2389,24 +2396,38 @@ def test_memory_server_warms_the_region_before_outbox_replay():
               / 'app' / 'memory_server' / 'runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef):
-            continue
-        calls = {}
-        for c in ast.walk(node):
-            if isinstance(c, ast.Call):
-                name = getattr(c.func, 'attr', None)
-                if name:
-                    calls.setdefault(name, []).append(c.lineno)
-        if '_replay_pending_outbox' not in calls:
-            continue
-        assert 'awarmup_region_check' in calls, \
-            'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
-        assert min(calls['awarmup_region_check']) < min(calls['_replay_pending_outbox']), \
-            '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
-        break
-    else:
-        pytest.fail('未找到 outbox 补跑调用，断言失效')
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    initializer = functions.get('_initialize_memory_server_runtime')
+    replay_owner = functions.get('_replay_startup_outbox_to_completion')
+    assert initializer is not None, '未找到 memory_server runtime 初始化函数，断言失效'
+    assert replay_owner is not None, '未找到 startup outbox 补跑所有者，断言失效'
+
+    def _calls(node):
+        result = {}
+        for call_node in ast.walk(node):
+            if not isinstance(call_node, ast.Call):
+                continue
+            name = (
+                getattr(call_node.func, 'attr', None)
+                or getattr(call_node.func, 'id', None)
+            )
+            if name:
+                result.setdefault(name, []).append(call_node.lineno)
+        return result
+
+    init_calls = _calls(initializer)
+    replay_calls = _calls(replay_owner)
+    assert '_replay_pending_outbox' in replay_calls, '未找到 outbox 补跑调用，断言失效'
+    assert 'awarmup_region_check' in init_calls, \
+        'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
+    assert '_replay_startup_outbox_to_completion' in init_calls, \
+        'memory_server 初始化未等待 startup outbox 补跑完成'
+    assert min(init_calls['awarmup_region_check']) < min(init_calls['_replay_startup_outbox_to_completion']), \
+        '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
 
 
 @pytest.mark.unit

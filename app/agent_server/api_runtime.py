@@ -160,10 +160,18 @@ from utils.storage.layout import (
 _AGENT_STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/internal/storage/startup/continue",
+    "/internal/storage/startup/activate",
     "/internal/storage/startup/block",
 }
 _agent_runtime_init_lock = asyncio.Lock()
 _agent_runtime_init_completed = False
+_agent_runtime_init_task: asyncio.Task | None = None
+_agent_runtime_activation_lock = asyncio.Lock()
+_agent_runtime_prepared_generation: int | None = None
+_agent_runtime_activated = False
+_agent_activation_tasks: set[asyncio.Task] = set()
+_agent_token_tracker_task: asyncio.Task | None = None
+_agent_quota_notifier_registered = False
 _agent_storage_blocked_after_init = False
 _agent_storage_admission_generation = 0
 
@@ -732,16 +740,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
 
 async def _initialize_agent_runtime_unlocked() -> None:
-    # Install token tracking hooks for this process
-    try:
-        from utils.token_tracker import TokenTracker, install_hooks
-        install_hooks()
-        TokenTracker.get_instance().start_periodic_save()
-        # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
-        TokenTracker.get_instance().record_app_start(process="agent_server")
-    except Exception as e:
-        logger.warning(f"[Agent] Token tracker init failed: {e}")
-
     # 注：模块预热统一由 main_server 在其 runtime init 完成后触发（见
     # _ensure_main_server_runtime_initialized 末尾）。合并模式下三个 app 同进程，
     # 那一处覆盖本进程全部 lazy 模块；不在这里另起，避免与启动期抢 GIL。
@@ -772,10 +770,6 @@ async def _initialize_agent_runtime_unlocked() -> None:
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
 
-    try:
-        await _start_embedded_user_plugin_server()
-    except Exception as e:
-        logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
     # direct run is requested.
 
@@ -783,13 +777,7 @@ async def _initialize_agent_runtime_unlocked() -> None:
     # and probe in background.  The single check updates both capability caches.
     _set_capability("computer_use", False, "connectivity check pending")
     _set_capability("browser_use", False, "connectivity check pending")
-    # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
-    # is NOT started here — it syncs with user_plugin_enabled (default OFF).
-    # The lifecycle starts on-demand when the user toggles the plugin flag ON.
-    _set_capability("user_plugin", True, "")
-    _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
-    Modules._persistent_tasks.add(_llm_probe_task)
-    _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
+    _set_capability("user_plugin", False, "activation pending")
 
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -873,43 +861,11 @@ async def _initialize_agent_runtime_unlocked() -> None:
     except Exception as e:
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
-    # Start computer-use scheduler
-    sch_task = asyncio.create_task(_computer_use_scheduler_loop())
-    Modules._persistent_tasks.add(sch_task)
-    sch_task.add_done_callback(Modules._persistent_tasks.discard)
-    # Start ZeroMQ bridge for main_server events
-    try:
-        Modules.agent_bridge = AgentServerEventBridge(on_session_event=_on_session_event)
-        await Modules.agent_bridge.start()
-    except Exception as e:
-        logger.warning(f"[Agent] Event bridge startup failed: {e}")
-    # 免费版 Agent 每日配额耗尽 → 节流通知前端弹提示（最多每 10 秒一次）。
-    # consume_agent_daily_quota 跑在 worker 线程里调这个回调，用 run_coroutine_threadsafe
-    # 把异步 ZeroMQ emit 调度回 agent_server 的事件循环；不 .result()，保持非阻塞。
-    try:
-        _quota_notify_loop = asyncio.get_running_loop()
 
-        def _notify_agent_quota_exceeded(used: int, limit: int) -> None:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    _emit_main_event("agent_quota_exceeded", None, used=used, limit=limit),
-                    _quota_notify_loop,
-                )
-            except Exception as e:
-                logger.debug("[Agent] schedule agent_quota_exceeded emit failed: %s", e)
+async def _initialize_agent_runtime_once() -> bool:
+    """Own the one real core initialization independently of HTTP waiters."""
 
-        get_config_manager().register_quota_exceeded_notifier(_notify_agent_quota_exceeded)
-    except Exception as e:
-        logger.warning(f"[Agent] register quota-exceeded notifier failed: {e}")
-    # Push initial server status so frontend can render Agent popup without waiting.
-    _bump_state_revision()
-
-
-async def ensure_agent_server_runtime_initialized() -> bool:
-    """Initialize a recovery-started agent exactly once after storage is safe."""
     global _agent_runtime_init_completed
-    if _agent_runtime_init_completed:
-        return False
     async with _agent_runtime_init_lock:
         if _agent_runtime_init_completed:
             return False
@@ -918,9 +874,218 @@ async def ensure_agent_server_runtime_initialized() -> bool:
         return True
 
 
+async def ensure_agent_server_runtime_initialized() -> bool:
+    """Initialize the recoverable core once without lending ownership to a waiter."""
+
+    global _agent_runtime_init_task
+    if _agent_runtime_init_completed:
+        return False
+
+    initializer_task = _agent_runtime_init_task
+    if initializer_task is None or initializer_task.done():
+        initializer_task = asyncio.create_task(_initialize_agent_runtime_once())
+        _agent_runtime_init_task = initializer_task
+
+        def _clear_initializer_task(done_task: asyncio.Task) -> None:
+            global _agent_runtime_init_task
+            if _agent_runtime_init_task is done_task:
+                _agent_runtime_init_task = None
+            if not done_task.cancelled():
+                # Retrieve failures even if every HTTP waiter disconnected.
+                done_task.exception()
+
+        initializer_task.add_done_callback(_clear_initializer_task)
+    return await asyncio.shield(initializer_task)
+
+
+def _track_agent_activation_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _agent_activation_tasks.add(task)
+    Modules._persistent_tasks.add(task)
+    task.add_done_callback(_agent_activation_tasks.discard)
+    task.add_done_callback(Modules._persistent_tasks.discard)
+    return task
+
+
+async def _start_agent_runtime_activation_resources() -> None:
+    """Start only resources owned by the current admission generation."""
+
+    global _agent_token_tracker_task, _agent_quota_notifier_registered
+
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+
+        install_hooks()
+        tracker = TokenTracker.get_instance()
+        tracker.resume_persistence("agent_server")
+        previous_save_task = getattr(tracker, "_save_task", None)
+        tracker.start_periodic_save()
+        current_save_task = getattr(tracker, "_save_task", None)
+        if current_save_task is not previous_save_task:
+            _agent_token_tracker_task = current_save_task
+        tracker.record_app_start(process="agent_server")
+    except Exception as exc:
+        logger.warning("[Agent] Token tracker init failed: %s", exc)
+
+    try:
+        await _start_embedded_user_plugin_server()
+        _set_capability("user_plugin", True, "")
+    except Exception as exc:
+        logger.warning("[Agent] Failed to start embedded user plugin server: %s", exc)
+        _set_capability("user_plugin", False, "plugin server unavailable")
+
+    _track_agent_activation_task(_fire_agent_llm_connectivity_check())
+    _track_agent_activation_task(_computer_use_scheduler_loop())
+
+    bridge = None
+    try:
+        bridge = AgentServerEventBridge(on_session_event=_on_session_event)
+        # Publish ownership before the first await. If this request is cancelled
+        # inside start(), the outer activation cleanup can still find and stop
+        # every partially-created socket/thread.
+        Modules.agent_bridge = bridge
+        await bridge.start()
+    except Exception as exc:
+        logger.warning("[Agent] Event bridge startup failed: %s", exc)
+        if bridge is not None:
+            try:
+                await bridge.stop()
+            except Exception:
+                pass
+            finally:
+                if Modules.agent_bridge is bridge:
+                    Modules.agent_bridge = None
+
+    # consume_agent_daily_quota can call this from a worker thread. The
+    # notifier therefore belongs to activation and must be removed by block.
+    try:
+        quota_notify_loop = asyncio.get_running_loop()
+
+        def _notify_agent_quota_exceeded(used: int, limit: int) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _emit_main_event(
+                        "agent_quota_exceeded", None, used=used, limit=limit
+                    ),
+                    quota_notify_loop,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[Agent] schedule agent_quota_exceeded emit failed: %s", exc
+                )
+
+        get_config_manager().register_quota_exceeded_notifier(
+            _notify_agent_quota_exceeded
+        )
+        _agent_quota_notifier_registered = True
+    except Exception as exc:
+        logger.warning("[Agent] register quota-exceeded notifier failed: %s", exc)
+
+
+async def _quiesce_agent_runtime_activation_locked() -> None:
+    global _agent_runtime_activated, _agent_token_tracker_task
+    global _agent_quota_notifier_registered
+
+    tracker = None
+    try:
+        from utils.token_tracker import TokenTracker
+
+        tracker = TokenTracker.get_existing_instance()
+        if tracker is not None:
+            tracker.suspend_persistence("agent_server")
+    except Exception as exc:
+        logger.warning("[Agent] token tracker suspension failed: %s", exc)
+
+    activation_tasks = tuple(_agent_activation_tasks)
+    for task in activation_tasks:
+        task.cancel()
+    if activation_tasks:
+        await asyncio.gather(*activation_tasks, return_exceptions=True)
+    for task in activation_tasks:
+        Modules._persistent_tasks.discard(task)
+    _agent_activation_tasks.clear()
+
+    token_task = _agent_token_tracker_task
+    if token_task is not None:
+        if not token_task.done():
+            token_task.cancel()
+            await asyncio.gather(token_task, return_exceptions=True)
+        try:
+            if tracker is not None and getattr(tracker, "_save_task", None) is token_task:
+                tracker._save_task = None
+        except Exception as exc:
+            logger.warning("[Agent] token tracker compensation failed: %s", exc)
+        _agent_token_tracker_task = None
+
+    try:
+        await _ensure_plugin_lifecycle_stopped()
+    except Exception as exc:
+        logger.warning("[Agent] Plugin lifecycle compensation failed: %s", exc)
+    try:
+        await _stop_embedded_user_plugin_server()
+    except Exception as exc:
+        logger.warning("[Agent] Plugin server compensation failed: %s", exc)
+
+    bridge = Modules.agent_bridge
+    if bridge is not None:
+        try:
+            await bridge.stop()
+        except Exception as exc:
+            logger.warning("[Agent] Event bridge compensation failed: %s", exc)
+        finally:
+            if Modules.agent_bridge is bridge:
+                Modules.agent_bridge = None
+
+    if _agent_quota_notifier_registered:
+        try:
+            get_config_manager().register_quota_exceeded_notifier(None)
+        except Exception as exc:
+            logger.warning("[Agent] quota notifier compensation failed: %s", exc)
+        _agent_quota_notifier_registered = False
+
+    _agent_runtime_activated = False
+    _bump_state_revision()
+
+
+async def _quiesce_agent_runtime_activation() -> None:
+    async with _agent_runtime_activation_lock:
+        await _quiesce_agent_runtime_activation_locked()
+
+
+async def _activate_agent_runtime(*, expected_generation: int) -> bool:
+    """Start generation-owned resources, then atomically publish admission."""
+
+    global _agent_runtime_activated, _agent_storage_blocked_after_init
+
+    async with _agent_runtime_activation_lock:
+        owns_generation = lambda: (
+            _agent_runtime_init_completed
+            and expected_generation == _agent_storage_admission_generation
+            and expected_generation == _agent_runtime_prepared_generation
+            and not get_storage_recovery_mode()
+        )
+        if not owns_generation():
+            return False
+        if _agent_runtime_activated:
+            _agent_storage_blocked_after_init = False
+            return True
+        try:
+            await _start_agent_runtime_activation_resources()
+            if not owns_generation():
+                await _quiesce_agent_runtime_activation_locked()
+                return False
+            _agent_runtime_activated = True
+            _agent_storage_blocked_after_init = False
+            _bump_state_revision()
+            return True
+        except BaseException:
+            await _quiesce_agent_runtime_activation_locked()
+            raise
+
+
 @app.on_event("startup")
 async def startup():
-    global _agent_storage_blocked_after_init
+    global _agent_runtime_prepared_generation, _agent_storage_blocked_after_init
     recovery_mode = get_storage_recovery_mode()
     blocking_reason = recovery_mode
     if not blocking_reason:
@@ -938,8 +1103,13 @@ async def startup():
             blocking_reason,
         )
         return
+    admission_generation = _agent_storage_admission_generation
     await ensure_agent_server_runtime_initialized()
-    _agent_storage_blocked_after_init = False
+    if admission_generation != _agent_storage_admission_generation:
+        return
+    _agent_runtime_prepared_generation = admission_generation
+    if not await _activate_agent_runtime(expected_generation=admission_generation):
+        logger.info("[Agent] startup activation was reblocked; limited-mode retained")
 
 
 class AgentStorageStartupRequest(BaseModel):
@@ -957,7 +1127,7 @@ def _require_storage_startup_control_auth(request: Request) -> None:
     dependencies=[Depends(_require_storage_startup_control_auth)],
 )
 async def continue_storage_startup(payload: AgentStorageStartupRequest | None = None):
-    global _agent_storage_blocked_after_init
+    global _agent_runtime_prepared_generation, _agent_storage_blocked_after_init
     admission_generation = _agent_storage_admission_generation
     recovery_mode = get_storage_recovery_mode()
     if recovery_mode in {
@@ -993,7 +1163,10 @@ async def continue_storage_startup(payload: AgentStorageStartupRequest | None = 
                     "error": "Agent server 初始化期间存储启动闸门已重新关闭。",
                 },
             )
-        _agent_storage_blocked_after_init = False
+        _agent_runtime_prepared_generation = admission_generation
+        # Core is ready, but business admission and persistent resources remain
+        # stopped until main_server confirms that every runtime initialized.
+        _agent_storage_blocked_after_init = True
         return {"ok": True, "initialized": bool(initialized)}
     except Exception as exc:
         _agent_storage_blocked_after_init = True
@@ -1007,10 +1180,68 @@ async def continue_storage_startup(payload: AgentStorageStartupRequest | None = 
 
 
 @app.post(
+    "/internal/storage/startup/activate",
+    dependencies=[Depends(_require_storage_startup_control_auth)],
+)
+async def activate_storage_startup(payload: AgentStorageStartupRequest | None = None):
+    admission_generation = _agent_storage_admission_generation
+    blocking_reason = get_storage_startup_blocking_reason(
+        get_config_manager(migrate=False)
+    )
+    if blocking_reason:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_blocked",
+                "blocking_reason": blocking_reason,
+            },
+        )
+    activated = await _activate_agent_runtime(
+        expected_generation=admission_generation
+    )
+    if not activated:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error_code": "storage_startup_reblocked",
+                "blocking_reason": "storage_startup_blocked_after_init",
+            },
+        )
+    return {
+        "ok": True,
+        "activated": True,
+        "reason": str(getattr(payload, "reason", "") or ""),
+    }
+
+
+async def _finish_agent_storage_block() -> None:
+    initializer_task = _agent_runtime_init_task
+    if initializer_task is not None and not initializer_task.done():
+        try:
+            await asyncio.shield(initializer_task)
+        except asyncio.CancelledError:
+            # The process-owned task may only be cancelled by shutdown, never by
+            # this compensating waiter. Continue to the lock/quiesce barrier.
+            pass
+        except Exception:
+            logger.warning(
+                "[Agent] runtime initializer failed while restoring limited-mode",
+                exc_info=True,
+            )
+    # Covers an initializer that finished between the pointer snapshot and wait.
+    async with _agent_runtime_init_lock:
+        pass
+    await _quiesce_agent_runtime_activation()
+
+
+@app.post(
     "/internal/storage/startup/block",
     dependencies=[Depends(_require_storage_startup_control_auth)],
 )
 async def block_storage_startup(payload: AgentStorageStartupRequest | None = None):
+    global _agent_runtime_prepared_generation
     global _agent_storage_blocked_after_init, _agent_storage_admission_generation
     reason = str(getattr(payload, "reason", "") or "").strip()
     recovery_mode = str(getattr(payload, "recovery_mode", "") or "").strip()
@@ -1023,7 +1254,20 @@ async def block_storage_startup(payload: AgentStorageStartupRequest | None = Non
                 content={"ok": False, "error": "invalid storage recovery mode"},
             )
     _agent_storage_admission_generation += 1
+    _agent_runtime_prepared_generation = None
     _agent_storage_blocked_after_init = True
+    safety_task = asyncio.create_task(_finish_agent_storage_block())
+    try:
+        await asyncio.shield(safety_task)
+    except asyncio.CancelledError:
+        while not safety_task.done():
+            try:
+                await asyncio.shield(safety_task)
+            except asyncio.CancelledError:
+                continue
+        if not safety_task.cancelled():
+            safety_task.result()
+        raise
     logger.warning(
         "[Agent] limited-mode restored after main_server startup failure: %s",
         reason or "-",

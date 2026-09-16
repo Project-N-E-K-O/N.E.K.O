@@ -661,6 +661,29 @@ def _private_record_epoch(data: dict) -> int | None:
     return epoch
 
 
+def _fsync_logout_epoch_directory_required(path: Path) -> None:
+    """Require POSIX durability for the logout tombstone's directory entry."""
+
+    if os.name == "nt":
+        # atomic_write_json already attempts the platform's best available
+        # directory barrier. Windows does not expose POSIX directory fsync.
+        return
+    directory_fd = -1
+    try:
+        directory_fd = os.open(
+            os.fspath(path),
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        os.fsync(directory_fd)
+    finally:
+        if directory_fd >= 0:
+            with suppress(OSError):
+                os.close(directory_fd)
+
+
 def _advance_logout_epoch(*, config_manager=None) -> int:
     auth_path = (
         _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
@@ -685,6 +708,7 @@ def _advance_logout_epoch(*, config_manager=None) -> int:
         ensure_ascii=False,
         indent=2,
     )
+    _fsync_logout_epoch_directory_required(path.parent)
     if _current_logout_epoch(config_manager=config_manager) != next_epoch:
         raise OSError("community logout state verification failed")
     return next_epoch

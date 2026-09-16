@@ -4,6 +4,7 @@ import inspect
 import hashlib
 import json
 import os
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -843,6 +844,40 @@ def test_logout_generation_blocks_offline_phase0_private_source_after_remount(
     assert fresh == {"access_token": "fresh", "credential_epoch": 1}
     assert C._load_auth() == fresh
 
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows directory fsync is unavailable")
+def test_logout_keeps_credentials_when_epoch_directory_flush_fails(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    manager = _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+    )
+    manager.committed_selected_root = selected_root
+    anchor_state.mkdir(parents=True)
+    selected_root.mkdir(parents=True)
+    canonical_auth = anchor_state / "community_auth.json"
+    canonical_social = anchor_state / "social_session.json"
+    canonical_auth.write_text(json.dumps({"access_token": "active"}), encoding="utf-8")
+    canonical_social.write_text(json.dumps({"token": "active"}), encoding="utf-8")
+    real_fsync = os.fsync
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("directory flush denied")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+
+    assert C._clear_auth() is False
+    assert canonical_auth.exists()
+    assert canonical_social.exists()
+
+
 def test_target_unlink_failure_preserves_canonical_login_for_retry(tmp_path, monkeypatch):
     anchor_state = tmp_path / "anchor" / "state"
     selected_root = tmp_path / "target" / "N.E.K.O"
@@ -1091,6 +1126,63 @@ def test_anchor_permission_failure_keeps_last_legacy_credential_usable(
     assert C._load_auth() == {"access_token": "only-copy"}
     assert legacy.exists()
     assert not (anchor_state / "community_auth.json").exists()
+
+
+def test_oauth_claim_and_start_reject_unpublished_legacy_pending_generation(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    retained_root.mkdir(parents=True)
+    legacy = retained_root / "community_oauth_pending.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "state": "legacy-state",
+                "code_verifier": "legacy-verifier",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 300,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        C,
+        "_write_private_json_no_replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("anchor publish denied")
+        ),
+    )
+    monkeypatch.setattr(
+        C,
+        "_write_private_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("anchor write denied")
+        ),
+    )
+
+    canonical = anchor_state / "community_oauth_pending.json"
+    assert O._claim_oauth_pending("legacy-state") == ("missing", None, None)
+    with pytest.raises(PermissionError, match="anchor write denied"):
+        O._prepare_oauth_pending(
+            canonical,
+            redirect_uri="http://127.0.0.1:48911/oauth/callback",
+            client_id="neko-servers-desktop-dev",
+            auth_url_base="https://auth.example",
+        )
+
+    assert legacy.exists()
+    assert not canonical.exists()
 
 
 def test_oauth_and_steam_pending_move_to_anchor_without_copying_lock_files(

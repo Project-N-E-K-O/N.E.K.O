@@ -296,8 +296,8 @@ phase-0 不移动或替换整个 selected root，而是把合并后的旧源快�
 首次选择、迁移和恢复期间，主服务与记忆服务可以先以受限模式启动：
 
 - 主服务只放行存储页面、静态资源、状态/健康检查、存储 API 和调试入口；普通 API 返回 `409 storage_startup_blocked`；
-- 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue` 和 `/internal/storage/startup/block`；Agent 只放行健康检查和同一组存储启动控制端点；其他请求返回 409；
-- 内部 continue/block 端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断；四个 Agent/Memory 控制入口都必须同时验证 launcher 通过一次性交付缓冲区传给三个服务的独立随机 token 和安全 Origin/Referer，无来源的原生进程请求仍须携带 token。该 token 不得进入环境变量、不可擦除的长期进程参数，也不得复用或暴露为网页可读取的 CSRF token；服务必须在导入应用代码前原位清零交付缓冲区，fork 产生的服务后代还要自动轮换各自副本。网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
+- 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue`、`/internal/storage/startup/activate` 和 `/internal/storage/startup/block`；Agent 只放行健康检查和它定义的存储启动控制端点；其他请求返回 409；
+- 内部控制端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断。Memory 与 Agent 的 `continue` 只完成由进程自有、不会随 HTTP 断连取消的核心初始化，并保持业务门禁和长期写任务关闭；Memory 启动重放产生的子任务必须在该初始化所有权内全部静止。Main 核心完成后，按 Agent `activate` → Memory `activate` 的顺序提交；Memory 必须在同一 root-state 事务内确认非阻断态、发布 `NORMAL`、登记本代任务所有权并开放准入。两个子服务均确认激活后，Main 才启动 game cleanup、Workshop sync 与 TokenTracker 等持久写者，最后开放业务准入。任一阶段失败、Cloud 导入后 Memory reload 未确认，或激活响应不确定，都必须重新 `block` 两个子服务并回滚 Main 本代运行资源；补偿只能在准入已关闭、初始化写入自然结束且激活资源已静止后确认完成。所有 Agent/Memory 控制入口都必须同时验证 launcher 通过一次性交付缓冲区传给三个服务的独立随机 token 和安全 Origin/Referer，无来源的原生进程请求仍须携带 token。该 token 不得进入环境变量、不可擦除的长期进程参数，也不得复用或暴露为网页可读取的 CSRF token；服务必须在导入应用代码前原位清零交付缓冲区，fork 产生的服务后代还要自动轮换各自副本。网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
 
 完整性恢复代次比普通首次选择更严格：`ConfigManager` 不运行默认配置、旧配置或根目录迁移；launcher 不自动安装 Playwright 浏览器；main 不初始化 voice、Avatar Tool 和后台业务运行时；Agent 不启动 token tracker、插件宿主或 LLM 探测，也不发外部请求。普通 main、memory 和 Agent API 都返回 409，只保留健康检查、存储状态/bootstrap、受控安全退出以及服务间恢复控制所需的最小白名单。受限 main 可以返回不触发业务初始化的页面壳；`/chat` 与桌面独立窗口使用的 `/chat_full` 必须保持同一 GET/HEAD 可达性，但它们后续的业务 API 和 WebSocket 仍受门禁。退出钩子不得写 token、角色释放、插件状态、记忆状态、`root_state` 或上传 cloudsave；launcher 也不得在三个服务 ready 后把 `root_state` 改回 normal。只有能够把固定锚点目录身份固定到落盘结束的诊断写入才可持久化；普通基于路径的 `debug_health` 日志在恢复代次保持内存态。受损权威文件和已提交用户数据必须保持逐字节不变。
 

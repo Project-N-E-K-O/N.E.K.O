@@ -489,7 +489,7 @@ def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
 
 
 def _load_oauth_pending() -> tuple[Path | None, dict | None]:
-    """Resolve and read the pending OAuth record on a worker thread."""
+    """Resolve one claimable fixed-anchor pending OAuth record."""
     path = _oauth_pending_path()
     if path is None:
         return None, None
@@ -499,6 +499,14 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
         validator=C._oauth_pending_record_is_fresh,
         conflict_paths=C._legacy_private_conflict_paths(_OAUTH_PENDING_FILENAME),
     )
+    # The generic private-state loader may return the last usable legacy copy
+    # when publishing the canonical record fails. Credentials can safely use
+    # that read-only fallback, but a one-shot PKCE generation cannot: claim
+    # must atomically rename the fixed-anchor file. Do not expose a generation
+    # that start would reuse but callback could never detach.
+    if pending is not None and C._read_json_dict(path) != pending:
+        logger.warning("community_oauth: pending is not published at the fixed anchor")
+        return path, None
     return path, pending
 
 
