@@ -135,6 +135,12 @@ class _InvalidIdentityResponse(Exception):
     detail = "invalid_identity_response"
 
 
+class _InvalidSyncTicket(Exception):
+    """The final locked sync-ticket consume lost to logout or another request."""
+
+    detail = "invalid_sync_ticket"
+
+
 class _SocialLockReplacedError(OSError):
     """The lock name moved to another inode during a stable snapshot read."""
 
@@ -435,15 +441,16 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
     )
 
 
-def _require_local_mutation_ticket(request: Request, payload: dict | None) -> None:
-    """Authorize a local state mutation and atomically consume its ticket."""
+def _require_local_mutation_ticket(request: Request, payload: dict | None) -> object:
+    """Authorize a local state mutation; the operation consumes under its lock."""
     if not _local_mutation_origin_allowed(request):
         raise HTTPException(status_code=403, detail="origin_not_allowed")
     sync_ticket = (payload or {}).get("sync_ticket") or (payload or {}).get(
         "syncTicket"
     )
-    if not _consume_sync_ticket(sync_ticket):
+    if not _sync_ticket_is_valid(sync_ticket):
         raise HTTPException(status_code=403, detail="invalid_sync_ticket")
+    return sync_ticket
 
 
 def _local_request_source_allowed(request: Request) -> bool:
@@ -2502,6 +2509,8 @@ def _save_auth_unlocked(data: dict) -> bool:
 
 
 def _save_auth(data: dict) -> bool:
+    if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
+        return _save_auth_unlocked(data)
     social_path = _social_session_path()
     if social_path is None:
         return _save_auth_unlocked(data)
@@ -2610,6 +2619,17 @@ def _save_social_session(
     p = _social_session_path()
     if not p:
         return False
+    if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
+        return _save_social_session_unlocked(
+            p,
+            base,
+            access,
+            refresh,
+            local_user_id=local_user_id,
+            auth_source=auth_source,
+            auth_public_url=auth_public_url,
+            client_id=client_id,
+        )
     try:
         with _social_session_lock(p):
             return _save_social_session_unlocked(
@@ -2636,26 +2656,43 @@ def _persist_session_credentials(
     *,
     local_user_id: str,
     auth_source: str,
-) -> None:
+    sync_ticket: object | None = None,
+) -> bool:
     """Persist both desktop credential files from a worker thread."""
-    auth_saved = _save_auth(auth_payload)
-    social_saved = _save_social_session(
-        base,
-        access,
-        refresh,
-        local_user_id=local_user_id,
-        auth_source=auth_source,
-    )
-    if not (auth_saved and social_saved):
+    auth_saved = False
+    social_saved = False
+    ticket_accepted = sync_ticket is None
+    try:
+        with _social_session_locks(_social_session_paths()):
+            if sync_ticket is not None:
+                if not _consume_sync_ticket(sync_ticket):
+                    return False
+                ticket_accepted = True
+            auth_saved = _save_auth(auth_payload)
+            social_saved = _save_social_session(
+                base,
+                access,
+                refresh,
+                local_user_id=local_user_id,
+                auth_source=auth_source,
+            )
+            if not (auth_saved and social_saved):
+                bind["local_save_failed"] = True
+                # If auth was written before the Electron session failed,
+                # persist the partial-success marker in the same transaction.
+                if auth_saved:
+                    _save_auth(auth_payload)
+            if auth_saved or social_saved:
+                # Serialize revocation with final delegate issuance for the
+                # newly published session; never clear a proof minted after
+                # this transaction releases the credential lock.
+                _clear_native_delegates()
+    except (OSError, TimeoutError) as exc:
+        if sync_ticket is not None and not ticket_accepted:
+            raise
         bind["local_save_failed"] = True
-        # If auth was written before the Electron session failed, persist the
-        # partial-success marker there as well so auth-status can surface it.
-        if auth_saved:
-            _save_auth(auth_payload)
-    if auth_saved or social_saved:
-        # Any credential publication can represent an account switch or token
-        # rotation. Existing browser delegates must be reissued for that session.
-        _clear_native_delegates()
+        logger.warning("card_drop: save session credentials failed: %s", exc)
+    return ticket_accepted
 
 
 def _persist_session_identity_metadata(
@@ -2744,12 +2781,13 @@ def _unlink_credentials(paths: list[Path]) -> bool:
     return True
 
 
-def _clear_auth() -> bool:
+def _auth_clear_plan() -> tuple[list[Path], list[Path]] | None:
+    """Resolve every credential target and the locks that fence its writers."""
     if not _logout_storage_ready():
         logger.warning(
             "card_drop: committed storage root is unavailable; credential clear deferred"
         )
-        return False
+        return None
     auth_path = _auth_path()
     authoritative_paths = (
         [auth_path, _social_session_path(), _community_state_path(_SOCIAL_SESSION_FILENAME)]
@@ -2775,7 +2813,7 @@ def _clear_auth() -> bool:
     paths = [*legacy_paths, *authoritative_paths]
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
-        return False
+        return None
     lock_paths = _social_session_paths()
     # Logout also removes a committed/effective target that can be retained
     # solely as a conflict witness and therefore omitted from normal reads.
@@ -2789,66 +2827,105 @@ def _clear_auth() -> bool:
             and _existing_safe_parent(path)
         ):
             lock_paths.append(path)
+    return paths, lock_paths
+
+
+def _clear_auth_locked(paths: list[Path]) -> bool:
+    """Commit and verify logout while the caller holds all planned locks."""
+    # Preflight every exact app-owned file before deleting the first one.
+    # Failure to reach or mutate the selected target must leave
+    # canonical/host credentials intact so logout remains retryable.
+    for path in paths:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning(
+                "card_drop: cannot inspect credential before clear for %s: %s",
+                path,
+                exc,
+            )
+            return False
+        if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path.parent):
+            logger.warning("card_drop: unsafe credential path while clearing: %s", path)
+            return False
+        if not os.access(path.parent, os.W_OK | os.X_OK):
+            logger.warning(
+                "card_drop: credential directory is not writable: %s",
+                path.parent,
+            )
+            return False
+    # Commit logical logout before deleting reachable copies. A phase-0
+    # legacy source may be temporarily offline and therefore impossible to
+    # erase; its older generation must remain invalid if it later reappears.
+    try:
+        _advance_logout_epoch()
+    except OSError as exc:
+        logger.warning("card_drop: cannot persist logout generation: %s", exc)
+        return False
+    # Logical logout is now committed. Revoke every in-memory proof before
+    # any fallible physical deletion can return early.
+    _clear_native_delegates()
+    with _native_sync_tickets_lock:
+        _native_sync_tickets.clear()
+    if not _unlink_credentials(paths):
+        return False
+    for path in paths:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+            return False
+        else:
+            logger.warning("card_drop: credential still exists after clear: %s", path)
+            return False
+    return True
+
+
+def _clear_auth() -> bool:
+    plan = _auth_clear_plan()
+    if plan is None:
+        return False
+    paths, lock_paths = plan
     # community_auth.json 的删除也必须在 social-session 锁内：否则
     # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
     # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
     try:
         with _social_session_locks(lock_paths):
-            # Preflight every exact app-owned file before deleting the first
-            # one. Failure to reach or mutate the selected target must leave
-            # canonical/host credentials intact so logout remains retryable.
-            for path in paths:
-                try:
-                    metadata = path.lstat()
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning(
-                        "card_drop: cannot inspect credential before clear for %s: %s",
-                        path,
-                        exc,
-                    )
-                    return False
-                if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path.parent):
-                    logger.warning("card_drop: unsafe credential path while clearing: %s", path)
-                    return False
-                if not os.access(path.parent, os.W_OK | os.X_OK):
-                    logger.warning(
-                        "card_drop: credential directory is not writable: %s",
-                        path.parent,
-                    )
-                    return False
-            # Commit logical logout before deleting reachable copies.  A
-            # phase-0 legacy source may be temporarily offline and therefore
-            # impossible to erase; its older generation must remain invalid
-            # if the same directory later reappears.
-            try:
-                _advance_logout_epoch()
-            except OSError as exc:
-                logger.warning("card_drop: cannot persist logout generation: %s", exc)
-                return False
-            if not _unlink_credentials(paths):
-                return False
-            for path in paths:
-                try:
-                    path.lstat()
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
-                    return False
-                else:
-                    logger.warning("card_drop: credential still exists after clear: %s", path)
-                    return False
-            _clear_native_delegates()
-            # A post-logout guest can mint a ticket as soon as these file
-            # locks are released, so invalidate older proofs before then.
-            with _native_sync_tickets_lock:
-                _native_sync_tickets.clear()
+            return _clear_auth_locked(paths)
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
         return False
-    return True
+
+
+def _clear_auth_with_ticket(
+    sync_ticket: object,
+    *,
+    expected_access: str | None = None,
+) -> str:
+    """Consume authorization and clear credentials in one locked transaction."""
+    plan = _auth_clear_plan()
+    if plan is None:
+        return "failed"
+    paths, lock_paths = plan
+    try:
+        with _social_session_locks(lock_paths):
+            if expected_access is not None:
+                current_access = _access_token() or ""
+                if current_access and (
+                    not expected_access
+                    or not secrets.compare_digest(current_access, expected_access)
+                ):
+                    return "mismatch"
+            if not _consume_sync_ticket(sync_ticket):
+                return "invalid"
+            return "ok" if _clear_auth_locked(paths) else "failed"
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: ticketed credential clear was fenced off: %s", exc)
+        return "busy"
 
 
 def _access_token() -> str | None:
@@ -2973,6 +3050,7 @@ async def _store_session(
     *,
     auth_source: str = "legacy",
     bind_client: bool = True,
+    sync_ticket: object | None = None,
 ) -> dict:
     """Store JWTs and optionally bind the legacy guest client to the user.
 
@@ -3033,7 +3111,7 @@ async def _store_session(
         },
         "bind": bind,
     }
-    await asyncio.to_thread(
+    accepted = await asyncio.to_thread(
         _persist_session_credentials,
         auth_payload,
         bind,
@@ -3042,7 +3120,10 @@ async def _store_session(
         refresh,
         local_user_id=local_user_id,
         auth_source=normalized_source,
+        sync_ticket=sync_ticket,
     )
+    if sync_ticket is not None and not accepted:
+        raise _InvalidSyncTicket()
     return bind
 
 
@@ -3391,6 +3472,28 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     return snapshot, ""
 
 
+def _issue_native_delegate_for_session(snapshot: dict, audience: str) -> str:
+    """Mint only while the validated session still owns the credential files."""
+    expected_fingerprint = _desktop_session_fingerprint(snapshot)
+    expected_user_id = _normalize_local_user_id(snapshot.get("local_user_id"))
+    if not expected_fingerprint or not expected_user_id:
+        return ""
+    with _social_session_locks(_social_session_paths()):
+        current = _desktop_session_snapshot()
+        if _desktop_session_fingerprint(current) != expected_fingerprint:
+            return ""
+        current_user_id = _normalize_local_user_id(
+            (current or {}).get("local_user_id")
+        )
+        if current_user_id != expected_user_id:
+            return ""
+        return _issue_native_delegate(
+            local_user_id=current_user_id,
+            audience=audience,
+            session_fingerprint=expected_fingerprint,
+        )
+
+
 @router.get("/native-delegate", summary="签发短时 scoped native delegate（facts）")
 async def native_delegate_endpoint(request: Request):
     """Mint a reusable short-lived proof for the community Web tab.
@@ -3423,11 +3526,25 @@ async def native_delegate_endpoint(request: Request):
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     audience = _social_base_url()
-    delegate = _issue_native_delegate(
-        local_user_id=str(local_user_id),
-        audience=audience,
-        session_fingerprint=session_fingerprint,
-    )
+    try:
+        delegate = await asyncio.to_thread(
+            _issue_native_delegate_for_session,
+            snapshot,
+            audience,
+        )
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: native delegate issuance fenced off: %s", exc)
+        return JSONResponse(
+            {"detail": "desktop_session_busy"},
+            status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    if not delegate:
+        return JSONResponse(
+            {"detail": "desktop_login_required"},
+            status_code=409,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     return JSONResponse(
         {
             "native_delegate": delegate,
@@ -3481,11 +3598,33 @@ async def native_delegate_handoff_endpoint(
             status_code=503 if unavailable else 409,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    delegate = _issue_native_delegate(
-        local_user_id=str(local_user_id),
-        audience=audience,
-        session_fingerprint=session_fingerprint,
-    )
+    try:
+        delegate = await asyncio.to_thread(
+            _issue_native_delegate_for_session,
+            snapshot,
+            audience,
+        )
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: native delegate handoff fenced off: %s", exc)
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><title>Desktop 暂时不可用</title>"
+            "<body style='font-family:sans-serif;padding:40px'>"
+            "<h1>暂时无法读取 Desktop 登录状态</h1>"
+            "<p>请稍后重试打开猫娘社区。</p>"
+            "</body>",
+            status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    if not delegate:
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><title>需要 Desktop 登录</title>"
+            "<body style='font-family:sans-serif;padding:40px'>"
+            "<h1>请先在 N.E.K.O. 桌宠完成社区登录</h1>"
+            "<p>登录后再打开猫娘社区，铸造券即可连接本机账本。</p>"
+            "</body>",
+            status_code=409,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     return RedirectResponse(
         f"{dest}#native_delegate={quote(delegate, safe='')}",
         status_code=302,
@@ -3819,22 +3958,27 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     if clear_requested:
         # Logout is account-scoped.  If Web login B could not replace the desktop's bound
         # account A, B's later logout must not erase A's still-valid local session.
-        current_access = await asyncio.to_thread(_access_token) or ""
         requested_access = (
             payload.get("access_token") or payload.get("accessToken") or ""
         ).strip()
-        if current_access and (
-            not requested_access
-            or not secrets.compare_digest(current_access, requested_access)
-        ):
+        clear_outcome = await asyncio.to_thread(
+            _clear_auth_with_ticket,
+            sync_ticket,
+            expected_access=requested_access,
+        )
+        if clear_outcome == "mismatch":
             return JSONResponse(
                 {"detail": "local_session_mismatch"}, status_code=409, headers=cors
             )
-        if not _consume_sync_ticket(sync_ticket):
+        if clear_outcome == "invalid":
             return JSONResponse(
                 {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
             )
-        if not await asyncio.to_thread(_clear_auth):
+        if clear_outcome == "busy":
+            return JSONResponse(
+                {"detail": "desktop_session_busy"}, status_code=503, headers=cors
+            )
+        if clear_outcome != "ok":
             return JSONResponse(
                 {"detail": "local_clear_failed", "cleared": False},
                 status_code=500,
@@ -3867,14 +4011,11 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             headers=cors,
         )
     user = lookup.identity.user
-    # Consume only after the cloud token is validated.  A 401 keeps the ticket usable so the
-    # current browser tab can finish login and retry; concurrent reuse still has exactly one
-    # winner at this atomic pop.
-    if not _consume_sync_ticket(sync_ticket):
-        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     # Web native sync only authorizes this browser account to read the installation-local
     # ledger and memories. Legacy guest-card ownership is unrelated and must not block
-    # account switching with ``client_already_bound_to_other_user``.
+    # account switching with ``client_already_bound_to_other_user``. Consume the
+    # ticket under the same file lock as both credential writes, so logout must
+    # happen wholly before or wholly after this publication.
     try:
         bind = await _store_session(
             base,
@@ -3883,6 +4024,13 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             user,
             auth_source=lookup.identity.auth_source,
             bind_client=False,
+            sync_ticket=sync_ticket,
+        )
+    except _InvalidSyncTicket as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=403, headers=cors)
+    except (OSError, TimeoutError):
+        return JSONResponse(
+            {"detail": "desktop_session_busy"}, status_code=503, headers=cors
         )
     except _ClientBindingConflict as exc:
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
@@ -4160,8 +4308,13 @@ async def register_endpoint(request: Request, payload: dict = Body(default=None)
 
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
-    _require_local_mutation_ticket(request, payload)
-    if not await asyncio.to_thread(_clear_auth):
+    sync_ticket = _require_local_mutation_ticket(request, payload)
+    clear_outcome = await asyncio.to_thread(_clear_auth_with_ticket, sync_ticket)
+    if clear_outcome == "invalid":
+        raise HTTPException(status_code=403, detail="invalid_sync_ticket")
+    if clear_outcome == "busy":
+        raise HTTPException(status_code=503, detail="desktop_session_busy")
+    if clear_outcome != "ok":
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
 
