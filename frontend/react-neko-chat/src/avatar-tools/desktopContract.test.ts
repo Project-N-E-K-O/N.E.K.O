@@ -51,7 +51,7 @@ describe('desktop avatar tool contract', () => {
   it('projects ordered local frames and the selected image-change rule as strict v2', () => {
     const source = buildLocalAvatarToolDefinition({
       id: 'local-12345678-1234-4123-8123-123456789abc',
-      revision: '2-123',
+      recordVersion: 2, revision: '2-123',
       name: 'Feather',
       changeMode: 'click-advance',
       defaultUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/default.png?v=1',

@@ -23,7 +23,7 @@ const LIMITS: LocalAvatarToolLimits = {
 
 const DETAIL: LocalAvatarToolDetail = {
   id: 'local-12345678-1234-4123-8123-123456789abc',
-  revision: '2-100',
+  recordVersion: 2, revision: '2-100',
   name: 'Loop',
   changeMode: 'press-swap',
   defaultImage: { resource: 'default.png', url: '/default.png' },
@@ -37,6 +37,22 @@ const DETAIL: LocalAvatarToolDetail = {
 describe('AvatarToolCreatePage stage 2 image references', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('allocates one creation ID across form edits and parent rerenders', () => {
+    const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
+    const page = (notice = '') => (
+      <AvatarToolInteractionEditorProvider>
+        <AvatarToolCreatePage limits={LIMITS} notice={notice}
+          onSpecialEnabledChange={() => undefined} onSave={async () => undefined}
+          onCancel={() => undefined} />
+      </AvatarToolInteractionEditorProvider>
+    );
+    const { rerender } = render(page());
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'First name' } });
+    rerender(page('Changed parent notice'));
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Second name' } });
+    expect(randomUUID).toHaveBeenCalledTimes(1);
   });
 
   it('saves an opened v2 tool as a complete ordinary v3 update', async () => {
@@ -85,7 +101,7 @@ describe('AvatarToolCreatePage stage 2 image references', () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const detail: LocalAvatarToolDetail = {
       ...DETAIL,
-      revision: '2-200',
+      recordVersion: 2, revision: '2-200',
       changeMode: 'click-advance',
       changeItems: [
         { resource: 'change-000.png', url: '/change-000.png', meaning: '第一张' },

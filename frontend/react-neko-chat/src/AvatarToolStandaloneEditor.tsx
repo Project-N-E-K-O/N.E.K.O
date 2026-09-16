@@ -50,6 +50,7 @@ export default function AvatarToolStandaloneEditor() {
   const [notice, setNotice] = useState('');
   const [specialEnabled, setSpecialEnabled] = useState(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const loadRequestRef = useRef(0);
 
   const title = request.mode === 'edit'
     ? i18n('chat.avatarToolUpdateTitle', 'Edit custom tool')
@@ -77,49 +78,55 @@ export default function AvatarToolStandaloneEditor() {
   }, [title]);
 
   useEffect(() => {
-    if (request.mode !== 'edit' || !request.toolId) return undefined;
-    let disposed = false;
+    const requestId = ++loadRequestRef.current;
+    // Initial loads and retries share ownership; changing the request or
+    // unmounting invalidates every outstanding callback, including retries.
+    const invalidateLoad = () => { loadRequestRef.current += 1; };
+    if (request.mode !== 'edit' || !request.toolId) return invalidateLoad;
     setLoading(true);
     setLoadError(false);
     void catalog.detail(request.toolId).then((nextDetail) => {
-      if (disposed) return;
+      if (requestId !== loadRequestRef.current) return;
       setDetail(nextDetail);
       setSpecialEnabled(!!nextDetail.special);
       setLoading(false);
     }).catch(() => {
-      if (disposed) return;
+      if (requestId !== loadRequestRef.current) return;
       setLoadError(true);
       setLoading(false);
     });
-    return () => { disposed = true; };
+    return invalidateLoad;
   }, [catalog.detail, request.mode, request.toolId]);
 
-  const retryLoad = () => {
-    if (!request.toolId) {
-      setLoading(true);
-      void catalog.refresh().catch(() => undefined).finally(() => setLoading(false));
-      return;
-    }
+  const retryLoad = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setLoadError(false);
-    void catalog.detail(request.toolId).then((nextDetail) => {
-      setDetail(nextDetail);
-      setSpecialEnabled(!!nextDetail.special);
-      setLoading(false);
-    }).catch(() => {
-      setLoadError(true);
-      setLoading(false);
-    });
+    try {
+      const [, nextDetail] = await Promise.all([
+        !catalog.authoritativeLoaded || catalog.refreshFailed ? catalog.refresh() : Promise.resolve(),
+        request.toolId && !detail ? catalog.detail(request.toolId) : Promise.resolve(null),
+      ]);
+      if (requestId !== loadRequestRef.current) return;
+      if (nextDetail) {
+        setDetail(nextDetail);
+        setSpecialEnabled(!!nextDetail.special);
+      }
+    } catch {
+      if (requestId === loadRequestRef.current) setLoadError(true);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
   };
 
   let content;
-  if (loading || (!catalog.limits && !catalog.refreshFailed)) {
+  if (loading || ((!catalog.authoritativeLoaded || !catalog.limits) && !catalog.refreshFailed)) {
     content = (
       <div className="avatar-tool-standalone-status" role="status">
         {i18n('chat.avatarToolUpdateLoading', 'Opening…')}
       </div>
     );
-  } else if (loadError || !catalog.limits || (request.mode === 'edit' && !detail)) {
+  } else if (loadError || !catalog.authoritativeLoaded || !catalog.limits || (request.mode === 'edit' && !detail)) {
     content = (
       <div className="avatar-tool-standalone-status is-error" role="alert">
         <p>{request.mode === 'edit'

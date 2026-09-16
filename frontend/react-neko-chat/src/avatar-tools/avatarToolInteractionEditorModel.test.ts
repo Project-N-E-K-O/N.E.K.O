@@ -18,7 +18,7 @@ const IMAGE_C = 'img-cccccccc-cccc-4ccc-8ccc-cccccccccccc' as const;
 
 const DETAIL: LocalAvatarToolDetail = {
   id: 'local-12345678-1234-4123-8123-123456789abc',
-  revision: '2-100',
+  recordVersion: 2, revision: '2-100',
   name: 'Loop',
   changeMode: 'press-swap',
   defaultImage: { resource: 'default.png', url: '/default.png' },

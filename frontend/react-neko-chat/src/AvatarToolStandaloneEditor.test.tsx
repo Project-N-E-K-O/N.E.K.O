@@ -3,6 +3,9 @@ import AvatarToolStandaloneEditor from './AvatarToolStandaloneEditor';
 
 const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 const catalog = vi.hoisted(() => ({
+  authoritativeLoaded: true,
+  refreshFailed: false,
+  refresh: vi.fn(),
   limits: {
     maxTools: 64,
     maxNameChars: 20,
@@ -65,7 +68,7 @@ describe('AvatarToolStandaloneEditor', () => {
     window.history.replaceState({}, '', `/avatar_tool_editor?mode=edit&toolId=${LOCAL_ID}`);
     catalog.detail.mockResolvedValue({
       id: LOCAL_ID,
-      revision: '100-200',
+      recordVersion: 2, revision: '2-200',
       name: 'My Feather',
       changeMode: 'press-swap',
       defaultImage: { resource: 'default.png', url: '/user_avatar_tools/local/default.png?v=1' },

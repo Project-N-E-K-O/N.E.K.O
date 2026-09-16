@@ -256,7 +256,7 @@ function createSlots(toolIds: AvatarToolId[]): AvatarToolSlotValue[] {
   return Array.from({ length: MAX_ACTIVE_AVATAR_TOOLS }, (_, index) => retained[index] ?? null);
 }
 
-// 草稿保留暂时不可用的 id（manager 会把它们画成 Empty slot），否则用户改一下
+// 草稿保留暂时不可用的 id，否则用户改一下
 // 别的槽位再保存，就把一个只是本轮没出现在列表里的道具永久冲掉了。
 function compactSlots(slots: AvatarToolSlotValue[]): AvatarToolId[] {
   return sanitizeAvatarToolSlots(
@@ -545,17 +545,26 @@ export default function AvatarToolItemManager({
   const prevActiveElementRef = useRef<HTMLElement | null>(null);
   const suppressClickRef = useRef(false);
   const wasOpenRef = useRef(false);
+  const previousActiveToolIdsRef = useRef(activeToolIds);
   const editRequestRef = useRef(0);
   // 保存请求在途时对话框仍可关闭。用户关掉再开、开始新一轮编辑后，旧请求完成
   // 时若无条件收尾，就会把新会话切回库页并丢掉他正在填的表单。
   const managerSessionRef = useRef(0);
 
   useEffect(() => {
+    const removedIds = new Set(previousActiveToolIdsRef.current.filter(id => !activeToolIds.includes(id)));
+    previousActiveToolIdsRef.current = activeToolIds;
     if (!open) {
       wasOpenRef.current = false;
       return;
     }
-    if (wasOpenRef.current) return;
+    if (wasOpenRef.current) {
+      // 父层只在明确移除后改变保存槽位；目录缺项或重渲染不重置编辑草稿。
+      if (removedIds.size > 0) {
+        setDraftSlots(slots => slots.map(id => id !== null && removedIds.has(id) ? null : id));
+      }
+      return;
+    }
     wasOpenRef.current = true;
     setDraftSlots(createSlots(activeToolIds));
     setView('library');
@@ -742,10 +751,9 @@ export default function AvatarToolItemManager({
     new Map(availableTools.map(tool => [tool.id, tool]))
   ), [availableTools]);
   const equippedIds = compactSlots(draftSlots);
-  const equippedIdSet = new Set(equippedIds.filter(toolId => availableById.has(toolId)));
-  // 已保存但当前运行时未接受的道具仍是一个真实槽位；只有用户明确移除后
-  // 才能复用。目录已经权威确认不存在的陈旧 ID 才按空槽处理。
-  const draftFull = draftSlots.filter(toolId => toolId && availableById.has(toolId)).length
+  const equippedIdSet = new Set(equippedIds);
+  // 列表缺项不代表删除，非 null ID 始终占据槽位。
+  const draftFull = draftSlots.filter(toolId => toolId !== null).length
     >= MAX_ACTIVE_AVATAR_TOOLS;
   const catalogSaveBlocked = !catalogAuthoritativeLoaded && activeToolIds.some(isLocalAvatarToolId);
   const dialogTitleId = 'avatar-tool-manager-title';
@@ -804,6 +812,8 @@ export default function AvatarToolItemManager({
           if (session.kind === 'slot' && typeof session.slotIndex === 'number') {
             return moveSlotTool(slots, session.slotIndex, targetSlotIndex);
           }
+          const targetId = slots[targetSlotIndex];
+          if (targetId !== null && !availableById.has(targetId)) return slots;
           return placeLibraryToolInSlot(slots, session.toolId, targetSlotIndex);
         });
         setNotice('');
@@ -830,7 +840,7 @@ export default function AvatarToolItemManager({
     if (!validToolIds.has(toolId)) return;
     if (equippedIdSet.has(toolId)) return;
     const firstEmptyIndex = draftSlots.findIndex(
-      slotToolId => slotToolId === null || !availableById.has(slotToolId),
+      slotToolId => slotToolId === null,
     );
     if (firstEmptyIndex < 0 || draftFull) {
       setNotice(i18n('chat.avatarToolSlotFull', 'Unequip a tool first.'));
@@ -1119,36 +1129,38 @@ export default function AvatarToolItemManager({
             {draftSlots.map((toolId, index) => {
               const tool = toolId ? availableById.get(toolId) : null;
               const runnable = !!tool && validToolIds.has(tool.id);
-              const label = tool ? getToolLabel(tool) : i18n('chat.avatarToolEmptySlot', 'Empty slot');
+              const label = tool ? getToolLabel(tool) : toolId !== null
+                ? i18n('chat.avatarToolTemporarilyUnavailable', 'Temporarily unavailable')
+                : i18n('chat.avatarToolEmptySlot', 'Empty slot');
               return (
                 <div
                   key={index}
-                  className={`avatar-tool-manager-slot${tool ? ' is-filled' : ' is-empty'}${tool && !runnable ? ' is-unavailable' : ''}`}
+                  className={`avatar-tool-manager-slot${toolId !== null ? ' is-filled' : ' is-empty'}${toolId !== null && !runnable ? ' is-unavailable' : ''}`}
                   data-avatar-tool-drop-slot={index}
-                  data-avatar-tool-id={tool?.id ?? ''}
+                  data-avatar-tool-id={toolId ?? ''}
                 >
-                  {tool ? (
+                  {toolId !== null ? (
                     <button
                       className="avatar-tool-manager-slot-card"
                       type="button"
                       disabled={!runnable}
                       data-avatar-tool-slot-index={index}
-                      onPointerDown={runnable
+                      onPointerDown={runnable && tool
                         ? (event) => startDrag({ kind: 'slot', toolId: tool.id, slotIndex: index }, event)
                         : undefined}
                       onPointerMove={updateDrag}
                       onPointerUp={finishDrag}
                       onPointerCancel={cancelDrag}
                     >
-                      <img
+                      {tool ? <img
                         className="avatar-tool-manager-tool-image"
                         src={withAvatarToolAssetVersion(tool.iconImagePath)}
                         style={getToolImageStyle(tool)}
                         alt=""
                         aria-hidden="true"
-                      />
+                      /> : null}
                       <span>{label}</span>
-                      {!runnable ? (
+                      {tool && !runnable ? (
                         <span className="avatar-tool-manager-library-status">
                           {i18n('chat.avatarToolNotYetEquippable', 'Not yet equippable')}
                         </span>
@@ -1157,7 +1169,7 @@ export default function AvatarToolItemManager({
                   ) : (
                     <span className="avatar-tool-manager-empty-slot">{label}</span>
                   )}
-                  {tool ? (
+                  {toolId !== null ? (
                     <button
                       className="avatar-tool-manager-remove"
                       type="button"

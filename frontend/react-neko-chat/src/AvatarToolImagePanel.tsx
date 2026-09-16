@@ -8,6 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { i18n } from './i18n';
+import { resolveAvatarToolDisplayName } from './avatar-tools/avatarToolNames';
 import type { LocalAvatarToolLimits } from './avatar-tools/localTools';
 import type {
   AvatarToolImageDraft,
@@ -57,13 +58,11 @@ function fileNameFromResource(resource?: string): string {
 }
 
 function imageDefaultName(index: number): string {
-  return i18n('chat.avatarToolCreateToolImageNumber', 'Tool image {{number}}', {
-    number: String(index + 1),
-  });
+  return resolveAvatarToolDisplayName('image', undefined, index + 1, i18n);
 }
 
 function imageDisplayName(image: AvatarToolImageDraft, index: number): string {
-  return image.name?.trim() || imageDefaultName(index);
+  return resolveAvatarToolDisplayName('image', image.name, index + 1, i18n);
 }
 
 function fitMeaningTextarea(textarea: HTMLTextAreaElement): void {

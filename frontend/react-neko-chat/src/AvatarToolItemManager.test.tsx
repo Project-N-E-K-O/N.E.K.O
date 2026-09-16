@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
 import { type LocalAvatarToolDetail } from './avatar-tools/localTools';
+import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
 import chatStyles from './styles.css?raw';
 
 const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
@@ -23,7 +24,7 @@ const LIMITS = {
 };
 const DETAIL: LocalAvatarToolDetail = {
   id: LOCAL_ID,
-  revision: '100-200',
+  recordVersion: 2, revision: '2-200',
   name: 'My Feather',
   changeMode: 'press-swap',
   defaultImage: { resource: 'default.png', url: '/user_avatar_tools/local/default.png?v=1' },
@@ -192,7 +193,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(onSave.mock.calls[0][0]).toHaveLength(3);
   });
 
-  it('reuses a draft slot whose local tool disappeared from the authoritative catalog', () => {
+  it.each(['click', 'drag'])('retains an unavailable occupied slot when equipping by %s', (method) => {
     const onSave = vi.fn();
     const localTool: AvatarToolItem = {
       id: LOCAL_ID,
@@ -219,10 +220,70 @@ describe('AvatarToolItemManager local creation', () => {
         availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
       />,
     );
-    fireEvent.click(document.querySelector('[data-avatar-tool-library-id="hammer"]')!);
+    const hammer = document.querySelector('[data-avatar-tool-library-id="hammer"]')!;
+    if (method === 'click') {
+      fireEvent.click(hammer);
+    } else {
+      const elementsFromPoint = document.elementsFromPoint;
+      document.elementsFromPoint = () => [
+        document.querySelector('[data-avatar-tool-drop-slot="0"]')!,
+      ];
+      fireEvent.pointerDown(hammer, { pointerType: 'mouse', button: 0, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(hammer, { clientX: 40, clientY: 0 });
+      fireEvent.pointerUp(hammer, { clientX: 40, clientY: 0 });
+      document.elementsFromPoint = elementsFromPoint;
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(onSave).toHaveBeenCalledWith(['hammer', 'lollipop', 'fist']);
+    expect(onSave).toHaveBeenCalledWith([LOCAL_ID, 'lollipop', 'fist']);
+    const retainedSlot = document.querySelector(`[data-avatar-tool-drop-slot="0"][data-avatar-tool-id="${LOCAL_ID}"]`)!;
+    expect(retainedSlot).toHaveTextContent('Temporarily unavailable');
+    expect(retainedSlot).not.toHaveTextContent('Empty slot');
+    expect(retainedSlot.querySelector('.avatar-tool-manager-slot-card')).toBeDisabled();
+    fireEvent.click(retainedSlot.querySelector('.avatar-tool-manager-remove')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenLastCalledWith(['lollipop', 'fist']);
+  });
+
+  it('reconciles exact parent deletion while retaining other unsaved changes in the open manager', async () => {
+    const onSave = vi.fn();
+    let errorCode = 'record_invalid';
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: false, error_code: errorCode }), {
+      status: 404, headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    function Harness({ items }: { items: ReadonlyArray<AvatarToolItem> }) {
+      const [activeToolIds, setActiveToolIds] = useState<AvatarToolId[]>([LOCAL_ID, 'fist']);
+      const onConfirmedDeleted = useCallback((ids: ReadonlyArray<`local-${string}`>) => {
+        setActiveToolIds(current => current.filter(id => !ids.some(deleted => deleted === id)));
+      }, []);
+      useAvatarToolSlotReconciliation({
+        activeToolIds, authoritativeItems: items, authoritativeLoaded: true, onConfirmedDeleted,
+      });
+      return <>
+        <output data-testid="saved-slots">{activeToolIds.join(',')}</output>
+        <AvatarToolItemManager open activeToolIds={activeToolIds} availableTools={items}
+          onSave={onSave} onCancel={() => undefined} />
+      </>;
+    }
+    try {
+      const { rerender } = render(<Harness items={AVAILABLE_COMPACT_AVATAR_TOOLS} />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      fireEvent.click(document.querySelector('[data-avatar-tool-id="fist"] .avatar-tool-manager-remove')!);
+      fireEvent.click(document.querySelector('[data-avatar-tool-library-id="hammer"]')!);
+      rerender(<Harness items={[...AVAILABLE_COMPACT_AVATAR_TOOLS]} />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      expect(onSave).toHaveBeenLastCalledWith([LOCAL_ID, 'hammer']);
+
+      errorCode = 'tool_not_found';
+      rerender(<Harness items={[...AVAILABLE_COMPACT_AVATAR_TOOLS]} />);
+      await waitFor(() => expect(screen.getByTestId('saved-slots')).toHaveTextContent(/^fist$/));
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      expect(onSave).toHaveBeenLastCalledWith(['hammer']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('keeps focus, scrolling, and close visibility inside the create surface', () => {

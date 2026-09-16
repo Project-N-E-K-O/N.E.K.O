@@ -103,6 +103,20 @@ _QUARANTINED_TOOL_IDS: dict[str, set[str]] = {}
 logger = logging.getLogger(__name__)
 
 
+def _fsync_directory(path: Path | str) -> None:
+    """Best-effort persistence for a directory entry on supported platforms."""
+    try:
+        handle = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
 class AvatarToolStoreError(ValueError):
     def __init__(
         self,
@@ -572,6 +586,36 @@ class AvatarToolStore:
         if quarantined is not None:
             quarantined.discard(tool_id)
 
+    @staticmethod
+    def _delete_authorization_matches(directory: Path, marker: Path) -> bool:
+        marker_kind, _, probe_error = _probe_entry(marker)
+        if probe_error is not None:
+            raise probe_error
+        if marker_kind != "file":
+            return False
+        try:
+            with marker.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                return False
+            authorization = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        directory_kind, _, directory_identity, probe_error = _probe_entry_state(directory)
+        if probe_error is not None:
+            raise probe_error
+        if directory_kind != "dir":
+            return False
+        record_kind, _, record_identity, probe_error = _probe_entry_state(directory / "record.json")
+        if probe_error is not None:
+            raise probe_error
+        # rename 改变目录 ctime；其余身份字段及子文件身份不应改变。
+        return authorization == {
+            "directoryIdentity": list(directory_identity[:-1]),
+            "recordKind": record_kind,
+            "recordIdentity": list(record_identity) if record_identity is not None else None,
+        }
+
     def _recover_interrupted_mutations(self) -> bool:
         """Resolve interrupted mutations; False when some candidate must wait."""
         def remove_owned_directory(directory: Path) -> None:
@@ -753,6 +797,20 @@ class AvatarToolStore:
             remove_owned_directory(backup)
 
         for candidate in self.root.iterdir():
+            if (
+                candidate.name.endswith(".unverified")
+                and LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(
+                    candidate.name.removesuffix(".unverified")
+                )
+            ):
+                deleting = candidate.with_name(candidate.name.removesuffix(".unverified"))
+                deleting_kind, _, probe_error = _probe_entry(deleting)
+                if probe_error is not None:
+                    complete = False
+                elif deleting_kind == "absent":
+                    # 移动尚未发生就退出的授权记录不包含用户资源。
+                    candidate.unlink(missing_ok=True)
+                continue
             if not (
                 LOCAL_AVATAR_TOOL_UPLOAD_PATTERN.fullmatch(candidate.name)
                 or LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(candidate.name)
@@ -772,6 +830,22 @@ class AvatarToolStore:
                 continue
             if candidate_kind != "dir":
                 continue
+            if LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(candidate.name):
+                marker = candidate.with_name(f"{candidate.name}.unverified")
+                marker_kind, _, probe_error = _probe_entry(marker)
+                if probe_error is not None:
+                    complete = False
+                    continue
+                if marker_kind != "absent":
+                    try:
+                        if not self._delete_authorization_matches(candidate, marker):
+                            logger.warning("Preserving unconfirmed avatar tool deletion %s", candidate)
+                            complete = False
+                            continue
+                        marker.unlink()
+                    except OSError:
+                        complete = False
+                        continue
             remove_owned_directory(candidate)
         return complete
 
@@ -825,7 +899,12 @@ class AvatarToolStore:
                 transient=True,
             ) from probe_error
         if record_kind != "file":
-            raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
+            directory_kind, _, probe_error = _probe_entry(directory)
+            if probe_error is not None:
+                raise _record_temporarily_unreadable() from probe_error
+            if directory_kind == "absent":
+                raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
+            raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         try:
             # 有界读取：畸形的多 GB record 只会被读走 64 KiB + 1 字节就出局，
             # 不会在列表刷新／详情／启动恢复时把内存吃光。
@@ -902,19 +981,26 @@ class AvatarToolStore:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         for filename in resource_names:
             resource = directory / filename
-            resource_kind, _, probe_error = _probe_entry(resource)
+            resource_kind, resource_size, probe_error = _probe_entry(resource)
             if probe_error is not None:
                 raise _record_temporarily_unreadable() from probe_error
             if resource_kind != "file":
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
+            maximum = (
+                self.limits["maxAudioBytes"]
+                if filename.endswith(".mp3")
+                else self.limits["maxImageBytes"]
+            )
+            if resource_size > maximum:
+                raise AvatarToolStoreError(
+                    "record_invalid",
+                    "Avatar tool resource integrity is invalid",
+                    status_code=404,
+                    integrity_mismatch=True,
+                )
             if verify_resources:
                 try:
-                    actual_digest = self._file_digest(
-                        resource,
-                        self.limits["maxAudioBytes"]
-                        if filename.endswith(".mp3")
-                        else self.limits["maxImageBytes"],
-                    )
+                    actual_digest = self._file_digest(resource, maximum)
                 except AvatarToolStoreError:
                     raise
                 except OSError as exc:
@@ -1738,7 +1824,7 @@ class AvatarToolStore:
                 )
                 self._require_recovery_complete_for_mutation()
             directory = self.root / tool_id
-            directory_kind, _, probe_error = _probe_entry(directory)
+            directory_kind, _, directory_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
             if directory_kind != "dir":
@@ -1760,6 +1846,11 @@ class AvatarToolStore:
                 raise _storage_total_unavailable() from exc
             if target.parent != root:
                 raise AvatarToolStoreError("invalid_tool_path", "Invalid local avatar tool path")
+
+            record_path = directory / "record.json"
+            record_kind, _, record_identity, probe_error = _probe_entry_state(record_path)
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
 
             if not recovery_pending:
                 assert_cloudsave_writable(
@@ -1796,7 +1887,7 @@ class AvatarToolStore:
                         "Avatar tool could not be deleted",
                         status_code=500,
                     ) from exc
-            recheck_kind, _, probe_error = _probe_entry(directory)
+            recheck_kind, _, recheck_identity, probe_error = _probe_entry_state(directory)
             if probe_error is not None:
                 raise _storage_total_unavailable() from probe_error
             if recheck_kind == "absent":
@@ -1805,26 +1896,60 @@ class AvatarToolStore:
                     "Avatar tool does not exist",
                     status_code=404,
                 )
-            if recheck_kind != "dir":
+            recheck_record_kind, _, recheck_record_identity, probe_error = _probe_entry_state(record_path)
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+            # 删除只授权最初观察到的目录和记录；同步期间发布的新版本必须保留。
+            if (
+                recheck_kind != directory_kind
+                or recheck_identity != directory_identity
+                or recheck_record_kind != record_kind
+                or recheck_record_identity != record_identity
+            ):
                 raise AvatarToolStoreError(
                     "tool_delete_failed",
                     "Avatar tool could not be deleted",
                     status_code=409,
                 )
             try:
+                marker = deleting.with_name(f"{deleting.name}.unverified")
+                # 先持久化授权，保证移动后进程退出也不会让未确认的新版本被启动清理。
+                with marker.open("x", encoding="utf-8") as stream:
+                    json.dump({
+                        "directoryIdentity": list(directory_identity[:-1]),
+                        "recordKind": record_kind,
+                        "recordIdentity": list(record_identity) if record_identity is not None else None,
+                    }, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _fsync_directory(marker.parent)
                 os.replace(target, deleting)
             except FileNotFoundError as exc:
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
                 raise AvatarToolStoreError(
                     "tool_not_found",
                     "Avatar tool does not exist",
                     status_code=404,
                 ) from exc
             except OSError as exc:
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
                 raise AvatarToolStoreError(
                     "tool_delete_failed",
                     "Avatar tool could not be deleted",
                     status_code=500,
                 ) from exc
+            try:
+                if not self._delete_authorization_matches(deleting, marker):
+                    _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                    raise AvatarToolStoreError(
+                        "tool_delete_failed",
+                        "Avatar tool could not be deleted",
+                        status_code=409,
+                    )
+                marker.unlink()
+            except OSError as exc:
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                raise _storage_total_unavailable() from exc
             try:
                 shutil.rmtree(deleting)
             except OSError:

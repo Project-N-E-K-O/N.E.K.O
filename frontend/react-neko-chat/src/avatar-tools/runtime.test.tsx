@@ -34,7 +34,7 @@ const LOCAL_TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 function localToolDto(version: number): LocalAvatarToolV2Dto {
   return {
     id: LOCAL_TOOL_ID,
-    revision: `2-${version}`,
+    recordVersion: 2, revision: `2-${version}`,
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/default.png?v=${version}`,

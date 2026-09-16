@@ -33,7 +33,7 @@ const LIMITS = {
 function dto(overrides: Partial<LocalAvatarToolV2Dto> = {}): LocalAvatarToolV2Dto {
   return {
     id: TOOL_ID,
-    revision: '2-123',
+    recordVersion: 2, revision: '2-123',
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: '/default.png?v=1',
@@ -70,6 +70,29 @@ describe('local avatar tool image change modes', () => {
   afterEach(() => {
     delete window.nekoLocalMutationSecurity;
     vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { recordVersion: undefined, revision: '2-123', valid: false },
+    { recordVersion: 2, revision: '3-123', valid: false },
+    { recordVersion: 2, revision: '100-200', valid: false },
+    { recordVersion: 2, revision: '2-123', valid: true },
+  ])('enforces explicit v2 list and detail revisions: %j', async ({ recordVersion, revision, valid }) => {
+    const item = { ...dto(), recordVersion, revision };
+    const detail = {
+      recordVersion, revision, id: TOOL_ID, name: 'Feather', changeMode: 'press-swap',
+      defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
+      changeItems: [{ resource: 'change-000.png', url: '/change-000.png?v=1', meaning: 'Change' }],
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [item], limits: LIMITS })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail, limits: LIMITS }))));
+    await expect.soft(fetchLocalAvatarTools()).resolves.toMatchObject({ items: valid ? [item] : [] });
+    if (valid) {
+      await expect(fetchLocalAvatarToolDetail(TOOL_ID)).resolves.toMatchObject(detail);
+    } else {
+      await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toThrow('avatar_tool_detail_invalid');
+    }
   });
 
   it('builds a strict press-swap v2 definition and reports the only change item', () => {
@@ -391,7 +414,7 @@ describe('local avatar tool image change modes', () => {
       ok: true,
       detail: {
         id: TOOL_ID,
-        revision: '100-200',
+        recordVersion: 2, revision: '2-200',
         name: 'Feather',
         changeMode: 'press-swap',
         defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
@@ -431,7 +454,7 @@ describe('local avatar tool image change modes', () => {
     const replacement = new File(['new'], 'new.png', { type: 'image/png' });
 
     await expect(updateLocalAvatarTool(TOOL_ID, {
-      baseRevision: '100-200',
+      baseRevision: '2-200',
       name: 'Soft Feather',
       changeMode: 'click-advance',
       defaultImage: { resource: 'default.png' },
@@ -451,7 +474,7 @@ describe('local avatar tool image change modes', () => {
     expect(options).toMatchObject({ method: 'PUT', headers: { 'X-CSRF-Token': 'token' } });
     const form = options.body as FormData;
     expect(form.get('default_resource')).toBe('default.png');
-    expect(form.get('base_revision')).toBe('100-200');
+    expect(form.get('base_revision')).toBe('2-200');
     expect(form.getAll('change_resources')).toEqual(['change-000.png', '']);
     expect(form.getAll('change_meanings')).toEqual(['Retained', 'Replacement']);
     expect(form.getAll('change_images')).toEqual([replacement]);
@@ -479,7 +502,7 @@ describe('local avatar tool image change modes', () => {
     const replacement = new File(['new'], 'new.png', { type: 'image/png' });
 
     await updateLocalAvatarTool(TOOL_ID, {
-      baseRevision: '100-200',
+      baseRevision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultImage: { resource: 'default.png' },

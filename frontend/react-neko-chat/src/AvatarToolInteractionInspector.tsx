@@ -13,6 +13,7 @@ import type { AvatarToolImageDraft, AvatarToolImageId } from './avatar-tools/ava
 import {
   findDuplicateAvatarToolNameIds,
   getAvatarToolNameValidationError,
+  resolveAvatarToolDisplayName,
 } from './avatar-tools/avatarToolNames';
 
 type AvatarToolInteractionInspectorProps = {
@@ -27,9 +28,7 @@ function defaultInteractionLabel(
   item: AvatarToolInteractionDraft,
 ): string {
   const number = getAvatarToolInteractionOrdinal(state, item.id);
-  return item.kind === 'mouse-click'
-    ? i18n('chat.avatarToolInteractionClickNumber', 'Mouse click {{number}}', { number: String(number) })
-    : i18n('chat.avatarToolInteractionDelayNumber', 'Delay {{number}}', { number: String(number) });
+  return resolveAvatarToolDisplayName(item.kind, undefined, number, i18n);
 }
 
 function interactionLabel(
@@ -38,13 +37,11 @@ function interactionLabel(
 ): string {
   const item = state.items.find(candidate => candidate.id === interactionId);
   if (!item) return i18n('chat.avatarToolInteractionUnknown', 'Unknown interaction');
-  return item.name?.trim() || defaultInteractionLabel(state, item);
+  return resolveAvatarToolDisplayName(item.kind, item.name, getAvatarToolInteractionOrdinal(state, item.id), i18n);
 }
 
 function imageLabel(image: AvatarToolImageDraft, number: number): string {
-  return image.name?.trim() || i18n('chat.avatarToolInteractionImageNumber', 'Tool image {{number}}', {
-    number: String(number),
-  });
+  return resolveAvatarToolDisplayName('image', image.name, number, i18n);
 }
 
 function waitingPositionLabel(
@@ -369,7 +366,7 @@ export default function AvatarToolInteractionInspector({
   const defaultTitle = defaultInteractionLabel(state, selectedItem);
   const duplicateNameIds = findDuplicateAvatarToolNameIds(
     state.items,
-    item => item.name?.trim() || defaultInteractionLabel(state, item),
+    item => interactionLabel(state, item.id),
   );
   const duplicateName = duplicateNameIds.has(selectedItem.id);
   const nameValidationError = getAvatarToolNameValidationError(
@@ -391,7 +388,7 @@ export default function AvatarToolInteractionInspector({
         ? i18n(
           'chat.avatarToolInteractionNameDuplicate',
           '“{{name}}” is already used by another interaction. Choose a different name.',
-          { name: selectedItem.name?.trim() || defaultTitle },
+          { name: interactionLabel(state, selectedItem.id) },
         )
         : '';
   const delayCompleteAction = selectedItem.kind === 'after' ? selectedItem.complete : null;

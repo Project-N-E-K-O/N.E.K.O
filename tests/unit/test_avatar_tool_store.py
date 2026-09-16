@@ -1158,6 +1158,240 @@ def test_delete_rejects_symlink_without_touching_its_target(tmp_path):
     assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.parametrize("replacement", ("directory", "record"))
+def test_delete_preserves_a_new_version_published_after_initial_observation(
+    tmp_path, monkeypatch, replacement
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id, name="Original"), uploads=[_png()])
+    external_store = AvatarToolStore(_ConfigManager(tmp_path / "external_avatar_tools"))
+    newest = external_store.create_tool_v3(
+        manifest=_v3_manifest(tool_id, name="Replaced"), uploads=[_png()]
+    )
+    final = store.root / tool_id
+    new_directory = external_store.root / tool_id
+    new_record = (new_directory / "record.json").read_bytes()
+
+    def publish_new_version(*_args, **kwargs):
+        assert kwargs["operation"] == "delete"
+        if replacement == "directory":
+            os.replace(final, tmp_path / "original")
+            os.replace(new_directory, final)
+        else:
+            (final / "record.json").write_bytes(new_record)
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", publish_new_version)
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    assert raised.value.code == "tool_delete_failed"
+    assert raised.value.status_code == 409
+    assert store.get_detail(tool_id)["revision"] == newest["revision"]
+    assert (final / "record.json").read_bytes() == new_record
+    assert not (store.root / f".{tool_id}.deleting").exists()
+
+
+@pytest.mark.parametrize("replacement", ("directory", "record"))
+@pytest.mark.parametrize("republish_final", (False, True))
+@pytest.mark.parametrize("crash_after_move", (False, True))
+def test_delete_preserves_an_unconfirmed_moved_version_across_restart(
+    tmp_path, monkeypatch, replacement, republish_final, crash_after_move
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id, name="Original"), uploads=[_png()])
+    external_store = AvatarToolStore(_ConfigManager(tmp_path / "external_avatar_tools"))
+    external_store.create_tool_v3(
+        manifest=_v3_manifest(tool_id, name="Replaced"), uploads=[_png()]
+    )
+    final = store.root / tool_id
+    newest = external_store.root / tool_id
+    new_record = (newest / "record.json").read_bytes()
+    deleting = store.root / f".{tool_id}.deleting"
+    real_replace = os.replace
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def replace_after_last_probe(source, destination, *args, **kwargs):
+        if Path(source) == final.resolve() and Path(destination) == deleting:
+            if replacement == "directory":
+                real_replace(final, tmp_path / "original")
+                real_replace(newest, final)
+            else:
+                (final / "record.json").write_bytes(new_record)
+            result = real_replace(source, destination, *args, **kwargs)
+            if republish_final:
+                final.mkdir()
+                (final / "synced-note.txt").write_bytes(b"another publication")
+            if crash_after_move:
+                raise SimulatedCrash()
+            return result
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", replace_after_last_probe)
+
+    with pytest.raises(SimulatedCrash if crash_after_move else AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    if not crash_after_move:
+        assert raised.value.code == "tool_delete_failed"
+        assert raised.value.status_code == 409
+        assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    assert (deleting / "record.json").read_bytes() == new_record
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    assert (deleting / "record.json").is_file(), "startup deleted an unconfirmed moved version"
+    assert (deleting / "record.json").read_bytes() == new_record
+    assert restarted._current_storage_bytes() >= sum(
+        path.stat().st_size for path in deleting.iterdir() if path.is_file()
+    )
+    assert restarted._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    if republish_final:
+        assert (final / "synced-note.txt").read_bytes() == b"another publication"
+    else:
+        assert not final.exists()
+
+
+@pytest.mark.parametrize("move_first", (False, True))
+def test_delete_restart_recovers_authorized_move_or_unused_marker(tmp_path, monkeypatch, move_first):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    original = store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    real_replace = os.replace
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def interrupt_move(source, destination, *args, **kwargs):
+        if Path(source) == final.resolve() and Path(destination) == deleting:
+            if move_first:
+                real_replace(source, destination, *args, **kwargs)
+            raise SimulatedCrash()
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", interrupt_move)
+    with pytest.raises(SimulatedCrash):
+        store.delete_tool(tool_id)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    real_iterdir = Path.iterdir
+
+    def deleting_before_marker(path):
+        return iter(sorted(real_iterdir(path), key=lambda entry: entry.name))
+
+    monkeypatch.setattr(Path, "iterdir", deleting_before_marker)
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+
+    assert not marker.exists()
+    assert not deleting.exists()
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    assert restarted.list_items() == ([] if move_first else [original])
+
+
+def test_delete_persists_authorization_directory_entry_before_move(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    deleting = store.root / f".{tool_id}.deleting"
+    calls = []
+    real_replace = os.replace
+
+    monkeypatch.setattr(
+        avatar_tool_store,
+        "_fsync_directory",
+        lambda path: calls.append(("fsync-directory", Path(path))),
+    )
+
+    def record_replace(source, destination, *args, **kwargs):
+        if Path(source) == final.resolve() and Path(destination) == deleting:
+            calls.append(("move", Path(destination).parent))
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", record_replace)
+
+    assert store.delete_tool(tool_id) == tool_id
+    assert calls[:2] == [
+        ("fsync-directory", store.root),
+        ("move", store.root),
+    ]
+
+
+@pytest.mark.parametrize("failure", ("directory-probe", "record-probe", "marker-probe", "marker-json"))
+def test_delete_keeps_unreadable_authorization_or_moved_objects_for_recovery(
+    tmp_path, monkeypatch, failure
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    final = store.root / tool_id
+    record_bytes = (final / "record.json").read_bytes()
+    deleting = store.root / f".{tool_id}.deleting"
+    marker = store.root / f".{tool_id}.deleting.unverified"
+    real_replace, real_lstat = os.replace, os.lstat
+    moved = False
+    authorization_bytes = None
+
+    def move_then_interrupt_verification(source, destination, *args, **kwargs):
+        nonlocal moved, authorization_bytes
+        result = real_replace(source, destination, *args, **kwargs)
+        if Path(destination) == deleting:
+            moved = True
+            authorization_bytes = marker.read_bytes()
+            if failure == "marker-json":
+                marker.write_bytes(b"{")
+        return result
+
+    locked_path = {
+        "directory-probe": deleting,
+        "record-probe": deleting / "record.json",
+        "marker-probe": marker,
+    }.get(failure)
+
+    def unreadable_after_move(path, *args, **kwargs):
+        if moved and locked_path is not None and Path(path) == locked_path:
+            raise OSError(errno.EIO, "temporarily unreadable")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", move_then_interrupt_verification)
+    monkeypatch.setattr("utils.avatar_tool_store.os.lstat", unreadable_after_move)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+    assert raised.value.status_code == (409 if failure == "marker-json" else 503)
+    assert (deleting / "record.json").read_bytes() == record_bytes
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert (deleting / "record.json").read_bytes() == record_bytes
+    assert restarted._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.lstat", real_lstat)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    if failure == "marker-json":
+        marker.write_bytes(authorization_bytes)
+    restarted.initialize()
+    assert not deleting.exists()
+    assert not marker.exists()
+    assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+
 def test_delete_unpublishes_before_cleanup_and_initialize_retries_residue(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -2356,6 +2590,34 @@ def test_update_rejects_a_retained_resource_that_outgrew_its_limit(tmp_path, mon
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("resource", "limit"),
+    (("image-000.png", "maxImageBytes"), ("normal.mp3", "maxAudioBytes")),
+)
+def test_list_quarantines_oversized_resources_without_hashing(tmp_path, monkeypatch, resource, limit):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id)
+    manifest["interaction"] = {"normalSound": {"kind": "upload", "index": 1}}
+    store.create_tool_v3(manifest=manifest, uploads=[_png(), _mp3()])
+    asset = store.root / tool_id / resource
+    with asset.open("r+b") as stream:
+        stream.truncate(store.limits[limit] + 1)
+
+    def unexpected_digest(*_args, **_kwargs):
+        pytest.fail("listing must reject oversized resources using metadata alone")
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(unexpected_digest))
+
+    assert store.list_items() == []
+    assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())
+    assert store._occupied_tool_slots() == 0
+    assert store._current_storage_bytes() == 0
+    assert asset.stat().st_size == store.limits[limit] + 1
+
+
+@pytest.mark.unit
 def test_verification_refuses_an_oversized_resource_before_hashing_it(tmp_path, monkeypatch):
     """Hashing runs under _STORE_LOCK, so a swapped-in giant must be refused first."""
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
@@ -2953,6 +3215,27 @@ def test_recovery_state_matrix(tmp_path, monkeypatch, final_state, backup_state,
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.unit
+def test_a_missing_record_in_an_existing_tool_is_quarantined_and_frees_quota(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    directory = store.root / tool_id
+    (directory / "record.json").unlink()
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool_id)
+
+    assert raised.value.code == "record_invalid"
+    assert raised.value.transient is False
+    assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())
+    assert store.list_items() == []
+    assert store._occupied_tool_slots() == 0
+    assert store._current_storage_bytes() == 0
+    assert (directory / "image-000.png").is_file()
 
 
 @pytest.mark.unit

@@ -9,7 +9,7 @@ import type { LocalAvatarToolDetail } from './localTools';
 
 const DETAIL: LocalAvatarToolDetail = {
   id: 'local-12345678-1234-4123-8123-123456789abc',
-  revision: '2-100',
+  recordVersion: 2, revision: '2-100',
   name: 'Loop',
   changeMode: 'click-advance',
   defaultImage: { resource: 'default.png', url: '/default.png' },

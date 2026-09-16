@@ -106,6 +106,24 @@ function mutationResultIsUncertain(error: unknown, invalidResponseCode: string):
     || error.message === invalidResponseCode;
 }
 
+// Compare every graph field, preserving array order. Object-key insertion order
+// carries no graph meaning; the strict detail codec still validates its schema.
+function graphFieldsEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => graphFieldsEqual(value, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftFields = left as Record<string, unknown>;
+  const rightFields = right as Record<string, unknown>;
+  const keys = Object.keys(leftFields);
+  return keys.length === Object.keys(rightFields).length
+    && keys.every(key => Object.prototype.hasOwnProperty.call(rightFields, key)
+      && graphFieldsEqual(leftFields[key], rightFields[key]));
+}
+
 function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAvatarToolInput): boolean {
   if ('images' in input) {
     if (detail.recordVersion !== 3) return false;
@@ -117,7 +135,7 @@ function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAv
     ) return false;
     return detail.name === input.name
       && detail.initialImageId === input.initialImageId
-      && JSON.stringify(detail.imageInteractions) === JSON.stringify(input.imageInteractions)
+      && graphFieldsEqual(detail.imageInteractions, input.imageInteractions)
       && detail.images.length === input.images.length
       && detail.images.every((image, index) => (
         image.id === input.images[index]?.id

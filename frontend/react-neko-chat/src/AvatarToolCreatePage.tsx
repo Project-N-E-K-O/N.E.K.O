@@ -41,6 +41,7 @@ import {
   getAvatarToolNameValidationError,
   normalizeAvatarToolName,
   normalizeAvatarToolComparableName,
+  resolveAvatarToolDisplayName,
 } from './avatar-tools/avatarToolNames';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import {
@@ -93,11 +94,7 @@ function characterCount(value: string): number {
 }
 
 function avatarToolImageDisplayName(image: AvatarToolImageDraft, index: number): string {
-  return image.name?.trim() || i18n(
-    'chat.avatarToolCreateToolImageNumber',
-    'Tool image {{number}}',
-    { number: String(index + 1) },
-  );
+  return resolveAvatarToolDisplayName('image', image.name, index + 1, i18n);
 }
 
 function editableNameErrorMessage(error: 'too-long' | 'invalid', maximum: number): string {
@@ -142,10 +139,7 @@ function avatarToolInteractionDisplayName(
   item: AvatarToolInteractionDraft,
 ): string {
   const number = getAvatarToolInteractionOrdinal(state, item.id);
-  const defaultName = item.kind === 'mouse-click'
-    ? i18n('chat.avatarToolInteractionClickNumber', 'Mouse click {{number}}', { number: String(number) })
-    : i18n('chat.avatarToolInteractionDelayNumber', 'Delayed switch {{number}}', { number: String(number) });
-  return item.name?.trim() || defaultName;
+  return resolveAvatarToolDisplayName(item.kind, item.name, number, i18n);
 }
 
 function FieldError({ message }: { message?: string }) {
@@ -181,7 +175,7 @@ export default function AvatarToolCreatePage({
   showCancelAction = true,
 }: AvatarToolCreatePageProps) {
   const editing = !!initialDetail;
-  const creationToolIdRef = useRef(createLocalAvatarToolId());
+  const [creationToolId] = useState(createLocalAvatarToolId);
   const createFieldsRef = useRef<HTMLDivElement | null>(null);
   const imageSelectionGenerationRef = useRef<Record<string, number>>({});
   const [name, setName] = useState(initialDetail?.name ?? '');
@@ -290,11 +284,7 @@ export default function AvatarToolCreatePage({
       locations?.forEach((location) => {
         const item = interactionState.items.find(candidate => candidate.id === location.interactionId);
         if (!item) return;
-        const number = getAvatarToolInteractionOrdinal(interactionState, location.interactionId);
-        const defaultInteractionName = item.kind === 'mouse-click'
-          ? i18n('chat.avatarToolInteractionClickNumber', 'Mouse click {{number}}', { number: String(number) })
-          : i18n('chat.avatarToolInteractionDelayNumber', 'Delay {{number}}', { number: String(number) });
-        const interaction = item.name?.trim() || defaultInteractionName;
+        const interaction = avatarToolInteractionDisplayName(interactionState, item);
         const field = location.field === 'press'
           ? i18n('chat.avatarToolInteractionPressTiming', 'Press')
           : location.field === 'release'
@@ -699,7 +689,7 @@ export default function AvatarToolCreatePage({
       } else {
         await onSave({
           ...commonInput,
-          toolId: creationToolIdRef.current,
+          toolId: creationToolId,
         } satisfies CreateLocalAvatarToolInput);
       }
     } catch (cause) {

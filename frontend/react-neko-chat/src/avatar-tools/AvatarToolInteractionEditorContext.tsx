@@ -22,7 +22,6 @@ type AvatarToolInteractionEditorContextValue = {
   dispatch: Dispatch<AvatarToolInteractionEditorAction>;
   issues: AvatarToolInteractionValidationIssue[];
   setIssues(issues: AvatarToolInteractionValidationIssue[]): void;
-  imageIds: AvatarToolImageId[];
   images: AvatarToolImageDraft[];
   initialImageId: AvatarToolImageId | null;
   setImageState(images: AvatarToolImageDraft[], initialImageId: AvatarToolImageId | null): void;
@@ -72,20 +71,18 @@ export function AvatarToolInteractionEditorProvider({ children }: { children: Re
   ) => {
     setImageStateValue({ images, initialImageId });
   }, []);
-  const imageIds = useMemo(() => imageState.images.map(image => image.id), [imageState.images]);
   const value = useMemo(
     () => ({
       state,
       dispatch,
       issues,
       setIssues,
-      imageIds,
       images: imageState.images,
       initialImageId: imageState.initialImageId,
       setImageState,
       graphRevision,
     }),
-    [dispatch, graphRevision, imageIds, imageState, issues, setImageState, state],
+    [dispatch, graphRevision, imageState, issues, setImageState, state],
   );
 
   return (
