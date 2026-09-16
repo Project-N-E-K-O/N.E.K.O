@@ -479,9 +479,22 @@ def test_system_status_preserves_rollback_required_as_actionable_lifecycle(tmp_p
         selection_source="recommended",
     )
     checkpoint = load_storage_migration(config_manager)
+    target_root = Path(checkpoint["target_root"])
+    original_target_entries = list(checkpoint["target_baseline"])
     save_storage_migration(
         config_manager,
-        {**checkpoint, "status": "rollback_required", "error_code": "rollback_failed"},
+        {
+            **checkpoint,
+            "status": "rollback_required",
+            "error_code": "rollback_failed",
+            "transaction_root": str(
+                target_root / f".neko-storage-migration-{checkpoint['txid']}"
+            ),
+            "source_runtime_baseline": {},
+            "original_target_entries": original_target_entries,
+            "publish_entry_names": [],
+            "publish_entry_snapshots": {},
+        },
     )
     monkeypatch.setattr(
         storage_location_bootstrap_module,

@@ -25,8 +25,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,13 +50,16 @@ from .entries import (
 from .policy import (
     POLICY_SELECTION_SOURCE_RECOVERED,
     PathIdentityUnavailable,
+    StoragePolicyError,
     compute_anchor_root,
+    delete_fixed_anchor_state_json,
     normalize_runtime_root,
     path_chain_has_symlink,
     path_is_within,
     paths_equal,
     read_fixed_anchor_state_json,
     save_storage_policy,
+    write_fixed_anchor_state_json,
 )
 from .path_rewrite import rebase_runtime_bound_workshop_config_paths
 
@@ -105,6 +110,55 @@ _MIGRATION_ERROR_MESSAGE_MAX_BYTES = 16 * 1024
 # contract so a damaged on-disk file fails closed instead of exhausting the
 # packaged launcher while it holds the startup gate.
 _WORKSHOP_CONFIG_REWRITE_MAX_BYTES = 16 * 1024 * 1024
+_STORAGE_MIGRATION_LOCK_FILENAME = "neko-storage-migration-checkpoint.lock"
+_STORAGE_MIGRATION_LOCK_TIMEOUT_SECONDS = 10.0
+_STORAGE_MIGRATION_THREAD_LOCK = threading.RLock()
+_STORAGE_MIGRATION_LOCK_STATE = threading.local()
+
+
+@contextmanager
+def storage_migration_checkpoint_transaction():
+    """Serialize checkpoint read-modify-write transactions across processes."""
+
+    from utils.single_instance import try_acquire_auxiliary_lock
+
+    with _STORAGE_MIGRATION_THREAD_LOCK:
+        depth = int(getattr(_STORAGE_MIGRATION_LOCK_STATE, "depth", 0) or 0)
+        if depth:
+            _STORAGE_MIGRATION_LOCK_STATE.depth = depth + 1
+            try:
+                yield
+            finally:
+                _STORAGE_MIGRATION_LOCK_STATE.depth = depth
+            return
+
+        deadline = time.monotonic() + _STORAGE_MIGRATION_LOCK_TIMEOUT_SECONDS
+        handle = None
+        while handle is None:
+            try:
+                handle = try_acquire_auxiliary_lock(
+                    _STORAGE_MIGRATION_LOCK_FILENAME
+                )
+            except OSError as exc:
+                raise StorageMigrationError(
+                    "migration_checkpoint_lock_unavailable",
+                    "无法固定存储迁移检查点，已停止修改。",
+                ) from exc
+            if handle is not None:
+                break
+            if time.monotonic() >= deadline:
+                raise StorageMigrationError(
+                    "migration_checkpoint_lock_timeout",
+                    "存储迁移检查点正被另一个进程修改，请稍后重试。",
+                )
+            time.sleep(0.02)
+
+        _STORAGE_MIGRATION_LOCK_STATE.depth = 1
+        try:
+            with handle:
+                yield
+        finally:
+            _STORAGE_MIGRATION_LOCK_STATE.depth = 0
 
 
 @dataclass(frozen=True)
@@ -517,12 +571,21 @@ def _open_windows_directory_rename_guard(
         if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
             raise ctypes.WinError(ctypes.get_last_error())
         named_after = path.lstat()
+        opened_file_index = (
+            int(info.file_index_high) << 32
+        ) | int(info.file_index_low)
+        opened_volume_serial = int(info.volume_serial_number)
         if (
             info.attributes & file_attribute_reparse_point
             or not info.attributes & file_attribute_directory
             or _is_link_like_metadata(named_after)
             or not stat.S_ISDIR(named_after.st_mode)
             or not os.path.samestat(expected_identity, named_after)
+            # lstat-after-open alone cannot detect A→B→A: it only proves the
+            # public name was restored. Bind the held handle itself to the
+            # CPython Windows file identity (volume serial + file index).
+            or int(named_after.st_ino) != opened_file_index
+            or (int(named_after.st_dev) & 0xFFFFFFFF) != opened_volume_serial
         ):
             raise StorageMigrationError(
                 "transaction_ownership_changed",
@@ -932,13 +995,21 @@ def _snapshot_posix_entry_at(
     display_path: Path,
     *,
     expected_mount_identity: tuple[str, int],
+    include_directory_count: bool = False,
 ) -> dict[str, int | str]:
     """Hash one entry without resolving any replaceable ancestor path."""
 
     try:
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
-        return {"kind": "missing", "file_count": 0, "total_bytes": 0}
+        snapshot: dict[str, int | str] = {
+            "kind": "missing",
+            "file_count": 0,
+            "total_bytes": 0,
+        }
+        if include_directory_count:
+            snapshot["directory_count"] = 0
+        return snapshot
     if _is_link_like_metadata(named):
         raise StorageMigrationError(
             "path_symlink_unsupported",
@@ -1001,12 +1072,15 @@ def _snapshot_posix_entry_at(
                     "migration_path_changed",
                     f"迁移校验文件在读取期间发生变化: {display_path}",
                 )
-            return {
+            snapshot = {
                 "kind": "file",
                 "file_count": 1,
                 "total_bytes": total_bytes,
                 "sha256": digest,
             }
+            if include_directory_count:
+                snapshot["directory_count"] = 0
+            return snapshot
         finally:
             if file_fd >= 0:
                 os.close(file_fd)
@@ -1037,9 +1111,10 @@ def _snapshot_posix_entry_at(
         manifest_digest = hashlib.sha256()
         total_bytes = 0
         file_count = 0
+        directory_count = 1
 
         def _walk(directory_fd: int, relative_root: Path, directory_display: Path) -> None:
-            nonlocal total_bytes, file_count
+            nonlocal total_bytes, file_count, directory_count
             with os.scandir(directory_fd) as scanned:
                 names = sorted(entry.name for entry in scanned)
             directories: list[tuple[str, os.stat_result]] = []
@@ -1066,6 +1141,7 @@ def _snapshot_posix_entry_at(
                         f"迁移校验不支持该文件类型: {child_display}",
                     )
             for child_name, _child_metadata in directories:
+                directory_count += 1
                 manifest_digest.update(
                     b"D\0" + os.fsencode((relative_root / child_name).as_posix()) + b"\0"
                 )
@@ -1181,12 +1257,15 @@ def _snapshot_posix_entry_at(
                 "migration_path_changed",
                 f"迁移校验目录在遍历期间被替换: {display_path}",
             )
-        return {
+        snapshot = {
             "kind": "dir",
             "file_count": file_count,
             "total_bytes": total_bytes,
             "sha256": manifest_digest.hexdigest(),
         }
+        if include_directory_count:
+            snapshot["directory_count"] = directory_count
+        return snapshot
     finally:
         if root_fd >= 0:
             os.close(root_fd)
@@ -1246,6 +1325,7 @@ def _snapshot_posix_relative_entry(
     relative_path: str,
     *,
     expected_mount_identity: tuple[str, int],
+    include_directory_count: bool = False,
 ) -> dict[str, int | str]:
     opened_parent = _open_posix_existing_relative_parent(
         root_fd,
@@ -1254,7 +1334,14 @@ def _snapshot_posix_relative_entry(
         expected_mount_identity=expected_mount_identity,
     )
     if opened_parent is None:
-        return {"kind": "missing", "file_count": 0, "total_bytes": 0}
+        snapshot: dict[str, int | str] = {
+            "kind": "missing",
+            "file_count": 0,
+            "total_bytes": 0,
+        }
+        if include_directory_count:
+            snapshot["directory_count"] = 0
+        return snapshot
     parent_fd, name, parent_display = opened_parent
     try:
         return _snapshot_posix_entry_at(
@@ -1262,6 +1349,7 @@ def _snapshot_posix_relative_entry(
             name,
             parent_display / name,
             expected_mount_identity=expected_mount_identity,
+            include_directory_count=include_directory_count,
         )
     finally:
         os.close(parent_fd)
@@ -1715,10 +1803,22 @@ def _remove_posix_directory_children(
             os.unlink(child_name, dir_fd=directory_fd)
 
 
-def _remove_posix_directory_tree(path: Path) -> None:
+def _remove_posix_directory_tree(
+    path: Path,
+    *,
+    expected_root_identity: os.stat_result | None = None,
+) -> None:
     """Remove one owned tree through pinned handles without crossing mounts."""
 
     root_identity = path.lstat()
+    if expected_root_identity is not None and not os.path.samestat(
+        expected_root_identity,
+        root_identity,
+    ):
+        raise StorageMigrationError(
+            "migration_path_changed",
+            f"迁移事务目录在清理前被替换: {path}",
+        )
     _preflight_named_mounts_below(path)
     mount_identity = _runtime_root_mount_identity(path.parent)
     if mount_identity is None:
@@ -1879,6 +1979,50 @@ def _remove_existing_path(path: Path) -> None:
     if path.exists() or path.is_symlink():
         raise OSError(f"storage path cleanup did not remove {path}")
     fsync_directory_best_effort(path.parent)
+
+
+def _remove_owned_private_directory(
+    path: Path,
+    expected_identity: os.stat_result,
+) -> bool:
+    """Remove one checkpoint-owned private root without trusting its name again."""
+
+    try:
+        current_identity = path.lstat()
+    except OSError:
+        return False
+    if (
+        _is_link_like_metadata(current_identity)
+        or not stat.S_ISDIR(current_identity.st_mode)
+        or not os.path.samestat(expected_identity, current_identity)
+    ):
+        return False
+    if os.name != "nt":
+        _remove_posix_directory_tree(
+            path,
+            expected_root_identity=expected_identity,
+        )
+        return not path.exists() and not path.is_symlink()
+
+    # Keep the Windows root itself deny-delete guarded while recursively
+    # removing children.  After the guard closes, only rmdir is attempted, so
+    # a late replacement can at worst make cleanup fail; it cannot be walked.
+    guard = _open_windows_directory_rename_guard(path, expected_identity)
+    try:
+        if not os.path.samestat(expected_identity, path.lstat()):
+            return False
+        for child in tuple(path.iterdir()):
+            _remove_existing_path(child)
+        if not os.path.samestat(expected_identity, path.lstat()):
+            return False
+    finally:
+        _close_windows_directory_rename_guard(guard)
+    try:
+        path.rmdir()
+    except OSError:
+        return False
+    fsync_directory_best_effort(path.parent)
+    return True
 
 
 def _fsync_migration_directory(path: Path) -> None:
@@ -2176,6 +2320,9 @@ def _copy_posix_directory_tree_durably(
     target_path: Path,
     *,
     expected_mount_identity: tuple[str, int],
+    source_parent_fd: int | None = None,
+    source_name: str | None = None,
+    expected_source_identity: os.stat_result | None = None,
     target_parent_fd: int | None = None,
     target_name: str | None = None,
     expected_target_mount_identity: tuple[str, int] | None = None,
@@ -2185,7 +2332,40 @@ def _copy_posix_directory_tree_durably(
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     target_mount_identity: tuple[str, int] | None = None
     try:
-        source_root_fd = _open_verified_directory(source_path)
+        if source_parent_fd is None:
+            source_root_fd = _open_verified_directory(source_path)
+        else:
+            if not source_name:
+                raise StorageMigrationError(
+                    "source_changed_during_migration",
+                    f"迁移源目录缺少目录内名称: {source_path}",
+                )
+            source_root_fd = os.open(
+                source_name,
+                directory_flags,
+                dir_fd=source_parent_fd,
+            )
+            opened_source = os.fstat(source_root_fd)
+            named_source = os.stat(
+                source_name,
+                dir_fd=source_parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _is_link_like_metadata(opened_source)
+                or _is_link_like_metadata(named_source)
+                or not stat.S_ISDIR(opened_source.st_mode)
+                or not stat.S_ISDIR(named_source.st_mode)
+                or not os.path.samestat(opened_source, named_source)
+                or (
+                    expected_source_identity is not None
+                    and not os.path.samestat(expected_source_identity, opened_source)
+                )
+            ):
+                raise StorageMigrationError(
+                    "source_changed_during_migration",
+                    f"迁移源目录在打开期间被替换: {source_path}",
+                )
     except StorageMigrationError:
         raise
     except OSError as exc:
@@ -2395,7 +2575,15 @@ def _copy_posix_directory_tree_durably(
             message=f"迁移暂存父目录在复制期间被替换: {target_path.parent}",
         )
         try:
-            named_source_after = source_path.lstat()
+            named_source_after = (
+                source_path.lstat()
+                if source_parent_fd is None
+                else os.stat(
+                    source_name,
+                    dir_fd=source_parent_fd,
+                    follow_symlinks=False,
+                )
+            )
         except OSError as exc:
             raise StorageMigrationError(
                 "source_changed_during_migration",
@@ -2417,17 +2605,29 @@ def _copy_windows_directory_tree_durably(
     target_path: Path,
     source_identity: os.stat_result,
 ) -> None:
-    """Copy one directory tree while every created target directory is pinned."""
+    """Copy one directory tree while source and target directories are pinned."""
 
     if os.name != "nt":
         raise OSError(errno.ENOTSUP, "Windows directory guards are unavailable")
-    owned_guards: list[int] = []
+    owned_target_guards: list[int] = []
+    owned_source_guards: list[int] = []
 
     def _guard_created_directory(path: Path) -> None:
         identity = path.lstat()
         handle = _open_windows_directory_rename_guard(path, identity)
         try:
-            owned_guards.append(handle)
+            owned_target_guards.append(handle)
+        except BaseException:
+            _close_windows_directory_rename_guard(handle)
+            raise
+
+    def _guard_source_directory(
+        path: Path,
+        expected_identity: os.stat_result,
+    ) -> None:
+        handle = _open_windows_directory_rename_guard(path, expected_identity)
+        try:
+            owned_source_guards.append(handle)
         except BaseException:
             _close_windows_directory_rename_guard(handle)
             raise
@@ -2492,6 +2692,7 @@ def _copy_windows_directory_tree_durably(
             source_child = source_directory / name
             target_child = target_directory / name
             if stat.S_ISDIR(child_identity.st_mode):
+                _guard_source_directory(source_child, child_identity)
                 try:
                     target_child.mkdir()
                 except FileExistsError as exc:
@@ -2532,12 +2733,23 @@ def _copy_windows_directory_tree_durably(
             ) from exc
 
     try:
+        # Pin every absolute source ancestor before the first scan.  Pin each
+        # nested directory immediately after lstat as well, so a concurrent
+        # junction/rename swap cannot redirect a later path-based scandir.
+        owned_source_guards.extend(
+            _open_windows_directory_rename_guard_chain(
+                source_path,
+                source_identity,
+            )
+        )
         target_path.mkdir()
         _guard_created_directory(target_path)
         _copy_directory(source_path, target_path, source_identity)
     finally:
-        while owned_guards:
-            _close_windows_directory_rename_guard(owned_guards.pop())
+        while owned_target_guards:
+            _close_windows_directory_rename_guard(owned_target_guards.pop())
+        while owned_source_guards:
+            _close_windows_directory_rename_guard(owned_source_guards.pop())
 
 
 def _copy_runtime_entry(
@@ -4080,7 +4292,12 @@ def _rewrite_windows_workshop_config_paths(
                 f"迁移暂存配置在原子重写窗口被并发替换: {workshop_config_path}",
             ) from exc
         temp_published = True
-        if not os.path.samestat(temp_identity, workshop_config_path.lstat()):
+        published_identity = os.fstat(temp_fd)
+        named_published = workshop_config_path.lstat()
+        if (
+            not os.path.samestat(temp_identity, published_identity)
+            or not os.path.samestat(published_identity, named_published)
+        ):
             raise StorageMigrationError(
                 "staging_entry_changed",
                 f"迁移暂存配置在原子重写期间被替换: {workshop_config_path}",
@@ -4099,9 +4316,9 @@ def _rewrite_windows_workshop_config_paths(
         named_after_snapshot = workshop_config_path.lstat()
         opened_after_snapshot = os.fstat(temp_fd)
         if (
-            not os.path.samestat(temp_identity, opened_after_snapshot)
+            not os.path.samestat(published_identity, opened_after_snapshot)
             or not os.path.samestat(opened_after_snapshot, named_after_snapshot)
-            or _windows_rewrite_stable_fields(temp_identity)
+            or _windows_rewrite_stable_fields(published_identity)
             != _windows_rewrite_stable_fields(opened_after_snapshot)
         ):
             raise StorageMigrationError(
@@ -4283,6 +4500,7 @@ def _snapshot_path(
     expected_mount_identity: tuple[str, int] | None = None,
     copy_capacity: _CopyCapacity | None = None,
     copy_allocation_unit: int = 0,
+    include_directory_count: bool = False,
 ) -> dict[str, int | str]:
     if copy_capacity is not None and copy_allocation_unit <= 0:
         raise ValueError("copy allocation unit must be positive")
@@ -4291,7 +4509,14 @@ def _snapshot_path(
     if not path.exists():
         if path.is_symlink():
             raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {path}")
-        return {"kind": "missing", "file_count": 0, "total_bytes": 0}
+        snapshot: dict[str, int | str] = {
+            "kind": "missing",
+            "file_count": 0,
+            "total_bytes": 0,
+        }
+        if include_directory_count:
+            snapshot["directory_count"] = 0
+        return snapshot
     if path.is_symlink():
         raise StorageMigrationError("path_symlink_unsupported", f"迁移校验不支持符号链接: {path}")
     if path.is_file():
@@ -4311,6 +4536,8 @@ def _snapshot_path(
         if copy_capacity is not None:
             copy_capacity.required_bytes += allocated_bytes + copy_allocation_unit
             copy_capacity.entry_count += 1
+        if include_directory_count:
+            snapshot["directory_count"] = 0
         return snapshot
     if not path.is_dir():
         raise StorageMigrationError("path_type_unsupported", f"迁移校验不支持该文件类型: {path}")
@@ -4321,6 +4548,7 @@ def _snapshot_path(
     )
     total_bytes = 0
     file_count = 0
+    directory_count = 1
     copy_required_bytes = copy_allocation_unit if copy_capacity is not None else 0
     copy_entry_count = 1 if copy_capacity is not None else 0
     manifest_digest = hashlib.sha256()
@@ -4333,6 +4561,7 @@ def _snapshot_path(
         filenames.sort()
         relative_root = Path(current_root).relative_to(path)
         for dirname in dirnames:
+            directory_count += 1
             current_dir = Path(current_root) / dirname
             if path_chain_has_symlink(current_dir):
                 raise StorageMigrationError(
@@ -4387,6 +4616,8 @@ def _snapshot_path(
     if copy_capacity is not None:
         copy_capacity.required_bytes += copy_required_bytes
         copy_capacity.entry_count += copy_entry_count
+    if include_directory_count:
+        snapshot["directory_count"] = directory_count
     return snapshot
 
 
@@ -6040,6 +6271,29 @@ def load_storage_migration(
             malformed(field_name)
     target_root = payload["target_root"]
 
+    source_identity = payload.get("source_root_identity")
+    if source_identity is not None and (
+        not isinstance(source_identity, list)
+        or len(source_identity) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in source_identity
+        )
+    ):
+        malformed("source_root_identity")
+    for identity_field in ("retained_source_identity", "cleanup_root_identity"):
+        identity = payload.get(identity_field)
+        if identity is not None and (
+            not isinstance(identity, dict)
+            or set(identity) != {"device", "inode"}
+            or any(
+                isinstance(identity[key], bool)
+                or not isinstance(identity[key], int)
+                for key in ("device", "inode")
+            )
+        ):
+            malformed(identity_field)
+
     selection_source = payload.get("selection_source")
     if (
         not isinstance(selection_source, str)
@@ -6201,6 +6455,76 @@ def is_storage_migration_pending(payload: dict[str, Any] | None) -> bool:
     return bool(source_root and target_root)
 
 
+def retained_source_identity_from_checkpoint(
+    payload: dict[str, Any] | None,
+    retained_root: Path | str,
+) -> dict[str, int] | None:
+    """Return only migration-time authority for the retained directory."""
+
+    if not isinstance(payload, dict):
+        return None
+    explicit = payload.get("retained_source_identity")
+    if (
+        isinstance(explicit, dict)
+        and set(explicit) == {"device", "inode"}
+        and all(
+            not isinstance(explicit[key], bool)
+            and isinstance(explicit[key], int)
+            for key in ("device", "inode")
+        )
+    ):
+        try:
+            return {
+                "device": int(explicit["device"]),
+                "inode": int(explicit["inode"]),
+            }
+        except (TypeError, ValueError):
+            return None
+    cleanup_identity = payload.get("cleanup_root_identity")
+    if (
+        str(payload.get("retained_source_mode") or "").strip()
+        == "cleanup_in_progress"
+        and isinstance(cleanup_identity, dict)
+        and set(cleanup_identity) == {"device", "inode"}
+        and all(
+            not isinstance(cleanup_identity[key], bool)
+            and isinstance(cleanup_identity[key], int)
+            for key in ("device", "inode")
+        )
+    ):
+        try:
+            return {
+                "device": int(cleanup_identity["device"]),
+                "inode": int(cleanup_identity["inode"]),
+            }
+        except (TypeError, ValueError):
+            return None
+    legacy_identity = payload.get("legacy_backup_identity")
+    legacy_backup = str(payload.get("legacy_import_backup_path") or "").strip()
+    source_identity = payload.get("source_root_identity")
+    source_root = str(payload.get("source_root") or "").strip()
+    try:
+        if (
+            legacy_backup
+            and paths_equal(retained_root, legacy_backup)
+            and isinstance(legacy_identity, list)
+            and len(legacy_identity) == 2
+            and all(isinstance(value, int) for value in legacy_identity)
+        ):
+            return {"device": legacy_identity[0], "inode": legacy_identity[1]}
+        if (
+            source_root
+            and paths_equal(retained_root, source_root)
+            and isinstance(source_identity, list)
+            and len(source_identity) == 2
+            and all(isinstance(value, int) for value in source_identity)
+        ):
+            return {"device": source_identity[0], "inode": source_identity[1]}
+    except (OSError, PathIdentityUnavailable, ValueError):
+        return None
+    return None
+
+
 def is_storage_migration_rollback_required(payload: dict[str, Any] | None) -> bool:
     """Return whether a checkpoint still owns an unfinished target rollback.
 
@@ -6233,7 +6557,28 @@ def build_pending_storage_migration_payload(
         normalized_source_root,
         normalized_target_root,
     )
-    return {
+    source_identity_payload: list[int] | None = None
+    try:
+        source_identity = normalized_source_root.lstat()
+    except FileNotFoundError:
+        # Keep the established builder contract: callers may persist a
+        # missing-source checkpoint so the packaged launcher can surface a
+        # controlled recovery result.  It gains an identity only if the source
+        # exists before the first transaction run.
+        pass
+    else:
+        if _is_link_like_metadata(source_identity) or not stat.S_ISDIR(
+            source_identity.st_mode
+        ):
+            raise StorageMigrationError(
+                "source_root_missing",
+                "原始数据目录不是可安全固定的真实目录。",
+            )
+        source_identity_payload = [
+            int(source_identity.st_dev),
+            int(source_identity.st_ino),
+        ]
+    payload = {
         "version": STORAGE_MIGRATION_VERSION,
         "txid": str(txid or uuid.uuid4().hex),
         "transaction_owner_token": secrets.token_hex(32),
@@ -6256,6 +6601,9 @@ def build_pending_storage_migration_payload(
         "started_at": "",
         "updated_at": timestamp,
     }
+    if source_identity_payload is not None:
+        payload["source_root_identity"] = source_identity_payload
+    return payload
 
 
 def save_storage_migration(
@@ -6264,19 +6612,90 @@ def save_storage_migration(
     *,
     anchor_root: Path | str | None = None,
 ) -> dict[str, Any]:
-    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
-    persisted_payload = dict(payload)
-    if "error_message" in persisted_payload:
-        persisted_payload["error_message"] = _bounded_migration_error_message(
-            persisted_payload.get("error_message")
+    with storage_migration_checkpoint_transaction():
+        configured_anchor_root = (
+            anchor_root
+            or getattr(config_manager, "anchor_root", None)
+            or compute_anchor_root(config_manager)
         )
-    atomic_write_json(migration_path, persisted_payload, ensure_ascii=False, indent=2)
-    # The generic writer is intentionally best-effort for directory handles so
-    # ordinary application writes remain portable. Migration checkpoints are
-    # recovery authority, so POSIX must not report success until the replace is
-    # also durable in its parent directory.
-    _fsync_migration_directory(migration_path.parent)
-    return persisted_payload
+        migration_path = get_storage_migration_path(
+            config_manager,
+            anchor_root=configured_anchor_root,
+        )
+        persisted_payload = dict(payload)
+        if "error_message" in persisted_payload:
+            persisted_payload["error_message"] = _bounded_migration_error_message(
+                persisted_payload.get("error_message")
+            )
+        try:
+            write_fixed_anchor_state_json(
+                configured_anchor_root,
+                migration_path.name,
+                persisted_payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+        except StoragePolicyError as exc:
+            error_code = (
+                "target_flush_failed"
+                if exc.reason == "policy_flush_failed"
+                else "migration_checkpoint_unwritable"
+            )
+            raise StorageMigrationError(
+                error_code,
+                f"存储迁移检查点无法安全写入固定锚点: {migration_path}",
+            ) from exc
+        return persisted_payload
+
+
+def replace_storage_migration_if_unchanged(
+    config_manager,
+    expected_payload: dict[str, Any] | None,
+    replacement_payload: dict[str, Any],
+    *,
+    anchor_root: Path | str | None = None,
+) -> dict[str, Any]:
+    """Persist ``replacement_payload`` only while the expected generation owns the file."""
+
+    with storage_migration_checkpoint_transaction():
+        current_payload = load_storage_migration(
+            config_manager,
+            anchor_root=anchor_root,
+        )
+        if current_payload != expected_payload:
+            raise StorageMigrationError(
+                "migration_checkpoint_conflict",
+                "存储迁移检查点已被另一项操作更新，已停止覆盖。",
+            )
+        return save_storage_migration(
+            config_manager,
+            replacement_payload,
+            anchor_root=anchor_root,
+        )
+
+
+def delete_storage_migration_if_unchanged(
+    config_manager,
+    expected_payload: dict[str, Any],
+    *,
+    anchor_root: Path | str | None = None,
+) -> None:
+    """Delete only the checkpoint generation named by ``expected_payload``."""
+
+    with storage_migration_checkpoint_transaction():
+        current_payload = load_storage_migration(
+            config_manager,
+            anchor_root=anchor_root,
+        )
+        if current_payload != expected_payload:
+            raise StorageMigrationError(
+                "migration_checkpoint_conflict",
+                "存储迁移检查点已被另一项操作更新，已停止删除。",
+            )
+        delete_storage_migration(
+            config_manager,
+            anchor_root=anchor_root,
+        )
 
 
 def create_pending_storage_migration(
@@ -6300,6 +6719,22 @@ def create_pending_storage_migration(
 
 
 def run_pending_storage_migration(
+    config_manager,
+    *,
+    anchor_root: Path | str | None = None,
+) -> dict[str, Any]:
+    # A migration owns one checkpoint generation from its initial read through
+    # every recovery/failure/completion write. Per-write locking alone leaves
+    # check-then-save gaps where another process can publish a new txid and be
+    # overwritten by the older run.
+    with storage_migration_checkpoint_transaction():
+        return _run_pending_storage_migration_locked(
+            config_manager,
+            anchor_root=anchor_root,
+        )
+
+
+def _run_pending_storage_migration_locked(
     config_manager,
     *,
     anchor_root: Path | str | None = None,
@@ -6347,6 +6782,12 @@ def run_pending_storage_migration(
     if not is_storage_migration_pending(migration_payload):
         if isinstance(migration_payload, dict):
             try:
+                finalization_owned = bool(
+                    str(migration_payload.get("layout_commit_mode") or "").strip()
+                    == "preserve_existing"
+                    and migration_payload.get("legacy_import_kind")
+                    == "phase0_legacy_runtime_import_v1"
+                )
                 completed_target = normalize_runtime_root(
                     str(migration_payload.get("target_root") or "").strip()
                 )
@@ -6362,6 +6803,7 @@ def run_pending_storage_migration(
                 )
                 if (
                     terminal_status == STORAGE_MIGRATION_STATUS_COMPLETED
+                    and not finalization_owned
                     and checkpoint_owned
                     and (
                         completed_transaction_root.exists()
@@ -6405,7 +6847,13 @@ def run_pending_storage_migration(
     windows_guarded_directory_paths: set[str] = set()
     posix_publish_roots: _PosixPublishRoots | None = None
     expected_target_identity: os.stat_result | None = None
+    expected_source_root_identity: tuple[int, int] | None = None
     pinned_target_root_fd = -1
+    pinned_source_root_fd = -1
+    preserve_existing_layout = bool(
+        str(payload.get("layout_commit_mode") or "").strip()
+        == "preserve_existing"
+    )
     cleanup_durability_pending = os.name != "nt" and (
         bool(payload.get("transaction_cleanup_pending"))
         or (
@@ -6485,6 +6933,13 @@ def run_pending_storage_migration(
                 os.close(pinned_target_root_fd)
             pinned_target_root_fd = -1
 
+    def _release_pinned_source_root() -> None:
+        nonlocal pinned_source_root_fd
+        if pinned_source_root_fd >= 0:
+            with suppress(OSError):
+                os.close(pinned_source_root_fd)
+            pinned_source_root_fd = -1
+
     def _arm_transaction_cleanup_intent() -> None:
         nonlocal payload, cleanup_durability_pending
         # Windows has no corresponding strict directory-fsync obligation.
@@ -6517,7 +6972,9 @@ def run_pending_storage_migration(
         nonlocal payload, policy_payload
         error_message = _bounded_migration_error_message(error_message)
         raw_payload_source_root = str(payload.get("source_root") or "").strip()
-        if source_root is not None:
+        if preserve_existing_layout and target_root is not None:
+            recovery_source_root = str(target_root)
+        elif source_root is not None:
             recovery_source_root = str(source_root)
         else:
             fallback_root = str(getattr(config_manager, "app_docs_dir", "") or "").strip()
@@ -6528,35 +6985,36 @@ def run_pending_storage_migration(
         # The checkpoint is written last and records partial recovery metadata so
         # future generations can fail closed even when policy/root_state did not.
         policy_payload = None
-        policy_persisted = False
-        try:
-            policy_payload = save_storage_policy(
-                config_manager,
-                selected_root=recovery_source_root,
-                selection_source=POLICY_SELECTION_SOURCE_RECOVERED,
-                anchor_root=normalized_anchor_root,
-            )
-            policy_persisted = True
-        except Exception as policy_exc:
-            logger.warning("Failed to persist recovered storage policy after migration failure: %s", policy_exc)
+        policy_persisted = preserve_existing_layout
+        root_state_persisted = preserve_existing_layout
+        if not preserve_existing_layout:
+            try:
+                policy_payload = save_storage_policy(
+                    config_manager,
+                    selected_root=recovery_source_root,
+                    selection_source=POLICY_SELECTION_SOURCE_RECOVERED,
+                    anchor_root=normalized_anchor_root,
+                )
+                policy_persisted = True
+            except Exception as policy_exc:
+                logger.warning("Failed to persist recovered storage policy after migration failure: %s", policy_exc)
 
-        root_state_persisted = False
-        try:
-            from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, set_root_mode
+            try:
+                from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, set_root_mode
 
-            set_root_mode(
-                config_manager,
-                ROOT_MODE_DEFERRED_INIT,
-                current_root=recovery_source_root,
-                last_known_good_root=recovery_source_root,
-                last_migration_source=recovery_source_root,
-                last_migration_result=f"failed:{error_code}",
-                last_migration_backup=recovery_source_root,
-                legacy_cleanup_pending=False,
-            )
-            root_state_persisted = True
-        except Exception as root_state_exc:
-            logger.warning("Failed to persist recovery root_state after migration failure: %s", root_state_exc)
+                set_root_mode(
+                    config_manager,
+                    ROOT_MODE_DEFERRED_INIT,
+                    current_root=recovery_source_root,
+                    last_known_good_root=recovery_source_root,
+                    last_migration_source=recovery_source_root,
+                    last_migration_result=f"failed:{error_code}",
+                    last_migration_backup=recovery_source_root,
+                    legacy_cleanup_pending=False,
+                )
+                root_state_persisted = True
+            except Exception as root_state_exc:
+                logger.warning("Failed to persist recovery root_state after migration failure: %s", root_state_exc)
 
         next_payload = dict(payload)
         transaction_cleanup_pending = (
@@ -6569,7 +7027,8 @@ def run_pending_storage_migration(
             STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
             if rollback_required
             else STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
-            if transaction_cleanup_pending
+            if preserve_existing_layout
+            or transaction_cleanup_pending
             or (
                 next_payload.get("version") == STORAGE_MIGRATION_VERSION
                 and transaction_evidence_present
@@ -6614,7 +7073,11 @@ def run_pending_storage_migration(
             "completed": False,
             "payload": payload,
             "policy": policy_payload,
-            "source_root": str(source_root) if source_root else "",
+            "source_root": (
+                recovery_source_root
+                if preserve_existing_layout
+                else str(source_root) if source_root else ""
+            ),
             "target_root": str(target_root) if target_root else "",
             "anchor_root": str(normalized_anchor_root),
             "error_code": error_code,
@@ -6664,7 +7127,11 @@ def run_pending_storage_migration(
                         "Preserving migration transaction after ownership changed: %s",
                         transaction_root,
                     )
-                elif str(payload.get("status") or "").strip() == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED:
+                elif (
+                    not preserve_existing_layout
+                    and str(payload.get("status") or "").strip()
+                    == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+                ):
                     _mark_transaction_cleanup_durable()
                     # The durable failed checkpoint existed before destructive
                     # cleanup.  Only after the owned transaction is gone may it
@@ -6732,6 +7199,98 @@ def run_pending_storage_migration(
             )
         source_root = normalize_runtime_root(raw_source_root)
         selection_source = _normalize_selection_source(str(payload.get("selection_source") or ""))
+        if preserve_existing_layout:
+            configured_runtime_root = normalize_runtime_root(
+                getattr(config_manager, "app_docs_dir", target_root)
+            )
+            expected_prefix = f".{target_root.name}.legacy-source-"
+            try:
+                source_parent_matches = paths_equal(
+                    source_root.parent,
+                    target_root.parent,
+                )
+            except (OSError, PathIdentityUnavailable, ValueError):
+                source_parent_matches = False
+            if (
+                payload.get("legacy_import_kind")
+                != "phase0_legacy_runtime_import_v1"
+                or selection_source != "legacy"
+                or not paths_equal(configured_runtime_root, target_root)
+                or not source_parent_matches
+                or not source_root.name.startswith(expected_prefix)
+            ):
+                raise StorageMigrationError(
+                    "invalid_internal_publication",
+                    "内部运行目录发布检查点边界无效。",
+                )
+            legacy_target_identity = payload.get("legacy_target_identity")
+            legacy_source_identity = payload.get("legacy_source_identity")
+            legacy_backup_identity = payload.get("legacy_backup_identity")
+            legacy_backup_baseline = payload.get("legacy_backup_baseline")
+            raw_legacy_backup = str(
+                payload.get("legacy_import_backup_path") or ""
+            ).strip()
+            if (
+                not isinstance(legacy_target_identity, list)
+                or len(legacy_target_identity) != 2
+                or any(not isinstance(value, int) for value in legacy_target_identity)
+                or not isinstance(legacy_source_identity, list)
+                or len(legacy_source_identity) != 2
+                or any(not isinstance(value, int) for value in legacy_source_identity)
+                or not isinstance(legacy_backup_identity, list)
+                or len(legacy_backup_identity) != 2
+                or any(not isinstance(value, int) for value in legacy_backup_identity)
+                or not isinstance(legacy_backup_baseline, dict)
+                or not raw_legacy_backup
+            ):
+                raise StorageMigrationError(
+                    "invalid_internal_publication",
+                    "内部运行目录发布检查点缺少根目录身份。",
+                )
+            current_target_identity = target_root.lstat()
+            current_source_identity = source_root.lstat()
+            legacy_backup_root = normalize_runtime_root(raw_legacy_backup)
+            try:
+                backup_parent_matches = paths_equal(
+                    legacy_backup_root.parent,
+                    target_root.parent,
+                )
+            except (OSError, PathIdentityUnavailable, ValueError):
+                backup_parent_matches = False
+            if (
+                not backup_parent_matches
+                or not legacy_backup_root.name.startswith(
+                    f".{target_root.name}.legacy-backup-"
+                )
+                or path_chain_has_symlink(legacy_backup_root)
+            ):
+                raise StorageMigrationError(
+                    "invalid_internal_publication",
+                    "旧运行目录发布的可恢复备份边界无效。",
+                )
+            current_backup_identity = legacy_backup_root.lstat()
+            if (
+                (int(current_target_identity.st_dev), int(current_target_identity.st_ino))
+                != tuple(legacy_target_identity)
+                or (int(current_source_identity.st_dev), int(current_source_identity.st_ino))
+                != tuple(legacy_source_identity)
+                or (
+                    int(current_backup_identity.st_dev),
+                    int(current_backup_identity.st_ino),
+                )
+                != tuple(legacy_backup_identity)
+            ):
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    "内部运行目录发布边界已被替换，已停止迁移。",
+                )
+            if _snapshot_runtime_entries(
+                legacy_backup_root
+            ) != legacy_backup_baseline:
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    "旧运行目录发布的可恢复备份已变化，已停止迁移。",
+                )
         migration_mode = str(payload.get("migration_mode") or STORAGE_MIGRATION_MODE_COPY).strip()
         if migration_mode != STORAGE_MIGRATION_MODE_COPY:
             raise StorageMigrationError("invalid_migration_mode", "存储迁移检查点包含不支持的迁移模式。")
@@ -6773,6 +7332,70 @@ def run_pending_storage_migration(
             ) from exc
         if not source_root.exists() or not source_root.is_dir():
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
+        current_source_root_identity = source_root.lstat()
+        raw_source_root_identity = payload.get("source_root_identity")
+        if raw_source_root_identity is None:
+            # Compatibility upgrade for old pending checkpoints: bind the
+            # source generation before the first transaction copy.
+            expected_source_root_identity = (
+                int(current_source_root_identity.st_dev),
+                int(current_source_root_identity.st_ino),
+            )
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                source_root_identity=list(expected_source_root_identity),
+            )
+        else:
+            expected_source_root_identity = tuple(raw_source_root_identity)
+            if (
+                int(current_source_root_identity.st_dev),
+                int(current_source_root_identity.st_ino),
+            ) != expected_source_root_identity:
+                can_rebind_restored_ordinary_source = bool(
+                    not preserve_existing_layout
+                    and source_runtime_baseline is not None
+                    and _migration_transaction_evidence_is_present(payload)
+                    and _source_matches_recovery_baseline()
+                )
+                if not can_rebind_restored_ordinary_source:
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        "迁移源根目录已被替换，已停止迁移。",
+                    )
+                # Ordinary migration recovery historically permits the user to
+                # restore a vanished source byte-for-byte.  Rebind only while
+                # owned transaction evidence and the persisted full baseline
+                # both prove that recovery case; phase-0 never takes this path.
+                expected_source_root_identity = (
+                    int(current_source_root_identity.st_dev),
+                    int(current_source_root_identity.st_ino),
+                )
+                payload = _persist_migration_payload(
+                    config_manager,
+                    payload,
+                    anchor_root=normalized_anchor_root,
+                    source_root_identity=list(expected_source_root_identity),
+                )
+        if os.name == "nt":
+            _retain_windows_directory_guard(
+                source_root,
+                error_code="migration_path_changed",
+                message="迁移源根在 Windows 固定期间发生变化。",
+                expected_identity=current_source_root_identity,
+            )
+        else:
+            pinned_source_root_fd = _open_verified_directory(source_root)
+            pinned_source_identity = os.fstat(pinned_source_root_fd)
+            if (
+                int(pinned_source_identity.st_dev),
+                int(pinned_source_identity.st_ino),
+            ) != expected_source_root_identity:
+                raise StorageMigrationError(
+                    "migration_path_changed",
+                    "迁移源根在固定前已被替换，已停止迁移。",
+                )
 
         # The desktop preflight is advisory and a mount can appear after it.
         # Re-run the non-traversing boundary check in the packaged launcher
@@ -7002,6 +7625,14 @@ def run_pending_storage_migration(
         )
 
         writable_target_identity = _ensure_target_root_writable(target_root)
+        if preserve_existing_layout and (
+            int(writable_target_identity.st_dev),
+            int(writable_target_identity.st_ino),
+        ) != tuple(legacy_target_identity):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                "内部运行目录发布目标在固定前已被替换，已停止迁移。",
+            )
         if os.name == "nt":
             expected_target_identity = writable_target_identity
             _retain_windows_directory_guard(
@@ -7071,7 +7702,31 @@ def run_pending_storage_migration(
                 f"无法确认目标卷分配单元，已停止迁移: {exc}",
             ) from exc
 
-        source_mount_identity = _runtime_root_mount_identity(source_root)
+        source_mount_identity = (
+            _opened_mount_identity(pinned_source_root_fd)
+            if pinned_source_root_fd >= 0
+            else _runtime_root_mount_identity(source_root)
+        )
+        if pinned_source_root_fd >= 0:
+            _ensure_opened_directory_still_named(
+                source_root,
+                pinned_source_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移源根在事务扫描前被替换: {source_root}",
+            )
+        source_root_before_scan = source_root.lstat()
+        if (
+            expected_source_root_identity is None
+            or (
+                int(source_root_before_scan.st_dev),
+                int(source_root_before_scan.st_ino),
+            )
+            != expected_source_root_identity
+        ):
+            raise StorageMigrationError(
+                "migration_path_changed",
+                "迁移源根目录在事务扫描前已被替换，已停止迁移。",
+            )
         existing_entries = _iter_existing_runtime_entries(source_root)
         copy_capacity = _CopyCapacity()
         source_snapshots: dict[str, dict[str, int | str]] = {}
@@ -7083,6 +7738,32 @@ def run_pending_storage_migration(
                 copy_allocation_unit=copy_allocation_unit,
             )
         source_runtime_baseline = dict(source_snapshots)
+        source_root_after_scan = source_root.lstat()
+        if (
+            int(source_root_after_scan.st_dev),
+            int(source_root_after_scan.st_ino),
+        ) != expected_source_root_identity:
+            raise StorageMigrationError(
+                "migration_path_changed",
+                "迁移源根目录在事务扫描期间被替换，已停止迁移。",
+            )
+        if pinned_source_root_fd >= 0:
+            _ensure_opened_directory_still_named(
+                source_root,
+                pinned_source_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移源根在事务扫描期间被替换: {source_root}",
+            )
+        if preserve_existing_layout:
+            legacy_source_baseline = payload.get("legacy_source_baseline")
+            if (
+                not isinstance(legacy_source_baseline, dict)
+                or source_runtime_baseline != legacy_source_baseline
+            ):
+                raise StorageMigrationError(
+                    "source_changed_during_migration",
+                    "旧运行目录私有快照在事务接力前发生变化，已停止迁移。",
+                )
         # The transaction root, prepared root, owner marker, staged/backup
         # roots and atomic transaction metadata need a small fixed allocation
         # in addition to the source tree. Count both bytes and entries: Windows
@@ -7282,6 +7963,13 @@ def run_pending_storage_migration(
                     message=f"迁移事务目录在复制检查点持久化期间被替换: {transaction_root}",
                 )
             for entry_name in existing_entries:
+                if pinned_source_root_fd >= 0:
+                    _ensure_opened_directory_still_named(
+                        source_root,
+                        pinned_source_root_fd,
+                        error_code="migration_path_changed",
+                        message=f"迁移源根在复制前被替换: {source_root}",
+                    )
                 if path_chain_has_symlink(source_root) or path_chain_has_symlink(target_root):
                     raise StorageMigrationError(
                         "migration_path_changed",
@@ -7337,6 +8025,22 @@ def run_pending_storage_migration(
                     raise StorageMigrationError(
                         "source_changed_during_migration",
                         f"迁移期间源数据发生变化，已停止迁移: {entry_name}",
+                    )
+                current_source_identity = source_root.lstat()
+                if (
+                    int(current_source_identity.st_dev),
+                    int(current_source_identity.st_ino),
+                ) != expected_source_root_identity:
+                    raise StorageMigrationError(
+                        "migration_path_changed",
+                        "迁移源根目录在复制期间被替换，已停止迁移。",
+                    )
+                if pinned_source_root_fd >= 0:
+                    _ensure_opened_directory_still_named(
+                        source_root,
+                        pinned_source_root_fd,
+                        error_code="migration_path_changed",
+                        message=f"迁移源根在复制期间被替换: {source_root}",
                     )
                 if os.name != "nt":
                     _ensure_opened_directory_still_named(
@@ -7438,10 +8142,30 @@ def run_pending_storage_migration(
             # was flushed through its writable handle.
             _fsync_staged_tree(staged_root)
 
-        if _snapshot_runtime_entries(
-            source_root,
-            expected_mount_identity=source_mount_identity,
-        ) != source_runtime_baseline:
+        if pinned_source_root_fd >= 0:
+            _ensure_opened_directory_still_named(
+                source_root,
+                pinned_source_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移源根在最终校验前被替换: {source_root}",
+            )
+            final_source_snapshot = _snapshot_posix_runtime_entries_at(
+                pinned_source_root_fd,
+                source_root,
+                expected_mount_identity=source_mount_identity,
+            )
+            _ensure_opened_directory_still_named(
+                source_root,
+                pinned_source_root_fd,
+                error_code="migration_path_changed",
+                message=f"迁移源根在最终校验期间被替换: {source_root}",
+            )
+        else:
+            final_source_snapshot = _snapshot_runtime_entries(
+                source_root,
+                expected_mount_identity=source_mount_identity,
+            )
+        if final_source_snapshot != source_runtime_baseline:
             raise StorageMigrationError(
                 "source_changed_during_migration",
                 "迁移期间源数据清单发生变化，已停止迁移。",
@@ -7631,12 +8355,15 @@ def run_pending_storage_migration(
             status=STORAGE_MIGRATION_STATUS_COMMITTING,
         )
 
-        policy_payload = save_storage_policy(
-            config_manager,
-            selected_root=target_root,
-            selection_source=selection_source,
-            anchor_root=normalized_anchor_root,
-        )
+        if preserve_existing_layout:
+            policy_payload = None
+        else:
+            policy_payload = save_storage_policy(
+                config_manager,
+                selected_root=target_root,
+                selection_source=selection_source,
+                anchor_root=normalized_anchor_root,
+            )
         if posix_publish_roots is not None:
             _ensure_posix_publish_roots_still_named(
                 posix_publish_roots,
@@ -7644,26 +8371,45 @@ def run_pending_storage_migration(
                 transaction_root,
             )
 
-        from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+        if not preserve_existing_layout:
+            from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
 
-        legacy_cleanup_pending = is_retained_root_cleanup_available(
-            source_root,
-            current_root=target_root,
-            anchor_root=normalized_anchor_root,
-            target_root=target_root,
-            require_exists=False,
-            allow_anchor_root=True,
-        )
-        set_root_mode(
-            config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(target_root),
-            last_known_good_root=str(target_root),
-            last_migration_source=str(source_root),
-            last_migration_result=f"completed:{target_root}",
-            last_migration_backup=str(source_root),
-            legacy_cleanup_pending=legacy_cleanup_pending,
-        )
+            legacy_cleanup_pending = is_retained_root_cleanup_available(
+                source_root,
+                current_root=target_root,
+                anchor_root=normalized_anchor_root,
+                target_root=target_root,
+                require_exists=False,
+                allow_anchor_root=True,
+            )
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(target_root),
+                last_known_good_root=str(target_root),
+                last_migration_source=str(source_root),
+                last_migration_result=f"completed:{target_root}",
+                last_migration_backup=str(source_root),
+                legacy_cleanup_pending=legacy_cleanup_pending,
+            )
+        else:
+            # The exact pre-import target backup is recovery authority, not a
+            # best-effort artifact.  Revalidate it after publication while the
+            # generic transaction can still roll the target back.
+            current_backup_identity = legacy_backup_root.lstat()
+            if (
+                (
+                    int(current_backup_identity.st_dev),
+                    int(current_backup_identity.st_ino),
+                )
+                != tuple(legacy_backup_identity)
+                or _snapshot_runtime_entries(legacy_backup_root)
+                != legacy_backup_baseline
+            ):
+                raise StorageMigrationError(
+                    "legacy_backup_changed",
+                    "旧运行目录发布的可恢复备份在提交前发生变化。",
+                )
         if posix_publish_roots is not None:
             _ensure_posix_publish_roots_still_named(
                 posix_publish_roots,
@@ -7679,27 +8425,48 @@ def run_pending_storage_migration(
             status=STORAGE_MIGRATION_STATUS_COMPLETED,
             backup_root=str(source_root),
             retained_source_root=str(source_root),
+            retained_source_identity={
+                "device": int(expected_source_root_identity[0]),
+                "inode": int(expected_source_root_identity[1]),
+            },
             retained_source_mode="manual_retention",
             error_code="",
             error_message="",
             committed_at=completed_at,
             completed_at=completed_at,
         )
+        if preserve_existing_layout:
+            current_backup_identity = legacy_backup_root.lstat()
+            if (
+                (
+                    int(current_backup_identity.st_dev),
+                    int(current_backup_identity.st_ino),
+                )
+                != tuple(legacy_backup_identity)
+                or _snapshot_runtime_entries(legacy_backup_root)
+                != legacy_backup_baseline
+            ):
+                raise StorageMigrationError(
+                    "legacy_backup_changed",
+                    "旧运行目录发布的可恢复备份在完成落盘时发生变化。",
+                )
         _release_windows_directory_guards()
         _release_posix_publish_roots()
+        _release_pinned_source_root()
         _release_pinned_target_root()
-        try:
-            if not _remove_transaction_root_if_owned(
-                payload,
-                transaction_root,
-                txid,
-            ):
-                logger.warning(
-                    "Preserving completed migration transaction after ownership changed: %s",
+        if not preserve_existing_layout:
+            try:
+                if not _remove_transaction_root_if_owned(
+                    payload,
                     transaction_root,
-                )
-        except Exception as cleanup_exc:
-            logger.warning("Failed to clean completed migration transaction: %s", cleanup_exc)
+                    txid,
+                ):
+                    logger.warning(
+                        "Preserving completed migration transaction after ownership changed: %s",
+                        transaction_root,
+                    )
+            except Exception as cleanup_exc:
+                logger.warning("Failed to clean completed migration transaction: %s", cleanup_exc)
         return {
             "attempted": True,
             "completed": True,
@@ -7746,6 +8513,7 @@ def run_pending_storage_migration(
                 logger.exception("Failed to roll back storage migration target")
         _release_windows_directory_guards()
         _release_posix_publish_roots()
+        _release_pinned_source_root()
         _release_pinned_target_root()
         if rollback_error is not None:
             return _finish_failure(
@@ -7792,6 +8560,7 @@ def run_pending_storage_migration(
                 logger.exception("Failed to roll back unexpected storage migration failure")
         _release_windows_directory_guards()
         _release_posix_publish_roots()
+        _release_pinned_source_root()
         _release_pinned_target_root()
         if rollback_error is not None:
             return _finish_failure(
@@ -7807,6 +8576,7 @@ def run_pending_storage_migration(
         # in-process semantics equivalent so a retry can recover immediately.
         _release_windows_directory_guards()
         _release_posix_publish_roots()
+        _release_pinned_source_root()
         _release_pinned_target_root()
 
 
@@ -7815,16 +8585,31 @@ def delete_storage_migration(
     *,
     anchor_root: Path | str | None = None,
 ) -> None:
-    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
-    try:
-        os.unlink(migration_path)
-    except FileNotFoundError:
-        return
-    # A deleted checkpoint is itself recovery authority: callers may restore
-    # the normal root state immediately after this returns.  On POSIX, do not
-    # report that rollback as complete until the directory entry removal is
-    # durable; otherwise a failed pending intent can reappear after power loss.
-    _fsync_migration_directory(migration_path.parent)
+    with storage_migration_checkpoint_transaction():
+        configured_anchor_root = (
+            anchor_root
+            or getattr(config_manager, "anchor_root", None)
+            or compute_anchor_root(config_manager)
+        )
+        migration_path = get_storage_migration_path(
+            config_manager,
+            anchor_root=configured_anchor_root,
+        )
+        try:
+            delete_fixed_anchor_state_json(
+                configured_anchor_root,
+                migration_path.name,
+            )
+        except StoragePolicyError as exc:
+            error_code = (
+                "target_flush_failed"
+                if exc.reason == "policy_flush_failed"
+                else "migration_checkpoint_undeletable"
+            )
+            raise StorageMigrationError(
+                error_code,
+                f"存储迁移检查点无法从固定锚点安全删除: {migration_path}",
+            ) from exc
 
 
 def _migration_transaction_evidence_is_present(

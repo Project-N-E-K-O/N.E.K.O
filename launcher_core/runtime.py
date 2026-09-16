@@ -83,9 +83,11 @@ from utils.cloudsave_runtime import (
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
     cloud_apply_fence,
+    recover_interrupted_legacy_runtime_import,
     set_root_mode,
     should_write_root_mode_normal_after_startup,
 )
+from utils.cloudsave_runtime.fence import _recover_stale_write_blocking_mode
 from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager, reset_config_manager_cache
 from utils.storage_layout import (
@@ -3369,6 +3371,18 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
             raise diagnostic
         raise OSError("failed to ensure local state directory")
 
+    # A previous launcher can die after persisting bootstrap_importing but
+    # before creating a legacy checkpoint.  Recover that orphaned mode under
+    # the real cross-process cloud-apply lock before entering a new fence.
+    current_root_state = config_manager.load_root_state()
+    if isinstance(current_root_state, dict):
+        _recover_stale_write_blocking_mode(config_manager, current_root_state)
+
+    # Resolve a completed internal legacy checkpoint before the new fence.
+    # Pending checkpoints are normally resumed by storage layout resolution;
+    # this call also covers direct packaged-launcher bootstrap entry paths.
+    recover_interrupted_legacy_runtime_import(config_manager)
+
     with cloud_apply_fence(
         config_manager,
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
@@ -3464,14 +3478,15 @@ def _initialize_storage_generation_for_launch() -> tuple[dict, bool]:
                     {
                         "error_code": str(
                             getattr(e, "error_code", "")
+                            or getattr(e, "code", "")
                             or "storage_status_unavailable"
                         ),
                         "error_message": "存储启动状态无法安全初始化。",
                     },
                 )
                 print(
-                    "[Launcher] Storage phase-0 failed; starting the read-only recovery surface: "
-                    f"{e}",
+                    "[Launcher] Storage phase-0 failed; starting the read-only recovery surface "
+                    f"(code={getattr(e, 'error_code', '') or getattr(e, 'code', '') or 'storage_status_unavailable'})",
                     flush=True,
                 )
                 reset_config_manager_cache()

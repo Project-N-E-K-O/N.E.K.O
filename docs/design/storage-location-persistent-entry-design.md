@@ -129,6 +129,8 @@ pending -> preflight -> copying -> verifying -> publishing -> committing
 
 检查点读取采用 fail-closed 语义：只有文件确实不存在才等价于“没有迁移”；坏 JSON、非对象内容、权限错误或其他读取异常都必须作为 `storage_status_unavailable` 阻断启动。schema 只接受版本 1、2 和已知状态，且所有状态都必须带 32 位十六进制 `txid`、绝对的源/目标根、非空选择来源以及布尔型的目标覆盖确认；版本 2 还必须带随机 owner token、`migration_mode=copy` 和用户确认时的目标基线，任何已经绑定事务目录的状态都必须同时带源基线，发布及之后阶段还必须带互相一致的目标原有入口、发布入口和发布快照。`recovery_required` 允许两种形态：已有受约束事务目录时必须满足上述绑定字段；仅发现派生路径被未知内容占用时保持未绑定并保留现场，不能伪造事务所有权。版本 1 可缺省复制模式和目标基线，但不能声明新状态或任何事务目录/owner token；执行器先从无破坏的 pending 边界重验路径并补取缺失的目标基线，再一次性升级落盘为完整的版本 2 pending，然后才允许绑定事务目录和源基线。未来版本或缺失阶段必填字段不能由旧执行器猜测执行。不得把损坏或暂时不可读的检查点吞掉后切回普通根目录，否则可能在未完成发布旁边启动一套新的业务写入。持久化的 `error_message` 最多保留 16 KiB UTF-8；POSIX 无法解码的文件名字节必须先转成可持久化的显式转义，异常中携带的海量路径不能把检查点本身撑到固定锚点读取上限之外。
 
+检查点发布和删除也必须固定同一条 anchor/state 目录链，不能只在读取时做锚定。POSIX 使用已打开的 `state` 描述符相对创建临时文件、replace/unlink 和 required fsync，并在发布前后复验公开名称仍指向同一目录；Windows 在完整目录链上持有拒绝 rename/delete 的原生 guard 后才允许路径式原子写。若 `state` 在操作中被换名、替换为链接/junction 或身份变化，本次操作必须失败关闭，不能把恢复权威写到外部目录后继续迁移。
+
 ### 5.3 启动阻塞原因与生命周期
 
 后端对外的三个业务引导原因是：
@@ -174,6 +176,12 @@ plugin-runtime
 
 前 13 项属于用户数据；`embedding_models`、`runtimes` 和 `plugin-runtime` 属于随运行根变化的可重建运行缓存，但为保证迁移后离线可用和插件任务连续性也一并复制。迁移/旧根复制使用完整清单，Cloud Save 的“本地已有用户内容”判定只使用用户数据子集；纯缓存不能阻止一个尚未应用的云快照自动恢复，也不能在恢复时被无故删除。`state` 本身是固定锚点控制数据，只有其子项 `state/game_scores` 随 selected root 迁移。
 
+phase-0 旧版本根导入以操作系统／配置返回的 `<base>/N.E.K.O` 为逻辑边界：允许该边界上方的 macOS 路径别名、Windows Known Folder 重定向或 Linux XDG／挂载位置，但根本身及根内清单路径仍拒绝符号链接、namespace reparse、特殊文件和嵌套挂载。候选根只先做不打开用户文件的保守探测；一旦可能有用户数据，旧源、selected runtime 目标和固定 anchor 分别通过存储迁移复制原语写入同卷的随机私有快照。目标快照只包含迁移清单；anchor 快照只复制受限的 `root_state` 和 tombstone 状态。cloudsave 暂存事实直接在固定 anchor 的同一已固定根代次上读取：manifest 最多 4 MiB，空目录骨架不算内容，缺少有效 manifest 时只安全遍历“是否存在实际文件”，绝不把 cloudsave payload 复制进 phase-0 工作区。固定锚点的 `state`、`cloudsave` 以及锁文件绝不进入发布清单。内容判定、修复评分、配置合并、tombstone 和可选 state 读取只能使用对应快照，不能在复制后重新读取原根；只有 cloudsave gate 使用上述受限事实，并在允许发布前对同一 anchor 代次复验。普通缓存仍不算用户内容，但缓存路径若是链接／reparse／特殊类型必须中止导入并进入受限恢复。旧根来源按规范物理路径持久化和比较，两个词法别名不得绕过一次性导入边界而复活用户已经删除的数据。
+
+旧源、selected runtime 目标和固定 anchor 的私有快照必须固定各自根边界，按清单记录复制前、复制后和暂存副本的 SHA-256／长度／相对路径摘要；三者不一致即停止，不能发布跨条目的混合代次。每个私有准备目录创建后都必须立即把随机路径和该目录身份写入固定 anchor 的 `root_state.legacy_import_preparation`，前一项身份持久化后才能创建下一项；若进程恰在 `mkdir` 与身份落盘之间崩溃，名称本身不构成删除授权，恢复必须保留这个无法认证的孤儿目录、不作读取或删除，同时安全退役本次 preparation ledger，并以新的随机 attempt 重试，不能让一次普通断电永久阻塞启动。共享迁移检查点建立前崩溃时，下一次启动只按已记录身份清理确属本次尝试的目录；已记录路径被替换、重定向或身份不符时仍停止。准备阶段在每次复制前执行权威容量门禁，并覆盖 source 快照、target 快照与原像备份、最终合并后的 `S+T` 共享事务副本、固定元数据、安全余量以及 POSIX 可用 inode；不能让各快照分别通过却在 `2S+3T` 量级的总峰值处耗尽。配置合并输出通过固定 POSIX 目录描述符或 Windows deny-delete guard 写入，不能在身份检查后重新按可替换路径创建文件。私有 source、target、anchor、backup 和 config 的初始目录身份必须贯穿评分、合并、摘要与共享检查点交接，后续步骤不得重新按路径接受另一代同名目录。发布前再次核对原旧源、目标实时基线、anchor 实时基线和目标原像备份；任一变化都不得进入发布。
+
+phase-0 不移动或替换整个 selected root，而是把合并后的旧源快照作为共享存储迁移引擎的源，按统一迁移清单逐入口复制、发布和回滚。当前只要已有 completed 检查点且其 target 是当前运行根，显式迁移结果即为权威，phase-0 不再扫描旧根；其他活动检查点也只保留并让出，不得覆盖。真正写入内部检查点时以跨进程检查点事务执行 compare-and-swap，发现并发出现的任何检查点即中止发布。内部 `state/storage_migration.json` 检查点使用 `layout_commit_mode=preserve_existing`：它记录源／目标身份和基线、完成事实以及 retained target preimage backup，但绝不改写 storage policy，也不把私有快照写成 selected root。目标发布前的完整运行时原像保存在同级随机 `.legacy-backup-*`，成功后作为界面可发现、可手动清理的 retained backup；原旧版本根的运行时条目不被 phase-0 清理，但受管社区私有状态会按固定锚点规则一次性迁移并删除已成功迁移的旧文件，不能笼统声称整个旧根字节不变。共享事务完成后，必须先把导入结果和 retained backup 原子写入固定 anchor 的 `root_state`，再按身份清理旧源私有快照和共享事务，最后才以 compare-and-swap 把仍属同一 txid 的内部 legacy 检查点转换成普通 completed/manual-retention 检查点。普通 retained 字段继续只指向 target preimage，并携带从迁移期继承的设备号/inode 删除授权；清理请求只能复核和消费该授权，不能以请求发生时的当前路径身份重新授权。旧检查点缺少该身份时仍可展示完成事实，但自动清理关闭。真实旧版本根及其设备号/inode 另存为不暴露给 UI 的私有状态兼容来源。界面把 retained 对象称为“迁移保留备份”，phase-0 只提示旧版本根的运行时条目未被清理，并明确受管私有状态可能已迁移；不能声称清理后只剩新运行目录。retained backup 被清理后，身份仍匹配且与 committed target 不同的真实旧根可以继续完成旧社区凭据的一次性导入；身份不匹配、路径含链接／reparse、或与 target/被清理 retained 物理相同时零读零删。任一步失败都保留内部检查点并阻止业务写入；普通 terminal cleanup 不得越过 finalizer 提前删除其回滚事务，finalizer 在交接前后都必须重验 retained backup。启动先建立本地状态诊断，再恢复 preparation／共享检查点，随后才进入 cloud apply fence；Cloud Save provider 禁用不能跳过这些纯本地恢复步骤。
+
 迁移拒绝源入口、内部条目及源/目标路径链上的符号链接；Windows junction 等重解析点按同一边界处理，避免复制越过用户确认的目录。这个检查覆盖每个清单条目的**完整词法父链**，包括 `state/game_scores` 的中间 `state`，并在源扫描、暂存、发布、回滚和旧根清理的不可逆边界重复检查；不能只检查末级入口是否为链接。POSIX 还必须在进入清单条目和事务树前拒绝相交的嵌套挂载，并在移动目标备份、回滚及清理前重复确认；存储根自身可以是挂载点，清单外无关路径中的挂载不应误阻断。Linux 以打开句柄的 mount ID 区分同设备 bind mount，macOS 以设备身份约束递归边界；源复制、暂存树持久化和事务清理都通过固定目录句柄逐级访问，并在进入每个子项前再次核对挂载身份，不能让预扫描后的新挂载被普通路径递归进入。POSIX 暂存目标的目录与文件也必须相对已经验证并固定的父目录句柄创建，完成后重新核对命名身份；事务根的目录持久化必须直接作用于已经固定的描述符，并在 `copying` 检查点落盘前后复验该描述符仍对应原命名目录，不能在身份检查后重新按路径打开。进入发布后还要同时固定目标根、事务根、`staged` 和 `backup`：当前卷内事务根必须从已固定的目标根描述符相对打开，入口摘要、目标备份、暂存发布和回滚只能相对这些描述符及逐级固定的父目录执行；发布或回滚新建嵌套父目录时，记录该名称的 containing parent 必须在入口 rename 前完成 required fsync，即使该目录由并发方先创建也不能省略。即使事务根或目标路径被改名并在原名放置链接，也只能操作原先固定的树并完成回滚，不能沿新路径向事务外写入；策略和根状态提交前后还要复验完整祖先链未出现符号链接。Windows 对 owner marker 复验后的事务根、`staged`、`backup`、目标根以及发布入口的各级父目录使用带 `FILE_TRAVERSE`/读取属性且拒绝删除共享的原生句柄，避免属性查询句柄绕过共享核算，并持有到发布或回滚结束，防止普通目录重命名绕过所有权边界；复制目录树时使用单次受控递归，创建每个暂存子目录后立即持有同类 guard，不能先扫描一遍再让通用 `copytree` 创建未固定的新目录。`workshop_config.json` 的 Windows 暂存重写还必须从卷根或 UNC share root 之后逐级固定到 `staged/config` 的完整祖先链，并从读取开始持有拒绝 write/delete 的文件句柄；句柄改名统一使用 `RootDirectory=NULL` 和完整绝对目标路径（SMB/SMB2 不接受非零 RootDirectory），先把所读对象改到私有备份名，再用 `ReplaceIfExists=FALSE` 把已刷盘临时文件发布到空出的公开名。若并发文件抢先占名，发布必须失败且保留赢家，不能以过期 payload 覆盖；异常退出后必须释放 guard，避免阻塞后续发布或恢复。每个文件按 SHA-256、长度和相对路径生成确定性清单摘要，空目录也进入摘要；POSIX 摘要中的路径使用文件系统原始字节语义，无法解码的文件名不能因严格 UTF-8 编码导致迁移失败。复制前后的源摘要必须一致，暂存和最终发布摘要必须与预期一致。复制普通权限、时间及非阻断扩展元数据时，不得把 macOS/BSD 的 immutable、append-only 或 nounlink 标志带入私有暂存区，否则会让发布、回滚和事务清理永久失败；源文件标志保持不变。`workshop_config.json` 中绑定旧运行根的路径只在暂存副本中重写到最终目标，不修改源目录；迁移读取沿用桌面 JSON 入口的 16 MiB 上限，并同时核对打开时大小和累计读取量，超限时保留源数据并受控停止，不能在 launcher 内无界聚合。临时文件在原子替换后必须仍与已刷盘的打开句柄指向同一文件，重写前后的兄弟条目清单不得变化，供发布使用的配置摘要必须在固定目录句柄释放前生成，不能用稍后的路径重扫结果覆盖预期事实。
 
 目标根的物理身份必须在可写探针前后保持稳定，并在事务创建前记录、发布固定时复核；发布前目标摘要必须在目标根固定后通过同一描述符生成。POSIX 的私有事务准备目录、owner marker 和事务公开名也必须相对这一个持续固定的目标根描述符创建、刷盘和 no-replace 发布，不能在身份检查后重新按可替换路径建立信任。
@@ -186,7 +194,7 @@ plugin-runtime
 - 目标目录中无关的其他文件会保留；
 - `selection_source` 只用于展示和审计，`legacy`、`recovered` 等来源不能把复制变成“直接采用目标内容”。
 
-确认建立时，后端记录目标中受管入口的内容摘要；launcher 在复制前和发布前各复核一次。目标受管内容只要发生变化，迁移就以 `target_changed_since_confirmation` 停止，不能用过期确认覆盖新数据。
+确认建立时，后端把目标中受管入口的内容摘要绑定到本次 `restart_operation_id`；确认请求先与该摘要比较，并在构造持久检查点的同一事务内再比较一次。任一时点发现变化都返回新的 `target_confirmation_required`，刷新本次操作的观察代并要求用户再次确认；不能在请求级检查通过后把随后出现的数据纳入已确认基线。launcher 在复制前和发布前还各复核一次，目标受管内容只要发生变化，迁移就以 `target_changed_since_confirmation` 停止，不能用过期确认覆盖新数据。
 
 ### 6.3 目标路径约束
 
@@ -241,8 +249,9 @@ plugin-runtime
 - 受管入口清理后，非锚点旧根仅在已经为空时删除；锚点本身始终保留；
 - 第一次删除前先把 `retained_source_mode=cleanup_in_progress`、私有文件摘要和旧根设备号/inode 持久化；落盘失败时零删除。重试只能清理同一物理目录，原路径被复用为另一真实目录时必须停止；
 - POSIX 清理逐级以 `O_NOFOLLOW` 打开并固定目录句柄，运行条目和社区私有文件都只通过该句柄的相对路径访问。即使旧根或祖先在清理期间被改名、替换或改成链接，也不能转而删除新路径指向的数据；
+- 每个受管入口或社区私有文件删除后都必须 required fsync 其已固定父目录；任一刷盘失败都保留已经落盘的 `cleanup_in_progress` 并返回失败，不能发布 `cleaned` 或让界面失去恢复入口；
 - Windows 的 Python 标准库不能提供与 POSIX `dir_fd` 等价的 handle-relative 安全删除合同，因此当前不显示自动清理入口，也不写清理意图，只提示用户手动清理保留目录。不能退回到普通 `rmtree(path)`；
-- 兼容读取只从已完成检查点确认的 retained/source 导入，target 只能作为冲突见证，不能在源凭据缺失时反向成为权威。`cleanup_in_progress` 和 `cleaned` 的旧根都禁止懒导入；
+- 兼容读取只从已完成检查点确认且身份仍匹配的 retained/source 导入，target 只能作为冲突见证，不能在源凭据缺失时反向成为权威。`cleanup_in_progress` 和 `cleaned` 禁止从对应 retained backup 懒导入；phase-0 单独记录、与该 backup 物理不同且始终保留的真实旧版本根不受这个 UI 清理状态误伤；登出还必须先在固定 anchor 持久化单调递增的 `community_logout.json.logout_epoch`，凭据和 OAuth/Steam pending 记录只在自身 epoch 等于当前 epoch 时有效。旧记录缺字段按 epoch 0 兼容；一旦登出推进代次，临时离线的旧源即使以同一 inode 重挂也只能保留为不可导入证据，不能让旧 token 或旧回调复活；新登录在同一 social-session 锁内核对并写入当前 epoch；
 - logout 在删除任何权威凭据前必须证明已提交 selected root 可访问；外置盘离线时零删除，重新挂载后才允许重试。删除顺序为旧副本在前、固定权威在后，任一步失败立即停止。
 
 清理事实以文件系统中的受管条目为准：如果删除已完成而检查点或 `root_state` 落盘失败，接口仍返回成功并标记 `metadata_persisted=false`；后续状态不得因为陈旧的 `legacy_cleanup_pending` 或 `last_migration_backup` 再显示假待清理。旧根不可访问与旧根不存在必须区分，前者继续 fail-closed。
@@ -305,7 +314,7 @@ plugin-runtime
 - 维护遮罩和 `/status` 轮询；
 - 完成提示、打开新/旧目录和旧目录清理。
 
-维护轮询同时兼容 `/storage/location/status` 顶层字段与 `/system/status` 的 `storage.*` 字段。每次重启轮询都分配 generation，旧请求、旧 bootstrap 和旧定时器不能覆盖新的外部维护事件。维护页不能因第一拍同实例、缺失身份或字段互相矛盾的 `ready` 立即 reload；必须先观察到明确迁移阻塞，或确认响应来自不同 `instance_id`，且当前响应没有任何 pending/publishing/阻塞字段。预检还要生成单次 `restart_operation_id`：`/restart` 在进入互斥队列前认领为 `in_flight`，状态轮询按该 ID 读取权威阶段；结果未知时只允许取消仍为 `prepared` 的预约，已在途或已受理的操作不能由网页猜测取消。结果未知且带操作 ID 时，其他标签页产生的迁移阻塞不能替当前操作背书：同一实例只允许当前 ID、目标和实例完全匹配且状态为 `cancelled/rejected/expired` 后恢复 ready，或在 `indeterminate` 等终态下进入相应恢复/选择面；成功请求则必须看到新的 `instance_id`。进入 `failed`、`recovery_required` 或 `selection_required` 时必须重新读取 bootstrap 后再切换选择页，不能复用迁移前快照；`rollback_required` 则保持业务门禁，显示真实错误和“安全退出并在下次启动恢复”，不能画成仍会自动重启的假进度。
+维护轮询同时兼容 `/storage/location/status` 顶层字段与 `/system/status` 的 `storage.*` 字段。每次重启轮询都分配 generation，旧请求、旧 bootstrap 和旧定时器不能覆盖新的外部维护事件。维护页不能因第一拍同实例、缺失身份或字段互相矛盾的 `ready` 立即 reload；必须先观察到明确迁移阻塞，或确认响应来自不同 `instance_id`，且当前响应没有任何 pending/publishing/阻塞字段。预检还要生成单次 `restart_operation_id`：`/restart` 在进入互斥队列前认领为 `in_flight`，状态轮询按该 ID 读取权威阶段；结果未知时只允许取消仍为 `prepared` 的预约，已在途或已受理的操作不能由网页猜测取消。结果未知且带操作 ID 时，其他标签页产生的迁移阻塞不能替当前操作背书：同一实例只允许当前 ID、目标和实例完全匹配且状态为 `cancelled/rejected/expired` 后恢复 ready，或在 `indeterminate` 等终态下进入相应恢复/选择面；成功请求则必须看到新的 `instance_id`。这些终态操作记录在当前后端实例生命周期内不得按普通 TTL 删除，否则丢失响应、页面挂起后会把同实例 `not_found` 误判为仍可能执行而永久留在维护门禁；实例重启本身由新的 `instance_id` 提供终结证据。进入 `failed`、`recovery_required` 或 `selection_required` 时必须重新读取 bootstrap 后再切换选择页，不能复用迁移前快照；`rollback_required` 则保持业务门禁，显示真实错误和“安全退出并在下次启动恢复”，不能画成仍会自动重启的假进度。
 
 所有状态、退出和迁移变更请求都必须有界；截止时间覆盖 `fetch()`、响应体读取和 JSON 解析，而不只覆盖响应头。`/select` 或 `/restart` 在网络超时后属于“结果未知”，前端必须查询当前状态确认事实，不能直接重试一次可能已经成功的变更。
 

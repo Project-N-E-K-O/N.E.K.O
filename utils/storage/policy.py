@@ -960,6 +960,475 @@ def _revalidate_windows_state_directories(
         raise StoragePolicyError("policy_path_changed")
 
 
+def _validate_fixed_anchor_state_filename(filename: str) -> str:
+    normalized = str(filename or "")
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+    ):
+        raise StoragePolicyError("policy_path_uninspectable")
+    return normalized
+
+
+def _open_or_create_posix_directory_at(
+    parent_fd: int,
+    name: str,
+    *,
+    create: bool,
+) -> int:
+    try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        if not create:
+            raise
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+            _fsync_opened_policy_directory_required(parent_fd)
+            named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileExistsError:
+            named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    if stat.S_ISLNK(named.st_mode) or not stat.S_ISDIR(named.st_mode):
+        raise StoragePolicyError("policy_path_redirect")
+    try:
+        directory_fd = os.open(name, _posix_directory_open_flags(), dir_fd=parent_fd)
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    opened = os.fstat(directory_fd)
+    if not stat.S_ISDIR(opened.st_mode) or not os.path.samestat(named, opened):
+        os.close(directory_fd)
+        raise StoragePolicyError("policy_path_changed")
+    return directory_fd
+
+
+def _open_or_create_posix_anchor_state_directories(
+    anchor_root: Path,
+) -> tuple[int, int]:
+    """Create and pin the fixed anchor/state chain without following redirects."""
+
+    if not anchor_root.is_absolute() or not anchor_root.anchor:
+        raise StoragePolicyError("anchor_root_uninspectable")
+    directory_fd = -1
+    anchor_fd = -1
+    state_fd = -1
+    try:
+        directory_fd = os.open(anchor_root.anchor, _posix_directory_open_flags())
+        for component in anchor_root.parts[1:]:
+            child_fd = _open_or_create_posix_directory_at(
+                directory_fd,
+                component,
+                create=True,
+            )
+            os.close(directory_fd)
+            directory_fd = child_fd
+        anchor_fd = directory_fd
+        directory_fd = -1
+        state_fd = _open_or_create_posix_directory_at(
+            anchor_fd,
+            "state",
+            create=True,
+        )
+        _revalidate_posix_state_directories(
+            anchor_root,
+            anchor_fd,
+            state_fd,
+        )
+        return anchor_fd, state_fd
+    except BaseException:
+        for fd in (state_fd, anchor_fd, directory_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+        raise
+
+
+def _write_fixed_anchor_state_json_posix(
+    anchor_root: Path,
+    filename: str,
+    encoded_payload: bytes,
+) -> None:
+    anchor_fd = -1
+    state_fd = -1
+    temp_fd = -1
+    temp_name = f".neko-state-{uuid.uuid4().hex}.tmp"
+    temp_created = False
+    try:
+        anchor_fd, state_fd = _open_or_create_posix_anchor_state_directories(
+            anchor_root
+        )
+        try:
+            existing = os.stat(filename, dir_fd=state_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+        else:
+            if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
+                raise StoragePolicyError("policy_path_redirect")
+
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        temp_fd = os.open(temp_name, flags, 0o600, dir_fd=state_fd)
+        temp_created = True
+        view = memoryview(encoded_payload)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError("short write while publishing fixed-anchor state")
+            view = view[written:]
+        os.fsync(temp_fd)
+        opened_temp = os.fstat(temp_fd)
+        named_temp = os.stat(
+            temp_name,
+            dir_fd=state_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened_temp.st_mode)
+            or not stat.S_ISREG(named_temp.st_mode)
+            or not os.path.samestat(opened_temp, named_temp)
+        ):
+            raise StoragePolicyError("policy_path_changed")
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+        os.replace(
+            temp_name,
+            filename,
+            src_dir_fd=state_fd,
+            dst_dir_fd=state_fd,
+        )
+        temp_created = False
+        published = os.stat(
+            filename,
+            dir_fd=state_fd,
+            follow_symlinks=False,
+        )
+        if not os.path.samestat(opened_temp, published):
+            raise StoragePolicyError("policy_path_changed")
+        _fsync_opened_policy_directory_required(state_fd)
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+    except StoragePolicyError:
+        raise
+    except OSError as exc:
+        raise StoragePolicyError("policy_write_failed") from exc
+    finally:
+        if temp_fd >= 0:
+            with suppress(OSError):
+                os.close(temp_fd)
+        if temp_created and state_fd >= 0:
+            with suppress(OSError):
+                os.unlink(temp_name, dir_fd=state_fd)
+        for fd in (state_fd, anchor_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+
+
+def _write_fixed_anchor_state_json_windows(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result,
+    filename: str,
+    payload: Any,
+    *,
+    ensure_ascii: bool = False,
+    indent: int | None = 2,
+) -> None:
+    handles = _open_windows_policy_directory_guards(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+    )
+    state_path = anchor_root / "state"
+    target_path = state_path / filename
+    try:
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+        try:
+            existing = target_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+        else:
+            is_reparse_point = bool(
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                & getattr(existing, "st_file_attributes", 0)
+            )
+            if (
+                stat.S_ISLNK(existing.st_mode)
+                or is_reparse_point
+                or not stat.S_ISREG(existing.st_mode)
+            ):
+                raise StoragePolicyError("policy_path_redirect")
+        atomic_write_json(
+            target_path,
+            payload,
+            ensure_ascii=ensure_ascii,
+            indent=indent,
+        )
+        _fsync_policy_directory_required(state_path)
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+    except StoragePolicyError:
+        raise
+    except OSError as exc:
+        raise StoragePolicyError("policy_write_failed") from exc
+    finally:
+        _close_windows_policy_directory_guards(handles)
+
+
+def write_fixed_anchor_state_json(
+    configured_anchor_root: Path | str,
+    filename: str,
+    payload: Any,
+    *,
+    ensure_ascii: bool = False,
+    indent: int | None = 2,
+) -> None:
+    """Durably publish one JSON authority file inside the fixed anchor state dir."""
+
+    filename = _validate_fixed_anchor_state_filename(filename)
+    raw_anchor_root = Path(configured_anchor_root).expanduser()
+    _validate_storage_policy_anchor(raw_anchor_root)
+    anchor_root = Path(os.path.abspath(os.fspath(raw_anchor_root)))
+    encoded_payload = json.dumps(
+        payload,
+        ensure_ascii=ensure_ascii,
+        indent=indent,
+    ).encode("utf-8")
+    _validate_fixed_anchor_json_size(len(encoded_payload))
+    if os.name != "nt":
+        _write_fixed_anchor_state_json_posix(
+            anchor_root,
+            filename,
+            encoded_payload,
+        )
+        return
+
+    anchor_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state_path = anchor_root / "state"
+    state_path.mkdir(mode=0o700, exist_ok=True)
+    expected_anchor = _validate_storage_policy_anchor(anchor_root)
+    if expected_anchor is None:
+        raise StoragePolicyError("anchor_root_changed")
+    try:
+        expected_state = state_path.lstat()
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    is_reparse_point = bool(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        & getattr(expected_state, "st_file_attributes", 0)
+    )
+    if (
+        stat.S_ISLNK(expected_state.st_mode)
+        or is_reparse_point
+        or not stat.S_ISDIR(expected_state.st_mode)
+    ):
+        raise StoragePolicyError("policy_path_redirect")
+    _write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        filename,
+        payload,
+        ensure_ascii=ensure_ascii,
+        indent=indent,
+    )
+
+
+def _delete_fixed_anchor_state_json_posix(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    filename: str,
+) -> None:
+    anchor_fd = -1
+    state_fd = -1
+    try:
+        anchor_fd = _open_posix_anchor_directory(anchor_root, expected_anchor)
+        try:
+            state_fd = _open_posix_child_directory(anchor_fd, "state")
+        except FileNotFoundError:
+            _revalidate_posix_policy_absence(
+                anchor_root,
+                anchor_fd,
+                -1,
+                filename,
+            )
+            return
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+        try:
+            existing = os.stat(filename, dir_fd=state_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            _revalidate_posix_policy_absence(
+                anchor_root,
+                anchor_fd,
+                state_fd,
+                filename,
+            )
+            return
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+        if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
+            raise StoragePolicyError("policy_path_redirect")
+        os.unlink(filename, dir_fd=state_fd)
+        _fsync_opened_policy_directory_required(state_fd)
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+    except StoragePolicyError:
+        raise
+    except OSError as exc:
+        raise StoragePolicyError("policy_delete_failed") from exc
+    finally:
+        for fd in (state_fd, anchor_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+
+
+def _delete_fixed_anchor_state_json_windows(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result,
+    filename: str,
+) -> None:
+    handles = _open_windows_policy_directory_guards(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+    )
+    target_path = anchor_root / "state" / filename
+    try:
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+        try:
+            existing = target_path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+        is_reparse_point = bool(
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            & getattr(existing, "st_file_attributes", 0)
+        )
+        if (
+            stat.S_ISLNK(existing.st_mode)
+            or is_reparse_point
+            or not stat.S_ISREG(existing.st_mode)
+        ):
+            raise StoragePolicyError("policy_path_redirect")
+        os.unlink(target_path)
+        _fsync_policy_directory_required(target_path.parent)
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+    except StoragePolicyError:
+        raise
+    except OSError as exc:
+        raise StoragePolicyError("policy_delete_failed") from exc
+    finally:
+        _close_windows_policy_directory_guards(handles)
+
+
+def _confirm_windows_fixed_anchor_state_absent(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+) -> None:
+    """Prove state is absent while the original anchor name cannot be swapped."""
+
+    handles = _open_windows_policy_directory_guards(
+        anchor_root,
+        expected_anchor,
+        None,
+    )
+    try:
+        refreshed_anchor = _validate_storage_policy_anchor(anchor_root)
+        if refreshed_anchor is None or not os.path.samestat(
+            expected_anchor,
+            refreshed_anchor,
+        ):
+            raise StoragePolicyError("anchor_root_changed")
+        try:
+            (anchor_root / "state").lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise StoragePolicyError("policy_path_uninspectable") from exc
+        raise StoragePolicyError("policy_path_changed")
+    finally:
+        _close_windows_policy_directory_guards(handles)
+
+
+def delete_fixed_anchor_state_json(
+    configured_anchor_root: Path | str,
+    filename: str,
+) -> None:
+    """Durably remove one JSON authority file without following a replaced state dir."""
+
+    filename = _validate_fixed_anchor_state_filename(filename)
+    raw_anchor_root = Path(configured_anchor_root).expanduser()
+    expected_anchor = _validate_storage_policy_anchor(raw_anchor_root)
+    anchor_root = Path(os.path.abspath(os.fspath(raw_anchor_root)))
+    if expected_anchor is None:
+        if _validate_storage_policy_anchor(raw_anchor_root) is not None:
+            raise StoragePolicyError("anchor_root_changed")
+        return
+    if os.name != "nt":
+        _delete_fixed_anchor_state_json_posix(
+            anchor_root,
+            expected_anchor,
+            filename,
+        )
+        return
+
+    state_path = anchor_root / "state"
+    try:
+        expected_state = state_path.lstat()
+    except FileNotFoundError:
+        _confirm_windows_fixed_anchor_state_absent(
+            anchor_root,
+            expected_anchor,
+        )
+        return
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    is_reparse_point = bool(
+        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        & getattr(expected_state, "st_file_attributes", 0)
+    )
+    if (
+        stat.S_ISLNK(expected_state.st_mode)
+        or is_reparse_point
+        or not stat.S_ISDIR(expected_state.st_mode)
+    ):
+        raise StoragePolicyError("policy_path_redirect")
+    _delete_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        filename,
+    )
+
+
 def _restore_storage_policy_snapshot_windows(
     anchor_root: Path,
     expected_anchor: os.stat_result,

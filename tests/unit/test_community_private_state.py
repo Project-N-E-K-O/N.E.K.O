@@ -126,19 +126,36 @@ def test_private_json_reader_allows_atomic_replace_but_rejects_stale_snapshot(
     replacement.write_text('{"access_token":"new"}', encoding="utf-8")
     real_read = private_state.os.read
     replaced = False
+    replace_blocked = False
 
     def replace_after_first_read(fd, size):
-        nonlocal replaced
+        nonlocal replaced, replace_blocked
         chunk = real_read(fd, size)
         if chunk and not replaced:
             replaced = True
-            os.replace(replacement, credential)
+            try:
+                os.replace(replacement, credential)
+            except OSError as exc:
+                if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32}:
+                    raise
+                # MoveFileExW cannot replace the target while this reader's
+                # exact handle is open. A concurrent replacer can publish only
+                # after that handle closes; do not inject its sharing violation
+                # into os.read and misclassify the reader itself as unreadable.
+                replace_blocked = True
         return chunk
 
     monkeypatch.setattr(private_state.os, "read", replace_after_first_read)
 
-    assert private_state.read_private_json_state(credential) == ("unsafe", None)
+    result = private_state.read_private_json_state(credential)
     assert replaced is True
+    if os.name == "nt":
+        assert replace_blocked is True
+        assert result == ("valid", {"access_token": "old"})
+        os.replace(replacement, credential)
+    else:
+        assert replace_blocked is False
+        assert result == ("unsafe", None)
     assert json.loads(credential.read_text(encoding="utf-8")) == {
         "access_token": "new"
     }
@@ -159,7 +176,30 @@ def _install_roots(monkeypatch, *, anchor_state: Path, selected_root: Path, reta
             "target_root": str(selected_root),
             "retained_source_root": str(retained_root),
         }
-    monkeypatch.setattr(storage_migration_module, "load_storage_migration", lambda *_args, **_kwargs: migration)
+
+    def _load_migration(*_args, **_kwargs):
+        if migration is None:
+            return None
+        payload = dict(migration)
+        try:
+            identity = retained_root.lstat()
+        except OSError:
+            return payload
+        payload["retained_source_identity"] = {
+            "device": int(identity.st_dev),
+            "inode": int(identity.st_ino),
+        }
+        payload["source_root_identity"] = [
+            int(identity.st_dev),
+            int(identity.st_ino),
+        ]
+        return payload
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "load_storage_migration",
+        _load_migration,
+    )
     return manager
 
 
@@ -747,6 +787,62 @@ def test_offline_committed_target_makes_logout_zero_delete_until_remount(
     assert reused_source_auth.exists()
 
 
+def test_logout_generation_blocks_offline_phase0_private_source_after_remount(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    target_root = tmp_path / "selected" / "N.E.K.O"
+    private_source = tmp_path / "legacy" / "N.E.K.O"
+    offline_source = tmp_path / "legacy" / "N.E.K.O.offline"
+    manager = _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=target_root,
+    )
+    manager.committed_selected_root = target_root
+    target_root.mkdir(parents=True)
+    private_source.mkdir(parents=True)
+    stale_auth = private_source / "community_auth.json"
+    stale_auth.write_text(
+        json.dumps({"access_token": "stale"}),
+        encoding="utf-8",
+    )
+    source_identity = private_source.lstat()
+    monkeypatch.setattr(
+        storage_migration_module,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: {
+            "status": "completed",
+            "source_root": str(private_source),
+            "target_root": str(target_root),
+            "retained_source_mode": "manual_retention",
+            "legacy_private_state_source_root": str(private_source),
+            "legacy_private_state_source_identity": [
+                int(source_identity.st_dev),
+                int(source_identity.st_ino),
+            ],
+        },
+    )
+
+    private_source.rename(offline_source)
+    assert C._clear_auth() is True
+    logout_state = json.loads(
+        (anchor_state / "community_logout.json").read_text(encoding="utf-8")
+    )
+    assert logout_state["logout_epoch"] == 1
+
+    offline_source.rename(private_source)
+    assert C._load_auth() is None
+    assert stale_auth.exists()
+    assert not (anchor_state / "community_auth.json").exists()
+    assert C._save_auth({"access_token": "fresh"}) is True
+    fresh = json.loads(
+        (anchor_state / "community_auth.json").read_text(encoding="utf-8")
+    )
+    assert fresh == {"access_token": "fresh", "credential_epoch": 1}
+    assert C._load_auth() == fresh
+
 def test_target_unlink_failure_preserves_canonical_login_for_retry(tmp_path, monkeypatch):
     anchor_state = tmp_path / "anchor" / "state"
     selected_root = tmp_path / "target" / "N.E.K.O"
@@ -860,6 +956,114 @@ def test_checkpoint_failure_never_falls_back_to_current_root_private_state(
     assert not any(anchor_state.glob("*.json"))
     for filename, payload in records.items():
         assert json.loads((selected_root / filename).read_text(encoding="utf-8")) == payload
+
+
+def test_phase0_private_state_source_remains_reachable_after_backup_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    retained_root = tmp_path / "retained-target-preimage"
+    private_source = tmp_path / "legacy" / "N.E.K.O"
+    manager = _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+    )
+    manager.committed_selected_root = selected_root
+    selected_root.mkdir(parents=True)
+    retained_root.mkdir()
+    private_source.mkdir(parents=True)
+    (private_source / "community_auth.json").write_text(
+        json.dumps({"access_token": "legacy-token"}),
+        encoding="utf-8",
+    )
+    private_identity = private_source.lstat()
+    checkpoint = {
+        "status": "completed",
+        "target_root": str(selected_root),
+        "source_root": str(private_source),
+        "backup_root": "",
+        "retained_source_root": "",
+        "retained_source_mode": "cleaned",
+        "legacy_private_state_source_root": str(private_source),
+        "legacy_private_state_source_identity": [
+            int(private_identity.st_dev),
+            int(private_identity.st_ino),
+        ],
+    }
+    monkeypatch.setattr(
+        storage_migration_module,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+
+    import_roots, witness_roots = C._legacy_root_candidates(manager)
+
+    assert import_roots == [private_source]
+    assert private_source in witness_roots
+    assert selected_root in witness_roots
+    assert C._load_auth() == {"access_token": "legacy-token"}
+    assert json.loads(
+        (anchor_state / "community_auth.json").read_text(encoding="utf-8")
+    ) == {"access_token": "legacy-token"}
+    assert not (private_source / "community_auth.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("private_source_kind", "identity_matches"),
+    (
+        ("retained", True),
+        ("committed", True),
+        ("distinct", False),
+    ),
+)
+def test_phase0_private_state_source_rejects_cleaned_or_untrusted_identity(
+    tmp_path,
+    monkeypatch,
+    private_source_kind,
+    identity_matches,
+):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    retained_root = tmp_path / "retained-target-preimage"
+    distinct_root = tmp_path / "legacy" / "N.E.K.O"
+    manager = _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+    )
+    manager.committed_selected_root = selected_root
+    selected_root.mkdir(parents=True)
+    retained_root.mkdir()
+    distinct_root.mkdir(parents=True)
+    private_source = {
+        "retained": retained_root,
+        "committed": selected_root,
+        "distinct": distinct_root,
+    }[private_source_kind]
+    private_identity = private_source.lstat()
+    identity = [int(private_identity.st_dev), int(private_identity.st_ino)]
+    if not identity_matches:
+        identity[1] += 1
+    checkpoint = {
+        "status": "completed",
+        "target_root": str(selected_root),
+        "source_root": str(distinct_root),
+        "backup_root": str(retained_root),
+        "retained_source_root": str(retained_root),
+        "retained_source_mode": "cleaned",
+        "legacy_private_state_source_root": str(private_source),
+        "legacy_private_state_source_identity": identity,
+    }
+    monkeypatch.setattr(
+        storage_migration_module,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+
+    assert C._legacy_root_candidates(manager) == ([], [])
 
 
 def test_anchor_permission_failure_keeps_last_legacy_credential_usable(
@@ -2176,7 +2380,10 @@ def test_social_legacy_lock_is_held_through_publish_verify_and_delete(
     assert finished.is_set()
     assert writer_errors == []
     assert json.loads(canonical.read_text(encoding="utf-8")) == before
-    assert json.loads(legacy.read_text(encoding="utf-8")) == concurrent
+    assert json.loads(legacy.read_text(encoding="utf-8")) == {
+        **concurrent,
+        "credential_epoch": 0,
+    }
 
 
 @pytest.mark.skipif(not HAS_SAFE_DIR_FD, reason="POSIX dirfd cleanup is unavailable")
@@ -2233,7 +2440,10 @@ def test_dirfd_cleanup_holds_legacy_social_lock_through_delete(tmp_path, monkeyp
     writer.join(timeout=2)
     assert finished.is_set()
     assert json.loads(canonical.read_text(encoding="utf-8")) == before
-    assert json.loads(legacy.read_text(encoding="utf-8")) == concurrent
+    assert json.loads(legacy.read_text(encoding="utf-8")) == {
+        **concurrent,
+        "credential_epoch": 0,
+    }
 
 
 def test_social_lock_deduplicates_two_aliases_of_same_physical_parent(tmp_path, monkeypatch):

@@ -83,14 +83,21 @@ from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+    build_pending_storage_migration_payload,
     create_pending_storage_migration,
     delete_storage_migration,
+    delete_storage_migration_if_unchanged,
     is_retained_root_cleanup_available,
+    is_storage_migration_pending,
     is_storage_migration_rollback_required,
     load_storage_migration,
+    replace_storage_migration_if_unchanged,
+    retained_source_identity_from_checkpoint,
     save_storage_migration,
+    storage_migration_checkpoint_transaction,
     storage_migration_retains_recovery_evidence,
     validate_storage_migration_preflight_boundaries,
+    _snapshot_runtime_entries,
 )
 from utils.storage_policy import (
     StoragePolicyError,
@@ -111,6 +118,7 @@ from utils.root_state_lock import root_state_transaction
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
 _DIRECTORY_PICKER_TIMEOUT_SECONDS = 120.0
+_TARGET_CONFIRMATION_SNAPSHOT_KEY = "_target_confirmation_snapshot"
 _storage_mutation_lock = asyncio.Lock()
 _retained_cleanup_requests_in_flight = 0
 _STORAGE_RESTART_OPERATION_TTL_SECONDS = 10 * 60
@@ -210,16 +218,18 @@ def _set_no_cache_headers(response: Response) -> None:
 
 def _prune_storage_restart_operations() -> None:
     now = time.monotonic()
-    for operation_id, operation in list(_storage_restart_operations.items()):
+    for _operation_id, operation in list(_storage_restart_operations.items()):
         age = now - float(operation.get("created_at") or now)
         if operation.get("state") == "prepared" and age >= _STORAGE_RESTART_OPERATION_TTL_SECONDS:
             operation["state"] = "expired"
             operation["updated_at"] = now
-        if age >= _STORAGE_RESTART_OPERATION_TTL_SECONDS * 2:
-            _storage_restart_operations.pop(operation_id, None)
 
 
-def _prepare_storage_restart_operation(target_root: Path | str) -> str:
+def _prepare_storage_restart_operation(
+    target_root: Path | str,
+    *,
+    target_confirmation_snapshot: dict[str, Any] | None = None,
+) -> str:
     _prune_storage_restart_operations()
     operation_id = uuid.uuid4().hex
     now = time.monotonic()
@@ -231,8 +241,45 @@ def _prepare_storage_restart_operation(target_root: Path | str) -> str:
         "created_at": now,
         "updated_at": now,
         "error_code": "",
+        "target_confirmation_snapshot": target_confirmation_snapshot,
     }
     return operation_id
+
+
+def _prepare_storage_restart_operation_from_preflight(
+    target_root: Path | str,
+    restart_preflight: dict[str, Any],
+) -> str:
+    target_confirmation_snapshot = restart_preflight.pop(
+        _TARGET_CONFIRMATION_SNAPSHOT_KEY,
+        None,
+    )
+    return _prepare_storage_restart_operation(
+        target_root,
+        target_confirmation_snapshot=target_confirmation_snapshot,
+    )
+
+
+def _restart_operation_matches_target_confirmation(
+    operation_id: str,
+    target_root: Path | str,
+    target_confirmation_snapshot: dict[str, Any] | None,
+) -> bool:
+    """Accept confirmation only for the target generation the user observed."""
+
+    operation = _storage_restart_operations.get(str(operation_id or "").strip())
+    if not isinstance(operation, dict) or target_confirmation_snapshot is None:
+        return False
+    if not paths_equal(operation.get("target_root") or "", target_root):
+        return False
+    observed_snapshot = operation.get("target_confirmation_snapshot")
+    if observed_snapshot != target_confirmation_snapshot:
+        # The next confirmation applies to this newly observed generation. The
+        # wrapper restores the operation to prepared after returning 409.
+        operation["target_confirmation_snapshot"] = target_confirmation_snapshot
+        operation["updated_at"] = time.monotonic()
+        return False
+    return True
 
 
 def _public_storage_restart_operation(operation_id: str) -> dict[str, Any]:
@@ -358,6 +405,14 @@ def _get_storage_anchor_root(config_manager, *, current_root: Path) -> Path:
     return compute_anchor_root(config_manager, current_root=current_root)
 
 
+def _storage_cleanup_intent_active(payload: dict[str, Any] | None) -> bool:
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("retained_source_mode") or "").strip()
+        == "cleanup_in_progress"
+    )
+
+
 def _snapshot_storage_mutation_state(config_manager, *, anchor_root: Path) -> dict[str, Any]:
     return {
         "root_state": config_manager.load_root_state(),
@@ -388,22 +443,35 @@ def _restore_storage_mutation_state(
         logger.warning("skipping storage mutation rollback: snapshot was never taken")
         return
 
-    previous_migration = snapshot.get("migration")
-    if isinstance(previous_migration, dict):
-        save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
-    else:
-        delete_storage_migration(config_manager, anchor_root=anchor_root)
+    with storage_migration_checkpoint_transaction(), root_state_transaction():
+        if "committed_migration" in snapshot:
+            committed_migration = snapshot.get("committed_migration")
+            current_migration = load_storage_migration(
+                config_manager,
+                anchor_root=anchor_root,
+            )
+            if current_migration != committed_migration:
+                raise StorageMigrationError(
+                    "migration_checkpoint_conflict",
+                    "关闭交接后检查点已被另一项操作更新，已停止回滚旧状态。",
+                )
 
-    previous_policy = snapshot.get("policy")
-    restore_storage_policy_snapshot(
-        config_manager,
-        previous_policy if isinstance(previous_policy, dict) else None,
-        anchor_root=anchor_root,
-    )
+        previous_migration = snapshot.get("migration")
+        if isinstance(previous_migration, dict):
+            save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
+        else:
+            delete_storage_migration(config_manager, anchor_root=anchor_root)
 
-    previous_root_state = snapshot.get("root_state")
-    if isinstance(previous_root_state, dict):
-        config_manager.save_root_state(previous_root_state)
+        previous_policy = snapshot.get("policy")
+        restore_storage_policy_snapshot(
+            config_manager,
+            previous_policy if isinstance(previous_policy, dict) else None,
+            anchor_root=anchor_root,
+        )
+
+        previous_root_state = snapshot.get("root_state")
+        if isinstance(previous_root_state, dict):
+            config_manager.save_root_state(previous_root_state)
 
 
 def _restore_restart_schedule_state(
@@ -413,14 +481,44 @@ def _restore_restart_schedule_state(
     anchor_root: Path,
     recovery_migration: dict[str, Any] | None = None,
 ) -> bool:
+    with storage_migration_checkpoint_transaction(), root_state_transaction():
+        return _restore_restart_schedule_state_locked(
+            config_manager,
+            snapshot,
+            anchor_root=anchor_root,
+            recovery_migration=recovery_migration,
+        )
+
+
+def _restore_restart_schedule_state_locked(
+    config_manager,
+    snapshot: dict[str, Any],
+    *,
+    anchor_root: Path,
+    recovery_migration: dict[str, Any] | None = None,
+) -> bool:
     """Restore the restart checkpoint and root state as one worker job."""
     previous_root_state = snapshot.get("root_state")
     previous_migration = snapshot.get("migration")
+    if not isinstance(recovery_migration, dict):
+        logger.warning(
+            "refusing restart-schedule rollback without its pending checkpoint generation"
+        )
+        return False
     try:
         if isinstance(previous_migration, dict):
-            save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
+            replace_storage_migration_if_unchanged(
+                config_manager,
+                recovery_migration,
+                previous_migration,
+                anchor_root=anchor_root,
+            )
         else:
-            delete_storage_migration(config_manager, anchor_root=anchor_root)
+            delete_storage_migration_if_unchanged(
+                config_manager,
+                recovery_migration,
+                anchor_root=anchor_root,
+            )
     except Exception:
         # 先前确有 checkpoint 时，save 失败后绝不能退化成 delete；原文件
         # 很可能仍由 atomic write 保留，删除反而把一次回滚失败扩大成数据丢失。
@@ -440,17 +538,25 @@ def _restore_restart_schedule_state(
         logger.exception(
             "failed to restore root_state during restart-schedule rollback"
         )
-        if isinstance(recovery_migration, dict):
-            try:
-                save_storage_migration(
+        try:
+            if isinstance(previous_migration, dict):
+                replace_storage_migration_if_unchanged(
                     config_manager,
+                    previous_migration,
                     recovery_migration,
                     anchor_root=anchor_root,
                 )
-            except Exception:
-                logger.exception(
-                    "failed to retain pending checkpoint after root_state rollback failed"
+            else:
+                replace_storage_migration_if_unchanged(
+                    config_manager,
+                    None,
+                    recovery_migration,
+                    anchor_root=anchor_root,
                 )
+        except Exception:
+            logger.exception(
+                "failed to retain pending checkpoint after root_state rollback failed"
+            )
         return False
     return True
 
@@ -497,6 +603,7 @@ async def _apply_storage_mutation_writes(
     *,
     anchor_root: Path,
     snapshot_out: dict[str, Any],
+    expected_migration: dict[str, Any] | None,
     write: Callable[[], Any],
 ) -> Any:
     """Take the rollback snapshot and run one storage-state write sequence off the loop.
@@ -521,7 +628,7 @@ async def _apply_storage_mutation_writes(
         # The rollback pre-image and the mutation must observe one root-state
         # transaction. In particular, do not snapshot the temporary mode held
         # by cloud_apply_fence and then replay it after that fence has exited.
-        with root_state_transaction():
+        with storage_migration_checkpoint_transaction(), root_state_transaction():
             snapshot_out.clear()
             snapshot_out.update(
                 _snapshot_storage_mutation_state(
@@ -529,8 +636,19 @@ async def _apply_storage_mutation_writes(
                     anchor_root=anchor_root,
                 )
             )
+            if snapshot_out.get("migration") != expected_migration:
+                snapshot_out.clear()
+                raise StorageMigrationError(
+                    "migration_checkpoint_conflict",
+                    "存储迁移检查点在关闭交接前已更新，未修改存储状态。",
+                )
             try:
-                return write()
+                result = write()
+                snapshot_out["committed_migration"] = load_storage_migration(
+                    config_manager,
+                    anchor_root=anchor_root,
+                )
+                return result
             except BaseException:
                 # The write order spans three independent files.  Keep their
                 # observable fact atomic even when the second or third write
@@ -577,6 +695,12 @@ def _resolve_same_root_restart_plan(
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
             "blocking_reason": "recovery_required",
         }
+    if _storage_cleanup_intent_active(raw_blocking_migration):
+        return {
+            "error_code": "retained_source_cleanup_in_progress",
+            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
+            "blocking_reason": "recovery_required",
+        }
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
         config_manager,
         current_root=current_root,
@@ -597,6 +721,7 @@ def _resolve_same_root_restart_plan(
             "selection_source": str(
                 current_policy.get("selection_source") or "user_selected"
             ),
+            "expected_migration": raw_blocking_migration,
             "write_selection": lambda: current_policy,
         }
 
@@ -631,6 +756,7 @@ def _resolve_same_root_restart_plan(
 
                 return {
                     "selection_source": selection_source,
+                    "expected_migration": raw_blocking_migration,
                     "write_selection": _recover_from_indeterminate_restart,
                 }
 
@@ -672,6 +798,7 @@ def _resolve_same_root_restart_plan(
 
             return {
                 "selection_source": selection_source,
+                "expected_migration": raw_blocking_migration,
                 "write_selection": _recover_from_failed_migration,
             }
 
@@ -696,6 +823,7 @@ def _resolve_same_root_restart_plan(
 
         return {
             "selection_source": selection_source,
+            "expected_migration": raw_blocking_migration,
             "write_selection": _recover_from_unavailable_selected_root,
         }
 
@@ -709,6 +837,7 @@ def _resolve_same_root_restart_plan(
 
     return {
         "selection_source": selection_source,
+        "expected_migration": raw_blocking_migration,
         "write_selection": _persist_current_root_selection,
     }
 
@@ -742,6 +871,7 @@ async def _schedule_same_root_storage_restart(
     anchor_root: Path,
     current_root: Path,
     selection_source: str,
+    expected_migration: dict[str, Any] | None,
     write_selection: Callable[[], Any],
 ) -> dict[str, Any]:
     """Commit a same-root decision and hand phase-0 to a fresh launcher.
@@ -783,6 +913,7 @@ async def _schedule_same_root_storage_restart(
             config_manager,
             anchor_root=anchor_root,
             snapshot_out=state_snapshot,
+            expected_migration=expected_migration,
             write=_commit_restart_handoff,
         )
         await _request_app_shutdown(request_app_shutdown)
@@ -1008,6 +1139,11 @@ def _build_restart_preflight(
         target_has_existing_content
         and not allow_existing_target_content
     )
+    target_confirmation_snapshot = (
+        _snapshot_runtime_entries(target_root)
+        if requires_existing_target_confirmation
+        else {}
+    )
 
     blocking_error_code = ""
     blocking_error_message = ""
@@ -1044,6 +1180,7 @@ def _build_restart_preflight(
         ),
         "blocking_error_code": blocking_error_code,
         "blocking_error_message": blocking_error_message,
+        _TARGET_CONFIRMATION_SNAPSHOT_KEY: target_confirmation_snapshot,
     }
 
 
@@ -1670,6 +1807,26 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _retained_root_matches_identity(
+    retained_path: Path,
+    expected_identity: dict[str, int] | None,
+) -> bool:
+    if expected_identity is None:
+        return False
+    try:
+        metadata = retained_path.lstat()
+        expected_device = int(expected_identity["device"])
+        expected_inode = int(expected_identity["inode"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        not stat.S_ISLNK(metadata.st_mode)
+        and stat.S_ISDIR(metadata.st_mode)
+        and int(metadata.st_dev) == expected_device
+        and int(metadata.st_ino) == expected_inode
+    )
+
+
 def _build_completed_migration_notice(
     config_manager,
     *,
@@ -1699,6 +1856,27 @@ def _build_completed_migration_notice(
 
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = _get_storage_anchor_root(config_manager, current_root=current_root)
+    try:
+        authoritative_migration_payload = load_storage_migration(
+            config_manager,
+            anchor_root=anchor_root,
+        )
+    except StorageMigrationError:
+        authoritative_migration_payload = None
+    try:
+        authoritative_checkpoint_matches = bool(
+            isinstance(authoritative_migration_payload, dict)
+            and str(authoritative_migration_payload.get("status") or "").strip()
+            == STORAGE_MIGRATION_STATUS_COMPLETED
+            and paths_equal(
+                authoritative_migration_payload.get("target_root") or "",
+                migration_payload.get("target_root") or "",
+            )
+        )
+    except (OSError, ValueError):
+        authoritative_checkpoint_matches = False
+    if not authoritative_checkpoint_matches:
+        authoritative_migration_payload = migration_payload
     target_root = str(migration_payload.get("target_root") or "").strip()
     source_root = str(migration_payload.get("source_root") or "").strip()
     retained_root = str(
@@ -1707,7 +1885,26 @@ def _build_completed_migration_notice(
         or source_root
         or ""
     ).strip()
+    try:
+        retained_is_target_preimage = bool(
+            source_root
+            and retained_root
+            and not paths_equal(source_root, retained_root)
+        )
+    except (OSError, ValueError):
+        retained_is_target_preimage = False
     retained_exists = bool(retained_root and Path(retained_root).exists())
+    retained_identity = retained_source_identity_from_checkpoint(
+        authoritative_migration_payload,
+        retained_root,
+    )
+    retained_identity_matches = bool(
+        retained_root
+        and _retained_root_matches_identity(
+            Path(retained_root),
+            retained_identity,
+        )
+    )
     retained_has_runtime_entries = False
     secure_cleanup_supported = _secure_retained_cleanup_supported()
     retained_private_state = probe_retained_community_state(
@@ -1740,7 +1937,7 @@ def _build_completed_migration_notice(
         return {
             "completed": False,
         }
-    cleanup_available = secure_cleanup_supported and is_retained_root_cleanup_available(
+    cleanup_available = retained_identity_matches and secure_cleanup_supported and is_retained_root_cleanup_available(
         retained_root,
         current_root=current_root,
         anchor_root=anchor_root,
@@ -1759,10 +1956,23 @@ def _build_completed_migration_notice(
         "source_root": source_root,
         "target_root": target_root,
         "retained_root": retained_root,
+        "retained_kind": (
+            "target_preimport_backup"
+            if retained_is_target_preimage
+            else "migration_source_backup"
+        ),
+        "legacy_runtime_entries_preserved": retained_is_target_preimage,
+        "legacy_private_state_may_be_moved": retained_is_target_preimage,
         "retained_root_exists": retained_exists,
         "cleanup_available": cleanup_available,
+        "retained_identity_matches": retained_identity_matches,
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
-        "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
+        "message": (
+            "存储位置迁移已完成，迁移前目标备份仍保留；旧版本根的运行时条目未被清理，"
+            "其中受管社区私有状态可能已一次性迁移到固定状态目录。"
+            if retained_is_target_preimage
+            else "存储位置迁移已完成，迁移源备份当前仍保留，需手动清理。"
+        ),
     }
 
 
@@ -1858,6 +2068,7 @@ def _secure_clear_directory_tree(
     )
     with os.scandir(directory_fd) as children:
         child_names = [child.name for child in children]
+    mutated = False
     for child_name in child_names:
         child_display = f"{display_path}/{child_name}"
         try:
@@ -1883,10 +2094,14 @@ def _secure_clear_directory_tree(
             finally:
                 os.close(child_fd)
             os.rmdir(child_name, dir_fd=directory_fd)
+            mutated = True
         elif stat.S_ISREG(metadata.st_mode):
             os.unlink(child_name, dir_fd=directory_fd)
+            mutated = True
         else:
             raise ValueError(f"运行时条目包含不支持的文件类型: {child_display}")
+    if mutated:
+        os.fsync(directory_fd)
 
 
 def _secure_remove_runtime_entry(
@@ -1943,15 +2158,19 @@ def _secure_remove_runtime_entry(
             os.rmdir(name, dir_fd=current_fd)
         else:
             os.unlink(name, dir_fd=current_fd)
+        os.fsync(current_fd)
 
         for parent_fd, component, child_fd in reversed(opened):
             os.close(child_fd)
             current_fd = parent_fd
-            with suppress(OSError):
+            try:
                 os.rmdir(component, dir_fd=parent_fd)
+            except OSError:
+                pass
+            else:
+                os.fsync(parent_fd)
         opened.clear()
-        with suppress(OSError):
-            os.fsync(root_fd)
+        os.fsync(root_fd)
     finally:
         for _parent_fd, _component, child_fd in reversed(opened):
             with suppress(OSError):
@@ -2449,10 +2668,20 @@ async def _post_storage_location_retained_source_cleanup_locked(
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = _get_storage_anchor_root(config_manager, current_root=current_root)
 
-    def _persist_cleanup_intent() -> tuple[dict[str, str], dict[str, int]]:
+    def _persist_cleanup_intent() -> tuple[
+        dict[str, str],
+        dict[str, int],
+        dict[str, Any],
+    ]:
         migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
         if not isinstance(migration_payload, dict):
             raise OSError("storage migration checkpoint is unavailable")
+        authoritative_identity = retained_source_identity_from_checkpoint(
+            migration_payload,
+            retained_path,
+        )
+        if authoritative_identity is None:
+            raise OSError("retained root has no migration-time identity")
         mode = str(migration_payload.get("retained_source_mode") or "").strip()
         if mode == "cleanup_in_progress":
             snapshot = migration_payload.get("retained_private_snapshot")
@@ -2465,12 +2694,14 @@ async def _post_storage_location_retained_source_cleanup_locked(
                 "device": int(root_identity["device"]),
                 "inode": int(root_identity["inode"]),
             }
+            if normalized_identity != authoritative_identity:
+                raise OSError("cleanup intent identity changed")
             normalized_snapshot = {
                 str(filename): str(digest)
                 for filename, digest in snapshot.items()
                 if filename in COMMUNITY_PRIVATE_STATE_FILENAMES
             }
-            return normalized_snapshot, normalized_identity
+            return normalized_snapshot, normalized_identity, migration_payload
 
         try:
             initial_metadata = retained_path.lstat()
@@ -2482,14 +2713,17 @@ async def _post_storage_location_retained_source_cleanup_locked(
             raise OSError("retained root changed before cleanup intent") from exc
         try:
             pinned_metadata = os.fstat(root_fd)
+            if (
+                int(pinned_metadata.st_dev) != authoritative_identity["device"]
+                or int(pinned_metadata.st_ino)
+                != authoritative_identity["inode"]
+            ):
+                raise OSError("retained root changed before cleanup intent")
             snapshot = snapshot_retained_community_state(
                 retained_path,
                 dir_fd=root_fd,
             )
-            root_identity = {
-                "device": int(pinned_metadata.st_dev),
-                "inode": int(pinned_metadata.st_ino),
-            }
+            root_identity = dict(authoritative_identity)
         finally:
             os.close(root_fd)
             os.close(parent_fd)
@@ -2503,16 +2737,23 @@ async def _post_storage_location_retained_source_cleanup_locked(
             or _utc_now_iso()
         )
         updated_payload["updated_at"] = _utc_now_iso()
-        save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
-        return snapshot, root_identity
+        persisted_payload = replace_storage_migration_if_unchanged(
+            config_manager,
+            migration_payload,
+            updated_payload,
+            anchor_root=anchor_root,
+        )
+        return snapshot, root_identity, persisted_payload
 
     try:
         # The intent must survive before the first deletion. If final metadata
         # writes later fail and the same path is reused, compatibility reads can
         # distinguish it from the retained snapshot and refuse credential import.
-        cleanup_private_snapshot, cleanup_root_identity = await _run_locked_storage_job(
-            _persist_cleanup_intent
-        )
+        (
+            cleanup_private_snapshot,
+            cleanup_root_identity,
+            cleanup_intent_payload,
+        ) = await _run_locked_storage_job(_persist_cleanup_intent)
     except Exception as exc:
         response.status_code = 503
         return {
@@ -2547,18 +2788,22 @@ async def _post_storage_location_retained_source_cleanup_locked(
         # 而这个窗口正好会被存储页那条 1200ms 的轮询看到。
         checkpoint_persisted = False
         try:
-            migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
-            if isinstance(migration_payload, dict):
-                updated_payload = dict(migration_payload)
-                updated_payload["backup_root"] = ""
-                updated_payload["retained_source_root"] = ""
-                updated_payload["retained_source_mode"] = "cleaned"
-                updated_payload.pop("retained_private_snapshot", None)
-                updated_payload.pop("cleanup_private_names", None)
-                updated_payload.pop("cleanup_root_identity", None)
-                updated_payload["updated_at"] = _utc_now_iso()
-                updated_payload["cleanup_completed_at"] = _utc_now_iso()
-                save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+            updated_payload = dict(cleanup_intent_payload)
+            updated_payload["backup_root"] = ""
+            updated_payload["retained_source_root"] = ""
+            updated_payload.pop("retained_source_identity", None)
+            updated_payload["retained_source_mode"] = "cleaned"
+            updated_payload.pop("retained_private_snapshot", None)
+            updated_payload.pop("cleanup_private_names", None)
+            updated_payload.pop("cleanup_root_identity", None)
+            updated_payload["updated_at"] = _utc_now_iso()
+            updated_payload["cleanup_completed_at"] = _utc_now_iso()
+            replace_storage_migration_if_unchanged(
+                config_manager,
+                cleanup_intent_payload,
+                updated_payload,
+                anchor_root=anchor_root,
+            )
             checkpoint_persisted = True
         except Exception:
             # The filesystem deletion is already committed. Status derives the
@@ -2570,6 +2815,11 @@ async def _post_storage_location_retained_source_cleanup_locked(
         # 标记没落上不该把整个请求判失败。
         root_state_persisted = False
         try:
+            if not checkpoint_persisted:
+                return {
+                    "checkpoint_persisted": False,
+                    "root_state_persisted": False,
+                }
             with root_state_transaction():
                 root_state = config_manager.load_root_state()
                 if isinstance(root_state, dict):
@@ -2683,6 +2933,14 @@ async def _post_storage_location_select_locked(
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
             "blocking_reason": "recovery_required",
         }
+    if _storage_cleanup_intent_active(raw_blocking_migration):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_in_progress",
+            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
+            "blocking_reason": "recovery_required",
+        }
     if paths_equal(normalized_selected_root, current_root):
         restart_plan = await _run_locked_storage_job(
             partial(
@@ -2763,8 +3021,9 @@ async def _post_storage_location_select_locked(
         return {
             "ok": True,
             "result": "restart_required",
-            "restart_operation_id": _prepare_storage_restart_operation(
-                normalized_selected_root
+            "restart_operation_id": _prepare_storage_restart_operation_from_preflight(
+                normalized_selected_root,
+                restart_preflight,
             ),
             "restart_mode": "rebind_only",
             "selected_root": str(normalized_selected_root),
@@ -2783,8 +3042,9 @@ async def _post_storage_location_select_locked(
     return {
         "ok": True,
         "result": "restart_required",
-        "restart_operation_id": _prepare_storage_restart_operation(
-            normalized_selected_root
+        "restart_operation_id": _prepare_storage_restart_operation_from_preflight(
+            normalized_selected_root,
+            restart_preflight,
         ),
         "restart_mode": "migrate_after_shutdown",
         "selected_root": str(normalized_selected_root),
@@ -2882,8 +3142,9 @@ async def post_storage_location_preflight(
     return {
         "ok": True,
         "result": "restart_required",
-        "restart_operation_id": _prepare_storage_restart_operation(
-            normalized_selected_root
+        "restart_operation_id": _prepare_storage_restart_operation_from_preflight(
+            normalized_selected_root,
+            restart_preflight,
         ),
         "restart_mode": "migrate_after_shutdown",
         "selected_root": str(normalized_selected_root),
@@ -3042,6 +3303,7 @@ async def _post_storage_location_restart_locked(
             selection_source=str(
                 restart_plan.get("selection_source") or payload.selection_source
             ),
+            expected_migration=restart_plan.get("expected_migration"),
             write_selection=restart_plan["write_selection"],
         )
 
@@ -3092,6 +3354,14 @@ async def _post_storage_location_restart_locked(
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
             "blocking_reason": "recovery_required",
         }
+    if _storage_cleanup_intent_active(raw_blocking_migration):
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_in_progress",
+            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
+            "blocking_reason": "recovery_required",
+        }
     if bool(blocking_bootstrap.get("migration_pending")):
         response.status_code = 409
         return {
@@ -3136,6 +3406,7 @@ async def _post_storage_location_restart_locked(
                 migration_required=False,
             )
         )
+        restart_preflight.pop(_TARGET_CONFIRMATION_SNAPSHOT_KEY, None)
         if restart_preflight["blocking_error_code"]:
             response.status_code = 409
             return {
@@ -3167,6 +3438,7 @@ async def _post_storage_location_restart_locked(
                 config_manager,
                 anchor_root=anchor_root,
                 snapshot_out=state_snapshot,
+                expected_migration=raw_blocking_migration,
                 write=_rebind_to_selected_root,
             )
             await _request_app_shutdown(request_app_shutdown)
@@ -3253,6 +3525,10 @@ async def _post_storage_location_restart_locked(
             config_manager=config_manager,
         )
     )
+    target_confirmation_snapshot = restart_preflight.pop(
+        _TARGET_CONFIRMATION_SNAPSHOT_KEY,
+        None,
+    )
     if restart_preflight["blocking_error_code"]:
         response.status_code = 409
         return {
@@ -3261,14 +3537,20 @@ async def _post_storage_location_restart_locked(
             "error": restart_preflight["blocking_error_message"],
             **restart_preflight,
         }
-    if restart_preflight["requires_existing_target_confirmation"] and not payload.confirm_existing_target_content:
-        response.status_code = 409
-        return {
-            "ok": False,
-            "error_code": "target_confirmation_required",
-            "error": restart_preflight["existing_target_confirmation_message"],
-            **restart_preflight,
-        }
+    if restart_preflight["requires_existing_target_confirmation"]:
+        confirmation_matches = _restart_operation_matches_target_confirmation(
+            payload.restart_operation_id,
+            normalized_selected_root,
+            target_confirmation_snapshot,
+        )
+        if not payload.confirm_existing_target_content or not confirmation_matches:
+            response.status_code = 409
+            return {
+                "ok": False,
+                "error_code": "target_confirmation_required",
+                "error": restart_preflight["existing_target_confirmation_message"],
+                **restart_preflight,
+            }
 
     # 回滚要用的两份 pre-image 与两次写同在一个 job 里：create_pending_storage_migration
     # 落检查点、set_root_mode 切 maintenance，中间一旦有 await，取消就能停在
@@ -3279,21 +3561,54 @@ async def _post_storage_location_restart_locked(
         # The pre-images cannot be captured while cloud_apply_fence exposes a
         # temporary root mode. Keep them in the same transaction as both writes
         # so rollback always restores the state immediately preceding this job.
-        with root_state_transaction():
+        with storage_migration_checkpoint_transaction(), root_state_transaction():
             # 两份 pre-image 都读到之后再一起记进 rollback_state，这样
             # "rollback_state 非空" 就等价于 "两份都在手上"。分两次记的话，第二次读
             # 抛异常会留下 migration 键缺失，回滚分支就会把一份本来就存在的检查点删掉。
             previous_root_state = config_manager.load_root_state()
             previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
+            if is_storage_migration_pending(
+                previous_migration
+            ) or storage_migration_retains_recovery_evidence(
+                previous_migration
+            ) or (
+                isinstance(previous_migration, dict)
+                and str(
+                    previous_migration.get("retained_source_mode") or ""
+                ).strip()
+                == "cleanup_in_progress"
+            ):
+                raise StorageMigrationError(
+                    "storage_migration_checkpoint_active",
+                    "当前存储迁移检查点仍包含待处理或可恢复状态，不能被新迁移覆盖。",
+                )
             rollback_state["root_state"] = previous_root_state
             rollback_state["migration"] = previous_migration
-            pending_payload = create_pending_storage_migration(
-                config_manager,
+            pending_payload = build_pending_storage_migration_payload(
                 source_root=current_root,
                 target_root=normalized_selected_root,
                 selection_source=payload.selection_source,
-                anchor_root=anchor_root,
                 confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
+            )
+            if (
+                payload.confirm_existing_target_content
+                and target_confirmation_snapshot is not None
+                and pending_payload.get("target_baseline")
+                != target_confirmation_snapshot
+            ):
+                # The target changed after the request-level observation but
+                # before the durable checkpoint was built. Return the newly
+                # observed generation without writing either checkpoint or
+                # root state; the user must confirm this exact generation.
+                return {
+                    "_target_confirmation_changed": True,
+                    "target_baseline": pending_payload.get("target_baseline"),
+                }
+            pending_payload = replace_storage_migration_if_unchanged(
+                config_manager,
+                previous_migration,
+                pending_payload,
+                anchor_root=anchor_root,
             )
             rollback_state["recovery_migration"] = pending_payload
             set_root_mode(
@@ -3307,6 +3622,20 @@ async def _post_storage_location_restart_locked(
     migration_payload = None
     try:
         migration_payload = await _run_locked_storage_job(_schedule_pending_migration)
+        if migration_payload.get("_target_confirmation_changed"):
+            _restart_operation_matches_target_confirmation(
+                payload.restart_operation_id,
+                normalized_selected_root,
+                migration_payload.get("target_baseline"),
+            )
+            rollback_state.clear()
+            response.status_code = 409
+            return {
+                "ok": False,
+                "error_code": "target_confirmation_required",
+                "error": restart_preflight["existing_target_confirmation_message"],
+                **restart_preflight,
+            }
         await _request_app_shutdown(request_app_shutdown)
     except _ShutdownAcceptedCancellation:
         # Shutdown 已经被 launcher 接受；待迁移检查点正是退出后的接力依据。

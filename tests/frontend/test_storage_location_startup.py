@@ -3643,11 +3643,11 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
     expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
-    expect(cleanup_button).to_have_text("清理旧数据")
+    expect(cleanup_button).to_have_text("清理迁移备份")
     expect(defer_button).to_be_visible(timeout=10_000)
     expect(defer_button).to_have_class(re.compile(r"\bstorage-location-completion-later\b"))
     open_target_button = completion_card.get_by_role("button", name="打开当前路径")
-    open_retained_button = completion_card.get_by_role("button", name="打开旧数据目录")
+    open_retained_button = completion_card.get_by_role("button", name="打开迁移备份")
     expect(open_target_button).to_be_visible(timeout=10_000)
     expect(open_retained_button).to_be_visible(timeout=10_000)
     expect(open_target_button).to_have_class(re.compile(r"\bstorage-location-completion-link\b"))
@@ -3898,20 +3898,20 @@ def test_storage_location_cleanup_network_failure_reconciles_authoritative_resul
         }
         """
     )
-    completion_card.get_by_role("button", name="清理旧数据").evaluate("button => button.click()")
+    completion_card.get_by_role("button", name="清理迁移备份").evaluate("button => button.click()")
     if retained_outcome in {"unknown", "legacy_missing_cleanup_state", "mismatched_root"}:
-        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
+        expect(completion_card.get_by_role("button", name="清理迁移备份")).to_be_disabled()
 
     if retained_outcome == "in_progress_then_cleaned":
         page.wait_for_timeout(1200)
         assert retained_status_requests["count"] >= 2
-        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_disabled()
+        expect(completion_card.get_by_role("button", name="清理迁移备份")).to_be_disabled()
         expect(completion_card).to_be_hidden(timeout=10_000)
     elif retained_outcome == "cleaned":
         expect(completion_card).to_be_hidden(timeout=10_000)
     elif retained_outcome == "present":
         expect(completion_card).to_be_visible(timeout=10_000)
-        expect(completion_card.get_by_role("button", name="清理旧数据")).to_be_enabled(
+        expect(completion_card.get_by_role("button", name="清理迁移备份")).to_be_enabled(
             timeout=10_000,
         )
     else:

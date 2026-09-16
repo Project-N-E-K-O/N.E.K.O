@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 
 def _role_state_from_session_managers(session_managers: dict) -> dict:
@@ -828,6 +829,88 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert steam_language_response.status_code == 200
     assert "uiLanguage" in steam_language_response.json()
     assert active_character_response.status_code == 200
+
+
+@pytest.mark.unit
+def test_main_server_limited_mode_rejects_new_websocket_before_business_route():
+    from app import main_server
+    from main_routers import websocket_router
+
+    with patch.object(main_server, "_IS_MAIN_PROCESS", False), \
+         patch.object(main_server, "_runtime_startup_init_completed", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", True), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", "selection_required"), \
+         patch.object(websocket_router, "get_config_manager", return_value=SimpleNamespace()), \
+         patch.object(websocket_router, "get_session_manager", return_value={}):
+        with TestClient(main_server.app) as client:
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect("/ws/not-a-runtime-character"):
+                    pass
+
+    assert exc_info.value.code == 1013
+
+
+@pytest.mark.unit
+def test_main_server_limited_mode_blocks_business_frames_on_connected_websocket():
+    from app import main_server
+    from main_routers import websocket_router
+
+    class _Manager:
+        pending_agent_callbacks = []
+        websocket = None
+        _voice_lease_connection_id = None
+
+        async def cleanup(self, *, expected_websocket=None):
+            if self.websocket is expected_websocket:
+                self.websocket = None
+
+    manager = _Manager()
+    session_ids = {}
+    with patch.object(main_server, "_IS_MAIN_PROCESS", False), \
+         patch.object(main_server, "_runtime_startup_init_completed", True), \
+         patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""), \
+         patch.object(websocket_router, "get_config_manager", return_value=SimpleNamespace()), \
+         patch.object(websocket_router, "get_session_manager", return_value={"test-cat": manager}), \
+         patch.object(websocket_router, "get_session_id", return_value=session_ids):
+        with TestClient(main_server.app) as client:
+            with client.websocket_connect("/ws/test-cat") as websocket:
+                main_server._enable_main_storage_limited_mode("migration_pending")
+                websocket.send_json({"action": "ping"})
+                blocked = websocket.receive()
+
+    assert blocked["type"] == "websocket.close"
+    assert blocked["code"] == 1013
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_limited_mode_emits_only_one_websocket_close():
+    from app import main_server
+
+    sent = []
+
+    async def downstream(_scope, _receive, send):
+        await send({"type": "websocket.accept"})
+        main_server._enable_main_storage_limited_mode("migration_pending")
+        await send({"type": "websocket.send", "text": "must-not-pass"})
+        await send({"type": "websocket.close", "code": 1000})
+
+    async def receive():
+        return {"type": "websocket.receive", "text": "unused"}
+
+    async def send(message):
+        sent.append(message)
+
+    with patch.object(main_server, "_main_runtime_limited_mode_enabled", False), \
+         patch.object(main_server, "_main_runtime_limited_mode_reason", ""):
+        middleware = main_server.MainStorageLimitedModeWebSocketMiddleware(downstream)
+        await middleware({"type": "websocket", "path": "/ws/test-cat"}, receive, send)
+
+    assert sent == [
+        {"type": "websocket.accept"},
+        {"type": "websocket.close", "code": 1013},
+    ]
 
 
 @pytest.mark.unit

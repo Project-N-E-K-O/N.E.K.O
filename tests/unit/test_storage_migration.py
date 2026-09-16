@@ -1380,6 +1380,96 @@ def test_delete_storage_migration_propagates_checkpoint_unlink_flush_failure(
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound checkpoint publish")
+def test_save_storage_migration_never_publishes_into_replaced_state_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    migration_path = get_storage_migration_path(config_manager)
+    state_root = migration_path.parent
+    detached_state = tmp_path / "detached-state"
+    replacement_state = tmp_path / "replacement-state"
+    replacement_state.mkdir()
+    replacement_checkpoint = replacement_state / migration_path.name
+    replacement_checkpoint.write_text('{"owner":"foreign"}', encoding="utf-8")
+    replacement_bytes = replacement_checkpoint.read_bytes()
+    real_replace = os.replace
+    swapped = False
+
+    def swap_state_before_checkpoint_replace(source, target, *args, **kwargs):
+        nonlocal swapped
+        target_name = Path(target).name
+        if not swapped and target_name == migration_path.name:
+            swapped = True
+            state_root.rename(detached_state)
+            replacement_state.rename(state_root)
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "replace", swap_state_before_checkpoint_replace)
+    updated = dict(payload, status=STORAGE_MIGRATION_STATUS_PREFLIGHT)
+
+    with pytest.raises(StorageMigrationError):
+        storage_migration_module.save_storage_migration(config_manager, updated)
+
+    assert swapped is True
+    assert migration_path.read_bytes() == replacement_bytes
+    assert json.loads(migration_path.read_text(encoding="utf-8")) == {"owner": "foreign"}
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound checkpoint delete")
+def test_delete_storage_migration_never_deletes_from_replaced_state_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    migration_path = get_storage_migration_path(config_manager)
+    state_root = migration_path.parent
+    detached_state = tmp_path / "detached-state"
+    replacement_state = tmp_path / "replacement-state"
+    replacement_state.mkdir()
+    replacement_checkpoint = replacement_state / migration_path.name
+    replacement_checkpoint.write_text('{"owner":"foreign"}', encoding="utf-8")
+    replacement_bytes = replacement_checkpoint.read_bytes()
+    real_unlink = os.unlink
+    swapped = False
+
+    def swap_state_before_checkpoint_unlink(path, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path).name == migration_path.name:
+            swapped = True
+            state_root.rename(detached_state)
+            replacement_state.rename(state_root)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "unlink", swap_state_before_checkpoint_unlink)
+
+    with pytest.raises(StorageMigrationError):
+        storage_migration_module.delete_storage_migration(config_manager)
+
+    assert swapped is True
+    assert migration_path.read_bytes() == replacement_bytes
+    assert json.loads(migration_path.read_text(encoding="utf-8")) == {"owner": "foreign"}
+
+
+@pytest.mark.unit
 def test_load_storage_migration_propagates_read_failure_as_fail_closed_error(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 
@@ -2928,6 +3018,10 @@ def test_windows_nested_staging_directory_is_guarded_only_during_copy(
         moved_parent = target_parent.with_name(target_parent.name + "-moved")
         with pytest.raises(OSError):
             target_parent.rename(moved_parent)
+        source_parent = Path(source_path).parent
+        moved_source_parent = source_parent.with_name(source_parent.name + "-moved")
+        with pytest.raises(OSError):
+            source_parent.rename(moved_source_parent)
         attempted = True
         return original_copy(source_path, target_path, **kwargs)
 
@@ -2942,6 +3036,9 @@ def test_windows_nested_staging_directory_is_guarded_only_during_copy(
     moved_nested = target / "nested-moved"
     (target / "nested").rename(moved_nested)
     assert (moved_nested / "characters.json").read_text(encoding="utf-8") == "SOURCE"
+    moved_source_nested = source / "nested-moved"
+    (source / "nested").rename(moved_source_nested)
+    assert (moved_source_nested / "characters.json").read_text(encoding="utf-8") == "SOURCE"
 
 
 @pytest.mark.unit
@@ -4459,11 +4556,23 @@ def test_transaction_marker_write_failure_never_publishes_unowned_root(
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
         )
     else:
-        monkeypatch.setattr(
-            storage_migration_module.os,
-            "write",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("marker denied")),
-        )
+        real_open = storage_migration_module.os.open
+        real_write = storage_migration_module.os.write
+        marker_fds: set[int] = set()
+
+        def track_marker_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if path == storage_migration_module._TRANSACTION_OWNER_MARKER_FILENAME:
+                marker_fds.add(fd)
+            return fd
+
+        def fail_marker_write(fd, data):
+            if fd in marker_fds:
+                raise OSError("marker denied")
+            return real_write(fd, data)
+
+        monkeypatch.setattr(storage_migration_module.os, "open", track_marker_open)
+        monkeypatch.setattr(storage_migration_module.os, "write", fail_marker_write)
 
     result = run_pending_storage_migration(config_manager)
 
@@ -4626,6 +4735,53 @@ def test_pending_migration_recovers_transaction_created_before_copying_checkpoin
     assert result["completed"] is True
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "SOURCE"
     assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory descriptor semantics")
+def test_pending_migration_releases_pinned_source_after_base_exception(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    class SimulatedProcessLoss(BaseException):
+        pass
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("SOURCE", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    opened_source_fds: list[int] = []
+    original_open = storage_migration_module._open_verified_directory
+
+    def record_open(path):
+        descriptor = original_open(path)
+        if Path(path) == source_root:
+            opened_source_fds.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(storage_migration_module, "_open_verified_directory", record_open)
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SimulatedProcessLoss),
+    )
+
+    with pytest.raises(SimulatedProcessLoss):
+        run_pending_storage_migration(config_manager)
+
+    assert len(opened_source_fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_source_fds[0])
 
 
 @pytest.mark.unit

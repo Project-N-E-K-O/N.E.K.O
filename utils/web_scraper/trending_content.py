@@ -123,6 +123,17 @@ def _neko_community_legacy_session_path() -> Path | None:
         return None
 
 
+def _neko_community_canonical_session_path() -> Path | None:
+    """Return the fixed-anchor OAuth session path without router imports."""
+
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().local_state_dir) / "social_session.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _neko_community_legacy_auth_path() -> Path | None:
     """Return the pre-Electron community credential file without router imports."""
 
@@ -142,15 +153,16 @@ def _neko_community_session_path() -> Path | None:
         candidate = Path(user_data_dir).expanduser()
         if candidate.is_absolute():
             return candidate / "social_session.json"
-    return _neko_community_legacy_session_path()
+    return _neko_community_canonical_session_path()
 
 
 def _neko_community_session_paths() -> list[Path]:
-    """Return desktop then legacy OAuth-session paths, deduplicated."""
+    """Return override, fixed-anchor, then legacy session paths."""
 
     paths: list[Path] = []
     for candidate in (
         _neko_community_session_path(),
+        _neko_community_canonical_session_path(),
         _neko_community_legacy_session_path(),
     ):
         if candidate is not None and candidate not in paths:

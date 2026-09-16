@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -73,6 +74,7 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     config_manager = SimpleNamespace(
         app_docs_dir=tmp_path / "N.E.K.O",
         cloudsave_manifest_path=tmp_path / "N.E.K.O" / "cloudsave" / "manifest.json",
+        load_root_state=lambda: call_order.append("load_root_state") or {"mode": "normal"},
     )
     call_order = []
     emitted_events = []
@@ -89,6 +91,14 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
         call_order.append("bootstrap")
         return {"bootstrap": True}
 
+    def _fake_recover(_config_manager):
+        call_order.append("recover_interrupted_publication")
+        return None
+
+    def _fake_recover_stale(_config_manager, _root_state):
+        call_order.append("recover_stale_mode")
+        return None
+
     def _fake_ensure_local_state_directory():
         call_order.append("state_preflight")
         return True
@@ -104,6 +114,16 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
 
     monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
     monkeypatch.setattr(launcher, "cloud_apply_fence", _fake_fence)
+    monkeypatch.setattr(
+        launcher,
+        "recover_interrupted_legacy_runtime_import",
+        _fake_recover,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_recover_stale_write_blocking_mode",
+        _fake_recover_stale,
+    )
     monkeypatch.setattr(launcher, "bootstrap_local_cloudsave_environment", _fake_bootstrap)
     monkeypatch.setattr(launcher, "get_cloudsave_manager", lambda _config_manager: _DummyCloudsaveManager())
     monkeypatch.setattr(launcher, "set_root_mode", _fake_set_root_mode)
@@ -117,11 +137,14 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     result = launcher._prepare_cloudsave_runtime_for_launch()
 
     state_preflight_index = call_order.index("state_preflight")
+    state_load_index = call_order.index("load_root_state")
+    stale_recovery_index = call_order.index("recover_stale_mode")
+    recovery_index = call_order.index("recover_interrupted_publication")
     bootstrap_index = call_order.index("bootstrap")
     fence_enter_index = call_order.index(("fence_enter", launcher.ROOT_MODE_BOOTSTRAP_IMPORTING, "launcher_phase0_bootstrap"))
     import_index = call_order.index(("import", "launcher_phase0_prelaunch_import", True))
     fence_exit_index = call_order.index(("fence_exit", launcher.ROOT_MODE_BOOTSTRAP_IMPORTING, "launcher_phase0_bootstrap"))
-    assert state_preflight_index < fence_enter_index < bootstrap_index < import_index < fence_exit_index
+    assert state_preflight_index < state_load_index < stale_recovery_index < recovery_index < fence_enter_index < bootstrap_index < import_index < fence_exit_index
     assert result["import_result"]["action"] == "imported"
     assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
     event_import_result = emitted_events[-1][1]["import_result"]

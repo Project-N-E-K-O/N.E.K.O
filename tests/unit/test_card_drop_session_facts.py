@@ -2347,6 +2347,7 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "refresh-a",
+        "credential_epoch": 0,
     }
     legacy_session = legacy_auth.parent / "social_session.json"
     legacy_session.write_text("{}", encoding="utf-8")
@@ -2676,11 +2677,13 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "legacy-refresh",
+        "credential_epoch": 0,
     }
     assert auth_data["schema_version"] == 2
     assert auth_data["local_user_id"] == USER_A_ID
     assert auth_data["auth_source"] == "legacy"
     assert auth_data["user"]["id"] == USER_A_ID
+    assert auth_data["credential_epoch"] == 0
 
 
 def test_sync_session_status_is_exact_cors_read_only_and_identity_scoped(

@@ -54,14 +54,14 @@ def test_storage_location_locale_namespace_matches_used_keys():
 @pytest.mark.parametrize(
     ("locale_name", "expected_cleanup", "expected_defer"),
     (
-        ("en.json", "Clean up old data", "Not now"),
-        ("es.json", "Limpiar datos antiguos", "Ahora no"),
-        ("ja.json", "古いデータを削除", "今はしない"),
-        ("ko.json", "이전 데이터 정리", "나중에"),
-        ("pt.json", "Limpar dados antigos", "Agora não"),
-        ("ru.json", "Очистить старые данные", "Не сейчас"),
-        ("zh-CN.json", "清理旧数据", "暂时不处理"),
-        ("zh-TW.json", "清理舊資料", "暫時不處理"),
+        ("en.json", "Clean up migration backup", "Not now"),
+        ("es.json", "Limpiar copia de migración", "Ahora no"),
+        ("ja.json", "移行バックアップを削除", "今はしない"),
+        ("ko.json", "마이그레이션 백업 정리", "나중에"),
+        ("pt.json", "Limpar backup de migração", "Agora não"),
+        ("ru.json", "Удалить резерв миграции", "Не сейчас"),
+        ("zh-CN.json", "清理迁移备份", "暂时不处理"),
+        ("zh-TW.json", "清理遷移備份", "暫時不處理"),
     ),
 )
 def test_storage_location_completion_actions_match_locale(locale_name, expected_cleanup, expected_defer):

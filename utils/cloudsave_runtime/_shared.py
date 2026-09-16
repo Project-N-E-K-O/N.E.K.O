@@ -146,9 +146,6 @@ MANAGED_CLOUDSAVE_PREFIXES = (
 
 LEGACY_RUNTIME_DIR_NAMES = (
     *RUNTIME_STORAGE_RELATIVE_PATHS,
-    "cloudsave",
-    "cloudsave_backups",
-    ".cloudsave_staging",
 )
 
 

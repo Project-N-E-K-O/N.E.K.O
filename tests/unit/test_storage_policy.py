@@ -115,6 +115,142 @@ def test_save_storage_policy_fails_closed_when_parent_flush_fails(tmp_path, monk
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinked state boundary")
+def test_write_fixed_anchor_state_json_rejects_symlinked_state_without_external_write(
+    tmp_path,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    anchor_root.mkdir(parents=True)
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    sentinel = external_state / "sentinel.json"
+    sentinel.write_text('{"owner":"foreign"}', encoding="utf-8")
+    (anchor_root / "state").symlink_to(external_state, target_is_directory=True)
+
+    with pytest.raises(StoragePolicyError):
+        storage_policy_module.write_fixed_anchor_state_json(
+            anchor_root,
+            "storage_migration.json",
+            {"status": "pending"},
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == '{"owner":"foreign"}'
+    assert not (external_state / "storage_migration.json").exists()
+
+
+@pytest.mark.unit
+def test_windows_fixed_anchor_state_writer_holds_directory_guards_around_publish(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    state_root = anchor_root / "state"
+    state_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    expected_state = state_root.lstat()
+    events = []
+
+    def open_guards(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert os.path.samestat(state_identity, expected_state)
+        events.append("open")
+        return [101, 102]
+
+    def revalidate(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert os.path.samestat(state_identity, expected_state)
+        events.append("revalidate")
+
+    def write_json(path, payload, **kwargs):
+        assert path == state_root / "storage_migration.json"
+        assert payload == {"status": "pending"}
+        assert events[-1] == "revalidate"
+        events.append("write")
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        open_guards,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_revalidate_windows_state_directories",
+        revalidate,
+    )
+    monkeypatch.setattr(storage_policy_module, "atomic_write_json", write_json)
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    storage_policy_module._write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        "storage_migration.json",
+        {"status": "pending"},
+    )
+
+    assert events == [
+        "open",
+        "revalidate",
+        "write",
+        "revalidate",
+        ("close", (101, 102)),
+    ]
+
+
+@pytest.mark.unit
+def test_windows_absent_state_delete_is_proved_while_anchor_guard_is_held(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    anchor_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    events = []
+
+    def open_guards(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert state_identity is None
+        events.append("open")
+        return [201, 202]
+
+    def validate_anchor(path):
+        assert path == anchor_root
+        assert events == ["open"]
+        events.append("validate")
+        return expected_anchor
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        open_guards,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_validate_storage_policy_anchor",
+        validate_anchor,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    storage_policy_module._confirm_windows_fixed_anchor_state_absent(
+        anchor_root,
+        expected_anchor,
+    )
+
+    assert events == ["open", "validate", ("close", (201, 202))]
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd restore race injection")
 @pytest.mark.parametrize("restore_existing", (False, True))
 @pytest.mark.parametrize("replaced_directory", ("anchor", "state"))

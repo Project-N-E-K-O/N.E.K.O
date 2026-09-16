@@ -35,7 +35,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
 from utils import single_instance
-from utils.file_utils import fsync_directory_best_effort, publish_without_replacing
+from utils.file_utils import (
+    atomic_write_json,
+    fsync_directory_best_effort,
+    publish_without_replacing,
+)
 from utils.storage.community_private_state import (
     COMMUNITY_AUTH_FILENAME as _AUTH_FILENAME,
     COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
@@ -63,6 +67,13 @@ _SOCIAL_SESSION_LOCK_SUFFIX = ".lock"
 _SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
 _SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
+_COMMUNITY_LOGOUT_STATE_FILENAME = "community_logout.json"
+_PRIVATE_EPOCH_FILENAMES = {
+    _AUTH_FILENAME,
+    _SOCIAL_SESSION_FILENAME,
+    _OAUTH_PENDING_FILENAME,
+    _STEAM_PENDING_FILENAME,
+}
 _SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV = "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"
 # Orphan reclamation publishes while holding this mutex; publication-failure
 # bookkeeping protects the same recovery state and therefore re-enters it.
@@ -612,6 +623,73 @@ def _community_state_path(filename: str, *, config_manager=None) -> Path | None:
     return state_dir / filename if state_dir is not None else None
 
 
+def _current_logout_epoch(*, config_manager=None) -> int:
+    """Read the fixed-anchor logout generation; malformed state fails closed."""
+
+    auth_path = (
+        _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
+        if config_manager is not None
+        else _auth_path()
+    )
+    path = (
+        auth_path.parent / _COMMUNITY_LOGOUT_STATE_FILENAME
+        if auth_path is not None
+        else None
+    )
+    if path is None:
+        raise OSError("community logout state is unavailable")
+    state, payload = _read_private_json_state(path)
+    if state == "absent":
+        return 0
+    if state != "valid" or not isinstance(payload, dict):
+        raise OSError("community logout state is unreadable")
+    epoch = payload.get("logout_epoch")
+    if (
+        payload.get("version") != 1
+        or isinstance(epoch, bool)
+        or not isinstance(epoch, int)
+        or epoch < 0
+    ):
+        raise OSError("community logout state is malformed")
+    return epoch
+
+
+def _private_record_epoch(data: dict) -> int | None:
+    epoch = data.get("credential_epoch", 0)
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        return None
+    return epoch
+
+
+def _advance_logout_epoch(*, config_manager=None) -> int:
+    auth_path = (
+        _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
+        if config_manager is not None
+        else _auth_path()
+    )
+    path = (
+        auth_path.parent / _COMMUNITY_LOGOUT_STATE_FILENAME
+        if auth_path is not None
+        else None
+    )
+    if path is None:
+        raise OSError("community logout state is unavailable")
+    next_epoch = _current_logout_epoch(config_manager=config_manager) + 1
+    atomic_write_json(
+        path,
+        {
+            "version": 1,
+            "logout_epoch": next_epoch,
+            "updated_at": int(time.time()),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    if _current_logout_epoch(config_manager=config_manager) != next_epoch:
+        raise OSError("community logout state verification failed")
+    return next_epoch
+
+
 def _legacy_root_candidates(
     config_manager=None,
     *,
@@ -624,7 +702,10 @@ def _legacy_root_candidates(
     record. Arbitrary root_state strings are deliberately not followed.
     """
     try:
-        from utils.storage_migration import load_storage_migration
+        from utils.storage_migration import (
+            load_storage_migration,
+            retained_source_identity_from_checkpoint,
+        )
 
         if config_manager is None:
             from utils.config_manager import get_config_manager
@@ -651,50 +732,138 @@ def _legacy_root_candidates(
             and paths_equal(migration["target_root"], committed_root)
         ):
             retained_mode = str(migration.get("retained_source_mode") or "").strip()
-            if retained_mode == "cleaned" or (
-                retained_mode == "cleanup_in_progress"
-                and not include_cleanup_in_progress
-            ):
-                return [], []
+            retained_allowed = retained_mode != "cleaned" and (
+                include_cleanup_in_progress
+                or retained_mode != "cleanup_in_progress"
+            )
             retained = str(
                 migration.get("retained_source_root")
                 or migration.get("backup_root")
-                or migration.get("source_root")
+                or (
+                    ""
+                    if migration.get("legacy_private_state_source_root")
+                    else migration.get("source_root")
+                )
                 or ""
             ).strip()
+            retained_root: Path | None = None
+            retained_path_candidate: Path | None = None
             if retained:
-                retained_root = Path(retained).expanduser()
-                if retained_root.is_absolute() and not path_chain_has_symlink(retained_root):
+                retained_candidate = Path(retained).expanduser()
+                if retained_candidate.is_absolute() and not path_chain_has_symlink(
+                    retained_candidate
+                ):
+                    retained_path_candidate = retained_candidate
+                    expected_retained_identity = (
+                        retained_source_identity_from_checkpoint(
+                            migration,
+                            retained_candidate,
+                        )
+                    )
+                    try:
+                        retained_metadata = retained_candidate.lstat()
+                    except OSError:
+                        retained_metadata = None
+                    if (
+                        retained_metadata is not None
+                        and expected_retained_identity is not None
+                        and stat.S_ISDIR(retained_metadata.st_mode)
+                        and not stat.S_ISLNK(retained_metadata.st_mode)
+                        and int(retained_metadata.st_dev)
+                        == expected_retained_identity["device"]
+                        and int(retained_metadata.st_ino)
+                        == expected_retained_identity["inode"]
+                    ):
+                        retained_root = retained_candidate
+                if retained_root is not None and retained_allowed:
                     import_roots.append(retained_root)
                     witness_roots.append(retained_root)
-                    # This compatibility read only needs file presence. Process
-                    # identity probing may spawn PowerShell/ps and must not
-                    # block an async social request merely to classify a lock.
-                    retained_inventory = probe_retained_community_state(
-                        retained_root,
-                        classify_social_lock_process=False,
+
+            private_source = str(
+                migration.get("legacy_private_state_source_root") or ""
+            ).strip()
+            private_identity = migration.get(
+                "legacy_private_state_source_identity"
+            )
+            if (
+                private_source
+                and isinstance(private_identity, list)
+                and len(private_identity) == 2
+                and all(isinstance(value, int) for value in private_identity)
+            ):
+                private_root = Path(private_source).expanduser()
+                private_matches_retained = bool(
+                    retained_path_candidate is not None
+                    and paths_equal(private_root, retained_path_candidate)
+                )
+                if (
+                    private_root.is_absolute()
+                    and not path_chain_has_symlink(private_root)
+                    and not paths_equal(private_root, committed_root)
+                    and (retained_allowed or not private_matches_retained)
+                ):
+                    try:
+                        private_metadata = private_root.lstat()
+                    except OSError:
+                        private_metadata = None
+                    private_is_link_like = bool(
+                        private_metadata is not None
+                        and (
+                            stat.S_ISLNK(private_metadata.st_mode)
+                            or int(
+                                getattr(private_metadata, "st_file_attributes", 0)
+                                or 0
+                            )
+                            & int(
+                                getattr(
+                                    stat,
+                                    "FILE_ATTRIBUTE_REPARSE_POINT",
+                                    0,
+                                )
+                                or 0
+                            )
+                        )
                     )
-                    # A retained directory with no managed private state may be
-                    # the residue of a cleanup whose two metadata writes both
-                    # failed. Do not use its stale checkpoint to revive target
-                    # credentials; a fresh login is safer than account rollback.
                     if (
-                        (
-                            retained_inventory.has_managed_content
-                            or (
-                                include_cleanup_in_progress
-                                and retained_mode == "cleanup_in_progress"
-                            )
+                        private_metadata is not None
+                        and not private_is_link_like
+                        and stat.S_ISDIR(private_metadata.st_mode)
+                        and (
+                            int(private_metadata.st_dev),
+                            int(private_metadata.st_ino),
                         )
-                        and not bool(
-                            getattr(
-                                config_manager,
-                                "recovery_committed_root_unavailable",
-                                False,
-                            )
-                        )
+                        == tuple(private_identity)
                     ):
-                        witness_roots.append(committed_root)
+                        import_roots.append(private_root)
+                        witness_roots.append(private_root)
+
+            # This compatibility read only needs file presence. Process
+            # identity probing may spawn PowerShell/ps and must not block an
+            # async social request merely to classify a lock.
+            has_authoritative_private_state = False
+            for candidate_root in import_roots:
+                candidate_inventory = probe_retained_community_state(
+                    candidate_root,
+                    classify_social_lock_process=False,
+                )
+                has_authoritative_private_state = bool(
+                    has_authoritative_private_state
+                    or candidate_inventory.has_managed_content
+                    or (
+                        retained_root is not None
+                        and paths_equal(candidate_root, retained_root)
+                        and include_cleanup_in_progress
+                        and retained_mode == "cleanup_in_progress"
+                    )
+                )
+            if has_authoritative_private_state and not bool(
+                getattr(
+                    config_manager,
+                    "recovery_committed_root_unavailable",
+                    False,
+                )
+            ):
+                witness_roots.append(committed_root)
         else:
             import_roots.append(current_root)
             witness_roots.append(current_root)
@@ -1321,9 +1490,21 @@ def _load_or_migrate_private_json(
     """
     if canonical_path is None:
         return None
+    try:
+        logout_epoch = _current_logout_epoch()
+    except OSError as exc:
+        logger.warning("card_drop: logout generation is unavailable: %s", exc)
+        return None
+
+    def _usable(data: dict) -> bool:
+        return bool(
+            validator(data)
+            and _private_record_epoch(data) == logout_epoch
+        )
+
     canonical_state, canonical_data = _read_private_json_state(canonical_path)
     if canonical_state != "absent":
-        if canonical_state == "valid" and validator(canonical_data or {}):
+        if canonical_state == "valid" and _usable(canonical_data or {}):
             return canonical_data
         logger.warning("card_drop: canonical %s is not usable", canonical_path.name)
         return None
@@ -1337,7 +1518,7 @@ def _load_or_migrate_private_json(
         legacy_state, legacy_data = _read_private_json_state(legacy_path)
         if legacy_state == "absent":
             continue
-        if legacy_state != "valid" or not validator(legacy_data or {}):
+        if legacy_state != "valid" or not _usable(legacy_data or {}):
             logger.warning("card_drop: legacy %s is not usable", legacy_path.name)
             unusable_candidate = True
             continue
@@ -1370,12 +1551,12 @@ def _load_or_migrate_private_json(
         winner_state, winner_data = _read_private_json_state(canonical_path)
         return (
             winner_data
-            if winner_state == "valid" and validator(winner_data or {})
+            if winner_state == "valid" and _usable(winner_data or {})
             else None
         )
 
     winner_state, winner_data = _read_private_json_state(canonical_path)
-    if winner_state != "valid" or not validator(winner_data or {}):
+    if winner_state != "valid" or not _usable(winner_data or {}):
         return None
     # Delete only the exact record copied. A concurrent refresh must remain.
     latest_state, latest_data = _read_private_json_state(legacy_path)
@@ -1722,10 +1903,7 @@ def _prepare_retained_community_state_cleanup_locked(
             fsync_directory_best_effort(legacy_path.parent)
         else:
             os.unlink(legacy_path.name, dir_fd=retained_dir_fd)
-            try:
-                os.fsync(retained_dir_fd)
-            except OSError:
-                pass
+            os.fsync(retained_dir_fd)
 
 
 def _read_json_dict(path: Path | None) -> dict | None:
@@ -1841,10 +2019,16 @@ def _desktop_session_snapshot() -> dict | None:
 
 def _write_private_json(path: Path, data: dict) -> None:
     """Atomically persist local credentials with owner-only permissions where supported."""
+    payload = dict(data)
+    if path.name in _PRIVATE_EPOCH_FILENAMES:
+        payload["credential_epoch"] = _current_logout_epoch()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         try:
             tmp.chmod(0o600)
         except OSError:
@@ -2557,6 +2741,15 @@ def _clear_auth() -> bool:
                         path.parent,
                     )
                     return False
+            # Commit logical logout before deleting reachable copies.  A
+            # phase-0 legacy source may be temporarily offline and therefore
+            # impossible to erase; its older generation must remain invalid
+            # if the same directory later reappears.
+            try:
+                _advance_logout_epoch()
+            except OSError as exc:
+                logger.warning("card_drop: cannot persist logout generation: %s", exc)
+                return False
             if not _unlink_credentials(paths):
                 return False
             for path in paths:

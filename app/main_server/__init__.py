@@ -605,6 +605,7 @@ importlib.import_module(
 
 _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
+_MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE = 1013
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
     "/api/card-drop/active-character",
@@ -706,6 +707,77 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
     )
 
 
+class MainStorageLimitedModeWebSocketMiddleware:
+    """Keep WebSocket business traffic behind the storage startup gate."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "websocket":
+            await self.app(scope, receive, send)
+            return
+
+        if _main_runtime_limited_mode_enabled:
+            await send(
+                {
+                    "type": "websocket.close",
+                    "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                }
+            )
+            return
+
+        close_sent = False
+
+        async def limited_mode_receive():
+            nonlocal close_sent
+            message = await receive()
+            if (
+                message.get("type") == "websocket.receive"
+                and _main_runtime_limited_mode_enabled
+            ):
+                if not close_sent:
+                    close_sent = True
+                    await send(
+                        {
+                            "type": "websocket.close",
+                            "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                        }
+                    )
+                return {
+                    "type": "websocket.disconnect",
+                    "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                }
+            return message
+
+        async def limited_mode_send(message):
+            nonlocal close_sent
+            message_type = message.get("type")
+            if close_sent and message_type in {
+                "websocket.accept",
+                "websocket.send",
+                "websocket.close",
+            }:
+                return
+            if (
+                message_type in {"websocket.accept", "websocket.send"}
+                and _main_runtime_limited_mode_enabled
+            ):
+                close_sent = True
+                await send(
+                    {
+                        "type": "websocket.close",
+                        "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                    }
+                )
+                return
+            if message_type == "websocket.close":
+                close_sent = True
+            await send(message)
+
+        await self.app(scope, limited_mode_receive, limited_mode_send)
+
+
 def _avatar_tool_multipart_preflight(scope):
     from main_routers.system_router._shared import (
         _is_loopback_request,
@@ -731,6 +803,7 @@ app.add_middleware(
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
 )
+app.add_middleware(MainStorageLimitedModeWebSocketMiddleware)
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
 app.add_middleware(HostOriginGuardMiddleware)

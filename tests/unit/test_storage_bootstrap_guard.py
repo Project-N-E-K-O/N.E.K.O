@@ -464,6 +464,52 @@ def test_initial_limited_recovery_releases_only_after_resolution(monkeypatch):
 
 
 @pytest.mark.unit
+def test_phase0_legacy_boundary_failure_reports_code_without_logging_path(
+    monkeypatch,
+    capsys,
+):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+
+    events = []
+    releases = []
+    sensitive_path = "/Users/example/Documents/N.E.K.O/config"
+    monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
+    monkeypatch.setattr(runtime, "_request_storage_bootstrap_guard", lambda _reason: "guard")
+    monkeypatch.setattr(
+        runtime,
+        "_release_storage_bootstrap_guard",
+        lambda guard_id, outcome: releases.append((guard_id, outcome)),
+    )
+    monkeypatch.setattr(runtime, "_resolve_storage_layout_for_launch", lambda: {})
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_cloudsave_runtime_for_launch",
+        lambda: (_ for _ in ()).throw(
+            CloudsaveOperationError(
+                "LEGACY_RUNTIME_ENTRY_UNSAFE",
+                f"unsafe legacy path: {sensitive_path}",
+            )
+        ),
+    )
+    monkeypatch.setattr(runtime, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "emit_frontend_event",
+        lambda event, payload=None: events.append((event, payload or {})),
+    )
+
+    try:
+        _storage_bootstrap, limited = runtime._initialize_storage_generation_for_launch()
+    finally:
+        runtime.os.environ.pop("NEKO_STORAGE_RECOVERY_MODE", None)
+
+    assert limited is True
+    assert events[-1][1]["error_code"] == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert releases == [("guard", "recovery_limited")]
+    assert sensitive_path not in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_restart_entry_requests_new_guard_before_reading_storage(monkeypatch):
     order = []
     config_manager = SimpleNamespace(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -844,6 +845,92 @@ async def test_neko_community_access_token_uses_only_matching_oauth_origin(
 
 
 @pytest.mark.asyncio
+async def test_neko_community_access_token_prefers_fixed_anchor_session(
+    monkeypatch, tmp_path
+):
+    from utils import config_manager as config_manager_module
+
+    fixed_state = tmp_path / "fixed-anchor" / "state"
+    fixed_state.mkdir(parents=True)
+    (fixed_state / "social_session.json").write_text(
+        json.dumps(
+            {
+                "baseUrl": "https://community.example.test",
+                "token": "fixed-anchor-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_root = tmp_path / "selected-root"
+    legacy_root.mkdir()
+    (legacy_root / "social_session.json").write_text(
+        json.dumps(
+            {
+                "baseUrl": "https://community.example.test",
+                "token": "legacy-selected-root-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("NEKO_USER_DATA_DIR", raising=False)
+    monkeypatch.setattr(
+        config_manager_module,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            local_state_dir=fixed_state,
+            memory_dir=legacy_root / "memory",
+        ),
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "fixed-anchor-token"
+
+
+@pytest.mark.asyncio
+async def test_neko_community_access_token_preserves_electron_override_precedence(
+    monkeypatch, tmp_path
+):
+    from utils import config_manager as config_manager_module
+
+    desktop_dir = tmp_path / "desktop"
+    desktop_dir.mkdir()
+    (desktop_dir / "social_session.json").write_text(
+        json.dumps(
+            {
+                "baseUrl": "https://community.example.test",
+                "token": "electron-override-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixed_state = tmp_path / "fixed-anchor" / "state"
+    fixed_state.mkdir(parents=True)
+    (fixed_state / "social_session.json").write_text(
+        json.dumps(
+            {
+                "baseUrl": "https://community.example.test",
+                "token": "fixed-anchor-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(desktop_dir))
+    monkeypatch.setattr(
+        config_manager_module,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            local_state_dir=fixed_state,
+            memory_dir=tmp_path / "selected-root" / "memory",
+        ),
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "electron-override-token"
+
+
+@pytest.mark.asyncio
 async def test_neko_community_access_token_falls_back_after_blank_session_aliases(
     tmp_path, monkeypatch
 ):
@@ -898,6 +985,7 @@ async def test_neko_community_access_token_requires_session_origin(tmp_path, mon
 @pytest.mark.asyncio
 async def test_neko_community_access_token_falls_back_to_legacy_session(tmp_path, monkeypatch):
     desktop_dir = tmp_path / "desktop"
+    canonical_session = tmp_path / "canonical_social_session.json"
     legacy_session = tmp_path / "legacy_social_session.json"
     legacy_session.write_text(
         """{
@@ -909,12 +997,18 @@ async def test_neko_community_access_token_falls_back_to_legacy_session(tmp_path
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(desktop_dir))
     monkeypatch.setattr(
         trending_content,
+        "_neko_community_canonical_session_path",
+        lambda: canonical_session,
+    )
+    monkeypatch.setattr(
+        trending_content,
         "_neko_community_legacy_session_path",
         lambda: legacy_session,
     )
 
     assert trending_content._neko_community_session_paths() == [
         desktop_dir / "social_session.json",
+        canonical_session,
         legacy_session,
     ]
     assert await trending_content._neko_community_access_token(
