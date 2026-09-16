@@ -1,912 +1,959 @@
 <template>
-  <div class="plugin-config-editor">
-    <div class="header">
-      <div class="meta">
-        <div v-if="configPath" class="meta-line">
-          <span class="meta-label">{{ t('plugins.configPath') }}:</span>
-          <span class="meta-value">{{ configPath }}</span>
-        </div>
-        <div v-if="lastModified" class="meta-line">
-          <span class="meta-label">{{ t('plugins.lastModified') }}:</span>
-          <span class="meta-value">{{ lastModified }}</span>
-        </div>
-      </div>
-
-      <div class="actions">
-        <el-button :icon="Refresh" size="small" @click="loadAll" :loading="loading">
-          {{ t('common.refresh') }}
-        </el-button>
-        <el-button size="small" @click="resetDraft" :disabled="!hasChanges" :loading="saving">
-          {{ t('common.reset') }}
-        </el-button>
+  <div
+    ref="container"
+    class="plugin-config-editor"
+    :id="editorId"
+    :aria-busy="loading || saving || applying"
+  >
+    <div class="config-toolbar">
+      <el-input
+        v-model="search"
+        :prefix-icon="Search"
+        :placeholder="t('plugins.configUi.search')"
+        :aria-label="t('plugins.configUi.search')"
+        clearable
+      />
+      <el-dropdown trigger="click" @command="(value: ConfigFilter) => (filter = value)">
         <el-button
-          type="primary"
-          :icon="Check"
-          size="small"
-          @click="save"
-          :loading="saving"
-          :disabled="!profilesStateLoaded || !selectedProfileName"
+          text
+          :class="{ 'filter-active': filter !== 'all' }"
+          :aria-label="t('plugins.configUi.filterFields')"
         >
-          {{ t('common.save') }}
+          {{ filterOptions.find((option) => option.value === filter)?.label
+          }}<el-icon class="trailing-icon"><ArrowDown /></el-icon>
         </el-button>
-      </div>
+        <template #dropdown
+          ><el-dropdown-menu>
+            <el-dropdown-item
+              v-for="option in filterOptions"
+              :key="option.value"
+              :command="option.value"
+            >
+              {{ option.label
+              }}<span v-if="option.count" class="filter-count">{{ option.count }}</span>
+            </el-dropdown-item>
+          </el-dropdown-menu></template
+        >
+      </el-dropdown>
+      <div class="toolbar-spacer" />
+      <el-button class="profile-entry" text :icon="Setting" @click="profilesOpen = true">
+        {{ t('plugins.profiles') }}<span class="profile-name">{{ selected }}</span
+        ><el-icon class="trailing-icon"><ArrowDown /></el-icon>
+      </el-button>
+      <el-dropdown trigger="click" @command="toolbarCommand">
+        <el-button
+          text
+          :icon="MoreFilled"
+          :aria-label="t('plugins.configUi.configData') + ' / ' + t('common.refresh')"
+        />
+        <template #dropdown
+          ><el-dropdown-menu>
+            <el-dropdown-item command="data" :icon="Document">{{
+              t('plugins.configUi.configData')
+            }}</el-dropdown-item>
+            <el-dropdown-item
+              command="refresh"
+              :icon="Refresh"
+              :disabled="loading || saving || applying"
+              >{{ t('common.refresh') }}</el-dropdown-item
+            >
+          </el-dropdown-menu></template
+        >
+      </el-dropdown>
     </div>
+    <el-dialog
+      v-model="profilesOpen"
+      :title="t('plugins.profiles')"
+      class="profile-manager-dialog"
+      width="min(520px, 94vw)"
+      append-to-body
+    >
+      <div class="profile-manager-body">
+        <label class="profile-label" for="config-profile-picker">{{
+          t('plugins.configUi.editProfile')
+        }}</label>
+        <div class="profile-picker-row">
+          <el-select
+            id="config-profile-picker"
+            :model-value="selected"
+            :aria-label="t('plugins.configUi.editProfile')"
+            :disabled="loading || saving || applying"
+            @change="selectProfile"
+          >
+            <el-option
+              v-for="name in names"
+              :key="name"
+              :value="name"
+              :label="
+                name +
+                (dirtyCount(name)
+                  ? ' · ' + t('plugins.configUi.unsavedCount', { count: dirtyCount(name) })
+                  : '')
+              "
+            />
+          </el-select>
+          <el-button
+            :icon="Plus"
+            :disabled="!profiles || loading || saving || applying"
+            @click="addProfile"
+            >{{ t('plugins.configUi.newProfile') }}</el-button
+          >
+        </div>
+        <div v-if="selected && !virtualDefault(selected)" class="profile-current-row">
+          <span class="active-profile">{{
+            active ? t('plugins.configUi.activeProfile', { name: active }) : ''
+          }}</span>
+          <el-button
+            text
+            type="danger"
+            :icon="Delete"
+            :disabled="loading || saving || applying"
+            @click="removeProfile"
+            >{{ t('plugins.configUi.deleteProfile') }}</el-button
+          >
+        </div>
+        <p class="profile-help">{{ t('plugins.configUi.inheritHint') }}</p>
+      </div>
+      <template #footer>
+        <div class="profile-dialog-actions">
+          <el-button @click="profilesOpen = false">{{ t('common.close') }}</el-button>
+          <el-button
+            v-if="virtualDefault(selected || '')"
+            type="primary"
+            :disabled="!saveEnabled || applying"
+            :loading="saving"
+            @click="saveOnly"
+            >{{ t('plugins.configUi.saveAsProfile') }}</el-button
+          >
+          <el-button
+            v-else-if="selected && selected !== active"
+            type="primary"
+            :disabled="!canSave || dirty || applying"
+            @click="activate"
+            >{{ t('plugins.configUi.activateProfile') }}</el-button
+          >
+        </div>
+      </template>
+    </el-dialog>
 
     <el-alert
-      v-if="error"
-      :title="t('common.error')"
-      :description="error"
+      v-if="visibleError"
+      :title="visibleError"
       type="error"
-      :closable="false"
       show-icon
-      style="margin-bottom: 12px"
+      :closable="false"
+      class="config-error"
     />
-
-    <el-skeleton v-if="loading" :rows="8" animated />
-
-    <div v-else class="config-layout">
-      <div class="profiles-pane">
-        <div class="profiles-header">
-          <span class="profiles-title">{{ t('plugins.profiles') }}</span>
-          <el-button
-            type="primary"
-            size="small"
-            :icon="Plus"
-            @click="addProfile"
-            :disabled="!profilesStateLoaded"
-          >
-            {{ t('common.add') }}
-          </el-button>
-        </div>
-
-        <el-empty v-if="!profileNames.length" :description="t('common.noData')" />
-
-        <el-menu v-else :default-active="selectedProfileName || ''" class="profiles-menu">
-          <el-menu-item
-            v-for="name in profileNames"
-            :key="name"
-            :index="name"
-            :class="{ 'viewing-profile': name === selectedProfileName }"
-            @click="selectProfile(name)"
-          >
-            <span>{{ name }}</span>
-            <el-tag
-              v-if="name === activeProfileName"
-              size="small"
-              type="success"
-              style="margin-left: 6px"
-            >
-              {{ t('plugins.active') }}
-            </el-tag>
-            <el-button
-              v-if="!isVirtualDefaultProfile(name)"
-              type="danger"
-              text
-              size="small"
-              :icon="Delete"
-              style="margin-left: auto"
-              @click.stop="removeProfile(name)"
-            />
-          </el-menu-item>
-        </el-menu>
-      </div>
-
-      <div class="preview-pane">
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          :title="t('plugins.config')"
-          :description="t('plugins.formModeHint')"
-          style="margin-bottom: 12px"
+    <el-skeleton v-if="loading || current?.loading" :rows="6" animated />
+    <template v-else-if="current?.loaded">
+      <el-select
+        v-if="sectionNames.length > 3"
+        class="section-jump"
+        :model-value="''"
+        :placeholder="t('plugins.configUi.jumpSection')"
+        :aria-label="t('plugins.configUi.jumpSection')"
+        @change="jumpSection"
+      >
+        <el-option
+          v-for="name in sectionNames"
+          :key="name"
+          :value="name"
+          :label="
+            name +
+            (sectionChanges(name)
+              ? ' · ' + t('plugins.configUi.unsavedCount', { count: sectionChanges(name) })
+              : '')
+          "
         />
-
-        <div class="diff-container">
-          <div class="diff-header">
-            <div class="diff-title">{{ t('plugins.currentEffectiveConfig') }}</div>
-            <div class="diff-title">
-              {{ t('plugins.profilePreview') }}
-              <span v-if="selectedProfileName"> ({{ selectedProfileName }})</span>
-            </div>
-          </div>
-          <div class="diff-body">
-            <div
-              v-for="(row, idx) in diffRows"
-              :key="idx"
-              class="diff-row"
-              :class="{
-                'diff-added': row.type === 'add',
-                'diff-deleted': row.type === 'del',
-                'diff-modified': row.type === 'mod'
-              }"
-            >
-              <div class="diff-gutter diff-gutter-left">
-                <span class="diff-line-number">{{ row.leftLineNo ?? '' }}</span>
-              </div>
-              <pre class="diff-code-cell">{{ row.leftText }}</pre>
-              <div class="diff-gutter diff-gutter-right">
-                <span class="diff-line-number">{{ row.rightLineNo ?? '' }}</span>
-              </div>
-              <pre class="diff-code-cell">{{ row.rightText }}</pre>
-            </div>
-          </div>
-        </div>
-
-        <el-divider style="margin: 16px 0" />
-
-        <div>
-          <div class="preview-title">{{ t('plugins.editProfileOverlay') }}</div>
-          <PluginConfigForm
-            :model-value="profileDraftConfig"
-            :baseline-value="baseConfig"
-            @update:model-value="updateProfileDraft"
-          />
-        </div>
+      </el-select>
+      <div v-if="search || filter !== 'all'" class="search-scope">
+        {{ t('plugins.configUi.searchScope')
+        }}<el-button text size="small" @click="clearFilters">{{
+          t('plugins.configUi.clearFilters')
+        }}</el-button>
       </div>
-    </div>
+      <div class="config-content">
+        <el-empty
+          v-if="!hasVisibleFields"
+          :description="t('plugins.configUi.emptySearch')"
+          :image-size="65"
+          ><el-button @click="clearFilters">{{
+            t('plugins.configUi.clearFilters')
+          }}</el-button></el-empty
+        >
+        <PluginConfigForm
+          v-show="hasVisibleFields"
+          :key="pluginId + ':' + selected"
+          :model-value="current.draft"
+          :baseline-value="base"
+          :search="search"
+          :filter="filter"
+          :changes="changes"
+          @update:model-value="updateDraft"
+          @undo="undoField"
+        />
+      </div>
+    </template>
+
+    <el-dialog
+      v-model="reviewOpen"
+      :title="t('plugins.configUi.unsaved') + ' · ' + changes.length"
+      width="min(900px, 94vw)"
+      append-to-body
+    >
+      <section class="change-review" :aria-label="t('plugins.configUi.reviewChanges')">
+        <p class="data-hint">{{ t('plugins.configUi.reviewHint') }}</p>
+        <p v-if="!changes.length" class="no-changes">{{ t('plugins.configUi.noChanges') }}</p>
+        <div v-for="change in changes" :key="JSON.stringify(change.path)" class="change-row">
+          <code>{{ change.path.join('.') }}</code>
+          <div>
+            <small>{{ t('plugins.configUi.beforeSave') }}</small>
+            <pre>{{ configValueText(configValueAt(originalPreview, change.path)) }}</pre>
+          </div>
+          <div>
+            <small>{{ t('plugins.configUi.draftValue') }}</small>
+            <pre>{{ configValueText(configValueAt(preview, change.path)) }}</pre>
+            <span class="change-intent">{{
+              t(
+                change.afterPresent
+                  ? 'plugins.configUi.explicitValue'
+                  : 'plugins.configUi.restoreInheritance'
+              )
+            }}</span>
+          </div>
+        </div>
+      </section>
+    </el-dialog>
+
+    <el-affix
+      ref="saveAffix"
+      v-if="current?.loaded"
+      position="bottom"
+      :offset="0"
+      :target="'#' + editorId"
+      :z-index="10"
+      :teleported="false"
+    >
+      <footer ref="saveFooter" class="config-footer">
+        <div class="footer-status" role="status" aria-live="polite">
+          <strong
+            ><span class="status-dot" :class="{ dirty }" />{{
+              dirty
+                ? t('plugins.configUi.unsavedCount', { count: changes.length })
+                : virtualDefault(selected || '')
+                  ? t('plugins.configUi.usingBase')
+                  : t('plugins.configUi.noChanges')
+            }}</strong
+          ><small v-if="dirty || otherDirtyCount"
+            >{{ t('plugins.configUi.saveScope', { name: selected })
+            }}<template v-if="otherDirtyCount">
+              · {{ t('plugins.configUi.otherDrafts', { count: otherDirtyCount }) }}</template
+            ></small
+          >
+          <p
+            v-if="!dirty && (applicationNotice || pendingForActive)"
+            class="apply-status"
+            :class="{ pending: pendingForActive }"
+          >
+            {{ applicationNotice || t('plugins.configUi.pendingApply') }}
+          </p>
+        </div>
+        <div class="footer-actions">
+          <el-button v-if="dirty || reviewOpen" text @click="reviewOpen = !reviewOpen">{{
+            t('plugins.configUi.reviewChanges')
+          }}</el-button>
+          <el-button v-if="dirty" text :disabled="saving || applying" @click="undoAll">{{
+            t('plugins.configUi.discardChanges')
+          }}</el-button>
+          <template v-if="pendingForActive && !dirty">
+            <el-button :disabled="loading || saving || applying" @click="hotUpdate">{{
+              t('plugins.hotUpdate')
+            }}</el-button>
+            <el-button
+              type="primary"
+              :loading="applying"
+              :disabled="loading || saving"
+              @click="reloadSaved"
+              >{{ t('plugins.reloadPlugin') }}</el-button
+            >
+          </template>
+          <el-button
+            v-if="selected === active && dirty"
+            :disabled="!saveEnabled || applying"
+            :loading="applying"
+            @click="saveAndReload"
+            >{{ t('plugins.configUi.saveReload') }}</el-button
+          >
+          <el-button
+            v-if="dirty || !pendingForActive"
+            type="primary"
+            :icon="Check"
+            :loading="saving"
+            :disabled="!saveEnabled || !dirty || applying"
+            @click="saveOnly"
+            >{{ t('plugins.configUi.saveProfile') }}</el-button
+          >
+        </div>
+      </footer>
+    </el-affix>
+
+    <el-dialog
+      v-model="dataOpen"
+      :title="t('plugins.configUi.configData')"
+      width="min(900px, 94vw)"
+      append-to-body
+    >
+      <div class="config-meta">
+        <p v-if="configPath">
+          <strong>{{ t('plugins.configPath') }}</strong
+          ><code>{{ configPath }}</code>
+        </p>
+        <p v-if="lastModified">{{ t('plugins.lastModified') }}: {{ lastModified }}</p>
+      </div>
+      <p class="data-hint">{{ t('plugins.configUi.dataHint') }}</p>
+      <el-tabs v-model="dataTab"
+        ><el-tab-pane :label="t('plugins.configUi.resolvedConfig')" name="effective" /><el-tab-pane
+          :label="t('plugins.configUi.draftOverlay')"
+          name="draft" /><el-tab-pane :label="t('plugins.configUi.previewConfig')" name="preview"
+      /></el-tabs>
+      <pre class="config-json">{{ dataJson }}</pre>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, ref, toRef, useId, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Check, Plus, Delete } from '@element-plus/icons-vue'
-import * as Diff from 'diff'
-
+import { ElMessage, ElMessageBox, type AffixInstance } from 'element-plus'
+import { useEventListener, useResizeObserver } from '@vueuse/core'
 import {
-  getPluginConfig,
-  getPluginEffectiveBaseConfig,
-  getPluginProfilesState,
-  getPluginProfileConfig,
-  upsertPluginProfileConfig,
-  deletePluginProfileConfig
-} from '@/api/config'
+  ArrowDown,
+  Check,
+  Delete,
+  Document,
+  MoreFilled,
+  Plus,
+  Refresh,
+  Search,
+  Setting,
+} from '@element-plus/icons-vue'
+import { hotUpdatePluginConfig } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
-import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
+import { usePluginConfigDrafts } from '@/composables/usePluginConfigDrafts'
+import {
+  applyProfileOverlay,
+  configuredFieldCount,
+  configNodeMatches,
+  configValueAt,
+  configValueText,
+  deepClone,
+  type ConfigFilter,
+} from '@/utils/configEditor'
 import { isRequestTimeout } from '@/utils/request'
+import { isAxiosError } from 'axios'
+import PluginConfigForm from './PluginConfigForm.vue'
 
-interface Props {
-  pluginId: string
-}
-
-const props = defineProps<Props>()
+const props = defineProps<{ pluginId: string }>()
 const { t } = useI18n()
-const router = useRouter()
 const pluginStore = usePluginStore()
-
-const loading = ref(false)
-const saving = ref(false)
-const error = ref<string | null>(null)
-
-const configPath = ref<string | undefined>(undefined)
-const lastModified = ref<string | undefined>(undefined)
-
-const baseConfig = ref<Record<string, any> | null>(null)
-const effectiveConfig = ref<Record<string, any> | null>(null)
-const profilesState = ref<any | null>(null)
-const profilesStateLoaded = ref(false)
-
-const selectedProfileName = ref<string | null>(null)
-const profileDraftConfig = ref<Record<string, any> | null>(null)
-const originalProfileConfig = ref<Record<string, any> | null>(null)
-
-// Plugins without persisted profiles expose an editable default draft. It is
-// persisted only when the user saves, keeping configuration page loading read-only.
-const DEFAULT_PROFILE_NAME = 'default'
-
-function cloneDeep<T>(input: T, seen = new WeakMap<object, any>()): T {
-  if (input === null || typeof input !== 'object') return input
-
-  if (input instanceof Date) return new Date(input.getTime()) as any
-  if (input instanceof RegExp) return new RegExp(input.source, input.flags) as any
-
-  if (seen.has(input as any)) return seen.get(input as any)
-
-  if (Array.isArray(input)) {
-    const out: any[] = []
-    seen.set(input as any, out)
-    for (const item of input as any[]) out.push(cloneDeep(item, seen))
-    return out as any
-  }
-
-  if (input instanceof Map) {
-    const out = new Map()
-    seen.set(input as any, out)
-    for (const [k, v] of input.entries()) out.set(cloneDeep(k as any, seen), cloneDeep(v as any, seen))
-    return out as any
-  }
-
-  if (input instanceof Set) {
-    const out = new Set()
-    seen.set(input as any, out)
-    for (const v of input.values()) out.add(cloneDeep(v as any, seen))
-    return out as any
-  }
-
-  const proto = Object.getPrototypeOf(input)
-  const out = Object.create(proto)
-  seen.set(input as any, out)
-  for (const key of Reflect.ownKeys(input as any)) {
-    const desc = Object.getOwnPropertyDescriptor(input as any, key)
-    if (!desc) continue
-    if ('value' in desc) {
-      desc.value = cloneDeep((input as any)[key], seen)
-    }
-    Object.defineProperty(out, key, desc)
-  }
-  return out
+const drafts = usePluginConfigDrafts(toRef(props, 'pluginId'))
+const {
+  base,
+  effective,
+  profiles,
+  selected,
+  active,
+  current,
+  names,
+  loading,
+  saving,
+  error,
+  configPath,
+  lastModified,
+  changes,
+  dirty,
+  anyDirty,
+  canSave,
+  pendingApplication,
+  virtualDefault,
+  dirtyCount,
+  selectProfile,
+  updateDraft,
+  undoAll,
+  undoField,
+} = drafts
+const search = ref('')
+const filter = ref<ConfigFilter>('all')
+const reviewOpen = ref(false)
+const profilesOpen = ref(false)
+const editorId = 'plugin-config-' + useId().replace(/[^a-zA-Z0-9_-]/g, '-')
+function toolbarCommand(command: string) {
+  if (command === 'data') dataOpen.value = true
+  else if (command === 'refresh') void refresh()
 }
-
-function deepClone<T>(v: T): T {
-  const sc = (globalThis as any).structuredClone as undefined | ((x: any) => any)
-  if (typeof sc === 'function') {
-    try {
-      return sc(v) as T
-    } catch {
-      // fall through
-    }
-  }
-  return cloneDeep(v)
+const dataOpen = ref(false)
+const dataTab = ref('effective')
+const applying = ref(false)
+const operationError = ref<string | null>(null)
+const applicationNotice = ref('')
+let alive = true
+const container = ref<HTMLElement | null>(null)
+const saveAffix = ref<AffixInstance>()
+const saveFooter = ref<HTMLElement>()
+// The detail page scrolls in an outer container. Re-measure when that container
+// scrolls, or when responsive wrapping / save state changes the footer size.
+const updateSavePosition = () => {
+  void saveAffix.value?.updateRoot()
 }
-
-const persistedProfileNames = computed<string[]>(() => {
-  if (!profilesStateLoaded.value) return []
-  const cfg = profilesState.value?.config_profiles
-  if (!cfg || !cfg.files || typeof cfg.files !== 'object') return []
-  return Object.keys(cfg.files).sort()
-})
-
-const profileNames = computed<string[]>(() =>
-  !profilesStateLoaded.value
-    ? []
-    : persistedProfileNames.value.length > 0
-    ? persistedProfileNames.value
-    : [DEFAULT_PROFILE_NAME]
+useResizeObserver([container, saveFooter], updateSavePosition)
+useEventListener(document, 'scroll', updateSavePosition, { capture: true, passive: true })
+const configuredCount = computed(() =>
+  current.value && Object.keys(current.value.draft).length
+    ? configuredFieldCount(current.value.draft, true)
+    : 0
 )
-
-const activeProfileName = computed<string | null>(() => {
-  if (!profilesStateLoaded.value) return null
-  const cfg = profilesState.value?.config_profiles
-  const name = cfg?.active
-  if (typeof name === 'string' && name) return name
-  return persistedProfileNames.value.length === 0 ? DEFAULT_PROFILE_NAME : null
-})
-
-function isVirtualDefaultProfile(name: string) {
-  return profilesStateLoaded.value && name === DEFAULT_PROFILE_NAME && persistedProfileNames.value.length === 0
+const sectionNames = computed(() =>
+  [...new Set([...Object.keys(base.value), ...Object.keys(current.value?.draft || {})])]
+    .filter((name) => name !== 'plugin')
+    .sort()
+)
+const sectionChanges = (name: string) =>
+  changes.value.filter((change) => change.path[0] === name).length
+async function jumpSection(name: string) {
+  clearFilters()
+  await nextTick()
+  const rows = container.value?.querySelectorAll<HTMLElement>('.cve.is-root > .obj > .row')
+  const target = rows && [...rows].find((row) => row.dataset.configPath === name)
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
-
-const hasChanges = computed(() => {
-  if (!selectedProfileName.value) return false
-  return (
-    JSON.stringify(profileDraftConfig.value || {}) !==
-    JSON.stringify(originalProfileConfig.value || {})
+const filterOptions = computed(() => [
+  { value: 'all' as const, label: t('plugins.configUi.all') },
+  { value: 'dirty' as const, label: t('plugins.configUi.unsaved'), count: changes.value.length },
+  {
+    value: 'configured' as const,
+    label: t('plugins.configUi.configured'),
+    count: configuredCount.value,
+  },
+])
+const hasVisibleFields = computed(() =>
+  configNodeMatches(
+    current.value?.draft || {},
+    base.value,
+    [],
+    search.value,
+    filter.value,
+    changes.value
   )
-})
-
-interface DiffRow {
-  leftText: string
-  rightText: string
-  leftLineNo: number | null
-  rightLineNo: number | null
-  type: 'equal' | 'add' | 'del' | 'mod'
+)
+const visibleError = computed(() => error.value || current.value?.error || operationError.value)
+const saveEnabled = computed(
+  () => canSave.value && (dirty.value || virtualDefault(selected.value || ''))
+)
+const otherDirtyCount = computed(
+  () => names.value.filter((n) => n !== selected.value && dirtyCount(n)).length
+)
+const pendingForActive = computed(
+  () =>
+    !!selected.value && selected.value === active.value && pendingApplication.has(selected.value)
+)
+const preview = computed(() => applyProfileOverlay(base.value, current.value?.draft || {}))
+const originalPreview = computed(() =>
+  applyProfileOverlay(base.value, current.value?.original || {})
+)
+const dataJson = computed(() =>
+  JSON.stringify(
+    dataTab.value === 'effective'
+      ? effective.value
+      : dataTab.value === 'draft'
+        ? current.value?.draft || {}
+        : preview.value,
+    null,
+    2
+  )
+)
+const clearFilters = () => {
+  search.value = ''
+  filter.value = 'all'
 }
+const errorText = (err: unknown) => (err instanceof Error ? err.message : t('common.error'))
 
-const currentConfigJson = computed(() => {
-  if (!effectiveConfig.value) return ''
+async function confirmDiscard(): Promise<boolean> {
+  if (!anyDirty.value) return true
   try {
-    return JSON.stringify(effectiveConfig.value, null, 2)
-  } catch {
-    return ''
-  }
-})
-
-const diffRows = computed<DiffRow[]>(() => {
-  if (!effectiveConfig.value && !previewConfig.value) return []
-
-  let left = currentConfigJson.value
-  let right = previewConfigJson.value
-
-  if (!left && effectiveConfig.value) {
-    try {
-      left = JSON.stringify(effectiveConfig.value, null, 2)
-    } catch {
-      left = ''
-    }
-  }
-
-  if (!right && previewConfig.value) {
-    try {
-      right = JSON.stringify(previewConfig.value, null, 2)
-    } catch {
-      right = ''
-    }
-  }
-
-  const toLines = (v: string) => {
-    if (!v) return ['']
-    const lines = v.split('\n')
-    if (v.endsWith('\n') && lines.length > 0) lines.pop()
-    return lines
-  }
-
-  const changes = Diff.diffLines(left, right)
-  const rows: DiffRow[] = []
-  let leftNo = 1
-  let rightNo = 1
-
-  for (let i = 0; i < changes.length; i++) {
-    const cur = changes[i]
-    if (!cur) continue
-    const next = i + 1 < changes.length ? changes[i + 1] : undefined
-
-    // treat adjacent removed+added as a modification block so the UI aligns them
-    if (cur.removed && next?.added) {
-      const leftLines = toLines(cur.value)
-      const rightLines = toLines(next.value)
-      const maxLen = Math.max(leftLines.length, rightLines.length)
-
-      for (let j = 0; j < maxLen; j++) {
-        const l = j < leftLines.length ? leftLines[j] : null
-        const r = j < rightLines.length ? rightLines[j] : null
-        rows.push({
-          leftText: l ?? '',
-          rightText: r ?? '',
-          leftLineNo: l !== null ? leftNo++ : null,
-          rightLineNo: r !== null ? rightNo++ : null,
-          type: l !== null && r !== null ? (l === r ? 'equal' : 'mod') : l !== null ? 'del' : 'add'
-        })
-      }
-
-      i++
-      continue
-    }
-
-    const lines = toLines(cur.value)
-
-    for (const line of lines) {
-      if (cur.added) {
-        rows.push({
-          leftText: '',
-          rightText: line,
-          leftLineNo: null,
-          rightLineNo: rightNo++,
-          type: 'add'
-        })
-      } else if (cur.removed) {
-        rows.push({
-          leftText: line,
-          rightText: '',
-          leftLineNo: leftNo++,
-          rightLineNo: null,
-          type: 'del'
-        })
-      } else {
-        rows.push({
-          leftText: line,
-          rightText: line,
-          leftLineNo: leftNo++,
-          rightLineNo: rightNo++,
-          type: 'equal'
-        })
-      }
-    }
-  }
-
-  return rows
-})
-
-function deepMerge(base: any, updates: any): any {
-  if (base == null || typeof base !== 'object') return deepClone(updates)
-  if (updates == null || typeof updates !== 'object') return deepClone(updates)
-  // 对象递归合并；数组和原始值直接替换（不做逐项合并）
-  const out: any = Array.isArray(base) ? [...base] : { ...base }
-  for (const [k, v] of Object.entries(updates)) {
-    const cur = (out as any)[k]
-    if (
-      cur &&
-      typeof cur === 'object' &&
-      !Array.isArray(cur) &&
-      v &&
-      typeof v === 'object' &&
-      !Array.isArray(v)
-    ) {
-      ;(out as any)[k] = deepMerge(cur, v)
-    } else {
-      ;(out as any)[k] = v
-    }
-  }
-  return out
-}
-
-function applyProfileOverlay(base: any, overlay: any): any {
-  if (!base && !overlay) return null
-  if (!overlay) return deepClone(base)
-  if (!base) return deepClone(overlay)
-  const result: any = deepClone(base)
-  for (const [k, v] of Object.entries(overlay)) {
-    // Profile cannot modify the 'plugin' section; skip it — shown only in JSON preview
-    if (k === 'plugin') continue
-    const cur = (result as any)[k]
-    if (
-      cur &&
-      typeof cur === 'object' &&
-      !Array.isArray(cur) &&
-      v &&
-      typeof v === 'object' &&
-      !Array.isArray(v)
-    ) {
-      ;(result as any)[k] = deepMerge(cur, v)
-    } else {
-      ;(result as any)[k] = v
-    }
-  }
-  return result
-}
-
-const previewConfig = computed<Record<string, any> | null>(() => {
-  if (!baseConfig.value) return null
-  if (!profileDraftConfig.value) return deepClone(baseConfig.value)
-  return applyProfileOverlay(baseConfig.value, profileDraftConfig.value)
-})
-
-const previewConfigJson = computed(() => {
-  if (!previewConfig.value) return ''
-  try {
-    return JSON.stringify(previewConfig.value, null, 2)
-  } catch {
-    return ''
-  }
-})
-
-async function loadProfileDraft(name: string, expectedVersion = loadVersion) {
-  if (!props.pluginId) return
-  if (isVirtualDefaultProfile(name)) {
-    originalProfileConfig.value = {}
-    profileDraftConfig.value = {}
-    return
-  }
-  try {
-    const res = await getPluginProfileConfig(props.pluginId, name)
-    if (expectedVersion !== loadVersion) return
-    const cfg = (res.config || {}) as Record<string, any>
-    originalProfileConfig.value = deepClone(cfg)
-    profileDraftConfig.value = deepClone(cfg)
-  } catch {
-    if (expectedVersion !== loadVersion) return
-    // 如果 profile 文件不存在或解析失败，则从空配置开始
-    originalProfileConfig.value = {}
-    profileDraftConfig.value = {}
-  }
-}
-
-let loadVersion = 0
-
-async function loadAll() {
-  if (!props.pluginId) return
-
-  const currentVersion = ++loadVersion
-
-  loading.value = true
-  error.value = null
-  profilesStateLoaded.value = false
-  try {
-    const prevSelected = selectedProfileName.value
-    const [baseRes, effectiveRes, profilesRes] = await Promise.all([
-      getPluginEffectiveBaseConfig(props.pluginId),
-      getPluginConfig(props.pluginId),
-      getPluginProfilesState(props.pluginId)
-    ])
-
-    if (currentVersion !== loadVersion) return
-
-    configPath.value = (baseRes as any).config_path || (effectiveRes as any).config_path
-    lastModified.value = (baseRes as any).last_modified || (effectiveRes as any).last_modified
-
-    baseConfig.value = (baseRes.config || {}) as Record<string, any>
-    effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
-    profilesState.value = profilesRes
-    profilesStateLoaded.value = !!profilesRes && typeof profilesRes === 'object'
-
-    const names = profileNames.value
-    const active = activeProfileName.value
-    let toSelect: string | null = null
-    if (prevSelected && names.includes(prevSelected)) {
-      toSelect = prevSelected
-    } else if (typeof active === 'string' && names.includes(active)) {
-      toSelect = active
-    } else if (names.length > 0) {
-      toSelect = names[0] as string
-    }
-
-    selectedProfileName.value = toSelect
-    if (toSelect) {
-      await loadProfileDraft(toSelect, currentVersion)
-    } else {
-      profileDraftConfig.value = null
-      originalProfileConfig.value = null
-    }
-  } catch (e: any) {
-    if (currentVersion !== loadVersion) return
-    error.value = e?.message || t('plugins.configLoadFailed')
-  } finally {
-    if (currentVersion === loadVersion) {
-      loading.value = false
-    }
-  }
-}
-
-function updateProfileDraft(v: Record<string, any> | null) {
-  profileDraftConfig.value = v || {}
-}
-
-async function selectProfile(name: string) {
-  if (selectedProfileName.value === name) return
-  if (hasChanges.value) {
-    try {
-      await ElMessageBox.confirm(
-        t('plugins.unsavedChangesWarning'),
-        t('common.warning'),
-        { type: 'warning' }
-      )
-    } catch {
-      return
-    }
-  }
-  selectedProfileName.value = name
-  await loadProfileDraft(name)
-}
-
-async function addProfile() {
-  if (!props.pluginId || !profilesStateLoaded.value) return
-  if (hasChanges.value) {
-    try {
-      await ElMessageBox.confirm(
-        t('plugins.unsavedChangesWarning'),
-        t('common.warning'),
-        { type: 'warning' }
-      )
-    } catch {
-      return
-    }
-  }
-
-  const pluginId = props.pluginId
-  try {
-    const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
-      inputPattern: /^(?!\s*$).+/u,
-      inputErrorMessage: t('plugin.addProfile.inputError')
+    await ElMessageBox.confirm(t('plugins.configUi.discardPrompt'), t('common.warning'), {
+      type: 'warning',
     })
+    return true
+  } catch {
+    return false
+  }
+}
+async function refresh() {
+  if (!(await confirmDiscard())) return
+  operationError.value = null
+  applicationNotice.value = ''
+  await drafts.loadAll(true)
+}
+async function addProfile() {
+  const id = props.pluginId
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('plugin.addProfile.prompt'),
+      t('plugin.addProfile.title'),
+      {
+        inputPattern: /^(?!\s*$).+/u,
+        inputErrorMessage: t('plugin.addProfile.inputError'),
+      }
+    )
     const name = String(value || '').trim()
-    if (!name) return
-    if (pluginId !== props.pluginId || !profilesStateLoaded.value) return
-    if (persistedProfileNames.value.includes(name)) {
+    if (!alive || id !== props.pluginId || !name) return
+    if (names.value.includes(name) && !virtualDefault(name)) {
       ElMessage.error(t('plugin.addProfile.inputError'))
       return
     }
-
-    // 立即在后端创建一个空的 profile 映射，方便左侧列表立刻出现该 profile
-    // Without an active profile the backend activates this first profile;
-    // otherwise the current active profile remains unchanged until the user saves edits.
-    await upsertPluginProfileConfig(pluginId, name, {}, false)
-    if (pluginId !== props.pluginId) return
-
-    // 重新加载所有配置与 profiles 状态，并选中新建的 profile
-    await loadAll()
-    if (pluginId !== props.pluginId) return
-    await selectProfile(name)
-  } catch (e: any) {
-    // 用户取消或请求失败时忽略，由上层错误提示负责
-    if (e === 'cancel' || e === 'close') return
-    ElMessage.error(e?.message || t('common.error'))
+    // A virtual default stops being listed when the first real profile is
+    // created. Do not orphan its unsaved draft in an invisible cache entry.
+    const discardVirtual =
+      name !== 'default' && virtualDefault('default') && dirtyCount('default') > 0
+    if (discardVirtual && !(await confirmDiscard())) return
+    if (!alive || id !== props.pluginId) return
+    await drafts.createProfile(name)
+    if (alive && id === props.pluginId && discardVirtual && names.value.includes(name))
+      drafts.records.delete('default')
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') operationError.value = errorText(err)
   }
 }
-
-async function removeProfile(name: string) {
+async function removeProfile() {
+  const id = props.pluginId,
+    name = selected.value
+  if (!name || virtualDefault(name)) return
   try {
-    await ElMessageBox.confirm(t('plugin.removeProfile.confirm', { name }), t('plugin.removeProfile.title'), {
-      type: 'warning'
-    })
-    await deletePluginProfileConfig(props.pluginId, name)
-    ElMessage.success(t('common.success'))
-    await loadAll()
-  } catch (e: any) {
-    if (e === 'cancel' || e === 'close') return
-    error.value = e?.message || t('common.error')
-  }
-}
-
-function resetDraft() {
-  error.value = null
-  if (!originalProfileConfig.value) {
-    profileDraftConfig.value = {}
-  } else {
-    profileDraftConfig.value = deepClone(originalProfileConfig.value)
-  }
-}
-
-async function save() {
-  if (!props.pluginId || !selectedProfileName.value || !profilesStateLoaded.value) return
-
-  const pluginId = props.pluginId
-  const profileName = selectedProfileName.value
-  const saveLoadVersion = loadVersion
-  const draftToSave = deepClone(profileDraftConfig.value || {}) as Record<string, any>
-  const shouldActivate = isVirtualDefaultProfile(profileName)
-  const isCurrentSave = () =>
-    saveLoadVersion === loadVersion &&
-    pluginId === props.pluginId &&
-    profileName === selectedProfileName.value
-
-  saving.value = true
-  error.value = null
-  try {
-    await upsertPluginProfileConfig(
-      pluginId,
-      profileName,
-      draftToSave,
-      shouldActivate
+    await ElMessageBox.confirm(
+      t('plugin.removeProfile.confirm', { name }) +
+        (dirtyCount(name) ? '\n' + t('plugins.configUi.discardPrompt') : ''),
+      t('plugin.removeProfile.title'),
+      { type: 'warning' }
     )
-
-    if (!isCurrentSave()) return
-
+    if (!alive || id !== props.pluginId || name !== selected.value) return
+    await drafts.deleteProfile(name)
     ElMessage.success(t('common.success'))
-
-    const [effectiveRes, profilesRes] = await Promise.all([
-      getPluginConfig(pluginId),
-      getPluginProfilesState(pluginId)
-    ])
-    if (!isCurrentSave()) return
-    effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
-    profilesState.value = profilesRes
-    profilesStateLoaded.value = !!profilesRes && typeof profilesRes === 'object'
-    originalProfileConfig.value = deepClone(draftToSave)
-
-    // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示热更新或重载插件
-    const isActive = activeProfileName.value === profileName
-    if (isActive) {
-      try {
-        // 提供热更新选项
-        const action = await ElMessageBox.confirm(
-          t('plugins.configHotUpdatePrompt'),
-          t('plugins.configApplyTitle'),
-          {
-            type: 'info',
-            distinguishCancelAndClose: true,
-            confirmButtonText: t('plugins.hotUpdate'),
-            cancelButtonText: t('plugins.reloadPlugin')
-          }
-        )
-        // 用户点击了"热更新"
-        if (!isCurrentSave()) return
-        await hotUpdateConfig(pluginId, profileName, draftToSave)
-      } catch (e: any) {
-        if (e === 'cancel') {
-          // 用户点击了"重启插件"
-          try {
-            if (!isCurrentSave()) return
-            await pluginStore.reload(pluginId)
-            ElMessage.success(t('messages.pluginReloaded'))
-          } catch (reloadErr: any) {
-            if (!isRequestTimeout(reloadErr)) {
-              ElMessage.error(reloadErr?.message || t('messages.reloadFailed'))
-            }
-          }
-        }
-        // e === 'close' 时用户关闭了对话框，不做任何操作
-      }
-    }
-  } catch (e: any) {
-    error.value = e?.message || t('plugins.configSaveFailed')
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') operationError.value = errorText(err)
+  }
+}
+async function activate() {
+  if (!selected.value || dirty.value) return
+  const name = selected.value,
+    id = props.pluginId
+  operationError.value = null
+  try {
+    await drafts.activateProfile(name)
+    if (!alive || id !== props.pluginId) return
+    if (active.value !== name)
+      ElMessage.warning(t('plugins.configUi.activationUnchanged', { name: active.value || '—' }))
+  } catch (err) {
+    operationError.value = errorText(err)
+  }
+}
+async function saveOnly() {
+  operationError.value = null
+  applicationNotice.value = ''
+  const name = await drafts.saveProfile()
+  if (name) ElMessage.success(t('plugins.configUi.configStored', { name }))
+  return name
+}
+async function saveAndReload() {
+  const id = props.pluginId
+  const name = await saveOnly()
+  if (alive && id === props.pluginId && name && name === active.value && name === selected.value)
+    await reloadSaved()
+}
+async function reloadSaved() {
+  const id = props.pluginId,
+    name = selected.value
+  if (!name || name !== active.value || applying.value) return
+  applying.value = true
+  operationError.value = null
+  try {
+    await pluginStore.reload(id)
+    if (!alive || id !== props.pluginId) return
+    pendingApplication.delete(name)
+    applicationNotice.value = t('plugins.configUi.reloadComplete')
+    await drafts.loadAll()
+  } catch (err) {
+    if (alive && id === props.pluginId)
+      operationError.value =
+        isAxiosError(err) && isRequestTimeout(err)
+          ? t('plugins.configUi.applyUnconfirmed')
+          : errorText(err)
   } finally {
-    saving.value = false
+    if (alive && id === props.pluginId) applying.value = false
   }
 }
-
-async function hotUpdateConfig(
-  pluginId: string,
-  profileName: string,
-  config: Record<string, any>
-) {
+async function hotUpdate() {
+  const id = props.pluginId,
+    name = selected.value
+  if (!name || name !== active.value || !current.value?.loaded || dirty.value || applying.value)
+    return
+  const config = deepClone(current.value.original)
+  applying.value = true
+  operationError.value = null
   try {
-    const { hotUpdatePluginConfig } = await import('@/api/config')
-    const result = await hotUpdatePluginConfig(
-      pluginId,
-      config,
-      'permanent',
-      profileName
-    )
-    
-    if (result.success) {
-      if (result.hot_reloaded) {
-        ElMessage.success(t('plugins.hotUpdateSuccess'))
-      } else {
-        ElMessage.warning(t('plugins.hotUpdatePartial'))
-      }
-    } else {
-      ElMessage.error(result.message || t('plugins.hotUpdateFailed'))
+    // Preserve the existing endpoint and permanent-mode behavior. This is an
+    // explicit hot-update action, not a silent extra write on profile save.
+    const result = await hotUpdatePluginConfig(id, config, 'permanent', name)
+    if (!alive || id !== props.pluginId) return
+    if (!result.success) {
+      operationError.value = result.message || t('plugins.hotUpdateFailed')
+      return
     }
-  } catch (e: any) {
-    ElMessage.error(e?.message || t('plugins.hotUpdateFailed'))
+    applicationNotice.value = result.hot_reloaded
+      ? t('plugins.configUi.hotRequested')
+      : t('plugins.hotUpdatePartial')
+    await drafts.loadAll()
+  } catch (err) {
+    if (alive && id === props.pluginId) operationError.value = errorText(err)
+  } finally {
+    if (alive && id === props.pluginId) applying.value = false
   }
 }
 
-onMounted(loadAll)
-
+watch([() => props.pluginId, selected], () => {
+  clearFilters()
+  reviewOpen.value = false
+  operationError.value = null
+  applicationNotice.value = ''
+})
 watch(
   () => props.pluginId,
-  async (newId, oldId) => {
-    if (!newId) return
-    if (hasChanges.value && oldId) {
-      try {
-        await ElMessageBox.confirm(
-          t('plugins.unsavedChangesWarning'),
-          t('common.warning'),
-          { type: 'warning' }
-        )
-      } catch {
-        router.replace(`/plugins/${encodeURIComponent(oldId)}`)
-        return
-      }
-    }
-    await loadAll()
+  () => {
+    applying.value = false
   }
 )
+onBeforeRouteLeave(() => confirmDiscard())
+onBeforeRouteUpdate((to, from) => (to.params.id === from.params.id ? true : confirmDiscard()))
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (anyDirty.value) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+window.addEventListener('beforeunload', beforeUnload)
+onBeforeUnmount(() => {
+  alive = false
+  window.removeEventListener('beforeunload', beforeUnload)
+})
 </script>
 
 <style scoped>
 .plugin-config-editor {
-  padding: 8px 0;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 4px 0 0;
+  min-width: 0;
+  container-type: inline-size;
+  container-name: config-editor;
+  color: var(--el-text-color-primary);
 }
-
-.header {
+.config-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 20px;
+}
+.config-toolbar > .el-input {
+  width: 300px;
+  max-width: 45%;
+}
+.config-toolbar :deep(.el-input__wrapper) {
+  min-height: 36px;
+  border-radius: 8px;
+}
+.toolbar-spacer {
+  flex: 1;
+}
+.trailing-icon {
+  margin-left: 8px;
+  font-size: 11px;
+}
+.profile-name {
+  margin-left: 9px;
+  font-weight: 600;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-active {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.filter-count {
+  margin-left: 12px;
+  color: var(--el-text-color-secondary);
+}
+:global(.profile-manager-dialog) {
+  padding: 24px;
+  border-radius: 12px;
+}
+:global(.profile-manager-dialog .el-dialog__header) {
+  padding: 0 28px 22px 0;
+}
+:global(.profile-manager-dialog .el-dialog__title) {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+}
+:global(.profile-manager-dialog .el-dialog__headerbtn) {
+  top: 16px;
+  right: 16px;
+}
+:global(.profile-manager-dialog .el-dialog__footer) {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.profile-label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+.profile-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.profile-picker-row :deep(.el-select__wrapper) {
+  min-height: 40px;
+  border-radius: 6px;
+}
+.profile-picker-row > .el-button,
+.profile-dialog-actions > .el-button {
+  height: 40px;
+  margin: 0;
+  border-radius: 6px;
+}
+.profile-current-row {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-top: 10px;
 }
-
-.meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.active-profile {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
-
-.meta-line {
+.profile-current-row > .el-button {
+  flex-shrink: 0;
+  padding-right: 0;
+}
+.profile-help {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+.profile-dialog-actions {
   display: flex;
-  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
 }
-
-.meta-label {
-  white-space: nowrap;
+@media (max-width: 420px) {
+  .profile-picker-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
-
-.meta-value {
-  word-break: break-all;
+.config-content {
+  min-width: 0;
+  padding-bottom: 20px;
 }
-
-.actions {
-  display: flex;
-  gap: 8px;
+.config-error {
+  margin-bottom: 20px;
 }
-
-.config-layout {
+.section-jump {
+  width: 200px;
+  margin-bottom: 16px;
+}
+.search-scope {
   display: flex;
   gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
-
-.profiles-pane {
-  width: 220px;
+.config-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  background: var(--el-bg-color);
+  border-top: 1px solid var(--el-border-color-lighter);
 }
-
-.profiles-header {
+.footer-status {
+  min-width: 0;
+}
+.footer-status strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  font-size: 13px;
+}
+.footer-status small {
+  display: block;
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-color-info);
+}
+.status-dot.dirty {
+  background: var(--el-color-primary);
+}
+.apply-status {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin: 6px 0 0;
+  max-width: 480px;
+}
+.apply-status.pending {
+  color: var(--el-color-warning);
+}
+.footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.footer-actions .el-button {
+  margin-left: 0;
+  border-radius: 7px;
+}
+.change-review {
+  max-height: 55vh;
+  overflow: auto;
+}
+.change-review header {
+  position: sticky;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.profiles-title {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.profiles-menu {
-  border-radius: 4px;
-}
-
-.profiles-menu :deep(.viewing-profile) {
-  background-color: rgba(64, 158, 255, 0.14);
-}
-
-.preview-pane {
-  flex: 1 1 auto;
-}
-
-.preview-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--el-fill-color-lighter);
-}
-
-.preview-title {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-bottom: 4px;
-}
-
-/* VSCode 风格的双列 diff 预览 */
-.diff-container {
-  border-radius: 6px;
-  border: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-lighter);
-}
-
-.diff-header {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  background: var(--el-bg-color);
+  padding: 12px 0;
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
-
-.diff-header .diff-title {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  padding: 4px 8px;
-}
-
-.diff-body {
-  max-height: 260px;
-  overflow: auto;
-  font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--el-bg-color);
-  white-space: pre;
-}
-
-.diff-row {
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr) 54px minmax(0, 1fr);
-  white-space: pre;
-}
-
-.diff-gutter {
-  padding: 0 6px;
-  text-align: right;
-  border-right: 1px solid var(--el-border-color-lighter);
-  color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-lighter);
-}
-
-.diff-gutter-right {
-  border-left: 1px solid var(--el-border-color-lighter);
-}
-
-.diff-line-number {
-  display: inline-block;
-  min-width: 24px;
-}
-
-.diff-code-cell {
+.change-review h3 {
   margin: 0;
-  padding: 0 8px;
+  font-size: 14px;
 }
-
-.diff-row.diff-added {
-  background: rgba(46, 160, 67, 0.14);
+.change-review h3 span {
+  color: var(--el-color-primary);
+  margin-left: 5px;
 }
-
-.diff-row.diff-deleted {
-  background: rgba(248, 81, 73, 0.16);
+.change-review header p,
+.no-changes {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin: 6px 0;
 }
-
-.diff-row.diff-modified {
-  background: rgba(56, 139, 253, 0.16);
+.change-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(160px, 1fr) minmax(160px, 1fr);
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+.change-row code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.change-row small {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+.change-row pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+  font: 12px/1.6 monospace;
+  margin: 5px 0;
+}
+.change-intent {
+  font-size: 11px;
+  color: var(--el-color-primary);
+}
+.config-meta {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.config-meta strong {
+  margin-right: 10px;
+}
+.config-meta code {
+  overflow-wrap: anywhere;
+}
+.data-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.config-json {
+  background: var(--el-fill-color-extra-light);
+  padding: 14px;
+  border-radius: 6px;
+  max-height: 55vh;
+  overflow: auto;
+  font: 12px/1.6 monospace;
+  white-space: pre;
+}
+@container config-editor (max-width: 660px) {
+  .config-toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .config-toolbar > .el-input {
+    max-width: none;
+    width: calc(100% - 100px);
+    flex: 1;
+  }
+  .toolbar-spacer {
+    flex-basis: 100%;
+  }
+  .profile-entry {
+    margin-left: -12px;
+  }
+  .config-footer {
+    gap: 10px;
+  }
+  .footer-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 680px) {
+  .change-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .change-row code {
+    grid-column: 1 / -1;
+  }
 }
 </style>
