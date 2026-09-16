@@ -121,6 +121,43 @@ describe('avatar tool stage 3 editor', () => {
     expect(toolSettings).toHaveFocus();
   });
 
+  it('applies a connected flow preset before any image is added', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderEditor();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    expect(screen.getByRole('button', { name: 'Press swap' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Sequential switch' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Image cycle' })).toBeEnabled();
+    expect(screen.getByText(
+      'Switch images while pressing and switch back on release. Choose the images for both states after applying.',
+    )).toBeVisible();
+    expect(screen.getByText(
+      'Switch to the next image with each click, then stop after three steps. Choose an image for each step after applying.',
+    )).toBeVisible();
+    expect(screen.getByText(
+      'Cycle through images at your chosen interval. A click pauses the cycle for one interval, then it continues. Choose the images and interval after applying.',
+    )).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Press swap' }));
+    fireEvent.click(document.querySelector('[data-avatar-tool-interaction-id]')!);
+    expect(screen.getByLabelText('Press')).toHaveValue('keep');
+    expect(screen.getByLabelText('Release')).toHaveValue('keep');
+    expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sequential switch' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(3);
+    expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Image cycle' }));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('[data-avatar-tool-interaction-id]')).toHaveLength(5);
+    expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(9);
+    confirm.mockRestore();
+  });
+
   it('uses custom names across image choices, nodes, and connection labels while keeping event types separate', async () => {
     renderEditor();
     await addImage(validPng('A.png'));

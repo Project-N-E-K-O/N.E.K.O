@@ -3,8 +3,10 @@ import {
   avatarToolConnectionSideFromHandleId,
   buildLocalAvatarToolImageInteractions,
   createAvatarToolInteractionEditorState,
+  createAvatarToolInteractionPresetState,
   duplicateAvatarToolInteractionDraft,
   getAvatarToolInteractionImageReferences,
+  getAvatarToolInteractionPresetRequirements,
   validateAvatarToolInteractionGraph,
   type AvatarToolInteractionEditorState,
 } from './avatarToolInteractionEditorModel';
@@ -71,6 +73,158 @@ function standardGraph(): AvatarToolInteractionEditorState {
 }
 
 describe('avatar tool interaction editor model', () => {
+  it('creates independent ordinary v3 drafts from the reusable presets', () => {
+    const first = createAvatarToolInteractionPresetState({
+      kind: 'click-advance',
+      initialImageId: IMAGE_B,
+      targetImageIds: [IMAGE_A, IMAGE_C],
+      initialImagePosition: { x: 10, y: 20 },
+    });
+    const second = createAvatarToolInteractionPresetState({
+      kind: 'click-advance',
+      initialImageId: IMAGE_B,
+      targetImageIds: [IMAGE_A, IMAGE_C],
+      initialImagePosition: { x: 10, y: 20 },
+    });
+
+    expect(first.items.map(item => item.kind === 'mouse-click' ? item.release : null)).toEqual([
+      { kind: 'show', imageId: IMAGE_A },
+      { kind: 'show', imageId: IMAGE_C },
+    ]);
+    expect(first.links.map(link => [link.from, link.to])).toEqual([
+      [first.items[0].id, first.items[1].id],
+    ]);
+    expect(first.items.map(item => item.id)).not.toEqual(second.items.map(item => item.id));
+    expect(first.links.map(link => link.id)).not.toEqual(second.links.map(link => link.id));
+
+    const edited = avatarToolInteractionEditorReducer(first, {
+      type: 'update-click-action',
+      interactionId: first.items[0].id,
+      timing: 'press',
+      action: { kind: 'show', imageId: IMAGE_C },
+    });
+    expect(edited.items[0]).toMatchObject({ press: { kind: 'show', imageId: IMAGE_C } });
+    expect(second.items[0]).toMatchObject({ press: { kind: 'keep' } });
+  });
+
+  it('uses only one target for the press-swap preset and restores the initial image', () => {
+    const state = createAvatarToolInteractionPresetState({
+      kind: 'press-swap',
+      initialImageId: IMAGE_B,
+      targetImageIds: [IMAGE_A, IMAGE_C],
+    });
+
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({
+      kind: 'mouse-click',
+      press: { kind: 'show', imageId: IMAGE_A },
+      release: { kind: 'show', imageId: IMAGE_B },
+    });
+    expect(state.links).toEqual([expect.objectContaining({
+      from: state.items[0].id,
+      to: state.items[0].id,
+    })]);
+  });
+
+  it('creates connected preset graphs without requiring any image', () => {
+    const pressSwap = createAvatarToolInteractionPresetState({
+      kind: 'press-swap',
+    });
+    const clickAdvance = createAvatarToolInteractionPresetState({
+      kind: 'click-advance',
+    });
+    const cycleStop = createAvatarToolInteractionPresetState({
+      kind: 'cycle-stop',
+    });
+
+    expect(pressSwap.items).toHaveLength(1);
+    expect(pressSwap.items[0]).toMatchObject({
+      press: { kind: 'keep' },
+      release: { kind: 'keep' },
+    });
+    expect(clickAdvance.items).toHaveLength(3);
+    expect(clickAdvance.items).toEqual([
+      expect.objectContaining({ press: { kind: 'keep' }, release: { kind: 'keep' } }),
+      expect.objectContaining({ press: { kind: 'keep' }, release: { kind: 'keep' } }),
+      expect.objectContaining({ press: { kind: 'keep' }, release: { kind: 'keep' } }),
+    ]);
+    expect(pressSwap.initialImageTargetIds).toEqual([pressSwap.items[0].id]);
+    expect(clickAdvance.initialImageTargetIds).toEqual([clickAdvance.items[0].id]);
+    expect(pressSwap.links[0]).toMatchObject({
+      from: pressSwap.items[0].id,
+      to: pressSwap.items[0].id,
+    });
+    expect(clickAdvance.links).toEqual([
+      expect.objectContaining({
+        from: clickAdvance.items[0].id,
+        to: clickAdvance.items[1].id,
+      }),
+      expect.objectContaining({
+        from: clickAdvance.items[1].id,
+        to: clickAdvance.items[2].id,
+      }),
+    ]);
+    expect(getAvatarToolInteractionPresetRequirements('click-advance')).toEqual({
+      interactionCount: 3,
+      totalLinkCount: 3,
+    });
+
+    const [firstDelay, secondDelay, thirdDelay, holdClick, resumeDelay] = cycleStop.items;
+    expect(cycleStop.items).toHaveLength(5);
+    expect(cycleStop.items.map(item => item.position)).toEqual([
+      { x: 380, y: 180 },
+      { x: 680, y: 180 },
+      { x: 980, y: 180 },
+      { x: 680, y: 400 },
+      { x: 680, y: 620 },
+    ]);
+    expect(cycleStop.items.slice(0, 3)).toEqual([
+      expect.objectContaining({ kind: 'after', delayMs: '800', complete: { kind: 'keep' } }),
+      expect.objectContaining({ kind: 'after', delayMs: '800', complete: { kind: 'keep' } }),
+      expect.objectContaining({ kind: 'after', delayMs: '800', complete: { kind: 'keep' } }),
+    ]);
+    expect(holdClick).toMatchObject({
+      kind: 'mouse-click',
+      press: { kind: 'keep' },
+      release: { kind: 'keep' },
+    });
+    expect(resumeDelay).toMatchObject({
+      kind: 'after',
+      delayMs: '800',
+      complete: { kind: 'keep' },
+    });
+    expect(cycleStop.initialImageTargetIds).toEqual([firstDelay.id]);
+    const successors = (interactionId: string) => cycleStop.links
+      .filter(link => link.from === interactionId)
+      .map(link => link.to);
+    expect(successors(firstDelay.id)).toEqual([secondDelay.id, holdClick.id]);
+    expect(successors(secondDelay.id)).toEqual([thirdDelay.id, holdClick.id]);
+    expect(successors(thirdDelay.id)).toEqual([firstDelay.id, holdClick.id]);
+    expect(successors(holdClick.id)).toEqual([resumeDelay.id]);
+    expect(successors(resumeDelay.id)).toEqual([firstDelay.id]);
+    expect(cycleStop.links.map(link => [
+      link.from,
+      link.to,
+      link.sourceSide,
+      link.targetSide,
+    ])).toEqual([
+      [firstDelay.id, secondDelay.id, 'right', 'left'],
+      [firstDelay.id, holdClick.id, 'bottom', 'left'],
+      [secondDelay.id, thirdDelay.id, 'right', 'left'],
+      [secondDelay.id, holdClick.id, 'bottom', 'top'],
+      [thirdDelay.id, firstDelay.id, 'top', 'top'],
+      [thirdDelay.id, holdClick.id, 'bottom', 'right'],
+      [holdClick.id, resumeDelay.id, 'bottom', 'top'],
+      [resumeDelay.id, firstDelay.id, 'left', 'bottom'],
+    ]);
+    expect(validateAvatarToolInteractionGraph(cycleStop, [])).toEqual([]);
+    expect(buildLocalAvatarToolImageInteractions(cycleStop)).not.toHaveProperty('presetId');
+    expect(getAvatarToolInteractionPresetRequirements('cycle-stop')).toEqual({
+      interactionCount: 5,
+      totalLinkCount: 9,
+    });
+  });
+
   it('validates optional interaction names with the shared Unicode-aware rule', () => {
     const state = standardGraph();
     state.items[0] = { ...state.items[0], name: '𠮷'.repeat(20) };
@@ -163,7 +317,7 @@ describe('avatar tool interaction editor model', () => {
     });
   });
 
-  it('projects every v2 click-advance image into one ordered click chain with a stable tail loop', () => {
+  it('projects every v2 click-advance image into one finite ordered click chain', () => {
     const state = createAvatarToolInteractionEditorState({
       ...DETAIL,
       changeMode: 'click-advance',
@@ -213,13 +367,6 @@ describe('avatar tool interaction editor model', () => {
         to: 'ix-v2-click-advance-002',
         sourceSide: 'right',
         targetSide: 'left',
-      },
-      {
-        id: 'link-v2-click-advance-002',
-        from: 'ix-v2-click-advance-002',
-        to: 'ix-v2-click-advance-002',
-        sourceSide: 'right',
-        targetSide: 'right',
       },
     ]);
     expect(state.initialImageTargetIds).toEqual(['ix-v2-click-advance-000']);

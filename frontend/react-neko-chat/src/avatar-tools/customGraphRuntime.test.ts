@@ -1,5 +1,9 @@
 import type { CustomGraphProfile } from './catalog';
 import { createCustomGraphRuntime } from './customGraphRuntime';
+import {
+  buildLocalAvatarToolImageInteractions,
+  createAvatarToolInteractionPresetState,
+} from './avatarToolInteractionEditorModel';
 
 function profile(): CustomGraphProfile {
   return {
@@ -163,5 +167,53 @@ describe('custom graph runtime', () => {
     expect(clock.size).toBe(1);
     delayed.destroy();
     expect(clock.size).toBe(0);
+  });
+
+  it('holds the clicked frame for one delay before the cycle-stop preset resumes', () => {
+    const editorState = createAvatarToolInteractionPresetState({ kind: 'cycle-stop' });
+    const delayItems = editorState.items.filter(item => item.kind === 'after');
+    const [firstDelay, secondDelay, thirdDelay, resumeDelay] = delayItems;
+    firstDelay.complete = { kind: 'show', imageId: 'img-b' };
+    secondDelay.complete = { kind: 'show', imageId: 'img-c' };
+    thirdDelay.complete = { kind: 'show', imageId: 'img-a' };
+    const graph = buildLocalAvatarToolImageInteractions(editorState);
+    if (!graph) throw new Error('cycle-stop preset must build a graph');
+    const source = profile();
+    source.initialInteractionIds = graph.initialLinks.map(link => link.to);
+    source.interactions = graph.items.map(item => ({
+      id: item.id,
+      trigger: item.trigger,
+      actions: item.actions,
+    }));
+    source.links = graph.links.map(link => ({ from: link.from, to: link.to }));
+
+    const clock = scheduler();
+    const runtime = createCustomGraphRuntime(source, {
+      scheduler: clock.api,
+      onImageChange: () => undefined,
+    });
+
+    expect(runtime.beginClick()).toBe(false);
+    clock.advance(800);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-b');
+    clock.advance(800);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-c');
+    expect(runtime.beginClick()).toBe(true);
+    clock.advance(800);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-c');
+    expect(runtime.completeClick()).toMatchObject({
+      capturedImageId: 'img-c',
+      currentImageId: 'img-c',
+    });
+    expect(runtime.getSnapshot().waitingInteractionIds).toEqual([resumeDelay.id]);
+    expect(clock.size).toBe(1);
+    clock.advance(800);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-c');
+    expect(runtime.getSnapshot().waitingInteractionIds).toEqual([firstDelay.id]);
+    expect(clock.size).toBe(1);
+    clock.advance(800);
+    expect(runtime.getSnapshot().currentImageId).toBe('img-b');
+    expect(runtime.getSnapshot().waitingInteractionIds).toEqual([secondDelay.id, editorState.items[3].id]);
+    expect(clock.size).toBe(1);
   });
 });

@@ -60,6 +60,7 @@ export function AvatarToolInteractionEditorProvider({ children }: { children: Re
   const dispatch = useCallback<Dispatch<AvatarToolInteractionEditorAction>>((action) => {
     if (action.type === 'reset') {
       setIssues([]);
+      setGraphRevision(revision => revision + 1);
     } else if (actionChangesGraphValidation(action)) {
       setGraphRevision(revision => revision + 1);
     }

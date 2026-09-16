@@ -22,6 +22,7 @@ import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
+import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -1163,6 +1164,19 @@ function CompactChatApp({
     setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
     forgetPersistedAvatarToolId(toolId);
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
+
+  const handleConfirmedAvatarToolDeletion = useCallback((toolIds: ReadonlyArray<`local-${string}`>) => {
+    const deletedIds = new Set<AvatarToolId>(toolIds);
+    setActiveAvatarToolIds(current => current.filter(toolId => !deletedIds.has(toolId)));
+    toolIds.forEach(forgetPersistedAvatarToolId);
+  }, []);
+
+  useAvatarToolSlotReconciliation({
+    activeToolIds: activeAvatarToolIds,
+    authoritativeItems: localAvatarToolCatalog.items,
+    authoritativeLoaded: localAvatarToolCatalog.authoritativeLoaded,
+    onConfirmedDeleted: handleConfirmedAvatarToolDeletion,
+  });
 
   useEffect(() => {
     if (!avatarToolManagerOpen) return;

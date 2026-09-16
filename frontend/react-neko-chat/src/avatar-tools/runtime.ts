@@ -63,6 +63,7 @@ import {
   type AvatarToolRoundChoiceConfirmation,
 } from './interaction';
 import {
+  type AvatarToolImageId,
   type AvatarToolVariantId,
 } from './catalog';
 import {
@@ -134,6 +135,8 @@ type RuntimePress = {
   startY: number;
   moved: boolean;
   frozenVariant: AvatarToolVariantId;
+  customGraphClickStarted?: boolean;
+  capturedImageId?: AvatarToolImageId;
 };
 
 type RuntimeRoundChoiceCycle = {
@@ -1171,7 +1174,9 @@ export function useAvatarToolRuntime({
       const visibleVariant = presentedVariantRef.current;
       const profile = registry.getRegistration(toolId).definition.interaction;
       if (profile.kind === 'custom-graph') {
-        if (hit && !interactionLocked && session.customGraph?.beginClick()) {
+        if (hit && !interactionLocked && session.customGraph) {
+          const customGraphClickStarted = session.customGraph.beginClick();
+          const graphSnapshot = session.customGraph.getSnapshot();
           session.press = {
             toolId,
             generation: session.generation,
@@ -1181,6 +1186,10 @@ export function useAvatarToolRuntime({
             startY: event.clientY,
             moved: false,
             frozenVariant: visibleVariant,
+            customGraphClickStarted,
+            capturedImageId: customGraphClickStarted
+              ? graphSnapshot.activeClick?.capturedImageId
+              : graphSnapshot.currentImageId,
           };
         }
         return;
@@ -1249,11 +1258,14 @@ export function useAvatarToolRuntime({
       );
       const profile = registry.getRegistration(session.toolId).definition.interaction;
       if (profile.kind === 'custom-graph') {
-        const completion = validCommit ? session.customGraph?.completeClick() : null;
-        if (completion && commitHit) {
+        const completion = validCommit && press?.customGraphClickStarted
+          ? session.customGraph?.completeClick()
+          : null;
+        const capturedImageId = completion?.capturedImageId ?? press?.capturedImageId;
+        if (validCommit && capturedImageId && commitHit) {
           const tapCount = recordBurst(profile.burst.key, profile.burst.windowMs);
           const feedback = resolveCustomGraphLocalFeedback(profile, random);
-          const capturedImage = profile.images.find(image => image.id === completion.capturedImageId);
+          const capturedImage = profile.images.find(image => image.id === capturedImageId);
           applyCommand({
             ...((feedback.specialTriggered || capturedImage?.hasMeaning) ? { commit: {
               toolId: session.toolId as `local-${string}`,
@@ -1263,7 +1275,7 @@ export function useAvatarToolRuntime({
                 ? profile.burst.rapidIntensity
                 : profile.burst.normalIntensity,
               touchZone: commitHit.touchZone,
-              imageId: completion.capturedImageId,
+              imageId: capturedImageId,
               ...(profile.chance ? { specialTriggered: feedback.specialTriggered } : {}),
               clientX: event.clientX,
               clientY: event.clientY,

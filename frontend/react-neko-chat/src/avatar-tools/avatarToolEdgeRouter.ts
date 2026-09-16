@@ -854,6 +854,73 @@ function laneOffsetCandidates(
   ]);
 }
 
+function alignedFacingLaneOffsets(
+  sourceBox: AvatarToolRouteNodeBox,
+  targetBox: AvatarToolRouteNodeBox,
+  sourcePosition: Position,
+  targetPosition: Position,
+  preferredSourceOffset: number,
+  preferredTargetOffset: number,
+): { sourceOffset: number; targetOffset: number } | null {
+  const sourceHorizontal = sourcePosition === Position.Left || sourcePosition === Position.Right;
+  const targetHorizontal = targetPosition === Position.Left || targetPosition === Position.Right;
+  if (sourceHorizontal !== targetHorizontal) return null;
+
+  const sourceCenter = center(sourceBox);
+  const targetCenter = center(targetBox);
+  if (sourceHorizontal) {
+    const facesTarget = (
+      sourcePosition === Position.Right
+      && targetPosition === Position.Left
+      && sourceBox.x + sourceBox.width <= targetBox.x + EPSILON
+    ) || (
+      sourcePosition === Position.Left
+      && targetPosition === Position.Right
+      && sourceBox.x >= targetBox.x + targetBox.width - EPSILON
+    );
+    if (!facesTarget) return null;
+    const minimum = Math.max(sourceBox.y + PORT_INSET, targetBox.y + PORT_INSET);
+    const maximum = Math.min(
+      sourceBox.y + sourceBox.height - PORT_INSET,
+      targetBox.y + targetBox.height - PORT_INSET,
+    );
+    if (minimum > maximum + EPSILON) return null;
+    const sharedY = clamp((
+      sourceCenter.y + preferredSourceOffset
+      + targetCenter.y + preferredTargetOffset
+    ) / 2, minimum, maximum);
+    return {
+      sourceOffset: sharedY - sourceCenter.y,
+      targetOffset: sharedY - targetCenter.y,
+    };
+  }
+
+  const facesTarget = (
+    sourcePosition === Position.Bottom
+    && targetPosition === Position.Top
+    && sourceBox.y + sourceBox.height <= targetBox.y + EPSILON
+  ) || (
+    sourcePosition === Position.Top
+    && targetPosition === Position.Bottom
+    && sourceBox.y >= targetBox.y + targetBox.height - EPSILON
+  );
+  if (!facesTarget) return null;
+  const minimum = Math.max(sourceBox.x + PORT_INSET, targetBox.x + PORT_INSET);
+  const maximum = Math.min(
+    sourceBox.x + sourceBox.width - PORT_INSET,
+    targetBox.x + targetBox.width - PORT_INSET,
+  );
+  if (minimum > maximum + EPSILON) return null;
+  const sharedX = clamp((
+    sourceCenter.x + preferredSourceOffset
+    + targetCenter.x + preferredTargetOffset
+  ) / 2, minimum, maximum);
+  return {
+    sourceOffset: sharedX - sourceCenter.x,
+    targetOffset: sharedX - targetCenter.x,
+  };
+}
+
 function connectionRouteWithFlexiblePorts(
   sourceBox: AvatarToolRouteNodeBox,
   targetBox: AvatarToolRouteNodeBox,
@@ -864,9 +931,38 @@ function connectionRouteWithFlexiblePorts(
   obstacles: readonly AvatarToolRouteNodeBox[],
   existingRoutes: readonly (readonly AvatarToolRoutePoint[])[],
 ): AvatarToolRoutePoint[] | null {
+  const existingSegments = prepareRouteSegments(existingRoutes);
+  const alignedOffsets = alignedFacingLaneOffsets(
+    sourceBox,
+    targetBox,
+    sourcePosition,
+    targetPosition,
+    preferredSourceOffset,
+    preferredTargetOffset,
+  );
+  const alignedPoints = alignedOffsets
+    ? connectionRoute(
+      sourceBox,
+      targetBox,
+      sourcePosition,
+      targetPosition,
+      alignedOffsets.sourceOffset,
+      alignedOffsets.targetOffset,
+      obstacles,
+      existingRoutes,
+    )
+    : null;
+  const alignedSegments = alignedPoints ? routeSegments(alignedPoints) : [];
+  if (
+    alignedPoints
+    && alignedSegments.length === 1
+    && alignedSegments.every(segment => (
+      segmentExistingRoutePenalty(segment, existingSegments) < EPSILON
+    ))
+  ) return alignedPoints;
+
   const sourceOffsets = laneOffsetCandidates(sourceBox, sourcePosition, preferredSourceOffset);
   const targetOffsets = laneOffsetCandidates(targetBox, targetPosition, preferredTargetOffset);
-  const existingSegments = prepareRouteSegments(existingRoutes);
   let bestNearby: { points: AvatarToolRoutePoint[]; score: number } | null = null;
   for (const sourceOffset of sourceOffsets) {
     for (const targetOffset of targetOffsets) {
@@ -898,7 +994,28 @@ function connectionRouteWithFlexiblePorts(
     obstacles,
     existingRoutes,
   );
-  if (preferredPoints) return preferredPoints;
+  const preferredCandidates = [
+    preferredPoints ? {
+      points: preferredPoints,
+      portMovement: 0,
+    } : null,
+    alignedPoints && alignedOffsets ? {
+      points: alignedPoints,
+      portMovement: Math.abs(alignedOffsets.sourceOffset - preferredSourceOffset)
+        + Math.abs(alignedOffsets.targetOffset - preferredTargetOffset),
+    } : null,
+  ].filter((candidate): candidate is {
+    points: AvatarToolRoutePoint[];
+    portMovement: number;
+  } => candidate !== null);
+  if (preferredCandidates.length > 0) {
+    preferredCandidates.sort((left, right) => (
+      routeScoreWithPreparedSegments(left.points, existingSegments) + left.portMovement * 0.35
+    ) - (
+      routeScoreWithPreparedSegments(right.points, existingSegments) + right.portMovement * 0.35
+    ));
+    return preferredCandidates[0].points;
+  }
 
   const candidates = sourceOffsets.flatMap(sourceOffset => targetOffsets.map(targetOffset => ({
     sourceOffset,

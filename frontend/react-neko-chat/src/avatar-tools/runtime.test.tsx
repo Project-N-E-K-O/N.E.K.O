@@ -914,6 +914,36 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     }
   });
 
+  it('keeps actual click feedback active after a finite image flow reaches its end', () => {
+    const dto = localGraphToolDto(1);
+    dto.runtime.interactions = [dto.runtime.interactions[0]];
+    dto.runtime.links = [];
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={createAvatarToolRegistrySnapshot([
+          buildLocalAvatarToolDefinition(dto),
+        ])}
+      />,
+    );
+
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+    expect(onInteraction).toHaveBeenLastCalledWith(expect.objectContaining({ imageId: 'img-a' }));
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('2');
+    expect(onInteraction).toHaveBeenCalledTimes(2);
+    expect(onInteraction).toHaveBeenLastCalledWith(expect.objectContaining({ imageId: 'img-c' }));
+    view.unmount();
+  });
+
   it('keeps v3 empty B local-only and sends one C fact when C has a description', () => {
     for (const [initialImageId, shouldSend] of [['img-b', false], ['img-c', true]] as const) {
       const dto = localGraphToolDto(1);

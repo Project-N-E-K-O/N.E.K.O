@@ -31,6 +31,7 @@ import AvatarToolItemManager, {
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
+import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
 import {
   forgetPersistedAvatarToolId,
   getAvatarToolItemLabel,
@@ -625,6 +626,19 @@ export default function FullChatSurface({
     setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
     forgetPersistedAvatarToolId(toolId);
   }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.remove]);
+
+  const handleConfirmedAvatarToolDeletion = useCallback((toolIds: ReadonlyArray<`local-${string}`>) => {
+    const deletedIds = new Set<AvatarToolId>(toolIds);
+    setActiveAvatarToolIds(current => current.filter(toolId => !deletedIds.has(toolId)));
+    toolIds.forEach(forgetPersistedAvatarToolId);
+  }, []);
+
+  useAvatarToolSlotReconciliation({
+    activeToolIds: activeAvatarToolIds,
+    authoritativeItems: localAvatarToolCatalog.items,
+    authoritativeLoaded: localAvatarToolCatalog.authoritativeLoaded,
+    onConfirmedDeleted: handleConfirmedAvatarToolDeletion,
+  });
 
   useEffect(() => {
     if (!avatarToolManagerOpen) return;

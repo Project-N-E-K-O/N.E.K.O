@@ -9,7 +9,7 @@ import {
   type UpdateLocalAvatarToolInput,
 } from './avatar-tools/localTools';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
-import { isLocalAvatarToolId } from './avatarTools';
+import { getAvatarToolItemLabel, isLocalAvatarToolId } from './avatarTools';
 
 type EditorMode = 'create' | 'edit';
 type EditorResultAction = 'created' | 'updated' | 'deleted';
@@ -136,6 +136,9 @@ export default function AvatarToolStandaloneEditor() {
         key={detail ? `${detail.id}:${detail.revision}` : 'create'}
         limits={catalog.limits}
         initialDetail={detail ?? undefined}
+        existingToolNames={(catalog.items ?? [])
+          .filter(item => item.id !== request.toolId)
+          .map(getAvatarToolItemLabel)}
         notice={notice}
         onSpecialEnabledChange={setSpecialEnabled}
         onCancel={closeEditorWindow}

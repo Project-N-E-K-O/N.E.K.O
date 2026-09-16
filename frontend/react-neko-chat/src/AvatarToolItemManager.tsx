@@ -1032,6 +1032,9 @@ export default function AvatarToolItemManager({
         userName={userName}
         assistantName={assistantName}
         initialDetail={view === 'edit' ? editDetail ?? undefined : undefined}
+        existingToolNames={availableTools
+          .filter(tool => tool.id !== editDetail?.id)
+          .map(getToolLabel)}
         notice={view === 'edit' ? notice : ''}
         onSpecialEnabledChange={setCreateSpecialEnabled}
         onCancel={returnToLibrary}

@@ -60,6 +60,18 @@ export type AvatarToolInteractionEditorState = {
   selectedInitialLinkTargetId: AvatarToolInteractionId | null;
 };
 
+export type AvatarToolInteractionPresetKind = 'press-swap' | 'click-advance' | 'cycle-stop';
+
+export type AvatarToolInteractionPresetRequirements = {
+  interactionCount: number;
+  totalLinkCount: number;
+};
+
+type AvatarToolInteractionPresetIdentity = {
+  interactionIds?: readonly AvatarToolInteractionId[];
+  linkIds?: readonly AvatarToolInteractionLinkId[];
+};
+
 export type AvatarToolInteractionValidationCode =
   | 'initial-connection-required'
   | 'duplicate-name'
@@ -111,6 +123,15 @@ export type AvatarToolInteractionEditorAction =
 
 const AVATAR_TOOL_NODE_HORIZONTAL_GAP = 300;
 const AVATAR_TOOL_NODE_VERTICAL_GAP = 170;
+const AVATAR_TOOL_DEFAULT_DELAY_MS = '800';
+const AVATAR_TOOL_INTERACTION_PRESET_REQUIREMENTS: Record<
+  AvatarToolInteractionPresetKind,
+  AvatarToolInteractionPresetRequirements
+> = {
+  'press-swap': { interactionCount: 1, totalLinkCount: 2 },
+  'click-advance': { interactionCount: 3, totalLinkCount: 3 },
+  'cycle-stop': { interactionCount: 5, totalLinkCount: 9 },
+};
 const AVATAR_TOOL_CONNECTION_SIDES: readonly AvatarToolConnectionSide[] = [
   'top',
   'right',
@@ -162,6 +183,12 @@ export function createAvatarToolInteractionLinkId(): AvatarToolInteractionLinkId
   return `link-${globalThis.crypto.randomUUID().toLowerCase()}` as AvatarToolInteractionLinkId;
 }
 
+export function getAvatarToolInteractionPresetRequirements(
+  kind: AvatarToolInteractionPresetKind,
+): AvatarToolInteractionPresetRequirements {
+  return AVATAR_TOOL_INTERACTION_PRESET_REQUIREMENTS[kind];
+}
+
 export function createAvatarToolInteractionDraft(
   kind: AvatarToolInteractionDraft['kind'],
   position: { x: number; y: number },
@@ -181,7 +208,7 @@ export function createAvatarToolInteractionDraft(
       name: '',
       kind,
       position,
-      delayMs: '800',
+      delayMs: AVATAR_TOOL_DEFAULT_DELAY_MS,
       complete: null,
     };
 }
@@ -201,21 +228,252 @@ export function duplicateAvatarToolInteractionDraft(
   };
 }
 
+function emptyAvatarToolInteractionEditorState(
+  initialImagePosition: { x: number; y: number } = { x: 80, y: 180 },
+): AvatarToolInteractionEditorState {
+  return {
+    items: [],
+    links: [],
+    initialImageTargetIds: [],
+    initialImageLinkSides: {},
+    initialImagePosition,
+    selectedInteractionId: null,
+    selectedLinkId: null,
+    selectedInitialLinkTargetId: null,
+  };
+}
+
+type AvatarToolInteractionPresetIdFactory = {
+  interactionIdAt(index: number): AvatarToolInteractionId;
+  linkIdAt(index: number): AvatarToolInteractionLinkId;
+};
+
+type AvatarToolInteractionPresetInitialTarget = {
+  id: AvatarToolInteractionId;
+  sides: AvatarToolConnectionSides;
+};
+
+function completeAvatarToolInteractionPresetState({
+  initialImagePosition,
+  items,
+  links,
+  initialTargets,
+}: {
+  initialImagePosition: { x: number; y: number };
+  items: AvatarToolInteractionDraft[];
+  links: AvatarToolInteractionLinkDraft[];
+  initialTargets: AvatarToolInteractionPresetInitialTarget[];
+}): AvatarToolInteractionEditorState {
+  const initialImageLinkSides: AvatarToolInteractionEditorState['initialImageLinkSides'] = {};
+  initialTargets.forEach(({ id, sides }) => {
+    initialImageLinkSides[id] = sides;
+  });
+  return {
+    items,
+    links,
+    initialImageTargetIds: initialTargets.map(target => target.id),
+    initialImageLinkSides,
+    initialImagePosition,
+    selectedInteractionId: null,
+    selectedLinkId: null,
+    selectedInitialLinkTargetId: null,
+  };
+}
+
+function createPressSwapPresetState({
+  initialImageId,
+  targetImageId,
+  initialImagePosition,
+  ids,
+}: {
+  initialImageId: AvatarToolImageId | null;
+  targetImageId: AvatarToolImageId | null;
+  initialImagePosition: { x: number; y: number };
+  ids: AvatarToolInteractionPresetIdFactory;
+}): AvatarToolInteractionEditorState {
+  const id = ids.interactionIdAt(0);
+  return completeAvatarToolInteractionPresetState({
+    initialImagePosition,
+    items: [{
+      id,
+      name: '',
+      kind: 'mouse-click',
+      position: { x: initialImagePosition.x + 320, y: initialImagePosition.y },
+      press: targetImageId ? { kind: 'show', imageId: targetImageId } : { kind: 'keep' },
+      release: initialImageId ? { kind: 'show', imageId: initialImageId } : { kind: 'keep' },
+    }],
+    links: [{
+      id: ids.linkIdAt(0),
+      from: id,
+      to: id,
+      sourceSide: 'right',
+      targetSide: 'right',
+    }],
+    initialTargets: [{ id, sides: { sourceSide: 'right', targetSide: 'left' } }],
+  });
+}
+
+function createClickAdvancePresetState({
+  targetImageIds,
+  initialImagePosition,
+  ids,
+}: {
+  targetImageIds: readonly AvatarToolImageId[];
+  initialImagePosition: { x: number; y: number };
+  ids: AvatarToolInteractionPresetIdFactory;
+}): AvatarToolInteractionEditorState {
+  const clickTargets: Array<AvatarToolImageId | null> = targetImageIds.length > 0
+    ? [...targetImageIds]
+    : [null, null, null];
+  const items: AvatarToolClickInteractionDraft[] = clickTargets.map((imageId, index) => ({
+    id: ids.interactionIdAt(index),
+    name: '',
+    kind: 'mouse-click',
+    position: {
+      x: initialImagePosition.x + 280 + index * 270,
+      y: initialImagePosition.y,
+    },
+    press: { kind: 'keep' },
+    release: imageId ? { kind: 'show', imageId } : { kind: 'keep' },
+  }));
+  const links: AvatarToolInteractionLinkDraft[] = items.slice(0, -1).map((item, index) => ({
+    id: ids.linkIdAt(index),
+    from: item.id,
+    to: items[index + 1].id,
+    sourceSide: 'right',
+    targetSide: 'left',
+  }));
+  return completeAvatarToolInteractionPresetState({
+    initialImagePosition,
+    items,
+    links,
+    initialTargets: [{ id: items[0].id, sides: { sourceSide: 'right', targetSide: 'left' } }],
+  });
+}
+
+function createCycleStopPresetState({
+  initialImagePosition,
+  ids,
+}: {
+  initialImagePosition: { x: number; y: number };
+  ids: AvatarToolInteractionPresetIdFactory;
+}): AvatarToolInteractionEditorState {
+  const cycleItems: AvatarToolDelayInteractionDraft[] = [
+    { x: initialImagePosition.x + 300, y: initialImagePosition.y },
+    { x: initialImagePosition.x + 600, y: initialImagePosition.y },
+    { x: initialImagePosition.x + 900, y: initialImagePosition.y },
+  ].map((position, index) => ({
+    id: ids.interactionIdAt(index),
+    name: '',
+    kind: 'after',
+    position,
+    delayMs: AVATAR_TOOL_DEFAULT_DELAY_MS,
+    complete: { kind: 'keep' },
+  }));
+  const holdClick: AvatarToolClickInteractionDraft = {
+    id: ids.interactionIdAt(cycleItems.length),
+    name: '',
+    kind: 'mouse-click',
+    position: { x: initialImagePosition.x + 600, y: initialImagePosition.y + 220 },
+    press: { kind: 'keep' },
+    release: { kind: 'keep' },
+  };
+  const resumeDelay: AvatarToolDelayInteractionDraft = {
+    id: ids.interactionIdAt(cycleItems.length + 1),
+    name: '',
+    kind: 'after',
+    position: { x: initialImagePosition.x + 600, y: initialImagePosition.y + 440 },
+    delayMs: AVATAR_TOOL_DEFAULT_DELAY_MS,
+    complete: { kind: 'keep' },
+  };
+  const cycleLinkSides: readonly AvatarToolConnectionSides[] = [
+    { sourceSide: 'right', targetSide: 'left' },
+    { sourceSide: 'right', targetSide: 'left' },
+    { sourceSide: 'top', targetSide: 'top' },
+  ];
+  const holdLinkSides: readonly AvatarToolConnectionSides[] = [
+    { sourceSide: 'bottom', targetSide: 'left' },
+    { sourceSide: 'bottom', targetSide: 'top' },
+    { sourceSide: 'bottom', targetSide: 'right' },
+  ];
+  const links = cycleItems.flatMap((item, index): AvatarToolInteractionLinkDraft[] => {
+    const nextCycleItem = cycleItems[(index + 1) % cycleItems.length];
+    return [
+      {
+        id: ids.linkIdAt(index * 2),
+        from: item.id,
+        to: nextCycleItem.id,
+        ...cycleLinkSides[index],
+      },
+      {
+        id: ids.linkIdAt(index * 2 + 1),
+        from: item.id,
+        to: holdClick.id,
+        ...holdLinkSides[index],
+      },
+    ];
+  });
+  links.push({
+    id: ids.linkIdAt(cycleItems.length * 2),
+    from: holdClick.id,
+    to: resumeDelay.id,
+    sourceSide: 'bottom',
+    targetSide: 'top',
+  });
+  links.push({
+    id: ids.linkIdAt(cycleItems.length * 2 + 1),
+    from: resumeDelay.id,
+    to: cycleItems[0].id,
+    sourceSide: 'left',
+    targetSide: 'bottom',
+  });
+  return completeAvatarToolInteractionPresetState({
+    initialImagePosition,
+    items: [...cycleItems, holdClick, resumeDelay],
+    links,
+    initialTargets: [
+      { id: cycleItems[0].id, sides: { sourceSide: 'right', targetSide: 'left' } },
+    ],
+  });
+}
+
+export function createAvatarToolInteractionPresetState({
+  kind,
+  initialImageId = null,
+  targetImageIds = [],
+  initialImagePosition = { x: 80, y: 180 },
+  identity,
+}: {
+  kind: AvatarToolInteractionPresetKind;
+  initialImageId?: AvatarToolImageId | null;
+  targetImageIds?: readonly AvatarToolImageId[];
+  initialImagePosition?: { x: number; y: number };
+  identity?: AvatarToolInteractionPresetIdentity;
+}): AvatarToolInteractionEditorState {
+  const ids: AvatarToolInteractionPresetIdFactory = {
+    interactionIdAt: index => (
+      identity?.interactionIds?.[index] ?? createAvatarToolInteractionId()
+    ),
+    linkIdAt: index => (
+      identity?.linkIds?.[index] ?? createAvatarToolInteractionLinkId()
+    ),
+  };
+  if (kind === 'press-swap') {
+    return createPressSwapPresetState({
+      initialImageId,
+      targetImageId: targetImageIds[0] ?? null,
+      initialImagePosition,
+      ids,
+    });
+  }
+  if (kind === 'cycle-stop') return createCycleStopPresetState({ initialImagePosition, ids });
+  return createClickAdvancePresetState({ targetImageIds, initialImagePosition, ids });
+}
+
 export function createAvatarToolInteractionEditorState(
   detail?: LocalAvatarToolDetail,
 ): AvatarToolInteractionEditorState {
-  if (!detail) {
-    return {
-      items: [],
-      links: [],
-      initialImageTargetIds: [],
-      initialImageLinkSides: {},
-      initialImagePosition: { x: 80, y: 180 },
-      selectedInteractionId: null,
-      selectedLinkId: null,
-      selectedInitialLinkTargetId: null,
-    };
-  }
+  if (!detail) return emptyAvatarToolInteractionEditorState();
 
   if (detail.recordVersion === 3) {
     const initialImageLinkSides: AvatarToolInteractionEditorState['initialImageLinkSides'] = {};
@@ -264,61 +522,26 @@ export function createAvatarToolInteractionEditorState(
     `img-v2-change-${String(index).padStart(3, '0')}` as AvatarToolImageId
   ));
 
-  if (detail.changeMode === 'press-swap') {
-    const id: AvatarToolInteractionId = 'ix-v2-press-swap';
-    const item: AvatarToolClickInteractionDraft = {
-      id,
-      name: '',
-      kind: 'mouse-click',
-      position: { x: 220, y: 180 },
-      press: changeImageIds[0] ? { kind: 'show', imageId: changeImageIds[0] } : { kind: 'keep' },
-      release: { kind: 'show', imageId: defaultImageId },
-    };
-    return {
-      items: [item],
-      links: [{
-        id: 'link-v2-press-swap-loop',
-        from: id,
-        to: id,
-        sourceSide: 'right',
-        targetSide: 'right',
-      }],
-      initialImageTargetIds: [id],
-      initialImageLinkSides: { [id]: { sourceSide: 'right', targetSide: 'left' } },
-      initialImagePosition: { x: -100, y: 180 },
-      selectedInteractionId: null,
-      selectedLinkId: null,
-      selectedInitialLinkTargetId: null,
-    };
-  }
-
-  const items: AvatarToolClickInteractionDraft[] = changeImageIds.map((imageId, index) => ({
-    id: `ix-v2-click-advance-${String(index).padStart(3, '0')}` as AvatarToolInteractionId,
-    name: '',
-    kind: 'mouse-click',
-    position: { x: 120 + index * 270, y: 180 },
-    press: { kind: 'keep' },
-    release: { kind: 'show', imageId },
-  }));
-  const links: AvatarToolInteractionLinkDraft[] = items.map((item, index) => ({
-    id: `link-v2-click-advance-${String(index).padStart(3, '0')}` as AvatarToolInteractionLinkId,
-    from: item.id,
-    to: items[index + 1]?.id ?? item.id,
-    sourceSide: 'right',
-    targetSide: items[index + 1] ? 'left' : 'right',
-  }));
-  return {
-    items,
-    links,
-    initialImageTargetIds: items[0] ? [items[0].id] : [],
-    initialImageLinkSides: items[0]
-      ? { [items[0].id]: { sourceSide: 'right', targetSide: 'left' } }
-      : {},
-    initialImagePosition: { x: -160, y: 180 },
-    selectedInteractionId: null,
-    selectedLinkId: null,
-    selectedInitialLinkTargetId: null,
-  };
+  const pressSwap = detail.changeMode === 'press-swap';
+  return createAvatarToolInteractionPresetState({
+    kind: detail.changeMode,
+    initialImageId: defaultImageId,
+    targetImageIds: changeImageIds,
+    initialImagePosition: { x: pressSwap ? -100 : -160, y: 180 },
+    identity: pressSwap
+      ? {
+        interactionIds: ['ix-v2-press-swap'],
+        linkIds: ['link-v2-press-swap-loop'],
+      }
+      : {
+        interactionIds: changeImageIds.map((_, index) => (
+          `ix-v2-click-advance-${String(index).padStart(3, '0')}` as AvatarToolInteractionId
+        )),
+        linkIds: changeImageIds.slice(0, -1).map((_, index) => (
+          `link-v2-click-advance-${String(index).padStart(3, '0')}` as AvatarToolInteractionLinkId
+        )),
+      },
+  });
 }
 
 function hasInteraction(state: AvatarToolInteractionEditorState, interactionId: AvatarToolInteractionId): boolean {

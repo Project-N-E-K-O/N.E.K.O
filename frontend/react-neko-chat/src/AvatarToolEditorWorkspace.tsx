@@ -43,14 +43,21 @@ import {
   avatarToolConnectionSideFromHandleId,
   createAvatarToolInteractionDraft,
   createAvatarToolInteractionLinkId,
+  createAvatarToolInteractionPresetState,
   findAvailableAvatarToolInteractionPosition,
+  getAvatarToolInteractionPresetRequirements,
   getAvatarToolInteractionOrdinal,
+  type AvatarToolInteractionPresetKind,
   type AvatarToolInteractionDraft,
 } from './avatar-tools/avatarToolInteractionEditorModel';
 import {
   AvatarToolInteractionEditorProvider,
   useAvatarToolInteractionEditor,
 } from './avatar-tools/AvatarToolInteractionEditorContext';
+import {
+  AVATAR_TOOL_PRESET_MENU_WIDTH,
+  AvatarToolPresetPicker,
+} from './AvatarToolPresetPicker';
 import {
   avatarToolEdgePath,
   planAvatarToolEdgeRoutes,
@@ -101,6 +108,7 @@ const AVATAR_TOOL_OVERVIEW_PREFERENCE_KEY = 'neko.avatarToolEditor.overview.v1';
 const AVATAR_TOOL_EDGE_STYLE_PREFERENCE_KEY = 'neko.avatarToolEditor.edgeStyle.v1';
 const AVATAR_TOOL_INITIAL_NODE_SIZE = { width: 202, height: 82 } as const;
 const AVATAR_TOOL_INTERACTION_NODE_SIZE = { width: 228, height: 104 } as const;
+const AVATAR_TOOL_NODE_SNAP_GRID: [number, number] = [10, 10];
 const AVATAR_TOOL_OVERVIEW_SIZE = { width: 202, height: 126 } as const;
 const AVATAR_TOOL_EDGE_VISUALS = {
   error: {
@@ -120,6 +128,14 @@ const AVATAR_TOOL_EDGE_VISUALS = {
     style: { stroke: '#5d9fc2' },
   },
 } as const;
+
+export function snapAvatarToolNodePosition(position: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: Math.round(position.x / AVATAR_TOOL_NODE_SNAP_GRID[0]) * AVATAR_TOOL_NODE_SNAP_GRID[0],
+    y: Math.round(position.y / AVATAR_TOOL_NODE_SNAP_GRID[1]) * AVATAR_TOOL_NODE_SNAP_GRID[1],
+  };
+}
+
 const AVATAR_TOOL_CONNECTION_POSITIONS = [
   Position.Top,
   Position.Right,
@@ -557,11 +573,15 @@ export function AvatarToolInteractionCanvas({
     initialOverviewPreference.position,
   );
   const [overviewPositionMenuOpen, setOverviewPositionMenuOpen] = useState(false);
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false);
+  const [presetMenuAlign, setPresetMenuAlign] = useState<'start' | 'end'>('start');
   const [edgeLineStyle, setEdgeLineStyle] = useState<AvatarToolEdgeLineStyle>(
     readEdgeLineStylePreference,
   );
   const [draggingNodeIds, setDraggingNodeIds] = useState<ReadonlySet<string>>(() => new Set());
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const presetPickerRef = useRef<HTMLDivElement | null>(null);
+  const presetTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overviewPositionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const overviewOpenButtonRef = useRef<HTMLButtonElement | null>(null);
   const routePlanCacheRef = useRef<AvatarToolRoutePlanCache | null>(null);
@@ -582,6 +602,12 @@ export function AvatarToolInteractionCanvas({
   const initialImageNumber = initialImage
     ? images.findIndex(image => image.id === initialImage.id) + 1
     : 0;
+  const canApplyPreset = useCallback((kind: AvatarToolInteractionPresetKind) => {
+    if (!limits) return false;
+    const requirements = getAvatarToolInteractionPresetRequirements(kind);
+    return limits.maxInteractions >= requirements.interactionCount
+      && limits.maxLinks >= requirements.totalLinkCount;
+  }, [limits?.maxInteractions, limits?.maxLinks]);
   const nodes = useMemo<AvatarToolCanvasNode[]>(() => [
     {
       id: AVATAR_TOOL_INITIAL_IMAGE_NODE_ID,
@@ -831,6 +857,48 @@ export function AvatarToolInteractionCanvas({
     dispatch({ type: 'add', interaction: createAvatarToolInteractionDraft(kind, position) });
   }, [dispatch, flow, limits?.maxInteractions, state.initialImagePosition, state.items]);
 
+  const applyPreset = useCallback((kind: AvatarToolInteractionPresetKind) => {
+    if (!canApplyPreset(kind)) return;
+    if (state.items.length > 0 && !window.confirm(i18n(
+      'chat.avatarToolPresetReplaceConfirm',
+      'Applying a preset replaces the current interaction flow. Continue?',
+    ))) return;
+    dispatch({
+      type: 'reset',
+      state: createAvatarToolInteractionPresetState({
+        kind,
+        initialImagePosition: state.initialImagePosition,
+      }),
+    });
+    setPresetMenuOpen(false);
+    window.requestAnimationFrame(() => flow?.fitView({ padding: 0.22, maxZoom: 1 }));
+  }, [
+    canApplyPreset,
+    dispatch,
+    flow,
+    state.initialImagePosition,
+    state.items.length,
+  ]);
+
+  const closePresetMenu = useCallback(() => {
+    setPresetMenuOpen(false);
+    presetTriggerRef.current?.focus();
+  }, []);
+
+  const togglePresetMenu = useCallback(() => {
+    if (presetMenuOpen) {
+      setPresetMenuOpen(false);
+      return;
+    }
+    const pickerBounds = presetPickerRef.current?.getBoundingClientRect();
+    const canvasBounds = canvasRef.current?.getBoundingClientRect();
+    if (pickerBounds && canvasBounds) {
+      const menuWidth = Math.min(AVATAR_TOOL_PRESET_MENU_WIDTH, Math.max(0, window.innerWidth - 48));
+      setPresetMenuAlign(pickerBounds.left + menuWidth <= canvasBounds.right ? 'start' : 'end');
+    }
+    setPresetMenuOpen(true);
+  }, [presetMenuOpen]);
+
   const onNodesChange = useCallback((changes: NodeChange<AvatarToolCanvasNode>[]) => {
     const draggingChanges = changes.filter((change): change is Extract<
       NodeChange<AvatarToolCanvasNode>,
@@ -864,6 +932,18 @@ export function AvatarToolInteractionCanvas({
         }
       } else if (change.type === 'remove' && change.id !== AVATAR_TOOL_INITIAL_IMAGE_NODE_ID) {
         dispatch({ type: 'remove-interaction', interactionId: change.id as `ix-${string}` });
+      }
+    });
+  }, [dispatch]);
+
+  const snapDroppedNodes = useCallback((droppedNodes: readonly AvatarToolCanvasNode[]) => {
+    droppedNodes.forEach((node) => {
+      const position = snapAvatarToolNodePosition(node.position);
+      if (position.x === node.position.x && position.y === node.position.y) return;
+      if (node.id === AVATAR_TOOL_INITIAL_IMAGE_NODE_ID) {
+        dispatch({ type: 'move-initial-image', position });
+      } else {
+        dispatch({ type: 'move', interactionId: node.id as `ix-${string}`, position });
       }
     });
   }, [dispatch]);
@@ -907,6 +987,12 @@ export function AvatarToolInteractionCanvas({
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
+        onNodeDragStop={(_, node, draggedNodes) => {
+          snapDroppedNodes(draggedNodes.length > 0 ? draggedNodes : [node]);
+        }}
+        onSelectionDragStop={(_, draggedNodes) => {
+          snapDroppedNodes(draggedNodes);
+        }}
         onEdgesChange={(changes) => changes.forEach((change) => {
           if (change.type === 'select') {
             if (!change.selected) return;
@@ -995,7 +1081,7 @@ export function AvatarToolInteractionCanvas({
         ariaLabelConfig={ariaLabelConfig}
         proOptions={{ hideAttribution: true }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1.4} />
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} />
         <Controls showInteractive={false} />
         <Panel
           className={`avatar-tool-overview-dock is-${overviewVisible ? 'open' : 'collapsed'}`}
@@ -1104,6 +1190,17 @@ export function AvatarToolInteractionCanvas({
             {i18n('chat.avatarToolInteractionAfterTime', 'Delayed switch')}
           </button>
         </div>
+        <AvatarToolPresetPicker
+          open={presetMenuOpen}
+          align={presetMenuAlign}
+          pickerRef={presetPickerRef}
+          triggerRef={presetTriggerRef}
+          canApply={canApplyPreset}
+          onToggle={togglePresetMenu}
+          onBlurAway={() => setPresetMenuOpen(false)}
+          onClose={closePresetMenu}
+          onApply={applyPreset}
+        />
         <div className="avatar-tool-edge-style" role="group" aria-label={i18n(
           'chat.avatarToolEdgeStyle',
           'Connection style',
@@ -1208,7 +1305,7 @@ export default function AvatarToolEditorWorkspace({
               <h3>{i18n('chat.avatarToolWorkspaceCanvasTitle', 'Interaction flow')}</h3>
               <p>{i18n(
                 'chat.avatarToolWorkspaceCanvasHint',
-                'Drag nodes to move · Connect from any edge point · Scroll to pan',
+                'Drag nodes freely; they align on release · Connect from any edge point · Scroll to pan',
               )}</p>
             </div>
             <AvatarToolInteractionCanvas limits={limits} />

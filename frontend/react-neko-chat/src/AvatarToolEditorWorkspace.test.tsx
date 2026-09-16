@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Position } from '@xyflow/react';
 import {
   AvatarToolInteractionCanvas,
   avatarToolConnectionPreviewPath,
+  snapAvatarToolNodePosition,
 } from './AvatarToolEditorWorkspace';
 import {
   AvatarToolInteractionEditorProvider,
@@ -15,6 +16,23 @@ import {
   planAvatarToolEdgeRoutes,
 } from './avatar-tools/avatarToolEdgeRouter';
 import { findAvailableAvatarToolInteractionPosition } from './avatar-tools/avatarToolInteractionEditorModel';
+import type { LocalAvatarToolLimits } from './avatar-tools/localTools';
+
+const LIMITS: LocalAvatarToolLimits = {
+  maxTools: 64,
+  maxNameChars: 20,
+  maxMeaningChars: 100,
+  maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600_000,
+  maxImageBytes: 8_388_608,
+  maxImagePixels: 16_000_000,
+  maxAudioBytes: 5_242_880,
+  maxAudioDurationMs: 10_000,
+  maxTotalBytes: 268_435_456,
+};
 
 function PreparedCanvas() {
   const { dispatch, setImageState } = useAvatarToolInteractionEditor();
@@ -57,6 +75,33 @@ function PreparedCanvas() {
   return <AvatarToolInteractionCanvas />;
 }
 
+function PresetCanvas() {
+  const { state, setImageState } = useAvatarToolInteractionEditor();
+  useEffect(() => {
+    setImageState([
+      { id: 'img-a', image: null, imageUrl: '/a.png', meaning: '' },
+      { id: 'img-b', image: null, imageUrl: '/b.png', meaning: '' },
+      { id: 'img-c', image: null, imageUrl: '/c.png', meaning: '' },
+    ], 'img-b');
+  }, [setImageState]);
+  return (
+    <>
+      <AvatarToolInteractionCanvas limits={LIMITS} />
+      <output data-testid="preset-state">{JSON.stringify(state)}</output>
+    </>
+  );
+}
+
+function EmptyPresetCanvas() {
+  const { state } = useAvatarToolInteractionEditor();
+  return (
+    <>
+      <AvatarToolInteractionCanvas limits={LIMITS} />
+      <output data-testid="empty-preset-state">{JSON.stringify(state)}</output>
+    </>
+  );
+}
+
 describe('AvatarToolEditorWorkspace', () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -72,6 +117,165 @@ describe('AvatarToolEditorWorkspace', () => {
       { position: preferred },
       { position: { x: 480, y: 140 } },
     ])).toEqual({ x: 180, y: 310 });
+  });
+
+  it('applies reusable presets as replaceable ordinary graph drafts', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <PresetCanvas />
+      </AvatarToolInteractionEditorProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sequential switch' }));
+    let state = JSON.parse(screen.getByTestId('preset-state').textContent || '{}');
+    expect(state.items).toHaveLength(3);
+    expect(state.items.map((item: { press: unknown; release: unknown }) => ({
+      press: item.press,
+      release: item.release,
+    }))).toEqual([
+      { press: { kind: 'keep' }, release: { kind: 'keep' } },
+      { press: { kind: 'keep' }, release: { kind: 'keep' } },
+      { press: { kind: 'keep' }, release: { kind: 'keep' } },
+    ]);
+    const firstIds = state.items.map((item: { id: string }) => item.id);
+    expect(confirm).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Press swap' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(screen.getByTestId('preset-state').textContent || '{}').items)
+      .toHaveLength(3);
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Press swap' }));
+    state = JSON.parse(screen.getByTestId('preset-state').textContent || '{}');
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({
+      press: { kind: 'keep' },
+      release: { kind: 'keep' },
+    });
+    expect(state.items.map((item: { id: string }) => item.id)).not.toEqual(firstIds);
+    confirm.mockRestore();
+  });
+
+  it('shows actual built-in tools as read-only preset references', () => {
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <EmptyPresetCanvas />
+      </AvatarToolInteractionEditorProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    const pressSwap = screen.getByRole('button', { name: 'Press swap' });
+    const clickAdvance = screen.getByRole('button', { name: 'Sequential switch' });
+    const cycleStop = screen.getByRole('button', { name: 'Image cycle' });
+
+    expect(within(pressSwap).getByText('Reference: 猫爪')).toBeInTheDocument();
+    expect(within(pressSwap).getByText('Mouse click 1: Press switches the image → Release restores it'))
+      .toBeInTheDocument();
+    expect(within(pressSwap).getByText('Follow-up setup')).toBeInTheDocument();
+    expect(within(pressSwap).getByText(/In “Mouse click 1”.*“Press”.*“Release”/))
+      .toBeInTheDocument();
+    expect(within(clickAdvance).getByText('Reference: 棒棒糖')).toBeInTheDocument();
+    expect(within(clickAdvance).getByText('Mouse click 1 → Mouse click 2 → Mouse click 3 → end'))
+      .toBeInTheDocument();
+    expect(within(clickAdvance).getByText(/“Mouse click 1”.*“Mouse click 2”.*“Mouse click 3”.*“Release”/))
+      .toBeInTheDocument();
+    expect(within(cycleStop).getByText('Reference: 猜拳')).toBeInTheDocument();
+    expect(within(cycleStop).getByText(/“Delayed switch 1”.*“Delayed switch 2”.*“Delayed switch 3”.*“Mouse click 1”.*“Delayed switch 4”/))
+      .toBeInTheDocument();
+    expect(within(cycleStop).getByText(/does not include win\/loss logic or result animation/))
+      .toBeInTheDocument();
+    expect(screen.getByText(/without copying the reference images or choosing node images/))
+      .toBeInTheDocument();
+
+    const imageSources = Array.from(
+      document.querySelectorAll<HTMLImageElement>('.avatar-tool-preset-guide-images img'),
+      image => image.getAttribute('src'),
+    );
+    expect(imageSources).toEqual(expect.arrayContaining([
+      '/static/assets/avatar-tools/fist/primary-icon.png',
+      '/static/assets/avatar-tools/fist/secondary-icon.png',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png',
+      '/static/assets/avatar-tools/lollipop/secondary-icon.png',
+      '/static/assets/avatar-tools/lollipop/tertiary-icon.png',
+      '/static/assets/avatar-tools/rps/rock-icon.png',
+      '/static/assets/avatar-tools/rps/scissors-icon.png',
+      '/static/assets/avatar-tools/rps/paper-icon.png',
+    ]));
+    expect(JSON.parse(screen.getByTestId('empty-preset-state').textContent || '{}').items)
+      .toEqual([]);
+  });
+
+  it('applies a connected preset graph without any image', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <EmptyPresetCanvas />
+      </AvatarToolInteractionEditorProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    expect(screen.getByRole('button', { name: /Press swap/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Sequential switch/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Image cycle/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: /Press swap/ }));
+    expect(confirm).not.toHaveBeenCalled();
+    const state = JSON.parse(screen.getByTestId('empty-preset-state').textContent || '{}');
+    expect(state.items).toEqual([expect.objectContaining({
+      kind: 'mouse-click',
+      press: { kind: 'keep' },
+      release: { kind: 'keep' },
+    })]);
+    expect(state.initialImageTargetIds).toEqual([state.items[0].id]);
+    expect(state.links).toEqual([expect.objectContaining({
+      from: state.items[0].id,
+      to: state.items[0].id,
+    })]);
+
+    const pressSwapId = state.items[0].id;
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: /Sequential switch/ }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const sequential = JSON.parse(screen.getByTestId('empty-preset-state').textContent || '{}');
+    expect(sequential.items).toHaveLength(3);
+    expect(sequential.items.map((item: { id: string }) => item.id)).not.toContain(pressSwapId);
+    expect(sequential.initialImageTargetIds).toEqual([sequential.items[0].id]);
+    expect(sequential.links).toEqual([
+      expect.objectContaining({ from: sequential.items[0].id, to: sequential.items[1].id }),
+      expect.objectContaining({ from: sequential.items[1].id, to: sequential.items[2].id }),
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: /Image cycle/ }));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    const cycleStop = JSON.parse(screen.getByTestId('empty-preset-state').textContent || '{}');
+    const [firstDelay, secondDelay, thirdDelay, holdClick, resumeDelay] = cycleStop.items;
+    expect(cycleStop.items).toHaveLength(5);
+    expect(cycleStop.initialImageTargetIds).toEqual([firstDelay.id]);
+    expect(cycleStop.links).toHaveLength(8);
+    expect(cycleStop.links.filter((link: { from: string }) => link.from === firstDelay.id))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ to: secondDelay.id }),
+        expect.objectContaining({ to: holdClick.id }),
+      ]));
+    expect(cycleStop.links.filter((link: { from: string }) => link.from === secondDelay.id))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ to: thirdDelay.id }),
+        expect.objectContaining({ to: holdClick.id }),
+      ]));
+    expect(cycleStop.links.filter((link: { from: string }) => link.from === thirdDelay.id))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ to: firstDelay.id }),
+        expect.objectContaining({ to: holdClick.id }),
+      ]));
+    expect(cycleStop.links.filter((link: { from: string }) => link.from === holdClick.id))
+      .toEqual([expect.objectContaining({ to: resumeDelay.id })]);
+    expect(cycleStop.links.filter((link: { from: string }) => link.from === resumeDelay.id))
+      .toEqual([expect.objectContaining({ to: firstDelay.id })]);
+    confirm.mockRestore();
   });
 
   it('routes a connection around another node instead of through it', () => {
@@ -304,6 +508,74 @@ describe('AvatarToolEditorWorkspace', () => {
     expect(routes.get('a-b')?.points).toEqual([
       { x: 100, y: 40 },
       { x: 340, y: 40 },
+    ]);
+  });
+
+  it('keeps slightly misaligned facing nodes connected by one straight horizontal segment', () => {
+    const route = planAvatarToolEdgeRoutes([{
+      id: 'a-b',
+      source: 'a',
+      target: 'b',
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    }], new Map([
+      ['a', { x: 0, y: 0, width: 100, height: 80 }],
+      ['b', { x: 340, y: 10, width: 100, height: 80 }],
+    ])).get('a-b')!;
+
+    expect(route.points).toEqual([
+      { x: 100, y: 45 },
+      { x: 340, y: 45 },
+    ]);
+  });
+
+  it('keeps slightly misaligned facing nodes connected by one straight vertical segment', () => {
+    const route = planAvatarToolEdgeRoutes([{
+      id: 'a-b',
+      source: 'a',
+      target: 'b',
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+    }], new Map([
+      ['a', { x: 0, y: 0, width: 100, height: 80 }],
+      ['b', { x: 10, y: 280, width: 100, height: 80 }],
+    ])).get('a-b')!;
+
+    expect(route.points).toEqual([
+      { x: 55, y: 80 },
+      { x: 55, y: 280 },
+    ]);
+  });
+
+  it('keeps close slightly misaligned facing nodes straight instead of adding a short dogleg', () => {
+    const horizontal = planAvatarToolEdgeRoutes([{
+      id: 'horizontal',
+      source: 'a',
+      target: 'b',
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    }], new Map([
+      ['a', { x: 0, y: 0, width: 228, height: 104 }],
+      ['b', { x: 248, y: 10, width: 228, height: 104 }],
+    ])).get('horizontal')!;
+    const vertical = planAvatarToolEdgeRoutes([{
+      id: 'vertical',
+      source: 'a',
+      target: 'b',
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+    }], new Map([
+      ['a', { x: 0, y: 0, width: 228, height: 104 }],
+      ['b', { x: 10, y: 124, width: 228, height: 104 }],
+    ])).get('vertical')!;
+
+    expect(horizontal.points).toEqual([
+      { x: 228, y: 57 },
+      { x: 248, y: 57 },
+    ]);
+    expect(vertical.points).toEqual([
+      { x: 119, y: 104 },
+      { x: 119, y: 124 },
     ]);
   });
 
@@ -793,6 +1065,7 @@ describe('AvatarToolEditorWorkspace', () => {
     const connectedNode = document.querySelector<HTMLElement>('.react-flow__node[data-id="ix-a"]')!;
     fireEvent.click(connectedNode);
     fireEvent.keyDown(connectedNode, { key: 'ArrowRight' });
+    expect(connectedNode.style.transform).toContain('translate(5px,0px)');
     expect(document.querySelectorAll('.react-flow__edge-path')).toHaveLength(initialEdgeCount);
 
     first.unmount();
@@ -802,6 +1075,11 @@ describe('AvatarToolEditorWorkspace', () => {
       </AvatarToolInteractionEditorProvider>,
     );
     expect(screen.getByRole('button', { name: 'Curve' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps movement free and aligns a node only when its dropped position is committed', () => {
+    expect(snapAvatarToolNodePosition({ x: 104, y: 206 })).toEqual({ x: 100, y: 210 });
+    expect(snapAvatarToolNodePosition({ x: 110, y: 220 })).toEqual({ x: 110, y: 220 });
   });
 
   it('uses a narrower edge hit target and renders hover or selection feedback', () => {

@@ -72,6 +72,7 @@ Chat descriptor 只传当前选择和桌面契约，不传 Avatar pointer。桌�
 | `frontend/react-neko-chat/src/avatar-tools/localTools.ts` | 带内容 revision 的 v2/v3 本地管理与运行 DTO、GET/POST/PUT client、v3 manifest，以及从权威公开 DTO 构建对应运行 definition。 |
 | `frontend/react-neko-chat/src/avatar-tools/registry.ts` | 组合内置 registration 与当前有效本地 definition，生成不可变 snapshot 和按 `(toolId, resourceId)` 的资源查询。 |
 | `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts` | Full／Compact 的本地列表加载、创建/修改后发布、管理目录与 v2/v3 运行 registry 派生、刷新失败保留和权威加载状态；不管理槽位或 pointer。 |
+| `frontend/react-neko-chat/src/avatar-tools/useAvatarToolSlotReconciliation.ts` | 在 surface 边界核对已保存本地槽位；只有权威列表缺项且 detail 精确返回 `tool_not_found` 才报告已删除 ID。它不派生 registry，不同步 Full／Compact 槽位，也不把坏记录或临时失败解释为删除。 |
 | `frontend/react-neko-chat/src/avatar-tools/profileInterpreter.ts` | 解释当前支持的 profile kind，生成通用 handlers；不按 tool id 分支。 |
 | `frontend/react-neko-chat/src/avatar-tools/customGraphRuntime.ts` | v3 图解释器：当前图片、等待候选、点击占有、延时票据、取消与后继连接；不拥有页面输入监听。 |
 | `frontend/react-neko-chat/src/avatar-tools/interaction.ts` | bounds、范围、UI exclusion、touch zone、press/release guard 和共享 runtime policy。 |
@@ -250,6 +251,8 @@ UI exclusion 至少覆盖 composer、工具菜单/快捷栏/manager、消息操�
 
 record v2 与 v3 都已从同一权威目录进入运行 registry，按各自声明的 profile 执行；不能把 v3 猜测性降级为 v2。
 
+旧 v2 的 `press-swap` / `click-advance` 也可在编辑器中作为“按下切换”／“依次切换”快捷预设生成普通 v3 图。预设菜单内的只读教程依次使用内置猫爪、棒棒糖和猜拳 definition 中声明的真实图片，配合流程示意和“后续设置”帮助理解；教程文字逐字引用实际生成的“鼠标点击 1–3”“延时切换 1–4”及其“按下时”“松开时”“等待”“切换为”字段，不使用与画布不一致的概括名称。它不提供或伪造出图提示词，教程图片、设置说明和内置道具身份也不会写入草稿。用户主动应用“依次切换”时固定生成三个普通完整点击节点，按第一项到第三项顺序连接，第三项没有后续连接；旧 v2 转换则仍严格按旧变化图片的实际数量生成有限点击链。编辑器另提供“轮播切换”预设，用三个普通延时节点形成循环；初始图片只连接第一段延时，每个轮播等待位置都可由同一个完整点击抢占。它只把原来的“点击回到第一段轮播延时”拆成“点击 → 独立延时 → 第一段轮播延时”；独立延时没有其它出口，也不改变原轮播连接。默认构图将三段轮播横排、点击和点击后延时纵排，并把两条回线放到不同走廊；它仍使用普通节点位置、端口和通用路由。整个互动编辑器只在节点松手时按轻量网格校正一次落点，拖动过程保持自由，键盘移动也不强制吸附；折线与曲线共用节点位置，面对面的端口在可用边界重叠且共享直线不穿节点、不与已有连接冲突时，无论节点远近都优先沿边移动落点形成单段直线，否则仍执行通用避障和分流，连接语义保持不变。三项预设都只属于编辑草稿：每次应用生成独立 ID；保存后的 definition、desktop descriptor 和 runtime 中都没有预设身份或固定模式分支。猜拳教程只参考轮播、点击停留和延时继续的节奏；猜拳的胜负、手势事实、变速轮播、结果动画和专属 Host 事实不进入自定义道具模块。
+
 v2 固定切图语义：
 
 1. Full／Compact 从后端公开 DTO 构建固定 definition v2；名称使用 literal label，内容 revision 随 definition 和 descriptor 传递，互动描述不返回浏览器或 PC。
@@ -265,8 +268,8 @@ v3 完整图片交互语义：
 1. 一张同级图片是初始图片，也是图的真实入口；图片和完整交互使用稳定 ID，连接引用这些 ID。每个等待位置从初始连接或前一完整交互的后继连接取得候选，不能有无法区分的同级触发。
 2. 鼠标点击作为整体占有当前等待位置：按下前冻结当前图片 ID，再执行按下图片动作；正常松开执行松开动作并沿连接前进。无效或取消点击恢复按下前图片，不执行松开动作、不推进该点击，也不产生反馈；同级已到期延时按原等待关系继续竞争。
 3. 延时从进入等待位置开始计时；到期执行自己的“图片不变／显示图片”动作并沿连接前进。点击已按下时，同级延时不能插入按下与松开之间；失去等待位置、切换或销毁时清理旧票据。
-4. 普通反馈只依据冻结图片的 `hasMeaning` 事实决定是否提交，彩蛋命中只提交一次替代反馈；服务端仍从相同 revision 的权威 record 选择原文。无描述且未命中彩蛋时只执行本地动作，不进入模型反馈链。
-5. 无后继时保持当前图片；自连接、回连及不同触发分支继续使用相同连接规则。重建选择 session 时从初始图片和初始等待位置开始，旧 timer、press 和回调不能推进新图。
+4. 图片流程事件与真实点击角色响应分离：图中存在当前点击节点时，同一次点击同时执行图片动作和推进流程；图已结束或当前只等待其它事件时不改图，但真实有效点击仍按当时图片走普通音效、彩蛋和角色反馈链。普通反馈只依据冻结图片的 `hasMeaning` 事实决定是否提交，彩蛋命中只提交一次替代反馈；服务端仍从相同 revision 的权威 record 选择原文。无描述且未命中彩蛋时只执行本地动作，不进入模型反馈链。
+5. 无后继时保持当前图片并停止该图片流程，不隐式循环，也不为维持角色响应添加尾部自连接；自连接、回连及不同触发分支只按用户明确保存的连接执行。重建选择 session 时从初始图片和初始等待位置开始，旧 timer、press 和回调不能推进新图。
 
 所有道具在 Avatar 范围内显示大形态、范围外显示小形态；这是共享 presentation 语义，不应在单个 tool handler 中重复实现。
 
@@ -355,7 +358,7 @@ interaction sent
 6. RAF、timer、Audio、effect、Promise 和旧 generation 完整清理。
 7. 猜拳准备手势只在真实范围内循环，按下不停止当前猫娘出拳；合法松开只确定一次双方手势和胜负，普通离开范围不截断结果时间线。
 8. 碰撞期间只有两只最终手势；胜方图层与大小只在碰撞时突出，碰撞后双方恢复正常大小，败方灰度持续到结果结束。结果声与已有 i18n 结果文字同步，当前猫娘名字正确，减少动态效果时仍可清楚读取结果。
-9. v2 自定义道具的两种切图方式、末张不循环、范围只缩放、无效松开不前进以及选择 session 结束复位一致；v3 从实际初始图片运行点击、延时、连接、循环、取消和空描述抑制，Web/PC 的按下前 `imageId` 一致；首次列表失败不清洗已保存本地槽位。
+9. v2 自定义道具的两种切图方式、末张不循环、范围只缩放、无效松开不前进以及选择 session 结束复位一致；v3 从实际初始图片运行点击、延时、连接、循环、点击抢占、回连或终点、取消和空描述抑制，Web/PC 的按下前 `imageId`、延时竞争、点击占有以及回连／终点清理一致；首次列表失败不清洗已保存本地槽位，后续列表缺项也只有在 detail 精确确认 `tool_not_found` 后才清理当前 surface 槽位，坏记录和暂时失败必须保留。
 
 ### Host/Python
 

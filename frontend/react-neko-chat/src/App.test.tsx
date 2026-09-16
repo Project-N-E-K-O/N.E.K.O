@@ -603,9 +603,17 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -623,16 +631,20 @@ describe('App', () => {
           maxAudioDurationMs: 60_000,
           maxTotalBytes: 100_000_000,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       render(<App chatSurfaceMode="full" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(listCount).toBe(1));
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -645,9 +657,83 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。持久化只发生
-      // 在用户显式 Save 和删除时。
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a hidden Full slot after refresh and detail both prove the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const localItem = {
+      id: localToolId,
+      revision: '2-100',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+      changeUrls: [`/user_avatar_tools/${localToolId}/change-000.png?v=1`],
+    };
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      return new Response(JSON.stringify({
+        ok: true,
+        items: listCount === 1 ? [localItem] : [],
+        limits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    vi.stubGlobal('fetch', fetchMock);
+    const onAvatarToolStateChange = vi.fn();
+
+    try {
+      render(<App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />);
+      await waitFor(() => expect(listCount).toBe(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+      })));
+
+      act(() => window.dispatchEvent(new Event('focus')));
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -5898,9 +5984,17 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(new Response(JSON.stringify({
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -5918,16 +6012,20 @@ describe('App', () => {
           maxAudioDurationMs: 10_000,
           maxTotalBytes: 268_435_456,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(listCount).toBe(1));
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       await openCompactInputTools();
@@ -5940,8 +6038,57 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a restored Compact slot only after detail proves the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, items: [], limits }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }

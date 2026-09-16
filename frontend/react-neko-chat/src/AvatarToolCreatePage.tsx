@@ -40,6 +40,7 @@ import {
   findDuplicateAvatarToolNameIds,
   getAvatarToolNameValidationError,
   normalizeAvatarToolName,
+  normalizeAvatarToolComparableName,
 } from './avatar-tools/avatarToolNames';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import {
@@ -54,6 +55,7 @@ type AvatarToolCreatePageProps = {
   initialDetail?: LocalAvatarToolDetail;
   notice?: string;
   imageReferences?: Readonly<Partial<Record<AvatarToolImageId, readonly string[]>>>;
+  existingToolNames?: readonly string[];
   onSpecialEnabledChange(enabled: boolean): void;
   onSave(input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput): Promise<void>;
   onDelete?(): Promise<void>;
@@ -171,6 +173,7 @@ export default function AvatarToolCreatePage({
   initialDetail,
   notice = '',
   imageReferences = {},
+  existingToolNames = [],
   onSpecialEnabledChange,
   onSave,
   onDelete,
@@ -546,6 +549,15 @@ export default function AvatarToolCreatePage({
       nextErrors.name = i18n(
         'chat.avatarToolCreateNameInvalidError',
         'Use letters, numbers, spaces, “-”, or “_” in the tool name.',
+      );
+    } else if (existingToolNames.some(
+      existingName => normalizeAvatarToolComparableName(existingName)
+        === normalizeAvatarToolComparableName(normalizedName),
+    )) {
+      nextErrors.name = i18n(
+        'chat.avatarToolCreateNameDuplicate',
+        '“{{name}}” is already used by another tool. Choose a different name.',
+        { name: normalizedName },
       );
     }
     if (images.length === 0) {
