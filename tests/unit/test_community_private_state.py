@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import os
 import threading
@@ -1107,6 +1108,54 @@ def test_retained_snapshot_does_not_block_when_credential_becomes_fifo(
     assert "changed while snapshotting" in str(outcome[0])
     assert opened_flags and opened_flags[0] & os.O_NONBLOCK
     assert opened_flags[0] & os.O_NOFOLLOW
+
+
+def test_retained_snapshot_rejects_oversized_credential_before_reading(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained"
+    retained_root.mkdir()
+    credential = retained_root / private_state.COMMUNITY_AUTH_FILENAME
+    with credential.open("wb") as handle:
+        handle.truncate(
+            private_state.COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES + 1
+        )
+
+    real_read = private_state.os.read
+
+    def _reject_credential_read(fd, size):
+        if os.path.samestat(os.fstat(fd), credential.stat()):
+            pytest.fail("oversized credential must be rejected before reading")
+        return real_read(fd, size)
+
+    monkeypatch.setattr(private_state.os, "read", _reject_credential_read)
+
+    with pytest.raises(OSError, match="changed while snapshotting"):
+        private_state.snapshot_retained_community_state(retained_root)
+
+
+def test_retained_snapshot_accepts_bounded_regular_file_short_reads(
+    tmp_path,
+    monkeypatch,
+):
+    retained_root = tmp_path / "retained"
+    retained_root.mkdir()
+    credential = retained_root / private_state.COMMUNITY_AUTH_FILENAME
+    content = b'{"credential":"short-read-safe"}'
+    credential.write_bytes(content)
+    real_read = private_state.os.read
+
+    def short_read(fd, size):
+        return real_read(fd, min(size, 3))
+
+    monkeypatch.setattr(private_state.os, "read", short_read)
+
+    snapshot = private_state.snapshot_retained_community_state(retained_root)
+
+    assert snapshot == {
+        private_state.COMMUNITY_AUTH_FILENAME: hashlib.sha256(content).hexdigest()
+    }
 
 
 @pytest.mark.skipif(

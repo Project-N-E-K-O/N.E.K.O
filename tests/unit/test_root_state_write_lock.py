@@ -14,6 +14,7 @@ green" cannot mean "the guard never ran":
 """
 import ast
 import asyncio
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -953,12 +954,16 @@ def test_storage_snapshot_restore_propagates_policy_directory_flush_failure(
         selection_source="custom",
     )
 
-    def fail_required_flush(_path):
+    def fail_required_flush(_fd):
         raise StoragePolicyError("policy_flush_failed")
 
     monkeypatch.setattr(
         storage_policy_module,
-        "_fsync_policy_directory_required",
+        (
+            "_fsync_policy_directory_required"
+            if os.name == "nt"
+            else "_fsync_opened_policy_directory_required"
+        ),
         fail_required_flush,
     )
     with pytest.raises(StoragePolicyError) as caught:

@@ -575,6 +575,7 @@ def _open_or_create_posix_child_directory(
     expected_mount_identity: tuple[str, int],
     allow_existing: bool,
     create_missing: bool = True,
+    durable_creation: bool = False,
 ) -> int:
     """Create/open one child below a pinned POSIX parent without path re-resolution."""
 
@@ -602,7 +603,6 @@ def _open_or_create_posix_child_directory(
                 "staging_entry_changed",
                 f"迁移暂存目录无法安全创建: {display_path}: {exc}",
             ) from exc
-
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     child_fd = -1
     try:
@@ -629,6 +629,22 @@ def _open_or_create_posix_child_directory(
             expected_mount_identity,
             display_path,
         )
+        if create_missing and durable_creation:
+            _fsync_opened_migration_directory(parent_fd, display_path.parent)
+            named_after_flush = os.stat(
+                name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                _is_link_like_metadata(named_after_flush)
+                or not stat.S_ISDIR(named_after_flush.st_mode)
+                or not os.path.samestat(opened, named_after_flush)
+            ):
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存目录在持久化期间被替换: {display_path}",
+                )
         return child_fd
     except StorageMigrationError:
         if child_fd >= 0:
@@ -650,6 +666,7 @@ def _open_or_create_posix_directory_chain(
     *,
     expected_mount_identity: tuple[str, int],
     create_missing: bool = True,
+    durable_creation: bool = False,
 ) -> int:
     """Return a pinned parent below a trusted staging root, creating safe parents."""
 
@@ -670,6 +687,7 @@ def _open_or_create_posix_directory_chain(
                 expected_mount_identity=expected_mount_identity,
                 allow_existing=True,
                 create_missing=create_missing,
+                durable_creation=durable_creation,
             )
             os.close(current_fd)
             current_fd = child_fd
@@ -843,6 +861,7 @@ def _open_posix_relative_parent(
         parts[:-1],
         expected_mount_identity=expected_mount_identity,
         create_missing=create_missing,
+        durable_creation=create_missing,
     )
     return parent_fd, parts[-1], root_display.joinpath(*parts[:-1])
 
@@ -3392,8 +3411,8 @@ def _rewrite_migrated_runtime_config_paths(
         return None
 
     windows_config_guard = -1
-    try:
-        if os.name == "nt":
+    if os.name == "nt":
+        try:
             config_directory = workshop_config_path.parent
             config_identity = config_directory.lstat()
             if (
@@ -3408,6 +3427,16 @@ def _rewrite_migrated_runtime_config_paths(
                 config_directory,
                 config_identity,
             )
+            return _rewrite_windows_workshop_config_paths(
+                source_root=source_root,
+                content_root=content_root,
+                target_root=target_root,
+                workshop_config_path=workshop_config_path,
+            )
+        finally:
+            _close_windows_directory_rename_guard(windows_config_guard)
+
+    try:
         payload = _read_json_from_verified_regular_file(
             workshop_config_path,
             max_bytes=_WORKSHOP_CONFIG_REWRITE_MAX_BYTES,
@@ -3548,6 +3577,508 @@ def _read_json_from_verified_regular_file(
         if fd >= 0:
             with suppress(OSError):
                 os.close(fd)
+
+
+def _native_windows_path(path: Path) -> str:
+    value = str(path)
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def _windows_rewrite_stable_fields(metadata: os.stat_result) -> tuple[int, int, int]:
+    return (
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+    )
+
+
+def _snapshot_windows_config_with_open_workshop(
+    config_directory: Path,
+    workshop_config_path: Path,
+    workshop_fd: int,
+) -> dict[str, int | str]:
+    """Hash config while the rewritten workshop file remains write/delete guarded."""
+
+    if path_chain_has_symlink(config_directory):
+        raise StorageMigrationError(
+            "path_symlink_unsupported",
+            f"迁移校验不支持符号链接路径: {config_directory}",
+        )
+    tree_mount_identity = _preflight_directory_tree_mounts(config_directory)
+    total_bytes = 0
+    file_count = 0
+    manifest_digest = hashlib.sha256()
+    guarded_identity = os.fstat(workshop_fd)
+    for current_root, dirnames, filenames in os.walk(config_directory):
+        current_root_path = Path(current_root)
+        _ensure_directory_path_on_mount(current_root_path, tree_mount_identity)
+        dirnames.sort()
+        filenames.sort()
+        relative_root = current_root_path.relative_to(config_directory)
+        for dirname in dirnames:
+            current_dir = current_root_path / dirname
+            if path_chain_has_symlink(current_dir):
+                raise StorageMigrationError(
+                    "path_symlink_unsupported",
+                    f"迁移校验不支持符号链接: {current_dir}",
+                )
+            _ensure_directory_path_on_mount(current_dir, tree_mount_identity)
+            manifest_digest.update(
+                b"D\0" + os.fsencode((relative_root / dirname).as_posix()) + b"\0"
+            )
+        for filename in filenames:
+            current_file = current_root_path / filename
+            if path_chain_has_symlink(current_file):
+                raise StorageMigrationError(
+                    "path_symlink_unsupported",
+                    f"迁移校验不支持符号链接: {current_file}",
+                )
+            if current_file == workshop_config_path:
+                named_before = current_file.lstat()
+                opened_before = os.fstat(workshop_fd)
+                if (
+                    not os.path.samestat(guarded_identity, opened_before)
+                    or not os.path.samestat(opened_before, named_before)
+                    or _windows_rewrite_stable_fields(guarded_identity)
+                    != _windows_rewrite_stable_fields(opened_before)
+                ):
+                    raise StorageMigrationError(
+                        "staging_entry_changed",
+                        f"迁移暂存配置在生成清单前被替换或修改: {current_file}",
+                    )
+                os.lseek(workshop_fd, 0, os.SEEK_SET)
+                digest = hashlib.sha256()
+                file_bytes = 0
+                while True:
+                    chunk = os.read(workshop_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    file_bytes += len(chunk)
+                    digest.update(chunk)
+                opened_after = os.fstat(workshop_fd)
+                named_after = current_file.lstat()
+                if (
+                    file_bytes != opened_after.st_size
+                    or not os.path.samestat(opened_before, opened_after)
+                    or not os.path.samestat(opened_after, named_after)
+                    or _windows_rewrite_stable_fields(opened_before)
+                    != _windows_rewrite_stable_fields(opened_after)
+                ):
+                    raise StorageMigrationError(
+                        "staging_entry_changed",
+                        f"迁移暂存配置在生成清单期间被替换或修改: {current_file}",
+                    )
+                file_digest = digest.hexdigest()
+            else:
+                if not current_file.is_file():
+                    raise StorageMigrationError(
+                        "path_type_unsupported",
+                        f"迁移校验不支持该文件类型: {current_file}",
+                    )
+                file_bytes, file_digest, _allocated_bytes = _hash_file(
+                    current_file,
+                    expected_mount_identity=tree_mount_identity,
+                )
+            relative_file = (relative_root / filename).as_posix()
+            manifest_digest.update(
+                b"F\0"
+                + os.fsencode(relative_file)
+                + b"\0"
+                + str(file_bytes).encode("ascii")
+                + b"\0"
+                + file_digest.encode("ascii")
+                + b"\0"
+            )
+            total_bytes += file_bytes
+            file_count += 1
+
+    return {
+        "kind": "dir",
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "sha256": manifest_digest.hexdigest(),
+    }
+
+
+def _open_windows_rewrite_file(
+    path: Path,
+    *,
+    create_new: bool,
+) -> tuple[int, os.stat_result]:
+    """Open one exact file while denying concurrent write, rename, and delete."""
+
+    if os.name != "nt":
+        raise OSError("Windows rewrite handles are unavailable on this platform")
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    delete_access = 0x00010000
+    file_write_attributes = 0x00000100
+    file_share_read = 0x00000001
+    create_new_disposition = 1
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+    desired_access = generic_read | delete_access | file_write_attributes
+    os_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if create_new:
+        desired_access |= generic_write
+        os_flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    handle = kernel32.CreateFileW(
+        _native_windows_path(path),
+        desired_access,
+        # Holding this handle freezes the bytes and the name we verified.
+        file_share_read,
+        None,
+        create_new_disposition if create_new else open_existing,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle_value:
+        error = ctypes.get_last_error()
+        message = ctypes.FormatError(error).strip()
+        if error in {80, 183}:
+            raise FileExistsError(error, message, str(path))
+        if error in {2, 3}:
+            if not create_new:
+                raise StorageMigrationError(
+                    "staging_entry_changed",
+                    f"迁移暂存配置在独占打开前消失: {path}",
+                )
+            raise FileNotFoundError(error, message, str(path))
+        if error == 32 and not create_new:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置正被并发修改，无法固定: {path}",
+            )
+        raise OSError(error, message, str(path))
+    try:
+        fd = msvcrt.open_osfhandle(int(handle), os_flags)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+    try:
+        opened = os.fstat(fd)
+        named = path.lstat()
+        if (
+            _is_link_like_metadata(opened)
+            or _is_link_like_metadata(named)
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or not os.path.samestat(opened, named)
+        ):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置在独占打开期间被替换: {path}",
+            )
+        return fd, opened
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _rename_windows_open_file(fd: int, target_path: Path) -> None:
+    """Rename the exact open file to an absent absolute target name."""
+
+    if os.name != "nt":
+        raise OSError("Windows handle rename is unavailable on this platform")
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileRenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("flags", wintypes.DWORD),
+            ("root_directory", wintypes.HANDLE),
+            ("file_name_length", wintypes.DWORD),
+            ("file_name", wintypes.WCHAR * 1),
+        ]
+
+    encoded_name = _native_windows_path(target_path).encode("utf-16-le")
+    filename_offset = _FileRenameInfo.file_name.offset
+    buffer_size = max(ctypes.sizeof(_FileRenameInfo), filename_offset + len(encoded_name))
+    buffer = ctypes.create_string_buffer(buffer_size)
+    header = _FileRenameInfo.from_buffer(buffer)
+    header.flags = 0  # ReplaceIfExists = FALSE
+    header.root_directory = None
+    header.file_name_length = len(encoded_name)
+    ctypes.memmove(ctypes.addressof(buffer) + filename_offset, encoded_name, len(encoded_name))
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.SetFileInformationByHandle(
+        msvcrt.get_osfhandle(fd),
+        3,  # FileRenameInfo
+        buffer,
+        buffer_size,
+    ):
+        error = ctypes.get_last_error()
+        message = ctypes.FormatError(error).strip()
+        if error in {80, 183}:
+            raise FileExistsError(error, message, str(target_path))
+        raise OSError(error, message, str(target_path))
+
+
+def _delete_windows_open_file_on_close(fd: int) -> None:
+    """Delete the exact verified file rather than re-resolving its private name."""
+
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("delete_file", wintypes.BOOLEAN)]
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation_time", ctypes.c_longlong),
+            ("last_access_time", ctypes.c_longlong),
+            ("last_write_time", ctypes.c_longlong),
+            ("change_time", ctypes.c_longlong),
+            ("file_attributes", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    handle = msvcrt.get_osfhandle(fd)
+    basic_info = _FileBasicInfo()
+    if not kernel32.GetFileInformationByHandleEx(
+        handle,
+        0,  # FileBasicInfo
+        ctypes.byref(basic_info),
+        ctypes.sizeof(basic_info),
+    ):
+        error = ctypes.get_last_error()
+        raise OSError(error, ctypes.FormatError(error).strip())
+    file_attribute_readonly = 0x00000001
+    file_attribute_normal = 0x00000080
+    if basic_info.file_attributes & file_attribute_readonly:
+        basic_info.file_attributes &= ~file_attribute_readonly
+        if not basic_info.file_attributes:
+            basic_info.file_attributes = file_attribute_normal
+        if not kernel32.SetFileInformationByHandle(
+            handle,
+            0,  # FileBasicInfo
+            ctypes.byref(basic_info),
+            ctypes.sizeof(basic_info),
+        ):
+            error = ctypes.get_last_error()
+            raise OSError(error, ctypes.FormatError(error).strip())
+    disposition = _FileDispositionInfo(True)
+    if not kernel32.SetFileInformationByHandle(
+        handle,
+        4,  # FileDispositionInfo
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        error = ctypes.get_last_error()
+        raise OSError(error, ctypes.FormatError(error).strip())
+
+
+def _rewrite_windows_workshop_config_paths(
+    *,
+    source_root: Path,
+    content_root: Path,
+    target_root: Path,
+    workshop_config_path: Path,
+) -> dict[str, int | str] | None:
+    """CAS-rewrite the staged config without overwriting a concurrent winner."""
+
+    source_fd = -1
+    temp_fd = -1
+    source_renamed = False
+    temp_published = False
+    config_read_completed = False
+    temp_path = workshop_config_path.parent / f".neko-storage-rewrite-{uuid.uuid4().hex}.tmp"
+    backup_path = workshop_config_path.parent / f".neko-storage-rewrite-{uuid.uuid4().hex}.old"
+    try:
+        try:
+            source_fd, source_before = _open_windows_rewrite_file(
+                workshop_config_path,
+                create_new=False,
+            )
+        except StorageMigrationError:
+            raise
+        except OSError as exc:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置无法取得独占写保护: {workshop_config_path}: {exc}",
+            ) from exc
+        if source_before.st_size > _WORKSHOP_CONFIG_REWRITE_MAX_BYTES:
+            raise StorageMigrationError(
+                "workshop_config_too_large",
+                "工坊配置超过迁移重写的安全大小上限，已保留原数据并停止迁移。",
+            )
+        chunks: list[bytes] = []
+        total_bytes = 0
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > _WORKSHOP_CONFIG_REWRITE_MAX_BYTES:
+                raise StorageMigrationError(
+                    "workshop_config_too_large",
+                    "工坊配置在迁移读取期间超过安全大小上限，已保留原数据并停止迁移。",
+                )
+            chunks.append(chunk)
+        source_after = os.fstat(source_fd)
+        if (
+            not os.path.samestat(source_before, source_after)
+            or _windows_rewrite_stable_fields(source_before)
+            != _windows_rewrite_stable_fields(source_after)
+        ):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置在读取期间被修改: {workshop_config_path}",
+            )
+        payload = json.loads(b"".join(chunks).decode("utf-8"))
+        config_read_completed = True
+        rewritten_payload = rebase_runtime_bound_workshop_config_paths(
+            payload,
+            source_root=source_root,
+            target_root=target_root,
+        )
+        if rewritten_payload is payload:
+            return None
+
+        encoded = json.dumps(
+            rewritten_payload,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        temp_fd, _temp_before = _open_windows_rewrite_file(temp_path, create_new=True)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError("short write while rewriting migrated workshop config")
+            view = view[written:]
+        os.fsync(temp_fd)
+        temp_identity = os.fstat(temp_fd)
+        if not os.path.samestat(temp_identity, temp_path.lstat()):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置临时文件在发布前被替换: {temp_path}",
+            )
+
+        _rename_windows_open_file(source_fd, backup_path)
+        source_renamed = True
+        try:
+            _rename_windows_open_file(temp_fd, workshop_config_path)
+        except FileExistsError as exc:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置在原子重写窗口被并发替换: {workshop_config_path}",
+            ) from exc
+        temp_published = True
+        if not os.path.samestat(temp_identity, workshop_config_path.lstat()):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置在原子重写期间被替换: {workshop_config_path}",
+            )
+
+        _delete_windows_open_file_on_close(source_fd)
+        os.close(source_fd)
+        source_fd = -1
+        source_renamed = False
+
+        rewritten_snapshot = _snapshot_windows_config_with_open_workshop(
+            content_root / "config",
+            workshop_config_path,
+            temp_fd,
+        )
+        named_after_snapshot = workshop_config_path.lstat()
+        opened_after_snapshot = os.fstat(temp_fd)
+        if (
+            not os.path.samestat(temp_identity, opened_after_snapshot)
+            or not os.path.samestat(opened_after_snapshot, named_after_snapshot)
+            or _windows_rewrite_stable_fields(temp_identity)
+            != _windows_rewrite_stable_fields(opened_after_snapshot)
+        ):
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置在生成清单期间被替换或修改: {workshop_config_path}",
+            )
+        return rewritten_snapshot
+    except StorageMigrationError:
+        raise
+    except Exception as exc:
+        if not config_read_completed:
+            logger.warning(
+                "Failed to read migrated workshop_config for path rewrite: %s",
+                exc,
+            )
+            return None
+        raise StorageMigrationError(
+            "target_flush_failed",
+            f"迁移暂存配置无法可靠重写到目标磁盘: {workshop_config_path}: {exc}",
+        ) from exc
+    finally:
+        if temp_fd >= 0:
+            if not temp_published:
+                with suppress(OSError):
+                    _delete_windows_open_file_on_close(temp_fd)
+            with suppress(OSError):
+                os.close(temp_fd)
+        if source_fd >= 0:
+            if source_renamed:
+                public_name_exists = True
+                try:
+                    workshop_config_path.lstat()
+                except FileNotFoundError:
+                    public_name_exists = False
+                    try:
+                        _rename_windows_open_file(source_fd, workshop_config_path)
+                        source_renamed = False
+                    except OSError:
+                        # The exact old file remains under the private backup
+                        # name as recovery evidence. Never delete it merely
+                        # because compensating publication also failed.
+                        pass
+                if source_renamed and public_name_exists:
+                    with suppress(OSError):
+                        _delete_windows_open_file_on_close(source_fd)
+            with suppress(OSError):
+                os.close(source_fd)
 
 
 def _hash_file(

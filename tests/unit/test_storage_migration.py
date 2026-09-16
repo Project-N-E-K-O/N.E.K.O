@@ -2630,20 +2630,38 @@ def test_windows_workshop_rewrite_guards_config_directory_and_releases_it(
         json.dumps({"default_workshop_folder": str(source_root / "workshop")}),
         encoding="utf-8",
     )
-    original_write = storage_migration_module.atomic_write_json
+    original_rename = storage_migration_module._rename_windows_open_file
+    original_snapshot = (
+        storage_migration_module._snapshot_windows_config_with_open_workshop
+    )
     attempted = False
+    write_blocked_during_snapshot = False
 
-    def assert_config_guarded(path, payload, **kwargs):
+    def assert_config_guarded(fd, target_path):
         nonlocal attempted
-        with pytest.raises(OSError):
-            config_directory.rename(config_directory.with_name("config-moved"))
-        attempted = True
-        return original_write(path, payload, **kwargs)
+        if not attempted:
+            with pytest.raises(OSError):
+                config_directory.rename(config_directory.with_name("config-moved"))
+            attempted = True
+        return original_rename(fd, target_path)
 
     monkeypatch.setattr(
         storage_migration_module,
-        "atomic_write_json",
+        "_rename_windows_open_file",
         assert_config_guarded,
+    )
+
+    def assert_rewritten_file_guarded(config_path, workshop_path, workshop_fd):
+        nonlocal write_blocked_during_snapshot
+        with pytest.raises(OSError):
+            workshop_path.write_text('{"attacker":true}', encoding="utf-8")
+        write_blocked_during_snapshot = True
+        return original_snapshot(config_path, workshop_path, workshop_fd)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_windows_config_with_open_workshop",
+        assert_rewritten_file_guarded,
     )
     snapshot = storage_migration_module._rewrite_migrated_runtime_config_paths(
         source_root=source_root,
@@ -2652,11 +2670,139 @@ def test_windows_workshop_rewrite_guards_config_directory_and_releases_it(
     )
 
     assert attempted is True
+    assert write_blocked_during_snapshot is True
     assert snapshot is not None
     moved_config = config_directory.with_name("config-moved")
     config_directory.rename(moved_config)
     rewritten = json.loads((moved_config / "workshop_config.json").read_text(encoding="utf-8"))
     assert rewritten["default_workshop_folder"] == str(target_root / "workshop")
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows workshop config CAS")
+def test_windows_workshop_rewrite_preserves_concurrent_name_winner(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    content_root = tmp_path / "transaction" / "staged"
+    target_root = tmp_path / "target"
+    config_directory = content_root / "config"
+    config_path = config_directory / "workshop_config.json"
+    config_directory.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"default_workshop_folder": str(source_root / "workshop")}),
+        encoding="utf-8",
+    )
+    rival_bytes = b'{"generation":"concurrent-new","new_field":true}'
+    original_rename = storage_migration_module._rename_windows_open_file
+    injected = False
+
+    def inject_winner_after_exact_source_rename(fd, target_path):
+        nonlocal injected
+        original_rename(fd, target_path)
+        if not injected and target_path.suffix == ".old":
+            injected = True
+            config_path.write_bytes(rival_bytes)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_rename_windows_open_file",
+        inject_winner_after_exact_source_rename,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._rewrite_migrated_runtime_config_paths(
+            source_root=source_root,
+            content_root=content_root,
+            target_root=target_root,
+        )
+
+    assert injected is True
+    assert caught.value.error_code == "staging_entry_changed"
+    assert config_path.read_bytes() == rival_bytes
+    assert sorted(path.name for path in config_directory.iterdir()) == [
+        "workshop_config.json"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows workshop config CAS")
+def test_windows_workshop_rewrite_removes_readonly_source_backup(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    content_root = tmp_path / "transaction" / "staged"
+    target_root = tmp_path / "target"
+    config_directory = content_root / "config"
+    config_path = config_directory / "workshop_config.json"
+    config_directory.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"default_workshop_folder": str(source_root / "workshop")}),
+        encoding="utf-8",
+    )
+    config_path.chmod(stat.S_IREAD)
+
+    snapshot = storage_migration_module._rewrite_migrated_runtime_config_paths(
+        source_root=source_root,
+        content_root=content_root,
+        target_root=target_root,
+    )
+
+    assert snapshot is not None
+    rewritten = json.loads(config_path.read_text(encoding="utf-8"))
+    assert rewritten["default_workshop_folder"] == str(target_root / "workshop")
+    assert sorted(path.name for path in config_directory.iterdir()) == [
+        "workshop_config.json"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows workshop config CAS")
+def test_windows_workshop_rewrite_preserves_backup_when_publish_and_restore_fail(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    content_root = tmp_path / "transaction" / "staged"
+    target_root = tmp_path / "target"
+    config_directory = content_root / "config"
+    config_path = config_directory / "workshop_config.json"
+    config_directory.mkdir(parents=True)
+    original_bytes = json.dumps(
+        {"default_workshop_folder": str(source_root / "workshop")}
+    ).encode("utf-8")
+    config_path.write_bytes(original_bytes)
+    original_rename = storage_migration_module._rename_windows_open_file
+
+    def fail_public_name(fd, target_path):
+        if target_path == config_path:
+            raise OSError("injected public-name failure")
+        return original_rename(fd, target_path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_rename_windows_open_file",
+        fail_public_name,
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        storage_migration_module._rewrite_migrated_runtime_config_paths(
+            source_root=source_root,
+            content_root=content_root,
+            target_root=target_root,
+        )
+
+    assert caught.value.error_code == "target_flush_failed"
+    assert not config_path.exists()
+    backup_paths = list(config_directory.glob(".neko-storage-rewrite-*.old"))
+    assert len(backup_paths) == 1
+    assert backup_paths[0].read_bytes() == original_bytes
+    assert not list(config_directory.glob(".neko-storage-rewrite-*.tmp"))
 
 
 @pytest.mark.unit
@@ -5009,6 +5155,82 @@ def test_interrupted_publish_rollback_rename_steps_are_crash_recoverable(
     assert result["error_code"] == "copy_failed"
     assert target_file.read_text(encoding="utf-8") == "TARGET"
     assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX publication durability")
+def test_posix_publish_flushes_new_nested_parent_names_before_entry_rename(
+    tmp_path,
+    monkeypatch,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    score_file = source_root / "state" / "game_scores" / "score.json"
+    score_file.parent.mkdir(parents=True)
+    score_file.write_text("SOURCE", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        pending["txid"],
+    )
+    backup_root = transaction_root / "backup"
+    flushed_parents: list[Path] = []
+    real_flush = storage_migration_module._fsync_opened_migration_directory
+    real_publish = storage_migration_module._durable_publish_without_replacing_at
+    checked = False
+
+    def _record_flush(fd, display_path):
+        real_flush(fd, display_path)
+        flushed_parents.append(Path(display_path))
+
+    def _assert_parent_names_are_durable(
+        source_parent_fd,
+        source_name,
+        source_parent_display,
+        target_parent_fd,
+        target_name,
+        target_parent_display,
+    ):
+        nonlocal checked
+        if target_name == "game_scores" and Path(target_parent_display) == target_root / "state":
+            assert target_root in flushed_parents
+            assert backup_root in flushed_parents
+            checked = True
+        return real_publish(
+            source_parent_fd,
+            source_name,
+            source_parent_display,
+            target_parent_fd,
+            target_name,
+            target_parent_display,
+        )
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_fsync_opened_migration_directory",
+        _record_flush,
+    )
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_durable_publish_without_replacing_at",
+        _assert_parent_names_are_durable,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert checked is True
+    assert (target_root / "state" / "game_scores" / "score.json").read_text(
+        encoding="utf-8"
+    ) == "SOURCE"
 
 
 @pytest.mark.unit

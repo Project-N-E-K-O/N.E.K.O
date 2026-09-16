@@ -115,6 +115,183 @@ def test_save_storage_policy_fails_closed_when_parent_flush_fails(tmp_path, monk
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd restore race injection")
+@pytest.mark.parametrize("restore_existing", (False, True))
+@pytest.mark.parametrize("replaced_directory", ("anchor", "state"))
+def test_restore_storage_policy_snapshot_never_mutates_replaced_directory(
+    tmp_path,
+    monkeypatch,
+    restore_existing,
+    replaced_directory,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    original_root = tmp_path / "selected-original"
+    changed_root = tmp_path / "selected-changed"
+    replacement_root_value = tmp_path / "selected-replacement"
+    for path in (original_root, changed_root, replacement_root_value):
+        path.mkdir()
+
+    original_payload = None
+    if restore_existing:
+        original_payload = save_storage_policy(
+            config_manager,
+            selected_root=original_root,
+            selection_source="current",
+            anchor_root=anchor_root,
+        )
+    save_storage_policy(
+        config_manager,
+        selected_root=changed_root,
+        selection_source="current",
+        anchor_root=anchor_root,
+    )
+
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_payload = save_storage_policy(
+        config_manager,
+        selected_root=replacement_root_value,
+        selection_source="current",
+        anchor_root=replacement_anchor,
+    )
+    replacement_policy = replacement_anchor / "state" / "storage_policy.json"
+    replacement_bytes = replacement_policy.read_bytes()
+    detached = tmp_path / f"detached-{replaced_directory}"
+    swapped = False
+
+    def swap_directory():
+        nonlocal swapped
+        swapped = True
+        if replaced_directory == "anchor":
+            anchor_root.rename(detached)
+            replacement_anchor.rename(anchor_root)
+        else:
+            (anchor_root / "state").rename(detached)
+            (replacement_anchor / "state").rename(anchor_root / "state")
+
+    if restore_existing:
+        real_replace = os.replace
+
+        def replace_after_directory_binding(
+            source,
+            target,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+        ):
+            if (
+                not swapped
+                and target == "storage_policy.json"
+                and src_dir_fd is not None
+            ):
+                swap_directory()
+            return real_replace(
+                source,
+                target,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+        monkeypatch.setattr(storage_policy_module.os, "replace", replace_after_directory_binding)
+    else:
+        real_unlink = os.unlink
+
+        def unlink_after_directory_binding(path, *, dir_fd=None):
+            if not swapped and path == "storage_policy.json" and dir_fd is not None:
+                swap_directory()
+            return real_unlink(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(storage_policy_module.os, "unlink", unlink_after_directory_binding)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module.restore_storage_policy_snapshot(
+            config_manager,
+            original_payload,
+            anchor_root=anchor_root,
+        )
+
+    assert swapped is True
+    assert caught.value.reason == (
+        "anchor_root_changed" if replaced_directory == "anchor" else "policy_path_changed"
+    )
+    active_policy = anchor_root / "state" / "storage_policy.json"
+    assert active_policy.read_bytes() == replacement_bytes
+    assert json.loads(active_policy.read_text(encoding="utf-8")) == replacement_payload
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows fixed-anchor directory guards")
+@pytest.mark.parametrize("restore_existing", (False, True))
+def test_windows_restore_storage_policy_guards_anchor_and_state_until_complete(
+    tmp_path,
+    monkeypatch,
+    restore_existing,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    original_root = tmp_path / "selected-original"
+    changed_root = tmp_path / "selected-changed"
+    original_root.mkdir()
+    changed_root.mkdir()
+    original_payload = None
+    if restore_existing:
+        original_payload = save_storage_policy(
+            config_manager,
+            selected_root=original_root,
+            selection_source="current",
+            anchor_root=anchor_root,
+        )
+    save_storage_policy(
+        config_manager,
+        selected_root=changed_root,
+        selection_source="current",
+        anchor_root=anchor_root,
+    )
+    attempted = False
+
+    def assert_directories_guarded():
+        nonlocal attempted
+        with pytest.raises(OSError):
+            (anchor_root / "state").rename(anchor_root / "state-moved")
+        with pytest.raises(OSError):
+            anchor_root.rename(anchor_root.with_name("anchor-moved"))
+        attempted = True
+
+    if restore_existing:
+        real_write = storage_policy_module.atomic_write_json
+
+        def guarded_write(path, payload, **kwargs):
+            assert_directories_guarded()
+            return real_write(path, payload, **kwargs)
+
+        monkeypatch.setattr(storage_policy_module, "atomic_write_json", guarded_write)
+    else:
+        real_unlink = storage_policy_module.os.unlink
+
+        def guarded_unlink(path, *args, **kwargs):
+            if Path(path).name == "storage_policy.json":
+                assert_directories_guarded()
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(storage_policy_module.os, "unlink", guarded_unlink)
+
+    storage_policy_module.restore_storage_policy_snapshot(
+        config_manager,
+        original_payload,
+        anchor_root=anchor_root,
+    )
+
+    assert attempted is True
+    moved_anchor = anchor_root.with_name("anchor-moved")
+    anchor_root.rename(moved_anchor)
+    restored_path = moved_anchor / "state" / "storage_policy.json"
+    if restore_existing:
+        assert json.loads(restored_path.read_text(encoding="utf-8")) == original_payload
+    else:
+        assert not restored_path.exists()
+
+
+@pytest.mark.unit
 def test_load_storage_policy_returns_default_when_payload_is_unreadable(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     policy_path = get_storage_policy_path(config_manager)

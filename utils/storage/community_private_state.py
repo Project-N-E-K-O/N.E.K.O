@@ -44,6 +44,7 @@ COMMUNITY_PRIVATE_STATE_FILENAMES = (
     COMMUNITY_OAUTH_PENDING_FILENAME,
     COMMUNITY_STEAM_PENDING_FILENAME,
 )
+COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -265,13 +266,22 @@ def _read_stable_regular_file(
         ):
             raise _PrivateStateSnapshotChanged
 
-        if max_bytes is None:
-            chunks: list[bytes] = []
-            while chunk := os.read(fd, 1024 * 1024):
-                chunks.append(chunk)
-            raw = b"".join(chunks)
-        else:
-            raw = os.read(fd, max_bytes + 1)
+        chunks: list[bytes] = []
+        total_bytes = 0
+        while True:
+            request_size = 1024 * 1024
+            if max_bytes is not None:
+                request_size = min(request_size, max_bytes - total_bytes + 1)
+                if request_size <= 0:
+                    break
+            chunk = os.read(fd, request_size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total_bytes += len(chunk)
+            if max_bytes is not None and total_bytes > max_bytes:
+                break
+        raw = b"".join(chunks)
 
         after = os.fstat(fd)
         named = (
@@ -417,6 +427,7 @@ def snapshot_retained_community_state(
                 path,
                 before,
                 dir_fd=dir_fd,
+                max_bytes=COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES,
             )
         except _PrivateStateSnapshotChanged as exc:
             raise OSError(f"retained {filename} changed while snapshotting") from exc

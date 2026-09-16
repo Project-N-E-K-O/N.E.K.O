@@ -18,6 +18,7 @@ import json
 import os
 import stat
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -473,6 +474,13 @@ def _fsync_policy_directory_required(path: Path) -> None:
                 pass
 
 
+def _fsync_opened_policy_directory_required(directory_fd: int) -> None:
+    try:
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise StoragePolicyError("policy_flush_failed") from exc
+
+
 def _open_posix_anchor_directory(
     anchor_root: Path,
     expected_anchor: os.stat_result | None,
@@ -649,6 +657,353 @@ def _revalidate_posix_policy_absence(
             or not os.path.samestat(named_state, os.fstat(state_fd))
         ):
             raise StoragePolicyError("policy_changed_during_read")
+
+
+def _revalidate_posix_state_directories(
+    anchor_root: Path,
+    anchor_fd: int,
+    state_fd: int,
+) -> None:
+    """Require the pinned fixed-anchor directories to keep their public names."""
+
+    try:
+        named_anchor = anchor_root.lstat()
+        named_state = (anchor_root / "state").lstat()
+        opened_anchor = os.fstat(anchor_fd)
+        opened_state = os.fstat(state_fd)
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_changed") from exc
+    if (
+        stat.S_ISLNK(named_anchor.st_mode)
+        or not stat.S_ISDIR(named_anchor.st_mode)
+        or not os.path.samestat(named_anchor, opened_anchor)
+    ):
+        raise StoragePolicyError("anchor_root_changed")
+    if (
+        stat.S_ISLNK(named_state.st_mode)
+        or not stat.S_ISDIR(named_state.st_mode)
+        or not os.path.samestat(named_state, opened_state)
+    ):
+        raise StoragePolicyError("policy_path_changed")
+
+
+def _restore_storage_policy_snapshot_posix(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result | None,
+    encoded_payload: bytes | None,
+) -> None:
+    anchor_fd = -1
+    state_fd = -1
+    temp_fd = -1
+    temp_name = f".neko-policy-restore-{uuid.uuid4().hex}.tmp"
+    temp_created = False
+    try:
+        anchor_fd = _open_posix_anchor_directory(anchor_root, expected_anchor)
+        try:
+            state_fd = _open_posix_child_directory(anchor_fd, "state")
+        except FileNotFoundError:
+            if encoded_payload is None:
+                _revalidate_posix_policy_absence(
+                    anchor_root,
+                    anchor_fd,
+                    -1,
+                    "storage_policy.json",
+                )
+                return
+            raise StoragePolicyError("policy_path_changed")
+        if expected_state is None or not os.path.samestat(
+            expected_state,
+            os.fstat(state_fd),
+        ):
+            raise StoragePolicyError("policy_path_changed")
+
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+        if encoded_payload is None:
+            try:
+                os.unlink("storage_policy.json", dir_fd=state_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise StoragePolicyError("policy_restore_delete_failed") from exc
+        else:
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            temp_fd = os.open(temp_name, flags, 0o600, dir_fd=state_fd)
+            temp_created = True
+            view = memoryview(encoded_payload)
+            while view:
+                written = os.write(temp_fd, view)
+                if written <= 0:
+                    raise OSError("short write while restoring storage policy")
+                view = view[written:]
+            os.fsync(temp_fd)
+            opened_temp = os.fstat(temp_fd)
+            named_temp = os.stat(
+                temp_name,
+                dir_fd=state_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(opened_temp.st_mode)
+                or not stat.S_ISREG(named_temp.st_mode)
+                or not os.path.samestat(opened_temp, named_temp)
+            ):
+                raise StoragePolicyError("policy_path_changed")
+            _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+            os.replace(
+                temp_name,
+                "storage_policy.json",
+                src_dir_fd=state_fd,
+                dst_dir_fd=state_fd,
+            )
+            temp_created = False
+            named_policy = os.stat(
+                "storage_policy.json",
+                dir_fd=state_fd,
+                follow_symlinks=False,
+            )
+            if not os.path.samestat(opened_temp, named_policy):
+                raise StoragePolicyError("policy_path_changed")
+
+        _fsync_opened_policy_directory_required(state_fd)
+        _revalidate_posix_state_directories(anchor_root, anchor_fd, state_fd)
+    except StoragePolicyError:
+        raise
+    except OSError as exc:
+        raise StoragePolicyError("policy_restore_failed") from exc
+    finally:
+        if temp_fd >= 0:
+            with suppress(OSError):
+                os.close(temp_fd)
+        if temp_created and state_fd >= 0:
+            with suppress(OSError):
+                os.unlink(temp_name, dir_fd=state_fd)
+        for fd in (state_fd, anchor_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+
+
+def _open_windows_policy_directory_guards(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result | None,
+) -> list[int]:
+    """Pin every named directory component while denying rename/delete sharing."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", _FileTime),
+            ("last_access_time", _FileTime),
+            ("last_write_time", _FileTime),
+            ("volume_serial_number", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    file_list_directory = 0x0001
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_attribute_directory = 0x0010
+    file_attribute_reparse_point = 0x0400
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+    handles: list[int] = []
+
+    def _native_path(path: Path) -> str:
+        value = str(path)
+        if value.startswith("\\\\?\\"):
+            return value
+        if value.startswith("\\\\"):
+            return "\\\\?\\UNC\\" + value[2:]
+        return "\\\\?\\" + value
+
+    def _open_directory(path: Path) -> int:
+        handle = kernel32.CreateFileW(
+            _native_path(path),
+            # Attribute-only access does not reliably participate in Windows
+            # share accounting. Directory-list access makes omission of
+            # FILE_SHARE_DELETE an effective rename/delete guard.
+            file_list_directory | file_read_attributes,
+            file_share_read | file_share_write,
+            None,
+            open_existing,
+            file_flag_backup_semantics | file_flag_open_reparse_point,
+            None,
+        )
+        if handle == invalid_handle_value:
+            error = ctypes.get_last_error()
+            if error in {2, 3}:
+                raise FileNotFoundError(error, "path is absent", str(path))
+            raise ctypes.WinError(error)
+        info = _ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise ctypes.WinError(error)
+        if (
+            info.attributes & file_attribute_reparse_point
+            or not info.attributes & file_attribute_directory
+        ):
+            kernel32.CloseHandle(handle)
+            raise StoragePolicyError("policy_path_redirect")
+        return int(handle)
+
+    try:
+        if not anchor_root.is_absolute() or not anchor_root.anchor:
+            raise StoragePolicyError("anchor_root_uninspectable")
+        current = Path(anchor_root.anchor)
+        for component in (None, *anchor_root.parts[1:]):
+            if component is not None:
+                current /= component
+            handles.append(_open_directory(current))
+
+        named_anchor = anchor_root.lstat()
+        if (
+            stat.S_ISLNK(named_anchor.st_mode)
+            or not stat.S_ISDIR(named_anchor.st_mode)
+            or not os.path.samestat(expected_anchor, named_anchor)
+        ):
+            raise StoragePolicyError("anchor_root_changed")
+
+        state_path = anchor_root / "state"
+        try:
+            state_handle = _open_directory(state_path)
+        except FileNotFoundError:
+            if expected_state is not None:
+                raise StoragePolicyError("policy_path_changed")
+            try:
+                state_path.lstat()
+            except FileNotFoundError:
+                return handles
+            raise StoragePolicyError("policy_path_changed")
+        handles.append(state_handle)
+        named_state = state_path.lstat()
+        if (
+            expected_state is None
+            or stat.S_ISLNK(named_state.st_mode)
+            or not stat.S_ISDIR(named_state.st_mode)
+            or not os.path.samestat(expected_state, named_state)
+        ):
+            raise StoragePolicyError("policy_path_changed")
+        return handles
+    except BaseException:
+        for handle in reversed(handles):
+            kernel32.CloseHandle(handle)
+        raise
+
+
+def _close_windows_policy_directory_guards(handles: list[int]) -> None:
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    for handle in reversed(handles):
+        kernel32.CloseHandle(handle)
+
+
+def _revalidate_windows_state_directories(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result,
+) -> None:
+    try:
+        named_anchor = anchor_root.lstat()
+        named_state = (anchor_root / "state").lstat()
+    except OSError as exc:
+        raise StoragePolicyError("policy_path_changed") from exc
+    if not os.path.samestat(expected_anchor, named_anchor):
+        raise StoragePolicyError("anchor_root_changed")
+    if not os.path.samestat(expected_state, named_state):
+        raise StoragePolicyError("policy_path_changed")
+
+
+def _restore_storage_policy_snapshot_windows(
+    anchor_root: Path,
+    expected_anchor: os.stat_result,
+    expected_state: os.stat_result | None,
+    policy_path: Path,
+    policy_payload: dict[str, Any] | None,
+) -> None:
+    handles = _open_windows_policy_directory_guards(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+    )
+    try:
+        if expected_state is None:
+            if policy_payload is not None:
+                raise StoragePolicyError("policy_path_changed")
+            return
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+        if policy_payload is None:
+            try:
+                os.unlink(policy_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise StoragePolicyError("policy_restore_delete_failed") from exc
+        else:
+            atomic_write_json(
+                policy_path,
+                policy_payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+        _fsync_policy_directory_required(policy_path.parent)
+        _revalidate_windows_state_directories(
+            anchor_root,
+            expected_anchor,
+            expected_state,
+        )
+    finally:
+        _close_windows_policy_directory_guards(handles)
 
 
 def _read_storage_policy_json_posix(
@@ -1116,36 +1471,70 @@ def restore_storage_policy_snapshot(
 ) -> None:
     """Restore an exact pre-mutation policy fact with a required directory barrier."""
 
-    normalized_anchor_root = normalize_runtime_root(
-        anchor_root or compute_anchor_root(config_manager)
-    )
+    configured_anchor_root = anchor_root or compute_anchor_root(config_manager)
+    expected_anchor = _validate_storage_policy_anchor(configured_anchor_root)
+    normalized_anchor_root = normalize_runtime_root(configured_anchor_root)
     policy_path = get_storage_policy_path(
         config_manager,
         anchor_root=normalized_anchor_root,
     )
+    encoded_payload: bytes | None = None
     if isinstance(policy_payload, dict):
         _validate_storage_policy_payload(
             config_manager,
             policy_payload,
             anchor_root=normalized_anchor_root,
         )
-        atomic_write_json(
-            policy_path,
+        encoded_payload = json.dumps(
             policy_payload,
             ensure_ascii=False,
             indent=2,
-        )
-        _fsync_policy_directory_required(policy_path.parent)
-        return
-    if policy_payload is not None:
+        ).encode("utf-8")
+        _validate_fixed_anchor_json_size(len(encoded_payload))
+    elif policy_payload is not None:
         raise StoragePolicyError("invalid_policy_snapshot")
-    try:
-        os.unlink(policy_path)
-    except FileNotFoundError:
+
+    if expected_anchor is None:
+        if encoded_payload is not None:
+            raise StoragePolicyError("anchor_root_changed")
+        if _validate_storage_policy_anchor(configured_anchor_root) is not None:
+            raise StoragePolicyError("anchor_root_changed")
         return
+
+    state_path = normalized_anchor_root / "state"
+    try:
+        expected_state = state_path.lstat()
+    except FileNotFoundError:
+        expected_state = None
     except OSError as exc:
-        raise StoragePolicyError("policy_restore_delete_failed") from exc
-    _fsync_policy_directory_required(policy_path.parent)
+        raise StoragePolicyError("policy_path_uninspectable") from exc
+    else:
+        is_reparse_point = bool(
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            & getattr(expected_state, "st_file_attributes", 0)
+        )
+        if (
+            stat.S_ISLNK(expected_state.st_mode)
+            or is_reparse_point
+            or not stat.S_ISDIR(expected_state.st_mode)
+        ):
+            raise StoragePolicyError("policy_path_redirect")
+
+    if os.name == "nt":
+        _restore_storage_policy_snapshot_windows(
+            normalized_anchor_root,
+            expected_anchor,
+            expected_state,
+            policy_path,
+            policy_payload,
+        )
+        return
+    _restore_storage_policy_snapshot_posix(
+        normalized_anchor_root,
+        expected_anchor,
+        expected_state,
+        encoded_payload,
+    )
 
 
 def should_require_storage_selection(
