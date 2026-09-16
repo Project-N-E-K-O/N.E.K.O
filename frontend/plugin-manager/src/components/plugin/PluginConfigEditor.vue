@@ -136,64 +136,70 @@
       </template>
     </el-dialog>
 
-    <el-alert
-      v-if="visibleError"
-      :title="visibleError"
-      type="error"
-      show-icon
-      :closable="false"
-      class="config-error"
-    />
-    <el-skeleton v-if="loading || current?.loading" :rows="6" animated />
-    <template v-else-if="current?.loaded">
-      <el-select
-        v-if="sectionNames.length > 3"
-        class="section-jump"
-        :model-value="''"
-        :placeholder="t('plugins.configUi.jumpSection')"
+    <div class="config-workspace">
+      <nav
+        v-if="current?.loaded && sectionNames.length"
+        class="config-nav"
         :aria-label="t('plugins.configUi.jumpSection')"
-        @change="jumpSection"
       >
-        <el-option
+        <div class="config-nav-title">{{ t('plugins.configUi.jumpSection') }}</div>
+        <button
           v-for="name in sectionNames"
           :key="name"
-          :value="name"
-          :label="
-            name +
-            (sectionChanges(name)
-              ? ' · ' + t('plugins.configUi.unsavedCount', { count: sectionChanges(name) })
-              : '')
-          "
-        />
-      </el-select>
-      <div v-if="search || filter !== 'all'" class="search-scope">
-        {{ t('plugins.configUi.searchScope')
-        }}<el-button text size="small" @click="clearFilters">{{
-          t('plugins.configUi.clearFilters')
-        }}</el-button>
-      </div>
-      <div class="config-content">
-        <el-empty
-          v-if="!hasVisibleFields"
-          :description="t('plugins.configUi.emptySearch')"
-          :image-size="65"
-          ><el-button @click="clearFilters">{{
-            t('plugins.configUi.clearFilters')
-          }}</el-button></el-empty
+          type="button"
+          :class="{ 'is-active': activeSection === name }"
+          :aria-current="activeSection === name ? 'location' : undefined"
+          :disabled="!visibleSections.includes(name)"
+          @click="jumpSection(name)"
         >
-        <PluginConfigForm
-          v-show="hasVisibleFields"
-          :key="pluginId + ':' + selected"
-          :model-value="current.draft"
-          :baseline-value="base"
-          :search="search"
-          :filter="filter"
-          :changes="changes"
-          @update:model-value="updateDraft"
-          @undo="undoField"
+          <span>{{ name }}</span>
+          <small v-if="sectionChanges(name)">{{ sectionChanges(name) }}</small>
+        </button>
+      </nav>
+      <div
+        ref="contentScroll"
+        class="config-content"
+        tabindex="0"
+        :aria-label="t('plugins.configUi.configData')"
+        @scroll="updateActiveSection"
+      >
+        <el-alert
+          v-if="visibleError"
+          :title="visibleError"
+          type="error"
+          show-icon
+          :closable="false"
+          class="config-error"
         />
+        <el-skeleton v-if="loading || current?.loading" :rows="6" animated />
+        <template v-else-if="current?.loaded">
+          <div v-if="search || filter !== 'all'" class="search-scope">
+            {{ t('plugins.configUi.searchScope') }}
+            <el-button text size="small" @click="clearFilters">{{
+              t('plugins.configUi.clearFilters')
+            }}</el-button>
+          </div>
+          <el-empty
+            v-if="!hasVisibleFields"
+            :description="t('plugins.configUi.emptySearch')"
+            :image-size="65"
+          >
+            <el-button @click="clearFilters">{{ t('plugins.configUi.clearFilters') }}</el-button>
+          </el-empty>
+          <PluginConfigForm
+            v-show="hasVisibleFields"
+            :key="pluginId + ':' + selected"
+            :model-value="current.draft"
+            :baseline-value="base"
+            :search="search"
+            :filter="filter"
+            :changes="changes"
+            @update:model-value="updateDraft"
+            @undo="undoField"
+          />
+        </template>
       </div>
-    </template>
+    </div>
 
     <el-dialog
       v-model="reviewOpen"
@@ -225,77 +231,67 @@
       </section>
     </el-dialog>
 
-    <el-affix
-      ref="saveAffix"
-      v-if="current?.loaded"
-      position="bottom"
-      :offset="0"
-      :target="'#' + editorId"
-      :z-index="10"
-      :teleported="false"
-    >
-      <footer ref="saveFooter" class="config-footer">
-        <div class="footer-status" role="status" aria-live="polite">
-          <strong
-            ><span class="status-dot" :class="{ dirty }" />{{
-              dirty
-                ? t('plugins.configUi.unsavedCount', { count: changes.length })
-                : virtualDefault(selected || '')
-                  ? t('plugins.configUi.usingBase')
-                  : t('plugins.configUi.noChanges')
-            }}</strong
-          ><small v-if="dirty || otherDirtyCount"
-            >{{ t('plugins.configUi.saveScope', { name: selected })
-            }}<template v-if="otherDirtyCount">
-              · {{ t('plugins.configUi.otherDrafts', { count: otherDirtyCount }) }}</template
-            ></small
-          >
-          <p
-            v-if="!dirty && (applicationNotice || pendingForActive)"
-            class="apply-status"
-            :class="{ pending: pendingForActive }"
-          >
-            {{ applicationNotice || t('plugins.configUi.pendingApply') }}
-          </p>
-        </div>
-        <div class="footer-actions">
-          <el-button v-if="dirty || reviewOpen" text @click="reviewOpen = !reviewOpen">{{
-            t('plugins.configUi.reviewChanges')
+    <footer v-if="current?.loaded" class="config-footer">
+      <div class="footer-status" role="status" aria-live="polite">
+        <strong
+          ><span class="status-dot" :class="{ dirty }" />{{
+            dirty
+              ? t('plugins.configUi.unsavedCount', { count: changes.length })
+              : virtualDefault(selected || '')
+                ? t('plugins.configUi.usingBase')
+                : t('plugins.configUi.noChanges')
+          }}</strong
+        ><small v-if="dirty || otherDirtyCount"
+          >{{ t('plugins.configUi.saveScope', { name: selected })
+          }}<template v-if="otherDirtyCount">
+            · {{ t('plugins.configUi.otherDrafts', { count: otherDirtyCount }) }}</template
+          ></small
+        >
+        <p
+          v-if="!dirty && (applicationNotice || pendingForActive)"
+          class="apply-status"
+          :class="{ pending: pendingForActive }"
+        >
+          {{ applicationNotice || t('plugins.configUi.pendingApply') }}
+        </p>
+      </div>
+      <div class="footer-actions">
+        <el-button v-if="dirty || reviewOpen" text @click="reviewOpen = !reviewOpen">{{
+          t('plugins.configUi.reviewChanges')
+        }}</el-button>
+        <el-button v-if="dirty" text :disabled="saving || applying" @click="undoAll">{{
+          t('plugins.configUi.discardChanges')
+        }}</el-button>
+        <template v-if="pendingForActive && !dirty">
+          <el-button :disabled="loading || saving || applying" @click="hotUpdate">{{
+            t('plugins.hotUpdate')
           }}</el-button>
-          <el-button v-if="dirty" text :disabled="saving || applying" @click="undoAll">{{
-            t('plugins.configUi.discardChanges')
-          }}</el-button>
-          <template v-if="pendingForActive && !dirty">
-            <el-button :disabled="loading || saving || applying" @click="hotUpdate">{{
-              t('plugins.hotUpdate')
-            }}</el-button>
-            <el-button
-              type="primary"
-              :loading="applying"
-              :disabled="loading || saving"
-              @click="reloadSaved"
-              >{{ t('plugins.reloadPlugin') }}</el-button
-            >
-          </template>
           <el-button
-            v-if="selected === active && dirty"
-            :disabled="!saveEnabled || applying"
-            :loading="applying"
-            @click="saveAndReload"
-            >{{ t('plugins.configUi.saveReload') }}</el-button
-          >
-          <el-button
-            v-if="dirty || !pendingForActive"
             type="primary"
-            :icon="Check"
-            :loading="saving"
-            :disabled="!saveEnabled || !dirty || applying"
-            @click="saveOnly"
-            >{{ t('plugins.configUi.saveProfile') }}</el-button
+            :loading="applying"
+            :disabled="loading || saving"
+            @click="reloadSaved"
+            >{{ t('plugins.reloadPlugin') }}</el-button
           >
-        </div>
-      </footer>
-    </el-affix>
+        </template>
+        <el-button
+          v-if="selected === active && dirty"
+          :disabled="!saveEnabled || applying"
+          :loading="applying"
+          @click="saveAndReload"
+          >{{ t('plugins.configUi.saveReload') }}</el-button
+        >
+        <el-button
+          v-if="dirty || !pendingForActive"
+          type="primary"
+          :icon="Check"
+          :loading="saving"
+          :disabled="!saveEnabled || !dirty || applying"
+          @click="saveOnly"
+          >{{ t('plugins.configUi.saveProfile') }}</el-button
+        >
+      </div>
+    </footer>
 
     <el-dialog
       v-model="dataOpen"
@@ -325,8 +321,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, toRef, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox, type AffixInstance } from 'element-plus'
-import { useEventListener, useResizeObserver } from '@vueuse/core'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useResizeObserver } from '@vueuse/core'
 import {
   ArrowDown,
   Check,
@@ -399,34 +395,71 @@ const operationError = ref<string | null>(null)
 const applicationNotice = ref('')
 let alive = true
 const container = ref<HTMLElement | null>(null)
-const saveAffix = ref<AffixInstance>()
-const saveFooter = ref<HTMLElement>()
-// The detail page scrolls in an outer container. Re-measure when that container
-// scrolls, or when responsive wrapping / save state changes the footer size.
-const updateSavePosition = () => {
-  void saveAffix.value?.updateRoot()
+const contentScroll = ref<HTMLElement | null>(null)
+const activeSection = ref('')
+function sectionRows() {
+  return [
+    ...(contentScroll.value?.querySelectorAll<HTMLElement>('.cve.is-root > .obj > .row') || []),
+  ].filter((row) => row.getClientRects().length > 0)
 }
-useResizeObserver([container, saveFooter], updateSavePosition)
-useEventListener(document, 'scroll', updateSavePosition, { capture: true, passive: true })
+function updateActiveSection() {
+  const pane = contentScroll.value
+  if (!pane) return
+  const rows = sectionRows()
+  const top = pane.getBoundingClientRect().top
+  const current =
+    rows.filter((row) => row.getBoundingClientRect().top <= top + 24).at(-1) || rows[0]
+  const atBottom =
+    pane.scrollHeight > pane.clientHeight &&
+    pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2
+  activeSection.value = (atBottom ? rows.at(-1) : current)?.dataset.configPath || ''
+}
+useResizeObserver(contentScroll, updateActiveSection)
 const configuredCount = computed(() =>
   current.value && Object.keys(current.value.draft).length
     ? configuredFieldCount(current.value.draft, true)
     : 0
 )
-const sectionNames = computed(() =>
-  [...new Set([...Object.keys(base.value), ...Object.keys(current.value?.draft || {})])]
-    .filter((name) => name !== 'plugin')
-    .sort()
-)
+const sectionNames = computed(() => {
+  const names = new Set([...Object.keys(base.value), ...Object.keys(current.value?.draft || {})])
+  names.delete('plugin')
+  // Match the editor order, including the runtime section pinned at the end.
+  if (names.delete('plugin_runtime')) names.add('plugin_runtime')
+  return [...names]
+})
 const sectionChanges = (name: string) =>
   changes.value.filter((change) => change.path[0] === name).length
+const visibleSections = computed(() =>
+  sectionNames.value.filter((name) =>
+    configNodeMatches(
+      current.value?.draft[name],
+      base.value[name],
+      [name],
+      search.value,
+      filter.value,
+      changes.value
+    )
+  )
+)
 async function jumpSection(name: string) {
-  clearFilters()
   await nextTick()
-  const rows = container.value?.querySelectorAll<HTMLElement>('.cve.is-root > .obj > .row')
-  const target = rows && [...rows].find((row) => row.dataset.configPath === name)
-  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const pane = contentScroll.value
+  const target = sectionRows().find((row) => row.dataset.configPath === name)
+  if (!pane || !target) return
+  // Scroll only the editor, never the outer page or the fixed headings.
+  pane.scrollTo({
+    top: pane.scrollTop + target.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+    behavior: 'auto',
+  })
+  updateActiveSection()
 }
+watch([visibleSections, selected, () => props.pluginId, loading], async () => {
+  await nextTick()
+  updateActiveSection()
+})
+watch([selected, () => props.pluginId], () => {
+  contentScroll.value?.scrollTo({ top: 0 })
+})
 const filterOptions = computed(() => [
   { value: 'all' as const, label: t('plugins.configUi.all') },
   { value: 'dirty' as const, label: t('plugins.configUi.unsaved'), count: changes.value.length },
@@ -650,8 +683,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .plugin-config-editor {
   width: 100%;
-  max-width: 1120px;
-  margin: 0 auto;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 4px 0 0;
   min-width: 0;
   container-type: inline-size;
@@ -662,7 +698,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 0 20px;
+  padding: 8px 0 12px;
+  flex-shrink: 0;
 }
 .config-toolbar > .el-input {
   width: 300px;
@@ -772,16 +809,99 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.config-content {
-  min-width: 0;
-  padding-bottom: 20px;
+.config-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 20px;
+  overflow: hidden;
 }
+.config-nav {
+  flex: 0 0 180px;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--el-border-color-lighter);
+  padding: 8px 12px 12px 0;
+}
+.config-nav-title {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 4px 10px 12px;
+}
+.config-nav button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: 0;
+  border-radius: 6px;
+  padding: 10px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.config-nav button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+.config-nav button small {
+  flex-shrink: 0;
+}
+.config-nav button:hover:not(:disabled),
+.config-nav button.is-active {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.config-nav button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.config-nav button:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: -2px;
+}
+.config-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px 8px 16px 0;
+  container-type: inline-size;
+  container-name: config-fields;
+}
+@container config-editor (max-width: 760px) {
+  .config-workspace {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .config-nav {
+    flex: 0 0 auto;
+    display: flex;
+    max-height: 88px;
+    padding: 0 0 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    overflow: auto;
+  }
+  .config-nav-title {
+    display: none;
+  }
+  .config-nav button {
+    width: auto;
+    flex-shrink: 0;
+    max-width: 180px;
+  }
+}
+
 .config-error {
   margin-bottom: 20px;
-}
-.section-jump {
-  width: 200px;
-  margin-bottom: 16px;
 }
 .search-scope {
   display: flex;
@@ -797,7 +917,10 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 16px 0;
+  padding: 12px 0;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
   background: var(--el-bg-color);
   border-top: 1px solid var(--el-border-color-lighter);
 }

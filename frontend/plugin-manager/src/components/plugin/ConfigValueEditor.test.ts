@@ -23,7 +23,7 @@ afterEach(() => {
  * 挂载编辑器根节点。`modelValue` 是 profile overlay，`baselineValue` 是
  * 「清单默认值 + 运行时配置」的合并基线。emitted 收集写回 overlay 的结果。
  */
-function mountEditor(modelValue: any, baselineValue: any) {
+function mountEditor(modelValue: any, baselineValue: any, compact = false) {
   const emitted: any[] = []
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -31,6 +31,7 @@ function mountEditor(modelValue: any, baselineValue: any) {
     h(ConfigValueEditor as any, {
       modelValue,
       baselineValue,
+      compact,
       path: '',
       'onUpdate:modelValue': (v: any) => emitted.push(v),
     })
@@ -342,5 +343,24 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c2'] })
+  })
+})
+
+
+describe('compact configuration layout preserves editing semantics', () => {
+  it('edits a nested inherited field without copying sibling defaults', async () => {
+    const { host, emitted } = mountEditor({}, { network: { retry: { delay: 2, attempts: 3 } } }, true)
+    await nextTick()
+    typeInto(rowFor(host, 'delay').querySelector('input')!, '4')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ network: { retry: { delay: 4 } } })
+  })
+
+  it('edits an inherited array as a complete replacement', async () => {
+    const { host, emitted } = mountEditor({}, { hosts: ['a', 'b', 'c'] }, true)
+    await nextTick()
+    typeInto(host.querySelectorAll('input')[1]!, 'updated')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'updated', 'c'] })
   })
 })

@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-detail" data-yui-guide-id="plugin-detail-page">
+  <div class="plugin-detail" :class="{ 'config-layout-active': activeTab === 'config' }" data-yui-guide-id="plugin-detail-page">
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -551,6 +551,50 @@ watch(locale, () => {
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+/* Constrain only the configuration tab. Other detail tabs retain page scrolling.
+   On very short windows the outer page can still scroll instead of clipping controls. */
+.config-layout-active {
+  height: 100%;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active > :deep(.el-card) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active > :deep(.el-card > .el-card__header) {
+  flex-shrink: 0;
+}
+.config-layout-active > :deep(.el-card > .el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-tabs"]) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__header) {
+  flex-shrink: 0;
+}
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-tabs"] > .el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.config-layout-active :deep(#pane-config),
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-config"]) {
+  height: 100%;
+  min-height: 0;
 }
 
 .loading-container {

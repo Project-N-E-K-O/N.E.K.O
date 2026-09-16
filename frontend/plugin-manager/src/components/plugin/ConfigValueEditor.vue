@@ -770,8 +770,8 @@ function confirmAddKey() {
 }
 .cve.compact > .obj {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px 32px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  gap: 12px 28px;
   align-items: start;
 }
 .compact > .obj > .row {
@@ -843,8 +843,8 @@ function confirmAddKey() {
   width: 100%;
 }
 .compact .input-wrap :deep(.el-input__wrapper) {
-  min-height: 40px;
-  border-radius: 7px;
+  min-height: 32px;
+  border-radius: 6px;
   background: var(--el-bg-color);
 }
 .compact .input-wrap :deep(.el-input__inner),
@@ -864,8 +864,8 @@ function confirmAddKey() {
 .compact.is-root > .obj > .section-row {
   grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 24px 28px 18px;
-  gap: 22px 12px;
+  padding: 16px;
+  gap: 16px 12px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 12px;
   background: var(--el-bg-color);
@@ -986,13 +986,39 @@ function confirmAddKey() {
 .compact > .obj > .section-row:focus-within > .ops :deep(.more-actions) {
   opacity: 1;
 }
-@container config-editor (max-width: 660px) {
-  .cve.compact > .obj {
+/* Each object chooses its column count from its own available width, including
+   nested objects and array items. Long text and containers span the grid. */
+.compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 12px;
+}
+.compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) > .k {
+  padding-top: 7px;
+}
+.compact > .obj > .boolean-row {
+  padding: 0;
+  min-height: 32px;
+  align-self: start;
+  background: transparent;
+}
+.compact > .obj > .boolean-row > .v {
+  display: block;
+}
+.compact > .obj > .table-row > .v {
+  min-width: 0;
+  padding-left: 12px;
+}
+.compact .field-value-line {
+  min-width: 0;
+}
+@container config-fields (max-width: 520px) {
+  .compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) {
     grid-template-columns: minmax(0, 1fr);
-    gap: 22px;
+    gap: 6px;
   }
   .compact.is-root > .obj > .section-row {
-    padding: 20px 18px 14px;
+    padding: 12px;
   }
 }
 </style>
