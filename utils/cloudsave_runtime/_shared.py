@@ -152,6 +152,16 @@ LEGACY_RUNTIME_DIR_NAMES = (
 )
 
 
+RUNTIME_USER_CONTENT_DIR_NAMES = tuple(
+    entry.relative_path for entry in RUNTIME_USER_DATA_ENTRIES
+)
+RUNTIME_CACHE_DIR_NAMES = tuple(
+    relative_path
+    for relative_path in RUNTIME_STORAGE_RELATIVE_PATHS
+    if relative_path not in RUNTIME_USER_CONTENT_DIR_NAMES
+)
+
+
 # 这些运行时目录用点开头的暂存目录做原子更新（如 avatar_tools 的
 # ``.<tool-id>.backup`` / ``.<tool-id>.updating``）。更新被打断时，它们可能是
 # 某个道具仅存的副本，所以扫描「有没有用户内容」时不能因为点开头就跳过 ——

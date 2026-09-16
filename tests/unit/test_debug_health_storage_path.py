@@ -5,7 +5,7 @@ import pytest
 
 
 @pytest.mark.unit
-def test_debug_health_log_uses_fixed_anchor_while_storage_is_blocked(tmp_path, monkeypatch):
+def test_debug_health_log_stays_memory_only_while_storage_is_blocked(tmp_path, monkeypatch):
     from main_routers import debug_router
     from main_routers import shared_state
 
@@ -19,7 +19,7 @@ def test_debug_health_log_uses_fixed_anchor_while_storage_is_blocked(tmp_path, m
     monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "migration_pending")
     monkeypatch.setattr(shared_state, "get_config_manager", lambda: manager)
 
-    assert debug_router._resolve_log_path() == anchor_root / "state" / "debug_health.jsonl"
+    assert debug_router._resolve_log_path() is None
 
 
 @pytest.mark.unit

@@ -79,7 +79,7 @@ def test_agent_storage_control_routes_require_internal_auth(
     assert srv._agent_storage_admission_generation == 31
 
     monkeypatch.setattr(srv, "get_storage_recovery_mode", lambda: "")
-    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    monkeypatch.setattr(srv, "get_config_manager", lambda **_kwargs: SimpleNamespace())
     monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
     initialize = AsyncMock(return_value=False)
     monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", initialize)
@@ -117,7 +117,13 @@ async def test_agent_first_run_derives_durable_selection_gate_without_launcher_m
     # Register this key with monkeypatch even when it starts absent: product
     # code writes it directly, and the storage-root guard verifies teardown.
     monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
-    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    config_manager_calls = []
+
+    def get_config_manager(**kwargs):
+        config_manager_calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(srv, "get_config_manager", get_config_manager)
     monkeypatch.setattr(
         srv,
         "get_storage_startup_blocking_reason",
@@ -131,6 +137,7 @@ async def test_agent_first_run_derives_durable_selection_gate_without_launcher_m
     await srv.startup()
 
     initialize.assert_not_awaited()
+    assert config_manager_calls == [{"migrate": False}]
     assert os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "selection_required"
 
 
@@ -197,7 +204,13 @@ async def test_agent_recovery_generation_can_initialize_after_storage_is_repaire
 
     monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", recovery_mode)
     monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
-    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    config_manager_calls = []
+
+    def get_config_manager(**kwargs):
+        config_manager_calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(srv, "get_config_manager", get_config_manager)
     initialize = AsyncMock(return_value=True)
     monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", initialize)
     monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
@@ -206,6 +219,7 @@ async def test_agent_recovery_generation_can_initialize_after_storage_is_repaire
 
     assert response == {"ok": True, "initialized": True}
     assert "NEKO_STORAGE_RECOVERY_MODE" not in os.environ
+    assert config_manager_calls == [{"migrate": False}]
     initialize.assert_awaited_once_with()
 
 
@@ -225,7 +239,7 @@ async def test_agent_late_continue_cannot_override_newer_block(
 
     monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "recovery_required")
     monkeypatch.setattr(srv, "get_storage_startup_blocking_reason", lambda _cm: "")
-    monkeypatch.setattr(srv, "get_config_manager", lambda: SimpleNamespace())
+    monkeypatch.setattr(srv, "get_config_manager", lambda **_kwargs: SimpleNamespace())
     monkeypatch.setattr(srv, "ensure_agent_server_runtime_initialized", _initialize)
     monkeypatch.setattr(srv, "_agent_storage_blocked_after_init", True)
     monkeypatch.setattr(srv, "_agent_storage_admission_generation", 20)

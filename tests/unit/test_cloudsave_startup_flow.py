@@ -720,11 +720,13 @@ def test_launcher_forces_source_layout_when_recovery_metadata_is_degraded(monkey
 
     source_root = (tmp_path / "source" / "N.E.K.O").resolve()
     target_root = (tmp_path / "target" / "N.E.K.O").resolve()
-    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "configured-anchor" / "N.E.K.O").resolve()
+    platform_anchor = (tmp_path / "platform-anchor" / "N.E.K.O").resolve()
     config_manager = SimpleNamespace(
         app_name="N.E.K.O",
         app_docs_dir=target_root,
-        _get_standard_data_directory_candidates=lambda: [anchor_root.parent],
+        anchor_root=anchor_root,
+        _get_standard_data_directory_candidates=lambda: [platform_anchor.parent],
     )
     exported = []
     monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
@@ -772,6 +774,8 @@ def test_launcher_forces_source_layout_when_recovery_metadata_is_degraded(monkey
     assert result["startup_limited"] is True
     assert result["limited_mode_reason"] == "recovery_required"
     assert result["layout"]["selected_root"] == str(source_root)
+    assert result["layout"]["anchor_root"] == str(anchor_root)
+    assert result["layout"]["cloudsave_root"] == str(anchor_root / "cloudsave")
     assert result["layout"]["source"] == "migration_failure_recovery"
     assert exported == [result["layout"]]
 
@@ -863,8 +867,12 @@ def test_launcher_missing_recovery_source_starts_anchor_only_limited_generation(
     from launcher_core import runtime as launcher
 
     selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
-    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
-    config_manager = SimpleNamespace(app_docs_dir=selected_root)
+    anchor_root = (tmp_path / "configured-anchor" / "N.E.K.O").resolve()
+    platform_anchor = (tmp_path / "platform-anchor" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        anchor_root=anchor_root,
+    )
     exported = []
     events = []
 
@@ -893,7 +901,11 @@ def test_launcher_missing_recovery_source_starts_anchor_only_limited_generation(
             AssertionError("must not select an unproven policy root")
         ),
     )
-    monkeypatch.setattr(launcher, "compute_anchor_root", lambda *_args, **_kwargs: anchor_root)
+    monkeypatch.setattr(
+        launcher,
+        "compute_anchor_root",
+        lambda *_args, **_kwargs: platform_anchor,
+    )
     monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda layout: exported.append(layout))
     monkeypatch.setattr(
         launcher,
@@ -907,6 +919,8 @@ def test_launcher_missing_recovery_source_starts_anchor_only_limited_generation(
     assert result["startup_limited"] is True
     assert result["limited_mode_reason"] == "storage_status_unavailable"
     assert result["layout"]["selected_root"] == str(anchor_root)
+    assert result["layout"]["anchor_root"] == str(anchor_root)
+    assert result["layout"]["cloudsave_root"] == str(anchor_root / "cloudsave")
     assert result["layout"]["source"] == "storage_status_unavailable_recovery"
     assert exported == [result["layout"]]
     assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "storage_status_unavailable"

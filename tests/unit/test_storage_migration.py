@@ -12,9 +12,11 @@ from unittest.mock import patch
 import pytest
 
 from utils.storage_migration import (
+    STORAGE_MIGRATION_STATUS_COPYING,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     STORAGE_MIGRATION_STATUS_PREFLIGHT,
+    STORAGE_MIGRATION_STATUS_PUBLISHING,
     STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
     create_pending_storage_migration,
@@ -974,6 +976,375 @@ def test_load_storage_migration_distinguishes_missing_from_malformed_checkpoint(
         load_storage_migration(config_manager)
 
     assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("version", True),
+        ("version", 0),
+        ("version", 3),
+        ("version", "2"),
+        ("status", "future_status"),
+        ("txid", "not-a-transaction-id"),
+        ("source_root", "relative/source"),
+        ("target_root", ""),
+        ("selection_source", ""),
+        ("migration_mode", "adopt"),
+        ("confirmed_existing_target_content", "false"),
+        ("confirmed_existing_target_content", 1),
+        ("confirmed_existing_target_content", None),
+    ),
+)
+def test_load_storage_migration_rejects_invalid_checkpoint_schema(
+    tmp_path,
+    field_name,
+    invalid_value,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    payload[field_name] = invalid_value
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "version",
+        "status",
+        "txid",
+        "source_root",
+        "target_root",
+        "selection_source",
+        "transaction_owner_token",
+        "confirmed_existing_target_content",
+        "target_baseline",
+    ),
+)
+def test_load_storage_migration_rejects_missing_required_checkpoint_field(
+    tmp_path,
+    missing_field,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    payload.pop(missing_field)
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+def test_load_storage_migration_accepts_complete_legacy_v1_checkpoint(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_file = config_manager.app_docs_dir / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_root = tmp_path / "target" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    payload["version"] = 1
+    for field_name in (
+        "migration_mode",
+        "transaction_owner_token",
+        "transaction_cleanup_pending",
+        "target_baseline",
+        "original_target_entries",
+        "publish_entry_names",
+    ):
+        payload.pop(field_name, None)
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    assert load_storage_migration(config_manager) == payload
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    upgraded = load_storage_migration(config_manager)
+    assert upgraded["version"] == 2
+    assert len(upgraded["transaction_owner_token"]) == 64
+    assert (target_root / "config" / "characters.json").read_text(
+        encoding="utf-8"
+    ) == "SOURCE"
+
+
+@pytest.mark.unit
+def test_legacy_v1_foreign_transaction_occupant_stays_readable_across_restarts(
+    tmp_path,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_file = config_manager.app_docs_dir / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_root = tmp_path / "target" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    payload["version"] = 1
+    for field_name in (
+        "migration_mode",
+        "transaction_owner_token",
+        "transaction_cleanup_pending",
+        "target_baseline",
+        "original_target_entries",
+        "publish_entry_names",
+    ):
+        payload.pop(field_name, None)
+    storage_migration_module.save_storage_migration(config_manager, payload)
+    foreign_transaction = storage_migration_module._transaction_root_for(
+        target_root,
+        payload["txid"],
+    )
+    foreign_transaction.mkdir(parents=True)
+    sentinel = foreign_transaction / "third-party.txt"
+    sentinel.write_text("KEEP", encoding="utf-8")
+
+    first = run_pending_storage_migration(config_manager)
+    persisted = load_storage_migration(config_manager)
+    second = run_pending_storage_migration(config_manager)
+
+    assert first["completed"] is False
+    assert first["error_code"] == "transaction_path_occupied"
+    assert persisted["version"] == 2
+    assert persisted["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+    assert "transaction_root" not in persisted
+    assert second["completed"] is False
+    assert second["error_code"] == "transaction_path_occupied"
+    assert sentinel.read_text(encoding="utf-8") == "KEEP"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "invalid_payload",
+    (
+        {"status": STORAGE_MIGRATION_STATUS_COPYING},
+        {"status": STORAGE_MIGRATION_STATUS_COPYING, "transaction_root": "relative"},
+        {"status": STORAGE_MIGRATION_STATUS_PUBLISHING},
+    ),
+)
+def test_load_storage_migration_rejects_active_v2_missing_phase_authority(
+    tmp_path,
+    invalid_payload,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    payload.update(invalid_payload)
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+def test_load_storage_migration_rejects_bound_failed_without_source_baseline(
+    tmp_path,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    payload.update(
+        status=STORAGE_MIGRATION_STATUS_FAILED,
+        transaction_root=str(
+            storage_migration_module._transaction_root_for(
+                target_root,
+                payload["txid"],
+            )
+        ),
+    )
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+def test_load_storage_migration_rejects_publish_manifest_missing_source_entry(
+    tmp_path,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    payload.update(
+        status=STORAGE_MIGRATION_STATUS_PUBLISHING,
+        transaction_root=str(
+            storage_migration_module._transaction_root_for(
+                target_root,
+                payload["txid"],
+            )
+        ),
+        source_runtime_baseline={"config": {}},
+        original_target_entries=[],
+        publish_entry_names=[],
+        publish_entry_snapshots={},
+    )
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("terminal_status", ("completed", "failed"))
+@pytest.mark.parametrize(
+    "authority_field",
+    ("transaction_root", "transaction_owner_token"),
+)
+def test_load_storage_migration_rejects_v1_transaction_authority(
+    tmp_path,
+    terminal_status,
+    authority_field,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    payload.update(version=1, status=terminal_status)
+    payload.pop("migration_mode")
+    payload.pop("transaction_owner_token")
+    if authority_field == "transaction_root":
+        payload[authority_field] = str(tmp_path / "target" / "N.E.K.O" / ".forged")
+    else:
+        payload[authority_field] = "f" * 64
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "newer_status",
+    (STORAGE_MIGRATION_STATUS_PUBLISHING, STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED),
+)
+def test_load_storage_migration_rejects_v1_checkpoint_with_newer_status(
+    tmp_path,
+    newer_status,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "target" / "N.E.K.O",
+        selection_source="custom",
+    )
+    payload["version"] = 1
+    payload["status"] = newer_status
+    payload.pop("transaction_owner_token")
+    payload.pop("migration_mode")
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        load_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+
+
+@pytest.mark.unit
+def test_future_checkpoint_version_is_rejected_before_copying_data(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    source_file = config_manager.app_docs_dir / "config" / "characters.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("SOURCE", encoding="utf-8")
+    target_root = tmp_path / "target" / "N.E.K.O"
+    payload = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    payload["version"] = 999
+    get_storage_migration_path(config_manager).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageMigrationError) as caught:
+        run_pending_storage_migration(config_manager)
+
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+    assert not (target_root / "config" / "characters.json").exists()
 
 
 @pytest.mark.unit
@@ -2509,6 +2880,32 @@ def test_windows_transaction_directory_guard_blocks_rename(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows absolute rename guard chain")
+def test_windows_directory_guard_chain_blocks_ancestor_rename(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    guarded_ancestor = tmp_path / "selected-root"
+    guarded_leaf = guarded_ancestor / "transaction" / "staged" / "config"
+    moved_ancestor = tmp_path / "moved-selected-root"
+    guarded_leaf.mkdir(parents=True)
+    guards = storage_migration_module._open_windows_directory_rename_guard_chain(
+        guarded_leaf,
+        guarded_leaf.lstat(),
+    )
+    try:
+        with pytest.raises(OSError):
+            guarded_ancestor.rename(moved_ancestor)
+    finally:
+        while guards:
+            storage_migration_module._close_windows_directory_rename_guard(
+                guards.pop()
+            )
+
+    guarded_ancestor.rename(moved_ancestor)
+    assert (moved_ancestor / "transaction" / "staged" / "config").is_dir()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(os.name != "nt", reason="Windows nested staging guards")
 def test_windows_nested_staging_directory_is_guarded_only_during_copy(
     tmp_path,
@@ -2700,10 +3097,10 @@ def test_windows_workshop_rewrite_preserves_concurrent_name_winner(
     original_rename = storage_migration_module._rename_windows_open_file
     injected = False
 
-    def inject_winner_after_exact_source_rename(fd, target_name, **kwargs):
+    def inject_winner_after_exact_source_rename(fd, target_path, **kwargs):
         nonlocal injected
-        original_rename(fd, target_name, **kwargs)
-        if not injected and target_name.endswith(".old"):
+        original_rename(fd, target_path, **kwargs)
+        if not injected and Path(target_path).name.endswith(".old"):
             injected = True
             config_path.write_bytes(rival_bytes)
 
@@ -2779,10 +3176,10 @@ def test_windows_workshop_rewrite_preserves_backup_when_publish_and_restore_fail
     config_path.write_bytes(original_bytes)
     original_rename = storage_migration_module._rename_windows_open_file
 
-    def fail_public_name(fd, target_name, **kwargs):
-        if target_name == config_path.name:
+    def fail_public_name(fd, target_path, **kwargs):
+        if Path(target_path) == config_path:
             raise OSError("injected public-name failure")
-        return original_rename(fd, target_name, **kwargs)
+        return original_rename(fd, target_path, **kwargs)
 
     monkeypatch.setattr(
         storage_migration_module,
@@ -3896,11 +4293,14 @@ def test_pending_migration_never_deletes_unowned_transaction_path(tmp_path):
 
     assert result["completed"] is False
     assert result["error_code"] == "transaction_path_occupied"
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+    assert "transaction_root" not in result["payload"]
+    assert load_storage_migration(config_manager) == result["payload"]
     assert sentinel.read_text(encoding="utf-8") == "KEEP"
 
 
 @pytest.mark.unit
-def test_checkpoint_bound_transaction_path_without_marker_preserves_late_occupant(
+def test_incomplete_bound_pending_checkpoint_preserves_late_occupant(
     tmp_path,
 ):
     from utils import storage_migration as storage_migration_module
@@ -3927,10 +4327,10 @@ def test_checkpoint_bound_transaction_path_without_marker_preserves_late_occupan
     sentinel = transaction_root / "third-party.txt"
     sentinel.write_text("KEEP", encoding="utf-8")
 
-    result = run_pending_storage_migration(config_manager)
+    with pytest.raises(StorageMigrationError) as caught:
+        run_pending_storage_migration(config_manager)
 
-    assert result["completed"] is False
-    assert result["error_code"] == "transaction_path_occupied"
+    assert caught.value.error_code == "migration_checkpoint_malformed"
     assert sentinel.read_text(encoding="utf-8") == "KEEP"
 
 
@@ -3958,6 +4358,7 @@ def test_completed_checkpoint_preserves_unmarked_transaction_path(tmp_path):
         {
             "status": "completed",
             "transaction_root": str(transaction_root),
+            "source_runtime_baseline": {},
         }
     )
     storage_migration_module.save_storage_migration(config_manager, payload)
@@ -4012,7 +4413,13 @@ def test_checkpoint_bound_transaction_rejects_untrusted_marker(
             pytest.skip("marker symlinks are unavailable")
     sentinel = transaction_root / "third-party.txt"
     sentinel.write_text("KEEP", encoding="utf-8")
-    payload["transaction_root"] = str(transaction_root)
+    payload.update(
+        status=STORAGE_MIGRATION_STATUS_PREFLIGHT,
+        transaction_root=str(transaction_root),
+        source_runtime_baseline=storage_migration_module._snapshot_runtime_entries(
+            source_root
+        ),
+    )
     storage_migration_module.save_storage_migration(config_manager, payload)
 
     result = run_pending_storage_migration(config_manager)
@@ -6221,12 +6628,13 @@ def test_interrupted_publish_without_target_baseline_preserves_transaction(tmp_p
     from utils import storage_migration as storage_migration_module
 
     storage_migration_module.save_storage_migration(config_manager, payload)
+    checkpoint_before = get_storage_migration_path(config_manager).read_bytes()
 
-    result = run_pending_storage_migration(config_manager)
+    with pytest.raises(StorageMigrationError) as caught:
+        run_pending_storage_migration(config_manager)
 
-    assert result["completed"] is False
-    assert result["error_code"] == "rollback_baseline_missing"
-    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+    assert get_storage_migration_path(config_manager).read_bytes() == checkpoint_before
     assert target_file.read_text(encoding="utf-8") == "SOURCE"
     assert transaction_root.exists()
 
@@ -6238,13 +6646,14 @@ def test_interrupted_publish_with_missing_source_and_manifest_stays_recoverable(
     from utils import storage_migration as storage_migration_module
 
     storage_migration_module.save_storage_migration(config_manager, payload)
+    checkpoint_before = get_storage_migration_path(config_manager).read_bytes()
     shutil.rmtree(config_manager.app_docs_dir)
 
-    result = run_pending_storage_migration(config_manager)
+    with pytest.raises(StorageMigrationError) as caught:
+        run_pending_storage_migration(config_manager)
 
-    assert result["completed"] is False
-    assert result["error_code"] == "rollback_failed"
-    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
+    assert caught.value.error_code == "migration_checkpoint_malformed"
+    assert get_storage_migration_path(config_manager).read_bytes() == checkpoint_before
     assert target_file.read_text(encoding="utf-8") == "SOURCE"
     assert transaction_root.exists()
 

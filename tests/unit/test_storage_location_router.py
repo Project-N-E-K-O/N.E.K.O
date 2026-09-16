@@ -2376,11 +2376,14 @@ def test_checkpointless_restart_recovery_preserves_completed_retention_metadata(
         {
             "version": 2,
             "txid": "a" * 32,
+            "transaction_owner_token": "b" * 64,
             "status": "completed",
             "source_root": str(retained_root),
             "target_root": str(current_root),
             "selection_source": "custom",
             "migration_mode": "copy",
+            "confirmed_existing_target_content": False,
+            "target_baseline": {},
             "retained_source_root": str(retained_root),
             "retained_source_mode": "manual_retention",
             "completed_at": "2026-09-15T00:00:00Z",
@@ -2465,10 +2468,12 @@ def test_storage_location_restart_restores_previous_migration_when_shutdown_fail
         config_manager,
         {
             "version": 1,
+            "txid": "a" * 32,
             "status": "completed",
             "source_root": str(tmp_path / "old-source" / "N.E.K.O"),
             "target_root": str(config_manager.app_docs_dir),
             "selection_source": "custom",
+            "confirmed_existing_target_content": False,
             "backup_root": str(tmp_path / "old-source" / "N.E.K.O"),
             "retained_source_root": str(tmp_path / "old-source" / "N.E.K.O"),
             "retained_source_mode": "manual_retention",
@@ -2586,6 +2591,8 @@ def test_storage_location_status_reports_pending_checkpoint_as_maintenance(tmp_p
 
 @pytest.mark.unit
 def test_storage_location_rollback_required_is_explicit_and_cannot_be_replaced(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "unfinished-target" / "N.E.K.O"
     replacement_root = tmp_path / "replacement-target" / "N.E.K.O"
@@ -2596,11 +2603,27 @@ def test_storage_location_rollback_required_is_explicit_and_cannot_be_replaced(t
         selection_source="recommended",
     )
     checkpoint = load_storage_migration(config_manager)
+    transaction_root = storage_migration_module._transaction_root_for(
+        target_root,
+        checkpoint["txid"],
+    )
+    storage_migration_module._write_transaction_owner_marker(
+        checkpoint,
+        transaction_root,
+        checkpoint["txid"],
+    )
     save_storage_migration(
         config_manager,
         {
             **checkpoint,
             "status": "rollback_required",
+            "transaction_root": str(transaction_root),
+            "source_runtime_baseline": storage_migration_module._snapshot_runtime_entries(
+                config_manager.app_docs_dir
+            ),
+            "original_target_entries": [],
+            "publish_entry_names": [],
+            "publish_entry_snapshots": {},
             "error_code": "rollback_failed",
             "error_message": "mock rollback failure",
         },
@@ -2765,22 +2788,22 @@ def test_storage_location_select_recovery_switch_to_recommended_root_resolves_cu
 def test_storage_location_select_current_root_recovers_failed_migration_checkpoint(tmp_path, monkeypatch):
     config_manager = _make_real_config_manager(tmp_path)
     target_root = tmp_path / "target-not-empty" / "N.E.K.O"
-    create_pending_storage_migration(
+    failed_migration = create_pending_storage_migration(
         config_manager,
         source_root=config_manager.app_docs_dir,
         target_root=target_root,
         selection_source="custom",
     )
-    save_storage_migration(
-        config_manager,
+    failed_migration.update(
         {
             "status": "failed",
-            "source_root": str(config_manager.app_docs_dir),
-            "target_root": str(target_root),
-            "selection_source": "custom",
             "error_code": "target_not_empty",
             "error_message": "目标路径已经包含现有数据，为避免覆盖，本次迁移已停止。",
-        },
+        }
+    )
+    save_storage_migration(
+        config_manager,
+        failed_migration,
     )
     config_manager.save_root_state({
         "mode": "deferred_init",
@@ -2886,6 +2909,12 @@ def test_storage_restart_never_orphans_recovery_checkpoint_staged_evidence(
         migration_payload.update(
             status=checkpoint_status,
             transaction_root=str(transaction_root),
+            source_runtime_baseline=storage_migration_module._snapshot_runtime_entries(
+                current_root
+            ),
+            target_baseline=storage_migration_module._snapshot_runtime_entries(
+                failed_target
+            ),
             error_code="source_recovery_unverifiable",
             error_message="source changed after the staged copy was created",
         )
@@ -2917,6 +2946,91 @@ def test_storage_restart_never_orphans_recovery_checkpoint_staged_evidence(
     assert checkpoint_path.read_bytes() == checkpoint_before
     assert load_storage_migration(config_manager)["txid"] == migration_payload["txid"]
     assert staged_file.read_text(encoding="utf-8") == "ONLY-COPY"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("restart_to_new_root", (False, True))
+def test_storage_restart_preserves_pending_transaction_cleanup_intent(
+    tmp_path,
+    restart_to_new_root,
+):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_real_config_manager(tmp_path)
+    current_root = config_manager.app_docs_dir
+    selected_root = (
+        tmp_path / "new-selection" / "N.E.K.O"
+        if restart_to_new_root
+        else current_root
+    )
+    shutdown_calls = []
+
+    with _build_client(
+        config_manager,
+        request_app_shutdown=lambda: shutdown_calls.append(True),
+    ) as client:
+        prepared = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+            },
+        )
+        assert prepared.status_code == 200
+
+        failed_target = tmp_path / "failed-target" / "N.E.K.O"
+        migration_payload = create_pending_storage_migration(
+            config_manager,
+            source_root=current_root,
+            target_root=failed_target,
+            selection_source="custom",
+        )
+        transaction_root = storage_migration_module._transaction_root_for(
+            failed_target.resolve(),
+            migration_payload["txid"],
+        )
+        migration_payload.update(
+            status="recovery_required",
+            transaction_root=str(transaction_root),
+            source_runtime_baseline=storage_migration_module._snapshot_runtime_entries(
+                current_root
+            ),
+            target_baseline=storage_migration_module._snapshot_runtime_entries(
+                failed_target
+            ),
+            transaction_cleanup_pending=True,
+            error_code="transaction_cleanup_durability_unknown",
+            error_message="transaction directory removal durability is unknown",
+        )
+        save_storage_migration(config_manager, migration_payload)
+        checkpoint_path = get_storage_migration_path(config_manager)
+        checkpoint_before = checkpoint_path.read_bytes()
+
+        restart = client.post(
+            "/api/storage/location/restart",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+                "restart_operation_id": prepared.json()["restart_operation_id"],
+            },
+        )
+        select_again = client.post(
+            "/api/storage/location/select",
+            json={
+                "selected_root": str(selected_root),
+                "selection_source": "recovered",
+            },
+        )
+
+    assert restart.status_code == 409
+    assert restart.json()["error_code"] == "storage_recovery_evidence_retained"
+    assert select_again.status_code == 409
+    assert select_again.json()["error_code"] == "storage_recovery_evidence_retained"
+    assert shutdown_calls == []
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    checkpoint = load_storage_migration(config_manager)
+    assert checkpoint["txid"] == migration_payload["txid"]
+    assert checkpoint["transaction_cleanup_pending"] is True
 
 
 @pytest.mark.unit
@@ -4296,10 +4410,12 @@ def test_storage_location_cleanup_rejects_retained_root_that_contains_target_roo
         config_manager,
         {
             "version": 1,
+            "txid": "a" * 32,
             "status": "completed",
             "source_root": str(retained_root),
             "target_root": str(target_root),
             "selection_source": "custom",
+            "confirmed_existing_target_content": True,
             "backup_root": str(retained_root),
             "retained_source_root": str(retained_root),
             "retained_source_mode": "manual_retention",

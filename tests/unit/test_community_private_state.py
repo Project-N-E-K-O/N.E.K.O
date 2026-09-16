@@ -37,6 +37,113 @@ def test_private_json_reader_rejects_fifo_without_opening_it(tmp_path):
     assert payload is None
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
+    reason="POSIX non-blocking FIFO reads are unavailable",
+)
+@pytest.mark.parametrize("reader_kind", ("path", "dirfd", "dict"))
+def test_private_json_readers_do_not_block_when_regular_file_becomes_fifo(
+    tmp_path,
+    monkeypatch,
+    reader_kind,
+):
+    if reader_kind == "dirfd" and not HAS_SAFE_DIR_FD:
+        pytest.skip("POSIX dirfd reads are unavailable")
+    credential = tmp_path / "private-state.json"
+    credential.write_text('{"access_token":"regular"}', encoding="utf-8")
+    real_open = private_state.os.open
+    opened_flags = []
+    replaced = False
+
+    def replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        opened_path = tmp_path / path if dir_fd is not None else Path(path)
+        if opened_path == credential and not replaced:
+            replaced = True
+            credential.unlink()
+            os.mkfifo(credential)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(private_state.os, "open", replace_with_fifo_before_open)
+    root_fd = (
+        real_open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        if reader_kind == "dirfd"
+        else None
+    )
+    outcome = []
+
+    def read_raced_credential():
+        if reader_kind == "dirfd":
+            outcome.append(C._read_private_json_state_at(root_fd, credential.name))
+        elif reader_kind == "dict":
+            outcome.append(C._read_json_dict(credential))
+        else:
+            outcome.append(C._read_private_json_state(credential))
+
+    worker = threading.Thread(target=read_raced_credential, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        writer_fd = real_open(credential, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+    if root_fd is not None:
+        os.close(root_fd)
+
+    assert not worker.is_alive(), "raced private-state FIFO read must not block"
+    assert outcome == ([None] if reader_kind == "dict" else [("unsafe", None)])
+    assert opened_flags and opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+
+
+def test_private_json_reader_rejects_oversized_file_before_reading(
+    tmp_path,
+    monkeypatch,
+):
+    credential = tmp_path / "private-state.json"
+    with credential.open("wb") as handle:
+        handle.truncate(private_state.COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES + 1)
+    real_read = private_state.os.read
+
+    def reject_read(fd, size):
+        if os.path.samestat(os.fstat(fd), credential.stat()):
+            pytest.fail("oversized private JSON must be rejected before reading")
+        return real_read(fd, size)
+
+    monkeypatch.setattr(private_state.os, "read", reject_read)
+
+    assert private_state.read_private_json_state(credential) == ("unsafe", None)
+
+
+def test_private_json_reader_allows_atomic_replace_but_rejects_stale_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    credential = tmp_path / "private-state.json"
+    replacement = tmp_path / "replacement.json"
+    credential.write_text('{"access_token":"old"}', encoding="utf-8")
+    replacement.write_text('{"access_token":"new"}', encoding="utf-8")
+    real_read = private_state.os.read
+    replaced = False
+
+    def replace_after_first_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            os.replace(replacement, credential)
+        return chunk
+
+    monkeypatch.setattr(private_state.os, "read", replace_after_first_read)
+
+    assert private_state.read_private_json_state(credential) == ("unsafe", None)
+    assert replaced is True
+    assert json.loads(credential.read_text(encoding="utf-8")) == {
+        "access_token": "new"
+    }
+
+
 def _install_roots(monkeypatch, *, anchor_state: Path, selected_root: Path, retained_root: Path | None = None):
     manager = SimpleNamespace(
         app_name="N.E.K.O",
@@ -1217,20 +1324,34 @@ def test_retained_snapshot_rejects_same_inode_rewrite_during_read(
     original_identity = credential.stat()
     real_read = private_state.os.read
     replaced = False
+    rewrite_blocked = False
 
     def rewrite_after_read(fd, size):
-        nonlocal replaced
+        nonlocal replaced, rewrite_blocked
         chunk = real_read(fd, size)
         if chunk and not replaced:
             replaced = True
-            credential.write_bytes(replacement)
-            os.utime(credential, (old_timestamp, old_timestamp))
+            try:
+                credential.write_bytes(replacement)
+                os.utime(credential, (old_timestamp, old_timestamp))
+            except PermissionError:
+                # Windows opens private state without FILE_SHARE_WRITE, so an
+                # in-place writer is denied instead of being detected later by
+                # mutable timestamps (ctime is creation time on Windows).
+                rewrite_blocked = True
         return chunk
 
     monkeypatch.setattr(private_state.os, "read", rewrite_after_read)
 
-    with pytest.raises(OSError, match="changed while snapshotting"):
-        private_state.snapshot_retained_community_state(retained_root)
+    if os.name == "nt":
+        snapshot = private_state.snapshot_retained_community_state(retained_root)
+        assert rewrite_blocked is True
+        assert snapshot == {
+            private_state.COMMUNITY_AUTH_FILENAME: hashlib.sha256(original).hexdigest()
+        }
+    else:
+        with pytest.raises(OSError, match="changed while snapshotting"):
+            private_state.snapshot_retained_community_state(retained_root)
 
     assert replaced is True
     assert os.path.samestat(original_identity, credential.stat())

@@ -25,6 +25,7 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.storage.community_private_state import read_private_json_state
 import random
 import re
 import time
@@ -161,12 +162,10 @@ def _load_neko_community_access_token(feed_api: str) -> str:
     """Read a matching desktop OAuth token without validating or refreshing it."""
 
     for path in _neko_community_session_paths():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        state, data = read_private_json_state(path)
+        if state != "valid":
             continue
-        if not isinstance(data, dict):
-            continue
+        data = data or {}
         access_token = ""
         for token_candidate in (data.get("token"), data.get("access_token")):
             access_token = str(token_candidate or "").strip()
@@ -181,9 +180,12 @@ def _load_neko_community_access_token(feed_api: str) -> str:
             return access_token
 
     legacy_auth_path = _neko_community_legacy_auth_path()
-    try:
-        legacy_auth = json.loads(legacy_auth_path.read_text(encoding="utf-8"))
-    except (AttributeError, OSError, ValueError, TypeError):
+    legacy_state, legacy_auth = (
+        read_private_json_state(legacy_auth_path)
+        if legacy_auth_path is not None
+        else ("absent", None)
+    )
+    if legacy_state != "valid":
         legacy_auth = None
     legacy_access_token = str(
         legacy_auth.get("access_token") if isinstance(legacy_auth, dict) else ""

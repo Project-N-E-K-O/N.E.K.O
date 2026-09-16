@@ -403,8 +403,9 @@ def test_runtime_cache_does_not_hide_legacy_user_data_from_seed_repair(tmp_path)
     result = bootstrap_local_cloudsave_environment(cm)
 
     assert result["legacy_import"]["migrated"] is True
-    assert result["legacy_import"]["repair_reason"] == "missing_live2d"
+    assert result["legacy_import"]["repair_reason"] == "target_missing"
     assert (cm.live2d_dir / "legacy-model" / "legacy.model3.json").is_file()
+    assert (Path(cm.app_docs_dir) / "embedding_models" / "cache.bin").read_bytes() == b"cache"
 
 
 @pytest.mark.unit
@@ -770,6 +771,26 @@ def test_runtime_root_summary_ignores_dotfiles_in_memory(tmp_path):
 
     assert summary["memory_character_names"] == set()
     assert summary["has_user_content"] is False
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "relative_path",
+    ("embedding_models/model.bin", "runtimes/runtime.bin", "plugin-runtime/plugin.bin"),
+)
+def test_runtime_root_does_not_count_rebuildable_cache_as_user_content(
+    tmp_path,
+    relative_path,
+):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    cache_file = Path(cm.app_docs_dir) / relative_path
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(b"rebuildable-cache")
+
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
 
 

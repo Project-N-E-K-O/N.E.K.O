@@ -29,9 +29,8 @@ runtime counter curves **while it reproduces**. This router does two things:
 2. Starts a background watchdog task on a 5-min cycle that writes the same
    snapshot into an in-memory ring buffer (keeping the last ~16 hours = 200
    entries). With ``NEKO_DEBUG_HEALTH_LOG=1`` it also persists to
-   ``<user_data>/debug_health.jsonl`` (or the fixed anchor while storage is
-   blocked) so users can send the file back for
-   curve plotting.
+   ``<user_data>/debug_health.jsonl`` during normal runtime so users can send
+   the file back for curve plotting. Recovery generations stay memory-only.
 
 Design principles
 -----------------
@@ -409,28 +408,24 @@ def _resolve_log_path() -> Path | None:
     """Return the jsonl log path; None when disabled.
 
     Enabled when env ``NEKO_DEBUG_HEALTH_LOG`` is truthy.
-    During normal runtime, use the config directory. During storage recovery,
-    write only below the fixed anchor; if that authority is unavailable, keep
-    diagnostics memory-only instead of guessing another writable location."""
+    During normal runtime, use the config directory. Storage recovery remains
+    memory-only: a pathname cannot keep an unsafe anchor/state chain pinned
+    through the later mkdir, rotation and append operations."""
     if os.environ.get("NEKO_DEBUG_HEALTH_LOG", "").strip().lower() not in ("1", "true", "yes", "on"):
         return None
     from utils.storage.layout import get_storage_recovery_mode
 
     recovery_mode = get_storage_recovery_mode()
+    if recovery_mode:
+        return None
     try:
         from main_routers.shared_state import get_config_manager
         cm = get_config_manager()
-        if recovery_mode:
-            anchor_root = getattr(cm, "anchor_root", None)
-            if anchor_root:
-                return Path(anchor_root) / "state" / "debug_health.jsonl"
-            return None
         config_dir = getattr(cm, "config_dir", None)
         if config_dir:
             return Path(config_dir) / "debug_health.jsonl"
     except Exception:
-        if recovery_mode:
-            return None
+        pass
     # Normal startup only: retain the historical launcher-adjacent fallback.
     try:
         return Path(sys.argv[0]).resolve().parent / "debug_health.jsonl"

@@ -927,7 +927,9 @@ async def startup():
         # Defence in depth for non-launcher embeddings: Agent must derive the
         # same durable first-run gate as Main and Memory instead of relying
         # solely on an inherited process marker.
-        blocking_reason = get_storage_startup_blocking_reason(get_config_manager())
+        blocking_reason = get_storage_startup_blocking_reason(
+            get_config_manager(migrate=False)
+        )
         if blocking_reason:
             set_storage_recovery_mode(blocking_reason)
     if blocking_reason:
@@ -964,7 +966,9 @@ async def continue_storage_startup(payload: AgentStorageStartupRequest | None = 
         "recovery_required",
     }:
         clear_storage_recovery_mode()
-    blocking_reason = get_storage_startup_blocking_reason(get_config_manager())
+    blocking_reason = get_storage_startup_blocking_reason(
+        get_config_manager(migrate=False)
+    )
     if blocking_reason:
         if recovery_mode:
             set_storage_recovery_mode(recovery_mode)

@@ -35,8 +35,9 @@ from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_path
 from ._shared import (
     LEGACY_OPTIONAL_STATE_FILES,
     LEGACY_RUNTIME_DIR_NAMES,
-    NON_RUNTIME_CONTENT_DIR_NAMES,
     ROOT_CONFIG_MERGE_FILES,
+    RUNTIME_CACHE_DIR_NAMES,
+    RUNTIME_USER_CONTENT_DIR_NAMES,
     TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
     RUNTIME_ASSET_DIR_NAMES,
     TARGET_OPTIONAL_STATE_FILES,
@@ -98,9 +99,7 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
             config_dir = Path(config_manager.config_dir)
         except Exception:
             config_dir = None
-    for name in LEGACY_RUNTIME_DIR_NAMES:
-        if name in NON_RUNTIME_CONTENT_DIR_NAMES:
-            continue
+    for name in RUNTIME_USER_CONTENT_DIR_NAMES:
         candidate = root / name
         if candidate.is_symlink():
             return True
@@ -145,9 +144,13 @@ def _is_ignorable_runtime_entry(path: Path, *, transactional_pattern=None) -> bo
     return False
 
 
-def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> list[str]:
+def _copy_named_runtime_root_entries(
+    source_root: Path,
+    destination_root: Path,
+    names: tuple[str, ...],
+) -> list[str]:
     copied_paths: list[str] = []
-    for name in LEGACY_RUNTIME_DIR_NAMES:
+    for name in names:
         source_path = source_root / name
         if not source_path.exists():
             continue
@@ -160,6 +163,14 @@ def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> lis
             shutil.copy2(source_path, destination_path)
         copied_paths.append(name)
     return copied_paths
+
+
+def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> list[str]:
+    return _copy_named_runtime_root_entries(
+        source_root,
+        destination_root,
+        LEGACY_RUNTIME_DIR_NAMES,
+    )
 
 
 def _directory_has_meaningful_content(path: Path) -> bool:
@@ -686,6 +697,15 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
                     target_summary=target_summary,
                 )
                 backup_path = _create_legacy_import_backup_path(target_root)
+            else:
+                # Rebuildable caches do not make the target authoritative user
+                # content, but replacing an otherwise empty target must not
+                # discard downloads that remain useful after the import.
+                _copy_named_runtime_root_entries(
+                    target_root,
+                    temp_root,
+                    RUNTIME_CACHE_DIR_NAMES,
+                )
             copied_paths.extend(_copy_optional_legacy_state(source_root=source_root, target_root=target_root, temp_root=temp_root))
 
             if not copied_paths:

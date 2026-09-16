@@ -240,6 +240,14 @@ class _PrivateStateSnapshotChanged(OSError):
     """The opened private-state name no longer identifies the inspected file."""
 
 
+def _private_state_link_like(metadata: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISLNK(metadata.st_mode)
+        or int(getattr(metadata, "st_file_attributes", 0) or 0)
+        & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    )
+
+
 def _stable_private_state_fields(metadata: os.stat_result) -> tuple[int, int, int]:
     """Return metadata that must not change while private state is read."""
 
@@ -248,6 +256,72 @@ def _stable_private_state_fields(metadata: os.stat_result) -> tuple[int, int, in
         int(metadata.st_mtime_ns),
         int(metadata.st_ctime_ns),
     )
+
+
+def _open_windows_private_state_file(path: Path) -> int:
+    """Freeze in-place writes while detecting any allowed atomic replacement."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    file_share_delete = 0x00000004
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    native_path = os.fspath(path)
+    if not os.path.isabs(native_path):
+        native_path = os.path.abspath(native_path)
+    if not native_path.startswith("\\\\?\\"):
+        if native_path.startswith("\\\\"):
+            native_path = "\\\\?\\UNC\\" + native_path[2:]
+        else:
+            native_path = "\\\\?\\" + native_path
+    handle = kernel32.CreateFileW(
+        native_path,
+        generic_read,
+        # Credentials are immutable snapshots. Existing/in-place writers make
+        # this read fail immediately. Atomic replacement remains compatible;
+        # the final named-identity check then rejects the stale snapshot.
+        file_share_read | file_share_delete,
+        None,
+        open_existing,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        message = ctypes.FormatError(error).strip()
+        if error in {2, 3}:
+            raise FileNotFoundError(error, message, os.fspath(path))
+        if error == 5:
+            raise PermissionError(error, message, os.fspath(path))
+        raise OSError(error, message, os.fspath(path))
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
 
 
 def _read_stable_regular_file(
@@ -264,13 +338,18 @@ def _read_stable_regular_file(
 
     fd = -1
     try:
-        if dir_fd is None:
+        if os.name == "nt":
+            if dir_fd is not None:
+                raise OSError("Windows private-state dir_fd reads are unavailable")
+            fd = _open_windows_private_state_file(path)
+        elif dir_fd is None:
             fd = os.open(path, flags)
         else:
             fd = os.open(path.name, flags, dir_fd=dir_fd)
         opened = os.fstat(fd)
         if (
-            not stat.S_ISREG(opened.st_mode)
+            _private_state_link_like(opened)
+            or not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(before, opened)
             or _stable_private_state_fields(before)
             != _stable_private_state_fields(opened)
@@ -304,6 +383,8 @@ def _read_stable_regular_file(
         if (
             (max_bytes is not None and len(raw) > max_bytes)
             or len(raw) != int(after.st_size)
+            or _private_state_link_like(after)
+            or _private_state_link_like(named)
             or not os.path.samestat(opened, after)
             or not os.path.samestat(after, named)
             or _stable_private_state_fields(opened)
@@ -316,6 +397,59 @@ def _read_stable_regular_file(
     finally:
         if fd >= 0:
             os.close(fd)
+
+
+def read_private_json_state(
+    path: Path | str,
+    *,
+    dir_fd: int | None = None,
+    max_bytes: int = COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES,
+) -> tuple[str, dict | None]:
+    """Read one private JSON object without following or blocking on a raced name.
+
+    ``absent`` is returned only when the name was absent before inspection. A
+    name that changes afterwards is unsafe rather than absent, so credential
+    migration and cleanup cannot mistake a race for permission to publish or
+    delete another record.
+    """
+
+    candidate = Path(path)
+    if dir_fd is not None and (
+        os.fspath(candidate) != candidate.name or candidate.name in {"", ".", ".."}
+    ):
+        return "unsafe", None
+    try:
+        before = (
+            candidate.lstat()
+            if dir_fd is None
+            else os.stat(candidate.name, dir_fd=dir_fd, follow_symlinks=False)
+        )
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "unreadable", None
+    if _private_state_link_like(before) or not stat.S_ISREG(before.st_mode) or (
+        dir_fd is None and path_chain_has_symlink(candidate)
+    ):
+        return "unsafe", None
+    try:
+        raw, _after = _read_stable_regular_file(
+            candidate,
+            before,
+            dir_fd=dir_fd,
+            max_bytes=max_bytes,
+        )
+    except (FileNotFoundError, _PrivateStateSnapshotChanged):
+        return "unsafe", None
+    except OSError:
+        return "unreadable", None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(payload, dict):
+        return "invalid", None
+    return "valid", payload
 
 
 def read_social_lock_owner_snapshot(path: Path) -> tuple[str, dict | None]:

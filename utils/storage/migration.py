@@ -89,6 +89,11 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
         STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
     }
 )
+KNOWN_STORAGE_MIGRATION_STATUSES = ACTIVE_STORAGE_MIGRATION_STATUSES | {
+    STORAGE_MIGRATION_STATUS_FAILED,
+    STORAGE_MIGRATION_STATUS_COMPLETED,
+}
+_STORAGE_MIGRATION_TXID_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 
 MIGRATED_RUNTIME_ENTRY_NAMES = RUNTIME_STORAGE_RELATIVE_PATHS
 _TRANSACTION_OWNER_MARKER_FILENAME = ".neko-storage-transaction-owner.json"
@@ -481,7 +486,7 @@ def _open_windows_directory_rename_guard(
         else:
             native_path = "\\\\?\\" + native_path
 
-    file_list_directory = 0x0001
+    file_traverse = 0x0020
     file_read_attributes = 0x0080
     file_share_read = 0x00000001
     file_share_write = 0x00000002
@@ -493,11 +498,10 @@ def _open_windows_directory_rename_guard(
     invalid_handle_value = ctypes.c_void_p(-1).value
     handle = kernel32.CreateFileW(
         native_path,
-        # Attribute-only access is exempt from normal share accounting on
-        # Windows. Request directory-list access as well so omitting
-        # FILE_SHARE_DELETE actually prevents rename/delete while this guard
-        # is alive, without requiring DELETE access ourselves.
-        file_list_directory | file_read_attributes,
+        # Traverse keeps this from becoming an attribute-only handle, whose
+        # access is exempt from normal share accounting. Omitting DELETE share
+        # must actually pin each ancestor used by the absolute rename path.
+        file_traverse | file_read_attributes,
         # Deliberately omit FILE_SHARE_DELETE. Windows then refuses renaming or
         # deleting this directory until the migration releases the guard.
         file_share_read | file_share_write,
@@ -539,6 +543,45 @@ def _close_windows_directory_rename_guard(handle: int) -> None:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.CloseHandle.restype = ctypes.c_int
     kernel32.CloseHandle(handle)
+
+
+def _open_windows_directory_rename_guard_chain(
+    path: Path,
+    expected_leaf_identity: os.stat_result,
+) -> list[int]:
+    """Pin every renameable ancestor used by an absolute Windows pathname."""
+
+    if os.name != "nt":
+        raise OSError("Windows directory guard chains are unavailable on this platform")
+    absolute_path = Path(os.path.abspath(os.fspath(path)))
+    anchor = Path(absolute_path.anchor)
+    relative_parts = absolute_path.relative_to(anchor).parts
+    guards: list[int] = []
+    current = anchor
+    try:
+        for index, part in enumerate(relative_parts):
+            current = current / part
+            identity = current.lstat()
+            expected_identity = (
+                expected_leaf_identity
+                if index == len(relative_parts) - 1
+                else identity
+            )
+            guard = _open_windows_directory_rename_guard(
+                current,
+                expected_identity,
+            )
+            guards.append(guard)
+        if not guards:
+            raise StorageMigrationError(
+                "staging_entry_changed",
+                f"迁移暂存配置目录不能是 Windows 卷根: {absolute_path}",
+            )
+        return guards
+    except BaseException:
+        while guards:
+            _close_windows_directory_rename_guard(guards.pop())
+        raise
 
 
 def _ensure_opened_directory_still_named(
@@ -3417,7 +3460,7 @@ def _rewrite_migrated_runtime_config_paths(
     if not workshop_config_path.is_file():
         return None
 
-    windows_config_guard = -1
+    windows_config_guards: list[int] = []
     if os.name == "nt":
         try:
             config_directory = workshop_config_path.parent
@@ -3430,7 +3473,7 @@ def _rewrite_migrated_runtime_config_paths(
                     "staging_entry_changed",
                     f"迁移暂存配置目录不是可固定的真实目录: {config_directory}",
                 )
-            windows_config_guard = _open_windows_directory_rename_guard(
+            windows_config_guards = _open_windows_directory_rename_guard_chain(
                 config_directory,
                 config_identity,
             )
@@ -3439,10 +3482,12 @@ def _rewrite_migrated_runtime_config_paths(
                 content_root=content_root,
                 target_root=target_root,
                 workshop_config_path=workshop_config_path,
-                config_directory_handle=windows_config_guard,
             )
         finally:
-            _close_windows_directory_rename_guard(windows_config_guard)
+            while windows_config_guards:
+                _close_windows_directory_rename_guard(
+                    windows_config_guards.pop()
+                )
 
     try:
         payload = _read_json_from_verified_regular_file(
@@ -3450,28 +3495,23 @@ def _rewrite_migrated_runtime_config_paths(
             max_bytes=_WORKSHOP_CONFIG_REWRITE_MAX_BYTES,
         )
     except StorageMigrationError as exc:
-        _close_windows_directory_rename_guard(windows_config_guard)
         if exc.error_code == "workshop_config_too_large":
             raise
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return None
     except Exception as exc:
-        _close_windows_directory_rename_guard(windows_config_guard)
         logger.warning("Failed to read migrated workshop_config for path rewrite: %s", exc)
         return None
 
-    try:
-        rewritten_payload = rebase_runtime_bound_workshop_config_paths(
-            payload,
-            source_root=source_root,
-            target_root=target_root,
-        )
-        if rewritten_payload is payload:
-            return None
-        atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
-        return _snapshot_path(content_root / "config")
-    finally:
-        _close_windows_directory_rename_guard(windows_config_guard)
+    rewritten_payload = rebase_runtime_bound_workshop_config_paths(
+        payload,
+        source_root=source_root,
+        target_root=target_root,
+    )
+    if rewritten_payload is payload:
+        return None
+    atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
+    return _snapshot_path(content_root / "config")
 
 
 def _verify_opened_regular_file(
@@ -3808,11 +3848,9 @@ def _open_windows_rewrite_file(
 
 def _rename_windows_open_file(
     fd: int,
-    target_name: str,
-    *,
-    target_directory_handle: int,
+    target_path: Path,
 ) -> None:
-    """Rename the exact open file to an absent name in one pinned directory."""
+    """Rename the exact open file to an absent absolute, fully guarded path."""
 
     if os.name != "nt":
         raise OSError("Windows handle rename is unavailable on this platform")
@@ -3827,14 +3865,18 @@ def _rename_windows_open_file(
             ("file_name", wintypes.WCHAR * 1),
         ]
 
+    target_name = target_path.name
     if not target_name or target_name in {".", ".."} or any(
         separator in target_name for separator in ("/", "\\")
     ):
-        raise ValueError("Windows handle rename requires one relative file name")
-    # FILE_RENAME_INFO officially accepts a normal absolute DOS path or a
-    # RootDirectory handle plus a relative name. Use the latter so resolution
-    # stays anchored to the directory that the caller has already pinned.
-    encoded_name = target_name.encode("utf-16-le")
+        raise ValueError("Windows handle rename requires one absolute leaf target")
+    if not target_path.is_absolute():
+        raise ValueError("Windows handle rename requires an absolute target path")
+    # SetFileInformationByHandle documents RootDirectory=NULL plus an absolute
+    # path as the common form. SMB/SMB2 additionally require RootDirectory=0;
+    # the caller holds every renameable ancestor until this operation and its
+    # identity checks finish, so absolute re-resolution cannot be redirected.
+    encoded_name = str(target_path).encode("utf-16-le")
     filename_offset = _FileRenameInfo.file_name.offset
     # Microsoft requires the fixed structure size plus FileNameLength bytes;
     # the structure already includes its one-WCHAR placeholder and alignment.
@@ -3842,7 +3884,7 @@ def _rename_windows_open_file(
     buffer = ctypes.create_string_buffer(buffer_size)
     header = _FileRenameInfo.from_buffer(buffer)
     header.flags = 0  # ReplaceIfExists = FALSE
-    header.root_directory = target_directory_handle
+    header.root_directory = None
     header.file_name_length = len(encoded_name)
     ctypes.memmove(ctypes.addressof(buffer) + filename_offset, encoded_name, len(encoded_name))
 
@@ -3863,8 +3905,8 @@ def _rename_windows_open_file(
         error = ctypes.get_last_error()
         message = ctypes.FormatError(error).strip()
         if error in {80, 183}:
-            raise FileExistsError(error, message, target_name)
-        raise OSError(error, message, target_name)
+            raise FileExistsError(error, message, str(target_path))
+        raise OSError(error, message, str(target_path))
 
 
 def _delete_windows_open_file_on_close(fd: int) -> None:
@@ -3941,7 +3983,6 @@ def _rewrite_windows_workshop_config_paths(
     content_root: Path,
     target_root: Path,
     workshop_config_path: Path,
-    config_directory_handle: int,
 ) -> dict[str, int | str] | None:
     """CAS-rewrite the staged config without overwriting a concurrent winner."""
 
@@ -4025,15 +4066,13 @@ def _rewrite_windows_workshop_config_paths(
 
         _rename_windows_open_file(
             source_fd,
-            backup_path.name,
-            target_directory_handle=config_directory_handle,
+            backup_path,
         )
         source_renamed = True
         try:
             _rename_windows_open_file(
                 temp_fd,
-                workshop_config_path.name,
-                target_directory_handle=config_directory_handle,
+                workshop_config_path,
             )
         except FileExistsError as exc:
             raise StorageMigrationError(
@@ -4100,8 +4139,7 @@ def _rewrite_windows_workshop_config_paths(
                     try:
                         _rename_windows_open_file(
                             source_fd,
-                            workshop_config_path.name,
-                            target_directory_handle=config_directory_handle,
+                            workshop_config_path,
                         )
                         source_renamed = False
                     except OSError:
@@ -5968,6 +6006,185 @@ def load_storage_migration(
             f"存储迁移检查点不是 JSON 对象，无法安全判断迁移状态: {migration_path}",
         )
 
+    def malformed(reason: str):
+        raise StorageMigrationError(
+            "migration_checkpoint_malformed",
+            f"存储迁移检查点字段无效（{reason}），无法安全判断迁移状态: {migration_path}",
+        )
+
+    version = payload.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version not in {1, 2}:
+        malformed("version")
+
+    status = payload.get("status")
+    if not isinstance(status, str) or status not in KNOWN_STORAGE_MIGRATION_STATUSES:
+        malformed("status")
+    if version == 1 and status in {
+        STORAGE_MIGRATION_STATUS_PUBLISHING,
+        STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
+    }:
+        malformed("status")
+
+    txid = payload.get("txid")
+    if not isinstance(txid, str) or not _STORAGE_MIGRATION_TXID_PATTERN.fullmatch(txid):
+        malformed("txid")
+
+    for field_name in ("source_root", "target_root"):
+        field_value = payload.get(field_name)
+        if (
+            not isinstance(field_value, str)
+            or not field_value
+            or field_value != field_value.strip()
+            or not Path(field_value).expanduser().is_absolute()
+        ):
+            malformed(field_name)
+    target_root = payload["target_root"]
+
+    selection_source = payload.get("selection_source")
+    if (
+        not isinstance(selection_source, str)
+        or not selection_source
+        or selection_source != selection_source.strip()
+    ):
+        malformed("selection_source")
+
+    migration_mode = payload.get("migration_mode")
+    if version == 2 and migration_mode != STORAGE_MIGRATION_MODE_COPY:
+        malformed("migration_mode")
+    if version == 1 and migration_mode not in {None, STORAGE_MIGRATION_MODE_COPY}:
+        malformed("migration_mode")
+
+    if not isinstance(payload.get("confirmed_existing_target_content"), bool):
+        malformed("confirmed_existing_target_content")
+
+    target_baseline = payload.get("target_baseline")
+    if version == 2 and (
+        not isinstance(target_baseline, dict)
+        or any(
+            not isinstance(name, str)
+            or name not in MIGRATED_RUNTIME_ENTRY_NAMES
+            or not isinstance(snapshot, dict)
+            for name, snapshot in target_baseline.items()
+        )
+    ):
+        # Version 2 binds overwrite confirmation to the target snapshot taken
+        # before shutdown. Re-snapshotting a missing baseline would silently
+        # approve files created after the user's confirmation.
+        malformed("target_baseline")
+
+    transaction_root = payload.get("transaction_root")
+    owner_token = payload.get("transaction_owner_token")
+    if version == 1:
+        # Version 1 predates private transaction directories. Never mint
+        # ownership credentials for a checkpoint that already claims one,
+        # including a terminal checkpoint that could otherwise authorize
+        # cleanup during load/run.
+        if (
+            transaction_root is not None
+            and transaction_root != ""
+        ) or (owner_token is not None and owner_token != ""):
+            malformed("legacy_transaction_authority")
+    if version == 2:
+        if (
+            not isinstance(owner_token, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", owner_token) is None
+        ):
+            malformed("transaction_owner_token")
+
+    if "transaction_cleanup_pending" in payload and not isinstance(
+        payload["transaction_cleanup_pending"],
+        bool,
+    ):
+        malformed("transaction_cleanup_pending")
+
+    transaction_mandatory_statuses = {
+        STORAGE_MIGRATION_STATUS_COPYING,
+        STORAGE_MIGRATION_STATUS_VERIFYING,
+        STORAGE_MIGRATION_STATUS_PUBLISHING,
+        STORAGE_MIGRATION_STATUS_COMMITTING,
+        STORAGE_MIGRATION_STATUS_RETAINING_SOURCE,
+        STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+    }
+    transaction_bound = (
+        transaction_root is not None and transaction_root != ""
+    )
+    transaction_path_required = (
+        status in transaction_mandatory_statuses or transaction_bound
+    )
+    transaction_baseline_required = (
+        status in transaction_mandatory_statuses
+        or transaction_bound
+    )
+    if version == 2 and transaction_path_required:
+        if (
+            not isinstance(transaction_root, str)
+            or not transaction_root
+            or transaction_root != transaction_root.strip()
+            or not Path(transaction_root).expanduser().is_absolute()
+        ):
+            malformed("transaction_root")
+        current_transaction_root = Path(target_root) / f".neko-storage-migration-{txid.lower()}"
+        legacy_safe_name = Path(target_root).name or "root"
+        legacy_transaction_root = (
+            Path(target_root).parent
+            / f".{legacy_safe_name}.neko-storage-migration-{txid.lower()}"
+        )
+        normalized_transaction_root = os.path.normcase(
+            os.path.abspath(os.path.expanduser(transaction_root))
+        )
+        allowed_transaction_roots = {
+            os.path.normcase(os.path.abspath(path))
+            for path in (current_transaction_root, legacy_transaction_root)
+        }
+        if normalized_transaction_root not in allowed_transaction_roots:
+            malformed("transaction_root")
+    if version == 2 and transaction_baseline_required:
+        source_runtime_baseline = payload.get("source_runtime_baseline")
+        if not isinstance(source_runtime_baseline, dict) or any(
+                not isinstance(name, str)
+                or name not in MIGRATED_RUNTIME_ENTRY_NAMES
+                or not isinstance(snapshot, dict)
+                for name, snapshot in source_runtime_baseline.items()
+        ):
+            malformed("source_runtime_baseline")
+
+    if version == 2 and status in {
+        STORAGE_MIGRATION_STATUS_PUBLISHING,
+        STORAGE_MIGRATION_STATUS_COMMITTING,
+        STORAGE_MIGRATION_STATUS_RETAINING_SOURCE,
+        STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+    }:
+        original_target_entries = payload.get("original_target_entries")
+        publish_entry_names = payload.get("publish_entry_names")
+        publish_entry_snapshots = payload.get("publish_entry_snapshots")
+        for list_name, values in (
+            ("original_target_entries", original_target_entries),
+            ("publish_entry_names", publish_entry_names),
+        ):
+            if (
+                not isinstance(values, list)
+                or any(
+                    not isinstance(name, str)
+                    or name not in MIGRATED_RUNTIME_ENTRY_NAMES
+                    for name in values
+                )
+                or len(values) != len(set(values))
+            ):
+                malformed(list_name)
+        if (
+            not isinstance(publish_entry_snapshots, dict)
+            or set(publish_entry_snapshots) != set(publish_entry_names)
+            or any(
+                not isinstance(snapshot, dict)
+                for snapshot in publish_entry_snapshots.values()
+            )
+        ):
+            malformed("publish_entry_snapshots")
+        if set(original_target_entries) != set(payload["target_baseline"]):
+            malformed("original_target_entries")
+        if set(publish_entry_names) != set(payload["source_runtime_baseline"]):
+            malformed("publish_entry_names")
+
     return payload
 
 
@@ -6098,8 +6315,21 @@ def run_pending_storage_migration(
         config_manager,
         anchor_root=normalized_anchor_root,
     )
+    legacy_v1_active = bool(
+        isinstance(migration_payload, dict)
+        and migration_payload.get("version") == 1
+        and is_storage_migration_pending(migration_payload)
+    )
+    if legacy_v1_active:
+        # Version 1 wrote directly to the target and had no authenticated
+        # transaction directory. Restart it in memory from the non-destructive
+        # pending boundary. It is upgraded durably only after path boundaries
+        # and the missing target confirmation baseline can be re-established.
+        migration_payload = dict(migration_payload)
+        migration_payload["status"] = STORAGE_MIGRATION_STATUS_PENDING
     if (
         isinstance(migration_payload, dict)
+        and migration_payload.get("version") == STORAGE_MIGRATION_VERSION
         and str(migration_payload.get("status") or "").strip()
         == STORAGE_MIGRATION_STATUS_FAILED
         and _migration_transaction_evidence_is_present(migration_payload)
@@ -6332,12 +6562,18 @@ def run_pending_storage_migration(
         transaction_cleanup_pending = (
             cleanup_durability_pending or force_recovery_required
         )
+        transaction_evidence_present = _migration_transaction_evidence_is_present(
+            next_payload
+        )
         next_status = (
             STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
             if rollback_required
             else STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
             if transaction_cleanup_pending
-            or _migration_transaction_evidence_is_present(next_payload)
+            or (
+                next_payload.get("version") == STORAGE_MIGRATION_VERSION
+                and transaction_evidence_present
+            )
             else STORAGE_MIGRATION_STATUS_FAILED
         )
         next_payload.update(
@@ -6550,6 +6786,25 @@ def run_pending_storage_migration(
                 boundary_exc.error_code,
                 boundary_exc.message,
                 rollback_required=publish_started,
+            )
+
+        if legacy_v1_active and payload.get("version") == 1:
+            # A foreign occupant can fail the run before transaction authority
+            # is bound. Persist a complete v2 pending schema first so any
+            # recovery checkpoint produced below remains readable next launch.
+            target_baseline = _snapshot_runtime_entries(target_root)
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                version=STORAGE_MIGRATION_VERSION,
+                status=STORAGE_MIGRATION_STATUS_PENDING,
+                transaction_owner_token=secrets.token_hex(32),
+                transaction_cleanup_pending=False,
+                migration_mode=STORAGE_MIGRATION_MODE_COPY,
+                target_baseline=target_baseline,
+                original_target_entries=[],
+                publish_entry_names=[],
             )
 
         if transaction_root.is_symlink():
@@ -7622,7 +7877,7 @@ def _migration_transaction_evidence_is_present(
 def storage_migration_retains_recovery_evidence(
     payload: dict[str, Any] | None,
 ) -> bool:
-    """Return whether a failed/recovery checkpoint still maps recovery data."""
+    """Return whether a failed/recovery checkpoint must not be replaced."""
 
     return bool(
         isinstance(payload, dict)
@@ -7631,7 +7886,10 @@ def storage_migration_retains_recovery_evidence(
             STORAGE_MIGRATION_STATUS_FAILED,
             STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
         }
-        and _migration_transaction_evidence_is_present(payload)
+        and (
+            payload.get("transaction_cleanup_pending") is True
+            or _migration_transaction_evidence_is_present(payload)
+        )
     )
 
 

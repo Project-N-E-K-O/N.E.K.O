@@ -451,6 +451,18 @@ def _release_storage_bootstrap_guard(guard_id: str | None, outcome: str) -> None
     )
 
 
+def _configured_storage_anchor(config_manager) -> Path:
+    """Keep the anchor already resolved by ConfigManager, with legacy fallback."""
+
+    configured_anchor = getattr(config_manager, "anchor_root", None)
+    if configured_anchor:
+        return Path(configured_anchor)
+    return compute_anchor_root(
+        config_manager,
+        current_root=Path(config_manager.app_docs_dir),
+    )
+
+
 def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:
     """Build an anchor-only HTTP recovery generation without trusting policy."""
     # Fail closed without failing dead: a corrupt routing authority must not be
@@ -461,10 +473,7 @@ def _policy_unavailable_recovery_bootstrap(exc: Exception) -> dict:
     os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_policy_unavailable"
     reset_config_manager_cache()
     recovery_manager = get_config_manager(APP_NAME, migrate=False)
-    anchor_root = compute_anchor_root(
-        recovery_manager,
-        current_root=Path(recovery_manager.app_docs_dir),
-    )
+    anchor_root = _configured_storage_anchor(recovery_manager)
     layout = build_storage_layout(
         selected_root=anchor_root,
         anchor_root=anchor_root,
@@ -502,10 +511,7 @@ def _storage_status_unavailable_recovery_bootstrap(
     """Start the desktop recovery surface from the fixed anchor only."""
 
     os.environ[NEKO_STORAGE_RECOVERY_MODE_ENV] = "storage_status_unavailable"
-    anchor_root = compute_anchor_root(
-        config_manager,
-        current_root=Path(config_manager.app_docs_dir),
-    )
+    anchor_root = _configured_storage_anchor(config_manager)
     layout = build_storage_layout(
         selected_root=anchor_root,
         anchor_root=anchor_root,
@@ -723,7 +729,7 @@ def _resolve_storage_layout_for_launch() -> dict:
             )
         layout = build_storage_layout(
             selected_root=recovery_source_root,
-            anchor_root=compute_anchor_root(resolved_config_manager),
+            anchor_root=_configured_storage_anchor(resolved_config_manager),
             source="migration_failure_recovery",
         )
     else:

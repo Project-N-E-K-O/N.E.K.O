@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,23 @@ def test_storage_startup_gate_keeps_http_fallback_alive_for_malformed_checkpoint
     assert get_storage_startup_blocking_reason(config_manager) == "storage_status_unavailable"
     assert is_storage_startup_blocked(config_manager) is True
     assert migration_path.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.unit
+def test_storage_startup_gate_blocks_valid_json_with_invalid_checkpoint_schema(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path, root_mode="normal")
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    migration_path = get_storage_migration_path(config_manager)
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = {"version": 2, "status": "copying"}
+    migration_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    assert get_storage_startup_blocking_reason(config_manager) == "storage_status_unavailable"
+    assert is_storage_startup_blocked(config_manager) is True
 
 
 @pytest.mark.unit

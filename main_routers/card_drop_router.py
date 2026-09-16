@@ -48,6 +48,7 @@ from utils.storage.community_private_state import (
     parse_social_lock_owner,
     probe_social_lock_process,
     probe_retained_community_state,
+    read_private_json_state,
     retained_community_snapshot_matches,
 )
 from utils.storage_policy import path_chain_has_symlink, paths_equal
@@ -1267,51 +1268,12 @@ def _legacy_social_path_ready(path: Path) -> bool:
 
 def _read_private_json_state(path: Path) -> tuple[str, dict | None]:
     """Distinguish absence from corrupt/unreadable credential authority."""
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return "absent", None
-    except OSError:
-        return "unreadable", None
-    if not stat.S_ISREG(metadata.st_mode) or path_chain_has_symlink(path):
-        return "unsafe", None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return "invalid", None
-    if not isinstance(data, dict):
-        return "invalid", None
-    return "valid", data
+    return read_private_json_state(path)
 
 
 def _read_private_json_state_at(dir_fd: int, filename: str) -> tuple[str, dict | None]:
     """Read one retained-root file through an already verified directory handle."""
-    try:
-        before = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return "absent", None
-    except OSError:
-        return "unreadable", None
-    if not stat.S_ISREG(before.st_mode):
-        return "unsafe", None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(filename, flags, dir_fd=dir_fd)
-        try:
-            after = os.fstat(fd)
-            if not os.path.samestat(before, after):
-                return "unsafe", None
-            with os.fdopen(fd, "r", encoding="utf-8") as handle:
-                fd = -1
-                data = json.load(handle)
-        finally:
-            if fd >= 0:
-                os.close(fd)
-    except (OSError, ValueError, TypeError):
-        return "invalid", None
-    if not isinstance(data, dict):
-        return "invalid", None
-    return "valid", data
+    return read_private_json_state(filename, dir_fd=dir_fd)
 
 
 def _write_private_json_no_replace(path: Path, data: dict) -> bool:
@@ -1767,13 +1729,10 @@ def _prepare_retained_community_state_cleanup_locked(
 
 
 def _read_json_dict(path: Path | None) -> dict | None:
-    if not path or not path.exists():
+    if not path:
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        return None
+    state, data = read_private_json_state(path)
+    return data if state == "valid" else None
 
 
 def _load_auth() -> dict | None:
