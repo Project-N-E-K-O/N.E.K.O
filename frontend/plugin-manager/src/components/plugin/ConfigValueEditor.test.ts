@@ -364,3 +364,51 @@ describe('compact configuration layout preserves editing semantics', () => {
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'updated', 'c'] })
   })
 })
+
+describe('ConfigValueEditor search/filter propagation', () => {
+  it('array child editor receives search/filter props and hides non-matching fields within array items', async () => {
+    const baseline = {
+      servers: [
+        { host: 'localhost', port: 8080, timeout: 30 },
+        { host: 'example.com', port: 443, timeout: 60 },
+      ],
+    }
+    const Wrapper = defineComponent({
+      setup() {
+        const search = ref('host')
+        const filter = ref<'all' | 'configured' | 'dirty'>('all')
+        return () =>
+          h(ConfigValueEditor as any, {
+            modelValue: {},
+            baselineValue: baseline,
+            compact: false,
+            path: '',
+            search: search.value,
+            filter: filter.value,
+          })
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(Wrapper)
+    app.use(ElementPlus)
+    app.mount(host)
+    await nextTick()
+
+    // Array items should be visible (servers path matches query)
+    // Within each array item, only 'host' field should be visible, 'port' and 'timeout' hidden
+    const visibleKeys = Array.from(host.querySelectorAll('.row')).map((row) => {
+      const keyEl = row.querySelector('.k')
+      const style = window.getComputedStyle(row as HTMLElement)
+      if (style.display === 'none') return null
+      return keyEl?.textContent?.trim()
+    }).filter(Boolean)
+
+    expect(visibleKeys).toContain('host')
+    expect(visibleKeys).not.toContain('port')
+    expect(visibleKeys).not.toContain('timeout')
+
+    app.unmount()
+    host.remove()
+  })
+})

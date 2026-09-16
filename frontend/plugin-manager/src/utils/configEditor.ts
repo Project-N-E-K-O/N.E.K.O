@@ -146,10 +146,19 @@ export function configNodeMatches(
     const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(
       (k) => path.length || k !== 'plugin'
     )
+    // Test the current path before recursing, so section names match themselves
+    const matchesState =
+      filter === 'all' ||
+      (filter === 'configured' && overlay !== undefined) ||
+      (filter === 'dirty' && hasConfigChangesAt(changes, path))
+    const matchesQuery =
+      !query || path.join('.').toLowerCase().includes(query.toLowerCase())
+    if (matchesState && matchesQuery) return true
     if (keys.length)
       return keys.some((k) =>
         configNodeMatches(a[k], b[k], [...path, k], query, filter, changes, replacement)
       )
+    return false
   }
   const matchesState =
     filter === 'all' ||

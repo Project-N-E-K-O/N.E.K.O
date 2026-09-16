@@ -160,6 +160,8 @@
               :replace-semantics="true"
               :compact="compact"
               :segments="[...(segments || []), String(idx)]"
+              :search="search"
+              :filter="filter"
               :changes="changes"
               :input-id="inputIdFor(String(idx))"
               @undo="emit('undo', $event)"

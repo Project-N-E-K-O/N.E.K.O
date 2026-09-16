@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyProfileOverlay, restoreConfigPath } from './configEditor'
+import { applyProfileOverlay, configNodeMatches, restoreConfigPath } from './configEditor'
 
 const owns = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -68,5 +68,28 @@ describe('literal configuration keys', () => {
     )
     expect(Object.getPrototypeOf(result.section)).toBe(Object.prototype)
     expect(base.section.items).toEqual([1, 2])
+  })
+})
+
+describe('configNodeMatches', () => {
+  it('returns true when searching for a top-level section name that has children', () => {
+    const overlay = {}
+    const baseline = {
+      llm: { model: 'gpt-4', temperature: 0.7 },
+      network: { timeout: 30 },
+    }
+    const changes: any[] = []
+
+    // Search for 'llm' should match the section itself before recursing into children
+    expect(configNodeMatches(overlay, baseline, [], 'llm', 'all', changes, false)).toBe(true)
+    
+    // Search for 'network' should match the section
+    expect(configNodeMatches(overlay, baseline, [], 'network', 'all', changes, false)).toBe(true)
+    
+    // Search for nested path component should also match
+    expect(configNodeMatches(overlay, baseline, [], 'model', 'all', changes, false)).toBe(true)
+    
+    // Search for non-existent key should not match
+    expect(configNodeMatches(overlay, baseline, [], 'nonexistent', 'all', changes, false)).toBe(false)
   })
 })
