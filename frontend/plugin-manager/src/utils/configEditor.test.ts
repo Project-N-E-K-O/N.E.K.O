@@ -71,6 +71,29 @@ describe('literal configuration keys', () => {
   })
 })
 
+describe('profile preview empty tables', () => {
+  it('replaces explicit empty tables at every depth without changing inputs', () => {
+    const base = { cache: { ttl: 120 }, nested: { cache: { ttl: 60 }, keep: true } }
+    const overlay = { cache: {}, nested: { cache: {} } }
+    expect(applyProfileOverlay(base, overlay)).toEqual({
+      cache: {},
+      nested: { cache: {}, keep: true },
+    })
+    expect(base.cache).toEqual({ ttl: 120 })
+    expect(base.nested.cache).toEqual({ ttl: 60 })
+    expect(overlay).toEqual({ cache: {}, nested: { cache: {} } })
+  })
+
+  it('keeps inheritance for an empty root overlay and protects plugin metadata', () => {
+    const base = { cache: { ttl: 120 }, plugin: { id: 'test' } }
+    expect(applyProfileOverlay(base, {})).toEqual(base)
+    expect(applyProfileOverlay(base, { plugin: {}, cache: {} })).toEqual({
+      plugin: { id: 'test' },
+      cache: {},
+    })
+  })
+})
+
 describe('configNodeMatches', () => {
   it('returns true when searching for a top-level section name that has children', () => {
     const overlay = {}
@@ -82,14 +105,16 @@ describe('configNodeMatches', () => {
 
     // Search for 'llm' should match the section itself before recursing into children
     expect(configNodeMatches(overlay, baseline, [], 'llm', 'all', changes, false)).toBe(true)
-    
+
     // Search for 'network' should match the section
     expect(configNodeMatches(overlay, baseline, [], 'network', 'all', changes, false)).toBe(true)
-    
+
     // Search for nested path component should also match
     expect(configNodeMatches(overlay, baseline, [], 'model', 'all', changes, false)).toBe(true)
-    
+
     // Search for non-existent key should not match
-    expect(configNodeMatches(overlay, baseline, [], 'nonexistent', 'all', changes, false)).toBe(false)
+    expect(configNodeMatches(overlay, baseline, [], 'nonexistent', 'all', changes, false)).toBe(
+      false
+    )
   })
 })

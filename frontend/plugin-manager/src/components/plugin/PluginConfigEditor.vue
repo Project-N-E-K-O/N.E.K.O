@@ -336,7 +336,7 @@ import {
   Search,
   Setting,
 } from '@element-plus/icons-vue'
-import { hotUpdatePluginConfig } from '@/api/config'
+import { getPluginConfig, hotUpdatePluginConfig } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import { useConfigEditorLayout } from '@/composables/useConfigEditorLayout'
 import { usePluginConfigDrafts } from '@/composables/usePluginConfigDrafts'
@@ -649,13 +649,16 @@ async function hotUpdate() {
     name = selected.value
   if (!name || name !== active.value || !current.value?.loaded || dirty.value || applying.value)
     return
-  const config = deepClone(current.value.original)
   applying.value = true
   operationError.value = null
   try {
-    // Preserve the existing endpoint and permanent-mode behavior. This is an
-    // explicit hot-update action, not a silent extra write on profile save.
-    const result = await hotUpdatePluginConfig(id, config, 'permanent', name)
+    // The profile is already persisted. Permanent hot updates write the shared
+    // base, so apply the server-resolved saved config only to the running plugin.
+    const saved = await getPluginConfig(id)
+    if (!alive || id !== props.pluginId || name !== selected.value || name !== active.value) return
+    const config = deepClone(saved.config)
+    delete config.plugin
+    const result = await hotUpdatePluginConfig(id, config, 'temporary', name)
     if (!alive || id !== props.pluginId) return
     if (!result.success) {
       operationError.value = result.message || t('plugins.hotUpdateFailed')

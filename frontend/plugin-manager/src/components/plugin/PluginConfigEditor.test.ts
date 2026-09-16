@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, ref } from 'vue'
-import ElementPlus, { ElMessage, ElMessageBox, type Action, type MessageBoxData } from 'element-plus'
+import ElementPlus, {
+  ElMessage,
+  ElMessageBox,
+  type Action,
+  type MessageBoxData,
+} from 'element-plus'
 import * as configApi from '@/api/config'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
@@ -22,6 +27,7 @@ vi.mock('@/api/config', () => ({
   getPluginProfilesState: async () => ({ config_profiles: null }),
   getPluginProfileConfig: vi.fn(),
   deletePluginProfileConfig: vi.fn(),
+  upsertPluginProfileConfig: vi.fn(),
   hotUpdatePluginConfig: vi.fn(),
 }))
 const cleanups: (() => void)[] = []
@@ -87,9 +93,9 @@ async function startProfileDeletion() {
     .spyOn(configApi, 'deletePluginProfileConfig')
     .mockReturnValue(deletion.promise)
   const confirmation = deferred<Action>()
-  const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(
-    confirmation.promise as Promise<MessageBoxData>
-  )
+  const confirmSpy = vi
+    .spyOn(ElMessageBox, 'confirm')
+    .mockReturnValue(confirmation.promise as Promise<MessageBoxData>)
   const success = vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
   const editor = await mountEditor()
   editor.host.querySelector<HTMLButtonElement>('.profile-entry')!.click()
@@ -155,6 +161,109 @@ describe('profile deletion lifecycle', () => {
         'Current plugin deletion failed'
       )
     )
+  })
+})
+
+describe('saved profile hot updates', () => {
+  async function savedEditor() {
+    vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    const editor = await mountEditor()
+    const input = editor.host.querySelector<HTMLInputElement>(
+      'input[aria-label="search.max_results"]'
+    )!
+    input.value = '9'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const save = [...editor.host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.configUi.saveProfile'
+    )!
+    save.click()
+    await vi.waitFor(() => expect(hotButton(editor.host)?.disabled).toBe(false))
+    return editor
+  }
+
+  function hotButton(host: HTMLElement) {
+    return [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.hotUpdate'
+    )
+  }
+
+  it('sends fresh resolved config temporarily, excluding protected metadata', async () => {
+    const { host } = await savedEditor()
+    const resolved = {
+      plugin: { id: 'test', entry: 'main' },
+      search: { max_results: 9, inherited: true },
+      cache: {},
+    }
+    const read = vi
+      .spyOn(configApi, 'getPluginConfig')
+      .mockResolvedValue({ plugin_id: 'test', config: resolved, last_modified: '' })
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig').mockResolvedValue({
+      success: true,
+      plugin_id: 'test',
+      mode: 'temporary',
+      hot_reloaded: true,
+      requires_reload: false,
+      message: 'Config update sent (response timeout, may have been applied)',
+    })
+    hotButton(host)!.click()
+    await vi.waitFor(() =>
+      expect(hot).toHaveBeenCalledExactlyOnceWith(
+        'test',
+        {
+          search: { max_results: 9, inherited: true },
+          cache: {},
+        },
+        'temporary',
+        'default'
+      )
+    )
+    expect(read).toHaveBeenCalledWith('test')
+    expect(resolved.plugin.id).toBe('test')
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.hotRequested'
+      )
+    )
+    expect(hotButton(host)).toBeDefined()
+    expect(configApi.upsertPluginProfileConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['unmount', 'switch'] as const)('does not apply a response after %s', async (action) => {
+    const { host, pluginId, unmount } = await savedEditor()
+    const response = deferred<Awaited<ReturnType<typeof configApi.getPluginConfig>>>()
+    const read = vi.spyOn(configApi, 'getPluginConfig').mockReturnValueOnce(response.promise)
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig')
+    hotButton(host)!.click()
+    await vi.waitFor(() => expect(read).toHaveBeenCalled())
+    if (action === 'unmount') unmount()
+    else {
+      pluginId.value = 'next'
+      await nextTick()
+    }
+    response.resolve({
+      plugin_id: 'test',
+      config: { search: { max_results: 9 } },
+      last_modified: '',
+    })
+    await flushDeletion()
+    expect(hot).not.toHaveBeenCalled()
+  })
+
+  it('does not apply when reading the saved config fails', async () => {
+    const { host } = await savedEditor()
+    vi.spyOn(configApi, 'getPluginConfig').mockRejectedValue(new Error('Cannot read saved config'))
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig')
+    hotButton(host)!.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.config-error')?.textContent).toContain('Cannot read saved config')
+    )
+    expect(hot).not.toHaveBeenCalled()
+    expect(hotButton(host)?.disabled).toBe(false)
   })
 })
 

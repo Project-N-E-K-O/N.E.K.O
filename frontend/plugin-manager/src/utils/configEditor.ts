@@ -233,6 +233,8 @@ export function deepClone<T>(v: T): T {
 function deepMerge(base: any, updates: any): any {
   if (base == null || typeof base !== 'object') return deepClone(updates)
   if (updates == null || typeof updates !== 'object') return deepClone(updates)
+  // An explicit empty table clears that section, matching the server merge.
+  if (isConfigObject(updates) && Object.keys(updates).length === 0) return deepClone(updates)
   // 对象递归合并；数组和原始值直接替换（不做逐项合并）
   const out: any = Array.isArray(base) ? [...base] : { ...base }
   for (const [k, v] of Object.entries(updates)) {

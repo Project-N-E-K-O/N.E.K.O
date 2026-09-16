@@ -82,12 +82,18 @@ export async function checkConfigLayout(tab, viewport, cases) {
               rect.left >= left - 2 &&
               rect.right <= right + 2,
             width: rect.width,
+            receivesPointer:
+              document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) ===
+              input,
           }
         }, name)
-        if (!field.visible || field.width < 40)
+        if (!field.visible || field.width < 40 || !field.receivesPointer)
           throw new Error(
             `Unreachable field ${name}: ${JSON.stringify({ width, height, zoom, field })}`
           )
+        // Click only after the focus geometry assertion, so automatic scrolling
+        // cannot hide a broken reveal handler. This also exercises pointer input.
+        await tab.playwright.getByRole('spinbutton', { name, exact: true }).click()
       }
       // Focus without invoking the save action.
       await tab.playwright
