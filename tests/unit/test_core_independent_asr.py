@@ -5001,10 +5001,18 @@ async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1] == {
+    assert {
         "code": "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
         "details": {
             "provider": "soniox",
+            "session_epoch": runtime._asr_session_epoch,
+        },
+    } in statuses
+    assert statuses[-1] == {
+        "code": "VOICE_INPUT_RECOVERY_FAILED",
+        "details": {
+            "lease_generation": runtime._voice_lease_generation,
+            "reason": "ASR_INDEPENDENT_FAILED",
             "session_epoch": runtime._asr_session_epoch,
         },
     }
@@ -5241,7 +5249,11 @@ async def test_restart_default_attempts_follow_single_attempt_policy(
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+    assert any(
+        status["code"] == "ASR_INDEPENDENT_FAILED" for status in statuses
+    )
+    assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
+    assert statuses[-1]["details"]["lease_generation"] == runtime._voice_lease_generation
     assert "private restart connect detail" not in str(
         runtime.send_status.await_args_list
     )
@@ -5275,7 +5287,10 @@ async def test_restart_default_attempts_follow_soniox_policy_ladder(
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+    assert any(
+        status["code"] == "ASR_INDEPENDENT_FAILED" for status in statuses
+    )
+    assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
 
 
 async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> None:
@@ -8184,7 +8199,68 @@ async def test_old_notifications_cannot_override_new_generation() -> None:
             "session_epoch": new_epoch,
         },
     }
-    assert payloads[1]["details"]["session_epoch"] == new_epoch
+
+
+async def test_recovery_failed_status_drops_after_lease_takeover() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._voice_lease_generation = 4
+    epoch = runtime._asr_session_epoch
+    first_send_entered = asyncio.Event()
+    release_first_send = asyncio.Event()
+    payloads: list[dict] = []
+
+    async def ordered_send_status(payload: str) -> bool:
+        payloads.append(json.loads(payload))
+        if len(payloads) == 1:
+            first_send_entered.set()
+            await release_first_send.wait()
+        return True
+
+    runtime.send_status = AsyncMock(side_effect=ordered_send_status)
+    delivery = asyncio.create_task(
+        runtime._send_core_asr_status(
+            AsrStatusEvent(
+                code="ASR_INDEPENDENT_FAILED",
+                provider="qwen",
+                session_epoch=epoch,
+            )
+        )
+    )
+    await asyncio.wait_for(first_send_entered.wait(), 1)
+    runtime._voice_lease_generation += 1
+    release_first_send.set()
+    await asyncio.wait_for(delivery, 1)
+
+    assert [payload["code"] for payload in payloads] == ["ASR_INDEPENDENT_FAILED"]
+    assert all(payload["code"] != "VOICE_INPUT_RECOVERY_FAILED" for payload in payloads)
+
+
+async def test_recovery_failed_status_carries_current_lease_generation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._voice_lease_generation = 7
+    epoch = runtime._asr_session_epoch
+
+    await runtime._send_core_asr_status(
+        AsrStatusEvent(
+            code="ASR_INDEPENDENT_FAILED",
+            provider="qwen",
+            session_epoch=epoch,
+        )
+    )
+
+    payloads = [
+        json.loads(call.args[0]) for call in runtime.send_status.await_args_list
+    ]
+    assert payloads[-1] == {
+        "code": "VOICE_INPUT_RECOVERY_FAILED",
+        "details": {
+            "session_epoch": epoch,
+            "lease_generation": 7,
+            "reason": "ASR_INDEPENDENT_FAILED",
+        },
+    }
 
 
 async def test_failure_event_only_blocks_current_generation() -> None:

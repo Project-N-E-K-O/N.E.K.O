@@ -1,0 +1,270 @@
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const source = fs.readFileSync(path.join(__dirname, '../../static/app/app-audio-capture.js'), 'utf8');
+const websocketSource = fs.readFileSync(path.join(__dirname, '../../static/app/app-websocket.js'), 'utf8');
+
+function loadCapture(active, enabled = active) {
+    const timers = new Map();
+    const listeners = new Map();
+    const messages = [];
+    const controls = [];
+    let timerId = 0;
+    const S = {
+        isRecording: true, isMicMuted: true, independentAsrActive: active,
+        independentAsrEnabled: enabled, voiceInputLifecycleState: 'off',
+        socket: { readyState: 1, send: text => controls.push(JSON.parse(text)) },
+    };
+    const window = {
+        appState: S, appConst: {}, appUtils: {},
+        addEventListener(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
+        dispatchEvent(event) { for (const listener of listeners.get(event.type) || []) listener(event); },
+        showStatusToast(message) { messages.push(message); },
+        location: { protocol: 'http:', host: 'localhost:48911' },
+        lanlan_config: { lanlan_name: '' },
+        t: key => key,
+    };
+    class FakeWebSocket {
+        static OPEN = 1;
+        constructor(url) { this.url = url; this.readyState = 1; }
+        send(text) { controls.push(JSON.parse(text)); }
+    }
+    const context = {
+        window, console, navigator: {}, WebSocket: FakeWebSocket, Blob,
+        CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init); } },
+        document: {
+            getElementById: id => id === 'status-toast' ? {} : null,
+            documentElement: { setAttribute() {} },
+        },
+        setTimeout(callback, delay) {
+            const id = ++timerId;
+            timers.set(id, { callback() { timers.delete(id); callback(); }, delay });
+            return id;
+        },
+        clearTimeout(id) { timers.delete(id); },
+    };
+    vm.runInNewContext(source, context);
+    timers.clear(); // Module startup UI timers are outside this test's scope.
+    return {
+        window, S, messages, controls, timers,
+        recoveryTimers: () => [...timers.values()].filter(timer => timer.delay === 4000),
+        emit: type => window.dispatchEvent({ type }),
+        loadWebsocket() {
+            vm.runInNewContext(websocketSource, context);
+            window.appWebSocket.connectWebSocket();
+        },
+        status(code, details = {}) {
+            S.socket.onmessage({ data: JSON.stringify({
+                type: 'status', message: JSON.stringify({ code, details }),
+            }) });
+        },
+    };
+}
+
+for (const entry of ['toggleMicMute', 'setMicMuted']) {
+    test(`${entry}: native voice does not await independent ASR, even if next-session setting is enabled`, () => {
+        const env = loadCapture(false, true);
+        env.S.voiceInputRecoveryState = 'failed';
+        env.window[entry](false);
+        assert.equal(env.S.isMicMuted, false);
+        assert.equal(env.S.voiceInputRecoveryState, 'idle');
+        assert.equal(env.recoveryTimers().length, 0);
+        assert.equal(env.messages.length, 0);
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+        assert.equal(env.controls.at(-1).hard_muted, false);
+        env.emit('voice-input-recovery-failed');
+        assert.equal(env.S.voiceInputRecoveryState, 'idle');
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+    });
+}
+
+test('active independent route waits even if its next-session setting is disabled', () => {
+    const env = loadCapture(true, false);
+    env.window.setMicMuted(false);
+    assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+    assert.equal(env.recoveryTimers().length, 1);
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { lease_generation: env.S.voiceInputRecoveryLeaseGeneration },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+    assert.equal(env.recoveryTimers().length, 0);
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+});
+
+test('stale recovery identity cannot complete the current recovery cycle', () => {
+    const env = loadCapture(true);
+    env.S.voiceSessionEpoch = 12;
+    env.window.setMicMuted(false);
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { session_epoch: 11, lease_generation: env.S.voiceInputRecoveryLeaseGeneration },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { session_epoch: 12, lease_generation: env.S.voiceInputRecoveryLeaseGeneration },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+});
+
+test('independent timeout blocks upload; remuting cancels the next recovery', () => {
+    const env = loadCapture(true);
+    env.window.setMicMuted(false);
+    env.recoveryTimers()[0].callback();
+    assert.equal(env.S.voiceInputRecoveryState, 'timed_out');
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+    env.window.setMicMuted(true);
+    env.window.setMicMuted(false);
+    const pending = env.recoveryTimers()[0].callback;
+    env.window.setMicMuted(true);
+    pending();
+    env.emit('voice-input-recovery-ready');
+    assert.equal(env.S.voiceInputRecoveryState, 'idle');
+    assert.equal(env.recoveryTimers().length, 0);
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+});
+
+test('late READY resumes upload after the UI deadline, but stale identities do not', () => {
+    const env = loadCapture(true);
+    env.S.voiceSessionEpoch = 12;
+    env.window.setMicMuted(false);
+    env.recoveryTimers()[0].callback();
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+    const current = {
+        session_epoch: 12,
+        lease_generation: env.controls.at(-1).lease_generation,
+        generation: env.S.voiceInputRecoveryGeneration,
+    };
+    for (const stale of [
+        { session_epoch: 11 }, { lease_generation: current.lease_generation - 1 },
+        { generation: current.generation - 1 },
+    ]) {
+        env.window.dispatchEvent({ type: 'voice-input-recovery-ready', detail: { ...current, ...stale } });
+        assert.equal(env.S.voiceInputRecoveryState, 'timed_out');
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+    }
+    env.window.dispatchEvent({ type: 'voice-input-recovery-ready', detail: current });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+    assert.equal(env.messages.at(-1), '语音识别已恢复');
+});
+
+for (const timedOut of [false, true]) {
+    test(`terminal backend failure rejects subsequent READY (timedOut=${timedOut})`, () => {
+        const env = loadCapture(true);
+        env.S.voiceSessionEpoch = 12;
+        env.window.setMicMuted(false);
+        if (timedOut) env.recoveryTimers()[0].callback();
+        const lease = env.S.voiceInputRecoveryLeaseGeneration;
+        env.window.dispatchEvent({ type: 'voice-input-recovery-failed', detail: { session_epoch: 11, lease_generation: lease } });
+        assert.equal(env.S.voiceInputRecoveryState, timedOut ? 'timed_out' : 'recovering');
+        env.window.dispatchEvent({ type: 'voice-input-recovery-failed', detail: { session_epoch: 12 } });
+        assert.equal(env.S.voiceInputRecoveryState, timedOut ? 'timed_out' : 'recovering');
+        env.window.dispatchEvent({ type: 'voice-input-recovery-failed', detail: { session_epoch: 12, lease_generation: lease - 1 } });
+        assert.equal(env.S.voiceInputRecoveryState, timedOut ? 'timed_out' : 'recovering');
+        env.window.dispatchEvent({ type: 'voice-input-recovery-failed', detail: { session_epoch: 12, lease_generation: lease } });
+        env.emit('voice-input-recovery-ready');
+        assert.equal(env.S.voiceInputRecoveryState, 'failed');
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+        assert.equal(env.S.voiceInputRecoveryTimer, null);
+    });
+
+    test(`reconnect replay binds recovery to the sent lease (timedOut=${timedOut})`, () => {
+        const env = loadCapture(true);
+        env.window.setMicMuted(false);
+        env.window.setMicMuted(true);
+        const previousLease = env.controls.at(-1).lease_generation;
+        assert.ok(previousLease > 0);
+        env.S.socket.readyState = 3;
+        env.window.setMicMuted(false);
+        assert.equal(env.S.voiceInputRecoveryLeaseGeneration, null);
+        assert.equal(env.controls.at(-1).lease_generation, previousLease);
+        env.window.dispatchEvent({ type: 'voice-input-recovery-ready', detail: { lease_generation: previousLease } });
+        assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+        if (timedOut) env.recoveryTimers()[0].callback();
+        env.S.socket = { readyState: 1, send: text => env.controls.push(JSON.parse(text)) };
+        env.window.dispatchEvent({ type: 'voice-input-socket-open', detail: { socket: env.S.socket } });
+        assert.equal(env.controls.at(-1).lease_generation, 1);
+        assert.equal(env.S.voiceInputRecoveryLeaseGeneration, 1);
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+        env.window.dispatchEvent({ type: 'voice-input-recovery-ready', detail: { lease_generation: 1 } });
+        assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+    });
+}
+
+test('a deduplicated unmute uses the already-sent lease generation', () => {
+    const env = loadCapture(true);
+    env.window.setMicMuted(false);
+    const sentCount = env.controls.length;
+    const lease = env.controls.at(-1).lease_generation;
+    env.window.setMicMuted(false);
+    assert.equal(env.controls.length, sentCount);
+    assert.equal(env.S.voiceInputRecoveryLeaseGeneration, lease);
+    env.window.dispatchEvent({ type: 'voice-input-recovery-ready', detail: { lease_generation: lease } });
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+});
+
+test('ASR status updates routing but only the first activation displays its toast', () => {
+    const env = loadCapture(false);
+    env.loadWebsocket();
+    env.status('ASR_INDEPENDENT_READY', { provider: 'test', session_epoch: 12 });
+    assert.equal(env.S.independentAsrActive, true);
+    assert.equal(env.messages.length, 1);
+    env.S.voiceInputRouteBlocked = true;
+    env.status('ASR_INDEPENDENT_READY', { provider: 'test', session_epoch: 12 });
+    assert.equal(env.S.voiceInputRouteBlocked, false);
+    assert.equal(env.messages.length, 1);
+    env.window.setMicMuted(false);
+    env.recoveryTimers()[0].callback();
+    const count = env.messages.length;
+    env.status('ASR_INDEPENDENT_READY', { provider: 'test', session_epoch: 12 });
+    assert.equal(env.messages.length, count);
+    env.status('VOICE_INPUT_READY', { session_epoch: 12, lease_generation: env.controls.at(-1).lease_generation });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+    assert.equal(env.messages.at(-1), '语音识别已恢复');
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), true);
+});
+
+test('READY and FAILED without the current lease identity cannot finish recovery', () => {
+    const env = loadCapture(true);
+    env.S.voiceSessionEpoch = 12;
+    env.window.setMicMuted(false);
+    const lease = env.S.voiceInputRecoveryLeaseGeneration;
+    env.emit('voice-input-recovery-ready');
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { session_epoch: 12 },
+    });
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-failed',
+        detail: { session_epoch: 12 },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { session_epoch: 12, lease_generation: lease },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+});
+
+test('websocket recovery failure requires the current lease generation', () => {
+    const env = loadCapture(true);
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.window.setMicMuted(false);
+    const lease = env.controls.at(-1).lease_generation;
+    env.status('VOICE_INPUT_RECOVERY_FAILED', { session_epoch: 12 });
+    assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+    env.status('VOICE_INPUT_RECOVERY_FAILED', { session_epoch: 12, lease_generation: lease });
+    assert.equal(env.S.voiceInputRecoveryState, 'failed');
+    assert.equal(env.window.appAudioCapture.canUploadOrdinaryMicFrame(), false);
+});

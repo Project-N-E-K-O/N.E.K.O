@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
 STATE = ROOT / "static" / "app" / "app-state.js"
 WEBSOCKET = ROOT / "static" / "app" / "app-websocket.js"
+ASR_RUNTIME = ROOT / "main_logic" / "core" / "asr_runtime.py"
 
 
 def test_mic_lease_state_and_priority_are_explicit() -> None:
@@ -97,6 +98,25 @@ def test_mic_lease_changes_are_sent_to_backend_with_generation() -> None:
     assert "owner: state.owner" in source
     assert "hard_muted: state.hard_muted" in source
     assert "focus_suppressed: state.focus_suppressed" in source
+
+
+def test_session_route_ack_clears_stale_independent_asr_state() -> None:
+    websocket = WEBSOCKET.read_text(encoding="utf-8")
+    assert "response.microphone_route === 'native'" in websocket
+    assert "response.microphone_route === 'independent'" in websocket
+    assert "S.independentAsrActive = response.microphone_route === 'independent';" in websocket
+
+
+def test_recovery_ready_reads_runtime_session_and_is_fenced() -> None:
+    source = ASR_RUNTIME.read_text(encoding="utf-8")
+    assert "def _independent_asr_transport_is_ready" in source
+    assert 'getattr(runtime, "_asr_session", None)' in source
+    assert "still_current=lambda: self._voice_input_ready_is_current" in source
+    assert "[voice-recovery] ready_emitting" in source
+    assert "[voice-recovery] ready_suppressed" in source
+    assert "def _voice_input_recovery_failure_is_current" in source
+    assert '"lease_generation": recovery_lease_generation' in source
+    assert "[voice-recovery] failure_emitting" in source
 
 
 def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:
