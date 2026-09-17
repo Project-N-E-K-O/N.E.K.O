@@ -380,7 +380,6 @@ const {
   anyDirty,
   canSave,
   pendingApplication,
-  setPendingApplication,
   virtualDefault,
   dirtyCount,
   selectProfile,
@@ -645,8 +644,9 @@ async function reloadSaved() {
   try {
     await pluginStore.reload(id)
     if (!alive || id !== props.pluginId) return
-    setPendingApplication(false)
-    applicationNotice.value = t('plugins.configUi.reloadComplete')
+    // The store clears the flag itself, and only while no newer write claimed it; when the
+    // flag survived, the host may still be behind, so do not claim the reload applied.
+    applicationNotice.value = pendingApplication.value ? '' : t('plugins.configUi.reloadComplete')
     await drafts.loadAll()
   } catch (err) {
     if (alive && id === props.pluginId)

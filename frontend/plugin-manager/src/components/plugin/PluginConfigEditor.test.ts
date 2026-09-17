@@ -414,6 +414,28 @@ describe('pending state synchronisation', () => {
     unmount()
   })
 
+  it('leaves the reload flag to the store instead of clearing it locally', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )!
+    reload.click()
+    // Drain the store call, the notice update, and the reloaded drafts.
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await nextTick()
+    }
+
+    // The store clears the flag itself once the host matches the saved configuration, and
+    // only while no newer write claimed it. This harness stubs the store out, so a
+    // surviving notice proves the editor did not clear the flag behind its back.
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+    unmount()
+  })
+
   it('keeps the form usable when only protected metadata is configured', async () => {
     vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
       plugin_id: 'test',
