@@ -247,6 +247,9 @@ export const usePluginStore = defineStore('plugin', () => {
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await startPlugin(pluginId)
+      // A fresh host resolves the persisted profile overlay while starting, so the
+      // running configuration matches the saved one again.
+      setPendingReload(pluginId, false)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)

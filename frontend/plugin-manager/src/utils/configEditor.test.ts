@@ -71,49 +71,92 @@ describe('literal configuration keys', () => {
   })
 })
 
-describe('profile preview empty tables', () => {
-  it('replaces explicit empty tables at every depth without changing inputs', () => {
-    const base = { cache: { ttl: 120 }, nested: { cache: { ttl: 60 }, keep: true } }
-    const overlay = { cache: {}, nested: { cache: {} } }
-    expect(applyProfileOverlay(base, overlay)).toEqual({
-      cache: {},
-      nested: { cache: {}, keep: true },
-    })
-    expect(base.cache).toEqual({ ttl: 120 })
-    expect(base.nested.cache).toEqual({ ttl: 60 })
-    expect(overlay).toEqual({ cache: {}, nested: { cache: {} } })
-  })
-
+describe('profile preview boundaries', () => {
   it('keeps inheritance for an empty root overlay and protects plugin metadata', () => {
     const base = { cache: { ttl: 120 }, plugin: { id: 'test' } }
     expect(applyProfileOverlay(base, {})).toEqual(base)
-    expect(applyProfileOverlay(base, { plugin: {}, cache: {} })).toEqual({
-      plugin: { id: 'test' },
-      cache: {},
-    })
+    // A profile may not modify the 'plugin' section, so its overlay is ignored.
+    expect(applyProfileOverlay(base, { plugin: {}, cache: {} })).toEqual(base)
   })
 })
 
-describe('server merge markers', () => {
-  it('replaces a table marked with __replace__ and drops the marker', () => {
-    const base = { feature: { a: 1, b: 2 } }
-    expect(applyProfileOverlay(base, { feature: { __replace__: true, b: 9 } })).toEqual({
-      feature: { b: 9 },
-    })
-    expect(base.feature).toEqual({ a: 1, b: 2 })
+describe('server merge markers and empty tables', () => {
+  // Expectations below are the real output of the server merge
+  // (plugin/server/infrastructure/config_profiles.py + config_merge.py), captured
+  // by running apply_user_config_profiles over the same base and overlay pairs.
+  const cases: Array<[string, any, any, any]> = [
+    [
+      'keeps base fields for a top-level empty table',
+      { cache: { ttl: 120 } },
+      { cache: {} },
+      { cache: { ttl: 120 } },
+    ],
+    [
+      'keeps a top-level __DELETE__ as data',
+      { keep: 1, drop: 2 },
+      { drop: '__DELETE__' },
+      { drop: '__DELETE__', keep: 1 },
+    ],
+    [
+      'keeps a top-level __replace__ marker for a new table',
+      { other: 1 },
+      { t: { __replace__: true, y: 3 } },
+      { other: 1, t: { __replace__: true, y: 3 } },
+    ],
+    [
+      'keeps a top-level __replace__ marker beside base fields',
+      { t: { x: 1 } },
+      { t: { __replace__: true, y: 3 } },
+      { t: { __replace__: true, x: 1, y: 3 } },
+    ],
+    [
+      'replaces a nested empty table',
+      { a: { cache: { ttl: 120 }, keep: 1 } },
+      { a: { cache: {} } },
+      { a: { cache: {}, keep: 1 } },
+    ],
+    [
+      'honours a nested __replace__ marker',
+      { a: { keep: 1, t: { x: 1, y: 2 } } },
+      { a: { t: { __replace__: true, y: 3 } } },
+      { a: { keep: 1, t: { y: 3 } } },
+    ],
+    [
+      'honours __replace__ for a table missing from the base',
+      { a: { keep: 1 } },
+      { a: { t: { __replace__: true, y: 3 } } },
+      { a: { keep: 1, t: { y: 3 } } },
+    ],
+    [
+      'honours a nested __DELETE__ marker',
+      { a: { keep: 1, drop: 2 } },
+      { a: { drop: '__DELETE__' } },
+      { a: { keep: 1 } },
+    ],
+    [
+      'replaces nested scalars and arrays',
+      { a: { n: 1, arr: [1, 2] } },
+      { a: { n: 5, arr: [3] } },
+      { a: { n: 5, arr: [3] } },
+    ],
+    [
+      'keeps markers below a table missing from the base',
+      { other: 1 },
+      { t: { u: { __replace__: true, y: 3 } } },
+      { other: 1, t: { u: { __replace__: true, y: 3 } } },
+    ],
+  ]
+
+  it.each(cases)('%s', (_name, base, overlay, expected) => {
+    expect(applyProfileOverlay(base, overlay)).toEqual(expected)
   })
 
-  it('removes keys marked with __DELETE__', () => {
-    expect(applyProfileOverlay({ a: 1, b: 2 }, { a: '__DELETE__' })).toEqual({ b: 2 })
-  })
-
-  it('applies both markers inside merged tables', () => {
-    const base = { section: { keep: 1, drop: 2, table: { x: 1, y: 2 } } }
-    const overlay = { section: { drop: '__DELETE__', table: { __replace__: true, y: 3 } } }
-    expect(applyProfileOverlay(base, overlay)).toEqual({
-      section: { keep: 1, table: { y: 3 } },
-    })
-    expect(base.section).toEqual({ keep: 1, drop: 2, table: { x: 1, y: 2 } })
+  it('never mutates the base or the overlay', () => {
+    const base = { a: { keep: 1, t: { x: 1 } }, cache: { ttl: 120 } }
+    const overlay = { a: { t: { __replace__: true, y: 3 } }, cache: {} }
+    applyProfileOverlay(base, overlay)
+    expect(base).toEqual({ a: { keep: 1, t: { x: 1 } }, cache: { ttl: 120 } })
+    expect(overlay).toEqual({ a: { t: { __replace__: true, y: 3 } }, cache: {} })
   })
 })
 

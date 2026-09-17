@@ -154,6 +154,57 @@ describe('profile deletion lifecycle', () => {
     expect(success).not.toHaveBeenCalled()
   })
 
+  it('clears the base-config reload path when the deleted profile was active', async () => {
+    // After deleting the active profile the server clears `active` while another
+    // saved profile remains, so the editor must still offer a working reload.
+    let state: configApi.PluginProfilesState = {
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: {
+          saved: { path: 'saved.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }
+    vi.spyOn(configApi, 'getPluginProfilesState').mockImplementation(async () => state)
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: {},
+    })
+    vi.spyOn(configApi, 'deletePluginProfileConfig').mockImplementation(async () => {
+      state = {
+        ...state,
+        config_profiles: {
+          active: null,
+          files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+        },
+      }
+      return { plugin_id: 'test', profile: 'saved', removed: true }
+    })
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
+    const { host, unmount } = await mountEditor()
+    host.querySelector<HTMLButtonElement>('.profile-entry')!.click()
+    await vi.waitFor(() =>
+      expect(document.querySelector('.profile-current-row button')).not.toBeNull()
+    )
+    document.querySelector<HTMLButtonElement>('.profile-current-row button')!.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.pendingApply'
+      )
+    )
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )
+    expect(reload).toBeDefined()
+    expect(reload?.disabled).toBe(false)
+    unmount()
+  })
+
   it('keeps a reload hint after deleting the active profile, including after remount', async () => {
     const { deletion, host, unmount } = await startProfileDeletion()
     deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })

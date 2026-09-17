@@ -230,22 +230,15 @@ export function deepClone<T>(v: T): T {
   return cloneDeep(v)
 }
 
-function deepMerge(base: any, updates: any): any {
-  if (base == null || typeof base !== 'object') return deepClone(updates)
-  if (updates == null || typeof updates !== 'object') return deepClone(updates)
-  // An explicit empty table clears that section, matching the server merge.
-  if (isConfigObject(updates) && Object.keys(updates).length === 0) return deepClone(updates)
-  // 对象递归合并；数组和原始值直接替换（不做逐项合并）
-  const out: any = Array.isArray(base) ? [...base] : { ...base }
-  for (const [k, v] of Object.entries(updates)) applyEntry(out, k, v)
-  return out
-}
-
-// The server merge (plugin/server/infrastructure/config_merge.py) treats these as
-// data: "__DELETE__" removes a key and a table carrying "__replace__" replaces the
-// base table instead of merging into it. The preview must report the same result.
+// Mirrors plugin/server/infrastructure/config_merge.py. Markers are ordinary data
+// except while merging into a table that already exists in the base, which is why
+// they are only interpreted here and never by `applyProfileOverlay`.
 const DELETE_MARKER = '__DELETE__'
 const REPLACE_MARKER = '__replace__'
+
+function isMapping(value: any): value is ConfigObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 function replacementTable(value: ConfigObject): ConfigObject {
   const table: ConfigObject = {}
@@ -254,19 +247,30 @@ function replacementTable(value: ConfigObject): ConfigObject {
   return table
 }
 
-function applyEntry(target: any, key: string, value: any): void {
-  if (value === DELETE_MARKER) {
-    delete target[key]
-    return
+function deepMerge(base: ConfigObject, updates: ConfigObject): ConfigObject {
+  const out: ConfigObject = { ...base }
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === DELETE_MARKER) {
+      delete out[key]
+      continue
+    }
+    if (isMapping(value)) {
+      if (value[REPLACE_MARKER] === true) {
+        setOwn(out, key, replacementTable(value))
+        continue
+      }
+      const current = hasOwn(out, key) ? out[key] : undefined
+      if (isMapping(current)) {
+        // An explicit empty table clears that table, matching the server merge.
+        setOwn(out, key, Object.keys(value).length === 0 ? {} : deepMerge(current, value))
+        continue
+      }
+      setOwn(out, key, deepClone(value))
+      continue
+    }
+    setOwn(out, key, deepClone(value))
   }
-  if (isConfigObject(value) && value[REPLACE_MARKER] === true) {
-    setOwn(target, key, replacementTable(value))
-    return
-  }
-  const current = hasOwn(target, key) ? target[key] : undefined
-  if (current && typeof current === 'object' && !Array.isArray(current) && isConfigObject(value))
-    setOwn(target, key, deepMerge(current, value))
-  else setOwn(target, key, value)
+  return out
 }
 
 export function applyProfileOverlay(base: any, overlay: any): any {
@@ -277,7 +281,11 @@ export function applyProfileOverlay(base: any, overlay: any): any {
   for (const [k, v] of Object.entries(overlay)) {
     // Profile cannot modify the 'plugin' section; skip it — shown only in JSON preview
     if (k === 'plugin') continue
-    applyEntry(result, k, v)
+    // Only a table that already exists in the base is merged, so markers and empty
+    // tables keep their literal meaning for any other key.
+    const current = hasOwn(result, k) ? result[k] : undefined
+    if (isMapping(current) && isMapping(v)) setOwn(result, k, deepMerge(current, v))
+    else setOwn(result, k, deepClone(v))
   }
   return result
 }

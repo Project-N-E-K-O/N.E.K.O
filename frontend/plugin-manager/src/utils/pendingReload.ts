@@ -9,29 +9,57 @@ const STORAGE_KEY = 'neko-plugin-config-pending-reload'
 
 type PendingRecord = Record<string, true>
 
-function readRecord(): PendingRecord {
+// Mirrors storage so the flag still works when localStorage is unavailable or
+// throws, which is why callers do not need their own fallback.
+const inMemory: PendingRecord = {}
+
+function storage(): Storage | undefined {
   try {
-    const raw = globalThis.localStorage?.getItem(STORAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : null
+    return globalThis.localStorage ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function readRecord(): PendingRecord | null {
+  const store = storage()
+  if (!store) return null
+  let raw: string | null
+  try {
+    raw = store.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
     return parsed && typeof parsed === 'object' ? (parsed as PendingRecord) : {}
   } catch {
-    // Storage can be unavailable; callers fall back to in-memory state.
+    // Corrupt content means "nothing pending" rather than "unavailable".
     return {}
   }
 }
 
+// Storage is authoritative when it works, so clearing it clears the flag; the
+// in-memory mirror only serves contexts where storage is unavailable or throws.
 export function hasPendingReload(pluginId: string): boolean {
-  return readRecord()[pluginId] === true
+  if (!pluginId) return false
+  const record = readRecord()
+  return record ? record[pluginId] === true : inMemory[pluginId] === true
 }
 
 export function setPendingReload(pluginId: string, pending: boolean): void {
   if (!pluginId) return
+  if (pending) inMemory[pluginId] = true
+  else delete inMemory[pluginId]
+  const store = storage()
+  if (!store) return
   try {
-    const record = readRecord()
+    const record = readRecord() ?? {}
     if (pending) record[pluginId] = true
     else delete record[pluginId]
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(record))
+    store.setItem(STORAGE_KEY, JSON.stringify(record))
   } catch {
-    // Best effort only.
+    // The in-memory mirror still drives this session.
   }
 }

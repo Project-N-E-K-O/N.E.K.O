@@ -74,9 +74,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const valid = (id: string, epoch: number) => id === pluginId.value && epoch === generation
   const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-  function setPendingApplication(pending: boolean) {
-    pendingApplication.value = pending
-    setPendingReload(pluginId.value, pending)
+  // Storage is written for the plugin that performed the operation, while the
+  // in-memory flag only follows it while that plugin is still the current one.
+  function setPendingApplication(pending: boolean, forPluginId = pluginId.value) {
+    setPendingReload(forPluginId, pending)
+    if (forPluginId === pluginId.value) pendingApplication.value = pending
   }
   async function loadProfile(name: string): Promise<void> {
     if (records.get(name)?.loaded) return
@@ -173,16 +175,21 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       name = selected.value,
       record = current.value
     const snapshot = deepClone(record.draft)
+    // Captured before the request so a later plugin switch cannot change the answer.
+    const appliesToRunningHost = name === active.value
     saving.value = true
     error.value = null
     try {
       const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
-      if (!valid(id, epoch)) return null
+      if (!valid(id, epoch)) {
+        if (appliesToRunningHost) setPendingApplication(true, id)
+        return null
+      }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
       await loadAll()
       // Only the active profile changes what the running host should be using.
-      if (name === active.value) setPendingApplication(true)
+      if (appliesToRunningHost) setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {
       if (valid(id, epoch)) error.value = message(err)
@@ -215,11 +222,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     saving.value = true
     try {
       await api.deletePluginProfileConfig(id, name)
-      if (!valid(id, epoch)) return
-      records.delete(name)
       // Deleting the active profile leaves the host running its configuration,
       // so it still needs a reload; other deletions change nothing at runtime.
-      if (wasActive) setPendingApplication(true)
+      if (wasActive) setPendingApplication(true, id)
+      if (!valid(id, epoch)) return
+      records.delete(name)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -231,10 +238,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     saving.value = true
     try {
       const result = await api.setPluginActiveProfile(id, name)
+      // Activation always changes what the host should be running.
+      setPendingApplication(true, id)
       if (!valid(id, epoch)) return
       profiles.value = result
       await loadAll()
-      if (active.value) setPendingApplication(true)
     } finally {
       if (valid(id, epoch)) saving.value = false
     }

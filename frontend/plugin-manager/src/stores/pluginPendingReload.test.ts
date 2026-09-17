@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { usePluginStore } from './plugin'
-import { getPlugins, getPluginStatus, reloadPlugin } from '@/api/plugins'
+import { getPlugins, getPluginStatus, reloadPlugin, startPlugin } from '@/api/plugins'
 import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/i18n', () => ({
@@ -52,5 +52,15 @@ describe('plugin store reload bookkeeping', () => {
     await expect(store.reload('demo')).rejects.toThrow('reload failed')
 
     expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('clears the flag after a fresh start', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(startPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
+    const store = usePluginStore()
+
+    await store.start('demo')
+
+    expect(hasPendingReload('demo')).toBe(false)
   })
 })

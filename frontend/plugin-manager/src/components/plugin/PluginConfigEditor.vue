@@ -275,7 +275,7 @@
           <el-button
             type="primary"
             :loading="applying"
-            :disabled="loading || saving || !active"
+            :disabled="loading || saving"
             @click="reloadSaved"
             >{{ t('plugins.reloadPlugin') }}</el-button
           >
@@ -636,10 +636,10 @@ async function saveAndReload() {
     await reloadSaved()
 }
 async function reloadSaved() {
-  // Reloading applies the persisted active profile, whatever is being viewed.
-  const id = props.pluginId,
-    name = active.value
-  if (!name || applying.value) return
+  // Reloading applies whatever the server now resolves, including the base config
+  // when no profile is active any more.
+  const id = props.pluginId
+  if (applying.value) return
   applying.value = true
   operationError.value = null
   try {

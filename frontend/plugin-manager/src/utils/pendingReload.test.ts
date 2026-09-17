@@ -29,5 +29,20 @@ describe('pending reload storage', () => {
     localStorage.setItem('neko-plugin-config-pending-reload', 'not json')
     expect(hasPendingReload('alpha')).toBe(false)
     expect(() => setPendingReload('alpha', true)).not.toThrow()
+    expect(hasPendingReload('alpha')).toBe(true)
+  })
+
+  it('falls back to memory when storage throws', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage denied')
+    })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied')
+    })
+    expect(hasPendingReload('alpha')).toBe(false)
+    expect(() => setPendingReload('alpha', true)).not.toThrow()
+    expect(hasPendingReload('alpha')).toBe(true)
+    setPendingReload('alpha', false)
+    expect(hasPendingReload('alpha')).toBe(false)
   })
 })
