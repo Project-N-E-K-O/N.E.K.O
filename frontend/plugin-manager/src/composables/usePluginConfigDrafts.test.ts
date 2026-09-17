@@ -142,6 +142,41 @@ describe('config draft lifecycle', () => {
     expect(hasPendingReload('alpha')).toBe(true)
   })
 
+  it('keeps the implicit activation when the refresh after saving fails', async () => {
+    // The server activates the saved profile, but refreshing the profile state
+    // fails, so the host still needs a reload and the snapshot is all we have.
+    let active: string | null = null
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active,
+        files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      active = 'other'
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.active.value).toBeNull()
+
+    vi.mocked(getPluginEffectiveBaseConfig).mockRejectedValue(new Error('refresh failed'))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    await drafts.saveProfile()
+
+    expect(drafts.active.value).toBeNull()
+    expect(hasPendingReload('alpha')).toBe(true)
+  })
+
   it('keeps the implicit activation when the save is invalidated', async () => {
     // No active profile: the server activates whatever is saved, so the original
     // plugin still needs a reload even if the user left during the request.

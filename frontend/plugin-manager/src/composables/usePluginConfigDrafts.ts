@@ -195,9 +195,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       record.original = deepClone(result.config || snapshot)
       await loadAll()
       // Only the active profile changes what the running host should be using. The
-      // refreshed state is authoritative because saving also activates the profile
-      // when the plugin had none, which the pre-request snapshot cannot see.
-      if (valid(id, epoch) ? name === active.value : wasActive || mayBecomeActive)
+      // refreshed state is authoritative, but the pre-request snapshot is the only
+      // evidence left when the refresh failed or the plugin switched meanwhile.
+      if (wasActive || mayBecomeActive || (valid(id, epoch) && name === active.value))
         setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {

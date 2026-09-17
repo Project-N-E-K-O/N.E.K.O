@@ -13,12 +13,11 @@ afterEach(() => {
 const STORAGE_KEY = 'neko-plugin-config-pending-reload'
 
 /**
- * The event another renderer window receives. `key`/`newValue` are defined on the
- * instance because the DOM lib declares `StorageEvent` with an optional init
- * dictionary that static analysis does not model.
+ * The event another renderer window receives. A plain Event carries the two fields
+ * the handler reads, which avoids `StorageEvent`'s init dictionary altogether.
  */
-function crossWindowChange(record: Record<string, true> | null): StorageEvent {
-  const event = new StorageEvent('storage')
+function crossWindowChange(record: Record<string, true> | null): Event {
+  const event = new Event('storage')
   Object.defineProperties(event, {
     key: { value: STORAGE_KEY },
     newValue: { value: record === null ? null : JSON.stringify(record) },
@@ -122,7 +121,7 @@ describe('pending reload storage', () => {
   it('ignores storage events for unrelated keys', () => {
     const seen: Array<[string, boolean]> = []
     const release = subscribePendingReload((pluginId, pending) => seen.push([pluginId, pending]))
-    const unrelated = new StorageEvent('storage')
+    const unrelated = new Event('storage')
     Object.defineProperty(unrelated, 'key', { value: 'neko-dark-mode' })
     window.dispatchEvent(unrelated)
     expect(seen).toEqual([])
