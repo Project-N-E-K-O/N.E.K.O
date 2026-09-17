@@ -2205,6 +2205,9 @@
         "storagePickTarget": "选择位置",
         "storagePickTargetFailed": "选择目标位置失败，请手动输入路径",
         "storagePreflightFailed": "预检失败",
+        "storagePreflightInstanceChanged": "服务已重新启动，请重新检查目标位置。",
+        "storagePreflightExpired": "本次预检已失效，请重新检查目标位置。",
+        "storagePreflightStillRunning": "目标位置预检仍未完成，请稍后重试或安全退出应用。",
         "storagePreflightReady": "预检通过。更改存储位置后会重启，旧数据默认保留。",
         "storagePreflightTarget": "目标位置：{{path}}",
         "storageExistingTargetWarning": "目标位置已经包含现有数据，后续确认迁移前需要二次确认。",
@@ -2217,6 +2220,9 @@
         "storageRestartFailed": "重启请求失败"
     },
     "storage": {
+        "preflightInstanceChanged": "服务已重新启动，请重新确认存储位置。",
+        "preflightExpired": "本次存储预检已失效，请重新检查目标位置。",
+        "preflightStillRunning": "目标位置预检仍未完成，请稍后重试或安全退出应用。",
         "bootstrapError": "无法读取存储位置初始化信息，请重试。",
         "blockingGeneric": "当前无法使用所选存储位置，请换一个位置或稍后重试。",
         "blockingInsufficientSpace": "目标卷剩余空间不足，无法安全执行关闭后的迁移。",

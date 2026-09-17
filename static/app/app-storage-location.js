@@ -145,7 +145,7 @@
     }
 
     function waitBeforeDeadline(promise, deadline, controller) {
-        var remainingMs = deadline - Date.now();
+        var remainingMs = deadline - performance.now();
         if (!(remainingMs > 0)) {
             if (controller) controller.abort();
             return Promise.reject(storageRequestTimeoutError());
@@ -166,7 +166,7 @@
     async function fetchWithTimeout(url, options, timeoutMs) {
         if (!(timeoutMs > 0)) return fetch(url, options);
 
-        var deadline = Date.now() + timeoutMs;
+        var deadline = performance.now() + timeoutMs;
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
         var requestOptions = Object.assign({}, options || {});
         if (controller) requestOptions.signal = controller.signal;
@@ -184,8 +184,8 @@
     }
 
     async function waitForStoragePreflight(operationId, expectedInstanceId) {
-        var deadline = Date.now() + STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS;
-        while (Date.now() < deadline) {
+        var deadline = performance.now() + STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS;
+        while (performance.now() < deadline) {
             var status = null;
             try {
                 var statusResponse = await fetchWithTimeout(
@@ -423,7 +423,7 @@
             try {
                 var result = await waitBeforeDeadline(
                     Promise.resolve(host.closeWindow()),
-                    Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                    performance.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
                     null
                 );
                 return !!(result && result.ok === true);
@@ -602,7 +602,7 @@
         try {
             var result = await waitBeforeDeadline(
                 Promise.resolve(host.getBackendRecoveryState()),
-                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                performance.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
                 null
             );
             return result && typeof result === 'object' ? result : null;
@@ -743,7 +743,7 @@
         try {
             var result = await waitBeforeDeadline(
                 Promise.resolve(host.requestSafeQuit()),
-                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                performance.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
                 null
             );
             if (result && result.ok === true) return true;
@@ -780,7 +780,7 @@
             setMaintenanceFallbackState(recoveryState);
             var result = await waitBeforeDeadline(
                 Promise.resolve(host.retryBackendRecovery()),
-                Date.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
+                performance.now() + STORAGE_HOST_CAPABILITY_TIMEOUT_MS,
                 null
             );
             if (!result || typeof result !== 'object') {

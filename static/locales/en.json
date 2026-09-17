@@ -2205,6 +2205,9 @@
         "storagePickTarget": "Choose Location",
         "storagePickTargetFailed": "Failed to choose target location. Please enter a path manually.",
         "storagePreflightFailed": "Preflight failed",
+        "storagePreflightInstanceChanged": "The service restarted. Check the target location again.",
+        "storagePreflightExpired": "This preflight expired. Check the target location again.",
+        "storagePreflightStillRunning": "Target preflight is still running. Retry later or quit the app safely.",
         "storagePreflightReady": "Preflight passed. The app will restart after the storage location changes; old data is kept by default.",
         "storagePreflightTarget": "Target location: {{path}}",
         "storageExistingTargetWarning": "The target location already contains data. A second confirmation will be required before migration.",
@@ -2217,6 +2220,9 @@
         "storageRestartFailed": "Restart request failed"
     },
     "storage": {
+        "preflightInstanceChanged": "The service restarted. Confirm the storage location again.",
+        "preflightExpired": "This storage preflight expired. Check the target location again.",
+        "preflightStillRunning": "Target preflight is still running. Retry later or quit the app safely.",
         "bootstrapError": "Failed to load storage initialization information. Please try again.",
         "blockingGeneric": "The selected storage location cannot be used right now. Please choose another location or try again later.",
         "blockingInsufficientSpace": "The target volume does not have enough free space for a safe migration.",

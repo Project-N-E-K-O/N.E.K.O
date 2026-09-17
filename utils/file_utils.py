@@ -694,7 +694,8 @@ def fsync_directory_best_effort(path: str | os.PathLike[str]) -> None:
     except OSError:
         pass
     finally:
-        os.close(handle)
+        with suppress(OSError):
+            os.close(handle)
 
 
 def _publish_once(source: str, target_path: Path) -> None:

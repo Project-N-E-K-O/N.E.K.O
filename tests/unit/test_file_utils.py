@@ -146,6 +146,33 @@ def test_directory_flush_does_not_block_when_directory_becomes_fifo(tmp_path, mo
             saved.rename(victim)
 
 
+def test_directory_close_error_does_not_report_published_write_as_failed(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    real_open = os.open
+    real_close = os.close
+    directory_fd = []
+
+    def record_directory_open(path, flags, mode=0o777, *, dir_fd=None):
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if Path(path) == tmp_path:
+            directory_fd.append(fd)
+        return fd
+
+    def fail_directory_close(fd):
+        real_close(fd)
+        if fd in directory_fd:
+            raise OSError("directory close failed after publication")
+
+    monkeypatch.setattr(file_utils.os, "open", record_directory_open)
+    monkeypatch.setattr(file_utils.os, "close", fail_directory_close)
+
+    atomic_write_json(target, {"version": 1})
+
+    assert directory_fd
+    assert target.read_text(encoding="utf-8")
+    assert read_json(target) == {"version": 1}
+
+
 def test_atomic_write_json_forwards_dumps_options(tmp_path):
     target = tmp_path / "state.json"
 

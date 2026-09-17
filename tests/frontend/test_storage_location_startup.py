@@ -572,9 +572,12 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
     restart_operation_id = "same-root-rebind-operation"
     page.add_init_script(
         """(() => {
-            const realNow = Date.now.bind(Date);
+            const realNow = performance.now.bind(performance);
             window.__storagePreflightClockOffset = 0;
-            Date.now = () => realNow() + window.__storagePreflightClockOffset;
+            Object.defineProperty(performance, 'now', {
+                configurable: true,
+                value: () => realNow() + window.__storagePreflightClockOffset
+            });
         })();"""
     )
 

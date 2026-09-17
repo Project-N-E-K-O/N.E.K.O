@@ -5076,9 +5076,12 @@ def test_memory_browser_storage_combined_restart_reports_preflight_blocking(mock
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     mock_page.add_init_script(
         """(() => {
-            const realNow = Date.now.bind(Date);
+            const realNow = performance.now.bind(performance);
             window.__storagePreflightClockOffset = 0;
-            Date.now = () => realNow() + window.__storagePreflightClockOffset;
+            Object.defineProperty(performance, 'now', {
+                configurable: true,
+                value: () => realNow() + window.__storagePreflightClockOffset
+            });
         })();"""
     )
 

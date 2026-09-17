@@ -2205,6 +2205,9 @@
         "storagePickTarget": "位置を選択",
         "storagePickTargetFailed": "移行先の選択に失敗しました。パスを手動で入力してください。",
         "storagePreflightFailed": "事前チェックに失敗しました",
+        "storagePreflightInstanceChanged": "サービスが再起動しました。保存先をもう一度確認してください。",
+        "storagePreflightExpired": "この事前チェックは期限切れです。保存先をもう一度確認してください。",
+        "storagePreflightStillRunning": "保存先の事前チェックはまだ実行中です。後で再試行するか、アプリを安全に終了してください。",
         "storagePreflightReady": "事前チェックに成功しました。ストレージ位置を変更すると再起動します。古いデータは既定で保持されます。",
         "storagePreflightTarget": "移行先：{{path}}",
         "storageExistingTargetWarning": "移行先には既存データがあります。移行確認前に追加確認が必要です。",
@@ -2217,6 +2220,9 @@
         "storageRestartFailed": "再起動要求に失敗しました"
     },
     "storage": {
+        "preflightInstanceChanged": "サービスが再起動しました。保存場所をもう一度確認してください。",
+        "preflightExpired": "この事前チェックは期限切れです。保存先をもう一度確認してください。",
+        "preflightStillRunning": "保存先の事前チェックはまだ実行中です。後で再試行するか、アプリを安全に終了してください。",
         "bootstrapError": "ストレージ初期化情報を読み込めませんでした。もう一度お試しください。",
         "blockingGeneric": "選択した保存場所は現在使用できません。別の場所を選ぶか、しばらくしてからもう一度お試しください。",
         "blockingInsufficientSpace": "移行を安全に行うための空き容量が、保存先ボリュームに足りません。",

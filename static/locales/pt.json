@@ -2205,6 +2205,9 @@
         "storagePickTarget": "Escolher local",
         "storagePickTargetFailed": "Falha ao escolher o local de destino. Informe o caminho manualmente.",
         "storagePreflightFailed": "Pré-verificação falhou",
+        "storagePreflightInstanceChanged": "O serviço reiniciou. Verifique novamente o local de destino.",
+        "storagePreflightExpired": "Esta pré-verificação expirou. Verifique novamente o local de destino.",
+        "storagePreflightStillRunning": "A pré-verificação ainda está em andamento. Tente novamente mais tarde ou feche o aplicativo com segurança.",
         "storagePreflightReady": "Pré-verificação aprovada. Ao alterar o local de armazenamento, o app será reiniciado; os dados antigos são mantidos por padrão.",
         "storagePreflightTarget": "Local de destino: {{path}}",
         "storageExistingTargetWarning": "O local de destino já contém dados. Será necessária uma segunda confirmação antes da migração.",
@@ -2217,6 +2220,9 @@
         "storageRestartFailed": "Falha ao solicitar reinício"
     },
     "storage": {
+        "preflightInstanceChanged": "O serviço reiniciou. Confirme novamente o local de armazenamento.",
+        "preflightExpired": "Esta pré-verificação expirou. Verifique novamente o local de destino.",
+        "preflightStillRunning": "A pré-verificação ainda está em andamento. Tente novamente mais tarde ou feche o aplicativo com segurança.",
         "bootstrapError": "Não foi possível carregar as informações de inicialização do armazenamento. Tente novamente.",
         "blockingGeneric": "O local de armazenamento selecionado não pode ser usado agora. Escolha outro local ou tente novamente mais tarde.",
         "blockingInsufficientSpace": "O volume de destino não tem espaço livre suficiente para uma migração segura.",

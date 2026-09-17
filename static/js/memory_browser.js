@@ -2171,7 +2171,7 @@
     }
 
     function waitForStorageRequestDeadline(promise, deadline, controller) {
-        const remainingMs = deadline - Date.now();
+        const remainingMs = deadline - performance.now();
         if (!(remainingMs > 0)) {
             if (controller) controller.abort();
             return Promise.reject(storageRequestTimeoutError());
@@ -2189,7 +2189,7 @@
     }
 
     async function storageFetchWithTimeout(url, options, timeoutMs) {
-        const deadline = Date.now() + timeoutMs;
+        const deadline = performance.now() + timeoutMs;
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         const requestOptions = Object.assign({}, options || {});
         if (controller) requestOptions.signal = controller.signal;
@@ -2210,8 +2210,8 @@
     }
 
     async function waitForStoragePreflight(operationId, expectedInstanceId) {
-        const deadline = Date.now() + STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS;
-        while (Date.now() < deadline) {
+        const deadline = performance.now() + STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS;
+        while (performance.now() < deadline) {
             let status = null;
             try {
                 const response = await storageFetchWithTimeout(

@@ -2205,6 +2205,9 @@
         "storagePickTarget": "위치 선택",
         "storagePickTargetFailed": "대상 위치 선택에 실패했습니다. 경로를 직접 입력하세요.",
         "storagePreflightFailed": "사전 검사 실패",
+        "storagePreflightInstanceChanged": "서비스가 다시 시작되었습니다. 대상 위치를 다시 확인하세요.",
+        "storagePreflightExpired": "이 사전 검사는 만료되었습니다. 대상 위치를 다시 확인하세요.",
+        "storagePreflightStillRunning": "대상 위치 사전 검사가 아직 진행 중입니다. 나중에 다시 시도하거나 앱을 안전하게 종료하세요.",
         "storagePreflightReady": "사전 검사가 통과되었습니다. 저장 위치를 변경하면 앱이 다시 시작되며, 이전 데이터는 기본적으로 보관됩니다.",
         "storagePreflightTarget": "대상 위치: {{path}}",
         "storageExistingTargetWarning": "대상 위치에 기존 데이터가 있습니다. 마이그레이션 확인 전에 추가 확인이 필요합니다.",
@@ -2217,6 +2220,9 @@
         "storageRestartFailed": "다시 시작 요청 실패"
     },
     "storage": {
+        "preflightInstanceChanged": "서비스가 다시 시작되었습니다. 저장 위치를 다시 확인하세요.",
+        "preflightExpired": "이 사전 검사는 만료되었습니다. 대상 위치를 다시 확인하세요.",
+        "preflightStillRunning": "대상 위치 사전 검사가 아직 진행 중입니다. 나중에 다시 시도하거나 앱을 안전하게 종료하세요.",
         "bootstrapError": "저장소 초기화 정보를 불러오지 못했습니다. 다시 시도해 주세요.",
         "blockingGeneric": "선택한 저장 위치는 지금 사용할 수 없습니다. 다른 위치를 선택하거나 잠시 후 다시 시도해 주세요.",
         "blockingInsufficientSpace": "안전하게 이전하려면 대상 볼륨에 남은 공간이 부족합니다.",
