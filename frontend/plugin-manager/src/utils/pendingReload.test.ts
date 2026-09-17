@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hasPendingReload, setPendingReload, subscribePendingReload } from './pendingReload'
 
-const STORAGE_KEY = 'neko-plugin-config-pending-reload:alpha'
+const keyFor = (pluginId: string) => `neko-plugin-config-pending-reload:${pluginId}`
 
 /**
  * The event another renderer window receives. The write that triggered it is applied
@@ -12,13 +12,13 @@ function crossWindowChange(pluginId: string | null, pending: boolean): Event {
   if (pluginId === null) {
     localStorage.clear()
   } else if (pending) {
-    localStorage.setItem(`neko-plugin-config-pending-reload:${pluginId}`, '1')
+    localStorage.setItem(keyFor(pluginId), '1')
   } else {
-    localStorage.removeItem(`neko-plugin-config-pending-reload:${pluginId}`)
+    localStorage.removeItem(keyFor(pluginId))
   }
   const event = new Event('storage')
   Object.defineProperties(event, {
-    key: { value: pluginId === null ? null : `neko-plugin-config-pending-reload:${pluginId}` },
+    key: { value: pluginId === null ? null : keyFor(pluginId) },
     newValue: { value: pluginId === null || !pending ? null : '1' },
   })
   return event
