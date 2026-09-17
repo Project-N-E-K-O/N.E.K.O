@@ -154,13 +154,19 @@ describe('profile deletion lifecycle', () => {
     expect(success).not.toHaveBeenCalled()
   })
 
-  it('keeps a reload hint after deleting the active profile', async () => {
-    const { deletion, host } = await startProfileDeletion()
+  it('keeps a reload hint after deleting the active profile, including after remount', async () => {
+    const { deletion, host, unmount } = await startProfileDeletion()
     deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
     await vi.waitFor(() =>
       expect(host.querySelector('.apply-status')?.textContent).toContain(
         'plugins.configUi.pendingApply'
       )
+    )
+    // The hint is derived from persisted state, so it survives a remount.
+    unmount()
+    const { host: remounted } = await mountEditor()
+    expect(remounted.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
     )
   })
 

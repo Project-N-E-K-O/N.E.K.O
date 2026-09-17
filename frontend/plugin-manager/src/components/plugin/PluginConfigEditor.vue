@@ -251,9 +251,9 @@
           ></small
         >
         <p
-          v-if="!dirty && (applicationNotice || pendingForActive)"
+          v-if="!dirty && (applicationNotice || pendingApplication)"
           class="apply-status"
-          :class="{ pending: pendingForActive }"
+          :class="{ pending: pendingApplication }"
         >
           {{ applicationNotice || t('plugins.configUi.pendingApply') }}
         </p>
@@ -265,14 +265,17 @@
         <el-button v-if="dirty" text :disabled="saving || applying" @click="undoAll">{{
           t('plugins.configUi.discardChanges')
         }}</el-button>
-        <template v-if="pendingForActive && !dirty">
-          <el-button :disabled="loading || saving || applying" @click="hotUpdate">{{
-            t('plugins.hotUpdate')
-          }}</el-button>
+        <template v-if="pendingApplication && !dirty">
+          <el-button
+            v-if="pendingForActive"
+            :disabled="loading || saving || applying"
+            @click="hotUpdate"
+            >{{ t('plugins.hotUpdate') }}</el-button
+          >
           <el-button
             type="primary"
             :loading="applying"
-            :disabled="loading || saving"
+            :disabled="loading || saving || !active"
             @click="reloadSaved"
             >{{ t('plugins.reloadPlugin') }}</el-button
           >
@@ -506,8 +509,7 @@ const otherDirtyCount = computed(
   () => names.value.filter((n) => n !== selected.value && dirtyCount(n)).length
 )
 const pendingForActive = computed(
-  () =>
-    !!selected.value && selected.value === active.value && pendingApplication.has(selected.value)
+  () => pendingApplication.value && !!selected.value && selected.value === active.value
 )
 const preview = computed(() => applyProfileOverlay(base.value, current.value?.draft || {}))
 const originalPreview = computed(() =>
@@ -590,7 +592,6 @@ async function removeProfile() {
   const id = props.pluginId,
     name = selected.value
   if (!name || virtualDefault(name)) return
-  const wasActive = name === active.value
   try {
     await ElMessageBox.confirm(
       t('plugin.removeProfile.confirm', { name }) +
@@ -602,9 +603,6 @@ async function removeProfile() {
     await drafts.deleteProfile(name)
     if (!alive || id !== props.pluginId || name !== selected.value) return
     ElMessage.success(t('common.success'))
-    // The host keeps running the deleted profile's configuration, so keep a
-    // reload hint visible now that no selected profile can be pending.
-    if (wasActive) applicationNotice.value = t('plugins.configUi.pendingApply')
   } catch (err) {
     if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
       operationError.value = errorText(err)
@@ -638,15 +636,16 @@ async function saveAndReload() {
     await reloadSaved()
 }
 async function reloadSaved() {
+  // Reloading applies the persisted active profile, whatever is being viewed.
   const id = props.pluginId,
-    name = selected.value
-  if (!name || name !== active.value || applying.value) return
+    name = active.value
+  if (!name || applying.value) return
   applying.value = true
   operationError.value = null
   try {
     await pluginStore.reload(id)
     if (!alive || id !== props.pluginId) return
-    setPendingApplication(name, false)
+    setPendingApplication(false)
     applicationNotice.value = t('plugins.configUi.reloadComplete')
     await drafts.loadAll()
   } catch (err) {

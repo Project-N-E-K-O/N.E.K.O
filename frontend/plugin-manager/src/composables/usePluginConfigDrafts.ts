@@ -7,6 +7,7 @@ import {
   restoreConfigPath,
   type ConfigObject,
 } from '@/utils/configEditor'
+import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 interface ProfileDraft {
   original: ConfigObject
@@ -14,33 +15,6 @@ interface ProfileDraft {
   loaded: boolean
   loading: boolean
   error: string | null
-}
-
-// Pending application must outlive the editor: the profile endpoint only persists
-// the mapping, so a saved or activated profile stays unapplied until the plugin
-// is reloaded. Storage is per plugin and best-effort; the in-memory set still
-// drives the current session when storage is unavailable.
-const PENDING_STORAGE_KEY = 'neko-plugin-config-pending-application'
-
-function readStoredPending(): Record<string, string[]> {
-  try {
-    const raw = globalThis.localStorage?.getItem(PENDING_STORAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : null
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string[]>) : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeStoredPending(pluginId: string, names: string[]): void {
-  try {
-    const stored = readStoredPending()
-    if (names.length) stored[pluginId] = names
-    else delete stored[pluginId]
-    globalThis.localStorage?.setItem(PENDING_STORAGE_KEY, JSON.stringify(stored))
-  } catch {
-    // Best effort only.
-  }
 }
 
 export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
@@ -55,7 +29,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const saving = ref(false)
   const error = ref<string | null>(null)
   const ready = ref(false)
-  const pendingApplication = reactive(new Set<string>())
+  // True while the running host may not match the persisted configuration.
+  const pendingApplication = ref(false)
   let generation = 0
   let loadVersion = 0
   const requests = new Map<string, Promise<void>>()
@@ -99,10 +74,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const valid = (id: string, epoch: number) => id === pluginId.value && epoch === generation
   const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-  function setPendingApplication(name: string, pending: boolean) {
-    if (pending) pendingApplication.add(name)
-    else pendingApplication.delete(name)
-    writeStoredPending(pluginId.value, [...pendingApplication])
+  function setPendingApplication(pending: boolean) {
+    pendingApplication.value = pending
+    setPendingReload(pluginId.value, pending)
   }
   async function loadProfile(name: string): Promise<void> {
     if (records.get(name)?.loaded) return
@@ -206,8 +180,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       if (!valid(id, epoch)) return null
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
-      setPendingApplication(name, true)
       await loadAll()
+      // Only the active profile changes what the running host should be using.
+      if (name === active.value) setPendingApplication(true)
       return valid(id, epoch) ? name : null
     } catch (err) {
       if (valid(id, epoch)) error.value = message(err)
@@ -236,12 +211,15 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   async function deleteProfile(name: string) {
     const id = pluginId.value,
       epoch = generation
+    const wasActive = name === active.value
     saving.value = true
     try {
       await api.deletePluginProfileConfig(id, name)
       if (!valid(id, epoch)) return
       records.delete(name)
-      setPendingApplication(name, false)
+      // Deleting the active profile leaves the host running its configuration,
+      // so it still needs a reload; other deletions change nothing at runtime.
+      if (wasActive) setPendingApplication(true)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -255,8 +233,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       const result = await api.setPluginActiveProfile(id, name)
       if (!valid(id, epoch)) return
       profiles.value = result
-      if (active.value) setPendingApplication(active.value, true)
       await loadAll()
+      if (active.value) setPendingApplication(true)
     } finally {
       if (valid(id, epoch)) saving.value = false
     }
@@ -269,9 +247,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       loadVersion++
       records.clear()
       requests.clear()
-      pendingApplication.clear()
-      for (const pendingName of readStoredPending()[pluginId.value] || [])
-        pendingApplication.add(pendingName)
+      pendingApplication.value = hasPendingReload(pluginId.value)
       selected.value = null
       profiles.value = null
       base.value = {}

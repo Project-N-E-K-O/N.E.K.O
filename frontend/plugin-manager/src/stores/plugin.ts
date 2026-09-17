@@ -14,6 +14,7 @@ import {
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
+import { setPendingReload } from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -35,7 +36,7 @@ export const usePluginStore = defineStore('plugin', () => {
   const selectedPluginId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
-  
+
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
   let pendingFetchStatus: Promise<void> | null = null
@@ -50,11 +51,11 @@ export const usePluginStore = defineStore('plugin', () => {
   // 计算属性
   const selectedPlugin = computed(() => {
     if (!selectedPluginId.value) return null
-    return plugins.value.find(p => p.id === selectedPluginId.value) || null
+    return plugins.value.find((p) => p.id === selectedPluginId.value) || null
   })
 
   const pluginsWithStatus = computed(() => {
-    return plugins.value.map(plugin => {
+    return plugins.value.map((plugin) => {
       const enabled = plugin.runtime_enabled !== false
       const autoStart = plugin.runtime_auto_start !== false
       // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
@@ -65,12 +66,12 @@ export const usePluginStore = defineStore('plugin', () => {
       // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
       // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
       const displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-      
+
       return {
         ...plugin,
         status: displayStatus,
         enabled,
-        autoStart
+        autoStart,
       }
     })
   })
@@ -85,10 +86,10 @@ export const usePluginStore = defineStore('plugin', () => {
     if (!force && pendingFetchPlugins) {
       return pendingFetchPlugins
     }
-    
+
     loading.value = true
     error.value = null
-    
+
     // 设置超时自动清理，防止请求堆积
     const timeoutId = setTimeout(() => {
       if (pendingFetchPlugins) {
@@ -97,13 +98,13 @@ export const usePluginStore = defineStore('plugin', () => {
         loading.value = false
       }
     }, REQUEST_TIMEOUT)
-    
+
     const seq = ++fetchPluginsSeq
     pendingFetchPlugins = (async () => {
       try {
         const response = await getPlugins(
           getLocale(),
-          options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
+          options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined
         )
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
@@ -120,17 +121,19 @@ export const usePluginStore = defineStore('plugin', () => {
         }
       }
     })()
-    
+
     return pendingFetchPlugins
   }
 
-  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+  async function syncRegistryAndFetch(
+    options: RegistrySyncOptions = {}
+  ): Promise<RegistrySyncResult> {
     let registryRefreshed = false
     let warningMessage: string | null = null
 
     try {
       const response = await refreshPluginsRegistry(
-        options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
+        options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined
       )
       registryRefreshed = true
       if (response.success === false) {
@@ -140,16 +143,17 @@ export const usePluginStore = defineStore('plugin', () => {
           if (!failureTarget) {
             warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
           } else {
-            warningMessage = response.failed.length > 1
-              ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
-                  count: response.failed.length,
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
-              : i18n.global.t('messages.pluginListRefreshPartial', {
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
+            warningMessage =
+              response.failed.length > 1
+                ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
+                    count: response.failed.length,
+                    target: failureTarget,
+                    error: firstFailure.error,
+                  })
+                : i18n.global.t('messages.pluginListRefreshPartial', {
+                    target: failureTarget,
+                    error: firstFailure.error,
+                  })
           }
         } else {
           warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
@@ -160,11 +164,12 @@ export const usePluginStore = defineStore('plugin', () => {
       if (status !== 401 && status !== 403 && status !== 404) {
         throw err
       }
-      warningMessage = status === 403
-        ? i18n.global.t('messages.pluginListRefreshForbidden')
-        : status === 404
-          ? i18n.global.t('messages.resourceNotFound')
-          : i18n.global.t('messages.pluginListRefreshUnauthenticated')
+      warningMessage =
+        status === 403
+          ? i18n.global.t('messages.pluginListRefreshForbidden')
+          : status === 404
+            ? i18n.global.t('messages.resourceNotFound')
+            : i18n.global.t('messages.pluginListRefreshUnauthenticated')
     }
 
     await fetchPlugins(true, options)
@@ -193,7 +198,7 @@ export const usePluginStore = defineStore('plugin', () => {
     if (!pluginId && pendingFetchStatus) {
       return pendingFetchStatus
     }
-    
+
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
     if (!pluginId) {
@@ -204,10 +209,10 @@ export const usePluginStore = defineStore('plugin', () => {
         }
       }, REQUEST_TIMEOUT)
     }
-    
+
     // 仅对全量请求使用序列号
     const seq = !pluginId ? ++fetchStatusSeq : 0
-    
+
     const doFetch = async () => {
       try {
         const response = await getPluginStatus(pluginId)
@@ -230,7 +235,7 @@ export const usePluginStore = defineStore('plugin', () => {
         }
       }
     }
-    
+
     if (!pluginId) {
       pendingFetchStatus = doFetch()
       return pendingFetchStatus
@@ -266,6 +271,9 @@ export const usePluginStore = defineStore('plugin', () => {
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await reloadPlugin(pluginId)
+      // The running host now matches the persisted configuration, whichever entry
+      // point triggered the reload.
+      setPendingReload(pluginId, false)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)
@@ -298,6 +306,6 @@ export const usePluginStore = defineStore('plugin', () => {
     start,
     stop,
     reload,
-    setSelectedPlugin
+    setSelectedPlugin,
   }
 })
