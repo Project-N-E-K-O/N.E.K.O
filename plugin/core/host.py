@@ -143,10 +143,6 @@ _HOST_HTTP_PORTS = frozenset({
     USER_PLUGIN_SERVER_PORT,
 })
 _INET_FAMILIES = frozenset({socket.AF_INET, socket.AF_INET6})
-# SO_DOMAIN 不是每个平台都有（Darwin 的 sys/socket.h 就没有）。没有时退回
-# socket.family——CPython 拿不到 SO_DOMAIN 时会把它留成 AF_UNSPEC，于是判据变成
-# 一律不命中：宁可什么都不关，也不要在 fork 钩子里抛异常。
-_SO_DOMAIN = getattr(socket, "SO_DOMAIN", None)
 
 _INHERITED_HOST_SOCKETS_CLOSED = 0
 
@@ -176,34 +172,49 @@ def _iter_open_fds() -> Iterator[int]:
         return
 
 
+def _is_host_http_socket(fd: int) -> bool:
+    """这个 fd 是不是宿主的某个 HTTP 服务 socket（监听 socket，或它 accept 出来的连接）。
+
+    fd 归调用方：这里只借一个包装对象看一眼，detach 保证它析构时不会再关一次。
+    家族用包装对象的 ``.family`` 判：CPython 在只给 fileno 时是用 getsockname() 的
+    sa_family 反推的（见 Modules/socketmodule.c 的 sock_initobj），不依赖 SO_DOMAIN，
+    而 Windows 与 Darwin 的 socket 头文件都没有 SO_DOMAIN。
+    """
+    try:
+        probe = socket.socket(fileno=fd)
+    except OSError:
+        return False  # 管道 / 文件 / epoll / signalfd…… 本来就不是 socket
+    try:
+        # AF_UNIX 的 getsockname() 给的是路径字符串（未命名时是空串），所以家族要判在
+        # 取端口之前——短路的 `and` 保证那里永远不会去下标一个字符串。
+        return probe.family in _INET_FAMILIES and probe.getsockname()[1] in _HOST_HTTP_PORTS
+    except OSError:
+        return False
+    finally:
+        probe.detach()
+
+
 def _close_inherited_host_sockets() -> None:
     """丢掉宿主的 HTTP 服务 socket（注册在 after_in_child 上）。
 
     fork 之后立刻跑，早于子进程建立的任何 socket，也早于插件代码。这里不能抛
     异常——它跑在 fork 钩子里，抛出去就是子进程带着半关的 fd 表继续跑
     （CPython 只把它当 unraisable 打到 stderr，不会停住子进程）。
+
+    关的动作（os.close）与判定分开，是因为判定要在所有平台都能被测试卡住，
+    而 os.close 一个裸 socket fd 是 POSIX 的事；反正这个钩子本身也只在有 fork 的
+    平台上会被触发。
     """
     global _INHERITED_HOST_SOCKETS_CLOSED
     closed = 0
     for fd in _iter_open_fds():
+        if not _is_host_http_socket(fd):
+            continue
         try:
-            probe = socket.socket(fileno=fd)
-        except OSError:
-            continue  # 管道 / 文件 / epoll / signalfd…… 本来就不是 socket
-        try:
-            is_inet = (
-                probe.getsockopt(socket.SOL_SOCKET, _SO_DOMAIN) in _INET_FAMILIES
-                if _SO_DOMAIN is not None
-                else probe.family in _INET_FAMILIES
-            )
-            if is_inet and probe.getsockname()[1] in _HOST_HTTP_PORTS:
-                os.close(fd)
-                closed += 1
+            os.close(fd)
+            closed += 1
         except OSError:
             pass
-        finally:
-            # fd 归我们处置：包装对象只借来看一眼，别让它析构时再关一次。
-            probe.detach()
     _INHERITED_HOST_SOCKETS_CLOSED = closed
 
 

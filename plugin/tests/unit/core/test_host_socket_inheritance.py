@@ -35,13 +35,20 @@ Coverage here is layered, and honestly so -- both CI pytest jobs run on
 windows-latest, where children are SPAWNED and inherit nothing, so the naive
 "fork a process and look" test would skip everywhere it could run:
 
-  classification   behaviour, runs everywhere -- the fd set is injected, so the
-                   rule that decides WHAT to close is checked on Windows too
+  rule decision    behaviour, runs everywhere -- with real sockets and an injected
+                   fd set, which fds count as host HTTP sockets (Windows too)
+  closure          behaviour, POSIX only -- closing a raw socket fd is os.close(),
+                   and the hook itself only ever fires where fork exists
   enumeration      behaviour, needs /proc/self/fd or /dev/fd, skipped in this CI
-  guard rails      behaviour, runs everywhere
   hook wiring      AST assertion, runs everywhere -- the only layer that bites
                    on Windows if the registration is deleted
   raw fork         behaviour, POSIX only, skipped in this CI
+
+The split between decision and closure is not cosmetic: an earlier version asserted
+the decision through the closing side effect, which made the whole case POSIX-only
+in practice -- it built an AF_UNIX socket (``socket.AF_UNIX`` does not exist in
+CPython's Windows builds) and it closed raw socket fds with ``os.close``. The CI run
+found exactly that.
 """
 
 from __future__ import annotations
@@ -81,27 +88,23 @@ def _detach_and_close(sock: socket.socket) -> None:
 
 
 @pytest.mark.plugin_unit
-def test_it_closes_sockets_on_every_host_http_port_and_nothing_else(
+def test_it_keeps_host_http_sockets_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Two host services, one ZMQ-shaped listener, and a client.
+    """判定层（不关任何东西，所以 Windows 也跑得到）。
 
-    The listener and the sockets it accepted share one local port. That is what
-    makes the rule exact rather than a heuristic: a client socket picks an
-    ephemeral local port, so it can never be mistaken for a socket the host
-    serves.
+    两个宿主服务端口都要命中：fork 插件的那个进程 serve 多少服务取决于拓扑——源码
+    运行是 agent_server（agent + 插件两个服务），打包版默认 merged（main + memory +
+    agent + 插件四个服务同进程）。只认后两个端口就会漏掉 48911/48912，主界面一样会
+    被黑洞化。
 
-    Two ports are in the rule on purpose, because the forking process serves more
-    than the plugin server: packaged builds run the merged topology (main + memory
-    + agent + plugin in ONE process), so 48911's accepted browser connections are
-    inherited exactly like 48916's. Closing only the latter is the P1 regression
-    this case pins -- the main UI keeps its poisoned keep-alive.
+    判定是精确的而不是启发式：监听 socket 与它 accept 出来的连接共用同一本地端口，
+    而任何客户端 socket 的本地端口都是临时端口，所以「本地端口 ∈ 允许表」不可能
+    误伤客户端。
 
-    Mutation: match the peer port instead of the local port, drop accepted
-    connections, or shrink the allow-list back to the plugin server port alone --
-    the first two leave the hanging request behind, the third leaves the main UI
-    exposed.
+    Mutation: 拿对端端口当判据、把 accept 出来的连接排除在外、或把允许表缩回只剩
+    插件服务端口——前两个会把挂死的请求留下，第三个把主界面漏掉。
     """
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -112,7 +115,7 @@ def test_it_closes_sockets_on_every_host_http_port_and_nothing_else(
     accepted, _ = listener.accept()  # 服务端：本地端口 == host_port
 
     # 同进程的第二个 HTTP 服务（merged 拓扑里的 main_server / memory_server，
-    # 本条用 48911 同款关系：监听 + 一条已 accept 的浏览器连接）
+    # 同款关系：监听 + 一条已 accept 的浏览器连接）
     other_listener = socket.socket()
     other_listener.bind(("127.0.0.1", 0))
     other_listener.listen(1)
@@ -126,14 +129,112 @@ def test_it_closes_sockets_on_every_host_http_port_and_nothing_else(
     zmq_like.bind(("127.0.0.1", 0))
     zmq_like.listen(1)
 
-    manager = socket.socket(socket.AF_UNIX)  # Manager proxy 那一类：必须留着
-    manager.bind(str(tmp_path / "manager.sock"))
+    # Manager proxy 那一类必须留着。CPython 的 Windows 构建不导出 AF_UNIX
+    # （socketmodule.c 里只在 `#if defined(AF_UNIX)` 下注册），所以这一格在 Windows
+    # 上跳过——早期版本把整个用例建立在它上面，于是这条"Windows 也跑"的覆盖在 CI 上
+    # 直接炸在 AttributeError。
+    manager: socket.socket | None = None
+    if hasattr(socket, "AF_UNIX"):
+        manager = socket.socket(socket.AF_UNIX)
+        manager.bind(str(tmp_path / "manager.sock"))
 
     pipe_read, pipe_write = os.pipe()
 
     monkeypatch.setattr(host, "_HOST_HTTP_PORTS", frozenset({host_port, other_port}))
-    # Inject the fd set so the classification is checked on platforms with no
-    # fd directory at all -- the enumeration itself is covered by the test below.
+
+    try:
+        for fd in (
+            listener.fileno(),
+            accepted.fileno(),
+            other_listener.fileno(),
+            other_accepted.fileno(),
+        ):
+            assert host._is_host_http_socket(fd), (
+                "宿主 HTTP 服务的 socket（监听的，或它 accept 出来的）没被认定为该丢"
+            )
+
+        for fd, why in (
+            (browser.fileno(), "客户端 socket（本地端口是临时的）"),
+            (other_browser.fileno(), "客户端 socket（本地端口是临时的）"),
+            (
+                zmq_like.fileno(),
+                "不在端口允许表里的监听 socket —— libzmq 的 TCP 监听就是这种形状",
+            ),
+            (pipe_read, "管道（fork 的哨兵管道是同类）"),
+            (pipe_write, "管道（fork 的哨兵管道是同类）"),
+        ):
+            assert not host._is_host_http_socket(fd), f"不该丢的 fd 被认定为该丢：{why}"
+
+        if manager is not None:
+            assert not host._is_host_http_socket(manager.fileno()), (
+                "AF_UNIX（state.plugin_response_map 的 Manager proxy）被认定为该丢"
+            )
+    finally:
+        for sock in (
+            browser,
+            accepted,
+            listener,
+            other_browser,
+            other_accepted,
+            other_listener,
+            zmq_like,
+            manager,
+        ):
+            if sock is not None:
+                _detach_and_close(sock)
+        for fd in (pipe_read, pipe_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.skipif(
+    not _HAS_FORK,
+    reason="关一个裸 socket fd 走的是 os.close（POSIX 的 fd 语义），而这个钩子本身也只会在有 fork 的平台上触发",
+)
+def test_the_hook_closes_exactly_the_host_http_sockets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """副作用层：真的把那几个 fd 关掉，且不碰别的。
+
+    与上面那条分开，是因为 os.close 一个裸 socket fd 是 POSIX 的事；混在一条用例里
+    写会把"判定"白白降级成 POSIX 专属（CI 只在 Windows 跑，于是等于没有覆盖）。
+
+    Mutation: 判定为真却不去真关——子进程仍拿着宿主的 socket，宿主 close() 依旧不发
+    FIN，对端那条 keep-alive 继续被复用。
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    host_port = listener.getsockname()[1]
+    browser = socket.create_connection(("127.0.0.1", host_port))
+    accepted, _ = listener.accept()
+
+    other_listener = socket.socket()
+    other_listener.bind(("127.0.0.1", 0))
+    other_listener.listen(1)
+    other_port = other_listener.getsockname()[1]
+    other_browser = socket.create_connection(("127.0.0.1", other_port))
+    other_accepted, _ = other_listener.accept()
+
+    zmq_like = socket.socket()
+    zmq_like.bind(("127.0.0.1", 0))
+    zmq_like.listen(1)
+
+    manager = socket.socket(socket.AF_UNIX)  # POSIX 上一定有；Manager proxy 那一类必须留着
+    manager.bind(str(tmp_path / "manager.sock"))
+
+    pipe_read, pipe_write = os.pipe()
+
+    monkeypatch.setattr(
+        host,
+        "_HOST_HTTP_PORTS",
+        frozenset({host_port, other_port}),
+    )
+    # 注入 fd 集合，让"该关哪几个"与枚举本身分开测（枚举另有一条用例）。
     monkeypatch.setattr(
         host,
         "_iter_open_fds",
@@ -176,8 +277,7 @@ def test_it_closes_sockets_on_every_host_http_port_and_nothing_else(
             "误伤了客户端 socket（本地端口是临时的）"
         )
         assert not _is_closed(zmq_like.fileno()), (
-            "误伤了不在端口允许表里的监听 socket——libzmq 的 TCP 监听就是这种形状，"
-            "替它关掉会让 zmq_ctx_term 去关一个号码被复用的 fd"
+            "误伤了不在端口允许表里的监听 socket——libzmq 的 TCP 监听就是这种形状"
         )
         assert not _is_closed(manager.fileno()), (
             "误伤了 AF_UNIX——state.plugin_response_map 的 Manager proxy 靠它跨进程"
