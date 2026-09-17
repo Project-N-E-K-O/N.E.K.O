@@ -1,5 +1,9 @@
 <template>
-  <div class="plugin-detail" data-yui-guide-id="plugin-detail-page">
+  <div
+    class="plugin-detail"
+    :class="{ 'plugin-detail--fill': isFillTab }"
+    data-yui-guide-id="plugin-detail-page"
+  >
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -48,7 +52,7 @@
                   :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)"
                   :plugin-id="pluginId"
                   :surface="surface"
-                  :height="hostedSurfaceFrameHeight"
+                 
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
                   @open-logs="openLogsTab"
@@ -61,7 +65,7 @@
               :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)"
               :plugin-id="pluginId"
               :surface="displayedPanelSurfaces[0]!"
-              :height="hostedSurfaceFrameHeight"
+             
               :active="isSurfaceActive(displayedPanelSurfaces[0]!)"
               :activation-revision="activationRevisionFor(displayedPanelSurfaces[0]!)"
               @open-logs="openLogsTab"
@@ -97,7 +101,7 @@
                 <HostedSurfaceFrame
                   :plugin-id="pluginId"
                   :surface="surface"
-                  :height="hostedSurfaceFrameHeight"
+                 
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
                   :ref="(instance) => setGuideSurfaceFrameRef(surface.id, instance)"
@@ -110,7 +114,7 @@
               v-else
               :plugin-id="pluginId"
               :surface="guideSurfaces[0]!"
-              :height="hostedSurfaceFrameHeight"
+             
               :active="isSurfaceActive(guideSurfaces[0]!)"
               :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
               :ref="(instance) => setGuideSurfaceFrameRef(guideSurfaces[0]?.id || '', instance)"
@@ -168,7 +172,7 @@
 
         <el-tab-pane :label="$t('plugins.logs')" name="logs">
           <div data-yui-guide-id="plugin-detail-logs">
-            <LogViewer :plugin-id="pluginId" :height="hostedSurfaceFrameHeight" />
+            <LogViewer :plugin-id="pluginId" />
           </div>
         </el-tab-pane>
 
@@ -200,6 +204,7 @@ import {
   PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
+import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 
 /** One immediate pass, no retries. */
 const SINGLE_REFRESH_PASS = [0] as const
@@ -223,7 +228,11 @@ type SurfaceMessageReceiver = {
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const guideSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const surfaceActivationRevisions = ref<Record<string, number>>({})
-const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
+// 撑满型 tab：面板高度由宿主容器决定，不再拿视口猜（链见 <style> 的
+// .plugin-detail--fill）。长内容 tab（info/entries/metrics/config）**不能**进这条链：
+// 被压到一屏后，.el-card 默认的 overflow:hidden 会把内容直接裁掉而不是让它滚动。
+const fillTabs = new Set(['panel', 'guide', 'logs'])
+const isFillTab = computed(() => fillTabs.has(activeTab.value))
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
 
@@ -551,6 +560,56 @@ watch(locale, () => {
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+/* ── 撑满型 tab 的高度链 ─────────────────────────────────────────────
+   目标：面板高度 = 容器剩余高度，而不是 `100vh - 常量`。
+
+   Element Plus 自己就是这条链的骨架（.el-card 是 flex 列、.el-card__body 是
+   flex:1、.el-tabs--top 是 flex 列、.el-tabs__content 是 flex-grow:1），缺的只是
+   “一个确定高度”。所以这里只做两件事：给根一个确定高度，并把中间几层的 flex
+   传递下去。判据全部来自容器，因此页头/工具栏换行/告警条/连接横幅出现都自动正确。
+
+   两个 overflow 不再需要覆写：下限移到页面根之后，没有任何元素会溢出自己的盒子，
+   也就不存在 .el-tabs__content 的 hidden / .el-card 的 hidden 裁掉内容的可能。 */
+.plugin-detail--fill {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* 窗口不够高时保持可用尺寸，由 .app-main 滚动（下限放在这里而不是面板上，
+     否则面板会溢出卡片被 .el-card 的 overflow:hidden 裁掉） */
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
+}
+
+.plugin-detail--fill :deep(.el-card) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-tabs) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.plugin-detail--fill :deep(.el-tab-pane) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 面板的直接宿主：面板自己 height:100% 要有确定高度可依 */
+.plugin-detail--fill .surface-section,
+.plugin-detail--fill [data-yui-guide-id='plugin-detail-logs'] {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .loading-container {

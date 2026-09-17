@@ -77,20 +77,20 @@ import { useLogsStore } from '@/stores/logs'
 import { useLogStream } from '@/composables/useLogStream'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
-import { API_BASE_URL } from '@/utils/constants'
+import { API_BASE_URL, PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
 
 const props = withDefaults(defineProps<{
   pluginId: string
   height?: string
 }>(), {
-  // Same default as HostedSurfaceFrame: a panel that fills the viewport unless the
-  // page says otherwise. The log list then absorbs whatever the chrome leaves.
-  height: 'clamp(520px, calc(100vh - 220px), 1200px)',
+  // 默认填满宿主容器（宿主必须提供确定高度，见 PluginDetail 的 --fill 链）；
+  // min/max 只做兜底，理由见 utils/constants.ts。
+  height: PANEL_FILL_HEIGHT,
 })
 
 const viewerStyle = computed(() => ({
   height: props.height,
-  minHeight: props.height,
+  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const { t } = useI18n()

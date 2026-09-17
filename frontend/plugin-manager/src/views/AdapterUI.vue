@@ -25,7 +25,7 @@
       </template>
 
       <div class="adapter-ui-container">
-        <PluginUIFrame :plugin-id="adapterId" height="calc(100vh - 200px)" />
+        <PluginUIFrame :plugin-id="adapterId" />
       </div>
     </el-card>
 
@@ -42,6 +42,7 @@ import { usePluginStore } from '@/stores/plugin'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +80,22 @@ onMounted(async () => {
 <style scoped>
 .adapter-ui {
   padding: 0;
+  /* 插件 UI frame 用 height:100% 填满容器：这里提供确定高度（理由见 utils/constants.ts） */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
+}
+
+.adapter-ui :deep(.el-card) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.adapter-ui :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .card-header {
@@ -105,7 +122,10 @@ onMounted(async () => {
 }
 
 .adapter-ui-container {
-  min-height: 500px;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .loading-container {

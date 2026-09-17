@@ -23,6 +23,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useLogsStore } from '@/stores/logs'
+import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import LogViewer from '@/components/logs/LogViewer.vue'
 
 const route = useRoute()
@@ -52,6 +53,29 @@ onMounted(async () => {
 <style scoped>
 .logs-page {
   padding: 0;
+  /* 面板用 height:100% 填满容器：这里提供确定高度（理由见 utils/constants.ts） */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
+}
+
+.logs-page :deep(.el-card) {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.logs-page :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.logs-page [data-yui-guide-id='logs-viewer-wrap'] {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .card-header {
