@@ -32,6 +32,10 @@ const inMemory = new Set<string>()
 const unpersisted = new Set<string>()
 // Flags this window believes are set in storage, used to report `storage.clear()`.
 const lastKnown = new Set<string>()
+// Identity of the flag this window set, so a conditional clear can still tell whether a
+// newer write happened while `pendingReloadToken` has to answer from memory (storage
+// missing, or the write rejected).
+const tokens = new Map<string, string>()
 let storageListenerAttached = false
 
 const keyFor = (pluginId: string) => KEY_PREFIX + pluginId
@@ -70,12 +74,15 @@ function nextToken(): string {
 /** The value that currently marks `pluginId` as pending, or null when no flag is set. */
 export function pendingReloadToken(pluginId: string): string | null {
   const store = storage()
-  if (!store) return null
-  try {
-    return store.getItem(keyFor(pluginId))
-  } catch {
-    return null
+  if (store) {
+    try {
+      const stored = store.getItem(keyFor(pluginId))
+      if (stored !== null) return stored
+    } catch {
+      // Storage cannot be read; the mirror below is the only evidence left.
+    }
   }
+  return tokens.get(pluginId) ?? null
 }
 
 function rememberLocal(pluginId: string, pending: boolean): void {
@@ -165,10 +172,11 @@ export function setPendingReload(
   // written since then belongs to a newer configuration and stays pending.
   if (expectedToken !== undefined && pendingReloadToken(pluginId) !== expectedToken) return false
   const store = storage()
+  const token = pending ? nextToken() : null
   let persisted = false
   if (store) {
     try {
-      if (pending) store.setItem(keyFor(pluginId), nextToken())
+      if (token) store.setItem(keyFor(pluginId), token)
       else store.removeItem(keyFor(pluginId))
       persisted = true
     } catch {
@@ -176,6 +184,8 @@ export function setPendingReload(
       persisted = false
     }
   }
+  if (token) tokens.set(pluginId, token)
+  else tokens.delete(pluginId)
   if (persisted) unpersisted.delete(pluginId)
   else if (pending) unpersisted.add(pluginId)
   else unpersisted.delete(pluginId)

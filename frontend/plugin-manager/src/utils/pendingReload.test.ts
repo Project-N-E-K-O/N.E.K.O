@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hasPendingReload, setPendingReload, subscribePendingReload } from './pendingReload'
+import {
+  hasPendingReload,
+  pendingReloadToken,
+  setPendingReload,
+  subscribePendingReload,
+} from './pendingReload'
 
 const keyFor = (pluginId: string) => `neko-plugin-config-pending-reload:${pluginId}`
 
@@ -208,6 +213,31 @@ describe('pending reload storage', () => {
     readsThrow = true
     expect(hasPendingReload('alpha')).toBe(true)
     release()
+  })
+
+  it('detects a concurrent write when the flag only lives in memory', () => {
+    const backing = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: () => {
+        throw new Error('quota exceeded')
+      },
+      removeItem: (key: string) => backing.delete(key),
+    })
+    setPendingReload('alpha', true)
+    const captured = pendingReloadToken('alpha')
+    expect(captured).not.toBeNull()
+
+    // A profile write lands while a start or reload is in flight. Storage never held either
+    // write, so the conditional clear can only notice through the mirror.
+    setPendingReload('alpha', true)
+    expect(setPendingReload('alpha', false, captured)).toBe(false)
+    expect(hasPendingReload('alpha')).toBe(true)
+
+    // The unchanged flag may still be cleared by the request that captured it.
+    const unchanged = pendingReloadToken('alpha')
+    expect(setPendingReload('alpha', false, unchanged)).toBe(true)
+    expect(hasPendingReload('alpha')).toBe(false)
   })
 
   it('ignores storage events for unrelated keys', () => {
