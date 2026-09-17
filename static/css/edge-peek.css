@@ -1,0 +1,8 @@
+.is-cat1-edge-peek-locked .neko-idle-return-btn > .neko-idle-return-art,
+.neko-idle-return-btn.is-cat1-edge-peek-locked > .neko-idle-return-art {
+    transition: opacity 160ms ease;
+}
+
+.neko-idle-return-btn > .neko-idle-return-art.is-cat1-edge-peek-locked-hover-fade {
+    opacity: 0.12;
+}
