@@ -152,8 +152,11 @@ export function configNodeMatches(
       (filter === 'configured' && overlay !== undefined) ||
       (filter === 'dirty' && hasConfigChangesAt(changes, path))
     const matchesQuery = !query || path.join('.').toLowerCase().includes(query.toLowerCase())
-    // The root node must descend into children; only non-root paths may match themselves.
-    if (path.length > 0 && matchesState && matchesQuery) return true
+    // The root must not match itself merely because an overlay object exists, but
+    // with nothing filtered out it has to stay visible: a config holding only
+    // protected metadata would otherwise hide the form and its Add field action.
+    const rootUnfiltered = path.length === 0 && filter === 'all' && !query
+    if ((path.length > 0 || rootUnfiltered) && matchesState && matchesQuery) return true
     if (keys.length)
       return keys.some((k) =>
         configNodeMatches(a[k], b[k], [...path, k], query, filter, changes, replacement)

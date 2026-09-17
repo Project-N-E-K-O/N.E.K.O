@@ -9,7 +9,7 @@ import {
   upsertPluginProfileConfig,
 } from '@/api/config'
 import { usePluginConfigDrafts } from './usePluginConfigDrafts'
-import { hasPendingReload } from '@/utils/pendingReload'
+import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/api/config', () => ({
   getPluginEffectiveBaseConfig: vi.fn(),
@@ -105,6 +105,37 @@ describe('config draft lifecycle', () => {
     // The pending flag belongs to the plugin that saved, not the one on screen.
     expect(hasPendingReload('alpha')).toBe(true)
     expect(hasPendingReload('beta')).toBe(false)
+    expect(drafts.pendingApplication.value).toBe(false)
+  })
+
+  it('drops a late save that a reload already superseded', async () => {
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    const blocked = deferred<unknown>()
+    let blockNext = false
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => {
+      if (blockNext) {
+        blockNext = false
+        await blocked.promise
+      }
+      return emptyState(id)
+    })
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    blockNext = true
+    const saving = drafts.saveProfile()
+    await settle()
+
+    // A reload from the plugin list clears the flag while the save is in flight.
+    setPendingReload('alpha', false)
+    blocked.resolve(undefined)
+    await saving
+    await settle()
+
+    expect(hasPendingReload('alpha')).toBe(false)
     expect(drafts.pendingApplication.value).toBe(false)
   })
 })

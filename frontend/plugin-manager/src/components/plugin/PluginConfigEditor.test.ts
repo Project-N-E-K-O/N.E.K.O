@@ -8,6 +8,7 @@ import ElementPlus, {
   type MessageBoxData,
 } from 'element-plus'
 import * as configApi from '@/api/config'
+import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
@@ -37,7 +38,7 @@ afterEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
 })
-async function mountEditor() {
+async function mountEditor({ expectNav = true }: { expectNav?: boolean } = {}) {
   const host = document.createElement('main')
   host.dataset.yuiGuideId = 'plugin-main'
   Object.defineProperty(host, 'clientHeight', { value: 1000 })
@@ -53,7 +54,12 @@ async function mountEditor() {
     host.remove()
   }
   cleanups.push(unmount)
-  await vi.waitFor(() => expect(host.querySelectorAll('.config-nav button')).toHaveLength(3))
+  // Plugins without configurable sections render no navigation at all.
+  await vi.waitFor(() =>
+    expect(host.querySelectorAll(expectNav ? '.config-nav button' : '.config-footer')).toHaveLength(
+      expectNav ? 3 : 1
+    )
+  )
   return { host, pluginId, unmount }
 }
 async function search(host: HTMLElement, value: string) {
@@ -388,6 +394,34 @@ describe('virtual default materialization', () => {
     await vi.waitFor(() => expect(upsert).toHaveBeenCalled())
     // The draft must be persisted, not replaced by an empty profile object.
     expect(upsert).toHaveBeenCalledWith('test', 'default', { search: { max_results: 9 } }, true)
+    unmount()
+  })
+})
+
+describe('pending state synchronisation', () => {
+  it('clears the warning when the plugin is reloaded elsewhere', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+
+    // What pluginStore.reload() does for any entry point outside the editor.
+    setPendingReload('test', false)
+    await nextTick()
+
+    expect(host.querySelector('.apply-status')).toBeNull()
+    unmount()
+  })
+
+  it('keeps the form usable when only protected metadata is configured', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: { plugin: { id: 'test', entry: 'main' } },
+    } as never)
+    const { host, unmount } = await mountEditor({ expectNav: false })
+    expect(host.querySelector('.el-empty')).toBeNull()
+    expect(host.querySelectorAll('.config-nav button')).toHaveLength(0)
     unmount()
   })
 })

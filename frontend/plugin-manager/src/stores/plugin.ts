@@ -245,11 +245,13 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
+    // Starting an already running plugin returns early on the server without
+    // restarting the process or re-reading the saved profile overlay, so the
+    // pending flag may only be cleared when this call actually started it.
+    const wasRunning = pluginIsRunning(pluginId)
     try {
       await startPlugin(pluginId)
-      // A fresh host resolves the persisted profile overlay while starting, so the
-      // running configuration matches the saved one again.
-      setPendingReload(pluginId, false)
+      if (!wasRunning) setPendingReload(pluginId, false)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)
@@ -288,6 +290,13 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function setSelectedPlugin(pluginId: string | null) {
     selectedPluginId.value = pluginId
+  }
+
+  function pluginIsRunning(pluginId: string): boolean {
+    const tracked = pluginStatuses.value[pluginId]?.status?.status
+    const status =
+      typeof tracked === 'string' ? tracked : plugins.value.find((p) => p.id === pluginId)?.status
+    return status === StatusEnum.RUNNING
   }
 
   return {
