@@ -567,24 +567,30 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
     page = mock_page
     _mock_selection_required_state(page)
     restart_requested = {"value": False}
+    preflight_polls = {"count": 0}
+    select_requests = {"count": 0}
     restart_operation_id = "same-root-rebind-operation"
+    page.add_init_script(
+        """(() => {
+            const realNow = Date.now.bind(Date);
+            window.__storagePreflightClockOffset = 0;
+            Date.now = () => realNow() + window.__storagePreflightClockOffset;
+        })();"""
+    )
 
     def handle_select(route):
+        select_requests["count"] += 1
         route.fulfill(
-            status=200,
+            status=202,
             content_type="application/json",
             body="""
             {
               "ok": true,
-              "result": "restart_required",
-              "restart_operation_id": "%s",
-              "restart_mode": "rebind_only",
-              "selected_root": "/tmp/runtime/N.E.K.O",
-              "selection_source": "user_selected",
-              "migration_phase": "awaiting_shutdown",
-              "shutdown_retry_allowed": true
+              "result": "preflight_pending",
+              "preflight_operation_id": "p.same-root-preflight",
+              "instance_id": "same-generation"
             }
-            """ % restart_operation_id,
+            """,
         )
 
     page.route(
@@ -616,6 +622,35 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
     page.route("**/api/storage/location/restart", handle_restart)
 
     def handle_maintenance_status(route):
+        if "preflight_operation_id=" in route.request.url:
+            preflight_polls["count"] += 1
+            if preflight_polls["count"] == 1:
+                route.fulfill(status=503, content_type="application/json", json={"error": "temporary"})
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                json={
+                    "instance_id": "same-generation",
+                    "preflight_operation": {
+                        "operation_id": "p.same-root-preflight",
+                        "instance_id": "same-generation",
+                        "state": "in_flight" if preflight_polls["count"] == 2 else "completed",
+                        "response_status_code": 200,
+                        "response_payload": {
+                            "ok": True,
+                            "result": "restart_required",
+                            "restart_operation_id": restart_operation_id,
+                            "restart_mode": "rebind_only",
+                            "selected_root": "/tmp/runtime/N.E.K.O",
+                            "selection_source": "user_selected",
+                            "migration_phase": "awaiting_shutdown",
+                            "shutdown_retry_allowed": True,
+                        },
+                    },
+                },
+            )
+            return
         if not restart_requested["value"]:
             route.fallback()
             return
@@ -639,7 +674,7 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
         )
 
     page.route("**/api/system/status", handle_maintenance_status)
-    page.route("**/api/storage/location/status", handle_maintenance_status)
+    page.route("**/api/storage/location/status**", handle_maintenance_status)
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     overlay = page.locator("#storage-location-overlay")
@@ -655,8 +690,16 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    page.get_by_role("button", name="推荐存储位置").click()
+    page.get_by_role("button", name="其他位置").click()
+    with page.expect_response(lambda r: "preflight_operation_id=" in r.url and r.status == 503):
+        page.get_by_role("button", name="使用推荐路径").click()
+    page.evaluate("window.__storagePreflightClockOffset = 121000")
+    expect(page.locator(".storage-location-shell--selection > p.storage-location-note")).to_contain_text("仍未完成", timeout=5000)
+    page.evaluate("window.__storagePreflightClockOffset = 0")
+    page.get_by_role("button", name="使用推荐路径").click()
     expect(page.get_by_role("button", name="确认并重启到原路径")).to_be_visible(timeout=10_000)
+    assert preflight_polls["count"] >= 3
+    assert select_requests["count"] == 1
     page.get_by_role("button", name="确认并重启到原路径").click()
 
     expect(overlay).to_be_visible(timeout=10_000)

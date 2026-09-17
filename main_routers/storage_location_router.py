@@ -132,6 +132,10 @@ _STORAGE_RESTART_OPERATION_RETIRED_STATES = frozenset(
 )
 _STORAGE_RESTART_OPERATION_PROTECTED_STATES = frozenset({"in_flight"})
 _storage_restart_operations: dict[str, dict[str, Any]] = {}
+_STORAGE_PREFLIGHT_OPERATION_TTL_SECONDS = 10 * 60
+_STORAGE_PREFLIGHT_OPERATION_MAX_ENTRIES = 64
+_STORAGE_PREFLIGHT_OPERATION_MAX_ACTIVE = 4
+_storage_preflight_operations: dict[str, dict[str, Any]] = {}
 
 # _STORAGE_MUTATION_OFFLOAD_CONTRACT
 #
@@ -413,6 +417,145 @@ def _finish_storage_restart_operation(
     operation["state"] = str(state or "indeterminate")
     operation["error_code"] = str(error_code or "")
     operation["updated_at"] = time.monotonic()
+
+
+def _prune_storage_preflight_operations() -> None:
+    now = time.monotonic()
+    for operation_id, operation in list(_storage_preflight_operations.items()):
+        if operation["state"] != "in_flight" and (
+            now - operation["updated_at"] >= _STORAGE_PREFLIGHT_OPERATION_TTL_SECONDS
+        ):
+            _storage_preflight_operations.pop(operation_id, None)
+
+
+def _public_storage_preflight_operation(operation_id: str) -> dict[str, Any]:
+    normalized_id = str(operation_id or "").strip()
+    _prune_storage_preflight_operations()
+    operation = _storage_preflight_operations.get(normalized_id)
+    if operation is None:
+        return {
+            "operation_id": normalized_id,
+            "state": (
+                "expired"
+                if normalized_id.startswith("p.")
+                and _is_authentic_storage_restart_operation_id(normalized_id[2:])
+                else "not_found"
+            ),
+            "instance_id": str(config_module.INSTANCE_ID),
+        }
+    public = {
+        "operation_id": normalized_id,
+        "state": operation["state"],
+        "instance_id": str(config_module.INSTANCE_ID),
+    }
+    if operation["state"] != "in_flight":
+        public["response_status_code"] = operation["response_status_code"]
+        public["response_payload"] = operation["response_payload"]
+    return public
+
+
+async def _run_storage_preflight_operation(
+    operation_id: str,
+    job: Callable[[Response], Any],
+) -> tuple[int, dict[str, Any]]:
+    operation = _storage_preflight_operations[operation_id]
+    response = Response()
+    try:
+        payload = await job(response)
+        status_code = response.status_code
+    except asyncio.CancelledError:
+        operation["state"] = "cancelled"
+        operation["response_status_code"] = 503
+        operation["response_payload"] = {
+            "ok": False,
+            "error_code": "storage_preflight_cancelled",
+            "error": "预检已中断，请重新检查存储状态。",
+        }
+        operation["updated_at"] = time.monotonic()
+        raise
+    except Exception:
+        logger.exception("storage preflight operation failed")
+        status_code = 500
+        payload = {
+            "ok": False,
+            "error_code": "storage_preflight_failed",
+            "error": "存储位置预检失败，请检查目标位置后重试。",
+        }
+    operation["response_status_code"] = status_code
+    operation["response_payload"] = payload
+    operation["state"] = "completed" if status_code < 400 else "failed"
+    operation["updated_at"] = time.monotonic()
+    return status_code, payload
+
+
+async def _respond_with_correlated_preflight(
+    job: Callable[[Response], Any],
+    response: Response,
+    *,
+    request_key: tuple[str, str, str] | None = None,
+) -> dict[str, Any]:
+    _prune_storage_preflight_operations()
+    if request_key is not None:
+        for existing_id, existing in _storage_preflight_operations.items():
+            if existing["state"] == "in_flight" and existing.get("request_key") == request_key:
+                response.status_code = 202
+                return {
+                    "ok": True,
+                    "result": "preflight_pending",
+                    "preflight_operation_id": existing_id,
+                    "instance_id": str(config_module.INSTANCE_ID),
+                }
+    active_count = sum(
+        operation["state"] == "in_flight"
+        for operation in _storage_preflight_operations.values()
+    )
+    if active_count >= _STORAGE_PREFLIGHT_OPERATION_MAX_ACTIVE:
+        response.status_code = 503
+        return {
+            "ok": False,
+            "error_code": "storage_preflight_busy",
+            "error": "已有存储位置预检仍在进行，请等待或安全退出后重试。",
+        }
+    if len(_storage_preflight_operations) >= _STORAGE_PREFLIGHT_OPERATION_MAX_ENTRIES:
+        evictable = [
+            (operation_id, operation)
+            for operation_id, operation in _storage_preflight_operations.items()
+            if operation["state"] != "in_flight"
+        ]
+        if not evictable:
+            response.status_code = 503
+            return {
+                "ok": False,
+                "error_code": "storage_preflight_busy",
+                "error": "存储位置预检暂不可用，请稍后重试。",
+            }
+        oldest_id, _ = min(evictable, key=lambda item: item[1]["updated_at"])
+        _storage_preflight_operations.pop(oldest_id, None)
+    operation_id = "p." + _new_storage_restart_operation_id()
+    now = time.monotonic()
+    _storage_preflight_operations[operation_id] = {
+        "state": "in_flight",
+        "request_key": request_key,
+        "updated_at": now,
+        "response_status_code": 0,
+        "response_payload": None,
+    }
+    task = asyncio.create_task(_run_storage_preflight_operation(operation_id, job))
+    _storage_preflight_operations[operation_id]["task"] = task
+    # Preserve the ordinary synchronous response for fast preflights. A slow
+    # target scan keeps running under its existing lock after this bounded wait.
+    try:
+        status_code, payload = await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+    except asyncio.TimeoutError:
+        response.status_code = 202
+        return {
+            "ok": True,
+            "result": "preflight_pending",
+            "preflight_operation_id": operation_id,
+            "instance_id": str(config_module.INSTANCE_ID),
+        }
+    response.status_code = status_code
+    return payload
 
 
 def _reject_storage_mutation_when_startup_unavailable(response: Response) -> dict[str, Any] | None:
@@ -2543,6 +2686,13 @@ async def get_storage_location_status(response: Response, request: Request):
     operation_id = str(request.query_params.get("restart_operation_id") or "").strip()
     if operation_id:
         payload["restart_operation"] = _public_storage_restart_operation(operation_id)
+    preflight_operation_id = str(
+        request.query_params.get("preflight_operation_id") or ""
+    ).strip()
+    if preflight_operation_id:
+        payload["preflight_operation"] = _public_storage_preflight_operation(
+            preflight_operation_id[:64]
+        )
     return payload
 
 
@@ -2989,6 +3139,18 @@ async def post_storage_location_select(
     )
     if validation_error is not None:
         return validation_error
+    if request.headers.get("Prefer") == "respond-async":
+        _set_no_cache_headers(response)
+
+        async def _job(job_response: Response) -> dict[str, Any]:
+            async with _storage_mutation_lock:
+                return await _post_storage_location_select_locked(payload, job_response)
+
+        return await _respond_with_correlated_preflight(
+            _job,
+            response,
+            request_key=("select", payload.selected_root, payload.selection_source),
+        )
     async with _storage_mutation_lock:
         return await _post_storage_location_select_locked(payload, response)
 
@@ -3195,6 +3357,24 @@ async def post_storage_location_preflight(
     )
     if validation_error is not None:
         return validation_error
+
+    if request.headers.get("Prefer") == "respond-async":
+        _set_no_cache_headers(response)
+        return await _respond_with_correlated_preflight(
+            lambda job_response: _post_storage_location_preflight_inner(
+                payload, job_response
+            ),
+            response,
+            request_key=("preflight", payload.selected_root, payload.selection_source),
+        )
+    return await _post_storage_location_preflight_inner(payload, response)
+
+
+async def _post_storage_location_preflight_inner(
+    payload: StorageLocationSelectionRequest,
+    response: Response,
+):
+    _set_no_cache_headers(response)
 
     disabled_response = _reject_storage_mutation_when_startup_unavailable(response)
     if disabled_response is not None:

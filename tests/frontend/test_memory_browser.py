@@ -5072,28 +5072,61 @@ def test_memory_browser_storage_bootstrap_blocks_memory_apis(mock_page: Page, ru
 def test_memory_browser_storage_combined_restart_reports_preflight_blocking(mock_page: Page, running_server: str, seed_memory_file):
     """The combined restart button should stop after preflight when the target is blocked."""
     requested_paths = []
+    preflight_status_polls = []
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.add_init_script(
+        """(() => {
+            const realNow = Date.now.bind(Date);
+            window.__storagePreflightClockOffset = 0;
+            Date.now = () => realNow() + window.__storagePreflightClockOffset;
+        })();"""
+    )
 
     def handle_preflight(route):
         requested_paths.append("/api/storage/location/preflight")
         route.fulfill(
-            status=200,
+            status=202,
             content_type="application/json",
             json={
                 "ok": True,
-                "result": "restart_required",
-                "restart_mode": "migrate_after_shutdown",
-                "selected_root": "/tmp/stage2-target/N.E.K.O",
-                "target_root": "/tmp/stage2-target/N.E.K.O",
-                "estimated_required_bytes": 1024,
-                "target_free_bytes": 4096,
-                "permission_ok": False,
-                "warning_codes": [],
-                "target_has_existing_content": False,
-                "requires_existing_target_confirmation": False,
-                "existing_target_confirmation_message": "",
-                "blocking_error_code": "target_not_writable",
-                "blocking_error_message": "目标路径当前不可写。",
+                "result": "preflight_pending",
+                "preflight_operation_id": "p.test-operation",
+                "instance_id": "test-instance",
+            },
+        )
+
+    def handle_preflight_status(route):
+        preflight_status_polls.append(route.request.url)
+        if len(preflight_status_polls) == 1:
+            route.fulfill(status=503, content_type="application/json", json={"error": "temporary"})
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "instance_id": "test-instance",
+                "preflight_operation": {
+                    "operation_id": "p.test-operation",
+                    "instance_id": "test-instance",
+                    "state": "in_flight" if len(preflight_status_polls) == 2 else "completed",
+                    "response_status_code": 200,
+                    "response_payload": {
+                        "ok": True,
+                        "result": "restart_required",
+                        "restart_mode": "migrate_after_shutdown",
+                        "selected_root": "/tmp/stage2-target/N.E.K.O",
+                        "target_root": "/tmp/stage2-target/N.E.K.O",
+                        "estimated_required_bytes": 1024,
+                        "target_free_bytes": 4096,
+                        "permission_ok": False,
+                        "warning_codes": [],
+                        "target_has_existing_content": False,
+                        "requires_existing_target_confirmation": False,
+                        "existing_target_confirmation_message": "",
+                        "blocking_error_code": "target_not_writable",
+                        "blocking_error_message": "目标路径当前不可写。",
+                    },
+                },
             },
         )
 
@@ -5102,6 +5135,7 @@ def test_memory_browser_storage_combined_restart_reports_preflight_blocking(mock
         route.fulfill(status=500, content_type="application/json", json={"error": "mutation should not be called"})
 
     mock_page.route("**/api/storage/location/preflight", handle_preflight)
+    mock_page.route("**/api/storage/location/status?**", handle_preflight_status)
     mock_page.route("**/api/storage/location/select", handle_forbidden_storage_mutation)
     mock_page.route("**/api/storage/location/restart", handle_forbidden_storage_mutation)
 
@@ -5119,12 +5153,18 @@ def test_memory_browser_storage_combined_restart_reports_preflight_blocking(mock
     mock_page.locator("#storage-target-root-input").fill("/tmp/stage2-target")
     expect(mock_page.locator("#storage-location-preflight-btn")).to_have_count(0)
 
-    with mock_page.expect_response(lambda r: "/api/storage/location/preflight" in r.url and r.status == 200):
+    with mock_page.expect_response(lambda r: "preflight_operation_id=" in r.url and r.status == 503):
         mock_page.locator("#storage-location-restart-btn").click()
+
+    mock_page.evaluate("window.__storagePreflightClockOffset = 121000")
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("仍未完成", timeout=5000)
+    mock_page.evaluate("window.__storagePreflightClockOffset = 0")
+    mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("目标路径当前不可写", timeout=5000)
     expect(mock_page.locator("#storage-location-restart-btn")).to_be_enabled()
     assert requested_paths == ["/api/storage/location/preflight"]
+    assert len(preflight_status_polls) >= 3
 
 
 @pytest.mark.frontend

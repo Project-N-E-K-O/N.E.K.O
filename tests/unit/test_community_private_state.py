@@ -28,6 +28,77 @@ USER_ID = "11111111-1111-4111-8111-111111111111"
 HAS_SAFE_DIR_FD = hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
 
 
+def test_fixed_anchor_private_read_treats_operating_system_error_as_unreadable(
+    tmp_path, monkeypatch
+):
+    credential = tmp_path / "anchor" / "state" / "community_auth.json"
+    _install_roots(
+        monkeypatch,
+        anchor_state=credential.parent,
+        selected_root=tmp_path / "selected",
+    )
+    credential.parent.mkdir(parents=True)
+    credential.write_text('{"access_token":"kept"}', encoding="utf-8")
+
+    def deny_read(*_args, **_kwargs):
+        raise PermissionError("credential is locked")
+
+    monkeypatch.setattr(C, "read_fixed_anchor_state_json", deny_read)
+
+    assert C._read_fixed_anchor_private_json_state(credential) == (
+        "unreadable",
+        None,
+    )
+    assert C._load_auth() is None
+    assert credential.read_text(encoding="utf-8") == '{"access_token":"kept"}'
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing modes are unavailable")
+def test_windows_fixed_anchor_private_read_denies_in_place_writer(tmp_path):
+    import ctypes
+    from ctypes import wintypes
+
+    credential = tmp_path / "anchor" / "state" / "community_auth.json"
+    credential.parent.mkdir(parents=True)
+    credential.write_text('{"access_token":"kept"}', encoding="utf-8")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    writer_handle = create_file(
+        os.fspath(credential),
+        0x40000000,  # GENERIC_WRITE
+        0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ|WRITE|DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x00000080,  # FILE_ATTRIBUTE_NORMAL
+        None,
+    )
+    assert writer_handle != wintypes.HANDLE(-1).value
+    try:
+        assert C._read_fixed_anchor_private_json_state(credential) == (
+            "unreadable",
+            None,
+        )
+    finally:
+        kernel32.CloseHandle(writer_handle)
+
+    assert C._read_fixed_anchor_private_json_state(credential) == (
+        "valid",
+        {"access_token": "kept"},
+    )
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files are unavailable")
 def test_private_json_reader_rejects_fifo_without_opening_it(tmp_path):
     fifo_path = tmp_path / "private-state.json"
@@ -877,6 +948,53 @@ def test_logout_keeps_credentials_when_epoch_directory_flush_fails(
     assert C._clear_auth() is False
     assert canonical_auth.exists()
     assert canonical_social.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink race model")
+def test_logout_epoch_rejects_replaced_anchor_state_directory(tmp_path, monkeypatch):
+    state = tmp_path / "anchor" / "state"
+    state.mkdir(parents=True)
+    epoch = state / "community_logout.json"
+    epoch.write_text(json.dumps({"version": 1, "logout_epoch": 3}), encoding="utf-8")
+    substitute = tmp_path / "substitute"
+    substitute.mkdir()
+    parked = state.with_name("parked_state")
+    manager = SimpleNamespace(local_state_dir=state)
+    real_write = C.write_fixed_anchor_state_json
+
+    def replace_state_before_publication(*args, **kwargs):
+        state.rename(parked)
+        state.symlink_to(substitute, target_is_directory=True)
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(C, "write_fixed_anchor_state_json", replace_state_before_publication)
+
+    with pytest.raises(OSError, match="publication failed"):
+        C._advance_logout_epoch(config_manager=manager)
+    assert not (substitute / epoch.name).exists()
+    assert json.loads((parked / epoch.name).read_text(encoding="utf-8"))["logout_epoch"] == 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory sharing guard")
+def test_windows_logout_epoch_publication_pins_state_directory(tmp_path, monkeypatch):
+    state = tmp_path / "anchor" / "state"
+    state.mkdir(parents=True)
+    manager = SimpleNamespace(local_state_dir=state)
+    real_write = storage_policy_module.atomic_write_json
+    attempted = False
+
+    def verify_directory_guard(path, payload, **kwargs):
+        nonlocal attempted
+        attempted = True
+        with pytest.raises(OSError):
+            state.rename(state.with_name("moved_state"))
+        return real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(storage_policy_module, "atomic_write_json", verify_directory_guard)
+
+    assert C._advance_logout_epoch(config_manager=manager) == 1
+    assert attempted
+    assert C._current_logout_epoch(config_manager=manager) == 1
 
 
 def test_target_unlink_failure_preserves_canonical_login_for_retry(tmp_path, monkeypatch):

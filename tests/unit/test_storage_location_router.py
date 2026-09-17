@@ -242,6 +242,147 @@ def _build_client(config_manager, *, request_app_shutdown=None, release_storage_
     )
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("endpoint", ["select", "preflight"])
+def test_slow_storage_preflight_is_correlated_after_http_deadline(
+    tmp_path, monkeypatch, endpoint
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "target" / "N.E.K.O"
+    target_root.mkdir(parents=True)
+    (target_root / "memory").mkdir()
+    (target_root / "memory" / "user.txt").write_text("keep", encoding="utf-8")
+    if endpoint == "preflight":
+        save_storage_policy(
+            config_manager,
+            selected_root=config_manager.app_docs_dir,
+            selection_source="recommended",
+        )
+    entered = threading.Event()
+    release = threading.Event()
+    preflight_calls = []
+    real_preflight = storage_location_router_module._build_restart_preflight
+
+    def slow_preflight(*args, **kwargs):
+        preflight_calls.append(args)
+        entered.set()
+        assert release.wait(timeout=5)
+        return real_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(storage_location_router_module, "_build_restart_preflight", slow_preflight)
+    with _build_client(config_manager) as client:
+        try:
+            response = client.post(
+                f"/api/storage/location/{endpoint}",
+                headers={"Prefer": "respond-async"},
+                json={"selected_root": str(target_root), "selection_source": "custom"},
+            )
+            assert entered.wait(timeout=2)
+            assert response.status_code == 202
+            pending = response.json()
+            assert pending["result"] == "preflight_pending"
+            operation_id = pending["preflight_operation_id"]
+            status = client.get(
+                "/api/storage/location/status",
+                params={"preflight_operation_id": operation_id},
+            ).json()["preflight_operation"]
+            assert status["state"] == "in_flight"
+            duplicate = client.post(
+                f"/api/storage/location/{endpoint}",
+                headers={"Prefer": "respond-async"},
+                json={"selected_root": str(target_root), "selection_source": "custom"},
+            )
+            assert duplicate.status_code == 202
+            assert duplicate.json()["preflight_operation_id"] == operation_id
+        finally:
+            release.set()
+
+        for _ in range(100):
+            status = client.get(
+                "/api/storage/location/status",
+                params={"preflight_operation_id": operation_id},
+            ).json()["preflight_operation"]
+            if status["state"] != "in_flight":
+                break
+            time.sleep(0.01)
+        assert status["state"] == "completed"
+        assert status["response_status_code"] == 200
+        result = status["response_payload"]
+        assert result["ok"] is True
+        assert result["result"] == "restart_required"
+        assert result["target_root"] == str(target_root.resolve())
+        assert result["requires_existing_target_confirmation"] is True
+        assert result["restart_operation_id"]
+        assert len(preflight_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_correlated_preflight_keeps_worker_after_request_cancellation():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    prior_ids = set(storage_location_router_module._storage_preflight_operations)
+
+    async def job(_response):
+        async with storage_location_router_module._storage_mutation_lock:
+            started.set()
+            await release.wait()
+            finished.set()
+            return {"ok": True, "result": "restart_required"}
+
+    request = asyncio.create_task(
+        storage_location_router_module._respond_with_correlated_preflight(
+            job, Response()
+        )
+    )
+    await started.wait()
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    operation_ids = set(storage_location_router_module._storage_preflight_operations) - prior_ids
+    assert len(operation_ids) == 1
+    operation_id = operation_ids.pop()
+    assert storage_location_router_module._storage_mutation_lock.locked()
+    assert storage_location_router_module._public_storage_preflight_operation(operation_id)["state"] == "in_flight"
+    release.set()
+    await asyncio.wait_for(finished.wait(), timeout=2)
+    task = storage_location_router_module._storage_preflight_operations[operation_id]["task"]
+    await asyncio.wait_for(task, timeout=2)
+    assert storage_location_router_module._public_storage_preflight_operation(operation_id)["state"] == "completed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_correlated_preflight_registry_is_bounded_and_tokens_are_checked(monkeypatch):
+    registry = {}
+    monkeypatch.setattr(storage_location_router_module, "_storage_preflight_operations", registry)
+    now = time.monotonic()
+    for index in range(storage_location_router_module._STORAGE_PREFLIGHT_OPERATION_MAX_ACTIVE):
+        registry[f"active-{index}"] = {"state": "in_flight", "updated_at": now}
+
+    async def forbidden_job(_response):
+        pytest.fail("capacity rejection must not start another scan")
+
+    response = Response()
+    result = await storage_location_router_module._respond_with_correlated_preflight(
+        forbidden_job, response
+    )
+    assert response.status_code == 503
+    assert result["error_code"] == "storage_preflight_busy"
+
+    registry.clear()
+    authenticated_id = "p." + storage_location_router_module._new_storage_restart_operation_id()
+    registry[authenticated_id] = {
+        "state": "completed",
+        "updated_at": now - storage_location_router_module._STORAGE_PREFLIGHT_OPERATION_TTL_SECONDS - 1,
+        "response_status_code": 200,
+        "response_payload": {"ok": True},
+    }
+    assert storage_location_router_module._public_storage_preflight_operation(authenticated_id)["state"] == "expired"
+    assert storage_location_router_module._public_storage_preflight_operation("p.forged")["state"] == "not_found"
+
+
 def _build_mutation_request() -> Request:
     return Request(
         {

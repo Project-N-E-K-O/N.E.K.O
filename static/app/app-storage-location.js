@@ -9,6 +9,7 @@
     var STORAGE_STATUS_REQUEST_TIMEOUT_MS = 4000;
     var STORAGE_EXIT_REQUEST_TIMEOUT_MS = 8000;
     var STORAGE_MUTATION_REQUEST_TIMEOUT_MS = 15000;
+    var STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS = 120000;
     var STORAGE_DIRECTORY_PICKER_TIMEOUT_MS = 125000;
     var STORAGE_HOST_CAPABILITY_TIMEOUT_MS = 3000;
     var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
@@ -110,6 +111,7 @@
             source: '',
             preflight: null,
         },
+        pendingPreflightOperation: null,
         otherSelection: {
             key: '',
             path: '',
@@ -177,6 +179,47 @@
             };
         }
         return response;
+    }
+
+    async function waitForStoragePreflight(operationId, expectedInstanceId) {
+        var deadline = Date.now() + STORAGE_PREFLIGHT_WAIT_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            var status = null;
+            try {
+                var statusResponse = await fetchWithTimeout(
+                    '/api/storage/location/status?preflight_operation_id=' + encodeURIComponent(operationId),
+                    { cache: 'no-store', headers: { 'Accept': 'application/json' } },
+                    STORAGE_STATUS_REQUEST_TIMEOUT_MS
+                );
+                if (statusResponse.ok) status = await statusResponse.json();
+            } catch (_) {}
+            if (!status) {
+                await sleep(900);
+                continue;
+            }
+            var operation = status && status.preflight_operation;
+            if (!status || String(status.instance_id || '') !== expectedInstanceId
+                || !operation || operation.operation_id !== operationId
+                || String(operation.instance_id || '') !== expectedInstanceId) {
+                var changed = new Error(translate('storage.preflightInstanceChanged', '服务已重新启动，请重新确认存储位置。'));
+                changed.preflightTerminal = true;
+                throw changed;
+            }
+            if (operation.state === 'in_flight') {
+                await sleep(900);
+                continue;
+            }
+            if (operation.state === 'completed' || operation.state === 'failed') {
+                return {
+                    ok: operation.response_status_code >= 200 && operation.response_status_code < 300,
+                    payload: operation.response_payload
+                };
+            }
+            var expired = new Error(translate('storage.preflightExpired', '本次存储预检已失效，请重新检查目标位置。'));
+            expired.preflightTerminal = true;
+            throw expired;
+        }
+        throw new Error(translate('storage.preflightStillRunning', '目标位置预检仍未完成，请稍后重试或安全退出应用。'));
     }
 
     function captureStorageCsrfToken(payload) {
@@ -2284,27 +2327,56 @@
 
         try {
             var response = null;
-            try {
-                response = await fetchWithTimeout('/api/storage/location/select', {
-                    method: 'POST',
-                    headers: storageMutationHeaders({
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    }),
-                    body: JSON.stringify({
-                        selected_root: normalizedTargetPath,
-                        selection_source: selectionSource
-                    })
-                }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
-            } catch (requestError) {
-                selectionOutcomeUnknown = true;
-                throw requestError;
-            }
-
             var payload = null;
-            try {
-                payload = await response.json();
-            } catch (_) {}
+            var pending = state.pendingPreflightOperation;
+            if (pending && (pending.path !== normalizedTargetPath || pending.source !== selectionSource)) {
+                state.pendingPreflightOperation = null;
+                pending = null;
+            }
+            if (!pending) {
+                try {
+                    response = await fetchWithTimeout('/api/storage/location/select', {
+                        method: 'POST',
+                        headers: storageMutationHeaders({
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json',
+                            'Prefer': 'respond-async'
+                        }),
+                        body: JSON.stringify({
+                            selected_root: normalizedTargetPath,
+                            selection_source: selectionSource
+                        })
+                    }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
+                } catch (requestError) {
+                    selectionOutcomeUnknown = true;
+                    throw requestError;
+                }
+                try {
+                    payload = await response.json();
+                } catch (_) {}
+                if (response.status === 202) {
+                    if (!payload || payload.result !== 'preflight_pending'
+                        || !payload.preflight_operation_id || !payload.instance_id) {
+                        throw new Error(translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。'));
+                    }
+                    pending = {
+                        path: normalizedTargetPath,
+                        source: selectionSource,
+                        operationId: String(payload.preflight_operation_id),
+                        instanceId: String(payload.instance_id)
+                    };
+                    state.pendingPreflightOperation = pending;
+                }
+            }
+            if (pending) {
+                var resolvedPreflight = await waitForStoragePreflight(
+                    pending.operationId,
+                    pending.instanceId
+                );
+                response = { ok: resolvedPreflight.ok };
+                payload = resolvedPreflight.payload;
+                state.pendingPreflightOperation = null;
+            }
 
             if (!response.ok) {
                 var selectionErrorCode = String(payload && payload.error_code || '').trim();
@@ -2362,6 +2434,7 @@
             );
         } catch (error) {
             console.warn('[storage-location] select failed', error);
+            if (error && error.preflightTerminal) state.pendingPreflightOperation = null;
             if (selectionOutcomeUnknown) {
                 setPhase('loading');
                 setLoadingCopy(

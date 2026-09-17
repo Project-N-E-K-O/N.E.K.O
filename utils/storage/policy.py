@@ -1627,6 +1627,8 @@ def _read_storage_policy_json_windows(
     anchor_root: Path,
     expected_anchor: os.stat_result | None,
     filename: str,
+    *,
+    deny_leaf_write: bool = False,
 ) -> Any:
     """Read through stable Win32 handles and reject every reparse component."""
 
@@ -1720,7 +1722,12 @@ def _read_storage_policy_json_windows(
         # component from being renamed while the full child path is opened.
         share_mode = file_share_read | file_share_write
         if not directory:
-            share_mode |= file_share_delete
+            # Private credentials are immutable snapshots: an in-place writer
+            # must not modify the leaf while its bytes are being read. Policy
+            # and checkpoint readers retain their existing sharing behavior.
+            share_mode = file_share_read | file_share_delete
+            if not deny_leaf_write:
+                share_mode |= file_share_write
         handle = kernel32.CreateFileW(
             _native_path(path),
             access,
@@ -1891,6 +1898,8 @@ def _read_storage_policy_json_windows(
 def read_fixed_anchor_state_json(
     configured_anchor_root: Path | str,
     filename: str,
+    *,
+    deny_leaf_write: bool = False,
 ) -> Any:
     """Read one fixed-anchor state JSON through a verified directory chain."""
 
@@ -1899,7 +1908,12 @@ def read_fixed_anchor_state_json(
     expected_anchor = _validate_storage_policy_anchor(configured_anchor_root)
     anchor_root = normalize_runtime_root(configured_anchor_root)
     if os.name == "nt":
-        return _read_storage_policy_json_windows(anchor_root, expected_anchor, filename)
+        return _read_storage_policy_json_windows(
+            anchor_root,
+            expected_anchor,
+            filename,
+            deny_leaf_write=deny_leaf_write,
+        )
     return _read_storage_policy_json_posix(anchor_root, expected_anchor, filename)
 
 

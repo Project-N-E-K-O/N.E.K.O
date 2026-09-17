@@ -61,6 +61,7 @@ from utils.storage_policy import (
     paths_equal,
     publish_fixed_anchor_state_json,
     read_fixed_anchor_state_json,
+    write_fixed_anchor_state_json,
 )
 
 logger = logging.getLogger("neko.card_drop")
@@ -651,7 +652,7 @@ def _current_logout_epoch(*, config_manager=None) -> int:
     )
     if path is None:
         raise OSError("community logout state is unavailable")
-    state, payload = _read_private_json_state(path)
+    state, payload = _read_fixed_anchor_private_json_state(path)
     if state == "absent":
         return 0
     if state != "valid" or not isinstance(payload, dict):
@@ -711,17 +712,26 @@ def _advance_logout_epoch(*, config_manager=None) -> int:
     if path is None:
         raise OSError("community logout state is unavailable")
     next_epoch = _current_logout_epoch(config_manager=config_manager) + 1
-    atomic_write_json(
-        path,
-        {
-            "version": 1,
-            "logout_epoch": next_epoch,
-            "updated_at": int(time.time()),
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    _fsync_logout_epoch_directory_required(path.parent)
+    payload = {
+        "version": 1,
+        "logout_epoch": next_epoch,
+        "updated_at": int(time.time()),
+    }
+    if path.parent.name == "state":
+        try:
+            write_fixed_anchor_state_json(
+                path.parent.parent,
+                path.name,
+                payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+        except StoragePolicyError as exc:
+            raise OSError("community logout state publication failed") from exc
+    else:
+        # Preserve the existing behavior for explicit non-anchor path overrides.
+        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
+        _fsync_logout_epoch_directory_required(path.parent)
     if _current_logout_epoch(config_manager=config_manager) != next_epoch:
         raise OSError("community logout state verification failed")
     return next_epoch
@@ -1488,10 +1498,14 @@ def _read_fixed_anchor_private_json_state(path: Path) -> tuple[str, dict | None]
     if path.parent.name != "state":
         return _read_private_json_state(path)
     try:
-        payload = read_fixed_anchor_state_json(path.parent.parent, path.name)
+        payload = read_fixed_anchor_state_json(
+            path.parent.parent,
+            path.name,
+            deny_leaf_write=True,
+        )
     except FileNotFoundError:
         return "absent", None
-    except StoragePolicyError:
+    except (StoragePolicyError, OSError):
         return "unreadable", None
     except (UnicodeError, ValueError, TypeError):
         return "invalid", None

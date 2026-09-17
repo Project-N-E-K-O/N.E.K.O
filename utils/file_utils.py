@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -677,11 +678,19 @@ def fsync_directory_best_effort(path: str | os.PathLike[str]) -> None:
     """
 
     try:
-        handle = os.open(os.fspath(path), os.O_RDONLY)
+        handle = os.open(
+            os.fspath(path),
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
     except OSError:
         return
     try:
-        os.fsync(handle)
+        if stat.S_ISDIR(os.fstat(handle).st_mode):
+            os.fsync(handle)
     except OSError:
         pass
     finally:
