@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: '復原修改',
-      activeLabel: '已啟用',
       usingBase: '目前沿用基礎設定',
       saveAsProfile: '儲存為方案',
       jumpSection: '定位設定區段',
@@ -319,7 +318,6 @@ export default {
       all: '全部',
       unsaved: '未儲存修改',
       configured: '本方案已設定',
-      configuredHint: '本方案明確設定的欄位；儲存後仍保留此標記',
       emptySearch: '沒有符合的欄位',
       clearFilters: '清除篩選',
       searchScope: '在目前方案的全部設定區段中篩選，儲存範圍不變。',

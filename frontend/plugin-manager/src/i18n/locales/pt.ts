@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: 'Desfazer',
-      activeLabel: 'Ativo',
       usingBase: 'Usando a configuração base',
       saveAsProfile: 'Salvar como perfil',
       jumpSection: 'Ir para a seção',
@@ -319,7 +318,6 @@ export default {
       all: 'Todos',
       unsaved: 'Alterações não salvas',
       configured: 'Definido neste perfil',
-      configuredHint: 'Campos definidos explicitamente no perfil; a marca permanece após salvar',
       emptySearch: 'Nenhum campo correspondente',
       clearFilters: 'Limpar filtros',
       searchScope: 'O filtro abrange todas as seções. O salvamento continua incluindo todas.',

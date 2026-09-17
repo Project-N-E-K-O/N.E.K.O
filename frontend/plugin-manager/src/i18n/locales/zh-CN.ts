@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: '撤销修改',
-      activeLabel: '已激活',
       usingBase: '当前沿用基础配置',
       saveAsProfile: '保存为方案',
       jumpSection: '定位配置段',
@@ -319,7 +318,6 @@ export default {
       all: '全部',
       unsaved: '未保存修改',
       configured: '本方案已设置',
-      configuredHint: '本方案明确设置的字段；保存后仍保留此标记',
       emptySearch: '没有匹配的字段',
       clearFilters: '清除筛选',
       searchScope: '在当前方案的全部配置段中筛选，保存范围不变。',

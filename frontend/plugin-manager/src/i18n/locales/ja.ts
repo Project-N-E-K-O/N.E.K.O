@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: '元に戻す',
-      activeLabel: '有効',
       usingBase: '基本設定を使用中',
       saveAsProfile: 'プロファイルとして保存',
       jumpSection: 'セクションへ移動',
@@ -319,7 +318,6 @@ export default {
       all: 'すべて',
       unsaved: '未保存の変更',
       configured: 'このプロファイルで設定済み',
-      configuredHint: 'このプロファイルで明示的に設定した項目です。保存後も表示されます',
       emptySearch: '一致するフィールドがありません',
       clearFilters: '絞り込みを解除',
       searchScope: 'このプロファイルの全セクションを検索します。保存範囲は変わりません。',

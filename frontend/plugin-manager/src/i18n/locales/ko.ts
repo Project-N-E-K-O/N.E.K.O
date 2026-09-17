@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: '실행 취소',
-      activeLabel: '활성',
       usingBase: '기본 설정 사용 중',
       saveAsProfile: '프로필로 저장',
       jumpSection: '섹션으로 이동',
@@ -319,7 +318,6 @@ export default {
       all: '전체',
       unsaved: '저장하지 않은 변경',
       configured: '이 프로필에 설정됨',
-      configuredHint: '이 프로필에 명시적으로 설정한 필드이며 저장 후에도 표시됩니다',
       emptySearch: '일치하는 필드가 없습니다',
       clearFilters: '필터 지우기',
       searchScope: '이 프로필의 모든 섹션을 검색합니다. 저장 범위는 바뀌지 않습니다.',

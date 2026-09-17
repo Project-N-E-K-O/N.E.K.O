@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: 'Отменить',
-      activeLabel: 'Активен',
       usingBase: 'Используется базовая конфигурация',
       saveAsProfile: 'Сохранить как профиль',
       jumpSection: 'Перейти к разделу',
@@ -319,7 +318,6 @@ export default {
       all: 'Все',
       unsaved: 'Несохранённые изменения',
       configured: 'Задано в этом профиле',
-      configuredHint: 'Поля, явно заданные в профиле; отметка остаётся после сохранения',
       emptySearch: 'Подходящих полей нет',
       clearFilters: 'Сбросить фильтры',
       searchScope: 'Фильтр по всем разделам профиля. Сохраняются по-прежнему все разделы.',

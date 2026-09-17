@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: 'Undo',
-      activeLabel: 'Active',
       usingBase: 'Using the base configuration',
       saveAsProfile: 'Save as profile',
       jumpSection: 'Go to section',
@@ -319,7 +318,6 @@ export default {
       all: 'All',
       unsaved: 'Unsaved changes',
       configured: 'Set in this profile',
-      configuredHint: 'Fields explicitly set in this profile; this marker remains after saving',
       emptySearch: 'No matching fields',
       clearFilters: 'Clear filters',
       searchScope: 'Filtering all sections of this profile. Saving still includes every section.',

@@ -303,7 +303,6 @@ export default {
   plugins: {
     configUi: {
       undoShort: 'Deshacer',
-      activeLabel: 'Activo',
       usingBase: 'Usando la configuración base',
       saveAsProfile: 'Guardar como perfil',
       jumpSection: 'Ir a la sección',
@@ -319,7 +318,6 @@ export default {
       all: 'Todos',
       unsaved: 'Cambios sin guardar',
       configured: 'Definido en este perfil',
-      configuredHint: 'Campos definidos explícitamente en el perfil; la marca permanece al guardar',
       emptySearch: 'No hay campos coincidentes',
       clearFilters: 'Borrar filtros',
       searchScope: 'Se filtran todas las secciones. El guardado sigue incluyendo todas.',

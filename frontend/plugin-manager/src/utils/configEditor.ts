@@ -82,24 +82,6 @@ export function configChanges(
   return result
 }
 
-// Replays a change list onto another base. Used to rebase locally edited drafts
-// onto content another window saved, so saving afterwards cannot discard it.
-export function applyConfigChanges(base: ConfigObject, changes: ConfigChange[]): ConfigObject {
-  const next = deepClone(base)
-  for (const change of changes) {
-    let target: any = next
-    for (const key of change.path.slice(0, -1)) {
-      if (!hasOwn(target, key) || !isMapping(target[key])) setOwn(target, key, {})
-      target = target[key]
-    }
-    const key = change.path[change.path.length - 1]
-    if (key === undefined) continue
-    if (change.afterPresent) setOwn(target, key, deepClone(change.after))
-    else delete target[key]
-  }
-  return next
-}
-
 export function configValueAt(config: any, path: string[]): any {
   return path.reduce(
     (value, key) => (value != null && hasOwn(value, key) ? value[key] : undefined),
