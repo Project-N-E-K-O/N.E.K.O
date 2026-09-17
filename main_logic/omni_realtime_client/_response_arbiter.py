@@ -88,6 +88,21 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 # so an unbounded host callback would stall every later dispatch; short
 # because the work it fronts is local bookkeeping plus one frontend send.
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
+# Ceiling on how long dispatch may stay paused without anyone claiming it.
+# A pause is a promise that some turn is about to take the lane, and only the
+# party that armed it can redeem it -- so a preparer that never returns (an
+# external-ASR turn whose provider final never arrives, an ownership slot
+# overwritten by a newer turn) leaves the lane shut with no other release
+# path, because the dispatch barrier itself is deliberately unbounded. Wide
+# enough to cover a whole spoken utterance plus its provider round trip: the
+# cost of expiring early is only that an already-completed turn takes the
+# lane while the user is still talking, which barge-in handles.
+_DISPATCH_PAUSE_TIMEOUT = 30.0
+# Dispatch waits past this are reported. The barrier has no bound of its own
+# to measure against, so this is a flat floor rather than a fraction: below
+# it the wait is ordinary turn-taking, above it something is holding the lane
+# and nothing else in the system would ever say so.
+_DISPATCH_WAIT_REPORT_SECONDS = 5.0
 
 
 class ResponseAdmissionRejected(RuntimeError):
@@ -371,6 +386,12 @@ class RealtimeResponseArbiter:
         self._dispatch_wakeup = asyncio.Event()
         self._dispatch_wakeup.set()
         self._turn_preparations = 0
+        self._dispatch_pause_timeout = _DISPATCH_PAUSE_TIMEOUT
+        # Bumped by every pause so a resume followed by a re-pause retires the
+        # earlier expiry instead of letting it fire against the new promise.
+        self._pause_generation = 0
+        self._pause_owner: str | None = None
+        self._pause_expiry: asyncio.Task[None] | None = None
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -594,6 +615,32 @@ class RealtimeResponseArbiter:
         return self._current.source if self._current is not None else None
 
     @property
+    def has_live_response(self) -> bool:
+        """Whether a response the provider already knows about is in flight.
+
+        Narrower than ``is_busy`` on purpose, and the distinction is what a
+        new user turn needs: a request still parked before its first send has
+        produced nothing to interrupt, so cancelling it does not stop anyone
+        talking over the user -- it only throws away the reply owed to an
+        earlier completed turn. The evidence mirrors ``cancel_current``, so
+        "nothing to cancel" here and "nothing was cancelled" there cannot
+        disagree.
+        """
+
+        current = self._current
+        if current is not None and (
+            current.item_committed or current.response_send_started
+        ):
+            return True
+        return bool(
+            self._response_owner is not None
+            or self._server_response_active
+            or self._server_vad_response_pending
+            or self._server_response_ids
+            or self._idless_server_response_live()
+        )
+
+    @property
     def is_busy(self) -> bool:
         return (
             self._current is not None
@@ -708,10 +755,64 @@ class RealtimeResponseArbiter:
         self._ensure_worker()
         return ticket
 
-    def pause_dispatch(self) -> None:
-        """Prevent queued work from starting while a user interruption settles."""
+    def pause_dispatch(self, owner: str | None = None) -> None:
+        """Prevent queued work from starting while a user interruption settles.
+
+        ``owner`` names the turn the pause is being held for, so an expiry can
+        say whose promise went unredeemed. It is a label only: release stays
+        keyed to the caller's own bookkeeping.
+        """
 
         self._dispatch_allowed.clear()
+        self._pause_owner = owner
+        self._pause_generation += 1
+        self._arm_pause_expiry(self._pause_generation)
+
+    def _arm_pause_expiry(self, generation: int) -> None:
+        """Bound one dispatch pause, replacing any earlier promise's expiry."""
+
+        previous = self._pause_expiry
+        self._pause_expiry = None
+        if previous is not None and previous is not asyncio.current_task():
+            previous.cancel()
+        timeout = self._dispatch_pause_timeout
+        if timeout <= 0:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Paused outside a loop (construction-time bookkeeping in tests).
+            # Nothing can dispatch without a loop either, so there is no
+            # promise to bound yet.
+            return
+
+        async def expire() -> None:
+            try:
+                await asyncio.sleep(timeout)
+            except asyncio.CancelledError:
+                return
+            if (
+                self._pause_generation != generation
+                or self._dispatch_allowed.is_set()
+                or not self._connection_available
+            ):
+                return
+            logger.warning(
+                "realtime dispatch held paused for its full %.1fs bound "
+                "(owner=%s preparations=%d current=%s queued=%d); releasing "
+                "the lane because nothing claimed the pause",
+                timeout,
+                self._pause_owner,
+                self._turn_preparations,
+                self.current_source,
+                self._queue.qsize(),
+            )
+            self.resume_dispatch()
+
+        self._pause_expiry = loop.create_task(
+            expire(),
+            name="realtime-dispatch-pause-expiry",
+        )
 
     def allow_ticket_while_paused(self, ticket: ResponseTicket) -> None:
         """Admit one completed user turn after its caller fixes pause ownership."""
@@ -721,16 +822,21 @@ class RealtimeResponseArbiter:
             self._dispatch_wakeup.set()
 
     def resume_dispatch(self) -> None:
+        expiry = self._pause_expiry
+        self._pause_expiry = None
+        if expiry is not None and expiry is not asyncio.current_task():
+            expiry.cancel()
+        self._pause_owner = None
         if not self._connection_available:
             return
         self._dispatch_allowed.set()
         self._dispatch_wakeup.set()
         self._ensure_worker()
 
-    def begin_turn_preparation(self) -> None:
+    def begin_turn_preparation(self, owner: str | None = None) -> None:
         """Keep even completed tickets behind in-flight interruption cleanup."""
         self._turn_preparations += 1
-        self.pause_dispatch()
+        self.pause_dispatch(owner)
 
     def end_turn_preparation(self) -> None:
         self._turn_preparations -= 1
@@ -2470,20 +2576,45 @@ class RealtimeResponseArbiter:
         self,
         queued: _QueuedResponse,
     ) -> None:
-        while not self._can_dispatch(queued) and not queued.interrupt_event.is_set():
-            self._dispatch_wakeup.clear()
-            dispatch_waiter = asyncio.create_task(self._dispatch_wakeup.wait())
-            interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
-            waiters = (dispatch_waiter, interrupt_waiter)
-            try:
-                # Unbounded on purpose: preparation/cancellation owns this barrier's
-                # lifetime, so there is no timeout allowance to measure.
-                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                for waiter in waiters:
-                    if not waiter.done():
-                        waiter.cancel()
-                await asyncio.gather(*waiters, return_exceptions=True)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            while (
+                not self._can_dispatch(queued)
+                and not queued.interrupt_event.is_set()
+            ):
+                self._dispatch_wakeup.clear()
+                dispatch_waiter = asyncio.create_task(self._dispatch_wakeup.wait())
+                interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
+                waiters = (dispatch_waiter, interrupt_waiter)
+                try:
+                    # Unbounded on purpose: preparation/cancellation owns this
+                    # barrier's lifetime, so there is no timeout allowance to
+                    # measure. What bounds it is the pause itself
+                    # (_arm_pause_expiry), not a deadline here.
+                    await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for waiter in waiters:
+                        if not waiter.done():
+                            waiter.cancel()
+                    await asyncio.gather(*waiters, return_exceptions=True)
+        finally:
+            # Nothing has been sent yet at this point, so a request stuck here
+            # is invisible to every other record in the system: no provider
+            # event, no bounded wait to report, no escalation. This line is the
+            # only evidence the lane was held.
+            waited = loop.time() - started
+            if waited >= _DISPATCH_WAIT_REPORT_SECONDS:
+                logger.warning(
+                    "realtime %s waited %.1fs for the dispatch lane "
+                    "(paused=%s owner=%s preparations=%d admitted=%s)",
+                    queued.source,
+                    waited,
+                    not self._dispatch_allowed.is_set(),
+                    self._pause_owner,
+                    self._turn_preparations,
+                    queued.dispatch_while_paused,
+                )
 
     async def _wait_for_idle_or_interrupt(self, queued: _QueuedResponse) -> None:
         if self._idle.is_set() or queued.interrupt_event.is_set():
