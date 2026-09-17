@@ -68,6 +68,47 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(false)
   })
 
+  it('keeps a flag that a profile write claimed while the plugin was starting', async () => {
+    setPendingReload('demo', true)
+    let releaseStart!: () => void
+    vi.mocked(startPlugin).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseStart = () =>
+            resolve({ success: true, plugin_id: 'demo', message: 'Plugin started successfully' })
+        })
+    )
+    const store = usePluginStore()
+
+    const starting = store.start('demo')
+    // The new host reads its saved configuration while starting, so a save that lands in
+    // the meantime describes a configuration it cannot have read yet.
+    setPendingReload('demo', true)
+    releaseStart()
+    await starting
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('keeps a flag that a profile write claimed while the plugin was reloading', async () => {
+    setPendingReload('demo', true)
+    let releaseReload!: () => void
+    vi.mocked(reloadPlugin).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = () => resolve({ success: true, plugin_id: 'demo', message: '' })
+        })
+    )
+    const store = usePluginStore()
+
+    const reloading = store.reload('demo')
+    setPendingReload('demo', true)
+    releaseReload()
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
   it('keeps the flag when the server reports the plugin was already running', async () => {
     // That response does not restart the host or re-read the saved configuration,
     // so the new configuration is still not applied.

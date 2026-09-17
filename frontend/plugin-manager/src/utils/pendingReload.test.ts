@@ -176,6 +176,40 @@ describe('pending reload storage', () => {
     release()
   })
 
+  it('restores write-failure flags on every storage clear', () => {
+    const backing = new Map<string, string>()
+    let readsThrow = false
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => {
+        if (readsThrow) throw new Error('storage denied')
+        return backing.get(key) ?? null
+      },
+      setItem: () => {
+        throw new Error('quota exceeded')
+      },
+      removeItem: (key: string) => backing.delete(key),
+    })
+    setPendingReload('alpha', true)
+    expect(hasPendingReload('alpha')).toBe(true)
+    // The handler only exists while something subscribes to the flag.
+    const release = subscribePendingReload(() => {})
+
+    // The flag only ever lived in memory, and two windows cleared storage.
+    const clearStorage = () => {
+      const cleared = new Event('storage')
+      Object.defineProperties(cleared, { key: { value: null }, newValue: { value: null } })
+      window.dispatchEvent(cleared)
+    }
+    clearStorage()
+    clearStorage()
+
+    // The second clear has nothing to report, and that must not drop the flag: a later
+    // storage read failure falls back to the mirror and has to still find it.
+    readsThrow = true
+    expect(hasPendingReload('alpha')).toBe(true)
+    release()
+  })
+
   it('ignores storage events for unrelated keys', () => {
     const seen: Array<[string, boolean, string]> = []
     const release = subscribePendingReload((pluginId, pending, source) =>

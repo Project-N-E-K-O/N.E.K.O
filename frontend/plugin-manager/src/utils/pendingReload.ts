@@ -55,6 +55,29 @@ function readStored(pluginId: string): boolean | null {
   }
 }
 
+// The stored value doubles as the identity of the flag that is currently set. A start or
+// reload captures it before its request and clears the flag only while it is still the
+// same one: a profile write that lands in the meantime describes a newer configuration
+// than the just-started host can have read. Refusing such a clear can only keep a warning
+// around, never drop one.
+let writeCount = 0
+
+function nextToken(): string {
+  writeCount += 1
+  return `${Date.now()}-${writeCount}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** The value that currently marks `pluginId` as pending, or null when no flag is set. */
+export function pendingReloadToken(pluginId: string): string | null {
+  const store = storage()
+  if (!store) return null
+  try {
+    return store.getItem(keyFor(pluginId))
+  } catch {
+    return null
+  }
+}
+
 function rememberLocal(pluginId: string, pending: boolean): void {
   if (pending) {
     inMemory.add(pluginId)
@@ -80,9 +103,13 @@ function handleStorageEvent(event: Event): void {
     const cleared = [...lastKnown]
     lastKnown.clear()
     inMemory.clear()
+    // A flag whose write never reached storage only lives in this window, so it survives
+    // the clear and its subscribers are not told otherwise. Restore every such flag, not
+    // just the ones this clear reported, or a second clear would silently drop them and a
+    // later storage read failure would then report the plugin as up to date.
+    for (const pluginId of unpersisted) inMemory.add(pluginId)
     for (const pluginId of cleared) {
-      if (unpersisted.has(pluginId)) inMemory.add(pluginId)
-      else notify(pluginId, false, 'external')
+      if (!unpersisted.has(pluginId)) notify(pluginId, false, 'external')
     }
     return
   }
@@ -128,13 +155,20 @@ export function hasPendingReload(pluginId: string): boolean {
   return stored || unpersisted.has(pluginId)
 }
 
-export function setPendingReload(pluginId: string, pending: boolean): boolean {
+export function setPendingReload(
+  pluginId: string,
+  pending: boolean,
+  expectedToken?: string | null
+): boolean {
   if (!pluginId) return false
+  // Callers that clear a flag they captured pass the token they started from; anything
+  // written since then belongs to a newer configuration and stays pending.
+  if (expectedToken !== undefined && pendingReloadToken(pluginId) !== expectedToken) return false
   const store = storage()
   let persisted = false
   if (store) {
     try {
-      if (pending) store.setItem(keyFor(pluginId), '1')
+      if (pending) store.setItem(keyFor(pluginId), nextToken())
       else store.removeItem(keyFor(pluginId))
       persisted = true
     } catch {
