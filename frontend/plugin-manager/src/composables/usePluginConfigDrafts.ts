@@ -151,8 +151,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
         record.draft = localChanges.length
           ? applyConfigChanges(fresh, localChanges)
           : deepClone(fresh)
-        // It is backed by a stored profile now, so later deletions may prune it.
-        record.virtual = false
       } catch {
         // Keep the cached content when the refresh fails.
       }
@@ -190,11 +188,18 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // record kept here would let a later profile of the same name display and save the
       // content that was deleted.
       for (const [name, record] of [...records]) {
-        // Keep a draft while its profile still exists, and keep the placeholder `default`,
-        // which has no stored profile to be deleted in the first place. Everything else
-        // describes a profile that is gone; the list still offers `default` as a
-        // placeholder there, and that placeholder must not keep showing stale content.
-        if (record.virtual || persistedNames.value.includes(name)) continue
+        // A persisted name is a real profile from now on, whether this window or another one
+        // created it: the external refresh used to be the only path that cleared this, so a
+        // placeholder saved here stayed marked as one.
+        if (persistedNames.value.includes(name)) {
+          record.virtual = false
+          continue
+        }
+        // The placeholder `default` has no stored profile to be deleted, so its draft
+        // (unsaved edits included) stays. Everything else describes a profile that is gone;
+        // the list still offers `default` as a placeholder there, and that placeholder must
+        // not keep showing stale content.
+        if (record.virtual) continue
         records.delete(name)
         requests.delete(name)
       }

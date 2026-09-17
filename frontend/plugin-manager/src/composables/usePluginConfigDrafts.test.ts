@@ -791,4 +791,37 @@ describe('config draft lifecycle', () => {
     window.dispatchEvent(crossWindowProfileWrite('alpha'))
     await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({}))
   })
+
+  it('stops treating a placeholder as one after this window saved it', async () => {
+    const file = (name: string) => ({ path: `${name}.toml`, resolved_path: null, exists: true })
+    let files: Record<string, ReturnType<typeof file>> = {}
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: { active: files.default ? 'default' : null, files },
+    }))
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      // The server now lists `default` as a stored profile.
+      files = { default: file('default') }
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    await drafts.saveProfile()
+
+    // That stored profile is deleted elsewhere: it must not survive as a placeholder draft
+    // and be written back on the next save.
+    files = {}
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
+    await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({}))
+  })
 })
