@@ -102,7 +102,7 @@ async def _refresh_committed_market_install(plugin_id: str) -> str | None:
         # shields the complete locked operation and waits for it before
         # propagating caller cancellation. Await directly here so no orphan
         # refresh task is created.
-        await plugin_registry_service.refresh_plugin(plugin_id, force=True)
+        await plugin_registry_service.refresh_plugin(plugin_id)
     except Exception as exc:  # noqa: BLE001 - committed install stays successful.
         logger.warning(
             "post-commit Market plugin refresh failed: plugin_id={}",
