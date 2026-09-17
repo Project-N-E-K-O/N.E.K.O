@@ -85,7 +85,7 @@ let _warnedThisSession = false
 export function warnReDoSOnce(pattern: string): void {
   if (_warnedThisSession) return
   _warnedThisSession = true
-  // eslint-disable-next-line no-console
+   
   console.warn(
     '[neko] regex pattern rejected by ReDoS guard, falling back to ' +
       'substring search:',

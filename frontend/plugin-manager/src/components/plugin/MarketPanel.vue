@@ -1019,7 +1019,7 @@ async function resolveInstallPayload(
   let payloadHash: string | null = null
   let version = plugin.version
   let channel: string | null = plugin.latest_channel || null
-  let publishedAt: string | null = plugin.latest_published_at || null
+  const publishedAt: string | null = plugin.latest_published_at || null
 
   try {
     const versions = await fetchMarketPluginVersions(plugin.rawId, {

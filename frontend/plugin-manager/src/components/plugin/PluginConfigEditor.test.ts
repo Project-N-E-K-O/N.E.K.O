@@ -171,6 +171,15 @@ describe('saved profile hot updates', () => {
       profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
       config: { search: { max_results: 9 } },
     })
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        profiles: [{ name: 'default', path: 'default.toml', resolved_path: null, exists: true }],
+      },
+    })
     const editor = await mountEditor()
     const input = editor.host.querySelector<HTMLInputElement>(
       'input[aria-label="search.max_results"]'
@@ -229,7 +238,8 @@ describe('saved profile hot updates', () => {
         'plugins.configUi.hotRequested'
       )
     )
-    expect(hotButton(host)).toBeDefined()
+    // Hot update success clears pending state, so the button should disappear
+    expect(hotButton(host)).toBeUndefined()
     expect(configApi.upsertPluginProfileConfig).toHaveBeenCalledTimes(1)
   })
 
@@ -306,5 +316,106 @@ describe('configuration navigation boundaries', () => {
     expect(host.querySelector('.config-footer')?.textContent).toContain(
       'plugins.configUi.unsavedCount'
     )
+  })
+})
+
+describe('async operation lifecycle isolation', () => {
+  it('does not show stale errors after switching plugins', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        profiles: [{ name: 'default', path: 'default.toml', resolved_path: null, exists: true }],
+      },
+    })
+    vi.spyOn(configApi, 'upsertPluginProfileConfig').mockRejectedValue(new Error('Create failed'))
+    const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: 'prod', action: 'confirm' } as MessageBoxData)
+    const { host, pluginId, unmount } = await mountEditor()
+    // 打开配置文件管理器
+    const profileBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (btn) => btn.classList.contains('profile-entry')
+    )!
+    profileBtn.click()
+    await nextTick()
+    await vi.waitFor(() => expect(document.querySelector('.profile-manager-dialog')).not.toBeNull())
+    // 点击新建配置文件按钮
+    const addBtn = [...document.querySelectorAll<HTMLButtonElement>('.profile-picker-row button')].find(
+      (btn) => btn.querySelector('svg') // Plus icon
+    )!
+    addBtn.click()
+    await vi.waitFor(() => expect(configApi.upsertPluginProfileConfig).toHaveBeenCalled())
+    pluginId.value = 'other'
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector('.config-error')).toBeNull()
+    unmount()
+  })
+
+  it('does not show stale activation errors after plugin change', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        profiles: [{ name: 'prod', path: 'prod.toml', resolved_path: null, exists: true }],
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'prod', path: 'prod.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 60 } },
+    })
+    
+    const { host, pluginId, unmount } = await mountEditor()
+    await vi.waitFor(() => expect(configApi.getPluginProfilesState).toHaveBeenCalled())
+    await nextTick()
+
+    // 模拟保存操作失败（延迟 100ms）
+    const saveSpy = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Network error')), 100)
+        })
+    )
+    
+    // 修改配置以触发草稿状态
+    const input = host.querySelector<HTMLInputElement>('input[type="number"]')
+    expect(input).toBeDefined()
+    input!.value = '120'
+    input!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    
+    // 点击保存按钮
+    await vi.waitFor(() => {
+      const saveBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+        (btn) => btn.textContent?.includes('save') || btn.classList.contains('save-button')
+      )
+      expect(saveBtn).toBeDefined()
+      return saveBtn !== undefined
+    })
+    const saveBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (btn) => btn.textContent?.includes('save') || btn.classList.contains('save-button')
+    )!
+    saveBtn.click()
+    await nextTick()
+    
+    // 等待 50ms，然后切换插件
+    await vi.advanceTimersByTimeAsync(50)
+    pluginId.value = 'another-plugin'
+    await nextTick()
+    
+    // 等待保存操作完成（失败）
+    await vi.advanceTimersByTimeAsync(100)
+    await nextTick()
+    
+    expect(saveSpy).toHaveBeenCalledOnce()
+    // 不应该显示错误（因为插件 ID 已经改变）
+    expect(host.querySelector('.config-error')).toBeNull()
+    vi.useRealTimers()
+    unmount()
   })
 })

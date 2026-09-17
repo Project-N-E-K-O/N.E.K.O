@@ -76,6 +76,7 @@
         <div class="profile-picker-row">
           <el-select
             id="config-profile-picker"
+            data-testid="profile-select"
             :model-value="selected"
             :aria-label="t('plugins.configUi.editProfile')"
             :disabled="loading || saving || applying"
@@ -567,12 +568,18 @@ async function addProfile() {
     const discardVirtual =
       name !== 'default' && virtualDefault('default') && dirtyCount('default') > 0
     if (discardVirtual && !(await confirmDiscard())) return
+    // Creating a persisted "default" profile should save the virtual default
+    // rather than orphaning its unsaved edits.
+    if (name === 'default' && virtualDefault('default') && dirtyCount('default') > 0) {
+      if (!(await confirmDiscard())) return
+    }
     if (!alive || id !== props.pluginId) return
     await drafts.createProfile(name)
     if (alive && id === props.pluginId && discardVirtual && names.value.includes(name))
       drafts.records.delete('default')
   } catch (err) {
-    if (err !== 'cancel' && err !== 'close') operationError.value = errorText(err)
+    if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
+      operationError.value = errorText(err)
   }
 }
 async function removeProfile() {
@@ -588,7 +595,7 @@ async function removeProfile() {
     )
     if (!alive || id !== props.pluginId || name !== selected.value) return
     await drafts.deleteProfile(name)
-    if (!alive || id !== props.pluginId) return
+    if (!alive || id !== props.pluginId || name !== selected.value) return
     ElMessage.success(t('common.success'))
   } catch (err) {
     if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
@@ -606,7 +613,7 @@ async function activate() {
     if (active.value !== name)
       ElMessage.warning(t('plugins.configUi.activationUnchanged', { name: active.value || '—' }))
   } catch (err) {
-    operationError.value = errorText(err)
+    if (alive && id === props.pluginId) operationError.value = errorText(err)
   }
 }
 async function saveOnly() {
@@ -667,6 +674,7 @@ async function hotUpdate() {
     applicationNotice.value = result.hot_reloaded
       ? t('plugins.configUi.hotRequested')
       : t('plugins.hotUpdatePartial')
+    pendingApplication.delete(name)
     await drafts.loadAll()
   } catch (err) {
     if (alive && id === props.pluginId) operationError.value = errorText(err)

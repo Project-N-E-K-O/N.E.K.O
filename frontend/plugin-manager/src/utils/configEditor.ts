@@ -153,7 +153,8 @@ export function configNodeMatches(
       (filter === 'dirty' && hasConfigChangesAt(changes, path))
     const matchesQuery =
       !query || path.join('.').toLowerCase().includes(query.toLowerCase())
-    if (matchesState && matchesQuery) return true
+    // The root node must descend into children; only non-root paths may match themselves.
+    if (path.length > 0 && matchesState && matchesQuery) return true
     if (keys.length)
       return keys.some((k) =>
         configNodeMatches(a[k], b[k], [...path, k], query, filter, changes, replacement)

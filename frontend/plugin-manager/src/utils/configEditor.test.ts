@@ -117,4 +117,17 @@ describe('configNodeMatches', () => {
       false
     )
   })
+
+  it('does not match the root as configured when the overlay is empty', () => {
+    const overlay = {}
+    const baseline = { cache: { ttl: 120 }, nested: { value: 1 } }
+    const changes: any[] = []
+    // Root node with empty overlay should not match 'configured' filter
+    expect(configNodeMatches(overlay, baseline, [], '', 'configured', changes, false)).toBe(false)
+    // Non-root paths can still match their own state
+    const overlayWithData = { cache: { ttl: 60 } }
+    expect(configNodeMatches(overlayWithData, baseline, [], '', 'configured', changes, false)).toBe(
+      true
+    )
+  })
 })
