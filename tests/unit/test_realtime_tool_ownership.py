@@ -39,6 +39,49 @@ class _QueueSocket:
         self.closed = True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unreliable_ids', [True, False])
+async def test_tool_call_id_filter_respects_route_after_announcement(monkeypatch, unreliable_ids):
+    from main_logic.omni_realtime_client._protocol_capabilities import (
+        LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+        STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+    )
+
+    client = OmniRealtimeClient('wss://example.invalid/realtime', 'test-key', api_type='gpt',
+                               on_tool_call=AsyncMock())
+    client._realtime_protocol_capabilities = (
+        LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES if unreliable_ids
+        else STRICT_REALTIME_PROTOCOL_CAPABILITIES
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    calls = []
+    marker = asyncio.Event()
+    monkeypatch.setattr(client, '_start_raw_tool_call', lambda call, *a, **kw: calls.append(call))
+
+    async def marked(event):
+        marker.set()
+
+    client.extra_event_handlers['test.marker'] = marked
+    receiver = asyncio.create_task(client.handle_messages())
+    try:
+        socket.feed({'type': 'response.created', 'response': {'id': 'current'}})
+        socket.feed({'type': 'response.function_call_arguments.delta', 'response_id': 'function-id',
+                     'call_id': 'call-1', 'name': 'lookup', 'delta': '{"value":1}'})
+        socket.feed(_raw_tool_event('call-1', response_id='function-id'))
+        socket.feed({'type': 'test.marker'})
+        await asyncio.wait_for(marker.wait(), 1)
+        assert len(calls) == int(unreliable_ids)
+        if calls:
+            assert calls[0].arguments == {'value': 1}
+        assert client._current_response_id == 'current'
+    finally:
+        socket.finish()
+        await asyncio.wait_for(receiver, 1)
+        await client._response_arbiter.shutdown()
+
+
 class _BlockingSendSocket(_QueueSocket):
     def __init__(self) -> None:
         super().__init__()

@@ -203,6 +203,7 @@ class _QueuedResponse:
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
+    item_driven: bool = field(default=False, compare=False)
     # Once the first pre-response event enters the transport send, the item is
     # committed to the provider. Admission invalidation after that point must
     # finish (or cancel) the same response lifecycle rather than orphaning the
@@ -1736,6 +1737,12 @@ class RealtimeResponseArbiter:
         create, so the lane must not reopen on it.
         """
 
+        # A rejected sole item is the rejected generation trigger on this
+        # route, not a late prerequisite error for a separate response.create.
+        # Multi-item dispatches remain conservative: another item may already
+        # have triggered a live response even when this item was rejected.
+        if target.item_driven and len(target.events_before_response) == 1:
+            return False
         if (
             not target.response_send_started
             and not target.ticket.sent.done()
@@ -2513,17 +2520,21 @@ class RealtimeResponseArbiter:
         requeued = False
         item_driven = bool(
             self._protocol_capabilities.responds_to_conversation_items
-            and len(queued.events_before_response) == 1
-            and queued.events_before_response[0].get("type") == "conversation.item.create"
-            and isinstance(queued.events_before_response[0].get("item"), dict)
-            and (
-                queued.events_before_response[0]["item"].get("type") == "function_call_output"
-                or (
-                    queued.events_before_response[0]["item"].get("type") == "message"
-                    and queued.events_before_response[0]["item"].get("role") == "user"
+            and queued.events_before_response
+            and all(
+                event.get("type") == "conversation.item.create"
+                and isinstance(event.get("item"), dict)
+                and (
+                    event["item"].get("type") == "function_call_output"
+                    or (
+                        event["item"].get("type") == "message"
+                        and event["item"].get("role") == "user"
+                    )
                 )
+                for event in queued.events_before_response
             )
         )
+        queued.item_driven = item_driven
 
         try:
             await self._wait_for_dispatch_or_interrupt(queued)
@@ -2586,10 +2597,13 @@ class RealtimeResponseArbiter:
                     # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
                     queued.pre_commit(event)
                 queued.item_committed = True
-                if item_driven:
+                if item_driven and queued.terminal is None:
                     # This route starts generation on item submission and does
                     # not acknowledge the item. Own the lifecycle before the
                     # write so even a synchronous response cannot be orphaned.
+                    # Install once for the whole batch: replacing the future
+                    # on a sibling item loses an early terminal, and reverting
+                    # batches to response.create duplicates generation.
                     queued.terminal = loop.create_future()
                     self._response_owner = queued
                     queued.response_send_started = True

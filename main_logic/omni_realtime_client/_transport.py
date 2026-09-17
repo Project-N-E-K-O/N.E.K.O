@@ -2969,6 +2969,19 @@ class _TransportMixin:
                         # its first turn onward and the stale filter behaves
                         # exactly as before.
                         and self._announces_responses
+                        # This route's function-call IDs are not lifecycle
+                        # IDs. An earlier response.created does not make that
+                        # comparison valid. Keep tool dispatch separate from
+                        # owner binding; call IDs and connection/turn guards
+                        # still protect execution. Other events/routes retain
+                        # the stale-response filter.
+                        and not (
+                            not self._realtime_protocol_capabilities.function_call_ids_match_terminal
+                            and event_type in {
+                                "response.function_call_arguments.delta",
+                                "response.function_call_arguments.done",
+                            }
+                        )
                     ):
                         if event_type == "response.done":
                             # A terminal event must reach the arbiter even when
