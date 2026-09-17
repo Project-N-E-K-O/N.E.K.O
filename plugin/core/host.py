@@ -10,6 +10,7 @@ import json
 import math
 import multiprocessing
 import os
+import socket
 import sys
 import threading
 import time
@@ -17,8 +18,9 @@ import hashlib
 import types
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Iterator, Optional, Type
 
+from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
@@ -91,6 +93,91 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 
 
 _TIMEOUT_UNSET = object()
+
+
+# ============================================================================
+# fork 后丢掉继承来的宿主 HTTP socket
+# ============================================================================
+
+# 插件进程是裸 multiprocessing.Process 起的，POSIX 上即 fork：子进程整份继承宿主
+# 的 fd 表，其中就有 user_plugin_server 的监听 socket 和每一条已 accept 的浏览器
+# 连接。子进程从不读它们，而 TCP socket 是在**最后一个引用**关闭时才断开的——
+# 于是宿主自己 close() 之后不再发 FIN，浏览器把这条连接当成空闲 keep-alive 留在
+# 池子里复用，下一个请求就堆进内核接收缓冲、没有任何人读，永久挂死。表现就是插件
+# 管理页转圈点不动、刷新一下又好了、再用一会儿又卡。
+#
+# 判据是「本地端口属于本进程自己那两个 HTTP 服务端口」：监听 socket 和从它 accept
+# 出来的连接共用同一个本地端口，而任何客户端 socket 的本地端口都是临时端口，所以
+# 这条判据天然只命中宿主的 HTTP 服务，不会误伤别的 socket。
+#
+# ZMQ 一律不碰：它们挂在 zmq.Context.instance() 这个进程级单例上，fork 之后
+# libzmq 的记账里还留着这些 fd 号，替它把 fd 关掉，号码一旦被复用，zmq_ctx_term
+# 就会去关一个无关的 fd。AF_UNIX 也不碰——state.plugin_response_map 那套 Manager
+# proxy 就是故意让子进程继承的。
+_HOST_HTTP_PORTS = frozenset({TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT})
+_INET_FAMILIES = frozenset({socket.AF_INET, socket.AF_INET6})
+
+_INHERITED_HOST_SOCKETS_CLOSED = 0
+
+
+def _iter_open_fds() -> Iterator[int]:
+    """本进程当前持有的 fd（跳过 stdio）。
+
+    没有 /proc 就没有 fork：macOS 与 Windows 的 multiprocessing 默认走 spawn，
+    子进程 re-exec，宿主的 fd 根本带不过去，这个钩子在那里无事可做。
+    """
+    try:
+        entries = os.listdir("/proc/self/fd")
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            fd = int(entry)
+        except ValueError:
+            continue
+        if fd > 2:
+            yield fd
+
+
+def _close_inherited_host_sockets() -> None:
+    """丢掉宿主的 HTTP 服务 socket（注册在 after_in_child 上）。
+
+    fork 之后立刻跑，早于子进程建立的任何 socket，也早于插件代码。这里不能抛
+    异常——它跑在 fork 钩子里，抛出去就是子进程直接死。
+    """
+    global _INHERITED_HOST_SOCKETS_CLOSED
+    closed = 0
+    for fd in _iter_open_fds():
+        try:
+            probe = socket.socket(fileno=fd)
+        except OSError:
+            continue  # 管道 / 文件 / epoll / signalfd…… 本来就不是 socket
+        try:
+            if (
+                probe.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN) in _INET_FAMILIES
+                and probe.getsockname()[1] in _HOST_HTTP_PORTS
+            ):
+                os.close(fd)
+                closed += 1
+        except OSError:
+            pass
+        finally:
+            # fd 归我们处置：包装对象只借来看一眼，别让它析构时再关一次。
+            probe.detach()
+    _INHERITED_HOST_SOCKETS_CLOSED = closed
+
+
+def inherited_host_sockets_closed() -> int:
+    """上一次 fork 里丢掉的宿主 socket 数，供子进程启动日志观测。"""
+    return _INHERITED_HOST_SOCKETS_CLOSED
+
+
+_FORK_SOCKET_HOOK_REGISTERED = False
+
+if hasattr(os, "register_at_fork"):
+    # POSIX only；spawn 平台子进程自己 re-exec，继承面根本不存在。
+    os.register_at_fork(after_in_child=_close_inherited_host_sockets)
+    _FORK_SOCKET_HOOK_REGISTERED = True
 
 
 # ============================================================================
@@ -765,6 +852,15 @@ def _plugin_process_runner(
         _setup_logging_interception(logger, project_root)
     except Exception as e:
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
+
+    # 宿主是 fork 出来的，fd 表整份跟了过来；宿主的 HTTP socket 已在 fork 钩子里
+    # 丢掉（见文件顶部 _close_inherited_host_sockets），这里只留一条可观测的痕迹。
+    released_sockets = inherited_host_sockets_closed()
+    if released_sockets:
+        logger.info(
+            "[Plugin Process] released {} host socket(s) inherited over fork",
+            released_sockets,
+        )
     
     # ── ZMQ child-side transport ─────────────────────────────────
     child_transport_kwargs: dict[str, object] = {}
@@ -1942,6 +2038,8 @@ class PluginHost:
                 plugin_id, e
             )
 
+        # POSIX 上这就是 fork：子进程整份继承宿主的 fd 表。宿主的 HTTP socket 由
+        # _close_inherited_host_sockets 在子进程里丢掉（见文件顶部）。
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(
