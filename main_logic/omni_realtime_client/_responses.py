@@ -359,7 +359,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         return ticket
 
     def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
@@ -701,7 +701,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         # Only here, and only on the path where ``ticket.sent`` resolved without
         # raising. Everything that could still have removed or rewritten a frame
         # has already run against this very dict -- both ownership downgrades
@@ -1003,9 +1003,19 @@ class _ResponseMixin:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.begin_turn_preparation()
+                    arbiter.begin_turn_preparation(stable_turn_id)
                     preparation_arbiter = arbiter
-                    await arbiter.cancel_current()
+                    # Only cancel something the provider is already acting on.
+                    # Independent ASR cuts one spoken sentence into several
+                    # turns, so this prepare routinely lands while the
+                    # *previous* turn's reply is still parked before its first
+                    # send. Cancelling that is not barge-in: nothing is being
+                    # said over the user, and the turn it discards is a
+                    # complete sentence that then never gets answered at all.
+                    # Leave it queued -- the lane is serial, and this turn's
+                    # own ticket is priority 0.
+                    if arbiter.has_live_response:
+                        await arbiter.cancel_current()
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
