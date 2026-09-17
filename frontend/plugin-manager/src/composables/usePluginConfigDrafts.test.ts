@@ -177,6 +177,43 @@ describe('config draft lifecycle', () => {
     expect(hasPendingReload('alpha')).toBe(true)
   })
 
+  it('does not warn when another window activated a different profile', async () => {
+    // The save started with no active profile, but by the time it finished another
+    // window had activated a different one, so this host is not waiting on us.
+    let active: string | null = null
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active,
+        files: {
+          mine: { path: 'mine.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }))
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      active = 'other'
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'mine', path: 'mine.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.selected.value).toBe('mine')
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    await drafts.saveProfile()
+
+    expect(drafts.active.value).toBe('other')
+    expect(hasPendingReload('alpha')).toBe(false)
+  })
+
   it('keeps the implicit activation when the save is invalidated', async () => {
     // No active profile: the server activates whatever is saved, so the original
     // plugin still needs a reload even if the user left during the request.

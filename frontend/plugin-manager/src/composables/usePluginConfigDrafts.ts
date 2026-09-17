@@ -194,10 +194,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
       await loadAll()
-      // Only the active profile changes what the running host should be using. The
-      // refreshed state is authoritative, but the pre-request snapshot is the only
-      // evidence left when the refresh failed or the plugin switched meanwhile.
-      if (wasActive || mayBecomeActive || (valid(id, epoch) && name === active.value))
+      // Only the active profile changes what the running host should be using. When
+      // the refresh worked it is authoritative; otherwise the pre-request snapshot is
+      // the only evidence left.
+      const refreshed = valid(id, epoch) && ready.value && !error.value
+      if (refreshed ? name === active.value : wasActive || mayBecomeActive)
         setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {
