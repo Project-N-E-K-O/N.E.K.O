@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * English language pack
  */
 export default {
+  modelApi: modelApiMessages['en-US'],
+  modelBindings: modelBindingsMessages['en-US'],
   development: {
     guidePurpose: "This interface does not develop plugins for you in one click. It helps developers package existing source code into importable plugins with one click and continue development.",
     navTitle: "Development plugins",

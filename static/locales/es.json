@@ -1063,6 +1063,7 @@
     "imageModelApiKeyPlaceholder": "Clave del endpoint personalizado; los proveedores usan el registro de claves API",
     "imageDisabled": "Sin configurar",
         "settings": "Configuración de clave API",
+        "pluginApiSettings": "Configuración de Plugin API ↗",
         "settingsTitle": "Configuración de clave API - Proyecto Lanlan",
         "quickStart": "Inicio rápido",
         "freeVersion": "Versión gratuita (recomendada para principiantes)",

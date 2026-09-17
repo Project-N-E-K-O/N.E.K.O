@@ -1063,6 +1063,7 @@
     "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
     "imageDisabled": "未設定",
         "settings": "APIキー設定",
+        "pluginApiSettings": "Plugin API 設定 ↗",
         "settingsTitle": "APIキー設定 - Project Lanlan",
         "quickStart": "クイックスタート",
         "freeVersion": "無料版（初心者推奨）",

@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 中文语言包
  */
 export default {
+  modelApi: modelApiMessages['zh-CN'],
+  modelBindings: modelBindingsMessages['zh-CN'],
   development: {
     guidePurpose: "此界面不提供一键式插件开发，而是帮助开发者将已有源码一键打包为可导入的插件，并支持持续开发。",
     navTitle: "开发插件",
