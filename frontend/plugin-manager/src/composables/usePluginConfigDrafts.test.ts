@@ -568,4 +568,114 @@ describe('config draft lifecycle', () => {
     await settle()
     expect(drafts.pendingApplication.value).toBe(false)
   })
+
+  it('drops a cached draft whose profile was deleted in another window', async () => {
+    const file = (name: string) => ({ path: `${name}.toml`, resolved_path: null, exists: true })
+    let files: Record<string, ReturnType<typeof file>> = {
+      prod: file('prod'),
+      staging: file('staging'),
+    }
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: { active: 'prod', files },
+    }))
+    let stored: Record<string, unknown> = { cache: { ttl: 1 } }
+    vi.mocked(getPluginProfileConfig).mockImplementation(async () => ({
+      plugin_id: 'alpha',
+      profile: { name: 'staging', path: 'staging.toml', resolved_path: null, exists: true },
+      config: stored,
+    }))
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    await drafts.selectProfile('staging')
+    expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
+
+    // Another window deleted it. The endpoint drops only the mapping, so the orphaned
+    // file is still readable and a refresh would put the deleted content back.
+    files = { prod: file('prod') }
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
+    await vi.waitFor(() => expect(drafts.records.has('staging')).toBe(false))
+
+    // Creating that name again has to start from the new empty profile instead of the
+    // cached draft that was deleted.
+    files = { prod: file('prod'), staging: file('staging') }
+    stored = {}
+    await drafts.loadAll()
+    await drafts.selectProfile('staging')
+    expect(drafts.current.value?.draft).toEqual({})
+  })
+
+  it('broadcasts a delete that finishes after the user left the plugin', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: {
+          prod: { path: 'prod.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }))
+    const blocked = deferred<unknown>()
+    vi.mocked(deletePluginProfileConfig).mockImplementation(async () => {
+      await blocked.promise
+      return { plugin_id: 'alpha', profile: 'other', removed: true } as never
+    })
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    const deleting = drafts.deleteProfile('other')
+    await settle()
+    pluginId.value = 'beta'
+    await settle()
+    blocked.resolve(undefined)
+    await deleting
+    await settle()
+
+    // The mapping is already gone on the server, so a window that still holds this
+    // profile must be told even though this one moved on before the response arrived.
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:beta')).toBeNull()
+  })
+
+  it('broadcasts a save that finishes after the user left the plugin', async () => {
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    const blocked = deferred<unknown>()
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      await blocked.promise
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    const saving = drafts.saveProfile()
+    await settle()
+    pluginId.value = 'beta'
+    await settle()
+    blocked.resolve(undefined)
+    await saving
+    await settle()
+
+    // The server already holds this write, so the other windows have to refresh their
+    // stale draft for it even though this window moved on mid-flight.
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:beta')).toBeNull()
+  })
 })

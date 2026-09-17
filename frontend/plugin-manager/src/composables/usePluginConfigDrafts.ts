@@ -176,6 +176,13 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       effective.value = effectiveResult.config || {}
       profiles.value = profileResult
       ready.value = true
+      // A profile deleted in another window is gone from the refreshed list, so drop
+      // its cached draft. The delete removes only the mapping, so reading that profile
+      // again can still return the orphaned file, and a record kept here would let a
+      // later profile of the same name display and save the content that was deleted.
+      for (const name of [...records.keys()]) {
+        if (!names.value.includes(name)) records.delete(name)
+      }
       configPath.value = baseResult.config_path || effectiveResult.config_path
       lastModified.value = baseResult.last_modified || effectiveResult.last_modified
       if (!selected.value || !names.value.includes(selected.value))
@@ -221,15 +228,16 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     error.value = null
     try {
       const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
+      // Tell other windows before the liveness check: the write already reached the
+      // server, so their cached draft for this profile is stale and saving it would
+      // drop these values — whether or not this window still shows that plugin.
+      bumpProfileRevision(id)
       if (!valid(id, epoch)) {
         if (wasActive || mayBecomeActive) setPendingApplication(true, id)
         return null
       }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
-      // Tell other windows even when this profile is not active: their cached draft
-      // for it is now stale and saving it would drop these values.
-      bumpProfileRevision(id)
       await loadAll()
       // Only the active profile changes what the running host should be using. When
       // the refresh worked it is authoritative; otherwise the pre-request snapshot is
@@ -274,11 +282,12 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Deleting the active profile leaves the host running its configuration,
       // so it still needs a reload; other deletions change nothing at runtime.
       if (wasActive) setPendingApplication(true, id)
+      // Emit before the liveness check: the mapping is already gone on the server, and
+      // another window may still hold that profile loaded, so it has to be told even
+      // when this window has already moved on to a different plugin.
+      bumpProfileRevision(id)
       if (!valid(id, epoch)) return
       records.delete(name)
-      // Another window may still hold this profile loaded; without the broadcast it
-      // would keep editing a deleted profile and recreate it on its next save.
-      bumpProfileRevision(id)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
