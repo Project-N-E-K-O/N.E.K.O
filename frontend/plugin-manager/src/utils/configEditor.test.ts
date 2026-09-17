@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { applyProfileOverlay, configNodeMatches, restoreConfigPath } from './configEditor'
+import {
+  applyConfigChanges,
+  applyProfileOverlay,
+  configNodeMatches,
+  restoreConfigPath,
+} from './configEditor'
 
 const owns = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -157,6 +162,34 @@ describe('server merge markers and empty tables', () => {
     applyProfileOverlay(base, overlay)
     expect(base).toEqual({ a: { keep: 1, t: { x: 1 } }, cache: { ttl: 120 } })
     expect(overlay).toEqual({ a: { t: { __replace__: true, y: 3 } }, cache: {} })
+  })
+})
+
+describe('applyConfigChanges', () => {
+  it('replays changes onto another base without mutating either input', () => {
+    const base = { cache: { ttl: 1 }, search: { query: 'neko' } }
+    const changes = [
+      { path: ['cache', 'ttl'], before: 1, after: 9, beforePresent: true, afterPresent: true },
+      { path: ['gone'], before: 'x', after: undefined, beforePresent: true, afterPresent: false },
+    ]
+    expect(applyConfigChanges(base, changes)).toEqual({
+      cache: { ttl: 9 },
+      search: { query: 'neko' },
+    })
+    expect(base).toEqual({ cache: { ttl: 1 }, search: { query: 'neko' } })
+  })
+
+  it('creates missing tables along the path', () => {
+    const changes = [
+      {
+        path: ['a', 'b', 'c'],
+        before: undefined,
+        after: 3,
+        beforePresent: false,
+        afterPresent: true,
+      },
+    ]
+    expect(applyConfigChanges({}, changes)).toEqual({ a: { b: { c: 3 } } })
   })
 })
 

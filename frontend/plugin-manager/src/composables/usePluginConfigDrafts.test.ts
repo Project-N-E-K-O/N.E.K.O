@@ -38,6 +38,16 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+/** The event another window receives after it changed the shared flag. */
+function crossWindowEvent(pluginId: string): Event {
+  const event = new Event('storage')
+  Object.defineProperties(event, {
+    key: { value: `neko-plugin-config-pending-reload:${pluginId}` },
+    newValue: { value: '1' },
+  })
+  return event
+}
+
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
@@ -72,6 +82,78 @@ afterEach(() => {
 })
 
 describe('config draft lifecycle', () => {
+  it('rebases the local draft when another window saved the profile', async () => {
+    // Window A added `search`; this window edited `cache`. Saving the stale draft
+    // unchanged would drop A's addition, so the local edit is rebased onto it.
+    let stored: Record<string, unknown> = { cache: { ttl: 1 } }
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: { prod: { path: 'prod.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockImplementation(async () => ({
+      plugin_id: 'alpha',
+      profile: { name: 'prod', path: 'prod.toml', resolved_path: null, exists: true },
+      config: stored,
+    }))
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.selected.value).toBe('prod')
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    expect(drafts.dirty.value).toBe(true)
+
+    // Another window saved the profile and this window received the event.
+    stored = { cache: { ttl: 1 }, search: { query: 'neko' } }
+    window.dispatchEvent(crossWindowEvent('alpha'))
+    await vi.waitFor(() =>
+      expect(drafts.current.value?.draft).toEqual({
+        cache: { ttl: 9 },
+        search: { query: 'neko' },
+      })
+    )
+    expect(drafts.current.value?.original).toEqual({
+      cache: { ttl: 1 },
+      search: { query: 'neko' },
+    })
+    // Only the local edit is still unsaved.
+    expect(drafts.changes.value.map((change) => change.path.join('.'))).toEqual(['cache.ttl'])
+  })
+
+  it('replaces an untouched cached draft with the saved content', async () => {
+    let stored: Record<string, unknown> = { cache: { ttl: 1 } }
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: { prod: { path: 'prod.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockImplementation(async () => ({
+      plugin_id: 'alpha',
+      profile: { name: 'prod', path: 'prod.toml', resolved_path: null, exists: true },
+      config: stored,
+    }))
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    stored = { cache: { ttl: 5 } }
+    window.dispatchEvent(crossWindowEvent('alpha'))
+    await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 5 } }))
+    expect(drafts.dirty.value).toBe(false)
+  })
+
   it('scopes a late save to the plugin that issued it', async () => {
     const pluginId = ref('alpha')
     scope = effectScope()

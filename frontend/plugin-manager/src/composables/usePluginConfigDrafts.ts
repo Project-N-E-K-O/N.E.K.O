@@ -1,6 +1,7 @@
 import { computed, onScopeDispose, reactive, ref, watch, type Ref } from 'vue'
 import * as api from '@/api/config'
 import {
+  applyConfigChanges,
   configChanges,
   configEqual,
   deepClone,
@@ -117,6 +118,32 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     requests.set(name, request)
     await request
     if (requests.get(name) === request) requests.delete(name)
+  }
+
+  // Another window saved or activated a profile for this plugin, so the cached
+  // records are stale. `loadProfile` skips already loaded records, so refresh them
+  // here and rebase local edits onto the new content; otherwise saving a stale whole
+  // draft would discard what the other window wrote.
+  async function refreshLoadedProfiles(): Promise<void> {
+    const id = pluginId.value,
+      epoch = generation
+    for (const [name, record] of [...records]) {
+      if (!record.loaded || virtualDefault(name)) continue
+      try {
+        const config = (await api.getPluginProfileConfig(id, name)).config || {}
+        if (!valid(id, epoch) || records.get(name) !== record) return
+        const fresh = deepClone(config)
+        const localChanges = configEqual(record.original, record.draft)
+          ? []
+          : configChanges(record.original, record.draft)
+        record.original = fresh
+        record.draft = localChanges.length
+          ? applyConfigChanges(fresh, localChanges)
+          : deepClone(fresh)
+      } catch {
+        // Keep the cached content when the refresh fails.
+      }
+    }
   }
 
   async function loadAll(discardDrafts = false): Promise<void> {
@@ -284,6 +311,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     releasePendingSubscription?.()
   })
 
+  async function refreshAfterExternalChange(): Promise<void> {
+    await loadAll()
+    await refreshLoadedProfiles()
+  }
+
   // A reload or start performed elsewhere (detail header, list, context menu) must
   // clear the warning on an already mounted editor.
   releasePendingSubscription = subscribePendingReload((changedId, pending, source) => {
@@ -291,7 +323,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     pendingApplication.value = pending
     // Another window saved or activated a profile for this plugin, so the cached
     // profile state is stale; refresh it while keeping local drafts.
-    if (source === 'external') void loadAll()
+    if (source === 'external') void refreshAfterExternalChange()
   })
 
   return {
