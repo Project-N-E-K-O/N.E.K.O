@@ -43,13 +43,24 @@ function detachListenerIfUnused(): void {
   listenerAttached = false
 }
 
+// Every write must store a token that differs from the one already there: browsers
+// only fire `storage` when the value actually changes, so two writes made in the
+// same millisecond (or by two windows that happen to share that millisecond) would
+// otherwise be invisible to the other windows and leave their drafts stale.
+let writeCount = 0
+
+function revisionToken(): string {
+  writeCount += 1
+  return `${Date.now()}-${writeCount}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 /** Announces that this window persisted a profile for `pluginId`. */
 export function bumpProfileRevision(pluginId: string): void {
   if (!pluginId) return
   const store = storage()
   if (!store) return
   try {
-    store.setItem(KEY_PREFIX + pluginId, String(Date.now()))
+    store.setItem(KEY_PREFIX + pluginId, revisionToken())
   } catch {
     // Without storage there is nothing to broadcast; the local window is already
     // up to date and other windows cannot share state anyway.
