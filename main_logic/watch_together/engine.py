@@ -153,7 +153,18 @@ def parse_video_url(value):
 
 def json_object(text):
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    return json.loads(text[text.index("{"):text.rindex("}") + 1])
+    # Parse the complete root first. Providers can return an event array even
+    # with json_object requested; slicing between braces corrupts multi-event
+    # arrays and silently unwraps single-event arrays. Schema adaptation belongs
+    # to the timeline validator, not this shared parser (live replies differ).
+    if text.startswith(('{', '[')):
+        return json.loads(text)
+    starts = [at for token in ('{', '[') if (at := text.find(token)) >= 0]
+    if not starts:
+        raise ValueError('Missing JSON object or array')
+    start = min(starts)
+    closing = '}' if text[start] == '{' else ']'
+    return json.loads(text[start:text.rindex(closing) + 1])
 
 
 def sample_danmaku(messages, length):
@@ -332,6 +343,26 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
             try:
                 return json_object(response.content or "")
             except (ValueError, TypeError, IndexError) as exc:
+                # Keep only structural diagnostics: model replies can contain
+                # private video/persona text. An exception class alone hides
+                # empty replies, truncation and malformed JSON behind the same
+                # retry-exhausted error, making provider changes guesswork.
+                metadata = getattr(response, 'response_metadata', None) or {}
+                raw = response.content
+                diagnostic = {
+                    'stage': stage, 'label': label, 'attempt': _number,
+                    'content_type': type(raw).__name__,
+                    'content_length': len(raw) if isinstance(raw, str) else None,
+                    'has_object_start': isinstance(raw, str) and '{' in raw,
+                    'has_object_end': isinstance(raw, str) and '}' in raw,
+                    'parse_error': type(exc).__name__,
+                    'finish_reason': metadata.get('finish_reason') if isinstance(metadata, dict) else None,
+                }
+                if isinstance(exc, json.JSONDecodeError):
+                    diagnostic.update(json_error=exc.msg, json_error_position=exc.pos)
+                failures = job.setdefault('structured_output_failures', [])
+                if len(failures) < 16:
+                    failures.append(diagnostic)
                 raise StructuredOutputContentError(f"invalid_{label}_json") from exc
         finally:
             await client.aclose()
@@ -365,6 +396,8 @@ class Engine:
     async def llm(self, content, job):
         cfg = await self.vision_config()
         def validate(value):
+            if isinstance(value, list) and all(isinstance(event, dict) for event in value):
+                value = {'events': value}
             valid = isinstance(value, dict) and isinstance(value.get("events"), list)
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]
         return await structured_json_completion(
@@ -538,7 +571,9 @@ When supported by changing content, aim for 5–7 reactions per minute, more com
 than laughs, at least five seconds apart. Stay quiet without evidence; never fill quotas.
 Keep each comment one short phrase in {self.language}, no lengthy narration or attacks
 on identity. Laugh only at clear humor, once per joke. Prefer gaps in subtitles.
-Return JSON with events: at (trigger seconds), evidence_at (past evidence seconds),
+Return a JSON object with exactly this root shape: {{"events": [...]}}.
+Use {{"events": []}} when no reaction is supported. Each event has:
+at (trigger seconds), evidence_at (past evidence seconds),
 kind (laugh or comment), text (short spoken phrase, empty for laugh), reason (specific
 visual/subtitle/danmaku evidence in {self.language}), confidence (0 to 1).
 at must be inside this window and at least evidence_at. Use only evidence at or before at.
