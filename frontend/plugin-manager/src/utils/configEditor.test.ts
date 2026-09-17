@@ -229,4 +229,28 @@ describe('configNodeMatches', () => {
       true
     )
   })
+
+  it('reads recursive children as own properties only', () => {
+    const changes: any[] = []
+    // A literal `constructor` in the base config is not an override, so the
+    // profile-only filter must not match it just because `{}.constructor` exists.
+    const baseline = JSON.parse('{"constructor":{"ttl":120}}') as Record<string, unknown>
+    expect(configNodeMatches({}, baseline, [], '', 'configured', changes, false)).toBe(false)
+    expect(
+      configNodeMatches(
+        JSON.parse('{"constructor":{"ttl":60}}') as Record<string, unknown>,
+        baseline,
+        [],
+        '',
+        'configured',
+        changes,
+        false
+      )
+    ).toBe(true)
+
+    // Same for a literal `__proto__`, which an empty overlay would otherwise read
+    // back as `Object.prototype`.
+    const protoBaseline = JSON.parse('{"__proto__":{"ttl":120}}') as Record<string, unknown>
+    expect(configNodeMatches({}, protoBaseline, [], '', 'configured', changes, false)).toBe(false)
+  })
 })

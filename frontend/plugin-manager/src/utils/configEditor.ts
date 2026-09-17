@@ -180,8 +180,19 @@ export function configNodeMatches(
     const rootUnfiltered = path.length === 0 && filter === 'all' && !query
     if ((path.length > 0 || rootUnfiltered) && matchesState && matchesQuery) return true
     if (keys.length)
+      // Read children as own properties only: a literal `constructor`, `__proto__` or
+      // `toString` key that only one side defines would otherwise resolve a prototype
+      // member and look like a configured overlay that does not exist.
       return keys.some((k) =>
-        configNodeMatches(a[k], b[k], [...path, k], query, filter, changes, replacement)
+        configNodeMatches(
+          hasOwn(a, k) ? a[k] : undefined,
+          hasOwn(b, k) ? b[k] : undefined,
+          [...path, k],
+          query,
+          filter,
+          changes,
+          replacement
+        )
       )
     return false
   }
