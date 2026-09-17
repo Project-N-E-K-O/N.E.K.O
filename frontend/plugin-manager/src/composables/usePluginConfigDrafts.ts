@@ -35,6 +35,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   let releasePendingSubscription: (() => void) | undefined
   let generation = 0
   let loadVersion = 0
+  // Every authoritative profile refresh (loadAll) or content refresh bumps this, so
+  // a slower earlier response cannot overwrite newer content.
+  let refreshVersion = 0
   const requests = new Map<string, Promise<void>>()
 
   const persistedNames = computed(() =>
@@ -126,12 +129,14 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   // draft would discard what the other window wrote.
   async function refreshLoadedProfiles(): Promise<void> {
     const id = pluginId.value,
-      epoch = generation
+      epoch = generation,
+      version = ++refreshVersion
     for (const [name, record] of [...records]) {
       if (!record.loaded || virtualDefault(name)) continue
       try {
         const config = (await api.getPluginProfileConfig(id, name)).config || {}
-        if (!valid(id, epoch) || records.get(name) !== record) return
+        // Drop a response that a newer refresh (or a full reload) already superseded.
+        if (!valid(id, epoch) || version !== refreshVersion || records.get(name) !== record) return
         const fresh = deepClone(config)
         const localChanges = configEqual(record.original, record.draft)
           ? []
@@ -150,6 +155,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     const id = pluginId.value,
       epoch = generation,
       version = ++loadVersion
+    // A full reload supersedes any in-flight content refresh.
+    refreshVersion += 1
     if (!id) return
     loading.value = true
     ready.value = false

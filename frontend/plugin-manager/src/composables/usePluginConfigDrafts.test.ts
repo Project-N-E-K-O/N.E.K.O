@@ -154,6 +154,52 @@ describe('config draft lifecycle', () => {
     expect(drafts.dirty.value).toBe(false)
   })
 
+  it('discards a superseded profile refresh', async () => {
+    // Two external events start two refreshes; the earlier one returns last and must
+    // not put back the content the newer one already replaced.
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: { prod: { path: 'prod.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    let stored: Record<string, unknown> = { cache: { ttl: 1 } }
+    let hangNext = false
+    const stale = deferred<unknown>()
+    vi.mocked(getPluginProfileConfig).mockImplementation(async () => {
+      // Only the first refresh hangs, so the second one answers with newer content.
+      const config = hangNext ? await ((hangNext = false), stale.promise) : stored
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'prod', path: 'prod.toml', resolved_path: null, exists: true },
+        config: config as Record<string, unknown>,
+      } as never
+    })
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    stored = { cache: { ttl: 2 } }
+    hangNext = true
+    window.dispatchEvent(crossWindowEvent('alpha'))
+    await settle()
+    window.dispatchEvent(crossWindowEvent('alpha'))
+    await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 2 } }))
+
+    // The earlier response arrives last and carries older content.
+    stale.resolve({ cache: { ttl: 100 } })
+    await settle()
+    await settle()
+
+    expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 2 } })
+    expect(drafts.current.value?.original).toEqual({ cache: { ttl: 2 } })
+  })
+
   it('scopes a late save to the plugin that issued it', async () => {
     const pluginId = ref('alpha')
     scope = effectScope()
