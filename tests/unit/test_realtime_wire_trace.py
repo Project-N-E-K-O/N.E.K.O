@@ -682,9 +682,8 @@ async def test_arbiter_trace_names_orphan_mismatch_terminal(caplog):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_arbiter_trace_records_foreign_content_confirming_an_owner(caplog):
-    # The field wedge: a function-call event from another turn starts the
-    # owner, whose own terminal then never matches. Both ids must be visible.
+async def test_arbiter_trace_rejects_unreliable_function_call_identity(caplog):
+    # The proxy's function-call ID is not its terminal ID. Do not bind it.
     _capture(caplog)
 
     async def send(_event):
@@ -705,20 +704,20 @@ async def test_arbiter_trace_records_foreign_content_confirming_an_owner(caplog)
             "name": "recall_memory",
             "arguments": PRIVATE_ARGUMENTS,
         }
-        assert arbiter.notify_response_content(content)
+        assert not arbiter.notify_response_content(content)
         # A repeat is refused and, being a duplicate refusal, logged once.
         assert not arbiter.notify_response_content(content)
         assert not arbiter.notify_response_content(content)
-        assert not arbiter.notify_response_terminal(
+        assert arbiter.notify_response_terminal(
             {"type": "response.done", "response": {"id": "resp-done"}}
         )
+        await asyncio.wait_for(ticket.done, 0.5)
     finally:
         await arbiter.shutdown()
 
     records = _trace_records(caplog, ARBITER_TRACE_PREFIX)
     contents = [record for record in records if record["decision"] == "content"]
     assert [record["outcome"] for record in contents] == [
-        "accepted",
         "ignored_other",
     ]
     accepted = contents[0]
@@ -728,11 +727,11 @@ async def test_arbiter_trace_records_foreign_content_confirming_an_owner(caplog)
     assert accepted["owner_source"] == "hot_swap"
     assert accepted["owner_response_id"] is None
     assert accepted["route"] == "lanlan_app_gemini"
-    assert contents[1]["reason"] == "owner_already_started"
+    assert contents[0]["reason"] == "not_eligible"
     terminals = [record for record in records if record["decision"] == "terminal"]
-    assert terminals[0]["outcome"] == "orphan_mismatch"
+    assert terminals[0]["outcome"] == "claimed_never_announced"
     assert terminals[0]["response.id"] == "resp-done"
-    assert terminals[0]["owner_response_id"] == "resp-fc"
+    assert terminals[0]["owner_response_id"] == "resp-done"
     _assert_no_private_content(caplog)
 
 

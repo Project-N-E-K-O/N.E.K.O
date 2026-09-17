@@ -1327,6 +1327,10 @@ class RealtimeResponseArbiter:
 
         if (
             not self._protocol_capabilities.accepts_id_bearing_content_start
+            or (
+                not self._protocol_capabilities.function_call_ids_match_terminal
+                and str(event.get("type") or "").startswith("response.function_call_arguments.")
+            )
             or str(event.get("type") or "")
             not in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES
         ):
@@ -2507,6 +2511,19 @@ class RealtimeResponseArbiter:
         item_acked = not queued.ack_expected
         queued.item_acked = item_acked
         requeued = False
+        item_driven = bool(
+            self._protocol_capabilities.responds_to_conversation_items
+            and len(queued.events_before_response) == 1
+            and queued.events_before_response[0].get("type") == "conversation.item.create"
+            and isinstance(queued.events_before_response[0].get("item"), dict)
+            and (
+                queued.events_before_response[0]["item"].get("type") == "function_call_output"
+                or (
+                    queued.events_before_response[0]["item"].get("type") == "message"
+                    and queued.events_before_response[0]["item"].get("role") == "user"
+                )
+            )
+        )
 
         try:
             await self._wait_for_dispatch_or_interrupt(queued)
@@ -2540,7 +2557,7 @@ class RealtimeResponseArbiter:
                         "queue_depth": self._queue.qsize(),
                     },
                 )
-            if queued.ack_expected:
+            if queued.ack_expected and not item_driven:
                 queued.item_ack = loop.create_future()
             # The causation claims arm HERE, immediately before the first
             # pre-response event goes out: nothing earlier can have been caused
@@ -2569,6 +2586,13 @@ class RealtimeResponseArbiter:
                     # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
                     queued.pre_commit(event)
                 queued.item_committed = True
+                if item_driven:
+                    # This route starts generation on item submission and does
+                    # not acknowledge the item. Own the lifecycle before the
+                    # write so even a synchronous response cannot be orphaned.
+                    queued.terminal = loop.create_future()
+                    self._response_owner = queued
+                    queued.response_send_started = True
                 # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
                 # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
                 await self._worker_send(queued, event)
@@ -2693,13 +2717,15 @@ class RealtimeResponseArbiter:
                 pre_response_error = queued.ticket.started.exception()
                 if pre_response_error is not None:
                     raise pre_response_error
-            if self._response_owner is not None:
+            if self._response_owner is not None and self._response_owner is not queued:
                 raise RuntimeError("response owner is already assigned")
-            queued.terminal = loop.create_future()
-            self._response_owner = queued
-            queued.response_send_started = True
+            if not item_driven:
+                queued.terminal = loop.create_future()
+                self._response_owner = queued
+                queued.response_send_started = True
             try:
-                await self._worker_send(queued, queued.response_event)
+                if not item_driven:
+                    await self._worker_send(queued, queued.response_event)
             except Exception:
                 self._detach_response_owner(queued)
                 if not queued.terminal.done():
@@ -2709,7 +2735,7 @@ class RealtimeResponseArbiter:
                 self._trace_decision(
                     "dispatch",
                     {
-                        "phase": "response_create_sent",
+                        "phase": "item_response_sent" if item_driven else "response_create_sent",
                         "source": queued.source,
                         "create_event_id": queued.response_event.get("event_id"),
                         "item_acked": item_acked,
