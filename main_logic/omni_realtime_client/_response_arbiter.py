@@ -204,6 +204,7 @@ class _QueuedResponse:
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
     item_driven: bool = field(default=False, compare=False)
+    submitted_item_event_ids: list[str] = field(default_factory=list, compare=False)
     # Once the first pre-response event enters the transport send, the item is
     # committed to the provider. Admission invalidation after that point must
     # finish (or cancel) the same response lifecycle rather than orphaning the
@@ -1737,11 +1738,11 @@ class RealtimeResponseArbiter:
         create, so the lane must not reopen on it.
         """
 
-        # A rejected sole item is the rejected generation trigger on this
-        # route, not a late prerequisite error for a separate response.create.
-        # Multi-item dispatches remain conservative: another item may already
-        # have triggered a live response even when this item was rejected.
-        if target.item_driven and len(target.events_before_response) == 1:
+        # Count actual send attempts, including the in-flight write, rather
+        # than planned siblings. Rejecting the only submitted trigger leaves
+        # no other item-generated response to cancel. Once another item has
+        # entered send, its possibly-live response must still be preserved.
+        if target.item_driven and target.submitted_item_event_ids == [event_id]:
             return False
         if (
             not target.response_send_started
@@ -2578,6 +2579,18 @@ class RealtimeResponseArbiter:
                 self._adoptable_serial, self._item_created_serial
             )
             for event in queued.events_before_response:
+                if item_driven:
+                    # Do not turn a rejected first item into a new trigger by
+                    # sending its siblings. Nor may a finished first response
+                    # count as success for a batch not yet fully submitted.
+                    # An early terminal detached ownership; sending more now
+                    # would start unowned work. Report partial dispatch instead.
+                    if queued.ticket.started.done() and not queued.ticket.started.cancelled():
+                        item_error = queued.ticket.started.exception()
+                        if item_error is not None:
+                            raise item_error
+                    if queued.terminal is not None and queued.terminal.done():
+                        raise RuntimeError("item-driven batch terminated before all items were submitted")
                 admission_rejected = bool(
                     queued.admission_check is not None
                     and not queued.admission_check()
@@ -2609,6 +2622,8 @@ class RealtimeResponseArbiter:
                     queued.response_send_started = True
                 # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
                 # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
+                if item_driven:
+                    queued.submitted_item_event_ids.append(str(event["event_id"]))
                 await self._worker_send(queued, event)
                 item = event.get("item")
                 item_id = item.get("id") if isinstance(item, dict) else None

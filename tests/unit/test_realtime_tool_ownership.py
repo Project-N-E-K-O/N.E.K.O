@@ -41,7 +41,8 @@ class _QueueSocket:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('unreliable_ids', [True, False])
-async def test_tool_call_id_filter_respects_route_after_announcement(monkeypatch, unreliable_ids):
+@pytest.mark.parametrize('announced', [True, False])
+async def test_tool_call_id_filter_respects_origin_evidence(monkeypatch, unreliable_ids, announced):
     from main_logic.omni_realtime_client._protocol_capabilities import (
         LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
         STRICT_REALTIME_PROTOCOL_CAPABILITIES,
@@ -66,16 +67,21 @@ async def test_tool_call_id_filter_respects_route_after_announcement(monkeypatch
     client.extra_event_handlers['test.marker'] = marked
     receiver = asyncio.create_task(client.handle_messages())
     try:
-        socket.feed({'type': 'response.created', 'response': {'id': 'current'}})
+        if announced:
+            socket.feed({'type': 'response.created', 'response': {'id': 'retired'}})
+            socket.feed({'type': 'response.done', 'response': {'id': 'retired', 'status': 'cancelled'}})
+            socket.feed({'type': 'response.created', 'response': {'id': 'current'}})
+        # The first appearance of this call ID may be a delayed call from the
+        # cancelled response. Capturing current scope cannot prove its origin.
         socket.feed({'type': 'response.function_call_arguments.delta', 'response_id': 'function-id',
                      'call_id': 'call-1', 'name': 'lookup', 'delta': '{"value":1}'})
         socket.feed(_raw_tool_event('call-1', response_id='function-id'))
         socket.feed({'type': 'test.marker'})
         await asyncio.wait_for(marker.wait(), 1)
-        assert len(calls) == int(unreliable_ids)
+        assert len(calls) == int(not announced)
         if calls:
             assert calls[0].arguments == {'value': 1}
-        assert client._current_response_id == 'current'
+        assert client._current_response_id == ('current' if announced else None)
     finally:
         socket.finish()
         await asyncio.wait_for(receiver, 1)

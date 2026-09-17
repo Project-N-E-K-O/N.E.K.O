@@ -2969,19 +2969,15 @@ class _TransportMixin:
                         # its first turn onward and the stale filter behaves
                         # exactly as before.
                         and self._announces_responses
-                        # This route's function-call IDs are not lifecycle
-                        # IDs. An earlier response.created does not make that
-                        # comparison valid. Keep tool dispatch separate from
-                        # owner binding; call IDs and connection/turn guards
-                        # still protect execution. Other events/routes retain
-                        # the stale-response filter.
-                        and not (
-                            not self._realtime_protocol_capabilities.function_call_ids_match_terminal
-                            and event_type in {
-                                "response.function_call_arguments.delta",
-                                "response.function_call_arguments.done",
-                            }
-                        )
+                        # Do not exempt mismatched function-call IDs here,
+                        # even on the Lanlan route. A first-time delayed call
+                        # from a cancelled response can have an unseen call ID;
+                        # capturing the CURRENT tool scope below would bless it
+                        # as the successor's work. Neither deduplication nor a
+                        # post-receive scope check proves its origin. Without
+                        # independent correlation, quarantine ambiguous calls
+                        # on announcing connections. Never-announcing proxies
+                        # retain their existing path via the latch above.
                     ):
                         if event_type == "response.done":
                             # A terminal event must reach the arbiter even when
