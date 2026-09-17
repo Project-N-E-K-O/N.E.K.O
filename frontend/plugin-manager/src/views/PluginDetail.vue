@@ -168,7 +168,7 @@
 
         <el-tab-pane :label="$t('plugins.logs')" name="logs">
           <div data-yui-guide-id="plugin-detail-logs">
-            <LogViewer :plugin-id="pluginId" />
+            <LogViewer :plugin-id="pluginId" :height="hostedSurfaceFrameHeight" />
           </div>
         </el-tab-pane>
 

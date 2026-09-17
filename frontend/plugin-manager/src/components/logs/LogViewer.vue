@@ -1,5 +1,5 @@
 <template>
-  <div class="log-viewer" data-yui-guide-id="log-viewer">
+  <div class="log-viewer" :style="viewerStyle" data-yui-guide-id="log-viewer">
     <div class="toolbar" data-yui-guide-id="log-viewer-toolbar">
       <el-select v-model="levelFilter" class="toolbar-item level-select" data-yui-guide-id="log-filter-level" :placeholder="$t('logs.allLevels')" clearable>
         <el-option :label="$t('logs.allLevels')" value="" />
@@ -79,9 +79,19 @@ import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
 import { API_BASE_URL } from '@/utils/constants'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   pluginId: string
-}>()
+  height?: string
+}>(), {
+  // Same default as HostedSurfaceFrame: a panel that fills the viewport unless the
+  // page says otherwise. The log list then absorbs whatever the chrome leaves.
+  height: 'clamp(520px, calc(100vh - 220px), 1200px)',
+})
+
+const viewerStyle = computed(() => ({
+  height: props.height,
+  minHeight: props.height,
+}))
 
 const { t } = useI18n()
 const logsStore = useLogsStore()
@@ -324,7 +334,8 @@ onMounted(async () => {
 }
 
 .log-list {
-  height: 420px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   border: 1px solid var(--el-border-color-light);
   border-radius: 6px;
