@@ -1,0 +1,32 @@
+[plugin]
+id = "ui_push_test"
+name = "UI 推送测试"
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.ui_push_test:UiPushTestPlugin"
+description = "通过 Hosted TSX 手动测试聊天卡片和 AgentHUD 插件内容的创建、更新与按钮回调。"
+short_description = "Chat / Agent HTML 内容推送测试面板"
+passive = true
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = { "$i18n" = "panel.title", default = "UI 推送测试" }
+mode = "hosted-tsx"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
