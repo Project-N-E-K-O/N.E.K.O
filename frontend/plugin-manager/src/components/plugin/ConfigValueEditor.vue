@@ -241,6 +241,7 @@ import { ElMessage } from 'element-plus'
 import ConfigFieldActions from './ConfigFieldActions.vue'
 import {
   configNodeMatches,
+  setConfigKey,
   configValueText,
   hasConfigChangesAt,
   type ConfigChange,
@@ -316,12 +317,21 @@ async function fieldCommand(k: string, command: string) {
 }
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
-function isValidKeySegment(key: string) {
+// Guards keys created through the Add-field dialog: dotted and reserved spellings
+// cannot be expressed as a path or a plain property.
+function isValidNewKey(key: string) {
   if (!key) return false
   if (key.includes('.')) return false
   if (FORBIDDEN_KEYS.has(key)) return false
   if (!props.path && key === 'plugin') return false
   return true
+}
+
+// Keys that already exist in the configuration — including quoted TOML spellings
+// such as "http.timeout" or "__proto__" — stay editable. They are written as own
+// properties, so a reserved name cannot reach the prototype.
+function canWriteKey(key: string) {
+  return hasOverlayKey(key) || hasBaselineKey(key) || isValidNewKey(key)
 }
 
 // `modelValue` 只承载 profile overlay：某个键未被覆盖时它是 undefined。
@@ -344,9 +354,11 @@ const displayValue = computed<any>(() =>
   props.modelValue !== undefined ? props.modelValue : props.baselineValue
 )
 
+// Reads are own-property only: a literal "__proto__" key must not resolve to the
+// prototype, and an absent key must not inherit anything.
 function overlayChild(k: string) {
   const a = asPlainObject(props.modelValue)
-  return a ? a[k] : undefined
+  return a && Object.prototype.hasOwnProperty.call(a, k) ? a[k] : undefined
 }
 
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
@@ -445,7 +457,8 @@ function emitUpdate(v: any) {
 
 function baselineChild(k: string) {
   const b = props.baselineValue
-  if (b && typeof b === 'object' && !Array.isArray(b)) return (b as any)[k]
+  if (b && typeof b === 'object' && !Array.isArray(b) && Object.prototype.hasOwnProperty.call(b, k))
+    return (b as any)[k]
   return undefined
 }
 
@@ -556,7 +569,7 @@ const indentStyle = computed(() => {
 })
 
 function updateObjectKey(k: string, v: any) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   const next = { ...overlayObject.value }
   // 子层把最后一个覆盖项重置掉后会回传空对象。基线里该键是张表时，空表不是
   // 「什么都不覆盖」而是「清空这张表」—— 后端 deep_merge 把空 mapping 当替换
@@ -571,7 +584,7 @@ function updateObjectKey(k: string, v: any) {
   ) {
     delete next[k]
   } else {
-    next[k] = v
+    setConfigKey(next, k, v)
   }
   emitUpdate(next)
 }
@@ -580,19 +593,19 @@ function updateObjectKey(k: string, v: any) {
 // 摘掉等于把该字段从生效配置里删了（例如 servers[0].host），
 // 所以必须把基线值显式写回。
 function resetObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   if (!props.replaceSemantics) {
     removeObjectKey(k)
     return
   }
   const next = { ...overlayObject.value }
-  next[k] = baselineChild(k)
+  setConfigKey(next, k, baselineChild(k))
   emitUpdate(next)
 }
 
 // 「删除」始终是把键移出 overlay。
 function removeObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   const next = { ...overlayObject.value }
   delete next[k]
   emitUpdate(next)
@@ -665,7 +678,7 @@ function confirmAddKey() {
     return
   }
 
-  if (!isValidKeySegment(key)) {
+  if (!isValidNewKey(key)) {
     ElMessage.warning(t('plugins.invalidFieldKey'))
     return
   }

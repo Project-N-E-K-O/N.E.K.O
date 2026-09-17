@@ -149,6 +149,33 @@ describe('pending reload storage', () => {
     expect(hasPendingReload('__proto__')).toBe(false)
   })
 
+  it('keeps a memory-only flag when another window clears storage', () => {
+    const backing = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: () => {
+        throw new Error('quota exceeded')
+      },
+      removeItem: (key: string) => backing.delete(key),
+    })
+    const seen: Array<[string, boolean, string]> = []
+    const release = subscribePendingReload((pluginId, pending, source) =>
+      seen.push([pluginId, pending, source])
+    )
+    setPendingReload('alpha', true)
+    expect(hasPendingReload('alpha')).toBe(true)
+
+    vi.unstubAllGlobals()
+    const cleared = new Event('storage')
+    Object.defineProperties(cleared, { key: { value: null }, newValue: { value: null } })
+    window.dispatchEvent(cleared)
+
+    // Nothing in storage to clear, and the flag must stay visible here.
+    expect(seen).toEqual([['alpha', true, 'local']])
+    expect(hasPendingReload('alpha')).toBe(true)
+    release()
+  })
+
   it('ignores storage events for unrelated keys', () => {
     const seen: Array<[string, boolean, string]> = []
     const release = subscribePendingReload((pluginId, pending, source) =>

@@ -38,15 +38,20 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-/** The event another window receives after it changed the shared flag. */
-function crossWindowEvent(pluginId: string): Event {
+/** The event another window receives for one of its storage keys. */
+function crossWindowEvent(key: string): Event {
   const event = new Event('storage')
-  Object.defineProperties(event, {
-    key: { value: `neko-plugin-config-pending-reload:${pluginId}` },
-    newValue: { value: '1' },
-  })
+  Object.defineProperties(event, { key: { value: key }, newValue: { value: '1' } })
   return event
 }
+
+/** Another window changed the pending-reload flag for this plugin. */
+const crossWindowPending = (pluginId: string) =>
+  crossWindowEvent(`neko-plugin-config-pending-reload:${pluginId}`)
+
+/** Another window persisted a profile for this plugin. */
+const crossWindowProfileWrite = (pluginId: string) =>
+  crossWindowEvent(`neko-plugin-config-profile-revision:${pluginId}`)
 
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -112,7 +117,7 @@ describe('config draft lifecycle', () => {
 
     // Another window saved the profile and this window received the event.
     stored = { cache: { ttl: 1 }, search: { query: 'neko' } }
-    window.dispatchEvent(crossWindowEvent('alpha'))
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
     await vi.waitFor(() =>
       expect(drafts.current.value?.draft).toEqual({
         cache: { ttl: 9 },
@@ -149,7 +154,7 @@ describe('config draft lifecycle', () => {
     await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
 
     stored = { cache: { ttl: 5 } }
-    window.dispatchEvent(crossWindowEvent('alpha'))
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
     await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 5 } }))
     expect(drafts.dirty.value).toBe(false)
   })
@@ -186,9 +191,9 @@ describe('config draft lifecycle', () => {
 
     stored = { cache: { ttl: 2 } }
     hangNext = true
-    window.dispatchEvent(crossWindowEvent('alpha'))
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
     await settle()
-    window.dispatchEvent(crossWindowEvent('alpha'))
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
     await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 2 } }))
 
     // The earlier response arrives last and carries older content.
@@ -198,6 +203,45 @@ describe('config draft lifecycle', () => {
 
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 2 } })
     expect(drafts.current.value?.original).toEqual({ cache: { ttl: 2 } })
+  })
+
+  it('broadcasts a non-active profile save without a pending reload', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: {
+          prod: { path: 'prod.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 1 } },
+    } as never)
+    const upsert = vi.mocked(upsertPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 9 } },
+    } as never)
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    await drafts.selectProfile('other')
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    await drafts.saveProfile()
+
+    expect(upsert).toHaveBeenCalledWith('alpha', 'other', { cache: { ttl: 9 } }, false)
+    // Other windows hold a stale draft for this profile and must be told to refresh…
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
+    // …but the running host is unaffected, so no reload is pending.
+    expect(hasPendingReload('alpha')).toBe(false)
   })
 
   it('scopes a late save to the plugin that issued it', async () => {

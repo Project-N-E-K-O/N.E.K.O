@@ -9,6 +9,7 @@ import {
   type ConfigObject,
 } from '@/utils/configEditor'
 import { hasPendingReload, setPendingReload, subscribePendingReload } from '@/utils/pendingReload'
+import { bumpProfileRevision, subscribeProfileRevision } from '@/utils/profileRevision'
 
 interface ProfileDraft {
   original: ConfigObject
@@ -227,6 +228,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
+      // Tell other windows even when this profile is not active: their cached draft
+      // for it is now stale and saving it would drop these values.
+      bumpProfileRevision(id)
       await loadAll()
       // Only the active profile changes what the running host should be using. When
       // the refresh worked it is authoritative; otherwise the pre-request snapshot is
@@ -282,6 +286,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     saving.value = true
     try {
       const result = await api.setPluginActiveProfile(id, name)
+      bumpProfileRevision(id)
       // Activation always changes what the host should be running.
       setPendingApplication(true, id)
       if (!valid(id, epoch)) return
@@ -316,6 +321,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     generation++
     loadVersion++
     releasePendingSubscription?.()
+    releaseRevisionSubscription()
   })
 
   async function refreshAfterExternalChange(): Promise<void> {
@@ -323,14 +329,17 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     await refreshLoadedProfiles()
   }
 
+  // Another window persisted a profile: the cached list, active profile and drafts
+  // are all stale, so refresh them while keeping local edits.
+  const releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
+    if (changedId === pluginId.value) void refreshAfterExternalChange()
+  })
+
   // A reload or start performed elsewhere (detail header, list, context menu) must
   // clear the warning on an already mounted editor.
   releasePendingSubscription = subscribePendingReload((changedId, pending, source) => {
     if (changedId !== pluginId.value) return
     pendingApplication.value = pending
-    // Another window saved or activated a profile for this plugin, so the cached
-    // profile state is stale; refresh it while keeping local drafts.
-    if (source === 'external') void refreshAfterExternalChange()
   })
 
   return {

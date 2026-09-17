@@ -74,11 +74,16 @@ function notify(pluginId: string, pending: boolean, source: PendingSource): void
 function handleStorageEvent(event: Event): void {
   const { key, newValue } = event as StorageEvent
   if (key === null) {
-    // storage.clear() removed every flag; report the ones this window knew about.
+    // storage.clear() removed every persisted flag; report the ones this window knew
+    // about. A flag whose write never reached storage only lives in this window, so
+    // it survives the clear and its subscribers are not told otherwise.
     const cleared = [...lastKnown]
     lastKnown.clear()
     inMemory.clear()
-    for (const pluginId of cleared) notify(pluginId, false, 'external')
+    for (const pluginId of cleared) {
+      if (unpersisted.has(pluginId)) inMemory.add(pluginId)
+      else notify(pluginId, false, 'external')
+    }
     return
   }
   if (!key?.startsWith(KEY_PREFIX)) return

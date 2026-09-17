@@ -68,6 +68,32 @@ function opsButtons(row: HTMLElement): string[] {
   )
 }
 
+describe('literal configuration keys', () => {
+  it('edits existing dotted and reserved keys as own properties', async () => {
+    // A persisted profile may contain quoted TOML spellings that the Add-field
+    // dialog refuses to create; they still have to be editable.
+    const baseline = JSON.parse('{"http.timeout":1,"__proto__":2}')
+    const { host, emitted } = mountEditor({}, baseline, true)
+    await nextTick()
+
+    const dotted = host.querySelector<HTMLInputElement>('input[aria-label="http.timeout"]')!
+    dotted.value = '7'
+    dotted.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(lastEmit(emitted)['http.timeout']).toBe(7)
+
+    const reserved = host.querySelector<HTMLInputElement>('input[aria-label="__proto__"]')!
+    reserved.value = '9'
+    reserved.dispatchEvent(new Event('input'))
+    await nextTick()
+
+    const written = lastEmit(emitted)
+    expect(Object.prototype.hasOwnProperty.call(written, '__proto__')).toBe(true)
+    expect(written['__proto__']).toBe(9)
+    expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
+  })
+})
+
 describe('compact numeric field', () => {
   it('accepts negative and decimal numbers typed one keystroke at a time', async () => {
     const emitted: any[] = []

@@ -3,6 +3,10 @@
 const hasOwn = (value: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(value, key)
 
 // Configuration keys are data, including the literal key "__proto__".
+export function setConfigKey(target: object, key: string, value: any): void {
+  setOwn(target, key, value)
+}
+
 function setOwn(target: object, key: PropertyKey, value: any) {
   Object.defineProperty(target, key, {
     value,
