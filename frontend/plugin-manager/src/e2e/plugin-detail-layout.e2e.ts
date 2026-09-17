@@ -102,6 +102,9 @@ async function measure(page: Page) {
       main: { top: Math.round(mainBox.top), bottom: Math.round(mainBox.bottom) },
       pane: box(pane),
       panel: box(panel),
+      // 面板的直接宿主盒（.surface-section / plugin-detail-logs）。"贴合容器"必须拿它当参照，
+      // 拿 .app-main 或 pane 当参照会被中间的卡片/工具栏 chrome 吃掉差值。
+      panelHost: box(panel?.parentElement ?? null),
       panelScrollable: panel
         ? Array.from(panel.querySelectorAll('*')).some(
             (node) => node.scrollHeight > (node as HTMLElement).clientHeight + 1,
@@ -117,8 +120,10 @@ async function openTab(page: Page, name: string) {
 }
 
 // ── 撑满型 tab：高度来自容器，因此外层不该出现滚动条 ────────────────────────
-// 尺寸矩阵：1340 = 用户当前窗口；768 = 常见笔记本；620 = 矮窗（会触发宿主下限）
-for (const height of [1340, 768]) {
+// 尺寸矩阵：1340 = 用户当前窗口；768 = 常见笔记本；2000 = 超高窗口（超过旧实现那个
+// 固定 1200px 上限，钉住面板随窗口继续长高而不是停在 1200px）。矮窗下限那档（620/400）
+// 是下面单独的用例。
+for (const height of [1340, 768, 2000]) {
   for (const tab of ['panel', 'guide', 'logs']) {
   test(`[h=${height}] 撑满型 tab「${tab}」不产生外层滚动条，且面板贴合容器`, async ({ page }) => {
     await openDetail(page, height)
@@ -130,6 +135,11 @@ for (const height of [1340, 768]) {
     expect(m.panel!.bottom, `h=${height} tab=${tab} 面板底部超出 .app-main`).toBeLessThanOrEqual(m.main.bottom)
     // 可用性：常见窗口下面板不该小到没法用（日志面板自身工具栏就要 ~140px）
     expect(m.panel!.bottom - m.panel!.top, `h=${height} tab=${tab} 面板过矮`).toBeGreaterThanOrEqual(tab === 'guide' ? 240 : 300)
+    // 真正的"贴合"：面板顶/底都要顶到宿主盒的两端。之前只断言"不超出 .app-main"，
+    // 于是面板在 1600/2000 高的窗口里停在 1200px（下面空 103 / 503px）也能全绿。
+    expect(m.panelHost, `h=${height} tab=${tab} 取不到面板宿主盒`).not.toBeNull()
+    expect(m.panel!.top - m.panelHost!.top, `h=${height} tab=${tab} 面板上方有缝`).toBeLessThanOrEqual(1)
+    expect(m.panelHost!.bottom - m.panel!.bottom, `h=${height} tab=${tab} 面板下方空 ${m.panelHost!.bottom - m.panel!.bottom}px（没填满容器）`).toBeLessThanOrEqual(1)
   })
   }
 }
