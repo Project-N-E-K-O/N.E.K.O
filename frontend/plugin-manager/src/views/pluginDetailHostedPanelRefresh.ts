@@ -9,6 +9,15 @@ export const PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY = Symbol('pluginDetailRefre
 export const HOSTED_PANEL_REFRESH_GAPS_MS = [0, 600, 1500] as const
 
 /**
+ * One immediate pass, no retries.
+ *
+ * Use this when the plugin itself already reported that it finished the mutation
+ * (``neko-plugin-context-invalidated``): it is demonstrably alive, so retrying
+ * would only triple the IPC round trips into its process.
+ */
+export const SINGLE_HOSTED_PANEL_REFRESH_PASS = [0] as const
+
+/**
  * Best-effort refresh: never rejects, so callers can fire it without awaiting.
  * Returns early when there is nothing to refresh — a plugin with no hosted-tsx
  * panel must not pay for the delay chain.

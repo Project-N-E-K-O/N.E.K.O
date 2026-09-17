@@ -140,6 +140,43 @@ jobs:
         working-directory: frontend/plugin-manager
         run: npm run test:unit
 
+  plugin-manager-e2e:
+    name: Plugin manager boot e2e
+    # 同一个洞里更深的一层。frontend/plugin-manager/src/e2e/*.e2e.ts（boot 配置：
+    # 先 build-only，再由 webServer 起 vite preview 到 4173）此前只有 package.json
+    # 里的 `test:boot:e2e` 一条入口，没有任何 workflow 会调用它 —— 连 docs 和
+    # scripts/check-hosted-ui.sh 都只提 test:hosted:e2e（那是另一套配置、另一个
+    # testDir）。而它守的恰好是 jsdom/happy-dom 看不见的那类回归：撑满链断了不报错、
+    # 只会静默变形（面板越界多出外层滚动条、抽屉被 contain:paint 裁掉、双滚动条），
+    # vitest 看得见行为看不见布局。所以把它接进 PR 门禁。
+    #
+    # 注意 `test:boot:e2e` 自己会先跑 build-only：preview 只服务 dist/，不重建就是
+    # 在测上一次构建的产物。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/plugin-manager/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend/plugin-manager
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        # 版本跟着 package-lock 里的 @playwright/test 走，不写死。
+        working-directory: frontend/plugin-manager
+        run: npx playwright install --with-deps chromium
+
+      - name: Run plugin-manager boot e2e suite
+        # 25 条：布局几何 14 + 适配器 surface 2 + 启动壳/主题/Element Plus 等 9。
+        working-directory: frontend/plugin-manager
+        run: npm run test:boot:e2e
+
   react-neko-chat-checks:
     name: React chat typecheck & vitest
     # 和 plugin-manager 一样的洞，只是更深一层：frontend/react-neko-chat 的
