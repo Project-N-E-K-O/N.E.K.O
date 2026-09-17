@@ -254,6 +254,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     try {
       // Keep the existing first-profile auto-activation behavior on the server.
       await api.upsertPluginProfileConfig(id, name, {}, false)
+      // Other windows list the profiles from their own cache, so announce it too.
+      bumpProfileRevision(id)
       if (!valid(id, epoch)) return
       await loadAll()
       if (!valid(id, epoch) || !names.value.includes(name)) return

@@ -205,6 +205,38 @@ describe('config draft lifecycle', () => {
     expect(drafts.current.value?.original).toEqual({ cache: { ttl: 2 } })
   })
 
+  it('broadcasts a newly created profile', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: { prod: { path: 'prod.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'extra', path: 'extra.toml', resolved_path: null, exists: true },
+      config: {},
+    } as never)
+    vi.mocked(upsertPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'extra', path: 'extra.toml', resolved_path: null, exists: true },
+      config: {},
+    } as never)
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    await drafts.createProfile('extra')
+
+    // Other windows must refresh to see the new profile in their lists.
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
+  })
+
   it('broadcasts a non-active profile save without a pending reload', async () => {
     vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
       plugin_id: id,
