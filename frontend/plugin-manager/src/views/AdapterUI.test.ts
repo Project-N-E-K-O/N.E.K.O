@@ -178,6 +178,37 @@ describe('AdapterUI surface loading', () => {
     mounted.unmount()
   })
 
+  it('首次加载就失败时仍然退回旧式静态 UI', async () => {
+    apiMocks.getPluginUiSurfaceInfo.mockRejectedValueOnce(new Error('boom'))
+    const mounted = await mountAdapter()
+
+    expect(panelTitle(mounted.container)).toBeNull()
+    expect(
+      mounted.container.querySelector('[data-testid="legacy-ui"]'),
+      '首次就取不到 surface 时应该交给 PluginUIFrame',
+    ).not.toBeNull()
+    mounted.unmount()
+  })
+
+  it('切语言的这次重取失败时保留已经拿到的 surface，不把能用的面板拆掉', async () => {
+    apiMocks.getPluginUiSurfaceInfo
+      .mockResolvedValueOnce({ surfaces: [panel({ title: 'Adapter Panel' })], warnings: [] })
+      .mockRejectedValueOnce(new Error('boom'))
+    const mounted = await mountAdapter()
+    expect(panelTitle(mounted.container)).toBe('Adapter Panel')
+
+    i18nHolder.locale.value = 'zh-CN'
+    await flush()
+
+    expect(apiMocks.getPluginUiSurfaceInfo).toHaveBeenCalledTimes(2)
+    expect(panelTitle(mounted.container), '重取失败把已经能用的面板清掉了').toBe('Adapter Panel')
+    expect(
+      mounted.container.querySelector('[data-testid="legacy-ui"]'),
+      '重取失败时不该降级回旧式 UI',
+    ).toBeNull()
+    mounted.unmount()
+  })
+
   it('面板要求打日志页时，插件 id 会被编码后再进路径段', async () => {
     apiMocks.getPluginUiSurfaceInfo.mockResolvedValue({ surfaces: [panel()], warnings: [] })
     const mounted = await mountAdapter('adapter#demo')

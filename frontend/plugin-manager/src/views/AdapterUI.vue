@@ -131,7 +131,10 @@ async function loadSurfaces() {
   } catch {
     if (loadId !== surfaceLoadId) return
     // 取不到 surface 不是错误：老插件本来就只有 static/index.html，交给 PluginUIFrame。
-    surfaces.value = []
+    // 但这里**不能**顺手把 surfaces 清空：首次加载失败时它本来就是空的（初值），清不清一样；
+    // 而切语言引起的重取失败时它装着上一次成功的列表 —— 清掉就会让一个本来还能用的面板
+    // 当场 unmount（surfacesLoaded 已是 true，于是直接掉回旧式 UI /"没有界面"），
+    // 而用户只是换了个语言、下一次重取可能就成功了。一次临时的 /surfaces 失败不该降级。
   } finally {
     // 只有最后一次请求有资格结束"还没拿到 surface"这个状态。重取时不把 surfacesLoaded
     // 打回 false，免得面板先塌成"没有界面"再弹回来。
