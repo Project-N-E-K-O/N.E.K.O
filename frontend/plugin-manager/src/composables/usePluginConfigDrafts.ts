@@ -180,12 +180,15 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     const snapshot = deepClone(record.draft)
     // Captured before the request so a later plugin switch cannot change the answer.
     const wasActive = name === active.value
+    // Saving also activates the profile when the plugin has none, which the server
+    // does even though `make_active` is false.
+    const mayBecomeActive = active.value === null
     saving.value = true
     error.value = null
     try {
       const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
       if (!valid(id, epoch)) {
-        if (wasActive) setPendingApplication(true, id)
+        if (wasActive || mayBecomeActive) setPendingApplication(true, id)
         return null
       }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
@@ -194,7 +197,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Only the active profile changes what the running host should be using. The
       // refreshed state is authoritative because saving also activates the profile
       // when the plugin had none, which the pre-request snapshot cannot see.
-      if (valid(id, epoch) ? name === active.value : wasActive) setPendingApplication(true, id)
+      if (valid(id, epoch) ? name === active.value : wasActive || mayBecomeActive)
+        setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {
       if (valid(id, epoch)) error.value = message(err)

@@ -87,6 +87,39 @@ describe('pending reload storage', () => {
     expect(hasPendingReload('alpha')).toBe(false)
   })
 
+  it('propagates a change made by another renderer window', () => {
+    const seen: Array<[string, boolean]> = []
+    const release = subscribePendingReload((pluginId, pending) => seen.push([pluginId, pending]))
+
+    // Another window saved a profile; only other windows receive the event.
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'neko-plugin-config-pending-reload',
+        newValue: JSON.stringify({ alpha: true }),
+      })
+    )
+    expect(seen).toEqual([['alpha', true]])
+    expect(hasPendingReload('alpha')).toBe(true)
+
+    // And another window reloaded the plugin, clearing it.
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: 'neko-plugin-config-pending-reload', newValue: '{}' })
+    )
+    expect(seen.at(-1)).toEqual(['alpha', false])
+    expect(hasPendingReload('alpha')).toBe(false)
+    release()
+  })
+
+  it('ignores storage events for unrelated keys', () => {
+    const seen: Array<[string, boolean]> = []
+    const release = subscribePendingReload((pluginId, pending) => seen.push([pluginId, pending]))
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: 'neko-dark-mode', newValue: JSON.stringify({ a: true }) })
+    )
+    expect(seen).toEqual([])
+    release()
+  })
+
   it('notifies subscribers about every applied change', () => {
     const seen: Array<[string, boolean]> = []
     const release = subscribePendingReload((pluginId, pending) => seen.push([pluginId, pending]))

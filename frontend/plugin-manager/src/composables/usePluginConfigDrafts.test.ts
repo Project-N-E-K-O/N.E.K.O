@@ -142,6 +142,66 @@ describe('config draft lifecycle', () => {
     expect(hasPendingReload('alpha')).toBe(true)
   })
 
+  it('keeps the implicit activation when the save is invalidated', async () => {
+    // No active profile: the server activates whatever is saved, so the original
+    // plugin still needs a reload even if the user left during the request.
+    let active: string | null = null
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active,
+        files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    const blocked = deferred<unknown>()
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      active = 'other'
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.active.value).toBeNull()
+
+    let blockNext = false
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => {
+      if (blockNext) {
+        blockNext = false
+        await blocked.promise
+      }
+      return {
+        plugin_id: id,
+        profiles_path: 'profiles',
+        profiles_exists: true,
+        config_profiles: {
+          active,
+          files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+        },
+      }
+    })
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    blockNext = true
+    const saving = drafts.saveProfile()
+    await settle()
+    pluginId.value = 'beta'
+    await settle()
+    blocked.resolve(undefined)
+    await saving
+    await settle()
+
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(hasPendingReload('beta')).toBe(false)
+  })
+
   it('still records a late save so the stale host keeps its warning', async () => {
     const pluginId = ref('alpha')
     scope = effectScope()
