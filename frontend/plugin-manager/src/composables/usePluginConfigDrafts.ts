@@ -34,6 +34,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   // True while the running host may not match the persisted configuration.
   const pendingApplication = ref(false)
   let releasePendingSubscription: (() => void) | undefined
+  let releaseRevisionSubscription: (() => void) | undefined
   let generation = 0
   let loadVersion = 0
   // Every authoritative profile refresh (loadAll) or content refresh bumps this, so
@@ -277,6 +278,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       if (wasActive) setPendingApplication(true, id)
       if (!valid(id, epoch)) return
       records.delete(name)
+      // Another window may still hold this profile loaded; without the broadcast it
+      // would keep editing a deleted profile and recreate it on its next save.
+      bumpProfileRevision(id)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -323,7 +327,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     generation++
     loadVersion++
     releasePendingSubscription?.()
-    releaseRevisionSubscription()
+    releaseRevisionSubscription?.()
   })
 
   async function refreshAfterExternalChange(): Promise<void> {
@@ -333,7 +337,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   // Another window persisted a profile: the cached list, active profile and drafts
   // are all stale, so refresh them while keeping local edits.
-  const releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
+  releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
     if (changedId === pluginId.value) void refreshAfterExternalChange()
   })
 

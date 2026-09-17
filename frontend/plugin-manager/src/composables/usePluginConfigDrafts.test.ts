@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope, ref, type EffectScope } from 'vue'
 import {
+  deletePluginProfileConfig,
   getPluginConfig,
   getPluginEffectiveBaseConfig,
   getPluginProfileConfig,
@@ -203,6 +204,41 @@ describe('config draft lifecycle', () => {
 
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 2 } })
     expect(drafts.current.value?.original).toEqual({ cache: { ttl: 2 } })
+  })
+
+  it('broadcasts a deleted profile', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: {
+          prod: { path: 'prod.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 1 } },
+    } as never)
+    vi.mocked(deletePluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: 'other',
+      removed: true,
+    } as never)
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    await drafts.deleteProfile('other')
+
+    // Another window holding this profile must drop it, not recreate it on save.
+    expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
   })
 
   it('broadcasts a newly created profile', async () => {
