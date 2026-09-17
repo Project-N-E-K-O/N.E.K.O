@@ -1,7 +1,6 @@
 import { computed, onScopeDispose, reactive, ref, watch, type Ref } from 'vue'
 import * as api from '@/api/config'
 import {
-  applyConfigChanges,
   configChanges,
   configEqual,
   deepClone,
@@ -9,7 +8,6 @@ import {
   type ConfigObject,
 } from '@/utils/configEditor'
 import { hasPendingReload, setPendingReload, subscribePendingReload } from '@/utils/pendingReload'
-import { bumpProfileRevision, subscribeProfileRevision } from '@/utils/profileRevision'
 
 interface ProfileDraft {
   original: ConfigObject
@@ -17,10 +15,6 @@ interface ProfileDraft {
   loaded: boolean
   loading: boolean
   error: string | null
-  // True when this record is the placeholder `default`, which has no stored profile behind
-  // it: it leaves the profile list as soon as the first profile is created, but that is not
-  // a deletion, so its draft (unsaved edits included) must not be dropped with it.
-  virtual: boolean
 }
 
 export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
@@ -39,9 +33,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const pendingApplication = ref(false)
   let generation = 0
   let loadVersion = 0
-  // Every authoritative profile refresh (loadAll) or content refresh bumps this, so
-  // a slower earlier response cannot overwrite newer content.
-  let refreshVersion = 0
   const requests = new Map<string, Promise<void>>()
 
   const persistedNames = computed(() =>
@@ -85,8 +76,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   // Storage is written for the plugin that performed the operation, while the
   // in-memory flag only follows it while that plugin is still the current one.
-  // The revision captured at the start of the operation keeps a late result from
-  // overriding a reload or start that happened while it was in flight.
   function setPendingApplication(pending: boolean, forPluginId = pluginId.value) {
     const applied = setPendingReload(forPluginId, pending)
     if (applied && forPluginId === pluginId.value) pendingApplication.value = pending
@@ -103,7 +92,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       loaded: false,
       loading: true,
       error: null,
-      virtual: isVirtual,
     })
     records.set(name, record)
     const request = (async () => {
@@ -127,42 +115,10 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     if (requests.get(name) === request) requests.delete(name)
   }
 
-  // Another window saved or activated a profile for this plugin, so the cached
-  // records are stale. `loadProfile` skips already loaded records, so refresh them
-  // here and rebase local edits onto the new content; otherwise saving a stale whole
-  // draft would discard what the other window wrote.
-  async function refreshLoadedProfiles(): Promise<void> {
-    const id = pluginId.value,
-      epoch = generation,
-      version = ++refreshVersion
-    for (const [name, record] of [...records]) {
-      // Only a profile that still exists has content to refresh; the placeholder `default`
-      // and profiles deleted elsewhere have no stored file to read.
-      if (!record.loaded || !persistedNames.value.includes(name)) continue
-      try {
-        const config = (await api.getPluginProfileConfig(id, name)).config || {}
-        // Drop a response that a newer refresh (or a full reload) already superseded.
-        if (!valid(id, epoch) || version !== refreshVersion || records.get(name) !== record) return
-        const fresh = deepClone(config)
-        const localChanges = configEqual(record.original, record.draft)
-          ? []
-          : configChanges(record.original, record.draft)
-        record.original = fresh
-        record.draft = localChanges.length
-          ? applyConfigChanges(fresh, localChanges)
-          : deepClone(fresh)
-      } catch {
-        // Keep the cached content when the refresh fails.
-      }
-    }
-  }
-
   async function loadAll(discardDrafts = false): Promise<void> {
     const id = pluginId.value,
       epoch = generation,
       version = ++loadVersion
-    // A full reload supersedes any in-flight content refresh.
-    refreshVersion += 1
     if (!id) return
     loading.value = true
     ready.value = false
@@ -182,27 +138,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       effective.value = effectiveResult.config || {}
       profiles.value = profileResult
       ready.value = true
-      // A profile deleted in another window is gone from the refreshed list, so drop its
-      // cached draft and any in-flight load for that name. The delete removes only the
-      // mapping, so reading that profile again can still return the orphaned file, and a
-      // record kept here would let a later profile of the same name display and save the
-      // content that was deleted.
-      for (const [name, record] of [...records]) {
-        // A persisted name is a real profile from now on, whether this window or another one
-        // created it: the external refresh used to be the only path that cleared this, so a
-        // placeholder saved here stayed marked as one.
-        if (persistedNames.value.includes(name)) {
-          record.virtual = false
-          continue
-        }
-        // The placeholder `default` has no stored profile to be deleted, so its draft
-        // (unsaved edits included) stays. Everything else describes a profile that is gone;
-        // the list still offers `default` as a placeholder there, and that placeholder must
-        // not keep showing stale content.
-        if (record.virtual) continue
-        records.delete(name)
-        requests.delete(name)
-      }
       configPath.value = baseResult.config_path || effectiveResult.config_path
       lastModified.value = baseResult.last_modified || effectiveResult.last_modified
       if (!selected.value || !names.value.includes(selected.value))
@@ -248,10 +183,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     error.value = null
     try {
       const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
-      // Tell other windows before the liveness check: the write already reached the
-      // server, so their cached draft for this profile is stale and saving it would
-      // drop these values — whether or not this window still shows that plugin.
-      bumpProfileRevision(id)
       if (!valid(id, epoch)) {
         if (wasActive || mayBecomeActive) setPendingApplication(true, id)
         return null
@@ -281,8 +212,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     try {
       // Keep the existing first-profile auto-activation behavior on the server.
       await api.upsertPluginProfileConfig(id, name, {}, false)
-      // Other windows list the profiles from their own cache, so announce it too.
-      bumpProfileRevision(id)
       if (!valid(id, epoch)) return
       await loadAll()
       if (!valid(id, epoch) || !names.value.includes(name)) return
@@ -302,12 +231,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Deleting the active profile leaves the host running its configuration,
       // so it still needs a reload; other deletions change nothing at runtime.
       if (wasActive) setPendingApplication(true, id)
-      // Emit before the liveness check: the mapping is already gone on the server, and
-      // another window may still hold that profile loaded, so it has to be told even
-      // when this window has already moved on to a different plugin.
-      bumpProfileRevision(id)
       if (!valid(id, epoch)) return
       records.delete(name)
+      // A read for that name may still be in flight; leaving it behind would make the next
+      // `loadProfile(name)` reuse it and end up with no record for the recreated profile.
+      requests.delete(name)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -319,7 +247,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     saving.value = true
     try {
       const result = await api.setPluginActiveProfile(id, name)
-      bumpProfileRevision(id)
       // Activation always changes what the host should be running.
       setPendingApplication(true, id)
       if (!valid(id, epoch)) return
@@ -351,20 +278,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     { immediate: true }
   )
 
-  async function refreshAfterExternalChange(): Promise<void> {
-    await loadAll()
-    await refreshLoadedProfiles()
-  }
-
-  // Another window persisted a profile: the cached list, active profile and drafts
-  // are all stale, so refresh them while keeping local edits.
-  const releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
-    if (changedId === pluginId.value) void refreshAfterExternalChange()
-  })
-
-  // A reload or start performed elsewhere (detail header, list, context menu) must
-  // clear the warning on an already mounted editor. The source is irrelevant here:
-  // a local write already updated the ref before it notified.
+  // A reload or start performed outside the editor (detail header, list, context menu)
+  // must clear the warning on an already mounted editor.
   const releasePendingSubscription = subscribePendingReload((changedId, pending) => {
     if (changedId !== pluginId.value) return
     pendingApplication.value = pending
@@ -373,7 +288,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   onScopeDispose(() => {
     generation++
     loadVersion++
-    releaseRevisionSubscription()
     releasePendingSubscription()
   })
 

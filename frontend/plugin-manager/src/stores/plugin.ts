@@ -14,7 +14,7 @@ import {
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
-import { pendingReloadToken, setPendingReload } from '@/utils/pendingReload'
+import { pendingReloadRevision, setPendingReload } from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -248,13 +248,13 @@ export const usePluginStore = defineStore('plugin', () => {
     // Captured before the request: the process reads the saved configuration while it
     // starts, so a profile write that lands in the meantime is newer than what that
     // process can have read and has to keep its reload warning.
-    const pendingToken = pendingReloadToken(pluginId)
+    const pendingRevision = pendingReloadRevision(pluginId)
     try {
       const result = await startPlugin(pluginId)
       // Starting an already running plugin returns success without restarting the
       // process or re-reading the saved profile overlay, so the server reports that
       // case explicitly; the pending flag may only be cleared for a real start.
-      if (result?.already_running !== true) setPendingReload(pluginId, false, pendingToken)
+      if (result?.already_running !== true) setPendingReload(pluginId, false, pendingRevision)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)
@@ -277,13 +277,13 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
-    const pendingToken = pendingReloadToken(pluginId)
+    const pendingRevision = pendingReloadRevision(pluginId)
     try {
       await reloadPlugin(pluginId)
       // The running host now matches the persisted configuration, whichever entry
       // point triggered the reload — unless a profile write claimed the flag while
       // this reload was in flight, which this host may have missed.
-      setPendingReload(pluginId, false, pendingToken)
+      setPendingReload(pluginId, false, pendingRevision)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)

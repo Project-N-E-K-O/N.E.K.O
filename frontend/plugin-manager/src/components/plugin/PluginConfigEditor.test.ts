@@ -36,6 +36,8 @@ afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup())
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  // The pending flag lives in its module, so clear the plugin these tests use.
+  setPendingReload('test', false)
   localStorage.clear()
 })
 async function mountEditor({ expectNav = true }: { expectNav?: boolean } = {}) {
