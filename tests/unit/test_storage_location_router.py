@@ -2257,7 +2257,7 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 
 @pytest.mark.unit
 def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
-    """Linux native dialog 不可用时直接 raise，不再有 tkinter 兜底（项目策略：不带 tk）。"""
+    """Reject unavailable Linux native dialogs without a tkinter fallback."""
     with patch.object(storage_location_router_module.sys, "platform", "linux"):
         with patch.object(
             storage_location_router_module,
