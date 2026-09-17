@@ -33,8 +33,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const ready = ref(false)
   // True while the running host may not match the persisted configuration.
   const pendingApplication = ref(false)
-  let releasePendingSubscription: (() => void) | undefined
-  let releaseRevisionSubscription: (() => void) | undefined
   let generation = 0
   let loadVersion = 0
   // Every authoritative profile refresh (loadAll) or content refresh bumps this, so
@@ -323,12 +321,6 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     },
     { immediate: true }
   )
-  onScopeDispose(() => {
-    generation++
-    loadVersion++
-    releasePendingSubscription?.()
-    releaseRevisionSubscription?.()
-  })
 
   async function refreshAfterExternalChange(): Promise<void> {
     await loadAll()
@@ -337,15 +329,23 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   // Another window persisted a profile: the cached list, active profile and drafts
   // are all stale, so refresh them while keeping local edits.
-  releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
+  const releaseRevisionSubscription = subscribeProfileRevision((changedId) => {
     if (changedId === pluginId.value) void refreshAfterExternalChange()
   })
 
   // A reload or start performed elsewhere (detail header, list, context menu) must
-  // clear the warning on an already mounted editor.
-  releasePendingSubscription = subscribePendingReload((changedId, pending, source) => {
+  // clear the warning on an already mounted editor. The source is irrelevant here:
+  // a local write already updated the ref before it notified.
+  const releasePendingSubscription = subscribePendingReload((changedId, pending) => {
     if (changedId !== pluginId.value) return
     pendingApplication.value = pending
+  })
+
+  onScopeDispose(() => {
+    generation++
+    loadVersion++
+    releaseRevisionSubscription()
+    releasePendingSubscription()
   })
 
   return {

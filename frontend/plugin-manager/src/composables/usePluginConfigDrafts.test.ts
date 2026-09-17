@@ -40,15 +40,15 @@ function deferred<T>() {
 }
 
 /** The event another window receives for one of its storage keys. */
-function crossWindowEvent(key: string): Event {
+function crossWindowEvent(key: string, newValue: string | null = '1'): Event {
   const event = new Event('storage')
-  Object.defineProperties(event, { key: { value: key }, newValue: { value: '1' } })
+  Object.defineProperties(event, { key: { value: key }, newValue: { value: newValue } })
   return event
 }
 
-/** Another window changed the pending-reload flag for this plugin. */
-const crossWindowPending = (pluginId: string) =>
-  crossWindowEvent(`neko-plugin-config-pending-reload:${pluginId}`)
+/** Another window set or cleared the pending-reload flag for this plugin. */
+const crossWindowPending = (pluginId: string, pending = true) =>
+  crossWindowEvent(`neko-plugin-config-pending-reload:${pluginId}`, pending ? '1' : null)
 
 /** Another window persisted a profile for this plugin. */
 const crossWindowProfileWrite = (pluginId: string) =>
@@ -544,5 +544,28 @@ describe('config draft lifecycle', () => {
     // The reload may have read the pre-save configuration, so the warning stays
     // until the next reload or start clears it.
     expect(hasPendingReload('alpha')).toBe(true)
+  })
+
+  it('follows a pending reload raised and cleared by another window', async () => {
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.pendingApplication.value).toBe(false)
+
+    // A flag belonging to another plugin is not this editor's business.
+    window.dispatchEvent(crossWindowPending('beta'))
+    await settle()
+    expect(drafts.pendingApplication.value).toBe(false)
+
+    // Another window saved this plugin's active profile, so the warning has to
+    // appear here as well, and reloading there clears it again.
+    window.dispatchEvent(crossWindowPending('alpha'))
+    await settle()
+    expect(drafts.pendingApplication.value).toBe(true)
+
+    window.dispatchEvent(crossWindowPending('alpha', false))
+    await settle()
+    expect(drafts.pendingApplication.value).toBe(false)
   })
 })
