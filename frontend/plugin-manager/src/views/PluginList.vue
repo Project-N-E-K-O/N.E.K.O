@@ -1559,7 +1559,15 @@ onUnmounted(() => {
 
 .plugin-workbench__rail-inner > * {
   width: 100%;
-  height: 100%;
+  /*
+    用 min-height 而不是 height：抽屉里的面板（如 .market-panel--embedded）自带白底、
+    圆角和阴影，这些都是“画在元素自己盒子上”的。写成 height:100% 就把它钉成固定高度，
+    面板内容一旦高于抽屉，溢出的部分（后面的卡片、分页条）就落在页面底色上——
+    实测小窗口下市场列表滚到底时，分页条两侧是 rgb(242,243,245) 而不是白底。
+    min-height 让面板随内容长高，白纸面始终覆盖全部内容；抽屉自己是滚动容器
+    （打开态 overflow-y:auto），所以滚动行为不变。
+  */
+  min-height: 100%;
 }
 
 .plugin-list-card {
