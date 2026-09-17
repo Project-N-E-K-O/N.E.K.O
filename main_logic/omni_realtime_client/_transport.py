@@ -2969,6 +2969,10 @@ class _TransportMixin:
                         # its first turn onward and the stale filter behaves
                         # exactly as before.
                         and self._announces_responses
+                        # A mismatched function/terminal ID alone does not
+                        # enter this branch: the observed Lanlan/livestream
+                        # trace never announced response.created. Its original
+                        # timeout was owner binding, not this stale filter.
                         # Do not exempt mismatched function-call IDs here,
                         # even on the Lanlan route. A first-time delayed call
                         # from a cancelled response can have an unseen call ID;

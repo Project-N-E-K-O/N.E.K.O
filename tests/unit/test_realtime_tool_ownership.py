@@ -57,6 +57,10 @@ async def test_tool_call_id_filter_respects_origin_evidence(monkeypatch, unrelia
     socket = _QueueSocket()
     client.ws = socket
     client._on_connection_attached()
+    if not announced:
+        # An earlier content-confirmed reply may leave a current ID without
+        # response.created. A mismatch alone must not enable stale filtering.
+        client._current_response_id = 'previous-content'
     calls = []
     marker = asyncio.Event()
     monkeypatch.setattr(client, '_start_raw_tool_call', lambda call, *a, **kw: calls.append(call))
@@ -81,7 +85,7 @@ async def test_tool_call_id_filter_respects_origin_evidence(monkeypatch, unrelia
         assert len(calls) == int(not announced)
         if calls:
             assert calls[0].arguments == {'value': 1}
-        assert client._current_response_id == ('current' if announced else None)
+        assert client._current_response_id == ('current' if announced else 'previous-content')
     finally:
         socket.finish()
         await asyncio.wait_for(receiver, 1)
