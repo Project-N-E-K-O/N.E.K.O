@@ -27,9 +27,9 @@ async function fixture(t, { reveal = true, covered = false } = {}) {
     <main class="app-main"><section class="plugin-config-editor">
       <div class="config-toolbar">Configuration</div>
       <div class="config-content">
-        <input type="number" aria-label="search.max_results" value="8">
+        <input type="text" inputmode="decimal" aria-label="search.max_results" value="8">
         <div style="height:600px"></div>
-        <input type="number" aria-label="search.duckduckgo_fallback_delay_seconds" value="2">
+        <input type="text" inputmode="decimal" aria-label="search.duckduckgo_fallback_delay_seconds" value="2">
       </div>
       <footer class="config-footer">
         <button>保存方案</button>

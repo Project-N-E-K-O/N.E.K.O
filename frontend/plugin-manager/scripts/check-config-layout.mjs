@@ -18,9 +18,9 @@ export async function checkConfigLayout(tab, viewport, cases) {
   const results = []
   let edited = false
   try {
-    await tab.playwright
-      .getByRole('spinbutton', { name: 'search.max_results', exact: true })
-      .fill(draftValue)
+    // Compact numeric fields are text inputs with inputmode=decimal, so they are
+    // located by their accessible name rather than by the spinbutton role.
+    await tab.playwright.locator('input[aria-label="search.max_results"]').fill(draftValue)
     edited = true
     for (const { width, height, zoom = 1 } of cases) {
       await viewport.set({ width: Math.floor(width / zoom), height: Math.floor(height / zoom) })
@@ -93,7 +93,7 @@ export async function checkConfigLayout(tab, viewport, cases) {
           )
         // Click only after the focus geometry assertion, so automatic scrolling
         // cannot hide a broken reveal handler. This also exercises pointer input.
-        await tab.playwright.getByRole('spinbutton', { name, exact: true }).click()
+        await tab.playwright.locator(`input[aria-label="${name}"]`).click()
       }
       // Focus without invoking the save action.
       await tab.playwright

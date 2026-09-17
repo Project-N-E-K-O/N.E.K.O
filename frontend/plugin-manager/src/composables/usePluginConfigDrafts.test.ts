@@ -108,7 +108,41 @@ describe('config draft lifecycle', () => {
     expect(drafts.pendingApplication.value).toBe(false)
   })
 
-  it('drops a late save that a reload already superseded', async () => {
+  it('marks a save that implicitly becomes the active profile', async () => {
+    // After the active profile is deleted the plugin has none; saving another
+    // profile makes it active server-side, so the host now needs a reload.
+    let active: string | null = null
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active,
+        files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(upsertPluginProfileConfig).mockImplementation(async () => {
+      active = 'other'
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'other', path: 'other.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 9 } },
+      } as never
+    })
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.active.value).toBeNull()
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    await drafts.saveProfile()
+
+    expect(drafts.active.value).toBe('other')
+    expect(hasPendingReload('alpha')).toBe(true)
+  })
+
+  it('still records a late save so the stale host keeps its warning', async () => {
     const pluginId = ref('alpha')
     scope = effectScope()
     const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
@@ -135,7 +169,8 @@ describe('config draft lifecycle', () => {
     await saving
     await settle()
 
-    expect(hasPendingReload('alpha')).toBe(false)
-    expect(drafts.pendingApplication.value).toBe(false)
+    // The reload may have read the pre-save configuration, so the warning stays
+    // until the next reload or start clears it.
+    expect(hasPendingReload('alpha')).toBe(true)
   })
 })

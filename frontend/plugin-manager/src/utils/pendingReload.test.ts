@@ -1,11 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  hasPendingReload,
-  pendingRevision,
-  setPendingReload,
-  subscribePendingReload,
-} from './pendingReload'
+import { hasPendingReload, setPendingReload, subscribePendingReload } from './pendingReload'
 
 afterEach(() => {
   setPendingReload('alpha', false)
@@ -83,16 +78,13 @@ describe('pending reload storage', () => {
     expect(backing.size).toBe(0)
   })
 
-  it('drops a write made for an outdated revision', () => {
-    const stale = pendingRevision('alpha')
-    setPendingReload('alpha', false)
-    // A lifecycle action happened while the older operation was in flight.
-    setPendingReload('alpha', false, stale)
-    expect(hasPendingReload('alpha')).toBe(false)
-
-    const current = pendingRevision('alpha')
-    setPendingReload('alpha', true, current)
+  it('applies writes in arrival order', () => {
+    // A save that lands after a reload still records the flag: the reload may have
+    // read the configuration from before that save.
+    setPendingReload('alpha', true)
     expect(hasPendingReload('alpha')).toBe(true)
+    setPendingReload('alpha', false)
+    expect(hasPendingReload('alpha')).toBe(false)
   })
 
   it('notifies subscribers about every applied change', () => {

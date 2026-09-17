@@ -7,12 +7,7 @@ import {
   restoreConfigPath,
   type ConfigObject,
 } from '@/utils/configEditor'
-import {
-  hasPendingReload,
-  pendingRevision,
-  setPendingReload,
-  subscribePendingReload,
-} from '@/utils/pendingReload'
+import { hasPendingReload, setPendingReload, subscribePendingReload } from '@/utils/pendingReload'
 
 interface ProfileDraft {
   original: ConfigObject
@@ -84,12 +79,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   // in-memory flag only follows it while that plugin is still the current one.
   // The revision captured at the start of the operation keeps a late result from
   // overriding a reload or start that happened while it was in flight.
-  function setPendingApplication(
-    pending: boolean,
-    forPluginId = pluginId.value,
-    revision?: number
-  ) {
-    const applied = setPendingReload(forPluginId, pending, revision)
+  function setPendingApplication(pending: boolean, forPluginId = pluginId.value) {
+    const applied = setPendingReload(forPluginId, pending)
     if (applied && forPluginId === pluginId.value) pendingApplication.value = pending
   }
   async function loadProfile(name: string): Promise<void> {
@@ -188,21 +179,22 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       record = current.value
     const snapshot = deepClone(record.draft)
     // Captured before the request so a later plugin switch cannot change the answer.
-    const appliesToRunningHost = name === active.value
-    const revision = pendingRevision(id)
+    const wasActive = name === active.value
     saving.value = true
     error.value = null
     try {
       const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
       if (!valid(id, epoch)) {
-        if (appliesToRunningHost) setPendingApplication(true, id, revision)
+        if (wasActive) setPendingApplication(true, id)
         return null
       }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
       await loadAll()
-      // Only the active profile changes what the running host should be using.
-      if (appliesToRunningHost) setPendingApplication(true, id, revision)
+      // Only the active profile changes what the running host should be using. The
+      // refreshed state is authoritative because saving also activates the profile
+      // when the plugin had none, which the pre-request snapshot cannot see.
+      if (valid(id, epoch) ? name === active.value : wasActive) setPendingApplication(true, id)
       return valid(id, epoch) ? name : null
     } catch (err) {
       if (valid(id, epoch)) error.value = message(err)
@@ -232,13 +224,12 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     const id = pluginId.value,
       epoch = generation
     const wasActive = name === active.value
-    const revision = pendingRevision(id)
     saving.value = true
     try {
       await api.deletePluginProfileConfig(id, name)
       // Deleting the active profile leaves the host running its configuration,
       // so it still needs a reload; other deletions change nothing at runtime.
-      if (wasActive) setPendingApplication(true, id, revision)
+      if (wasActive) setPendingApplication(true, id)
       if (!valid(id, epoch)) return
       records.delete(name)
       await loadAll()
@@ -249,12 +240,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   async function activateProfile(name: string) {
     const id = pluginId.value,
       epoch = generation
-    const revision = pendingRevision(id)
     saving.value = true
     try {
       const result = await api.setPluginActiveProfile(id, name)
       // Activation always changes what the host should be running.
-      setPendingApplication(true, id, revision)
+      setPendingApplication(true, id)
       if (!valid(id, epoch)) return
       profiles.value = result
       await loadAll()

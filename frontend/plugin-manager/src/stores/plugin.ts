@@ -245,13 +245,12 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    // Starting an already running plugin returns early on the server without
-    // restarting the process or re-reading the saved profile overlay, so the
-    // pending flag may only be cleared when this call actually started it.
-    const wasRunning = pluginIsRunning(pluginId)
     try {
-      await startPlugin(pluginId)
-      if (!wasRunning) setPendingReload(pluginId, false)
+      const result = await startPlugin(pluginId)
+      // Starting an already running plugin returns success without restarting the
+      // process or re-reading the saved profile overlay, so the server reports that
+      // case explicitly; the pending flag may only be cleared for a real start.
+      if (result?.already_running !== true) setPendingReload(pluginId, false)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
         await fetchPlugins(true)
@@ -290,13 +289,6 @@ export const usePluginStore = defineStore('plugin', () => {
 
   function setSelectedPlugin(pluginId: string | null) {
     selectedPluginId.value = pluginId
-  }
-
-  function pluginIsRunning(pluginId: string): boolean {
-    const tracked = pluginStatuses.value[pluginId]?.status?.status
-    const status =
-      typeof tracked === 'string' ? tracked : plugins.value.find((p) => p.id === pluginId)?.status
-    return status === StatusEnum.RUNNING
   }
 
   return {

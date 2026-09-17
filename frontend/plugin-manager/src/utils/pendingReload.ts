@@ -5,18 +5,18 @@
 // per-plugin flag therefore records that the running plugin may not match the
 // persisted configuration yet.
 //
-// Two rules keep the flag honest:
-//  - A reload or a real start supersedes any edit that was still in flight, so a
-//    write made for an older revision is dropped instead of resurrecting the flag.
-//  - Storage is authoritative while it works, so clearing it clears the flag; the
-//    in-memory mirror only serves contexts where storage is missing or failing.
+// Writes are applied in arrival order: the last operation to report wins. A reload
+// that finishes before an in-flight save may have read the pre-save configuration,
+// so the later save still records the flag — a spurious hint costs one redundant
+// reload, while a missing hint silently leaves the host on a stale configuration.
+// Storage is authoritative while it works, so clearing it clears the flag; the
+// in-memory mirror only serves contexts where storage is missing or failing.
 
 const STORAGE_KEY = 'neko-plugin-config-pending-reload'
 
 type PendingRecord = Record<string, true>
 
 const inMemory = new Map<string, true>()
-const revisions = new Map<string, number>()
 const listeners = new Set<(pluginId: string, pending: boolean) => void>()
 let storageWritable = true
 
@@ -80,26 +80,14 @@ function notify(pluginId: string, pending: boolean): void {
   for (const listener of listeners) listener(pluginId, pending)
 }
 
-/** Current revision for a plugin; capture it before starting an edit. */
-export function pendingRevision(pluginId: string): number {
-  return revisions.get(pluginId) ?? 0
-}
-
 export function hasPendingReload(pluginId: string): boolean {
   if (!pluginId) return false
   const record = readRecord()
   return record ? hasOwn(record, pluginId) : inMemory.has(pluginId)
 }
 
-/**
- * Records or clears the flag. `revision` defaults to the current one; pass the
- * revision captured when an operation started so a lifecycle action that happened
- * meanwhile wins instead of being overwritten by the late result.
- */
-export function setPendingReload(pluginId: string, pending: boolean, revision?: number): boolean {
+export function setPendingReload(pluginId: string, pending: boolean): boolean {
   if (!pluginId) return false
-  if (revision !== undefined && revision !== pendingRevision(pluginId)) return false
-  revisions.set(pluginId, pendingRevision(pluginId) + 1)
   if (pending) inMemory.set(pluginId, true)
   else inMemory.delete(pluginId)
   writeRecord(pluginId, pending)

@@ -54,36 +54,31 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('demo')).toBe(true)
   })
 
-  it('clears the flag when a stopped plugin actually starts', async () => {
+  it('clears the flag when the plugin actually starts', async () => {
     setPendingReload('demo', true)
-    vi.mocked(startPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
-    vi.mocked(getPlugins).mockResolvedValue({
-      plugins: [{ id: 'demo', status: 'stopped' }],
-      message: '',
-    } as never)
+    vi.mocked(startPlugin).mockResolvedValue({
+      success: true,
+      plugin_id: 'demo',
+      message: 'Plugin started successfully',
+    })
     const store = usePluginStore()
-    await store.fetchPlugins(true)
 
     await store.start('demo')
 
     expect(hasPendingReload('demo')).toBe(false)
   })
 
-  it('keeps the flag when the plugin was already running', async () => {
-    // The server returns success for an already running plugin without restarting
-    // it, so the saved configuration is still not applied.
+  it('keeps the flag when the server reports the plugin was already running', async () => {
+    // That response does not restart the host or re-read the saved configuration,
+    // so the new configuration is still not applied.
     setPendingReload('demo', true)
     vi.mocked(startPlugin).mockResolvedValue({
       success: true,
       plugin_id: 'demo',
+      already_running: true,
       message: 'Plugin is already running',
     })
-    vi.mocked(getPlugins).mockResolvedValue({
-      plugins: [{ id: 'demo', status: 'running' }],
-      message: '',
-    } as never)
     const store = usePluginStore()
-    await store.fetchPlugins(true)
 
     await store.start('demo')
 

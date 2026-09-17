@@ -537,7 +537,7 @@ describe('async operation lifecycle isolation', () => {
     )
 
     // 修改配置以触发草稿状态
-    const input = host.querySelector<HTMLInputElement>('input[type="number"]')
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="cache.ttl"]')
     expect(input).toBeDefined()
     input!.value = '120'
     input!.dispatchEvent(new Event('input', { bubbles: true }))

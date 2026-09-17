@@ -199,8 +199,8 @@
           :id="inputId"
           :aria-label="path"
           :model-value="numberText"
-          type="number"
-          step="any"
+          type="text"
+          inputmode="decimal"
           :disabled="isReadOnly"
           @input="updateNumberText"
           @blur="settleNumberText"
@@ -246,7 +246,7 @@ import {
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
-import { nextNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
+import { parseNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
 
 interface Props {
   modelValue: any
@@ -415,20 +415,20 @@ watch(
   { immediate: true }
 )
 
-function numberFromText(text: string): number | undefined {
-  return text.trim() !== '' && Number.isFinite(Number(text)) ? Number(text) : undefined
-}
 function updateNumberText(value: string) {
-  numberText.value = nextNumberText(numberText.value, value)
-  const parsed = numberFromText(numberText.value)
+  // The raw edit is authoritative:
+  // it may not parse yet ("-", "1.", "1e"), but keeping it lets the user finish
+  // typing. Only finite values reach the model.
+  numberText.value = value
+  const parsed = parseNumberText(value)
   if (parsed !== undefined) emitNumberUpdate(parsed)
 }
 function settleNumberText(event: FocusEvent) {
   const raw = (event.target as HTMLInputElement | null)?.value ?? ''
-  // A cleared or incomplete number cannot be represented in TOML. Keep the
-  // last finite value; never turn an empty edit into an explicit null or zero.
+  // An incomplete number cannot be represented in TOML. Restore the last finite
+  // value instead of turning an empty edit into null or zero.
   numberText.value = settleNumberReading(raw, String(displayValue.value))
-  const parsed = numberFromText(numberText.value)
+  const parsed = parseNumberText(numberText.value)
   if (parsed !== undefined) emitNumberUpdate(parsed)
 }
 
