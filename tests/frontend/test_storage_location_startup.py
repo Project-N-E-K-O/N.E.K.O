@@ -708,7 +708,7 @@ def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize("close_phase", ["selection_intro", "selection_required", "preview"])
+@pytest.mark.parametrize("close_phase", ["selection_intro", "selection_required", "preview", "preflight_wait"])
 def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
     mock_page: Page,
     running_server: str,
@@ -719,6 +719,8 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
     select_requests = {"count": 0}
     restart_requests = {"count": 0}
     pending_exit_routes = []
+    exit_completed = {"value": False}
+    preflight_status_polls = {"count": 0}
     _mock_selection_required_state(page)
     page.add_init_script(
         """
@@ -740,6 +742,18 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
 
     def handle_select(route):
         select_requests["count"] += 1
+        if close_phase == "preflight_wait":
+            route.fulfill(
+                status=202,
+                content_type="application/json",
+                json={
+                    "ok": True,
+                    "result": "preflight_pending",
+                    "preflight_operation_id": "p.close-preflight",
+                    "instance_id": "close-generation",
+                },
+            )
+            return
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -768,6 +782,30 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
     page.route("**/api/storage/location/exit", handle_exit)
     page.route("**/api/storage/location/select", handle_select)
     page.route("**/api/storage/location/restart", handle_restart)
+    if close_phase == "preflight_wait":
+        def handle_preflight_status(route):
+            preflight_status_polls["count"] += 1
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                json={
+                    "instance_id": "close-generation",
+                    "preflight_operation": {
+                        "operation_id": "p.close-preflight",
+                        "instance_id": "close-generation",
+                        "state": "completed" if exit_completed["value"] else "in_flight",
+                        "response_status_code": 200,
+                        "response_payload": {
+                            "ok": True,
+                            "result": "restart_required",
+                            "restart_operation_id": "late-preflight-result",
+                            "selected_root": "/tmp/runtime/N.E.K.O",
+                        },
+                    },
+                },
+            )
+
+        page.route("**/api/storage/location/status?preflight_operation_id=**", handle_preflight_status)
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
 
     expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
@@ -780,14 +818,20 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
             timeout=10_000
         )
         select_requests["count"] = 0
+    elif close_phase == "preflight_wait":
+        with page.expect_response(lambda r: "preflight_operation_id=" in r.url):
+            page.get_by_role("button", name="使用推荐路径").click()
+        expect(page.get_by_role("button", name="使用推荐路径")).to_be_disabled()
+        assert preflight_status_polls["count"] >= 1
 
     if close_phase == "selection_intro":
         mutation_button = page.get_by_role("button", name="推荐存储位置")
-    elif close_phase == "selection_required":
+    elif close_phase in {"selection_required", "preflight_wait"}:
         mutation_button = page.get_by_role("button", name="使用推荐路径")
     else:
         mutation_button = page.get_by_role("button", name="确认并重启到原路径")
 
+    initial_select_requests = select_requests["count"]
     page.locator(".storage-location-modal > .storage-location-close").click()
     expect(mutation_button).to_be_disabled(timeout=5_000)
     assert len(pending_exit_routes) == 1
@@ -795,7 +839,7 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
     expect(mutation_button).to_be_disabled()
     mutation_button.click(force=True)
     page.wait_for_timeout(100)
-    assert select_requests["count"] == 0
+    assert select_requests["count"] == initial_select_requests
     assert restart_requests["count"] == 0
 
     pending_exit_routes[0].fulfill(
@@ -803,11 +847,15 @@ def test_storage_location_close_requests_app_shutdown_while_startup_is_blocked(
         content_type="application/json",
         body=json.dumps({"ok": True, "result": "shutdown_initiated"}),
     )
+    exit_completed["value"] = True
     page.wait_for_function("() => window.__nekoHostCloseCalls === 1", timeout=10_000)
 
     assert exit_requests["count"] == 1
     expect(mutation_button).to_be_disabled()
     assert _page_config_state(page) == "pending"
+    if close_phase == "preflight_wait":
+        page.wait_for_timeout(1500)
+        expect(page.get_by_role("button", name="确认并重启到原路径")).to_have_count(0)
 
 
 @pytest.mark.frontend

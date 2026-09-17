@@ -25,6 +25,8 @@
         initialized: false,
         initPromise: null,
         submitting: false,
+        preflightWaitInFlight: false,
+        selectionAttemptGeneration: 0,
         sentinelFlowInFlight: false,
         sentinelFlowGeneration: 0,
         closeAttemptInFlight: false,
@@ -472,6 +474,9 @@
         if (state.submitting
             || state.closeAttemptInFlight
             || state.maintenanceRecoveryActionInFlight) return;
+        // A completed preflight response must not reopen selection after a
+        // close attempt, even when the backend scan finishes concurrently.
+        state.selectionAttemptGeneration += 1;
         var closingPhase = state.phase;
         var resumeSentinelAfterClose = state.sentinelFlowInFlight
             && closingPhase !== 'maintenance';
@@ -1053,6 +1058,7 @@
 
     function isStorageMutationFrozen() {
         return state.submitting
+            || state.preflightWaitInFlight
             || state.sentinelFlowInFlight
             || state.closeAttemptInFlight
             || state.shutdownRequested;
@@ -2321,6 +2327,8 @@
             return;
         }
 
+        if (state.preflightWaitInFlight || state.shutdownRequested || state.closeAttemptInFlight) return;
+        var selectionGeneration = ++state.selectionAttemptGeneration;
         setSubmitting(true);
         setSelectionStatus('', false);
         var selectionOutcomeUnknown = false;
@@ -2369,10 +2377,20 @@
                 }
             }
             if (pending) {
-                var resolvedPreflight = await waitForStoragePreflight(
-                    pending.operationId,
-                    pending.instanceId
-                );
+                state.preflightWaitInFlight = true;
+                setSubmitting(false);
+                var resolvedPreflight;
+                try {
+                    resolvedPreflight = await waitForStoragePreflight(
+                        pending.operationId,
+                        pending.instanceId
+                    );
+                } finally {
+                    state.preflightWaitInFlight = false;
+                    setSubmitting(false);
+                }
+                if (selectionGeneration !== state.selectionAttemptGeneration
+                    || state.shutdownRequested || state.closeAttemptInFlight) return;
                 response = { ok: resolvedPreflight.ok };
                 payload = resolvedPreflight.payload;
                 state.pendingPreflightOperation = null;
@@ -2434,6 +2452,8 @@
             );
         } catch (error) {
             console.warn('[storage-location] select failed', error);
+            if (selectionGeneration !== state.selectionAttemptGeneration
+                || state.shutdownRequested || state.closeAttemptInFlight) return;
             if (error && error.preflightTerminal) state.pendingPreflightOperation = null;
             if (selectionOutcomeUnknown) {
                 setPhase('loading');
