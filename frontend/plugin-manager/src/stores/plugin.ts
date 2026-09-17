@@ -9,6 +9,7 @@ import {
   startPlugin,
   stopPlugin,
   reloadPlugin,
+  reloadAllPlugins,
   refreshPluginsRegistry,
 } from '@/api/plugins'
 import { getLocale, i18n } from '@/i18n'
@@ -293,6 +294,27 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  async function reloadAll(options: PluginMutationOptions = {}) {
+    // The bulk endpoint restarts every plugin it reports back, so those hosts match their
+    // saved configuration again and the flags have to go with it. The revisions are captured
+    // first for the same reason as the single-plugin path: a profile write that lands during
+    // the request describes a configuration the restarted host cannot have read.
+    const revisions = new Map(
+      plugins.value.map((plugin) => [plugin.id, pendingReloadRevision(plugin.id)])
+    )
+    const result = await reloadAllPlugins()
+    for (const pluginId of result.reloaded) {
+      const revision = revisions.get(pluginId)
+      // Without a baseline there is nothing to compare against, so the warning stays.
+      if (revision !== undefined) setPendingReload(pluginId, false, revision)
+    }
+    if (options.refresh !== false) {
+      await fetchPluginStatus()
+      await fetchPlugins(true)
+    }
+    return result
+  }
+
   function setSelectedPlugin(pluginId: string | null) {
     selectedPluginId.value = pluginId
   }
@@ -316,6 +338,7 @@ export const usePluginStore = defineStore('plugin', () => {
     start,
     stop,
     reload,
+    reloadAll,
     setSelectedPlugin,
   }
 })

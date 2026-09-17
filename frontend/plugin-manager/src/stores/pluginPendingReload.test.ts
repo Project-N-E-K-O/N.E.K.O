@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { usePluginStore } from './plugin'
-import { getPlugins, getPluginStatus, reloadPlugin, startPlugin } from '@/api/plugins'
+import {
+  getPlugins,
+  getPluginStatus,
+  reloadAllPlugins,
+  reloadPlugin,
+  startPlugin,
+} from '@/api/plugins'
 import { hasPendingReload, setPendingReload } from '@/utils/pendingReload'
 
 vi.mock('@/i18n', () => ({
@@ -18,6 +24,7 @@ vi.mock('@/api/plugins', () => ({
   startPlugin: vi.fn(),
   stopPlugin: vi.fn(),
   reloadPlugin: vi.fn(),
+  reloadAllPlugins: vi.fn(),
   refreshPluginsRegistry: vi.fn(),
 }))
 
@@ -102,6 +109,54 @@ describe('plugin store reload bookkeeping', () => {
     const store = usePluginStore()
 
     const reloading = store.reload('demo')
+    setPendingReload('demo', true)
+    releaseReload()
+    await reloading
+
+    expect(hasPendingReload('demo')).toBe(true)
+  })
+
+  it('clears the flag of every plugin a bulk reload restarted', async () => {
+    setPendingReload('demo', true)
+    setPendingReload('other', true)
+    vi.mocked(getPlugins).mockResolvedValue({
+      plugins: [{ id: 'demo' }, { id: 'other' }] as never,
+      message: '',
+    })
+    vi.mocked(reloadAllPlugins).mockResolvedValue({
+      success: true,
+      reloaded: ['demo'],
+      failed: [],
+      skipped: ['other'],
+      message: '',
+    })
+    const store = usePluginStore()
+    await store.fetchPlugins()
+
+    await store.reloadAll({ refresh: false })
+
+    // Only the plugin the server actually restarted matches its saved configuration again.
+    expect(hasPendingReload('demo')).toBe(false)
+    expect(hasPendingReload('other')).toBe(true)
+  })
+
+  it('keeps a flag that a profile write claimed during a bulk reload', async () => {
+    setPendingReload('demo', true)
+    vi.mocked(getPlugins).mockResolvedValue({ plugins: [{ id: 'demo' }] as never, message: '' })
+    let releaseReload!: () => void
+    vi.mocked(reloadAllPlugins).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseReload = () =>
+            resolve({ success: true, reloaded: ['demo'], failed: [], skipped: [], message: '' })
+        })
+    )
+    const store = usePluginStore()
+    await store.fetchPlugins()
+
+    const reloading = store.reloadAll({ refresh: false })
+    // A save lands while the bulk reload is in flight, so the restarted host may have read
+    // the configuration from before it.
     setPendingReload('demo', true)
     releaseReload()
     await reloading
