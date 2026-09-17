@@ -15,6 +15,9 @@ MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES = (
     // 1_000
     * 2
 )
+# Shared process-host ceiling. Activation retains up to eight seconds of
+# continuous PCM, including pauses; legacy shadow keeps its four-second default.
+MAX_SPEAKER_BACKEND_PCM_BYTES = SPEAKER_SHADOW_SAMPLE_RATE_HZ * 8 * 2
 # Lifecycle pre-roll may arrive as one payload, so its per-submit ceiling must
 # match the candidate ceiling. The runtime still truncates to the configured
 # candidate duration before retaining PCM.

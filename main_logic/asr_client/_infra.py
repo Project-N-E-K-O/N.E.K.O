@@ -28,6 +28,7 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 import numpy as np
 import soxr
 
+from .delivery import delivery_evidence, log_delivery_phase
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -403,6 +404,29 @@ class _RealtimeAsrSessionImpl:
     @property
     def is_ready(self) -> bool:
         return self._state is _SessionState.READY
+
+    @property
+    def transport_write_attempted(self) -> bool | None:
+        """Actual worker send entered; its result may still be unknown."""
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.attempted if evidence else None
+
+    def protect_audio_delivery(self) -> None:
+        """Forbid provider-managed replay once this queue owns protected audio."""
+        if self._request_queue is None:
+            raise RuntimeError("ASR_SESSION_NOT_READY: no worker queue")
+        delivery_evidence(self._request_queue).protected = True
+
+    @property
+    def transport_written_audio_bytes(self) -> int:
+        """Audio payload bytes after successful socket send, not queue admission."""
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.written_audio_bytes if evidence else 0
+
+    @property
+    def transport_delivery_trace_id(self) -> str | None:
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.trace_id if evidence else None
 
     @property
     def provider_wire_audio_ms(self) -> int:
@@ -1380,6 +1404,12 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
+                log_delivery_phase(
+                    getattr(self._request_queue, "_transport_delivery_evidence", None),
+                    phase="adapter_final_received",
+                    generation=event.generation,
+                    buffer_epoch=event.buffer_epoch,
+                )
                 if (
                     self._config.endpointing_mode == "provider"
                     and self._uses_segment_aggregation
