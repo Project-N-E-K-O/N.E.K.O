@@ -94,6 +94,29 @@ describe('profile preview empty tables', () => {
   })
 })
 
+describe('server merge markers', () => {
+  it('replaces a table marked with __replace__ and drops the marker', () => {
+    const base = { feature: { a: 1, b: 2 } }
+    expect(applyProfileOverlay(base, { feature: { __replace__: true, b: 9 } })).toEqual({
+      feature: { b: 9 },
+    })
+    expect(base.feature).toEqual({ a: 1, b: 2 })
+  })
+
+  it('removes keys marked with __DELETE__', () => {
+    expect(applyProfileOverlay({ a: 1, b: 2 }, { a: '__DELETE__' })).toEqual({ b: 2 })
+  })
+
+  it('applies both markers inside merged tables', () => {
+    const base = { section: { keep: 1, drop: 2, table: { x: 1, y: 2 } } }
+    const overlay = { section: { drop: '__DELETE__', table: { __replace__: true, y: 3 } } }
+    expect(applyProfileOverlay(base, overlay)).toEqual({
+      section: { keep: 1, table: { y: 3 } },
+    })
+    expect(base.section).toEqual({ keep: 1, drop: 2, table: { x: 1, y: 2 } })
+  })
+})
+
 describe('configNodeMatches', () => {
   it('returns true when searching for a top-level section name that has children', () => {
     const overlay = {}

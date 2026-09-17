@@ -246,6 +246,7 @@ import {
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
+import { nextNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
 
 interface Props {
   modelValue: any
@@ -414,15 +415,21 @@ watch(
   { immediate: true }
 )
 
-function updateNumberText(value: string) {
-  numberText.value = value
-  if (value.trim() !== '') emitNumberUpdate(Number(value))
+function numberFromText(text: string): number | undefined {
+  return text.trim() !== '' && Number.isFinite(Number(text)) ? Number(text) : undefined
 }
-function settleNumberText() {
+function updateNumberText(value: string) {
+  numberText.value = nextNumberText(numberText.value, value)
+  const parsed = numberFromText(numberText.value)
+  if (parsed !== undefined) emitNumberUpdate(parsed)
+}
+function settleNumberText(event: FocusEvent) {
+  const raw = (event.target as HTMLInputElement | null)?.value ?? ''
   // A cleared or incomplete number cannot be represented in TOML. Keep the
   // last finite value; never turn an empty edit into an explicit null or zero.
-  if (!numberText.value.trim() || !Number.isFinite(Number(numberText.value)))
-    numberText.value = String(displayValue.value)
+  numberText.value = settleNumberReading(raw, String(displayValue.value))
+  const parsed = numberFromText(numberText.value)
+  if (parsed !== undefined) emitNumberUpdate(parsed)
 }
 
 function emitNumberUpdate(value: number | null | undefined) {

@@ -568,10 +568,13 @@ async function addProfile() {
     const discardVirtual =
       name !== 'default' && virtualDefault('default') && dirtyCount('default') > 0
     if (discardVirtual && !(await confirmDiscard())) return
-    // Creating a persisted "default" profile should save the virtual default
-    // rather than orphaning its unsaved edits.
-    if (name === 'default' && virtualDefault('default') && dirtyCount('default') > 0) {
-      if (!(await confirmDiscard())) return
+    // A virtual default is materialized by persisting its current draft, which
+    // would otherwise be replaced by the empty profile written below.
+    if (name === 'default' && virtualDefault('default')) {
+      const saved = await drafts.saveProfile()
+      if (alive && id === props.pluginId && saved)
+        ElMessage.success(t('plugins.configUi.configStored', { name: saved }))
+      return
     }
     if (!alive || id !== props.pluginId) return
     await drafts.createProfile(name)
@@ -674,7 +677,9 @@ async function hotUpdate() {
     applicationNotice.value = result.hot_reloaded
       ? t('plugins.configUi.hotRequested')
       : t('plugins.hotUpdatePartial')
-    pendingApplication.delete(name)
+    // Keep the pending marker: the host merges this payload into its live
+    // configuration, so removed or replaced tables stay live until a reload.
+    // The backend also reports success when the plugin never acknowledged.
     await drafts.loadAll()
   } catch (err) {
     if (alive && id === props.pluginId) operationError.value = errorText(err)

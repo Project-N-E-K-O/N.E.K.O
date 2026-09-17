@@ -151,8 +151,7 @@ export function configNodeMatches(
       filter === 'all' ||
       (filter === 'configured' && overlay !== undefined) ||
       (filter === 'dirty' && hasConfigChangesAt(changes, path))
-    const matchesQuery =
-      !query || path.join('.').toLowerCase().includes(query.toLowerCase())
+    const matchesQuery = !query || path.join('.').toLowerCase().includes(query.toLowerCase())
     // The root node must descend into children; only non-root paths may match themselves.
     if (path.length > 0 && matchesState && matchesQuery) return true
     if (keys.length)
@@ -238,22 +237,36 @@ function deepMerge(base: any, updates: any): any {
   if (isConfigObject(updates) && Object.keys(updates).length === 0) return deepClone(updates)
   // 对象递归合并；数组和原始值直接替换（不做逐项合并）
   const out: any = Array.isArray(base) ? [...base] : { ...base }
-  for (const [k, v] of Object.entries(updates)) {
-    const cur = hasOwn(out, k) ? out[k] : undefined
-    if (
-      cur &&
-      typeof cur === 'object' &&
-      !Array.isArray(cur) &&
-      v &&
-      typeof v === 'object' &&
-      !Array.isArray(v)
-    ) {
-      setOwn(out, k, deepMerge(cur, v))
-    } else {
-      setOwn(out, k, v)
-    }
-  }
+  for (const [k, v] of Object.entries(updates)) applyEntry(out, k, v)
   return out
+}
+
+// The server merge (plugin/server/infrastructure/config_merge.py) treats these as
+// data: "__DELETE__" removes a key and a table carrying "__replace__" replaces the
+// base table instead of merging into it. The preview must report the same result.
+const DELETE_MARKER = '__DELETE__'
+const REPLACE_MARKER = '__replace__'
+
+function replacementTable(value: ConfigObject): ConfigObject {
+  const table: ConfigObject = {}
+  for (const [key, child] of Object.entries(value))
+    if (key !== REPLACE_MARKER) setOwn(table, key, deepClone(child))
+  return table
+}
+
+function applyEntry(target: any, key: string, value: any): void {
+  if (value === DELETE_MARKER) {
+    delete target[key]
+    return
+  }
+  if (isConfigObject(value) && value[REPLACE_MARKER] === true) {
+    setOwn(target, key, replacementTable(value))
+    return
+  }
+  const current = hasOwn(target, key) ? target[key] : undefined
+  if (current && typeof current === 'object' && !Array.isArray(current) && isConfigObject(value))
+    setOwn(target, key, deepMerge(current, value))
+  else setOwn(target, key, value)
 }
 
 export function applyProfileOverlay(base: any, overlay: any): any {
@@ -264,19 +277,7 @@ export function applyProfileOverlay(base: any, overlay: any): any {
   for (const [k, v] of Object.entries(overlay)) {
     // Profile cannot modify the 'plugin' section; skip it — shown only in JSON preview
     if (k === 'plugin') continue
-    const cur = hasOwn(result, k) ? result[k] : undefined
-    if (
-      cur &&
-      typeof cur === 'object' &&
-      !Array.isArray(cur) &&
-      v &&
-      typeof v === 'object' &&
-      !Array.isArray(v)
-    ) {
-      setOwn(result, k, deepMerge(cur, v))
-    } else {
-      setOwn(result, k, v)
-    }
+    applyEntry(result, k, v)
   }
   return result
 }
