@@ -190,7 +190,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // record kept here would let a later profile of the same name display and save the
       // content that was deleted.
       for (const [name, record] of [...records]) {
-        if (record.virtual || names.value.includes(name)) continue
+        // Keep a draft while its profile still exists, and keep the placeholder `default`,
+        // which has no stored profile to be deleted in the first place. Everything else
+        // describes a profile that is gone; the list still offers `default` as a
+        // placeholder there, and that placeholder must not keep showing stale content.
+        if (record.virtual || persistedNames.value.includes(name)) continue
         records.delete(name)
         requests.delete(name)
       }

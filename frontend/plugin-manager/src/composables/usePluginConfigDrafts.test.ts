@@ -763,4 +763,32 @@ describe('config draft lifecycle', () => {
     await settle()
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
   })
+
+  it('reloads the placeholder after the last persisted profile is deleted elsewhere', async () => {
+    const file = (name: string) => ({ path: `${name}.toml`, resolved_path: null, exists: true })
+    let files: Record<string, ReturnType<typeof file>> = { default: file('default') }
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: { active: 'default', files },
+    }))
+    vi.mocked(getPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 1 } },
+    } as never)
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
+
+    // Another window deleted the only persisted profile, so `default` is the placeholder
+    // again and must not keep showing the content that was deleted.
+    files = {}
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
+    await vi.waitFor(() => expect(drafts.current.value?.draft).toEqual({}))
+  })
 })
