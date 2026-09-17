@@ -15,7 +15,11 @@ import {
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
-import { pendingReloadRevision, setPendingReload } from '@/utils/pendingReload'
+import {
+  pendingReloadPlugins,
+  pendingReloadRevision,
+  setPendingReload,
+} from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -296,16 +300,18 @@ export const usePluginStore = defineStore('plugin', () => {
 
   async function reloadAll(options: PluginMutationOptions = {}) {
     // The bulk endpoint restarts every plugin it reports back, so those hosts match their
-    // saved configuration again and the flags have to go with it. The revisions are captured
+    // saved configuration again and the flags have to go with it. Capture the revisions
     // first for the same reason as the single-plugin path: a profile write that lands during
-    // the request describes a configuration the restarted host cannot have read.
-    const revisions = new Map(
-      plugins.value.map((plugin) => [plugin.id, pendingReloadRevision(plugin.id)])
-    )
+    // the request describes a configuration the restarted host cannot have read. The flagged
+    // plugins are included because the server restarts hosts from its own running set, which
+    // can be ahead of (or behind) the list this window last loaded.
+    const baseline = [...new Set([...plugins.value.map((p) => p.id), ...pendingReloadPlugins()])]
+    const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
     const result = await reloadAllPlugins()
     for (const pluginId of result.reloaded) {
       const revision = revisions.get(pluginId)
-      // Without a baseline there is nothing to compare against, so the warning stays.
+      // Only ids that were neither listed nor flagged are skipped, and for those there is no
+      // flag to clear anyway.
       if (revision !== undefined) setPendingReload(pluginId, false, revision)
     }
     if (options.refresh !== false) {

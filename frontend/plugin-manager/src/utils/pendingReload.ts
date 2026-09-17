@@ -75,6 +75,11 @@ export function pendingReloadRevision(pluginId: string): number {
   return revisions.get(pluginId) ?? 0
 }
 
+/** The plugins this window currently flags, so a caller can capture their revisions. */
+export function pendingReloadPlugins(): string[] {
+  return [...flags]
+}
+
 /**
  * Records or clears the flag. `expectedRevision` is what a start or reload captured before
  * its request: a save that landed since then describes a configuration that host cannot

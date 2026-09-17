@@ -140,6 +140,26 @@ describe('plugin store reload bookkeeping', () => {
     expect(hasPendingReload('other')).toBe(true)
   })
 
+  it('clears a flagged plugin that the list snapshot does not know about', async () => {
+    setPendingReload('demo', true)
+    // The server restarts hosts from its own running set, so its answer can name a plugin
+    // this window's list has not loaded (or has fallen behind on).
+    vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
+    vi.mocked(reloadAllPlugins).mockResolvedValue({
+      success: true,
+      reloaded: ['demo'],
+      failed: [],
+      skipped: [],
+      message: '',
+    })
+    const store = usePluginStore()
+    await store.fetchPlugins()
+
+    await store.reloadAll({ refresh: false })
+
+    expect(hasPendingReload('demo')).toBe(false)
+  })
+
   it('keeps a flag that a profile write claimed during a bulk reload', async () => {
     setPendingReload('demo', true)
     vi.mocked(getPlugins).mockResolvedValue({ plugins: [{ id: 'demo' }] as never, message: '' })
