@@ -28,10 +28,12 @@
       <template v-if="adapters.length > 0">
         <div class="nav-divider" />
         <span class="nav-group-label">{{ $t('nav.adapters') }}</span>
+        <!-- id 要编码：插件 id 不保证 URL 安全，`#` / `?` / `/` 会让下面这条路由匹配不上
+             或被拆成 hash/query，点进去就是空白页。-->
         <router-link
           v-for="adapter in adapters"
           :key="adapter.id"
-          :to="`/adapter/${adapter.id}/ui`"
+          :to="`/adapter/${encodeURIComponent(adapter.id)}/ui`"
           custom
           v-slot="{ isActive, navigate }"
         >

@@ -17,6 +17,9 @@ import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test
 
 const ADAPTER_ID = 'adapter_demo'
 const NO_UI_ID = 'adapter_without_ui'
+// 手改 plugin.toml 就能塞进带 `#` 的 id（schema 里那个 pattern 只进 warning，不阻断注册），
+// 所以这条路径必须撑得住。
+const HASH_ADAPTER_ID = 'adapter#demo'
 
 async function stubAdapterApis(page: Page, opts: { withSurface: boolean }) {
   await stubCorePluginManagerApis(page)
@@ -97,4 +100,64 @@ test('确实没有任何界面声明的适配器才显示"没有自定义界面"
   expect(await page.locator('.hosted-surface-frame').count(), '无界面却渲染了 frame').toBe(0)
   await expect(page.locator('.plugin-ui-frame')).toBeVisible()
   await expect(page.locator('.no-ui-overlay'), '真无界面时没有给出提示').toBeVisible()
+})
+
+/**
+ * 侧栏是进适配器页的唯一入口，它拼的 `to` 必须是编码过的 id。
+ *
+ * 这条用例走的是真路由：编码后的 `%23` 要能被 `adapter/:id/ui` 匹配上、并解回
+ * `adapter#demo`，否则要么停在一个 "id 对不上" 的空页上（左边渲染 EmptyState），
+ * 要么被当成 URL 片段、路由根本匹配不上。断言落在"打开的是哪个适配器"上，
+ * 而不是 URL 字符串怎么写 —— 后者取决于 vue-router 的拼写习惯。
+ */
+test('侧栏里 id 带 # 的适配器，编码后仍进到正确的适配器页', async ({ page }) => {
+  await stubCorePluginManagerApis(page)
+  await page.route('**/plugins?*', (route) =>
+    route.fulfill({
+      json: {
+        plugins: [
+          {
+            id: HASH_ADAPTER_ID,
+            name: '哈希适配器',
+            description: 'id 里带 # 的适配器。',
+            version: '1.0.0',
+            type: 'adapter',
+            status: 'running',
+          },
+        ],
+        message: '',
+      },
+    }),
+  )
+  await page.route('**/plugin/status', (route) =>
+    route.fulfill({ json: { plugins: { [HASH_ADAPTER_ID]: 'running' } } }),
+  )
+  await page.route('**/plugin/*/ui-info', (route) =>
+    route.fulfill({ json: { has_ui: false, ui_path: null, static_dir: null, static_files: [] } }),
+  )
+  await page.route(/\/plugin\/[^/]+\/surfaces/, (route) =>
+    route.fulfill({
+      json: {
+        surfaces: [
+          { id: 'main', kind: 'panel', mode: 'static', title: 'Adapter', url: '/stub-adapter.html', available: true },
+        ],
+        warnings: [],
+      },
+    }),
+  )
+  await page.route('**/stub-adapter.html', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<html><body>adapter panel</body></html>' }),
+  )
+
+  // 从侧栏点进去，而不是直接 goto 适配器页：这条路由链接就是被修的地方。
+  await page.goto(`${PREVIEW_ORIGIN}/ui/`, { waitUntil: 'load' })
+  await page.evaluate(() => document.getElementById('plugin-manager-boot-shell')?.remove())
+
+  const adapterItem = page.locator('.sidebar .nav-item--sub', { hasText: '哈希适配器' })
+  await expect(adapterItem).toBeVisible({ timeout: 15_000 })
+  await adapterItem.click()
+
+  await expect(page.locator('.adapter-ui')).toBeVisible({ timeout: 15_000 })
+  expect(await page.locator('.adapter-ui').innerText(), '打开的不是这个适配器').toContain('哈希适配器')
+  expect(await page.locator('.no-ui-overlay').count(), 'surface 没渲染出来').toBe(0)
 })

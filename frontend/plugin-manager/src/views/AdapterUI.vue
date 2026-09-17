@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
@@ -89,7 +89,11 @@ function goBack() {
 }
 
 function openLogsTab() {
-  router.push({ path: `/plugins/${adapterId.value}`, query: { tab: 'logs' } })
+  // id 必须编码后再进路径段：插件 id 不保证 URL 安全，不编码时 `#` 会被路由拆成 hash、
+  // `?` 会被拆成 query，日志页就会开到另一个插件上（`/` 更是连 :id 都匹配不上）。
+  // 同一份 id 在别处都是编码过的：PluginList 跳详情页、HostedSurfaceFrame 拼静态 UI 地址、
+  // api/plugins 里每一处都是 —— 这里漏了。
+  router.push({ path: `/plugins/${encodeURIComponent(adapterId.value)}`, query: { tab: 'logs' } })
 }
 
 const surfaceFrameRef = ref<InstanceType<typeof HostedSurfaceFrame> | null>(null)
@@ -114,16 +118,24 @@ function onSurfaceMessage(data: unknown) {
 
 const primaryPanelSurface = computed(() => pickPrimaryPanelSurface(surfaces.value))
 
+// 请求序号：loadSurfaces() 现在会被语言切换重复触发，先发的慢请求后回来会盖掉后发的结果
+//（详情页 fetchSurfaces 里的 currentSurfaceLoadId 是同一个理由）。
+let surfaceLoadId = 0
+
 async function loadSurfaces() {
-  surfacesLoaded.value = false
+  const loadId = ++surfaceLoadId
   try {
     const info = await getPluginUiSurfaceInfo(adapterId.value, locale.value)
+    if (loadId !== surfaceLoadId) return
     surfaces.value = info.surfaces
   } catch {
+    if (loadId !== surfaceLoadId) return
     // 取不到 surface 不是错误：老插件本来就只有 static/index.html，交给 PluginUIFrame。
     surfaces.value = []
   } finally {
-    surfacesLoaded.value = true
+    // 只有最后一次请求有资格结束"还没拿到 surface"这个状态。重取时不把 surfacesLoaded
+    // 打回 false，免得面板先塌成"没有界面"再弹回来。
+    if (loadId === surfaceLoadId) surfacesLoaded.value = true
   }
 }
 
@@ -140,6 +152,23 @@ onMounted(async () => {
     }
   }
   await loadSurfaces()
+})
+
+/**
+ * 语言换了要把 surface 列表重取一次。
+ *
+ * 面板的"正文"不归这里管：HostedSurfaceFrame 自己 watch locale，带着新 locale 去
+ * /hosted-ui/source 取文档，按 locale 挑 `quickstart.zh-TW.md` 这类同语族文件是那边的事。
+ * 这里补的是列表自身携带、并且会被写进面板的那一项 —— /surfaces 的 locale 只影响 surface
+ * 的 title（后端 `_surface_from_mapping` → resolve_i18n_refs），而 markdown surface 的 title
+ * 会被 buildMarkdownDocument 写进文档的 `<h1>`，iframe 的 title 属性也用它。少了这道 watch，
+ * 切语言后看到的是"新语言的正文 + 旧语言的标题"。详情页对 locale 有 watch，正是同一个理由。
+ *
+ * 不用 watch adapterId：适配器之间切换会换 route.path，AppLayout 的 router-view 按 path
+ * 打了 key，组件整个重建，onMounted 会重跑。
+ */
+watch(locale, () => {
+  void loadSurfaces()
 })
 </script>
 
