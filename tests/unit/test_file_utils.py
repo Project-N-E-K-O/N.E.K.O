@@ -146,6 +146,7 @@ def test_directory_flush_does_not_block_when_directory_becomes_fifo(tmp_path, mo
             saved.rename(victim)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not open directories for fsync")
 def test_directory_close_error_does_not_report_published_write_as_failed(tmp_path, monkeypatch):
     target = tmp_path / "state.json"
     real_open = os.open

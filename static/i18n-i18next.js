@@ -31,7 +31,7 @@
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 本版本包含主动搭话与存储位置迁移新增的 key；递增版本让 Electron、Docker 等
     // 长期缓存重新拉取完整语言包，避免设置页把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-09-15-storage-location-migration';
+    const LOCALE_VERSION = '2026-09-17-storage-preflight-recovery';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
