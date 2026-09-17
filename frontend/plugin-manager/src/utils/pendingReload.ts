@@ -5,36 +5,31 @@
 // per-plugin flag therefore records that the running plugin may not match the
 // persisted configuration yet.
 //
+// Each plugin owns its own storage key so that concurrent windows writing different
+// plugins cannot overwrite each other's flag, and so a reserved plugin id such as
+// "__proto__" is just part of a key rather than an object property.
+//
 // Writes are applied in arrival order: the last operation to report wins. A reload
 // that finishes before an in-flight save may have read the pre-save configuration,
 // so the later save still records the flag — a spurious hint costs one redundant
 // reload, while a missing hint silently leaves the host on a stale configuration.
-// Storage is authoritative while it works, so clearing it clears the flag; the
-// in-memory mirror only serves contexts where storage is missing or failing.
+// Storage is authoritative while it works; the in-memory sets only serve contexts
+// where storage is unavailable or where a write could not be persisted.
 
-const STORAGE_KEY = 'neko-plugin-config-pending-reload'
+const KEY_PREFIX = 'neko-plugin-config-pending-reload:'
 
-type PendingRecord = Record<string, true>
+export type PendingSource = 'local' | 'external'
+type PendingListener = (pluginId: string, pending: boolean, source: PendingSource) => void
 
-const inMemory = new Map<string, true>()
-const listeners = new Set<(pluginId: string, pending: boolean) => void>()
-let storageWritable = true
-// Last storage content this window saw, used to diff changes made elsewhere.
-let lastStored: PendingRecord = {}
+const listeners = new Set<PendingListener>()
+// Mirrors the flag when storage is missing, and holds flags whose write was rejected.
+const inMemory = new Set<string>()
+const unpersisted = new Set<string>()
+// Flags this window believes are set in storage, used to report `storage.clear()`.
+const lastKnown = new Set<string>()
 let storageListenerAttached = false
 
-const hasOwn = (value: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(value, key)
-
-// A plugin id may literally be "__proto__", so pending keys are always written as
-// own data properties instead of through assignment.
-function setOwn(target: object, key: string, value: true): void {
-  Object.defineProperty(target, key, {
-    value,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  })
-}
+const keyFor = (pluginId: string) => KEY_PREFIX + pluginId
 
 function storage(): Storage | undefined {
   try {
@@ -44,66 +39,49 @@ function storage(): Storage | undefined {
   }
 }
 
-function parseRecord(raw: string | null): PendingRecord {
-  if (!raw) return {}
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? (parsed as PendingRecord) : {}
-  } catch {
-    // Corrupt content means "nothing pending" rather than "unavailable".
-    return {}
-  }
-}
-
-/** Returns the stored record, or null when storage is unusable. */
-function readStored(): PendingRecord | null {
+/** Returns the stored flag, or null when storage cannot be read. */
+function readStored(pluginId: string): boolean | null {
   const store = storage()
-  if (!store || !storageWritable) return null
-  let raw: string | null
+  if (!store) return null
   try {
-    raw = store.getItem(STORAGE_KEY)
+    return store.getItem(keyFor(pluginId)) !== null
   } catch {
-    storageWritable = false
     return null
   }
-  lastStored = parseRecord(raw)
-  return lastStored
 }
 
-function writeStored(pluginId: string, pending: boolean): void {
-  const store = storage()
-  if (!store || !storageWritable) return
-  try {
-    const record = readStored() ?? {}
-    if (pending) setOwn(record, pluginId, true)
-    else delete record[pluginId]
-    store.setItem(STORAGE_KEY, JSON.stringify(record))
-    lastStored = record
-  } catch {
-    // Quota or policy failures must not lose the flag: from here on the mirror is
-    // the source of truth for this session.
-    storageWritable = false
+function rememberLocal(pluginId: string, pending: boolean): void {
+  if (pending) {
+    inMemory.add(pluginId)
+    lastKnown.add(pluginId)
+  } else {
+    inMemory.delete(pluginId)
+    lastKnown.delete(pluginId)
   }
 }
 
-function notify(pluginId: string, pending: boolean): void {
-  if (pending) inMemory.set(pluginId, true)
-  else inMemory.delete(pluginId)
-  for (const listener of listeners) listener(pluginId, pending)
+function notify(pluginId: string, pending: boolean, source: PendingSource): void {
+  for (const listener of listeners) listener(pluginId, pending, source)
 }
 
-// Another renderer window (or tab) changed the shared flag. `storage` only fires in
-// the windows that did not write, so this is exactly the cross-window path.
-function handleStorageEvent(event: StorageEvent): void {
-  if (event.key && event.key !== STORAGE_KEY) return
-  const previous = lastStored
-  const next = parseRecord(event.newValue)
-  lastStored = next
-  for (const pluginId of new Set([...Object.keys(previous), ...Object.keys(next)])) {
-    const before = hasOwn(previous, pluginId)
-    const after = hasOwn(next, pluginId)
-    if (before !== after) notify(pluginId, after)
+// Another renderer window (or tab) changed a flag. `storage` only fires in the
+// windows that did not write, so this is exactly the cross-window path.
+function handleStorageEvent(event: Event): void {
+  const { key, newValue } = event as StorageEvent
+  if (key === null) {
+    // storage.clear() removed every flag; report the ones this window knew about.
+    const cleared = [...lastKnown]
+    lastKnown.clear()
+    inMemory.clear()
+    for (const pluginId of cleared) notify(pluginId, false, 'external')
+    return
   }
+  if (!key?.startsWith(KEY_PREFIX)) return
+  const pluginId = key.slice(KEY_PREFIX.length)
+  if (!pluginId) return
+  const pending = newValue !== null
+  rememberLocal(pluginId, pending)
+  notify(pluginId, pending, 'external')
 }
 
 function attachStorageListener(): void {
@@ -111,7 +89,13 @@ function attachStorageListener(): void {
   try {
     globalThis.addEventListener?.('storage', handleStorageEvent)
     storageListenerAttached = true
-    readStored()
+    // Seed the known set so a later clear() reports the right plugins.
+    const store = storage()
+    if (!store) return
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
+      if (key?.startsWith(KEY_PREFIX)) lastKnown.add(key.slice(KEY_PREFIX.length))
+    }
   } catch {
     // Listening is best effort; the flag still works within this window.
   }
@@ -129,21 +113,35 @@ function detachStorageListenerIfUnused(): void {
 
 export function hasPendingReload(pluginId: string): boolean {
   if (!pluginId) return false
-  const record = readStored()
-  return record ? hasOwn(record, pluginId) : inMemory.has(pluginId)
+  const stored = readStored(pluginId)
+  if (stored === null) return inMemory.has(pluginId)
+  return stored || unpersisted.has(pluginId)
 }
 
 export function setPendingReload(pluginId: string, pending: boolean): boolean {
   if (!pluginId) return false
-  writeStored(pluginId, pending)
-  notify(pluginId, pending)
+  const store = storage()
+  let persisted = false
+  if (store) {
+    try {
+      if (pending) store.setItem(keyFor(pluginId), '1')
+      else store.removeItem(keyFor(pluginId))
+      persisted = true
+    } catch {
+      // A rejected write must not lose the flag: the mirror carries it instead.
+      persisted = false
+    }
+  }
+  if (persisted) unpersisted.delete(pluginId)
+  else if (pending) unpersisted.add(pluginId)
+  else unpersisted.delete(pluginId)
+  rememberLocal(pluginId, pending)
+  notify(pluginId, pending, 'local')
   return true
 }
 
 /** Observes flag changes made anywhere, including other windows and the store. */
-export function subscribePendingReload(
-  listener: (pluginId: string, pending: boolean) => void
-): () => void {
+export function subscribePendingReload(listener: PendingListener): () => void {
   listeners.add(listener)
   attachStorageListener()
   return () => {

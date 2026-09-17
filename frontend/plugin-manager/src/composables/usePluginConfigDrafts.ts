@@ -286,8 +286,12 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
 
   // A reload or start performed elsewhere (detail header, list, context menu) must
   // clear the warning on an already mounted editor.
-  releasePendingSubscription = subscribePendingReload((changedId, pending) => {
-    if (changedId === pluginId.value) pendingApplication.value = pending
+  releasePendingSubscription = subscribePendingReload((changedId, pending, source) => {
+    if (changedId !== pluginId.value) return
+    pendingApplication.value = pending
+    // Another window saved or activated a profile for this plugin, so the cached
+    // profile state is stale; refresh it while keeping local drafts.
+    if (source === 'external') void loadAll()
   })
 
   return {
