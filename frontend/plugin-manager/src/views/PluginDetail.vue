@@ -202,6 +202,7 @@ import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 import {
   PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
+  SINGLE_HOSTED_PANEL_REFRESH_PASS,
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
@@ -209,9 +210,6 @@ import {
   pickPrimaryPanelSurface,
   renderablePanelSurfaces as selectRenderablePanelSurfaces,
 } from '@/utils/pluginSurfaces'
-
-/** One immediate pass, no retries. */
-const SINGLE_REFRESH_PASS = [0] as const
 
 const route = useRoute()
 const router = useRouter()
@@ -474,7 +472,7 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
     // A plugin that emits this is demonstrably alive and has already finished
     // the mutation it is reporting, so one pass is enough — retrying would
     // just triple the IPC round trips into its process.
-    void refreshHostedSurfaceContexts(SINGLE_REFRESH_PASS)
+    void refreshHostedSurfaceContexts(SINGLE_HOSTED_PANEL_REFRESH_PASS)
     return
   }
   // Hosted surface messages have already been source/origin checked by the

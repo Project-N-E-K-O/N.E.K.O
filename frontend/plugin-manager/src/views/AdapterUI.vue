@@ -61,6 +61,10 @@ import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { pickPrimaryPanelSurface } from '@/utils/pluginSurfaces'
+import {
+  SINGLE_HOSTED_PANEL_REFRESH_PASS,
+  refreshHostedPanelFrames,
+} from '@/views/pluginDetailHostedPanelRefresh'
 import type { PluginUiSurface } from '@/types/api'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 
@@ -95,11 +99,17 @@ const surfaceFrameRef = ref<InstanceType<typeof HostedSurfaceFrame> | null>(null
  * HostedSurfaceFrame 自己不处理这个类型，只把它转发给页面（它内部处理的是
  * console / open-logs / open-external / request 那几类），详情页也是这么接的。
  * 不接的话，在适配器页操作 MCP 服务器后，面板上的列表会一直是旧数据。
+ *
+ * 走详情页同一个 best-effort 通道而不是裸调 refreshContext()：后者会抛（插件正在
+ * 重启时 /hosted-ui/context 会失败），裸 void 调用就是一个未捕获的 promise
+ * rejection，而 refreshHostedPanelFrames 内部用 allSettled 保证永不 reject。
+ * 这个页面只有一个面板，所以是单次 pass。
  */
 function onSurfaceMessage(data: unknown) {
-  if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
-    void surfaceFrameRef.value?.refreshContext()
-  }
+  if (!data || typeof data !== 'object' || (data as { type?: unknown }).type !== 'neko-plugin-context-invalidated') return
+  const frame = surfaceFrameRef.value
+  if (!frame) return
+  void refreshHostedPanelFrames([frame], SINGLE_HOSTED_PANEL_REFRESH_PASS)
 }
 
 const primaryPanelSurface = computed(() => pickPrimaryPanelSurface(surfaces.value))
