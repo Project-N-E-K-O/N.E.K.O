@@ -17,6 +17,10 @@ interface ProfileDraft {
   loaded: boolean
   loading: boolean
   error: string | null
+  // True when this record is the placeholder `default`, which has no stored profile behind
+  // it: it leaves the profile list as soon as the first profile is created, but that is not
+  // a deletion, so its draft (unsaved edits included) must not be dropped with it.
+  virtual: boolean
 }
 
 export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
@@ -91,20 +95,20 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     if (records.get(name)?.loaded) return
     if (requests.has(name)) return requests.get(name)!
     const id = pluginId.value,
-      epoch = generation
+      epoch = generation,
+      isVirtual = virtualDefault(name)
     const record = reactive<ProfileDraft>({
       original: {},
       draft: {},
       loaded: false,
       loading: true,
       error: null,
+      virtual: isVirtual,
     })
     records.set(name, record)
     const request = (async () => {
       try {
-        const config = virtualDefault(name)
-          ? {}
-          : (await api.getPluginProfileConfig(id, name)).config || {}
+        const config = isVirtual ? {} : (await api.getPluginProfileConfig(id, name)).config || {}
         if (!valid(id, epoch) || records.get(name) !== record) return
         record.original = deepClone(config)
         record.draft = deepClone(config)
@@ -132,7 +136,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       epoch = generation,
       version = ++refreshVersion
     for (const [name, record] of [...records]) {
-      if (!record.loaded || virtualDefault(name)) continue
+      // Only a profile that still exists has content to refresh; the placeholder `default`
+      // and profiles deleted elsewhere have no stored file to read.
+      if (!record.loaded || !persistedNames.value.includes(name)) continue
       try {
         const config = (await api.getPluginProfileConfig(id, name)).config || {}
         // Drop a response that a newer refresh (or a full reload) already superseded.
@@ -145,6 +151,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
         record.draft = localChanges.length
           ? applyConfigChanges(fresh, localChanges)
           : deepClone(fresh)
+        // It is backed by a stored profile now, so later deletions may prune it.
+        record.virtual = false
       } catch {
         // Keep the cached content when the refresh fails.
       }
@@ -176,12 +184,15 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       effective.value = effectiveResult.config || {}
       profiles.value = profileResult
       ready.value = true
-      // A profile deleted in another window is gone from the refreshed list, so drop
-      // its cached draft. The delete removes only the mapping, so reading that profile
-      // again can still return the orphaned file, and a record kept here would let a
-      // later profile of the same name display and save the content that was deleted.
-      for (const name of [...records.keys()]) {
-        if (!names.value.includes(name)) records.delete(name)
+      // A profile deleted in another window is gone from the refreshed list, so drop its
+      // cached draft and any in-flight load for that name. The delete removes only the
+      // mapping, so reading that profile again can still return the orphaned file, and a
+      // record kept here would let a later profile of the same name display and save the
+      // content that was deleted.
+      for (const [name, record] of [...records]) {
+        if (record.virtual || names.value.includes(name)) continue
+        records.delete(name)
+        requests.delete(name)
       }
       configPath.value = baseResult.config_path || effectiveResult.config_path
       lastModified.value = baseResult.last_modified || effectiveResult.last_modified

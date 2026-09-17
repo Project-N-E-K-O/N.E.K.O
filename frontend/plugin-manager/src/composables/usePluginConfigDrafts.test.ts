@@ -678,4 +678,89 @@ describe('config draft lifecycle', () => {
     expect(localStorage.getItem('neko-plugin-config-profile-revision:alpha')).not.toBeNull()
     expect(localStorage.getItem('neko-plugin-config-profile-revision:beta')).toBeNull()
   })
+
+  it('keeps an unsaved virtual default draft when a profile appears elsewhere', async () => {
+    const file = (name: string) => ({ path: `${name}.toml`, resolved_path: null, exists: true })
+    // Nothing is persisted yet, so the editor works on the placeholder `default`.
+    let files: Record<string, ReturnType<typeof file>> | null = null
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: files ? { active: 'prod', files } : null,
+    }))
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.selected.value).toBe('default')
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    expect(drafts.dirty.value).toBe(true)
+
+    // Another window created the first persisted profile. `default` leaves the list, but
+    // nothing deleted it, so the draft being typed into must not be dropped with it.
+    files = { prod: file('prod') }
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
+    await vi.waitFor(() => expect(drafts.selected.value).toBe('prod'))
+
+    expect(drafts.records.has('default')).toBe(true)
+    expect(drafts.anyDirty.value).toBe(true)
+  })
+
+  it('loads a recreated profile instead of reusing its pruned in-flight read', async () => {
+    const file = (name: string) => ({ path: `${name}.toml`, resolved_path: null, exists: true })
+    let files: Record<string, ReturnType<typeof file>> = {
+      prod: file('prod'),
+      staging: file('staging'),
+    }
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: { active: 'prod', files },
+    }))
+    const abandoned = deferred<unknown>()
+    let hangNext = false
+    vi.mocked(getPluginProfileConfig).mockImplementation(async () => {
+      if (hangNext) {
+        hangNext = false
+        await abandoned.promise
+      }
+      return {
+        plugin_id: 'alpha',
+        profile: { name: 'staging', path: 'staging.toml', resolved_path: null, exists: true },
+        config: { cache: { ttl: 1 } },
+      } as never
+    })
+
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    // The read for `staging` never answers.
+    hangNext = true
+    void drafts.selectProfile('staging')
+    await settle()
+    expect(drafts.records.has('staging')).toBe(true)
+
+    // Another window deleted it while that read was still in flight.
+    files = { prod: file('prod') }
+    window.dispatchEvent(crossWindowProfileWrite('alpha'))
+    await vi.waitFor(() => expect(drafts.records.has('staging')).toBe(false))
+
+    // Recreating it has to start a new read: reusing the abandoned promise would select
+    // the profile with no record behind it at all.
+    files = { prod: file('prod'), staging: file('staging') }
+    await drafts.loadAll()
+    void drafts.selectProfile('staging')
+    await settle()
+    expect(drafts.current.value?.loaded).toBe(true)
+
+    // And the abandoned read must not overwrite the recreated record when it answers.
+    abandoned.resolve({ config: { cache: { ttl: 99 } } })
+    await settle()
+    expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
+  })
 })
