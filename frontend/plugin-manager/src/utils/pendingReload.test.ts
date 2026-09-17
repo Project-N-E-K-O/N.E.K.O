@@ -139,6 +139,22 @@ describe('pending reload storage', () => {
     release()
   })
 
+  it('migrates a legacy aggregate record once', () => {
+    // Written as text: an object literal `__proto__` key would set the prototype
+    // instead of an own property, and JSON.parse is what created the record.
+    localStorage.setItem(
+      'neko-plugin-config-pending-reload',
+      '{"alpha":true,"beta":false,"__proto__":true}'
+    )
+    const release = subscribePendingReload(() => {})
+    expect(hasPendingReload('alpha')).toBe(true)
+    expect(hasPendingReload('beta')).toBe(false)
+    expect(hasPendingReload('__proto__')).toBe(true)
+    // The legacy record is consumed so it cannot be migrated twice.
+    expect(localStorage.getItem('neko-plugin-config-pending-reload')).toBeNull()
+    release()
+  })
+
   it('ignores storage events for unrelated keys', () => {
     const seen: Array<[string, boolean, string]> = []
     const release = subscribePendingReload((pluginId, pending, source) =>

@@ -17,6 +17,10 @@
 // where storage is unavailable or where a write could not be persisted.
 
 const KEY_PREFIX = 'neko-plugin-config-pending-reload:'
+// An earlier revision of this feature (never released) stored every plugin in one
+// JSON record under this key. It is migrated once so a browser that ran that
+// revision does not silently lose its pending flags.
+const LEGACY_KEY = 'neko-plugin-config-pending-reload'
 
 export type PendingSource = 'local' | 'external'
 type PendingListener = (pluginId: string, pending: boolean, source: PendingSource) => void
@@ -84,8 +88,29 @@ function handleStorageEvent(event: Event): void {
   notify(pluginId, pending, 'external')
 }
 
+// One-time best effort migration of the legacy aggregate record.
+function migrateLegacyRecord(): void {
+  const store = storage()
+  if (!store) return
+  try {
+    const raw = store.getItem(LEGACY_KEY)
+    if (raw === null) return
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+      for (const [pluginId, pending] of Object.entries(parsed as Record<string, unknown>)) {
+        if (pluginId && pending === true && store.getItem(keyFor(pluginId)) === null)
+          store.setItem(keyFor(pluginId), '1')
+      }
+    }
+    store.removeItem(LEGACY_KEY)
+  } catch {
+    // A partially written or rejected migration leaves the current keys untouched.
+  }
+}
+
 function attachStorageListener(): void {
   if (storageListenerAttached) return
+  migrateLegacyRecord()
   try {
     globalThis.addEventListener?.('storage', handleStorageEvent)
     storageListenerAttached = true
