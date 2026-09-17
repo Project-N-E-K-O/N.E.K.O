@@ -62,6 +62,7 @@ import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
+import { PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
 import type { PluginUiSurface } from '@/types/api'
 
 const props = withDefaults(defineProps<{
@@ -71,7 +72,7 @@ const props = withDefaults(defineProps<{
   active?: boolean
   activationRevision?: number
 }>(), {
-  height: 'clamp(520px, calc(100vh - 220px), 1200px)',
+  height: PANEL_FILL_HEIGHT,
   active: false,
   activationRevision: 0,
 })
@@ -123,7 +124,7 @@ type HostedBridgeError = {
 
 const frameStyle = computed(() => ({
   height: props.height,
-  minHeight: props.height,
+  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const surfaceTitle = computed(() => {
