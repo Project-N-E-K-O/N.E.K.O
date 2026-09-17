@@ -377,6 +377,7 @@ const {
   anyDirty,
   canSave,
   pendingApplication,
+  setPendingApplication,
   virtualDefault,
   dirtyCount,
   selectProfile,
@@ -589,6 +590,7 @@ async function removeProfile() {
   const id = props.pluginId,
     name = selected.value
   if (!name || virtualDefault(name)) return
+  const wasActive = name === active.value
   try {
     await ElMessageBox.confirm(
       t('plugin.removeProfile.confirm', { name }) +
@@ -600,6 +602,9 @@ async function removeProfile() {
     await drafts.deleteProfile(name)
     if (!alive || id !== props.pluginId || name !== selected.value) return
     ElMessage.success(t('common.success'))
+    // The host keeps running the deleted profile's configuration, so keep a
+    // reload hint visible now that no selected profile can be pending.
+    if (wasActive) applicationNotice.value = t('plugins.configUi.pendingApply')
   } catch (err) {
     if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
       operationError.value = errorText(err)
@@ -641,7 +646,7 @@ async function reloadSaved() {
   try {
     await pluginStore.reload(id)
     if (!alive || id !== props.pluginId) return
-    pendingApplication.delete(name)
+    setPendingApplication(name, false)
     applicationNotice.value = t('plugins.configUi.reloadComplete')
     await drafts.loadAll()
   } catch (err) {

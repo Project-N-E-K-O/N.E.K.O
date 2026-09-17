@@ -35,6 +35,7 @@ afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup())
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  localStorage.clear()
 })
 async function mountEditor() {
   const host = document.createElement('main')
@@ -153,6 +154,16 @@ describe('profile deletion lifecycle', () => {
     expect(success).not.toHaveBeenCalled()
   })
 
+  it('keeps a reload hint after deleting the active profile', async () => {
+    const { deletion, host } = await startProfileDeletion()
+    deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.pendingApply'
+      )
+    )
+  })
+
   it('still displays a deletion error for the current plugin', async () => {
     const { deletion, host } = await startProfileDeletion()
     deletion.reject(new Error('Current plugin deletion failed'))
@@ -243,6 +254,14 @@ describe('saved profile hot updates', () => {
     expect(hotButton(host)).toBeDefined()
     expect(hotButton(host)?.disabled).toBe(false)
     expect(configApi.upsertPluginProfileConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the pending state after leaving and returning to the page', async () => {
+    const { unmount } = await savedEditor()
+    unmount()
+    const { host } = await mountEditor()
+    expect(hotButton(host)).toBeDefined()
+    expect(hotButton(host)?.disabled).toBe(false)
   })
 
   it.each(['unmount', 'switch'] as const)('does not apply a response after %s', async (action) => {

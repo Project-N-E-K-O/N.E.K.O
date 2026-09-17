@@ -16,6 +16,33 @@ interface ProfileDraft {
   error: string | null
 }
 
+// Pending application must outlive the editor: the profile endpoint only persists
+// the mapping, so a saved or activated profile stays unapplied until the plugin
+// is reloaded. Storage is per plugin and best-effort; the in-memory set still
+// drives the current session when storage is unavailable.
+const PENDING_STORAGE_KEY = 'neko-plugin-config-pending-application'
+
+function readStoredPending(): Record<string, string[]> {
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string[]>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredPending(pluginId: string, names: string[]): void {
+  try {
+    const stored = readStoredPending()
+    if (names.length) stored[pluginId] = names
+    else delete stored[pluginId]
+    globalThis.localStorage?.setItem(PENDING_STORAGE_KEY, JSON.stringify(stored))
+  } catch {
+    // Best effort only.
+  }
+}
+
 export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const base = ref<ConfigObject>({})
   const effective = ref<ConfigObject>({})
@@ -72,6 +99,11 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
   const valid = (id: string, epoch: number) => id === pluginId.value && epoch === generation
   const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+  function setPendingApplication(name: string, pending: boolean) {
+    if (pending) pendingApplication.add(name)
+    else pendingApplication.delete(name)
+    writeStoredPending(pluginId.value, [...pendingApplication])
+  }
   async function loadProfile(name: string): Promise<void> {
     if (records.get(name)?.loaded) return
     if (requests.has(name)) return requests.get(name)!
@@ -174,7 +206,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       if (!valid(id, epoch)) return null
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
-      pendingApplication.add(name)
+      setPendingApplication(name, true)
       await loadAll()
       return valid(id, epoch) ? name : null
     } catch (err) {
@@ -209,7 +241,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       await api.deletePluginProfileConfig(id, name)
       if (!valid(id, epoch)) return
       records.delete(name)
-      pendingApplication.delete(name)
+      setPendingApplication(name, false)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -223,7 +255,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       const result = await api.setPluginActiveProfile(id, name)
       if (!valid(id, epoch)) return
       profiles.value = result
-      if (active.value) pendingApplication.add(active.value)
+      if (active.value) setPendingApplication(active.value, true)
       await loadAll()
     } finally {
       if (valid(id, epoch)) saving.value = false
@@ -238,6 +270,8 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       records.clear()
       requests.clear()
       pendingApplication.clear()
+      for (const pendingName of readStoredPending()[pluginId.value] || [])
+        pendingApplication.add(pendingName)
       selected.value = null
       profiles.value = null
       base.value = {}
@@ -274,6 +308,7 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     anyDirty,
     canSave,
     pendingApplication,
+    setPendingApplication,
     virtualDefault,
     dirtyCount,
     loadAll,
