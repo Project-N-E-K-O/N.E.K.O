@@ -205,6 +205,10 @@ import {
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
+import {
+  pickPrimaryPanelSurface,
+  renderablePanelSurfaces as selectRenderablePanelSurfaces,
+} from '@/utils/pluginSurfaces'
 
 /** One immediate pass, no retries. */
 const SINGLE_REFRESH_PASS = [0] as const
@@ -257,13 +261,10 @@ const authorDisplay = computed(() => {
   return author.name || author.email || ''
 })
 
-const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
-const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surface) => surface.available !== false))
-// `auto` is accepted by the manifest but does not have a renderer yet. Do not
-// let its placeholder hide a working legacy static UI.
-const renderablePanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => surface.mode !== 'auto'))
-const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
+// 面板的选取判据统一在 utils/pluginSurfaces.ts（适配器界面页用同一份，避免两侧分叉）。
+// `auto` 在 manifest 里合法但还没有渲染器，留着它只会用占位块挡住可用的 legacy 静态 UI。
+const renderablePanelSurfaces = computed(() => selectRenderablePanelSurfaces(surfaces.value))
 // Keep every renderable panel, including the host-generated static `main`
 // compatibility surface. The separate legacy "界面" tab is what gets hidden
 // when panels exist; filtering main here would make that page unreachable.
@@ -271,11 +272,7 @@ const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)
 // A generated static `main` is inserted before declared panels by the backend.
 // Keep it accessible in the list, but let generic `?tab=panel` entry points
 // select the first declared hosted panel when one exists.
-const defaultPanelSurface = computed(() => {
-  return availableDeclaredPanelSurfaces.value.find((surface) => surface.mode === 'hosted-tsx')
-    ?? availableDeclaredPanelSurfaces.value[0]
-    ?? displayedPanelSurfaces.value[0]
-})
+const defaultPanelSurface = computed(() => pickPrimaryPanelSurface(surfaces.value))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')

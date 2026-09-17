@@ -25,7 +25,23 @@
       </template>
 
       <div class="adapter-ui-container">
-        <PluginUIFrame :plugin-id="adapterId" />
+        <!--
+          界面来源有两条路：新式 surface（[plugin.ui] panel，hosted-tsx / markdown / static）
+          与老式静态 UI（static/index.html，由 PluginUIFrame 读 /ui-info 渲染）。
+          这里以前只走老式那条，于是只用 surface 声明界面的适配器（如 mcp_adapter）会被
+          误报"没有自定义界面"——而同一个插件在详情页渲染完全正常。现在按详情页同一判据
+          优先 surface，没有 surface 时回退老式，两者都没有才提示无界面。
+        -->
+        <HostedSurfaceFrame
+          v-if="primaryPanelSurface"
+          ref="surfaceFrameRef"
+          :plugin-id="adapterId"
+          :surface="primaryPanelSurface"
+          @open-logs="openLogsTab"
+          @message="onSurfaceMessage"
+        />
+        <!-- 等 surfaces 回来再决定回退，避免先闪一下"没有界面" -->
+        <PluginUIFrame v-else-if="surfacesLoaded" :plugin-id="adapterId" />
       </div>
     </el-card>
 
@@ -39,18 +55,24 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
+import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
+import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import { pickPrimaryPanelSurface } from '@/utils/pluginSurfaces'
+import type { PluginUiSurface } from '@/types/api'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const loading = ref(false)
 const loadError = ref<string | null>(null)
+const surfaces = ref<PluginUiSurface[]>([])
+const surfacesLoaded = ref(false)
 
 const adapterId = computed(() => route.params.id as string)
 
@@ -60,6 +82,39 @@ const adapter = computed(() => {
 
 function goBack() {
   router.push('/plugins')
+}
+
+function openLogsTab() {
+  router.push({ path: `/plugins/${adapterId.value}`, query: { tab: 'logs' } })
+}
+
+const surfaceFrameRef = ref<InstanceType<typeof HostedSurfaceFrame> | null>(null)
+
+/**
+ * 面板主动报告“我改了东西，上下文旧了”时要重新拉一次 context。
+ * HostedSurfaceFrame 自己不处理这个类型，只把它转发给页面（它内部处理的是
+ * console / open-logs / open-external / request 那几类），详情页也是这么接的。
+ * 不接的话，在适配器页操作 MCP 服务器后，面板上的列表会一直是旧数据。
+ */
+function onSurfaceMessage(data: unknown) {
+  if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
+    void surfaceFrameRef.value?.refreshContext()
+  }
+}
+
+const primaryPanelSurface = computed(() => pickPrimaryPanelSurface(surfaces.value))
+
+async function loadSurfaces() {
+  surfacesLoaded.value = false
+  try {
+    const info = await getPluginUiSurfaceInfo(adapterId.value, locale.value)
+    surfaces.value = info.surfaces
+  } catch {
+    // 取不到 surface 不是错误：老插件本来就只有 static/index.html，交给 PluginUIFrame。
+    surfaces.value = []
+  } finally {
+    surfacesLoaded.value = true
+  }
 }
 
 onMounted(async () => {
@@ -74,6 +129,7 @@ onMounted(async () => {
       loading.value = false
     }
   }
+  await loadSurfaces()
 })
 </script>
 
