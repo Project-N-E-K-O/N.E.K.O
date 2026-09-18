@@ -158,8 +158,20 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     try {
       if (pluginStore.plugins.length === 0) await pluginStore.fetchPlugins()
       if (pluginStore.plugins.length === 0) {
-        checkFailed.value = !!pluginStore.error
-        updateLog.warn('check skipped: plugin list unavailable', pluginStore.error)
+        if (pluginStore.error) {
+          // Fetch failed: keep the previous snapshot rather than pretending
+          // nothing is installed.
+          checkFailed.value = true
+          updateLog.warn('check skipped: plugin list unavailable', pluginStore.error)
+          return
+        }
+        // A successful fetch with no plugins at all: that is a real no-target
+        // result, so the stale candidate list has to go — otherwise rows for
+        // uninstalled plugins stay clickable and the bridge rejects them.
+        candidates.value = []
+        unresolved.value = 0
+        checkFailed.value = false
+        updateLog.info('check done: no plugins installed')
         return
       }
 

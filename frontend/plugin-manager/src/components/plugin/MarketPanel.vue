@@ -442,7 +442,7 @@ async function runInstallTask(
 }
 
 async function handleCancelInstall(): Promise<void> {
-  const result = await installTask.cancel()
+  const result = await installTask.cancel('panel')
   if (result === 'unavailable') ElMessage.warning(t('market.cancelInstallUnavailable'))
   else if (result === 'failed') ElMessage.warning(resolveApiErrorMessage(null, 'market.cancelInstallUnavailable'))
 }

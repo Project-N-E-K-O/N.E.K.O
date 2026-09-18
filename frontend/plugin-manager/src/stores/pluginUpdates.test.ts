@@ -192,6 +192,23 @@ describe('plugin updates store — check', () => {
     expect(store.unresolved).toBe(1)
   })
 
+  it('clears stale candidates when the list is successfully empty', async () => {
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+    const store = usePluginUpdatesStore()
+    await store.check()
+    expect(store.candidates).toHaveLength(1)
+
+    // Everything got uninstalled. `error` stays null, so this is a real
+    // no-target result rather than a failed fetch.
+    setPlugins([])
+    await store.check({ force: true })
+
+    expect(store.candidates).toEqual([])
+    expect(store.unresolved).toBe(0)
+    expect(store.checkFailed).toBe(false)
+  })
+
   it('never touches the market when nothing was installed from it', async () => {
     setPlugins([plugin('delta', { source: 'builtin', source_detail: null })])
 

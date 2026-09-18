@@ -514,9 +514,19 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     }
   }
 
-  async function cancel(): Promise<'ok' | 'unavailable' | 'failed'> {
+  async function cancel(
+    requester?: MarketInstallOwner,
+  ): Promise<'ok' | 'unavailable' | 'failed'> {
     const id = taskId.value
     if (!id || done.value || cancelling.value) return 'unavailable'
+    // Same ownership rule as `dismiss`: a surface may only touch its own task.
+    if (requester && owner.value && requester !== owner.value) {
+      log.info('cancel ignored: task belongs to another surface', {
+        owner: owner.value,
+        requester,
+      })
+      return 'unavailable'
+    }
 
     cancelling.value = true
     try {

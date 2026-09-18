@@ -519,6 +519,22 @@ describe('market install task store — cancel', () => {
     await p
   })
 
+  it('refuses to cancel a task owned by the other surface', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never,
+    )
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'float')
+    await tick()
+
+    await expect(store.cancel('panel')).resolves.toBe('unavailable')
+    await expect(store.cancel('float')).resolves.toBe('ok')
+
+    store.dismiss()
+    await tick()
+    await p
+  })
+
   it('reports an unavailable cancel as such', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'replace', progress: 0.8 }) as never)
