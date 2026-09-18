@@ -92,6 +92,10 @@
       </ul>
     </div>
 
+    <div v-if="showProgress" class="update-float__progress-panel">
+      <MarketInstallProgress compact :show-version-transition="false" />
+    </div>
+
     <div v-if="showFooter" class="update-float__footer">
       <span class="update-float__progress">
         {{ updates.batchRunning
@@ -120,10 +124,21 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Close, Loading, Refresh, Right, Top } from '@element-plus/icons-vue'
 
+import MarketInstallProgress from '@/components/plugin/MarketInstallProgress.vue'
+import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { usePluginUpdatesStore, type MarketUpdateCandidate } from '@/stores/pluginUpdates'
 
 const { t } = useI18n()
 const updates = usePluginUpdatesStore()
+const installTask = useMarketInstallTaskStore()
+
+/** Only one install runs at a time, so one shared progress panel is enough. */
+const showProgress = computed(() => !!installTask.task)
+
+/** Once the popup is gone the task panel has nowhere to be shown. */
+watch(() => updates.popupOpen, (open) => {
+  if (!open && installTask.done) installTask.dismiss()
+})
 
 // ─── drag handle ────────────────────────────────────────────────────────────
 //
@@ -263,12 +278,14 @@ const showFooter = computed(() => (
 
 const canUpdateAll = computed(() => (
   !updates.busy
+  && !installTask.running
   && updates.candidates.some((candidate) => !candidate.needsManualUpgrade)
 ))
 
 function isItemDisabled(candidate: MarketUpdateCandidate): boolean {
   return candidate.needsManualUpgrade
     || updates.batchRunning
+    || installTask.running
     || candidate.status === 'updating'
 }
 
@@ -467,6 +484,11 @@ async function handleUpdateAll(): Promise<void> {
 
 .update-item__button {
   flex: none;
+}
+
+.update-float__progress-panel {
+  padding: 10px 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .update-float__footer {

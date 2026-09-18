@@ -13,15 +13,13 @@
  * date. Failures are logged (frontend console with the `[plugin-updates]`
  * prefix, plus structured `[market-catalog]` / `[market-update-check]` lines in
  * the plugin server log, visible under "Server Logs" in this panel).
- *
- * The bridge helpers below are intentionally a copy of the ones in
- * ``components/plugin/MarketPanel.vue``. Extracting a shared module would mean
- * touching that file's install flow, which is out of scope for this feature.
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { fetchMarketPlugin } from '@/api/market'
+import { fetchBridge, readErrorCode } from '@/api/marketBridge'
+import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { usePluginStore } from '@/stores/plugin'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
@@ -31,12 +29,6 @@ import type { PluginInstallSourceDetailMarket, PluginMeta } from '@/types/api'
 
 const LOG_PREFIX = '[plugin-updates]'
 const POPUP_FLAG_KEY = 'neko_plugin_update_popup_shown'
-const TOKEN_STORAGE_KEY = 'neko_bridge_token'
-const TASK_POLL_INTERVAL_MS = 800
-/** Consecutive 404s before we accept that the backend task is gone. */
-const TASK_MISSING_TOLERANCE = 15
-/** Stop tracking a task after this long; the install itself keeps running. */
-const TASK_TRACKING_TIMEOUT_MS = 10 * 60 * 1000
 
 export interface MarketUpdateCandidate {
   /** Local plugin.toml id — what the backend lock matches on. */
@@ -62,24 +54,6 @@ interface MarketUpdateTarget {
   currentVersion: string
 }
 
-interface MarketInstallTask {
-  status?: string
-  stage?: string
-  progress?: number
-  error?: string | null
-  error_code?: string | null
-}
-
-interface PollOutcome {
-  ok: boolean
-  errorKey?: string
-}
-
-/**
- * Backend rejections that mean "the float window cannot do this one safely".
- * All of them are recoverable from the Market page, where the user gets the
- * bound confirmation flow (builtin override / manual takeover).
- */
 const MANUAL_UPGRADE_CODES = new Set([
   'override_confirmation_required',
   'override_confirmation_changed',
@@ -118,14 +92,6 @@ function markPopupShown(): void {
   } catch {
     popupShownFallback = true
   }
-}
-
-function readErrorCode(body: unknown): string {
-  const record = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
-  const detail = record.detail && typeof record.detail === 'object'
-    ? record.detail as Record<string, unknown>
-    : null
-  return String(detail?.code || detail?.error_code || record.code || record.error_code || '')
 }
 
 /**
@@ -173,90 +139,6 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   )
   /** True while anything is in flight: a check, a single upgrade, or a batch. */
   const busy = computed(() => checking.value || batchRunning.value || updating.value)
-
-  // ─── bridge access (same-origin, token-authenticated write path) ──────────
-
-  const bridgeToken = ref('')
-  let inflightToken: Promise<string> | null = null
-
-  function readStoredToken(): string {
-    try {
-      return localStorage.getItem(TOKEN_STORAGE_KEY) || ''
-    } catch {
-      return ''
-    }
-  }
-
-  function storeToken(token: string): void {
-    try {
-      localStorage.setItem(TOKEN_STORAGE_KEY, token)
-    } catch {
-      // Non-fatal: the in-memory token still works for this session.
-    }
-  }
-
-  async function ensureBridgeToken(forceRefresh = false): Promise<string> {
-    if (forceRefresh) {
-      bridgeToken.value = ''
-      try {
-        localStorage.removeItem(TOKEN_STORAGE_KEY)
-      } catch {
-        // ignored
-      }
-    }
-    if (bridgeToken.value) return bridgeToken.value
-    if (inflightToken) return inflightToken
-
-    inflightToken = (async () => {
-      try {
-        const res = await fetch('/market/bridge-token')
-        if (res.ok) {
-          const data = await res.json().catch(() => null)
-          const token = String(data?.bridge_token || '')
-          if (token) {
-            bridgeToken.value = token
-            storeToken(token)
-          }
-        }
-      } catch (err) {
-        updateLog.warn('bridge token request failed', err)
-      }
-      if (!bridgeToken.value) bridgeToken.value = readStoredToken()
-      return bridgeToken.value
-    })()
-
-    try {
-      return await inflightToken
-    } finally {
-      inflightToken = null
-    }
-  }
-
-  async function fetchBridge(path: string, init?: RequestInit): Promise<Response | null> {
-    const token = await ensureBridgeToken()
-    if (!token) {
-      updateLog.warn('bridge request skipped: no token', path)
-      return null
-    }
-    const separator = path.includes('?') ? '&' : '?'
-    let res: Response
-    try {
-      res = await fetch(`${path}${separator}token=${encodeURIComponent(token)}`, init)
-    } catch (err) {
-      updateLog.warn('bridge request failed', path, err)
-      return null
-    }
-    if (res.status !== 403) return res
-
-    const freshToken = await ensureBridgeToken(true)
-    if (!freshToken) return res
-    try {
-      return await fetch(`${path}${separator}token=${encodeURIComponent(freshToken)}`, init)
-    } catch (err) {
-      updateLog.warn('bridge retry failed', path, err)
-      return null
-    }
-  }
 
   // ─── check ───────────────────────────────────────────────────────────────
 
@@ -372,53 +254,6 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     return false
   }
 
-  async function pollTask(taskId: string): Promise<PollOutcome> {
-    const deadline = Date.now() + TASK_TRACKING_TIMEOUT_MS
-    let consecutiveMissing = 0
-
-    for (;;) {
-      if (Date.now() > deadline) {
-        updateLog.warn('task tracking timed out', { taskId })
-        return { ok: false, errorKey: 'market.installTakingLonger' }
-      }
-
-      const res = await fetchBridge(`/market/tasks/${taskId}`)
-      if (!res) return { ok: false, errorKey: 'market.pairRequired' }
-      // A rejected token will not fix itself; bail out instead of polling a
-      // dead endpoint until the tracking deadline.
-      if (res.status === 401 || res.status === 403) {
-        updateLog.warn('task poll rejected', { taskId, status: res.status })
-        return { ok: false, errorKey: 'market.pairRequired' }
-      }
-
-      if (res.status === 404) {
-        consecutiveMissing += 1
-        if (consecutiveMissing >= TASK_MISSING_TOLERANCE) {
-          updateLog.warn('task disappeared before reaching a terminal state', { taskId })
-          return { ok: false, errorKey: 'market.installTaskLost' }
-        }
-      } else if (res.ok) {
-        consecutiveMissing = 0
-        const task = await res.json().catch(() => null) as MarketInstallTask | null
-        if (task?.status === 'completed') return { ok: true }
-        if (task?.status === 'failed') {
-          updateLog.warn('task failed', {
-            taskId,
-            errorCode: task.error_code,
-            error: task.error,
-          })
-          return { ok: false, errorKey: resolvePluginInstallErrorKey(task.error_code) }
-        }
-        if (task?.status === 'canceled') {
-          updateLog.warn('task canceled', { taskId })
-          return { ok: false, errorKey: 'market.installCancelled' }
-        }
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, TASK_POLL_INTERVAL_MS))
-    }
-  }
-
   async function finishCandidate(candidate: MarketUpdateCandidate): Promise<void> {
     updateLog.info('upgrade succeeded', {
       pluginId: candidate.pluginId,
@@ -511,7 +346,14 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         return true
       }
 
-      const outcome = await pollTask(String(body.task_id))
+      const outcome = await useMarketInstallTaskStore().track(String(body.task_id), {
+        pluginId: candidate.pluginId,
+        name: candidate.name,
+        mode: 'upgrade',
+        channel: candidate.channel,
+        fromVersion: candidate.currentVersion,
+        toVersion: candidate.latestVersion,
+      })
       if (!outcome.ok) {
         return failCandidate(candidate, outcome.errorKey || 'market.installFailed', 'task not ok')
       }

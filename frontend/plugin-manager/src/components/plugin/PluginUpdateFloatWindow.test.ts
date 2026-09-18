@@ -18,6 +18,13 @@ vi.mock('@/stores/pluginUpdates', () => ({
   usePluginUpdatesStore: () => mocks.store as unknown as UpdatesStore,
 }))
 
+// The shared install-task store is exercised by its own spec; here it only has
+// to look idle so the progress panel stays hidden.
+const installTask = { task: null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
+vi.mock('@/stores/marketInstallTask', () => ({
+  useMarketInstallTaskStore: () => installTask,
+}))
+
 function candidate(overrides: Partial<MarketUpdateCandidate> = {}): MarketUpdateCandidate {
   return {
     pluginId: 'alpha',
