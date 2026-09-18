@@ -1137,6 +1137,7 @@ function CompactChatApp({
     activeToolId: activeAvatarToolId,
     clearActiveTool: clearActiveAvatarToolSelection,
     managerOpen: avatarToolManagerOpen,
+    surface: 'compact',
   });
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {

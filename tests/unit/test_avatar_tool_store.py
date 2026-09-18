@@ -3344,7 +3344,7 @@ _PROVEN_INVALID = {
     "record-too-large": lambda d: (d / "record.json").write_bytes(
         (d / "record.json").read_bytes() + b" " * (128 * 1024)
     ),
-    "unknown-version": lambda d: _corrupt_record(d, lambda r: r.__setitem__("recordVersion", 3)),
+    "unknown-version": lambda d: _corrupt_record(d, lambda r: r.__setitem__("recordVersion", 4)),
     "extra-key": lambda d: _corrupt_record(d, lambda r: r.__setitem__("surprise", 1)),
     "missing-key": lambda d: _corrupt_record(d, lambda r: r.pop("interaction")),
     "id-mismatch": lambda d: _corrupt_record(

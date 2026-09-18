@@ -597,6 +597,7 @@ export default function FullChatSurface({
     activeToolId: activeAvatarToolId,
     clearActiveTool: clearAvatarTool,
     managerOpen: avatarToolManagerOpen,
+    surface: 'full',
   });
   const configuredToolIconItems = useMemo(() => {
     const availableById = new Map(toolIconItems.map(item => [item.id, item]));

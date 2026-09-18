@@ -752,6 +752,7 @@ export default function AvatarToolCreatePage({
                   ? i18n(
                     'chat.avatarToolImageNameDuplicate',
                     'This name is already used by another image. Choose a different name.',
+                    { name: avatarToolImageDisplayName(images[cause.index], cause.index) },
                   )
                   : saveError;
           }

@@ -45,7 +45,7 @@ export default function AvatarToolStandaloneEditor() {
   const catalog = useLocalAvatarToolCatalog();
   const [, setLocaleRevision] = useState(0);
   const [detail, setDetail] = useState<LocalAvatarToolDetail | null>(null);
-  const [loading, setLoading] = useState(request.mode === 'edit');
+  const [loading, setLoading] = useState(request.mode === 'edit' && !!request.toolId);
   const [loadError, setLoadError] = useState(request.mode === 'edit' && !request.toolId);
   const [notice, setNotice] = useState('');
   const [specialEnabled, setSpecialEnabled] = useState(false);

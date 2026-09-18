@@ -840,7 +840,7 @@ export default function AvatarToolItemManager({
             return moveSlotTool(slots, session.slotIndex, targetSlotIndex);
           }
           const targetId = slots[targetSlotIndex];
-          if (targetId !== null && !availableById.has(targetId)) return slots;
+          if (targetId !== null && !validToolIds.has(targetId)) return slots;
           return placeLibraryToolInSlot(slots, session.toolId, targetSlotIndex);
         });
         setNotice('');
