@@ -15,7 +15,7 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
-import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
+import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY, ACTIVE_AVATAR_TOOLS_STORAGE_KEYS } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
@@ -31,6 +31,7 @@ describe('App', () => {
     COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+    ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full,
   ];
 
   beforeEach(() => {
@@ -507,7 +508,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
     expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
       .map(button => button.dataset.avatarToolId)).toEqual(['rps', 'fist', 'hammer']);
-    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
       .toEqual(['rps', 'fist', 'hammer']);
 
     fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
@@ -524,7 +525,7 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const onAvatarToolStateChange = vi.fn();
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId]));
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       ok: true,
       items: [{
@@ -616,7 +617,7 @@ describe('App', () => {
   it('never rewrites Full local slots from the best-effort catalog list', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
     let listCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
@@ -652,7 +653,7 @@ describe('App', () => {
     try {
       render(<App chatSurfaceMode="full" />);
       await waitFor(() => expect(listCount).toBe(1));
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
       await waitFor(() => expect(listCount).toBe(2));
@@ -673,7 +674,7 @@ describe('App', () => {
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
       // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
       // 永久抹掉用户的槽位。
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -721,14 +722,14 @@ describe('App', () => {
         limits,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
     vi.stubGlobal('fetch', fetchMock);
     const onAvatarToolStateChange = vi.fn();
 
     try {
       render(<App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />);
       await waitFor(() => expect(listCount).toBe(1));
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
       await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -739,7 +740,7 @@ describe('App', () => {
       act(() => window.dispatchEvent(new Event('focus')));
 
       await waitFor(() => expect(
-        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'),
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'),
       ).toEqual(['fist']));
       expect(fetchMock.mock.calls.some(([input]) => (
         String(input).endsWith(`/api/avatar-tools/${localToolId}`)
@@ -5893,7 +5894,7 @@ describe('App', () => {
 
   it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId, 'fist']));
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId, 'fist']));
     render(<App chatSurfaceMode="full" />);
 
     expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
@@ -5907,7 +5908,7 @@ describe('App', () => {
     }));
 
     expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
       .toEqual(['fist']);
   });
 
