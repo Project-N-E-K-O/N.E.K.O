@@ -1,5 +1,5 @@
 /**
- * Binds the Electron desktop-window sensing service to the existing CAT1
+ * Binds the Electron desktop-window sensing service to the visible cat
  * lifecycle. The page remains a consumer: it does not read windows, schedule
  * checks, retain a second target, or produce Cat Mind actions.
  */
@@ -16,6 +16,7 @@
 
     let catAppearanceActive = false;
     let cat1Active = false;
+    let sensingActive = false;
     let disposed = false;
     let generation = 0;
     let startPending = false;
@@ -85,6 +86,21 @@
         ));
     }
 
+    function readWindowScene(value) {
+        const keys = new Set();
+        const windows = [];
+        for (const item of Array.isArray(value) ? value.slice(0, 256) : []) {
+            const rect = item && readRect(item.rect);
+            if (!rect || typeof item.key !== 'string' || !/^window-\d+$/.test(item.key)
+                || keys.has(item.key) || !['external', 'app'].includes(item.kind)) continue;
+            keys.add(item.key);
+            windows.push(Object.freeze({ key: item.key, kind: item.kind,
+                ...(item.kind === 'app' && item.collisionOnly === true ? { collisionOnly: true } : {}),
+                rect: Object.freeze(rect) }));
+        }
+        return Object.freeze(windows);
+    }
+
     function normalizeSharedResult(value, expectedSessionId) {
         if (!value || typeof value !== 'object') return null;
         const valueSessionId = readSessionId(value.sessionId);
@@ -115,6 +131,7 @@
             changes: Object.freeze(changes),
             movement: movement ? Object.freeze(movement) : null,
             rect: Object.freeze(rect),
+            ...(Array.isArray(value.windows) ? { windows: readWindowScene(value.windows) } : {}),
             timestamp: Date.now(),
         });
     }
@@ -253,13 +270,14 @@
     }
 
     function stopSession() {
-        if (!cat1Active
+        cat1Active = false;
+        if (!sensingActive
             && !startPending
             && !sessionId
             && unsubscribeChanged === null) {
             return;
         }
-        cat1Active = false;
+        sensingActive = false;
         generation += 1;
         startPending = false;
         clearSharedResult();
@@ -274,7 +292,7 @@
     }
 
     async function startSession() {
-        if (disposed || !cat1Active || startPending || sessionId) return;
+        if (disposed || !sensingActive || startPending || sessionId) return;
         const bridge = getBridge();
         if (!bridge) return;
         const expectedGeneration = generation;
@@ -296,7 +314,7 @@
         try {
             ownUnsubscribe = bridge.onChanged((value) => {
                 const changedSessionId = readSessionId(value && value.sessionId);
-                if (!cat1Active
+                if (!sensingActive
                     || disposed
                     || expectedGeneration !== generation
                     || !sessionId
@@ -309,7 +327,7 @@
             const result = await bridge.start();
             const startedSessionId = readSessionId(result && result.sessionId);
             if (disposed
-                || !cat1Active
+                || !sensingActive
                 || expectedGeneration !== generation) {
                 removeOwnSubscription();
                 if (startedSessionId) {
@@ -337,16 +355,22 @@
         }
     }
 
-    function syncCat1Session(tier) {
-        const shouldRun = catAppearanceActive && readTier(tier) === CAT1_TIER;
+    function syncCatSession(tier) {
+        const currentTier = readTier(tier);
+        const wasCat1Active = cat1Active;
+        cat1Active = catAppearanceActive && currentTier === CAT1_TIER;
+        const shouldRun = catAppearanceActive && ['cat1', 'cat2', 'cat3'].includes(currentTier);
         if (!shouldRun) {
             stopSession();
             return;
         }
-        if (!cat1Active) {
-            cat1Active = true;
+        if (!sensingActive) {
+            sensingActive = true;
             generation += 1;
         }
+        // Sleeping cats still need window bounds for physics. Cat Mind's
+        // observation consumer remains CAT1-only and resumes from the same fact.
+        if (cat1Active && !wasCat1Active && sharedResult) publishObservation(sharedResult);
         startSession();
     }
 
@@ -356,7 +380,7 @@
             : {};
         catAppearanceActive = detail.active === true
             && detail.appearance === 'cat';
-        syncCat1Session(detail.tier);
+        syncCatSession(detail.tier);
     }
 
     function handleCatTierChange(event) {
@@ -364,7 +388,7 @@
             ? event.detail
             : {};
         if (detail.type !== 'visual-tier') return;
-        syncCat1Session(detail.tier);
+        syncCatSession(detail.tier);
     }
 
     function handleGoodbyeStateCleared() {

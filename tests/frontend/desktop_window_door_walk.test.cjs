@@ -25,7 +25,11 @@ function sourceBetween(filePath, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start);
   assert.ok(start >= 0 && end > start, `${path.basename(filePath)} slice not found`);
-  return source.slice(start, end);
+  const gravityStart = source.indexOf('function _pauseNekoIdleCat1JourneyForGravity(');
+  const gravityHelper = filePath === journeyPath && gravityStart >= 0
+    ? source.slice(gravityStart, source.indexOf('\n}', gravityStart) + 2) + '\n'
+    : '';
+  return gravityHelper + source.slice(start, end);
 }
 
 class FakeClassList {

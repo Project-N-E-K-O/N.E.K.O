@@ -496,6 +496,7 @@ function createMovementHarness({ transferredAnchor = 'left' } = {}) {
         readFunction(dragSourcePath, '_isNekoIdleCat1EdgePeekActive'),
         readFunction(dragSourcePath, '_isNekoIdleCat1TransferredPeekAnchorActive'),
         readFunction(dragSourcePath, '_isNekoIdleCat1MovementAnchored'),
+        readFunction(journeySourcePath, '_pauseNekoIdleCat1JourneyForGravity'),
         readFunction(journeySourcePath, '_startNekoIdleCat1Walk'),
         readFunction(journeySourcePath, '_scheduleNekoIdleCat1WalkStart'),
         readFunction(journeySourcePath, '_prepareNekoIdleCat1PairMoveStart'),

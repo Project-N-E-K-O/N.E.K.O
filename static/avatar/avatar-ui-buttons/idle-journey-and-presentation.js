@@ -7,6 +7,19 @@ function _isNekoIdleCat1Walking(button) {
         !state.pairMoveFrame);
 }
 
+function _pauseNekoIdleCat1JourneyForGravity(button) {
+    if (window.NekoDesktopWindowGravity?.canWalk?.(button) !== false) return false;
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    const moving = state && (state.substate === state.profile?.walkingSubstate
+        || state.pairMovePlan || state.pairMoveFrame);
+    if (moving || (state && (state.pendingWalkTimer || state.pendingWalkReady))) {
+        _cancelNekoIdleCat1Journey(button, {
+            resetArt: !!moving, preserveObservers: true, reason: 'window-gravity-moving',
+        });
+    }
+    return true;
+}
+
 function _getNekoIdleCurrentLanlanName() {
     return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
 }
@@ -612,7 +625,7 @@ function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, options = 
 function _getNekoIdleCat1Target(container, chatRect, options = {}) {
     const minimizedSideTarget = _getNekoIdleCat1SideTarget(container, chatRect);
     if (minimizedSideTarget) {
-        return minimizedSideTarget;
+        return window.NekoDesktopWindowGravity?.constrainTarget(container, minimizedSideTarget) || minimizedSideTarget;
     }
 
     const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
@@ -623,13 +636,14 @@ function _getNekoIdleCat1Target(container, chatRect, options = {}) {
     if (!compactBlocked &&
         compactTarget &&
         compactTarget.distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX) {
-        return compactTarget;
+        return window.NekoDesktopWindowGravity?.constrainTarget(container, compactTarget) || compactTarget;
     }
     return null;
 }
 
 function _setNekoIdleCat1ContainerPosition(container, left, top) {
     if (!container) return;
+    if (window.NekoDesktopWindowGravity?.applyPosition(container, left, top)) return;
     container.style.left = `${Math.round(left)}px`;
     container.style.top = `${Math.round(top)}px`;
     container.style.right = '';
@@ -1305,6 +1319,7 @@ function _updateNekoIdleCat1WalkSpeedRate(button, state, distance) {
 }
 
 function _stepNekoIdleCat1Walk(button, timestamp) {
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -1351,6 +1366,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     if (target.distance <= profile.target.exitDistancePx) {
         _appendNekoIdleCat1WalkActivityPoint(state, target.left, target.top);
         _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
+        if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
         if (target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
             _finishNekoIdleCat1CompactTopEdgeWalk(button);
         } else {
@@ -1372,6 +1388,9 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     const nextTop = rect.top + (target.top - rect.top) * ratio;
     _appendNekoIdleCat1WalkActivityPoint(state, nextLeft, nextTop);
     _setNekoIdleCat1ContainerPosition(container, nextLeft, nextTop);
+    // A wall collision can synchronously interrupt this walk through gravity's
+    // state event. Do not re-arm the cancelled frame after returning from it.
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
 
     state.frame = window.requestAnimationFrame((nextTimestamp) => {
         _stepNekoIdleCat1Walk(button, nextTimestamp);
@@ -1379,6 +1398,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 }
 
 function _startNekoIdleCat1Walk(button, target) {
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
     if (_isNekoIdleCat1MovementAnchored(button)) {
@@ -1419,6 +1439,7 @@ function _startNekoIdleCat1Walk(button, target) {
 }
 
 function _scheduleNekoIdleCat1WalkStart(button, target) {
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
     if (_isNekoIdleCat1IndependentActionActive(button)) return;
@@ -1476,6 +1497,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
 }
 
 function _prepareNekoIdleCat1PairMoveStart(button, state) {
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return;
     if (_isNekoIdleCat1MovementAnchored(button)) return;
     if (_isNekoIdleCat1IndependentActionActive(button)) return;
@@ -1491,6 +1513,7 @@ function _prepareNekoIdleCat1PairMoveStart(button, state) {
 }
 
 function _canScheduleNekoIdleCat1PairMove(button, state) {
+    if (window.NekoDesktopWindowGravity?.canWalk?.(button) === false) return false;
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return false;
     if (_isNekoIdleCat1MovementAnchored(button)) return false;
     if (_isNekoIdleCat1IndependentActionActive(button)) return false;
@@ -1541,6 +1564,7 @@ function _finishNekoIdleCat1PairMove(button) {
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const completedPlan = state.pairMovePlan;
     _applyNekoIdleCat1PairMovePlan(completedPlan, 1);
+    if (state.pairMovePlan !== completedPlan || _pauseNekoIdleCat1JourneyForGravity(button)) return;
     _dispatchNekoIdleCat1MotionInputRegionState(state, false, 'cat1-pair-move-finish', completedPlan);
     state.pairMoveFrame = 0;
     state.pairMovePlan = null;
@@ -1570,6 +1594,7 @@ function _finishNekoIdleCat1PairMove(button) {
 }
 
 function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state || !state.pairMovePlan || state.paused) {
         if (state) state.pairMoveFrame = 0;
@@ -1594,6 +1619,7 @@ function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
         return;
     }
     _applyNekoIdleCat1PairMovePlan(plan, progress);
+    if (state.pairMovePlan !== plan || _pauseNekoIdleCat1JourneyForGravity(button)) return;
     state.pairMoveFrame = window.requestAnimationFrame((nextTimestamp) => {
         _stepNekoIdleCat1PairMove(button, startedAt, nextTimestamp);
     });
@@ -1691,6 +1717,7 @@ function _refreshNekoIdleCat1Observer(button) {
 
 function _syncNekoIdleCat1Journey(button, tier) {
     if (!button) return;
+    if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
     if (_isNekoIdleCat1MovementAnchored(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
@@ -1768,7 +1795,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
         target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE;
     const containerRect = _getNekoDesktopVirtualElementRect(container);
     const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);
-    const walkStartDistancePx = Number.isFinite(centerDistancePx)
+    const walkStartDistancePx = !window.NekoDesktopWindowGravity?.isActive(button) && Number.isFinite(centerDistancePx)
         ? centerDistancePx
         : target.distance;
     if (compactTopEdgeTarget) {
@@ -2165,6 +2192,14 @@ function _syncAllNekoIdleReturnButtons(tier) {
 function _ensureNekoIdleReturnPresentationBridge() {
     if (window.__nekoIdleReturnPresentationBridgeBound) return;
     window.__nekoIdleReturnPresentationBridgeBound = true;
+
+    window.addEventListener('neko:desktop-window-gravity-state', (event) => {
+        const button = event.detail && event.detail.button;
+        if (!button || button.isConnected === false) return;
+        if (!_pauseNekoIdleCat1JourneyForGravity(button)) {
+            _scheduleNekoIdleCat1JourneySync(button);
+        }
+    });
 
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;

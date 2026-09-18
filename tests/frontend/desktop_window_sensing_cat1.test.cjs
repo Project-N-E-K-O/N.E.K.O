@@ -270,8 +270,8 @@ test('one CAT1 phase owns one formal sensing session and forwards safe observati
   });
   await flushPromises();
 
-  assert.deepEqual(runtime.stops, ['session-1']);
-  assert.equal(runtime.unsubscribeCount, 1);
+  assert.deepEqual(runtime.stops, []);
+  assert.equal(runtime.unsubscribeCount, 0);
 
   runtime.publishChanged({
     status: 'changed',
@@ -289,7 +289,7 @@ test('one CAT1 phase owns one formal sensing session and forwards safe observati
   });
   await flushPromises();
 
-  assert.equal(runtime.starts.length, 2);
+  assert.equal(runtime.starts.length, 1);
   assert.equal(runtime.observations.length, 3);
   assert.equal(runtime.observations[2].tier, 'cat1');
 
@@ -300,11 +300,11 @@ test('one CAT1 phase owns one formal sensing session and forwards safe observati
   });
   await flushPromises();
 
-  assert.deepEqual(runtime.stops, ['session-1', 'session-2']);
-  assert.equal(runtime.unsubscribeCount, 2);
+  assert.deepEqual(runtime.stops, ['session-1']);
+  assert.equal(runtime.unsubscribeCount, 1);
 });
 
-test('leaving CAT1 stops a start result that arrives late', async () => {
+test('leaving cat appearance stops a start result that arrives late', async () => {
   const deferred = createDeferred();
   const runtime = createRuntime({ start: () => deferred.promise });
 
@@ -313,11 +313,7 @@ test('leaving CAT1 stops a start result that arrives late', async () => {
     appearance: 'cat',
     tier: 'cat1',
   });
-  runtime.publishTierState({
-    type: 'visual-tier',
-    tier: 'cat2',
-    source: 'auto-goodbye',
-  });
+  runtime.publishCatState({ active: false, appearance: 'cat' });
 
   deferred.resolve({
     status: 'ready',
@@ -347,8 +343,8 @@ test('a late start result never breaks the next CAT1 session subscription', asyn
   });
 
   runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
-  runtime.publishTierState({ type: 'visual-tier', tier: 'cat2' });
-  runtime.publishTierState({ type: 'visual-tier', tier: 'cat1' });
+  runtime.publishCatState({ active: false, appearance: 'cat' });
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
   await flushPromises();
 
   deferred.resolve({
@@ -427,7 +423,7 @@ test('switching to ball or unloading the page stops the current cat session', as
   assert.equal(runtime.unsubscribeCount, 2);
 });
 
-test('CAT2 and CAT3 never start sensing until the visible cat returns to CAT1', async () => {
+test('CAT2 and CAT3 share window sensing for gravity without publishing CAT1 observations', async () => {
   const runtime = createRuntime();
 
   runtime.setTier('cat2');
@@ -443,8 +439,10 @@ test('CAT2 and CAT3 never start sensing until the visible cat returns to CAT1', 
   });
   await flushPromises();
 
-  assert.equal(runtime.starts.length, 0);
-  assert.equal(runtime.subscriptions.length, 0);
+  assert.equal(runtime.starts.length, 1);
+  assert.equal(runtime.subscriptions.length, 1);
+  assert.equal(runtime.observations.length, 0);
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent().sessionId, 'session-1');
 
   runtime.publishTierState({
     type: 'visual-tier',
@@ -570,7 +568,7 @@ test('shared consumer failures are isolated and session stop clears the current 
   assert.equal(received.length, 1);
   assert.equal(runtime.observations.length, 1);
 
-  runtime.publishTierState({ type: 'visual-tier', tier: 'cat2' });
+  runtime.publishCatState({ active: false, appearance: 'cat' });
   await flushPromises();
 
   assert.equal(shared.getCurrent(), null);
@@ -586,7 +584,7 @@ test('shared consumer failures are isolated and session stop clears the current 
   });
   assert.equal(shared.getCurrent(), null);
 
-  runtime.publishTierState({ type: 'visual-tier', tier: 'cat1' });
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
   await flushPromises();
   const freshResult = plain(shared.getCurrent());
   const observationCount = runtime.observations.length;
@@ -635,4 +633,35 @@ test('adapter has no reader, polling timer, DOM state or Cat Mind action produce
   assert.doesNotMatch(source, /\b(?:document|querySelector|getElementById)\b/);
   assert.doesNotMatch(source, /cat-mind:action-request/);
   assert.doesNotMatch(source, /nekoDesktopWindowSensing\.start\(\)/);
+});
+
+test('shared scenes preserve only opaque keys and geometry, including background-only updates', async () => {
+  const runtime = createRuntime();
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  const rect = { x: 10, y: 20, width: 300, height: 200 };
+  const observationCount = runtime.observations.length;
+  runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null,
+    windows: [{ key: 'window-1', kind: 'external', rect, pid: 34, title: 'private-title', collisionOnly: true },
+      { key: 'window-2', kind: 'app', rect: { ...rect, x: 400 }, collisionOnly: true }] });
+  const shared = runtime.window.nekoDesktopWindowSensingContext.getCurrent();
+  assert.equal(shared.windows.length, 2);
+  assert.equal(shared.windows[1].rect.x, 400);
+  assert.equal(shared.windows[1].collisionOnly, true);
+  assert.notEqual(shared.windows[0].collisionOnly, true);
+  assert.equal(Object.isFrozen(shared.windows[0].rect), true);
+  assert.equal(JSON.stringify(shared).includes('private-title'), false);
+  assert.equal(runtime.observations.length, observationCount, 'scene-only geometry does not flood Cat Mind');
+  runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null,
+    windows: [{ key: 'window-2', kind: 'app', rect: { ...rect, x: 400 }, collisionOnly: false }] });
+  assert.notEqual(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows[0].collisionOnly, true);
+  for (const windows of [undefined, null, {}, false, 'invalid']) {
+    runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null, windows });
+    const current = runtime.window.nekoDesktopWindowSensingContext.getCurrent();
+    assert.equal(Object.hasOwn(current, 'windows'), false, 'malformed scenes preserve the legacy rect fallback');
+    assert.deepEqual(plain(current.rect), rect);
+  }
+  runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null, windows: [] });
+  assert.deepEqual(plain(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows), [],
+    'an explicit empty scene must not resurrect the legacy container');
 });
