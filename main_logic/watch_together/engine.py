@@ -376,14 +376,23 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                     {"role":"user", "content":bounded}],
                 **options)
             record_usage(job, response, cfg["model"], stage)
+            metadata = getattr(response, 'response_metadata', None) or {}
+            finish_reason = metadata.get('finish_reason') if isinstance(metadata, dict) else None
             try:
+                if finish_reason == 'length':
+                    # The provider cut the reply off, so anything that still
+                    # parses is a prefix of the answer rather than the answer:
+                    # a worked example ahead of a half-written reply, or a
+                    # timeline missing its tail. No syntactic rule can tell that
+                    # from a complete reply carrying prose, but the provider
+                    # already told us, so refuse and let the retry happen.
+                    raise ValueError('truncated_response')
                 return json_object(response.content or "", validate)
             except (ValueError, TypeError, IndexError) as exc:
                 # Keep only structural diagnostics: model replies can contain
                 # private video/persona text. An exception class alone hides
                 # empty replies, truncation and malformed JSON behind the same
                 # retry-exhausted error, making provider changes guesswork.
-                metadata = getattr(response, 'response_metadata', None) or {}
                 raw = response.content
                 diagnostic = {
                     'stage': stage, 'label': label, 'attempt': _number,
@@ -392,7 +401,7 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                     'has_root_start': isinstance(raw, str) and any(c in raw for c in '{['),
                     'has_root_end': isinstance(raw, str) and any(c in raw for c in '}]'),
                     'parse_error': type(exc).__name__,
-                    'finish_reason': metadata.get('finish_reason') if isinstance(metadata, dict) else None,
+                    'finish_reason': finish_reason,
                 }
                 if isinstance(exc, json.JSONDecodeError):
                     diagnostic.update(json_error=exc.msg, json_error_position=exc.pos)

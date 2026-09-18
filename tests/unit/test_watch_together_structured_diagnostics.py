@@ -12,7 +12,10 @@ from main_logic.watch_together.engine import structured_json_completion
 @pytest.mark.parametrize('content,finish_reason,error', [
     ('', 'stop', 'ValueError'),
     ('{"events": [{"text": "PRIVATE_VIDEO_TEXT",}]}', 'stop', 'JSONDecodeError'),
-    ('{"events": [', 'length', 'JSONDecodeError'),
+    ('{"events": [', 'stop', 'JSONDecodeError'),
+    # A provider that reports the cut-off never reaches the parser.
+    ('{"events": [', 'length', 'ValueError'),
+    ('{"events": []}', 'length', 'ValueError'),
 ])
 async def test_failed_attempts_preserve_structure_without_response_text(
     monkeypatch, content, finish_reason, error,
@@ -71,6 +74,35 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
     assert result == {'events': events}
     factory.assert_awaited_once()
     client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('content', [
+    # A worked example ahead of an answer the provider cut off. The example
+    # parses and passes the schema, so only finish_reason says it is a prefix.
+    'Format: {"line": "example"}\nAnswer: {"line":',
+    'Format: {"line": "example"}\nAnswer: {"line": "actu',
+])
+async def test_a_cut_off_reply_does_not_speak_the_example_ahead_of_it(monkeypatch, content):
+    from main_logic.watch_together.live import _validator
+
+    async def factory(**kwargs):
+        return SimpleNamespace(
+            ainvoke=AsyncMock(return_value=SimpleNamespace(
+                content=content, response_metadata={'finish_reason': 'length'},
+            )),
+            aclose=AsyncMock(),
+        )
+
+    monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
+    job = {}
+    with pytest.raises(StructuredOutputAttemptsExhausted):
+        await structured_json_completion(
+            {'model': 'test-model'}, 'Return JSON.', [], job,
+            _validator('interject'), stage='live', label='live_interject',
+        )
+    assert all(item['finish_reason'] == 'length' for item in job['structured_output_failures'])
+    assert 'example' not in json.dumps(job)
 
 
 def test_malformed_array_is_not_salvaged_as_its_nested_object():
