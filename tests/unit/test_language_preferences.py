@@ -198,6 +198,9 @@ class _LifecycleHarness(LifecycleMixin, SessionOwnershipMixin, TtsLifecycleMixin
     def _clear_pending_context_appends(self):
         pass
 
+    def _prune_request_staged_images(self):
+        pass
+
 
 @pytest.mark.unit
 def test_language_preference_copy_exists_in_all_supported_locales():
