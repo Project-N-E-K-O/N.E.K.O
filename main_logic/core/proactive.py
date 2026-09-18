@@ -537,7 +537,7 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._flush_ai_turn_text_to_tracker()
+            self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 # action_note 只进历史，不进 send_lanlan_response（前端不展示）

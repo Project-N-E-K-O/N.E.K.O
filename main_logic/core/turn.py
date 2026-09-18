@@ -32,7 +32,10 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from main_logic.session_state import SessionEvent
-from main_logic.agent_event_bus import dispatch_user_utterance
+from main_logic.agent_event_bus import (
+    dispatch_user_utterance,
+    publish_conversation_turn_observed_best_effort,
+)
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
 from uuid import uuid4
 import numpy as np
@@ -313,7 +316,7 @@ class TurnMixin:
         else:
             self._activity_tracker.on_ai_message(text=text, now=now)
 
-    def _flush_ai_turn_text_to_tracker(self) -> None:
+    def _flush_ai_turn_text_to_tracker(self, *, turn_type: str = "assistant_message") -> None:
         """Flush the per-turn AI text buffer into conversation turn sinks.
 
         Called from each AI-turn-end exit point — there are three:
@@ -325,9 +328,42 @@ class TurnMixin:
         (when text is non-empty) bumps ``_conv_seq`` for open_threads cache
         invalidation. Other sinks, such as background topic collection, see
         the same turn without living inside ``UserActivityTracker``.
+
+        ``turn_type`` is also the conversation-bus label
+        (``assistant_message`` / ``proactive_reply``).
         """
-        self._note_ai_turn(text=self._current_ai_turn_text or None)
+        ai_text = self._current_ai_turn_text
+        self._note_ai_turn(text=ai_text or None)
         self._current_ai_turn_text = ''
+        self._publish_ai_message_to_plugin_bus(ai_text, turn_type)
+
+    def _publish_ai_message_to_plugin_bus(self, text: Optional[str], turn_type: str) -> None:
+        """Publish one finished AI turn to the plugin conversation bus.
+
+        Plugins need the whole sentence plus when it was spoken. This store
+        previously only received proactive turns from the offline client, so
+        realtime replies were invisible; publishing here (paired with the user
+        side in ``_publish_user_utterance_to_plugin_bus``) lets plugins read
+        both sides of every turn — ordered by ``metadata.ts`` — without
+        touching host files or competing for the frontend websocket.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        try:
+            published_at = time.time()
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type=str(turn_type or "assistant_message"),
+                conversation_id=str(getattr(self, "_current_ai_turn_id", "") or ""),
+                source="main_logic.core",
+                message_count=1,
+                metadata={"role": "cat", "ts": published_at},
+                ts=published_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] ai message not published", exc_info=True)
 
     async def handle_proactive_complete(self, content_committed: bool = True):
         """Lightweight completion for proactive (agent callback) replies.
@@ -344,7 +380,7 @@ class TurnMixin:
         # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
         # send_lanlan_response（finish_proactive_delivery 内部会调），所以
         # _current_ai_turn_text 已经累加好。
-        self._flush_ai_turn_text_to_tracker()
+        self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -888,6 +924,26 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        # 插件总线（conversations store）：主人侧原话，与 _publish_ai_message_to_plugin_bus
+        # 成对；时间戳用消息自身发生时刻，供插件排序还原对话先后。
+        try:
+            published_at = time.time()
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type="user_message",
+                conversation_id="",
+                source="main_logic.core",
+                message_count=1,
+                metadata={
+                    "role": "master",
+                    "is_voice": bool(is_voice_source),
+                    "ts": published_at,
+                },
+                ts=published_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
             "type": "user_message",
             "content": cleaned,
@@ -1732,6 +1788,7 @@ class TurnMixin:
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
             self._current_ai_turn_text += text_clean
+            self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()

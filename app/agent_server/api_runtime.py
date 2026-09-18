@@ -271,6 +271,17 @@ def _forward_provider_frame(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
+    """Prefer the producer's message time; fall back to the forward time."""
+    raw = (event or {}).get("ts")
+    if raw is None:
+        return time.time()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return time.time()
+
+
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
     """Copy one already-handled conversation message into the ``conversations`` store.
 
@@ -326,7 +337,7 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
             "kind": "conversation",
             "type": "conversation_turn",
             "source": str((event or {}).get("source") or "unknown"),
-            "timestamp": time.time(),
+            "timestamp": _resolve_conversation_ts(event),
             "content": content,
             "metadata": metadata,
         }
