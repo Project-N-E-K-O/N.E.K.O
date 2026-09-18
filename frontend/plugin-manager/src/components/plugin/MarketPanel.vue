@@ -358,8 +358,15 @@ const installTaskDialogVisible = ref(false)
 
 // 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，关掉它不该让
 // 取消能力随之消失。文案必须是本地化的，后端 message 不进入可见文本。
+//
+// Ownership-gated: a task the update popup started must not be reachable from
+// here, otherwise this entry point would open the dialog on someone else's task
+// (and its cancel button would then act on that task).
 const showInstallResumeBar = computed(() => (
-  installTask.running && !installTaskDialogVisible.value && !!installTask.taskId
+  installTask.running
+  && installTask.owner === 'panel'
+  && !installTaskDialogVisible.value
+  && !!installTask.taskId
 ))
 
 // A task the update popup started must never render inside this dialog.
