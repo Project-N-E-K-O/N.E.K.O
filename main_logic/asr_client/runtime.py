@@ -2378,8 +2378,9 @@ class IndependentAsrRuntime:
             self._asr_received_audio = False
             self._asr_audio_sequence = 0
             self._asr_partial_turn_token = None
-            # The promise passes to the suppression below, which settles it
-            # through _complete_candidate_rejection.
+            # The promise passes to the suppression below, settled either by
+            # _complete_candidate_rejection or, if a teardown clears the
+            # suppression first, by _reset_asr_turn_state adopting it back.
             self._asr_prepared_turn_token = None
             self._asr_sealed_turn_token = None
             self._asr_provider_candidate_fence = None
@@ -2620,7 +2621,15 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        rejection = self._asr_candidate_rejection
         self._asr_candidate_rejection = None
+        if abandoned is None and rejection is not None:
+            # The rejection path clears the prepared token before awaiting its
+            # own cleanup and leaves the debt with the suppression. Taking it
+            # back here is what makes the promise above true: clearing the
+            # suppression makes _complete_candidate_rejection return without
+            # notifying, so this reset is now the only settler left.
+            abandoned = rejection.turn_token
         self._asr_sealed_turn_token = None
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None

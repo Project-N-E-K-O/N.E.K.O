@@ -49,6 +49,36 @@ async def test_provider_internal_close_reconnect_preserves_manager_resource_iden
     assert provider.close_calls == 2
 
 
+class FailingCloseProvider:
+    def __init__(self):
+        self.close_calls = 0
+
+    async def close(self):
+        self.close_calls += 1
+        raise RuntimeError("provider transport already gone")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_provider_close_still_frees_the_capacity_slot():
+    """A raising provider close must not strand the record.
+
+    Capacity counting and record pruning both key off ``closed``, so leaving
+    it unset costs a slot for the life of the process: a serialized provider
+    would block the next session and an overlapping one would run one short.
+    """
+
+    manager = SessionOwnershipMixin()
+    provider = FailingCloseProvider()
+
+    with pytest.raises(RuntimeError):
+        await manager._close_owned_session(provider)
+
+    record = manager._connection_record(provider)
+    assert record.retired and record.closed
+    assert provider.close_calls == 1
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_manager_close_is_idempotent_and_survives_caller_cancellation():
