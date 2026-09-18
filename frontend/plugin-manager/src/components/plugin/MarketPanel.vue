@@ -362,6 +362,11 @@ const showInstallResumeBar = computed(() => (
   installTask.running && !installTaskDialogVisible.value && !!installTask.taskId
 ))
 
+// A task the update popup started must never render inside this dialog.
+watch(() => installTask.owner, (ownerNow) => {
+  if (ownerNow && ownerNow !== 'panel') installTaskDialogVisible.value = false
+})
+
 const installTaskTitle = computed(() => {
   const name = installTask.context?.name || ''
   if (installTask.task?.status === 'failed') return t('market.installFailedTitle', { name })
@@ -868,9 +873,10 @@ async function resolveInstallPayload(
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
-  // The shared task store also covers installs started from the update popup,
-  // which this component's own flag cannot see.
-  if (marketInstallBusy.value || installTask.running) {
+  // The shared slot also covers installs started from the update popup, which
+  // this component's own flag cannot see — and it is claimed atomically, since
+  // this handler awaits resolveInstallPayload before it POSTs.
+  if (marketInstallBusy.value || !installTask.reserve('panel')) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }
@@ -945,6 +951,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   } finally {
     installingId.value = null
     marketInstallBusy.value = false
+    installTask.release('panel')
   }
 }
 
@@ -958,7 +965,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - 错误码识别在 runInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
-  if (marketInstallBusy.value || installTask.running) {
+  if (marketInstallBusy.value || !installTask.reserve('panel')) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }
@@ -1096,6 +1103,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
   } finally {
     upgradingId.value = null
     marketInstallBusy.value = false
+    installTask.release('panel')
   }
 }
 

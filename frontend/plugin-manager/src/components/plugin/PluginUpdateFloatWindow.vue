@@ -132,8 +132,9 @@ const { t } = useI18n()
 const updates = usePluginUpdatesStore()
 const installTask = useMarketInstallTaskStore()
 
-/** Only one install runs at a time, so one shared progress panel is enough. */
-const showProgress = computed(() => !!installTask.task)
+/** Only one install runs at a time, so one shared progress panel is enough —
+ *  but never render a task the Market dialog owns. */
+const showProgress = computed(() => !!installTask.task && installTask.owner === 'float')
 
 /** Once the popup is gone the task panel has nowhere to be shown — but only
  *  release a task this surface started, never one the Market dialog owns. */
@@ -280,6 +281,7 @@ const showFooter = computed(() => (
 const canUpdateAll = computed(() => (
   !updates.busy
   && !installTask.running
+  && !installTask.reservation
   && updates.candidates.some((candidate) => !candidate.needsManualUpgrade)
 ))
 
@@ -287,6 +289,7 @@ function isItemDisabled(candidate: MarketUpdateCandidate): boolean {
   return candidate.needsManualUpgrade
     || updates.batchRunning
     || installTask.running
+    || !!installTask.reservation
     || candidate.status === 'updating'
 }
 

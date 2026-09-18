@@ -20,7 +20,7 @@ vi.mock('@/stores/pluginUpdates', () => ({
 
 // The shared install-task store is exercised by its own spec; here it only has
 // to look idle so the progress panel stays hidden.
-const installTask = { task: null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
+const installTask = { task: null as unknown, owner: null as string | null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => installTask,
 }))
@@ -175,6 +175,23 @@ afterEach(() => {
 })
 
 describe('plugin update float window', () => {
+  it('only shows progress for a task this popup owns', () => {
+    installTask.task = { task_id: 't', status: 'downloading', stage: 'download' }
+    installTask.owner = 'panel'
+    let root = mount()
+    expect(root.querySelector('[data-yui-guide-id="market-install-progress"]')).toBeNull()
+
+    cleanup()
+    installTask.owner = 'float'
+    root = mount()
+    // The progress component is stubbed out by the mocked store module, so
+    // assert on the panel wrapper this component owns.
+    expect(root.querySelector('.update-float__progress-panel')).not.toBeNull()
+
+    installTask.task = null
+    installTask.owner = null
+  })
+
   it('renders nothing while the popup is closed', () => {
     makeStore({ popupOpen: false })
     const root = mount()

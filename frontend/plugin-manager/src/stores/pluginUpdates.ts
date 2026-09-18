@@ -271,12 +271,12 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     if (!candidate || candidate.needsManualUpgrade) return false
     if (candidate.status === 'updating') return false
 
-    // Take the shared mutex *before* creating a backend task. Without this the
-    // Market panel (which cannot see this surface) could POST concurrently, and
-    // the second worker would run untracked and uncancellable.
+    // Claim the shared slot atomically, before the async version lookup and the
+    // POST: a plain `running` read is racy because this method awaits in
+    // between, so the Market panel could create a second, untracked worker.
     const installTask = useMarketInstallTaskStore()
-    if (installTask.running) {
-      updateLog.warn('upgrade refused: an install task is already running', { pluginId })
+    if (!installTask.reserve('float')) {
+      updateLog.warn('upgrade refused: an install slot is already claimed', { pluginId })
       return false
     }
 
@@ -378,10 +378,13 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
           candidate.status = 'idle'
           return false
         }
-        if (outcome.aborted) {
-          // Tracking was dropped (the popup closed mid-upgrade). Leave the row
-          // alone rather than reporting a failure that never happened.
+        if (outcome.aborted || outcome.canceled) {
+          // Tracking was dropped (the popup closed mid-upgrade) or the user
+          // cancelled from the shared dialog. Neither is a failure — and a
+          // `failed` row would otherwise be carried forward by every later
+          // check, showing red until the plugin is finally upgraded.
           candidate.status = 'idle'
+          candidate.errorKey = null
           return false
         }
         return failCandidate(candidate, outcome.errorKey || 'market.installFailed', 'task not ok')
@@ -391,6 +394,8 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       return true
     } catch (err) {
       return failCandidate(candidate, 'market.installFailed', err)
+    } finally {
+      installTask.release('float')
     }
   }
 

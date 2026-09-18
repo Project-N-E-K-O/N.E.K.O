@@ -381,6 +381,73 @@ describe('market install task store — step checklist', () => {
   })
 })
 
+describe('market install task store — install slot reservation', () => {
+  it('only lets one surface claim the slot at a time', () => {
+    const store = useMarketInstallTaskStore()
+
+    expect(store.reserve('panel')).toBe(true)
+    expect(store.reserve('float')).toBe(false)
+    expect(store.reservation).toBe('panel')
+
+    // Releasing the wrong surface must not free someone else's claim.
+    store.release('float')
+    expect(store.reservation).toBe('panel')
+
+    store.release('panel')
+    expect(store.reservation).toBeNull()
+    expect(store.reserve('float')).toBe(true)
+  })
+
+  it('refuses a claim while a task is already being tracked', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never,
+    )
+    const store = useMarketInstallTaskStore()
+    void store.track('t', context(), 'panel')
+    await tick()
+
+    expect(store.reserve('float')).toBe(false)
+    store.dismiss()
+    await tick()
+    expect(store.reserve('float')).toBe(true)
+  })
+
+  it('clears the claim when the task is dismissed', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+    const store = useMarketInstallTaskStore()
+    expect(store.reserve('panel')).toBe(true)
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await p
+
+    store.dismiss('panel')
+    expect(store.reservation).toBeNull()
+  })
+
+  it('does not write state when the task is dismissed mid-request', async () => {
+    let releaseFetch: (value: unknown) => void = () => {}
+    vi.mocked(fetchBridge).mockImplementation(
+      () => new Promise((resolve) => { releaseFetch = resolve as (value: unknown) => void }) as never,
+    )
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick() // the loop is now parked inside `await fetchBridge(...)`
+
+    store.dismiss()
+    releaseFetch(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.5 }))
+    await tick()
+
+    await expect(p).resolves.toEqual({ ok: false, aborted: true })
+    // Regression guard: the stale poll used to repopulate the store, which made
+    // every later install refuse to start.
+    expect(store.task).toBeNull()
+    expect(store.running).toBe(false)
+  })
+})
+
 describe('market install task store — ownership', () => {
   it('refuses to let the other surface dismiss a live task', async () => {
     vi.mocked(fetchBridge).mockResolvedValue(

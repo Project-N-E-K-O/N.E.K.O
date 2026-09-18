@@ -156,6 +156,14 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   const context = ref<MarketInstallContext | null>(null)
   const taskId = ref<string | null>(null)
   const owner = ref<MarketInstallOwner | null>(null)
+  /**
+   * Slot claimed by a surface *before* it does its async pre-flight work and
+   * POSTs ``/market/install``. A plain ``running`` read is not enough: every
+   * entry point awaits (version lookup / resolveInstallPayload) before the
+   * POST, so two surfaces can both pass the read and create two backend
+   * workers — the second of which nobody polls or can cancel.
+   */
+  const reservation = ref<MarketInstallOwner | null>(null)
   const cancelling = ref(false)
   const overtime = ref(false)
   const detailsExpanded = ref(false)
@@ -398,6 +406,21 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
 
   // ─── public API ──────────────────────────────────────────────────────────
 
+  /** Atomically claim the install slot. Returns false when another surface
+   *  already holds it or a task is being tracked. */
+  function reserve(requester: MarketInstallOwner): boolean {
+    if (reservation.value || running.value) {
+      log.info('reserve refused', { heldBy: reservation.value, running: running.value, requester })
+      return false
+    }
+    reservation.value = requester
+    return true
+  }
+
+  function release(requester: MarketInstallOwner): void {
+    if (reservation.value === requester) reservation.value = null
+  }
+
   /** Poll ``id`` to a terminal state. Resolves with the outcome; the reactive
    *  state stays populated afterwards so the caller can report success/failure
    *  until it calls :func:`dismiss`. */
@@ -428,6 +451,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       } catch (err) {
         log.warn('task poll threw', { taskId: id, err })
       }
+      // Re-check after every await: a dismiss during the request must not let
+      // this loop write state back into a closed task.
+      if (myGeneration !== generation) return { ok: false, aborted: true }
       if (!res) {
         // Bridge temporarily unreachable: keep polling, it usually comes back.
         log.warn('task poll has no bridge', { taskId: id })
@@ -454,6 +480,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
 
       missingPolls = 0
       const current = (await res.json().catch(() => null)) as MarketInstallTask | null
+      if (myGeneration !== generation) return { ok: false, aborted: true }
       if (!current?.status) {
         log.warn('task poll returned no status', { taskId: id })
         continue
@@ -527,6 +554,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     generation += 1
     clearOvertimeTimer()
     owner.value = null
+    reservation.value = null
     syntheticErrorKey.value = null
     taskId.value = null
     task.value = null
@@ -552,6 +580,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     context,
     taskId,
     owner,
+    reservation,
+    reserve,
+    release,
     cancelling,
     overtime,
     detailsExpanded,
