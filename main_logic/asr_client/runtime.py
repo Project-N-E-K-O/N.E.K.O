@@ -4692,8 +4692,11 @@ class IndependentAsrRuntime:
                     if self._asr_partial_turn_token == accepted_turn_token:
                         self._asr_partial_turn_token = None
                     if self._asr_prepared_turn_token == accepted_turn_token:
-                        # The promise passes to the transcript dispatch below,
-                        # whose finally settles it through Core.
+                        # The promise passes to the transcript dispatch below.
+                        # Its own exits settle it explicitly; a rejected
+                        # envelope is settled instead by the voice-input
+                        # registry cancelling this route, which abandons the
+                        # turn through the Core-chat consumer.
                         self._asr_prepared_turn_token = None
                     lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
                     self._asr_turn_prepared = False
