@@ -376,6 +376,7 @@ const installResumeText = computed(() => {
   const stage = t(installTask.stageLabelKey)
   return name ? `${name} · ${stage}` : stage
 })
+
 /** Guards the window between the click and the task id coming back; the store
  *  guards everything after that. */
 const marketInstallBusy = ref(false)

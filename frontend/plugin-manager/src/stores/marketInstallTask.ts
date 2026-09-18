@@ -194,8 +194,11 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   })
 
   const stageLabelKey = computed(() => {
+    // Progressive copy ("Downloading") for the running state; the checklist
+    // below uses the noun form ("Download") because a finished row must not
+    // read as still-in-progress.
     const step = stageToStep(task.value?.stage) ?? lastRunningStep
-    return step ? STEP_LABEL_KEYS[step] : 'market.installStage.pending'
+    return step ? `market.installStage.${step}` : 'market.installStage.pending'
   })
 
   const errorKey = computed(() => (
@@ -487,6 +490,8 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     cancelling,
     overtime,
     detailsExpanded,
+    // `speed` / `eta` are the raw derivations; `transferText` only formats them.
+    // Kept public so the sampling maths can be asserted without string parsing.
     speed,
     eta,
     running,
