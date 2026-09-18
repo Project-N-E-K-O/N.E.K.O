@@ -518,8 +518,46 @@
             I.clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
         });
 
-        // Refresh option list whenever an assistant turn finishes streaming.
-        window.addEventListener('neko-assistant-turn-end', function () {
+        window.addEventListener('neko:icebreaker-galgame-handoff', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            var messageId = String(detail.messageId || '');
+            if (!messageId) return;
+            if (detail.sessionId) {
+                I.clearIcebreakerChoicePrompt(String(detail.sessionId));
+            }
+            I.rememberIcebreakerGalgameHandoff(messageId);
+            if (!I.state.galgameModeEnabled) return;
+            var overlay = I.getOverlay();
+            if (!overlay || overlay.hidden) return;
+            var seqAtSchedule = I.state._galgameRequestSeq;
+            I.waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!I.state.galgameModeEnabled) return;
+                if (I.state._galgameRequestSeq !== seqAtSchedule) return;
+                var overlayNow = I.getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                if (I.state.pendingIcebreakerGalgameHandoffMessageId !== messageId) return;
+                I.fetchPendingIcebreakerGalgameHandoffOrLatest();
+            });
+        });
+
+        function isNewUserIcebreakerTurnEndEvent(event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            if (detail.source === 'new_user_icebreaker') return true;
+            var meta = detail.meta && typeof detail.meta === 'object' ? detail.meta : {};
+            if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+                return true;
+            }
+            var metaEvent = meta.event && typeof meta.event === 'object' ? meta.event : {};
+            return metaEvent.source === 'new_user_icebreaker';
+        }
+
+        // Refresh option list whenever an ordinary assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function (event) {
+            if (isNewUserIcebreakerTurnEndEvent(event)) return;
             if (!I.state.galgameModeEnabled) return;
             // Skip when the chat overlay is hidden — otherwise galgame mode's
             // default-on flag would spam /api/galgame/options (and summary-tier

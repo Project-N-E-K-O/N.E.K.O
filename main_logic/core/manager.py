@@ -278,6 +278,9 @@ class LLMSessionManager(
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
         ] = None
+        # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
+        # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
+        self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -328,6 +331,11 @@ class LLMSessionManager(
         self._tts_notified_error_keys: set[tuple[str, str]] = set()
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
+        # 文本空闲软 flush：realtime 语音 + 自定义 TTS 时，本轮转录停下 ~1s 而
+        # provider 的 response.done 还没来，就让 worker 先把攒着的尾句合成出来。
+        # 定时器由每个入队的文本 chunk 重置，done 入队 / 打断 / 拆除时取消。
+        self._tts_soft_flush_task: Optional[asyncio.Task] = None
+        self._tts_soft_flush_supported: bool = False  # 由 _start_tts_thread 按 provider 能力位设置
         # Keep one utterance ledger so a replacement worker can replay consumed text.
         # 已送入当前 worker 的原始文本账本。配置型 provider 运行时失败时，
         # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。
@@ -346,6 +354,9 @@ class LLMSessionManager(
         self._active_text_request_id: Optional[str] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
+        # (request_id, staged image) pairs for offline attachments still queued in
+        # the session's _pending_images; pruned whenever a new image is recorded.
+        self._request_staged_images: deque[tuple[str, object]] = deque()
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪

@@ -49,7 +49,10 @@ html #chat-container {
 
 /* ===== 弹出框 & 按钮主题变量（供 JS 内联样式引用） ===== */
 :root {
-  --neko-popup-bg: rgba(255, 255, 255, 0.65);
+  /* 50% 映射到原有观感；设置模块将 0–100% 转成 0–2 系数。 */
+  --neko-chat-opacity-factor: 1;
+  --neko-floating-menu-opacity-factor: 1;
+  --neko-popup-bg: rgba(255, 255, 255, calc(0.65 * var(--neko-floating-menu-opacity-factor, 1)));
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.18);
   --neko-popup-border-color: rgba(0, 0, 0, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
@@ -75,16 +78,16 @@ html #chat-container {
   --neko-popup-error-border: rgba(220, 38, 38, 0.2);
   --neko-hud-subtle-bg: rgba(0, 0, 0, 0.06);
   /* 浮动按钮变量 */
-  --neko-btn-bg: rgba(255, 255, 255, 0.65);
-  --neko-btn-bg-hover: rgba(255, 255, 255, 0.8);
-  --neko-btn-bg-active: rgba(255, 255, 255, 0.75);
+  --neko-btn-bg: rgba(255, 255, 255, calc(0.65 * var(--neko-floating-menu-opacity-factor, 1)));
+  --neko-btn-bg-hover: rgba(255, 255, 255, calc(0.8 * var(--neko-floating-menu-opacity-factor, 1)));
+  --neko-btn-bg-active: rgba(255, 255, 255, calc(0.75 * var(--neko-floating-menu-opacity-factor, 1)));
   --neko-btn-border: 1px solid rgba(255, 255, 255, 0.18);
   --neko-btn-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08);
   --neko-btn-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="dark"] {
-  --neko-popup-bg: rgba(30, 30, 30, 0.82);
+  --neko-popup-bg: rgba(30, 30, 30, calc(0.82 * var(--neko-floating-menu-opacity-factor, 1)));
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.1);
   --neko-popup-border-color: rgba(255, 255, 255, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.15), 0 8px 16px rgba(0, 0, 0, 0.25), 0 16px 32px rgba(0, 0, 0, 0.15);
@@ -110,9 +113,9 @@ html #chat-container {
   --neko-popup-error-border: rgba(255, 107, 107, 0.2);
   --neko-hud-subtle-bg: rgba(255, 255, 255, 0.08);
   /* 浮动按钮变量 - 暗色 */
-  --neko-btn-bg: rgba(35, 35, 35, 0.75);
-  --neko-btn-bg-hover: rgba(50, 50, 50, 0.85);
-  --neko-btn-bg-active: rgba(45, 45, 45, 0.8);
+  --neko-btn-bg: rgba(35, 35, 35, calc(0.75 * var(--neko-floating-menu-opacity-factor, 1)));
+  --neko-btn-bg-hover: rgba(50, 50, 50, calc(0.85 * var(--neko-floating-menu-opacity-factor, 1)));
+  --neko-btn-bg-active: rgba(45, 45, 45, calc(0.8 * var(--neko-floating-menu-opacity-factor, 1)));
   --neko-btn-border: 1px solid rgba(255, 255, 255, 0.1);
   --neko-btn-shadow: 0 2px 4px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.16);
   --neko-btn-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.16), 0 8px 16px rgba(0, 0, 0, 0.2);
@@ -1310,6 +1313,37 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 
 [data-theme="dark"] .tooltip-icon {
   color: #4aa3df;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content {
+  background: linear-gradient(145deg, rgba(30, 52, 68, 0.98), rgba(21, 37, 51, 0.98));
+  color: #d9eff8;
+  border-color: rgba(80, 202, 244, 0.42);
+  border-left-color: #50caf4;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.38), 0 3px 12px rgba(39, 171, 224, 0.16);
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-icon {
+  color: #a7e9ff;
+  background: linear-gradient(180deg, #315f77 0%, #203f53 100%);
+  border-color: rgba(105, 220, 255, 0.72);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content strong {
+  color: #75dcff;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content::before {
+  opacity: 0.16;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content::after {
+  border-color: #172c3a transparent transparent transparent;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content[data-position="bottom"]::after {
+  border-color: transparent transparent #1d3545 transparent;
 }
 
 /* ===== 子页面：模态框 / 警告 ===== */

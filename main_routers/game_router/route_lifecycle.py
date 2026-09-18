@@ -49,6 +49,7 @@ from .memory_policy import (
     _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
     _DEFAULT_GAME_MEMORY_TAIL_COUNT,
     _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
+    _GAME_MEMORY_ARCHIVE_OWNER_GENERIC,
     _game_memory_policy_fields,
     _game_memory_policy_from_payload,
     _normalize_game_memory_type,
@@ -64,6 +65,30 @@ from utils.game_route_state import _game_route_states, _route_state_key
 
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _GAME_WINDOW_STATE_CHANGE_PUSH_TIMEOUT_SECONDS = 2.0
+# Route-state slot for the inbox behind SessionManager._takeover_callback_sink.
+_TAKEOVER_CALLBACK_INBOX_KEY = "_takeover_callback_inbox"
+
+
+def _close_takeover_callback_inbox(state: dict, mgr=None) -> None:
+    """Close this route's takeover inbox; recent cues return to ordinary delivery.
+
+    Call after the takeover flags are cleared, so resubmitted cues are queued
+    for normal proactive delivery instead of the closed sink.
+    """
+    close = getattr(state.get(_TAKEOVER_CALLBACK_INBOX_KEY), "close", None)
+    if not callable(close):
+        return
+    submit = getattr(mgr, "submit_proactive_callback", None)
+    for callback in close() or ():
+        if callable(submit):
+            try:
+                submit(callback, priority=callback.get("priority", 0),
+                       coalesce_key=callback.get("coalesce_key") or None)
+                continue
+            except Exception as exc:
+                logger.warning("takeover inbox handoff failed: %s", type(exc).__name__)
+        from main_logic.proactive_delivery import resolve_callback_delivery_ack
+        resolve_callback_delivery_ack(callback, False)
 
 
 async def _push_game_window_state_change(
@@ -276,6 +301,7 @@ def _build_route_state(
         "game_memory_player_interaction_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_event_reply_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_archive_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
+        "game_memory_archive_owner": _GAME_MEMORY_ARCHIVE_OWNER_GENERIC,
         "game_memory_postgame_context_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "last_state": {},
         "finalScore": {},

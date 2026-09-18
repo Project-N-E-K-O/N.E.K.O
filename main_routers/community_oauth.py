@@ -233,21 +233,25 @@ def _persist_refreshed_oauth_tokens(
     if auth_path is None:
         return True
     try:
-        auth = C._read_json_dict(auth_path)
-        if auth and str(auth.get("access_token") or "").strip() == str(
-            expected.get("access_token") or ""
-        ).strip():
-            C._write_private_json(
-                auth_path,
-                {
-                    **auth,
-                    "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "session_generation": int(auth.get("session_generation") or 0) + 1,
-                },
-            )
-    except (OSError, ValueError, TypeError) as exc:
+        # The bind-repair path in card_drop_router also writes community_auth.json
+        # while holding the social-session lock, so both writers must serialize
+        # on the same lock to avoid clobbering each other's updates.
+        with C._social_session_lock(social_path):
+            auth = C._read_json_dict(auth_path)
+            if auth and str(auth.get("access_token") or "").strip() == str(
+                expected.get("access_token") or ""
+            ).strip():
+                C._write_private_json(
+                    auth_path,
+                    {
+                        **auth,
+                        "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "session_generation": int(auth.get("session_generation") or 0) + 1,
+                    },
+                )
+    except (OSError, ValueError, TypeError, TimeoutError) as exc:
         # The Electron-visible social session is authoritative.  A stale legacy
         # mirror must not make a successful refresh look logged out.
         logger.warning("community_oauth: refreshed auth mirror save failed: %s", exc)
@@ -257,26 +261,25 @@ def _persist_refreshed_oauth_tokens(
 def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     """Clear only the rejected credential snapshot; preserve a concurrent login."""
     success = True
-    social_path = C._social_session_path()
-    if social_path is not None:
-        try:
-            with C._social_session_lock(social_path):
-                social = C._read_json_dict(social_path)
-                current_access = str((social or {}).get("token") or "").strip()
-                if current_access == str(expected.get("access_token") or "").strip():
-                    social_path.unlink(missing_ok=True)
-        except (OSError, TimeoutError):
-            success = False
+    social_paths = C._social_session_paths()
     auth_path = C._auth_path()
+    expected_access = str(expected.get("access_token") or "").strip()
+    credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
-        try:
-            auth = C._read_json_dict(auth_path)
-            if str((auth or {}).get("access_token") or "").strip() == str(
-                expected.get("access_token") or ""
-            ).strip():
-                auth_path.unlink(missing_ok=True)
-        except OSError:
-            success = False
+        credentials.append((auth_path, "access_token"))
+    try:
+        # Keep conditional reads and deletions in the same critical section as
+        # bind repair and identity writes, including the legacy session path.
+        with C._social_session_locks(social_paths):
+            for path, token_key in credentials:
+                try:
+                    saved = C._read_json_dict(path)
+                    if str((saved or {}).get(token_key) or "").strip() == expected_access:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    success = False
+    except (OSError, TimeoutError):
+        success = False
     return success
 
 
@@ -408,10 +411,10 @@ async def _resolve_saved_oauth_status(
             return {"logged_in": False, "snapshot": snapshot, "auth": auth}
 
     cleared = await asyncio.to_thread(_clear_rejected_oauth_snapshot, snapshot)
-    if cleared:
-        return {"logged_in": False, "snapshot": None, "auth": {}}
-
-    logger.warning("community_oauth: rejected credential cleanup did not complete")
+    if not cleared:
+        logger.warning("community_oauth: rejected credential cleanup did not complete")
+    # Conditional cleanup may succeed while preserving a concurrent login,
+    # including a newer auth mirror that now becomes the fallback session.
     current, current_auth = await asyncio.to_thread(_load_oauth_status_records)
     if (
         current
@@ -420,6 +423,8 @@ async def _resolve_saved_oauth_status(
     ):
         # A concurrent login replaced the rejected snapshot while cleanup ran.
         return await _resolve_saved_oauth_status(_attempt + 1)
+    if cleared:
+        return {"logged_in": False, "snapshot": current, "auth": current_auth}
     return {
         "logged_in": False,
         "snapshot": current or snapshot,
@@ -490,55 +495,73 @@ def _persist_oauth_credentials(
     if auth_path is None or social_path is None:
         return False
 
-    snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
+    rollback_ok = True
     try:
-        for path in (auth_path, social_path):
-            existed = path.exists()
-            payload = C._read_json_dict(path) if existed else None
-            if existed and payload is None:
-                logger.warning(
-                    "community_oauth: refusing to replace unreadable credential file: %s",
-                    path.name,
-                )
+        # Both credential files must move as one unit: a concurrent bind repair
+        # or refresh holds this same lock, so without it the two records can be
+        # left describing different accounts. The rollback snapshots are read
+        # inside the same scope, or a refresh committing between the read and
+        # the lock would be rolled back onto an already-consumed refresh token.
+        with C._social_session_lock(social_path):
+            snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
+            try:
+                for path in (auth_path, social_path):
+                    existed = path.exists()
+                    payload = C._read_json_dict(path) if existed else None
+                    if existed and payload is None:
+                        logger.warning(
+                            "community_oauth: refusing to replace unreadable "
+                            "credential file: %s",
+                            path.name,
+                        )
+                        return False
+                    snapshots.append((path, existed, payload))
+            except OSError as exc:
+                logger.warning("community_oauth: credential snapshot failed: %s", exc)
                 return False
-            snapshots.append((path, existed, payload))
-    except OSError as exc:
-        logger.warning("community_oauth: credential snapshot failed: %s", exc)
+
+            auth_saved = C._save_auth_unlocked(auth_payload)
+            social_saved = auth_saved and C._save_social_session_unlocked(
+                social_path,
+                social_base,
+                access_token,
+                refresh_token,
+                local_user_id=local_user_id,
+                auth_source="oauth",
+                auth_public_url=auth_public_url,
+                client_id=client_id,
+            )
+            if auth_saved and social_saved:
+                return True
+
+            for path, existed, payload in snapshots:
+                # social_saved is necessarily False here: either the social
+                # writer was never reached, or its atomic temp+rename write
+                # failed and left the old file byte-identical. Rewriting it
+                # cannot restore anything, but its failure would flip
+                # rollback_ok and make _clear_auth() delete a still-usable
+                # session, so leave the file alone.
+                if path == social_path:
+                    continue
+                try:
+                    if existed and payload is not None:
+                        C._write_private_json(path, payload)
+                    elif not existed:
+                        path.unlink(missing_ok=True)
+                except OSError as exc:
+                    rollback_ok = False
+                    logger.warning(
+                        "community_oauth: credential rollback failed for %s: %s",
+                        path.name,
+                        exc,
+                    )
+    except (OSError, TimeoutError) as exc:
+        logger.warning("community_oauth: credential persist failed: %s", exc)
         return False
 
-    auth_saved = C._save_auth(auth_payload)
-    social_saved = auth_saved and C._save_social_session(
-        social_base,
-        access_token,
-        refresh_token,
-        local_user_id=local_user_id,
-        auth_source="oauth",
-        auth_public_url=auth_public_url,
-        client_id=client_id,
-    )
-    if auth_saved and social_saved:
-        return True
-
-    rollback_ok = True
-    for path, existed, payload in snapshots:
-        # _save_social_session() either atomically replaced the social file and
-        # returned True, or left it untouched. Reaching rollback therefore
-        # means only community_auth.json may need restoration; rewriting the
-        # social snapshot here could overwrite a concurrent Desktop refresh.
-        if path == social_path:
-            continue
-        try:
-            if existed:
-                C._write_private_json(path, payload or {})
-            else:
-                path.unlink(missing_ok=True)
-        except OSError as exc:
-            rollback_ok = False
-            logger.warning(
-                "community_oauth: credential rollback failed for %s: %s",
-                path.name,
-                exc,
-            )
+    # A half-restored pair can pass a new auth record off as an active login.
+    # _clear_auth() takes the same non-reentrant lock, so it can only run once
+    # the scope above released it.
     if not rollback_ok and not C._clear_auth():
         logger.warning("community_oauth: failed to clear credentials after rollback failure")
     return False

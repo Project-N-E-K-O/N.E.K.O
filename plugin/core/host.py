@@ -548,12 +548,45 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
     return sys.modules[plugin_module_path]
 
 
-def _import_plugin_module(module_path: str, config_path: Path | None, logger: Any) -> Any:
+def _import_plugin_module(module_path: str, config_path: Path | None, logger: Any, *, source_only: bool = False) -> Any:
     """导入插件模块，并在用户插件命名空间失效时使用当前插件目录兜底。
 
     *config_path* 为空时（例如运行时启用扩展却拿不到 plugin.toml 路径），跳过兜底，
     退化为普通 ``import_module`` 行为。
     """
+
+    if source_only:
+        from plugin.core.source_imports import install_source_imports
+
+        if config_path is None:
+            raise ValueError("Source-only plugin imports require a manifest path")
+        canonical = module_path.removeprefix("plugin.")
+        parts = canonical.split(".")
+        directory = config_path.resolve().parent
+        if len(parts) < 2 or parts[0] != "plugins" or parts[1] != directory.name:
+            raise ValueError("Source-only plugin module must match its source directory")
+        package = ".".join(parts[:2])
+        _evict_plugin_module_tree(package)
+        _evict_plugin_module_tree(f"plugin.{package}")
+        _ensure_plugins_namespace(directory.parent, logger)
+        install_source_imports(package, directory)
+        legacy_parent = importlib.import_module("plugin.plugins")
+        spec = importlib.util.find_spec(package)
+        if spec is None:
+            raise ModuleNotFoundError(f"No source package named '{package}'", name=package)
+        root_module = importlib.util.module_from_spec(spec)
+        sys.modules[package] = root_module
+        sys.modules[f"plugin.{package}"] = root_module
+        setattr(sys.modules["plugins"], parts[1], root_module)
+        setattr(legacy_parent, parts[1], root_module)
+        try:
+            if spec.loader is not None:
+                spec.loader.exec_module(root_module)
+            return importlib.import_module(canonical)
+        except BaseException:
+            _evict_plugin_module_tree(package)
+            _evict_plugin_module_tree(f"plugin.{package}")
+            raise
 
     if config_path is not None and (
         module_path.startswith("plugins.") or module_path.startswith("plugin.plugins.")
@@ -774,7 +807,10 @@ def _plugin_process_runner(
         
         module_path, class_name = entry_point.split(":", 1)
         logger.debug("[Plugin Process] Importing module: {}", module_path)
-        mod = _import_plugin_module(module_path, config_path, logger)
+        mod = _import_plugin_module(
+            module_path, config_path, logger,
+            source_only=(startup_options or {}).get("source_only") is True,
+        )
         cls = getattr(mod, class_name)
         logger.debug("[Plugin Process] Class loaded: {}", cls.__name__)
 
@@ -1874,7 +1910,7 @@ class PluginHost:
     - 进程间通信（通过 PluginCommunicationResourceManager）
     """
 
-    def __init__(self, plugin_id: str, entry_point: str, config_path: Path):
+    def __init__(self, plugin_id: str, entry_point: str, config_path: Path, *, source_only: bool = False):
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
@@ -1886,6 +1922,8 @@ class PluginHost:
 
         self._process_stop_event: Any = multiprocessing.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
+        if source_only:
+            self._startup_options["source_only"] = True
 
         # Shared response notification primitives must be initialized before
         # forking, otherwise each child creates its own Manager proxies.

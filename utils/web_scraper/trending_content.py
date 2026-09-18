@@ -17,15 +17,19 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from itertools import zip_longest
+from itertools import islice, zip_longest
+import json
+import os
+from pathlib import Path
 import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
+from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
 import random
 import re
 import time
 from typing import TYPE_CHECKING, Dict, List, Any
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
@@ -51,6 +55,157 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
+# The community API's discover feed is deliberately fetched as its first page
+# of 60 cards. The caller's smaller ``limit`` is applied after normalization,
+# so Phase 1 keeps its existing prompt budget while still getting a varied pool.
+NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
+NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
+NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
+NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
+NEKO_COMMUNITY_TAG_MAX_COUNT = 8
+NEKO_COMMUNITY_TAG_MAX_CHARS = 80
+NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT = 64
+NEKO_COMMUNITY_CONTENT_MAX_CHARS = 500
+NEKO_COMMUNITY_TEXT_MAX_DEPTH = 8
+NEKO_COMMUNITY_TEXT_MAX_NODES = 128
+NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS = 200
+NEKO_COMMUNITY_URL_MAX_CHARS = 2048
+NEKO_COMMUNITY_RESPONSE_MAX_BYTES = 1_000_000
+
+
+def _neko_community_urls() -> tuple[str, str]:
+    """Return community feed and discover URLs for the configured social host."""
+
+    base_url = social_base_url().rstrip("/")
+    return f"{base_url}/api/feed", f"{base_url}/discover"
+
+
+def _same_community_origin(left: str, right: str) -> bool:
+    """Return whether two URLs have the same validated HTTP(S) origin."""
+
+    try:
+        left_url = urlparse(left)
+        right_url = urlparse(right)
+        scheme = left_url.scheme.lower()
+        if (
+            scheme not in {"http", "https"}
+            or scheme != right_url.scheme.lower()
+            or not left_url.hostname
+            or left_url.hostname.casefold() != (right_url.hostname or "").casefold()
+        ):
+            return False
+        default_port = 443 if scheme == "https" else 80
+        return (left_url.port or default_port) == (right_url.port or default_port)
+    except ValueError:
+        return False
+
+
+def _neko_community_bearer_transport_allowed(feed_api: str) -> bool:
+    """Allow bearer transport over HTTPS or the desktop's loopback HTTP hosts."""
+
+    try:
+        parsed = urlparse(feed_api)
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").casefold()
+    return parsed.scheme.lower() == "https" or (
+        parsed.scheme.lower() == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
+    )
+
+
+def _neko_community_legacy_session_path() -> Path | None:
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().memory_dir).parent / "social_session.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _neko_community_legacy_auth_path() -> Path | None:
+    """Return the pre-Electron community credential file without router imports."""
+
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().memory_dir).parent / "community_auth.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _neko_community_session_path() -> Path | None:
+    """Return the preferred desktop OAuth session file without router imports."""
+
+    user_data_dir = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if user_data_dir:
+        candidate = Path(user_data_dir).expanduser()
+        if candidate.is_absolute():
+            return candidate / "social_session.json"
+    return _neko_community_legacy_session_path()
+
+
+def _neko_community_session_paths() -> list[Path]:
+    """Return desktop then legacy OAuth-session paths, deduplicated."""
+
+    paths: list[Path] = []
+    for candidate in (
+        _neko_community_session_path(),
+        _neko_community_legacy_session_path(),
+    ):
+        if candidate is not None and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _load_neko_community_access_token(feed_api: str) -> str:
+    """Read a matching desktop OAuth token without validating or refreshing it."""
+
+    for path in _neko_community_session_paths():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        access_token = ""
+        for token_candidate in (data.get("token"), data.get("access_token")):
+            access_token = str(token_candidate or "").strip()
+            if access_token:
+                break
+        base_url = ""
+        for base_url_candidate in (data.get("baseUrl"), data.get("base_url")):
+            base_url = str(base_url_candidate or "").strip()
+            if base_url:
+                break
+        if access_token and base_url and _same_community_origin(base_url, feed_api):
+            return access_token
+
+    legacy_auth_path = _neko_community_legacy_auth_path()
+    try:
+        legacy_auth = json.loads(legacy_auth_path.read_text(encoding="utf-8"))
+    except (AttributeError, OSError, ValueError, TypeError):
+        legacy_auth = None
+    legacy_access_token = str(
+        legacy_auth.get("access_token") if isinstance(legacy_auth, dict) else ""
+    ).strip()
+    # Pre-Electron credentials contain no origin metadata. They are safe to reuse
+    # only for the historical production community, never a configured instance.
+    if legacy_access_token and _same_community_origin(DEFAULT_SOCIAL_BASE_URL, feed_api):
+        return legacy_access_token
+    return ""
+
+
+async def _neko_community_access_token(feed_api: str) -> str:
+    """Read a same-origin desktop OAuth token without blocking the event loop."""
+
+    try:
+        return await asyncio.to_thread(_load_neko_community_access_token, feed_api)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "社区 OAuth 会话读取失败，按未登录 Feed 继续: %s",
+            type(exc).__name__,
+        )
+        return ""
 
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
@@ -1683,6 +1838,375 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
             line += f"\n   {description[:300]}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
+    """Return a bounded prefix of the first list-shaped card collection."""
+
+    def bounded_items(items: list[Any]) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in islice(items, NEKO_COMMUNITY_FEED_PAGE_SIZE)
+            if isinstance(item, dict)
+        ]
+
+    if isinstance(payload, list):
+        return bounded_items(payload)
+    if not isinstance(payload, dict):
+        return []
+
+    containers: list[Any] = [payload]
+    for key in ("data", "result", "feed"):
+        value = payload.get(key)
+        if isinstance(value, (dict, list)):
+            containers.append(value)
+    for container in containers:
+        if isinstance(container, list):
+            return bounded_items(container)
+        if not isinstance(container, dict):
+            continue
+        for key in ("items", "posts", "cards", "results", "list"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return bounded_items(value)
+    return []
+
+
+def _community_text(
+    value: Any,
+    *,
+    max_chars: int | None = None,
+    _depth: int = 0,
+    _nodes_remaining: list[int] | None = None,
+) -> str:
+    """Flatten bounded community-card text without unbounded nested traversal."""
+
+    nodes_remaining = (
+        _nodes_remaining
+        if _nodes_remaining is not None
+        else [NEKO_COMMUNITY_TEXT_MAX_NODES]
+    )
+    if _depth > NEKO_COMMUNITY_TEXT_MAX_DEPTH or nodes_remaining[0] <= 0:
+        return ""
+    nodes_remaining[0] -= 1
+    if isinstance(value, str):
+        if max_chars is not None:
+            value = value[:max_chars]
+        return _plain_xhh_text(value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "body", "value", "name", "display_name"):
+            text = _community_text(
+                value.get(key),
+                max_chars=max_chars,
+                _depth=_depth + 1,
+                _nodes_remaining=nodes_remaining,
+            )
+            if text:
+                return text
+        return ""
+    if isinstance(value, list):
+        values: list[str] = []
+        remaining = max_chars
+        for item in value:
+            if nodes_remaining[0] <= 0:
+                break
+            allowed_chars = remaining
+            if allowed_chars is not None and values:
+                allowed_chars -= 1
+            if allowed_chars is not None and allowed_chars <= 0:
+                break
+            text = _community_text(
+                item,
+                max_chars=allowed_chars,
+                _depth=_depth + 1,
+                _nodes_remaining=nodes_remaining,
+            )
+            if not text:
+                continue
+            values.append(text)
+            if remaining is not None:
+                remaining -= len(text) + (1 if len(values) > 1 else 0)
+        return _plain_xhh_text(" ".join(values))
+    return ""
+
+
+def _community_label_values(
+    items: Any, *, limit: int, max_chars: int, scan_limit: int
+) -> list[str]:
+    """Normalize a bounded number of tags retained for prompt rendering."""
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in islice(items if isinstance(items, list) else [], scan_limit):
+        value = _community_text(item, max_chars=max_chars)
+        if not value or value in seen:
+            continue
+        values.append(value)
+        seen.add(value)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _community_identifier(value: Any) -> str:
+    """Normalize a bounded public card identifier for durable deduplication."""
+
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return str(value).strip()[:NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS]
+    return _community_text(value, max_chars=NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS)
+
+
+def _is_community_placeholder_url(url: str, discover_url: str) -> bool:
+    """Return whether a same-origin URL is only a generic community landing page."""
+
+    try:
+        parsed_url = urlparse(url)
+        parsed_discover = urlparse(discover_url)
+    except ValueError:
+        return True
+    path = parsed_url.path.rstrip("/")
+    discover_path = parsed_discover.path.rstrip("/")
+    return not path or (path == discover_path and not parsed_url.query)
+
+def _community_card_url(
+    raw: dict[str, Any], *, discover_fallback: bool = True
+) -> str:
+    _, discover_url = _neko_community_urls()
+    for key in (
+        "url",
+        "link",
+        "href",
+        "permalink",
+        "canonical_url",
+        "post_url",
+        "detail_url",
+        "path",
+    ):
+        candidate = _community_text(raw.get(key), max_chars=NEKO_COMMUNITY_URL_MAX_CHARS)
+        if not candidate or "\\" in candidate:
+            continue
+        try:
+            parsed_candidate = urlparse(candidate)
+        except ValueError:
+            continue
+        if parsed_candidate.scheme:
+            if parsed_candidate.scheme.lower() not in {"http", "https"}:
+                continue
+            resolved_url = candidate
+        else:
+            resolved_url = urljoin(discover_url, candidate)
+        try:
+            urlparse(resolved_url)
+        except ValueError:
+            continue
+        if (
+            len(resolved_url) <= NEKO_COMMUNITY_URL_MAX_CHARS
+            and _same_community_origin(resolved_url, discover_url)
+            and not _is_community_placeholder_url(resolved_url, discover_url)
+        ):
+            return resolved_url
+    # The feed API does not need to expose a post permalink for a card to stay
+    # useful: the discover page is a safe, stable fallback for the source card.
+    return discover_url if discover_fallback else ""
+
+
+def normalize_neko_community_feed(
+    payload: Any,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Normalize public N.E.K.O community feed cards for proactive chat."""
+    posts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in _community_feed_items(payload):
+        title = ""
+        for field in ("title", "headline", "subject"):
+            title = _community_text(raw.get(field), max_chars=NEKO_COMMUNITY_TITLE_MAX_CHARS)
+            if title:
+                break
+        content = ""
+        for field in (
+            "story_md",
+            "summary",
+            "content",
+            "body",
+            "text",
+            "description",
+            "excerpt",
+        ):
+            content = _community_text(
+                raw.get(field), max_chars=NEKO_COMMUNITY_CONTENT_MAX_CHARS
+            )
+            if content:
+                break
+        content = content[:NEKO_COMMUNITY_CONTENT_MAX_CHARS]
+        item_id = ""
+        for identifier in (raw.get("id"), raw.get("post_id"), raw.get("uuid")):
+            item_id = _community_identifier(identifier)
+            if item_id:
+                break
+        card_url = _community_card_url(raw, discover_fallback=False)
+        # Content alone is too weak an identity for a community source card.
+        # Skip it rather than making a discover-page fallback look distinct.
+        if not title and not item_id and not card_url:
+            continue
+        published_at = ""
+        for field in ("created_at", "createdAt"):
+            value = raw.get(field)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                published_at = _plain_xhh_text(
+                    str(value)[:NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS]
+                )
+            if published_at:
+                break
+        published_at = published_at[:NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS]
+        if not title:
+            title = content[:80]
+        if not title:
+            continue
+        author = ""
+        for author_candidate in (
+            raw.get("author"),
+            raw.get("author_name"),
+            raw.get("user"),
+            raw.get("creator"),
+        ):
+            author = _community_text(
+                author_candidate, max_chars=NEKO_COMMUNITY_AUTHOR_MAX_CHARS
+            )
+            if author:
+                break
+        author = author[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
+        labels: list[str] = []
+        for label_candidate in (
+            raw.get("tags"),
+            raw.get("topics"),
+            raw.get("categories"),
+        ):
+            labels = _community_label_values(
+                label_candidate,
+                limit=NEKO_COMMUNITY_TAG_MAX_COUNT,
+                max_chars=NEKO_COMMUNITY_TAG_MAX_CHARS,
+                scan_limit=NEKO_COMMUNITY_TAG_SCAN_MAX_COUNT,
+            )
+            if labels:
+                break
+        _, discover_url = _neko_community_urls()
+        url = card_url or _community_card_url(raw)
+        title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
+        permalink = card_url if card_url and card_url != discover_url else ""
+        dedupe_key = item_id or permalink or f"{url}|{title.casefold()}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        posts.append(
+            {
+                "id": item_id,
+                "dedupe_key": dedupe_key,
+                "title": title,
+                "content": content,
+                "author": author,
+                "tags": labels,
+                "url": url,
+                "created_at": published_at or None,
+            }
+        )
+        if len(posts) >= max(1, int(limit)):
+            break
+    return posts
+
+
+def format_neko_community_feed(posts: list[dict[str, Any]]) -> str:
+    """Format N.E.K.O community cards as bounded, prompt-ready material."""
+    lines: list[str] = []
+    for index, post in enumerate(posts, start=1):
+        details: list[str] = []
+        if post.get("author"):
+            details.append(f"作者: {post['author']}")
+        if post.get("tags"):
+            details.append("话题: " + "、".join(post["tags"][:5]))
+        suffix = f"（{'；'.join(details)}）" if details else ""
+        line = f"{index}. {post['title']}{suffix}"
+        content = _plain_xhh_text(post.get("content"))
+        if content and content != post["title"]:
+            line += f"\n   {content[:300]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _fetch_neko_community_payload(
+    client: httpx.AsyncClient,
+    feed_api: str,
+    *,
+    params: dict[str, int],
+    headers: dict[str, str],
+) -> tuple[int, Any | None]:
+    """Read one bounded community feed response before JSON decoding."""
+
+    body = bytearray()
+    async with client.stream(
+        "GET", feed_api, params=params, headers=headers, timeout=10.0
+    ) as response:
+        if response.status_code in {401, 403}:
+            return response.status_code, None
+        response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if len(body) + len(chunk) > NEKO_COMMUNITY_RESPONSE_MAX_BYTES:
+                raise ValueError("喵宇宙社区 feed 响应超过大小限制")
+            body.extend(chunk)
+    return response.status_code, json.loads(body)
+
+
+async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
+    """Fetch community cards with the validated desktop OAuth session when available."""
+
+    try:
+        feed_api, discover_url = _neko_community_urls()
+        headers = {
+            "Accept": "application/json",
+            "Referer": discover_url,
+            "User-Agent": XHH_USER_AGENT,
+        }
+        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        access_token = ""
+        if _neko_community_bearer_transport_allowed(feed_api):
+            access_token = await _neko_community_access_token(feed_api)
+        authenticated = bool(access_token)
+        if authenticated:
+            # Never put a refreshable community bearer into the process-wide client:
+            # its cookie jar and connection lifetime are shared by unrelated scrapers.
+            headers["Authorization"] = f"Bearer {access_token}"
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                trust_env=True,
+                follow_redirects=False,
+            ) as client:
+                status_code, payload = await _fetch_neko_community_payload(
+                    client, feed_api, params=params, headers=headers
+                )
+            # A permission/scope mismatch must not suppress the public discovery feed.
+            if status_code in {401, 403}:
+                authenticated = False
+                headers.pop("Authorization", None)
+                _, payload = await _fetch_neko_community_payload(
+                    get_external_http_client(), feed_api, params=params, headers=headers
+                )
+        else:
+            _, payload = await _fetch_neko_community_payload(
+                get_external_http_client(), feed_api, params=params, headers=headers
+            )
+        posts = normalize_neko_community_feed(payload, limit=limit)
+        if not posts:
+            raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+        return {
+            "success": True,
+            "posts": posts,
+            "formatted_content": format_neko_community_feed(posts),
+            "authenticated": authenticated,
+        }
+    except Exception as exc:
+        logger.warning(f"获取喵宇宙社区内容失败: {type(exc).__name__}: {exc}")
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}", "posts": []}
 
 
 async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:

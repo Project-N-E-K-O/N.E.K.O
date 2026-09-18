@@ -48,7 +48,8 @@
         previewCache: new Map(),    // cacheKey -> { payload }
         previewCurrentCacheKey: '',
         isPreviewRendering: false,
-        previewRenderToken: 0
+        previewRenderToken: 0,
+        previewRenderPending: false
     };
 
     // ======================== Utilities ========================
@@ -2650,6 +2651,37 @@
 
     // ======================== Preview modal ========================
 
+    function createPreviewFrame(doc) {
+        var frame = doc.createElement('iframe');
+        frame.className = 'chat-export-preview-frame';
+        frame.setAttribute('sandbox', 'allow-scripts');
+        frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
+        return frame;
+    }
+
+    function mountMarkdownPreviewFrame(modal, previewDocument, renderToken) {
+        var currentFrame = modal.frame;
+        var doc = currentFrame.ownerDocument || document;
+        var nextFrame = createPreviewFrame(doc);
+
+        nextFrame.addEventListener('load', function () {
+            if (
+                renderToken !== state.previewRenderToken
+                || state.previewModal !== modal
+                || modal.frame !== nextFrame
+            ) return;
+            modal.placeholder.hidden = true;
+        }, { once: true });
+
+        // Reusing an iframe after it has been display:none can leave Chromium's
+        // srcdoc browsing context blank. Replace it with a visible frame for
+        // every Markdown navigation and keep the loading cover until the new
+        // document has actually loaded.
+        nextFrame.srcdoc = String(previewDocument || '');
+        modal.frame = nextFrame;
+        modal.previewBody.replaceChild(nextFrame, currentFrame);
+    }
+
     function createPreviewModal(targetDocument) {
         var doc = targetDocument || document;
         var backdrop = doc.createElement('div');
@@ -2774,11 +2806,8 @@
         var previewBody = doc.createElement('div');
         previewBody.className = 'chat-export-preview-body';
 
-        var frame = doc.createElement('iframe');
-        frame.className = 'chat-export-preview-frame';
+        var frame = createPreviewFrame(doc);
         frame.hidden = true;
-        frame.setAttribute('sandbox', 'allow-scripts');
-        frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
 
         var previewImageWrap = doc.createElement('div');
         previewImageWrap.className = 'chat-export-preview-image-wrap';
@@ -2913,7 +2942,7 @@
             setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
-            frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
+            modal.frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
             previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             closeIcon.alt = translateLabel('common.close', 'Close');
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
@@ -2981,6 +3010,7 @@
         var previewWindow = state.previewWindow;
         var shouldDestroyWindow = !!(destroyWindow || closeWindow || (previewWindow && previewWindow.closed));
         state.previewRenderToken += 1;
+        state.previewRenderPending = false;
         if (modal) {
             var modalDocument = getPreviewModalDocument(modal);
             try {
@@ -3206,6 +3236,7 @@
         var formatId = state.exportFormat;
 
         if (entries.length === 0) {
+            state.previewRenderPending = false;
             modal.frame.hidden = true;
             modal.previewImageWrap.hidden = true;
             modal.placeholder.hidden = false;
@@ -3218,7 +3249,11 @@
         modal.downloadButton.disabled = false;
         modal.openWindowButton.disabled = false;
 
-        if (state.isPreviewRendering) return;
+        if (state.isPreviewRendering) {
+            state.previewRenderPending = true;
+            return;
+        }
+        state.previewRenderPending = false;
         state.isPreviewRendering = true;
         modal.placeholder.hidden = false;
         modal.placeholder.textContent = translateLabel('chat.exportPreviewLoading', 'Generating preview...');
@@ -3236,12 +3271,11 @@
                 modal.frame.hidden = true;
                 modal.placeholder.hidden = true;
             } else {
-                modal.frame.srcdoc = payload.previewDocument;
-                modal.frame.hidden = false;
                 modal.previewImageWrap.hidden = true;
-                modal.placeholder.hidden = true;
+                mountMarkdownPreviewFrame(modal, payload.previewDocument, myToken);
             }
         } catch (error) {
+            if (myToken !== state.previewRenderToken) return;
             logExportError('renderPreviewModal', error);
             modal.placeholder.hidden = false;
             modal.placeholder.textContent = translateLabel('chat.exportPreviewFailed', 'Failed to build the preview.')
@@ -3250,6 +3284,15 @@
             modal.previewImageWrap.hidden = true;
         } finally {
             state.isPreviewRendering = false;
+            if (
+                state.previewRenderPending
+                && state.previewModal
+                && state.previewModal.panel
+                && !state.previewModal.panel.hidden
+            ) {
+                state.previewRenderPending = false;
+                schedulePreviewRender();
+            }
         }
     }
 

@@ -526,6 +526,10 @@ class VRMCore {
         // the torso is still visible. Start wider and let the interaction module
         // expand further only when the animated bounds actually need it.
         this.manager.camera = new THREE.PerspectiveCamera(34, width / height, 0.05, 2000);
+        // Embedded renderers let their host own framing (including clipping).
+        // Reset on every camera initialization; never inherit a previous host's
+        // policy when a manager is reused for the desktop renderer.
+        this.manager._externalCameraFraming = embed;
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 
@@ -736,6 +740,7 @@ class VRMCore {
 
     async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
+        const embed = options.embed === true;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
             throw new Error(errorMsg);
@@ -880,7 +885,8 @@ class VRMCore {
 
             // 获取保存的用户偏好设置
             let preferences = null;
-            try {
+            if (!embed) {
+                try {
                 // 添加超时保护（5秒超时）
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -965,8 +971,9 @@ class VRMCore {
                         return false;
                     });
                 }
-            } catch (error) {
-                console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                } catch (error) {
+                    console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                }
             }
 
             if (preferences) {
@@ -1066,7 +1073,7 @@ class VRMCore {
             
             const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
-            if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
+            if (!embed && !hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
                 // 始终从 vrm.scene 获取当前位置，确保 z 值有效
                 // （旧版偏好设置可能只有 x 和 y，没有 z 值）

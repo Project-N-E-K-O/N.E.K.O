@@ -146,6 +146,8 @@ from .route_lifecycle import (  # noqa: F401
     _next_game_dialog_id,
     _push_game_speech_cancel,
     _push_game_window_state_change,
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _close_takeover_callback_inbox,
     _route_heartbeat_expired,
     _route_heartbeat_timeout_seconds,
     _route_liveness_at,
@@ -1872,6 +1874,27 @@ async def _finalize_superseded_route_if_current(
     )
 
 
+async def _start_watch_speech_takeover(state: dict, manager) -> None:
+    """Caller holds the route/supersede locks; no host resources are started yet."""
+    try:
+        await manager.interrupt_ordinary_speech_for_takeover()
+    except (Exception, asyncio.CancelledError) as exc:
+        # Roll back synchronously before releasing either lock. Do not launch a
+        # postgame task which could later unmute a replacement route, and do not
+        # report successful startup when ordinary audio could still be playing.
+        state['game_route_active'] = False
+        state['game_external_voice_route_active'] = False
+        state['game_external_text_route_active'] = False
+        state['heartbeat_enabled'] = False
+        state['exit_reason'] = 'speech_takeover_failed'
+        manager._takeover_active = False
+        manager._takeover_input_dispatcher = None
+        manager._takeover_callback_sink = None
+        _close_takeover_callback_inbox(state, manager)
+        logger.warning('watch-together speech takeover failed: error_type=%s', type(exc).__name__)
+        raise
+
+
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
     """Declare that the game window is open and main external inputs are hijacked."""
@@ -2051,6 +2074,15 @@ async def game_route_start(game_type: str, request: Request):
                     )
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
+                mgr._takeover_callback_sink = None
+                if game_type == "watch-together":
+                    # The scene speaks plugin responses itself (reaction gaps and
+                    # intermissions), so respond cues go to its route inbox.
+                    from main_logic.watch_together.live import LiveInbox
+                    inbox = LiveInbox()
+                    state[_TAKEOVER_CALLBACK_INBOX_KEY] = inbox
+                    mgr._takeover_callback_sink = inbox.accept
+                    await _start_watch_speech_takeover(state, mgr)
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
@@ -2420,6 +2452,7 @@ async def game_sdk_context_read(game_type: str, request: Request):
             scopes.append(scope)
 
     available: dict[str, Any] = {}
+    scope_metadata: dict[str, Any] = {}
     unavailable: list[str] = []
     for scope in scopes:
         if scope not in _SDK_GAME_CONTEXT_SCOPES:
@@ -2446,9 +2479,13 @@ async def game_sdk_context_read(game_type: str, request: Request):
             available[scope] = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
         elif scope == "pregame-context":
             available[scope] = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {}
+            scope_metadata[scope] = {
+                "source": _normalize_short_text(state.get("pre_game_context_source"), max_chars=80),
+                "error": _normalize_short_text(state.get("pre_game_context_error"), max_chars=500),
+            }
     try:
         bounded = _sdk_bounded_json_copy(
-            available,
+            {"scopes": available, "scope_metadata": scope_metadata},
             field="context_response",
             maximum_bytes=_SDK_GAME_PROTOCOL_MAX_BYTES,
         )
@@ -2457,7 +2494,8 @@ async def game_sdk_context_read(game_type: str, request: Request):
     return {
         "ok": True,
         "session_id": session_id,
-        "scopes": bounded,
+        "scopes": bounded["scopes"],
+        "scope_metadata": bounded["scope_metadata"],
         "unavailable_scopes": unavailable,
     }
 
@@ -3660,8 +3698,11 @@ async def _route_external_transcript_to_game(
         )
         if is_duplicate:
             logger.info(
-                "🎮 游戏语音转写去重: lanlan=%s key=%s text=%s",
-                lanlan_name, idempotency_key, text[:40],
+                "🎮 游戏语音转写去重: lanlan=%s "
+                "request_id_present=%s text_length=%s",
+                lanlan_name,
+                bool(current_request_id),
+                len(text),
             )
             return True
         # 3. Inserting a new key (or a no_id repeat past 1s window) — only
@@ -3745,11 +3786,49 @@ async def _route_external_transcript_to_game(
         )
         return True
 
+    # This scene uses a prepared media-clock reaction track. External text/STT
+    # must not start generic game chat or interrupt the track. Host controls own
+    # pause/stop; ordinary plugin responses remain behind the takeover gate.
+    if game_type == "watch-together":
+        return True
+
     if mgr and hasattr(mgr, "send_user_activity"):
         try:
             await mgr.send_user_activity()
         except Exception as exc:
             logger.debug("🎮 游戏外部输入打断当前语音失败: %s", exc)
+
+    if game_type == "drawing_guess":
+        if kind == "user-voice":
+            # The drawing page is the sole consumer of host-owned final ASR.
+            # The mirror above becomes the SDK ``voice.onTranscript`` event and
+            # the page submits it through the declared ``round:input`` command.
+            # Do not also append a generic output or run ``_run_game_chat``
+            # here: the page intentionally monitors with ``outputs: false``,
+            # and a second backend consumer would judge/reply twice.
+            return True
+
+        # Main-window text has no SDK transcript relay. Keep it in the drawing
+        # feature's own input policy instead of exposing its private round state
+        # (notably ``user_draw_answer``) to the generic game LLM.
+        try:
+            from .drawing_guess import handle_external_drawing_guess_transcript
+
+            await handle_external_drawing_guess_transcript(
+                lanlan_name,
+                session_id,
+                text,
+                route_state=state,
+                request_id=request_id,
+                source=source,
+                kind=kind,
+            )
+        except Exception as exc:
+            logger.warning(
+                "drawing_guess external text handling failed: error_type=%s",
+                type(exc).__name__,
+            )
+        return True
 
     event = (
         _build_external_voice_event(state, text)
@@ -4765,6 +4844,23 @@ async def _load_game_character_prompt_locale(lanlan_name: str) -> tuple[str, boo
         return "", False
 
 
+@router.get("/{game_type}/characters")
+async def game_character_names(game_type: str):
+    """Expose only bounded display names from the existing character registry."""
+    characters = await asyncio.to_thread(get_config_manager().load_characters)
+    nekos = characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    if not isinstance(nekos, dict):
+        return {"names": []}
+    if len(nekos) > 256:
+        raise HTTPException(status_code=413, detail="character_list_too_large")
+    names = []
+    for name in nekos:
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > 128:
+            raise HTTPException(status_code=422, detail="invalid_character_name")
+        names.append(name)
+    return {"names": names}
+
+
 @router.get("/{game_type}/character")
 async def game_character(game_type: str, request: Request = None):
     """Return current character information for model replacement.
@@ -4773,18 +4869,6 @@ async def game_character(game_type: str, request: Request = None):
     paths resolved by the host. Each mini game chooses the renderer it supports
     without redefining the current character's model-selection policy.
     """
-    def normalize_live3d_path(raw: str, static_dir: str) -> str:
-        if not raw or not isinstance(raw, str):
-            return ''
-        normalized = raw.strip().replace('\\', '/')
-        if not normalized:
-            return ''
-        if normalized.startswith(('http://', 'https://', '/user_', '/static/', '/workshop/')):
-            return normalized
-        if normalized.startswith(f'{static_dir}/'):
-            return f'/static/{normalized}'
-        return f'/static/{static_dir}/{normalized}'
-
     try:
         config_manager = get_config_manager()
         characters = await asyncio.to_thread(config_manager.load_characters)
@@ -4804,21 +4888,35 @@ async def game_character(game_type: str, request: Request = None):
         # 获取 _reserved.avatar 配置
         reserved = neko_data.get('_reserved', {})
         avatar = reserved.get('avatar', {}) if isinstance(reserved, dict) else {}
+        if not isinstance(avatar, dict):
+            avatar = {}
 
         model_type = avatar.get('model_type', '') if isinstance(avatar, dict) else ''
         live3d_sub_type = avatar.get('live3d_sub_type', '') if isinstance(avatar, dict) else ''
+        model_type = neko_data.get('model_type') or model_type
+        live3d_sub_type = neko_data.get('live3d_sub_type') or live3d_sub_type
 
         # 提取各类型模型路径
         live2d_path = ''
         mmd_path = ''
         vrm_path = ''
+        pngtuber_path = ''
 
         if isinstance(avatar, dict):
-            live2d_info = avatar.get('live2d', {})
-            if isinstance(live2d_info, dict):
+            pngtuber_info = avatar.get('pngtuber', {})
+            if isinstance(pngtuber_info, dict):
+                raw_png = pngtuber_info.get('idle_image', '')
+                if isinstance(raw_png, str) and len(raw_png) <= 2048:
+                    from ..config_router.page_config import _resolve_pngtuber_image_path
+
+                    pngtuber_path = await asyncio.to_thread(
+                        _resolve_pngtuber_image_path, raw_png, config_manager, current_name,
+                    )
+            # The canonical resolver owns legacy aliases and fallback policy,
+            # including malformed/missing reserved Live2D subobjects.
+            if isinstance(neko_data, dict):
                 # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。
-                # 始终复用主角色接口的规范解析结果；即使保存路径为空，主页面也可能
-                # 已经选定回退模型，小游戏不能再自行选择另一只默认角色。
+                # 主Live2D保留规范默认模型；其他主型的备用不能冒用全局默认角色。
                 from ..characters_router import get_current_live2d_model
 
                 try:
@@ -4827,21 +4925,41 @@ async def game_character(game_type: str, request: Request = None):
                     if response_body:
                         model_payload = json.loads(response_body.decode('utf-8'))
                         model_info = model_payload.get('model_info') or {}
-                        live2d_path = model_info.get('path', '')
+                        if not (model_info.get('is_fallback') is True and model_type in (
+                            'vrm', 'mmd', 'pngtuber', 'live3d',
+                        )):
+                            live2d_path = model_info.get('path', '')
                 except Exception as exc:
                     logger.warning("🎮 Live2D 模型路径解析失败: %s", type(exc).__name__)
 
             mmd_info = avatar.get('mmd', {})
-            if isinstance(mmd_info, dict):
-                mmd_path = normalize_live3d_path(mmd_info.get('model_path', ''), 'mmd')
+            if not isinstance(mmd_info, dict):
+                mmd_info = {}
+            # Match the trusted provider's legacy character projection.
+            raw_mmd = neko_data.get('mmd')
+            if not isinstance(raw_mmd, str) or not raw_mmd.strip():
+                raw_mmd = mmd_info.get('model_path', '')
+            if not raw_mmd and (model_type == 'mmd' or (
+                model_type == 'live3d' and live3d_sub_type == 'mmd'
+            )):
+                raw_mmd = neko_data.get('model_path', '')
+            if isinstance(raw_mmd, str) and raw_mmd.strip() and len(raw_mmd) <= 2048:
+                from ..config_router.page_config import _resolve_mmd_path
 
-            vrm_info = avatar.get('vrm', {})
-            if isinstance(vrm_info, dict):
-                raw = vrm_info.get('model_path', '')
-                if raw:
-                    from ..config_router import _resolve_vrm_path
+                mmd_path = await asyncio.to_thread(
+                    _resolve_mmd_path, raw_mmd.strip().replace('\\', '/'), config_manager, current_name,
+                )
 
-                    vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
+            from utils.config_manager.reserved_schema import get_reserved
+
+            raw_vrm = get_reserved(neko_data, 'avatar', 'vrm', 'model_path',
+                                   default='', legacy_keys=('vrm',))
+            if isinstance(raw_vrm, str) and raw_vrm.strip() and len(raw_vrm) <= 2048:
+                from ..config_router import _resolve_vrm_path
+
+                vrm_path = await asyncio.to_thread(
+                    _resolve_vrm_path, raw_vrm.strip(), config_manager, current_name,
+                )
 
         language, language_preference_resolved = (
             await _load_game_character_prompt_locale(current_name)
@@ -4855,6 +4973,7 @@ async def game_character(game_type: str, request: Request = None):
             'live2d_path': live2d_path,
             'mmd_path': mmd_path,
             'vrm_path': vrm_path,
+            'pngtuber_path': pngtuber_path,
         }
     except Exception as e:
         logger.error("🎮 获取角色信息失败: %s", e)

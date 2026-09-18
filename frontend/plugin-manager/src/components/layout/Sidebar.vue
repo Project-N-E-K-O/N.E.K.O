@@ -54,7 +54,7 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
-import { Odometer, Box, VideoPlay, Monitor, Link } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Tools } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -67,6 +67,7 @@ const navItems = computed(() => [
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
+  { path: '/development', icon: Tools, label: t('development.navTitle'), guideId: 'sidebar-development' },
 ])
 
 function isRouteActive(path: string): boolean {

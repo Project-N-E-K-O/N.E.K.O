@@ -24,6 +24,8 @@
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
+    const MUSIC_CANDIDATE_FALLBACK_BUDGET_MS = 10000;
+    const MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS = 3000;
 
     function isMusicOccupiedNow() {
         if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
@@ -216,6 +218,10 @@
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
                 if (window.newUserIcebreaker.getActiveSession()) return true;
             }
+        } catch (_) {}
+        try {
+            const state = window.NekoNewUserIcebreakerState;
+            if (state && typeof state.isPeriodActive === 'function' && state.isPeriodActive()) return true;
         } catch (_) {}
 
         const store = readNewUserIcebreakerStore();
@@ -547,7 +553,7 @@
      * 检查是否有任何搭话方式被选中
      */
     function hasAnyChatModeEnabled() {
-        return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
+        return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
             S.proactiveMiniGameInviteEnabled;
@@ -656,7 +662,7 @@
         }
 
         // 必须选择至少一种搭话方式
-        if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
+        if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
@@ -664,7 +670,7 @@
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
-        if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
+        if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
@@ -672,7 +678,7 @@
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
-        if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
+        if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
@@ -1127,9 +1133,14 @@
                 availableModes.push('window');
             }
 
-            // 新闻搭话：使用微博热议与小黑盒首页内容
+            // 新闻搭话：使用微博热议、贴吧与小黑盒首页内容
             if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('news');
+            }
+
+            // 喵宇宙社区搭话：使用发现页的公开卡牌。
+            if (S.proactiveCommunityChatEnabled && S.proactiveChatEnabled) {
+                availableModes.push('community');
             }
 
             // 视频搭话：中文地区使用 B站，非中文地区使用 YouTube 首页 Feed
@@ -1250,6 +1261,9 @@
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('news');
+                }
+                if (S.proactiveCommunityChatEnabled && S.proactiveChatEnabled) {
+                    latestModes.push('community');
                 }
                 if (S.proactiveVideoChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('video');
@@ -1433,6 +1447,9 @@
                     console.log('主动搭话已发送:', result.message, result.source_mode ? '(来源: ' + result.source_mode + ')' : '');
 
                     var dispatchedTrackUrl = null;
+                    var proactiveMusicCardScopeId = 'proactive:' + (
+                        result.turn_id || (Date.now() + '-' + Math.random().toString(36).slice(2, 8))
+                    );
 
                     // 如果模式包含音乐信号，按顺序尝试音轨；候选 URL 或媒体自身
                     // 的错误（包括加载超时）才回退，播放器/调度错误结束本轮推荐。
@@ -1465,36 +1482,63 @@
                                 if (!unknownTrack || unknownTrack === 'music.unknownTrack') unknownTrack = 'Unknown Track';
                                 if (!unknownArtist || unknownArtist === 'music.unknownArtist') unknownArtist = 'Unknown Artist';
 
-                                for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++) {
-                                    var musicLink = musicLinks[musicIndex];
-                                    var track = {
-                                        name: musicLink.title || unknownTrack,
-                                        artist: musicLink.artist || unknownArtist,
-                                        url: musicLink.url,
-                                        cover: musicLink.cover
-                                    };
-                                    console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
-                                    var dispatchResult;
-                                    if (typeof window.dispatchMusicPlayDetailed === 'function') {
-                                        dispatchResult = await window.dispatchMusicPlayDetailed(track, { source: 'proactive' });
-                                    } else {
-                                        var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
-                                        dispatchResult = {
-                                            ok: legacyAccepted === true,
-                                            reason: legacyAccepted === true ? '' : 'player_error',
-                                            canTryNextCandidate: false
+                                var proactiveMusicFallbackDeadlineAt = Date.now() + MUSIC_CANDIDATE_FALLBACK_BUDGET_MS;
+                                var lastAttemptedMusicTrack = null;
+                                try {
+                                    for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++) {
+                                        var musicLink = musicLinks[musicIndex];
+                                        var hasNextMusicCandidate = musicIndex < musicLinks.length - 1;
+                                        var track = {
+                                            name: musicLink.title || unknownTrack,
+                                            artist: musicLink.artist || unknownArtist,
+                                            url: musicLink.url,
+                                            cover: musicLink.cover
                                         };
-                                    }
+                                        lastAttemptedMusicTrack = track;
+                                        console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
+                                        var dispatchResult;
+                                        if (typeof window.dispatchMusicPlayDetailed === 'function') {
+                                            dispatchResult = await window.dispatchMusicPlayDetailed(track, {
+                                                source: 'proactive',
+                                                cardScopeId: proactiveMusicCardScopeId,
+                                                hasNextCandidate: hasNextMusicCandidate,
+                                                fallbackDeadlineAt: hasNextMusicCandidate
+                                                    ? proactiveMusicFallbackDeadlineAt
+                                                    : undefined,
+                                                candidateTimeoutMs: hasNextMusicCandidate
+                                                    ? MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS
+                                                    : undefined
+                                            });
+                                        } else {
+                                            var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                            dispatchResult = {
+                                                ok: legacyAccepted === true,
+                                                reason: legacyAccepted === true ? '' : 'player_error',
+                                                canTryNextCandidate: false
+                                            };
+                                        }
 
-                                    if (dispatchResult.ok === true) {
-                                        dispatchedTrackUrl = musicLink.url;
-                                        break;
+                                        if (dispatchResult.ok === true) {
+                                            dispatchedTrackUrl = musicLink.url;
+                                            break;
+                                        }
+                                        if (dispatchResult.canTryNextCandidate !== true) {
+                                            console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
+                                            break;
+                                        }
+                                        console.warn('[ProactiveChat] 音乐候选不可用，尝试下一条:', dispatchResult.reason, musicLink.url);
                                     }
-                                    if (dispatchResult.canTryNextCandidate !== true) {
-                                        console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
-                                        break;
+                                } finally {
+                                    if (
+                                        !dispatchedTrackUrl
+                                        && lastAttemptedMusicTrack
+                                        && typeof window.finalizeMusicCandidateCardFailure === 'function'
+                                    ) {
+                                        window.finalizeMusicCandidateCardFailure(lastAttemptedMusicTrack, {
+                                            source: 'proactive',
+                                            cardScopeId: proactiveMusicCardScopeId
+                                        });
                                     }
-                                    console.warn('[ProactiveChat] 音乐候选不可用，尝试下一条:', dispatchResult.reason, musicLink.url);
                                 }
                             }
                         }

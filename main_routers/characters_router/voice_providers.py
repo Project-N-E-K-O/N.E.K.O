@@ -142,16 +142,13 @@ async def _elevenlabs_synthesize_preview(
     base_url = (base_url or await _get_elevenlabs_base_url(config_manager)).rstrip('/')
 
     payload = {
-        "text": text,
+        "inputs": [{
+            "text": text,
+            "voice_id": raw_voice_id,
+        }],
         "model_id": ELEVENLABS_TTS_DEFAULT_MODEL,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-            "style": 0.0,
-            "use_speaker_boost": True,
-        },
     }
-    url = f"{base_url}/v1/text-to-speech/{raw_voice_id}"
+    url = f"{base_url}/v1/text-to-dialogue"
     headers = {
         "xi-api-key": api_key,
         "Accept": "audio/mpeg",

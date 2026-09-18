@@ -1007,13 +1007,16 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     )
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
     await pool.process_now("妮可", lang="zh-CN")
+    # A readable used-topics file is only an intermediate milestone: the old
+    # pool still has to clear and flush its signal snapshot. Finish that task
+    # before writing restart evidence, or its late flush can erase the new
+    # store's file and the restarted analyzer never runs (CI run 33599962541).
+    task = pool._trigger_tasks.get("妮可")
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+    assert not pool._trigger_tasks.get("妮可")
     used_path = path.with_name("topic_signals.used_topics.json")
-    # The trigger writes this file from a worker thread (to_thread), so a fixed
-    # sleep is a race: a loaded CI runner needs more than 20ms just to hand the
-    # write off. Polling `exists()` is not enough either — on Windows it flips
-    # True while os.replace is still in flight and the read right behind it
-    # loses with PermissionError (CI run 30549810820). Wait for readable, and
-    # read once: the two assertions below must see the same snapshot anyway.
+    # Read once so the privacy and history assertions share a disk snapshot.
     used_text = await read_text_when_readable(used_path)
 
     assert delivered == ["买车"]
@@ -1039,7 +1042,6 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
         signal_store_path=path,
     )
     await restarted.process_ready_topics(now=time.time() + 120, lang="zh-CN")
-    await asyncio.sleep(0.02)
 
     assert analyzer_calls == 2
     assert delivered == ["买车"]

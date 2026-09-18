@@ -79,6 +79,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'development',
+        name: 'Development',
+        component: () => import('@/views/Development.vue'),
+        meta: {
+          titleKey: 'development.title'
+        }
+      },
+      {
         path: ':pathMatch(.*)*',
         redirect: '/'
       }

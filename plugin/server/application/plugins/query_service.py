@@ -127,7 +127,7 @@ def _normalize_string_list(raw_value: object) -> list[str]:
 
 def _extract_llm_result_fields(raw_value: object, *, raw_schema: object = None) -> list[str]:
     fields = _normalize_string_list(raw_value)
-    if fields:
+    if isinstance(raw_value, list):
         return fields
     if isinstance(raw_schema, Mapping):
         properties_obj = raw_schema.get("properties")
@@ -317,12 +317,10 @@ def _build_entries_from_handlers(
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
 
-        if plugin_meta is not None:
-            entry_dict = resolve_i18n_refs(
-                entry_dict,
-                load_plugin_i18n_from_meta(plugin_meta),
-                locale=locale or _resolve_default_locale(),
-            )  # type: ignore[assignment]
+        # 这里刻意不解析 i18n：唯一的调用方（_list_plugins_payload）在拿到
+        # entries 之后，会用它自己那一份 plugin_i18n 和同一个 locale 把每个
+        # entry 再解析一遍。在循环里解析等于每个 entry 重新加载一次整个语言包
+        # ——302 个 entry 实测 554ms，其中 545ms 纯属重复。
         entries.append(entry_dict)
 
     return entries, seen
@@ -437,14 +435,17 @@ def _append_plugin_fallback(
         type(exc).__name__,
         str(exc),
     )
-    result.append(
-        {
-            "id": plugin_id,
-            "name": fallback_name,
-            "description": fallback_description,
-            "entries": [],
-        }
-    )
+    card: dict[str, object] = {
+        "id": plugin_id,
+        "name": fallback_name,
+        "description": fallback_description,
+        "entries": [],
+    }
+    if isinstance(plugin_meta_obj, Mapping) and (
+        plugin_meta_obj.get("source") == "development" or "development_ref" in plugin_meta_obj
+    ):
+        card["source"] = "development"
+    result.append(card)
 
 
 def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]]:
@@ -540,6 +541,16 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 by_plugin_id=install_source_by_plugin_id,
                 by_directory_name=install_source_by_directory_name,
             )
+            if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
+                # Public cards carry display/status data, not local directory
+                # provenance or detailed runtime errors containing source paths.
+                # The guarded development endpoint provides those details.
+                for field in (
+                    "source_dir", "development_ref", "config_path",
+                    "runtime_load_error_message", "runtime_startup_error",
+                    "static_ui_config",
+                ):
+                    plugin_info.pop(field, None)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

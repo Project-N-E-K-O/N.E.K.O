@@ -39,7 +39,13 @@ from .game_context import (
     _normalize_game_context_organizer_state,
     _normalize_game_context_signals,
 )
-from .memory_policy import _game_memory_archive_enabled, _game_memory_policy, _normalize_game_memory_tail_count
+from .memory_policy import (
+    _GAME_MEMORY_ARCHIVE_OWNER_FEATURE,
+    _game_memory_archive_enabled,
+    _game_memory_policy,
+    _normalize_game_memory_archive_owner,
+    _normalize_game_memory_tail_count,
+)
 
 import json
 import re
@@ -91,6 +97,8 @@ def _game_archive_memory_skip_reason(state: dict, reason: str = "") -> str:
         return "started_under_10s"
     if _game_memory_archive_enabled(state) is False:
         return "game_memory_archive_disabled"
+    if _normalize_game_memory_archive_owner(state.get("game_memory_archive_owner")) == _GAME_MEMORY_ARCHIVE_OWNER_FEATURE:
+        return "game_memory_archive_owned_by_feature"
     return ""
 
 
@@ -101,6 +109,8 @@ def _build_game_archive_memory_skipped_result(reason: str) -> dict:
             "game archive memory disabled; game user input mirrors, assistant replies, "
             "tail snippets, archive summary, and postgame context are controlled by game memory policy"
         )
+    elif reason == "game_memory_archive_owned_by_feature":
+        message = "generic game archive memory skipped; the game feature owns memory persistence"
     return {
         "ok": True,
         "status": "skipped",
@@ -140,6 +150,9 @@ def _build_game_archive(state: dict) -> dict:
         "last_state": last_state,
         "finalScore": final_score,
         "game_memory_tail_count": _normalize_game_memory_tail_count(state.get("game_memory_tail_count")),
+        "game_memory_archive_owner": _normalize_game_memory_archive_owner(
+            state.get("game_memory_archive_owner")
+        ),
         **_game_memory_policy(str(state.get("game_type") or "soccer"), state),
         "game_context_summary": str(state.get("game_context_summary") or ""),
         "game_context_signals": _normalize_game_context_signals(state.get("game_context_signals")),
@@ -723,6 +736,8 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
     """Persist a compact game archive into recent memory without blocking exit semantics."""
     if _game_memory_archive_enabled(archive) is False:
         return _build_game_archive_memory_skipped_result("game_memory_archive_disabled")
+    if _normalize_game_memory_archive_owner(archive.get("game_memory_archive_owner")) == _GAME_MEMORY_ARCHIVE_OWNER_FEATURE:
+        return _build_game_archive_memory_skipped_result("game_memory_archive_owned_by_feature")
     lanlan_name = str(archive.get("lanlan_name") or "").strip()
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
