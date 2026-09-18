@@ -15,7 +15,7 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
-import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
+import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY, ACTIVE_AVATAR_TOOLS_STORAGE_KEYS } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
@@ -31,6 +31,7 @@ describe('App', () => {
     COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+    ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full,
   ];
 
   beforeEach(() => {
@@ -47,6 +48,7 @@ describe('App', () => {
     resetCompactToolWheelDetentAudioForTests();
     document.body.style.pointerEvents = '';
     document.body.classList.remove('electron-chat-window');
+    document.body.classList.remove('neko-electron-runtime');
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
     document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
@@ -506,7 +508,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
     expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
       .map(button => button.dataset.avatarToolId)).toEqual(['rps', 'fist', 'hammer']);
-    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
       .toEqual(['rps', 'fist', 'hammer']);
 
     fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
@@ -519,16 +521,16 @@ describe('App', () => {
     })));
   });
 
-  it('loads a local avatar tool into Full without exposing the create entry', async () => {
+  it('loads a local avatar tool into Full and exposes the shared create/edit entries', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const onAvatarToolStateChange = vi.fn();
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId]));
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       ok: true,
       items: [{
         id: localToolId,
-        revision: '2-123',
+        recordVersion: 2, revision: '2-123',
         name: 'Feather',
         changeMode: 'click-advance',
         defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
@@ -547,7 +549,11 @@ describe('App', () => {
         maxTools: 20,
         maxNameChars: 20,
         maxMeaningChars: 100,
-        maxChangeImages: 16,
+              maxChangeImages: 16,
+              maxImages: 17,
+              maxInteractions: 16,
+              maxLinks: 32,
+              maxDelayMs: 600000,
         maxImageBytes: 10_000_000,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 10_000_000,
@@ -599,8 +605,8 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
       const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
       expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).not.toBeNull();
-      expect(dialog.querySelector('[data-avatar-tool-create]')).toBeNull();
-      expect(dialog.querySelector('.avatar-tool-manager-modify')).toBeNull();
+      expect(dialog.querySelector('[data-avatar-tool-create]')).not.toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-modify')).not.toBeNull();
       expect(dialog.querySelector('.avatar-tool-manager-delete')).toBeNull();
     } finally {
       vi.unstubAllGlobals();
@@ -611,10 +617,18 @@ describe('App', () => {
   it('never rewrites Full local slots from the best-effort catalog list', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -622,22 +636,30 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 10_000_000,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 10_000_000,
           maxAudioDurationMs: 60_000,
           maxTotalBytes: 100_000_000,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       render(<App chatSurfaceMode="full" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      await waitFor(() => expect(listCount).toBe(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -650,9 +672,83 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。持久化只发生
-      // 在用户显式 Save 和删除时。
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a hidden Full slot after refresh and detail both prove the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const localItem = {
+      id: localToolId,
+      recordVersion: 2, revision: '2-100',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+      changeUrls: [`/user_avatar_tools/${localToolId}/change-000.png?v=1`],
+    };
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      return new Response(JSON.stringify({
+        ok: true,
+        items: listCount === 1 ? [localItem] : [],
+        limits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    vi.stubGlobal('fetch', fetchMock);
+    const onAvatarToolStateChange = vi.fn();
+
+    try {
+      render(<App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />);
+      await waitFor(() => expect(listCount).toBe(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+      })));
+
+      act(() => window.dispatchEvent(new Event('focus')));
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -5750,6 +5846,72 @@ describe('App', () => {
     }
   });
 
+  it('uses the same expanded avatar tool editor from the full chat surface', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [],
+      limits: {
+        maxTools: 64,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
+        maxImageBytes: 8_388_608,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 5_242_880,
+        maxAudioDurationMs: 10_000,
+        maxTotalBytes: 268_435_456,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const createButton = screen.getByRole('button', { name: 'Create tool' });
+      await waitFor(() => expect(createButton).not.toBeDisabled());
+      fireEvent.click(createButton);
+
+      const workspace = screen.getByRole('dialog', { name: 'Create custom tool' });
+      expect(workspace).toHaveClass('avatar-tool-editor-workspace');
+      expect(workspace.querySelector('.react-flow')).not.toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Create tool' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId, 'fist']));
+    render(<App chatSurfaceMode="full" />);
+
+    expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+    fireEvent(window, new MessageEvent('message', {
+      origin: window.location.origin,
+      data: {
+        type: 'neko:avatar-tool-editor-result',
+        action: 'deleted',
+        toolId: localToolId,
+      },
+    }));
+
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
+      .toEqual(['fist']);
+  });
+
   it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
     const onAvatarToolStateChange = vi.fn();
     const { container } = render(
@@ -5801,6 +5963,10 @@ describe('App', () => {
         maxNameChars: 20,
         maxMeaningChars: 100,
         maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
         maxImageBytes: 8_388_608,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 5_242_880,
@@ -5833,9 +5999,17 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(new Response(JSON.stringify({
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -5843,22 +6017,30 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 8_388_608,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 5_242_880,
           maxAudioDurationMs: 10_000,
           maxTotalBytes: 268_435_456,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(listCount).toBe(1));
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       await openCompactInputTools();
@@ -5871,8 +6053,57 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a restored Compact slot only after detail proves the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, items: [], limits }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -5882,7 +6113,7 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const localItem = {
       id: localToolId,
-      revision: '100-200',
+      recordVersion: 2, revision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
@@ -5893,6 +6124,10 @@ describe('App', () => {
       maxNameChars: 20,
       maxMeaningChars: 100,
       maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
       maxImageBytes: 8_388_608,
       maxImagePixels: 16_000_000,
       maxAudioBytes: 5_242_880,
@@ -5901,7 +6136,7 @@ describe('App', () => {
     };
     const localDetail = {
       id: localToolId,
-      revision: '100-200',
+      recordVersion: 2, revision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultImage: {
@@ -5970,12 +6205,13 @@ describe('App', () => {
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
-      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      await screen.findByRole('dialog', { name: 'Manage tools' });
       fireEvent.click(screen.getByRole('button', { name: 'Edit Feather' }));
       await screen.findByRole('dialog', { name: 'Edit custom tool' });
       fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
 
-      await waitFor(() => expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
+      await screen.findByRole('dialog', { name: 'Manage tools' });
+      await waitFor(() => expect(document.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
       await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
       expect(confirm).toHaveBeenCalledTimes(1);
@@ -5997,10 +6233,12 @@ describe('App', () => {
     };
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
     const hadElectronChatWindowClass = document.body.classList.contains('electron-chat-window');
+    const hadElectronRuntimeClass = document.body.classList.contains('neko-electron-runtime');
 
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 393 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 74 });
     document.body.classList.add('electron-chat-window');
+    document.body.classList.add('neko-electron-runtime');
     desktopWindow.__nekoDesktopCompactLayout = {
       windowBounds: { x: 976, y: 485, width: 393, height: 74 },
       workArea: { x: 0, y: 0, width: 1706, height: 1066 },
@@ -6063,6 +6301,11 @@ describe('App', () => {
         document.body.classList.add('electron-chat-window');
       } else {
         document.body.classList.remove('electron-chat-window');
+      }
+      if (hadElectronRuntimeClass) {
+        document.body.classList.add('neko-electron-runtime');
+      } else {
+        document.body.classList.remove('neko-electron-runtime');
       }
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });

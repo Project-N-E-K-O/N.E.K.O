@@ -63,8 +63,15 @@ import {
   type AvatarToolRoundChoiceConfirmation,
 } from './interaction';
 import {
+  type AvatarToolImageId,
   type AvatarToolVariantId,
 } from './catalog';
+import {
+  createCustomGraphRuntime,
+  getCustomGraphImageFrameIndex,
+  resolveCustomGraphLocalFeedback,
+  type CustomGraphRuntime,
+} from './customGraphRuntime';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
   type AvatarToolRegistrySnapshot,
@@ -116,6 +123,7 @@ type RuntimeSession = {
   press: RuntimePress | null;
   pressFeedbackActive: boolean;
   roundChoice: RuntimeRoundChoiceCycle | null;
+  customGraph: CustomGraphRuntime | null;
 };
 
 type RuntimePress = {
@@ -127,6 +135,8 @@ type RuntimePress = {
   startY: number;
   moved: boolean;
   frozenVariant: AvatarToolVariantId;
+  customGraphClickStarted?: boolean;
+  capturedImageId?: AvatarToolImageId;
 };
 
 type RuntimeRoundChoiceCycle = {
@@ -527,6 +537,7 @@ export function useAvatarToolRuntime({
 
   const disposeSession = useCallback(() => {
     generationRef.current += 1;
+    sessionRef.current?.customGraph?.destroy();
     sessionRef.current?.disposer.destroy();
     sessionRef.current = null;
     clearRangeHold();
@@ -772,6 +783,7 @@ export function useAvatarToolRuntime({
       outsideVariantResetTimeoutId: null,
       press: null,
       pressFeedbackActive: false,
+      customGraph: null,
       roundChoice: profile.kind === 'round-choice' ? {
         variants: profile.choices.map(choice => choice.variant),
         outsideIntervalMs: profile.cycle.outsideIntervalMs,
@@ -788,6 +800,26 @@ export function useAvatarToolRuntime({
       } : null,
     };
     sessionRef.current = session;
+    if (profile.kind === 'custom-graph') {
+      const setSessionFrame = (frameIndex: number) => {
+        if (sessionRef.current !== session || !session.disposer.isCurrent()) return;
+        const currentFrameIndex = imageFrameIndicesRef.current[session.toolId] ?? 0;
+        if (currentFrameIndex === frameIndex) return;
+        const next = { ...imageFrameIndicesRef.current, [session.toolId]: frameIndex };
+        imageFrameIndicesRef.current = next;
+        setImageFrameIndices(next);
+        publishState();
+      };
+      session.customGraph = createCustomGraphRuntime(profile, {
+        scheduler: {
+          now: monotonicNow,
+          setTimeout: (callback, delayMs) => session.disposer.setTimeout(callback, delayMs),
+          clearTimeout: timeoutId => session.disposer.clearTimeout(timeoutId),
+        },
+        onImageChange: (_imageId, frameIndex) => setSessionFrame(frameIndex),
+      });
+      setSessionFrame(getCustomGraphImageFrameIndex(profile, profile.initialImageId));
+    }
     prewarmAvatarToolSounds(toolId, disposer, registry);
     let readiness: void | Promise<void>;
     try {
@@ -816,7 +848,15 @@ export function useAvatarToolRuntime({
       resumeRoundChoiceCycle(session);
       if (session.roundChoice.rawHitActive) startRoundChoiceAvatarGesture(session);
     }
-  }, [destroySession, prepareVisuals, registry, resumeRoundChoiceCycle, startRoundChoiceAvatarGesture]);
+  }, [
+    destroySession,
+    monotonicNow,
+    prepareVisuals,
+    publishState,
+    registry,
+    resumeRoundChoiceCycle,
+    startRoundChoiceAvatarGesture,
+  ]);
 
   const clearTool = useCallback((options?: { insideHostWindow?: boolean }) => {
     destroySession();
@@ -1085,6 +1125,7 @@ export function useAvatarToolRuntime({
     const session = sessionRef.current;
     if (!session) return;
     const shouldRelease = session.press !== null || session.pressFeedbackActive;
+    session.customGraph?.cancelClick();
     session.press = null;
     session.pressFeedbackActive = false;
     if (session.roundChoice?.status === 'pressed') resumeRoundChoiceCycle(session);
@@ -1094,7 +1135,7 @@ export function useAvatarToolRuntime({
       const initialVariant = registry.getRegistration(session.toolId).definition.visual.initialVariant;
       applyCommand({ outsideVariant: initialVariant }, latestPointerRef.current.x, latestPointerRef.current.y);
     }
-    if (shouldRelease) {
+    if (shouldRelease && !session.customGraph) {
       applyCommand(
         resolveAvatarToolPointerRelease(session.toolId, registry),
         latestPointerRef.current.x,
@@ -1131,6 +1172,28 @@ export function useAvatarToolRuntime({
       const toolId = session.toolId;
       const interactionLocked = interactionLockRef.current;
       const visibleVariant = presentedVariantRef.current;
+      const profile = registry.getRegistration(toolId).definition.interaction;
+      if (profile.kind === 'custom-graph') {
+        if (hit && !interactionLocked && session.customGraph) {
+          const customGraphClickStarted = session.customGraph.beginClick();
+          const graphSnapshot = session.customGraph.getSnapshot();
+          session.press = {
+            toolId,
+            generation: session.generation,
+            pointerId: event.pointerId,
+            button: event.button,
+            startX: event.clientX,
+            startY: event.clientY,
+            moved: false,
+            frozenVariant: visibleVariant,
+            customGraphClickStarted,
+            capturedImageId: customGraphClickStarted
+              ? graphSnapshot.activeClick?.capturedImageId
+              : graphSnapshot.currentImageId,
+          };
+        }
+        return;
+      }
       applyCommand(resolveAvatarToolPointerDown({
         toolId,
         clientX: event.clientX,
@@ -1184,7 +1247,7 @@ export function useAvatarToolRuntime({
         setRange(!!getVisualHit(event.clientX, event.clientY));
       }
       const commitHit = RELEASE_TOUCH_ZONE_USES_FRESH_HIT ? releaseHit : null;
-      if (
+      const validCommit = !!(
         press
         && (!RELEASE_REQUIRES_SAME_POINTER || press.pointerId === event.pointerId)
         && (!RELEASE_REQUIRES_SAME_BUTTON || press.button === event.button)
@@ -1192,7 +1255,38 @@ export function useAvatarToolRuntime({
         && press.toolId === session.toolId
         && !press.moved
         && commitHit
-      ) {
+      );
+      const profile = registry.getRegistration(session.toolId).definition.interaction;
+      if (profile.kind === 'custom-graph') {
+        const completion = validCommit && press?.customGraphClickStarted
+          ? session.customGraph?.completeClick()
+          : null;
+        const capturedImageId = completion?.capturedImageId ?? press?.capturedImageId;
+        if (validCommit && capturedImageId && commitHit) {
+          const tapCount = recordBurst(profile.burst.key, profile.burst.windowMs);
+          const feedback = resolveCustomGraphLocalFeedback(profile, random);
+          const capturedImage = profile.images.find(image => image.id === capturedImageId);
+          applyCommand({
+            ...((feedback.specialTriggered || capturedImage?.hasMeaning) ? { commit: {
+              toolId: session.toolId as `local-${string}`,
+              toolRevision: profile.revision,
+              actionId: 'interact' as const,
+              intensity: tapCount >= profile.burst.rapidThreshold
+                ? profile.burst.rapidIntensity
+                : profile.burst.normalIntensity,
+              touchZone: commitHit.touchZone,
+              imageId: capturedImageId,
+              ...(profile.chance ? { specialTriggered: feedback.specialTriggered } : {}),
+              clientX: event.clientX,
+              clientY: event.clientY,
+            } } : {}),
+            ...(feedback.sound ? { sound: feedback.sound } : {}),
+            ...(feedback.effect ? { effect: feedback.effect } : {}),
+          }, event.clientX, event.clientY);
+        } else {
+          session.customGraph?.cancelClick();
+        }
+      } else if (validCommit) {
         applyCommand(resolveAvatarToolCommit({
           toolId: session.toolId,
           clientX: event.clientX,

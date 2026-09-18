@@ -1,7 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App, { type ChatWindowProps } from './App';
+import AvatarToolStandaloneEditor from './AvatarToolStandaloneEditor';
 import { parseChatWindowProps } from './message-schema';
+import '@xyflow/react/dist/style.css';
 import './styles.css';
 
 const roots = new WeakMap<HTMLElement, ReactDOM.Root>();
@@ -34,6 +36,23 @@ export function unmount(container: HTMLElement) {
   if (!root) return;
   root.unmount();
   roots.delete(container);
+}
+
+export function mountAvatarToolEditor(container: HTMLElement) {
+  const existingRoot = roots.get(container);
+  const editor = (
+    <React.StrictMode>
+      <AvatarToolStandaloneEditor />
+    </React.StrictMode>
+  );
+  if (existingRoot) {
+    existingRoot.render(editor);
+    return existingRoot;
+  }
+  const root = ReactDOM.createRoot(container);
+  root.render(editor);
+  roots.set(container, root);
+  return root;
 }
 
 export const mountChatWindow = mount;

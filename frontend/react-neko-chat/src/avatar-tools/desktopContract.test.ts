@@ -51,7 +51,7 @@ describe('desktop avatar tool contract', () => {
   it('projects ordered local frames and the selected image-change rule as strict v2', () => {
     const source = buildLocalAvatarToolDefinition({
       id: 'local-12345678-1234-4123-8123-123456789abc',
-      revision: '2-123',
+      recordVersion: 2, revision: '2-123',
       name: 'Feather',
       changeMode: 'click-advance',
       defaultUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/default.png?v=1',
@@ -110,6 +110,75 @@ describe('desktop avatar tool contract', () => {
       delete (withoutRevision.definition.interaction.profile as { revision?: string }).revision;
     }
     expect(() => desktopAvatarToolContractSchema.parse(withoutRevision)).toThrow();
+  });
+
+  it('projects a strict reachable v3 custom graph without inventing a model action', () => {
+    const toolId = 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as const;
+    const asset = (name: string) => `/user_avatar_tools/${toolId}/${name}?v=1`;
+    const source = buildLocalAvatarToolDefinition({
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-123',
+      name: 'Flow',
+      initialImageUrl: asset('image-000.png'),
+      runtime: {
+        images: [
+          { id: 'img-a', url: asset('image-000.png'), hasMeaning: true },
+          { id: 'img-b', url: asset('image-001.png'), hasMeaning: false },
+          { id: 'img-c', url: asset('image-002.png'), hasMeaning: true },
+        ],
+        initialImageId: 'img-a',
+        initialInteractionIds: ['ix-click'],
+        interactions: [
+          {
+            id: 'ix-click',
+            trigger: { kind: 'mouse-click' },
+            actions: {
+              press: { kind: 'show', imageId: 'img-b' },
+              release: { kind: 'show', imageId: 'img-c' },
+            },
+          },
+          {
+            id: 'ix-delay',
+            trigger: { kind: 'after', delayMs: 800 },
+            actions: { complete: { kind: 'show', imageId: 'img-a' } },
+          },
+        ],
+        links: [
+          { from: 'ix-click', to: 'ix-delay' },
+          { from: 'ix-delay', to: 'ix-click' },
+        ],
+      },
+    });
+
+    const contract = projectDesktopAvatarToolContract(source);
+    expect(contract.definition?.definitionVersion).toBe(3);
+    expect(contract.definition?.visual?.frames).toHaveLength(3);
+    expect(contract.definition?.interaction?.profile).toMatchObject({
+      kind: 'custom-graph',
+      revision: '3-123',
+      initialImageId: 'img-a',
+      initialInteractionIds: ['ix-click'],
+      links: [
+        { from: 'ix-click', to: 'ix-delay' },
+        { from: 'ix-delay', to: 'ix-click' },
+      ],
+    });
+    expect(contract.definition?.interaction).not.toHaveProperty('actionId');
+    expect(() => desktopAvatarToolContractSchema.parse(contract)).not.toThrow();
+
+    const unreachable = cloneJson(contract);
+    if (unreachable.definition?.interaction?.profile.kind === 'custom-graph') {
+      unreachable.definition.interaction.profile.links = [];
+    }
+    expect(desktopAvatarToolContractSchema.safeParse(unreachable).success).toBe(false);
+
+    const missingReference = cloneJson(contract);
+    if (missingReference.definition?.interaction?.profile.kind === 'custom-graph') {
+      missingReference.definition.interaction.profile.initialInteractionIds = ['ix-missing'];
+    }
+    expect(() => desktopAvatarToolContractSchema.safeParse(missingReference)).not.toThrow();
+    expect(desktopAvatarToolContractSchema.safeParse(missingReference).success).toBe(false);
   });
 
   it('projects inactive and all four active definitions with strict JSON round trips', () => {

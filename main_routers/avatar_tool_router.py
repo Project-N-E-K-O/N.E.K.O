@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from main_routers.cookies_login_router import verify_local_access
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
 from utils.avatar_tool_store import (
+    AVATAR_TOOL_MAX_RECORD_BYTES,
     AvatarToolStoreError,
     get_avatar_tool_store,
     is_local_avatar_tool_id,
@@ -65,6 +67,80 @@ async def _read_upload_limited(
     return b"".join(chunks)
 
 
+async def _close_uploads(uploads: list[UploadFile]) -> None:
+    await asyncio.gather(*(upload.close() for upload in uploads), return_exceptions=True)
+
+
+def _parse_v3_manifest(raw: str | None, *, expected_tool_id: str | None = None) -> dict:
+    if raw is None or len(raw.encode("utf-8")) > AVATAR_TOOL_MAX_RECORD_BYTES:
+        raise AvatarToolStoreError("manifest_invalid", "Avatar tool manifest is invalid", field="manifest")
+    try:
+        manifest = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AvatarToolStoreError("manifest_invalid", "Avatar tool manifest is invalid", field="manifest") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("recordVersion") != 3
+        or not is_local_avatar_tool_id(manifest.get("id"))
+        or (expected_tool_id is not None and manifest.get("id") != expected_tool_id)
+    ):
+        raise AvatarToolStoreError("manifest_invalid", "Avatar tool manifest is invalid", field="manifest")
+    return manifest
+
+
+async def _read_v3_uploads(store, uploads: list[UploadFile], manifest: dict) -> list[bytes]:
+    if len(uploads) > store.limits["maxImages"] + 3:
+        raise AvatarToolStoreError(
+            "uploads_invalid",
+            "Avatar tool upload count is invalid",
+            status_code=413,
+            field="uploads",
+        )
+    locations: dict[int, list[tuple[str, int | None, int]]] = {}
+
+    def add_location(source, field: str, index: int | None, maximum: int) -> None:
+        if (
+            isinstance(source, dict)
+            and set(source) == {"kind", "index"}
+            and source.get("kind") == "upload"
+            and isinstance(source.get("index"), int)
+            and not isinstance(source.get("index"), bool)
+        ):
+            locations.setdefault(source["index"], []).append((field, index, maximum))
+
+    images = manifest.get("images")
+    if isinstance(images, list):
+        for image_index, image in enumerate(images):
+            if isinstance(image, dict):
+                add_location(image.get("source"), "image", image_index, store.limits["maxImageBytes"])
+    interaction = manifest.get("interaction")
+    if isinstance(interaction, dict):
+        add_location(interaction.get("normalSound"), "normal_sound", None, store.limits["maxAudioBytes"])
+        special = interaction.get("special")
+        if isinstance(special, dict):
+            add_location(special.get("image"), "special_image", None, store.limits["maxImageBytes"])
+            add_location(special.get("sound"), "special_sound", None, store.limits["maxAudioBytes"])
+
+    maximum_upload = max(store.limits["maxImageBytes"], store.limits["maxAudioBytes"])
+    reads = []
+    for upload_index, upload in enumerate(uploads):
+        matching_locations = locations.get(upload_index, [])
+        field, item_index, maximum = (
+            matching_locations[0]
+            if len(matching_locations) == 1
+            else ("uploads", upload_index, maximum_upload)
+        )
+        reads.append(_read_upload_limited(
+            upload,
+            maximum,
+            error_code="upload_too_large",
+            error_message="Avatar tool upload is too large",
+            field=field,
+            index=item_index,
+        ))
+    return list(await asyncio.gather(*reads))
+
+
 @router.get("")
 async def list_avatar_tools():
     store = get_avatar_tool_store(get_config_manager())
@@ -80,39 +156,71 @@ async def list_avatar_tools():
 @router.post("")
 async def create_avatar_tool(
     request: Request,
-    tool_id: str = Form(...),
-    name: str = Form(...),
-    change_mode: str = Form(...),
-    change_meanings: list[str] = Form(...),
-    default_image: UploadFile = File(...),
-    change_images: list[UploadFile] = File(...),
+    record_version: str | None = Form(None),
+    manifest: str | None = Form(None),
+    uploads: list[UploadFile] | None = File(None),
+    tool_id: str | None = Form(None),
+    name: str | None = Form(None),
+    change_mode: str | None = Form(None),
+    change_meanings: list[str] | None = Form(None),
+    default_image: UploadFile | None = File(None),
+    change_images: list[UploadFile] | None = File(None),
     normal_sound: UploadFile | None = File(None),
     special_probability: str | None = Form(None),
     special_image: UploadFile | None = File(None),
     special_meaning: str | None = Form(None),
     special_sound: UploadFile | None = File(None),
 ):
+    change_uploads = change_images or []
+    v3_uploads = uploads or []
+    all_uploads = [
+        *v3_uploads,
+        *(upload for upload in [default_image] if upload is not None),
+        *change_uploads,
+        *(upload for upload in [normal_sound, special_image, special_sound] if upload is not None),
+    ]
     rejected = _validate_local_mutation_request(request)
     if rejected is not None:
-        await default_image.close()
-        for upload in change_images:
-            await upload.close()
-        if normal_sound is not None:
-            await normal_sound.close()
-        if special_image is not None:
-            await special_image.close()
-        if special_sound is not None:
-            await special_sound.close()
+        await _close_uploads(all_uploads)
         return rejected
 
     store = get_avatar_tool_store(get_config_manager())
     try:
+        form_data = await request.form()
+        field_names = set(form_data.keys())
+        if record_version == "3":
+            if (
+                not field_names.issubset({"record_version", "manifest", "uploads"})
+                or form_data.getlist("record_version") != ["3"]
+                or len(form_data.getlist("manifest")) != 1
+            ):
+                raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
+            parsed_manifest = _parse_v3_manifest(manifest)
+            uploaded = await _read_v3_uploads(store, v3_uploads, parsed_manifest)
+            item = await asyncio.to_thread(
+                store.create_tool_v3,
+                manifest=parsed_manifest,
+                uploads=uploaded,
+            )
+            return JSONResponse(status_code=201, content={"ok": True, "item": item})
+        if record_version is not None or manifest is not None or v3_uploads:
+            raise AvatarToolStoreError("record_version_invalid", "Avatar tool record version is invalid")
+        if not field_names.issubset({
+            "tool_id", "name", "change_mode", "change_meanings", "default_image",
+            "change_images", "normal_sound", "special_probability", "special_image",
+            "special_meaning", "special_sound",
+        }):
+            raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
         if not is_local_avatar_tool_id(tool_id):
             raise AvatarToolStoreError(
                 "invalid_tool_id",
                 "Invalid local avatar tool ID",
             )
-        if len(change_images) > store.limits["maxChangeImages"]:
+        if default_image is None:
+            raise AvatarToolStoreError("image_required", "PNG image is required", field="default_image")
+        if name is None or change_mode is None or change_meanings is None or not change_uploads:
+            raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
+        if len(change_uploads) > store.limits["maxChangeImages"]:
             raise AvatarToolStoreError(
                 "change_items_invalid",
                 "Image change item count is invalid",
@@ -135,7 +243,7 @@ async def create_avatar_tool(
                     field="change_image",
                     index=index,
                 )
-                for index, upload in enumerate(change_images)
+                for index, upload in enumerate(change_uploads)
             ),
         )
         normal_sound_data = None
@@ -184,15 +292,7 @@ async def create_avatar_tool(
     except MaintenanceModeError as exc:
         return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
     finally:
-        await default_image.close()
-        for upload in change_images:
-            await upload.close()
-        if normal_sound is not None:
-            await normal_sound.close()
-        if special_image is not None:
-            await special_image.close()
-        if special_sound is not None:
-            await special_sound.close()
+        await _close_uploads(all_uploads)
 
     return JSONResponse(status_code=201, content={"ok": True, "item": item})
 
@@ -213,11 +313,14 @@ async def get_avatar_tool_detail(tool_id: str):
 async def update_avatar_tool(
     request: Request,
     tool_id: str,
-    base_revision: str = Form(...),
-    name: str = Form(...),
-    change_mode: str = Form(...),
-    change_meanings: list[str] = Form(...),
-    change_resources: list[str] = Form(...),
+    base_revision: str | None = Form(None),
+    record_version: str | None = Form(None),
+    manifest: str | None = Form(None),
+    uploads: list[UploadFile] | None = File(None),
+    name: str | None = Form(None),
+    change_mode: str | None = Form(None),
+    change_meanings: list[str] | None = Form(None),
+    change_resources: list[str] | None = Form(None),
     default_resource: str | None = Form(None),
     default_image: UploadFile | None = File(None),
     change_images: list[UploadFile] | None = File(None),
@@ -231,19 +334,59 @@ async def update_avatar_tool(
     special_sound: UploadFile | None = File(None),
 ):
     change_uploads = change_images or []
-    uploads = [
+    v3_uploads = uploads or []
+    all_uploads = [
+        *v3_uploads,
         *(upload for upload in [default_image] if upload is not None),
         *change_uploads,
         *(upload for upload in [normal_sound, special_image, special_sound] if upload is not None),
     ]
     rejected = _validate_local_mutation_request(request)
     if rejected is not None:
-        for upload in uploads:
-            await upload.close()
+        await _close_uploads(all_uploads)
         return rejected
 
     store = get_avatar_tool_store(get_config_manager())
     try:
+        form_data = await request.form()
+        field_names = set(form_data.keys())
+        if record_version == "3":
+            if (
+                not field_names.issubset({"base_revision", "record_version", "manifest", "uploads"})
+                or form_data.getlist("record_version") != ["3"]
+                or len(form_data.getlist("manifest")) != 1
+                or len(form_data.getlist("base_revision")) != 1
+            ):
+                raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
+            if base_revision is None:
+                raise AvatarToolStoreError("base_revision_required", "Base revision is required", field="base_revision")
+            parsed_manifest = _parse_v3_manifest(manifest, expected_tool_id=tool_id)
+            uploaded = await _read_v3_uploads(store, v3_uploads, parsed_manifest)
+            item = await asyncio.to_thread(
+                store.update_tool_v3,
+                tool_id,
+                base_revision=base_revision,
+                manifest=parsed_manifest,
+                uploads=uploaded,
+            )
+            return {"ok": True, "item": item}
+        if record_version is not None or manifest is not None or v3_uploads:
+            raise AvatarToolStoreError("record_version_invalid", "Avatar tool record version is invalid")
+        if not field_names.issubset({
+            "base_revision", "name", "change_mode", "change_meanings", "change_resources",
+            "default_resource", "default_image", "change_images", "normal_sound_resource",
+            "normal_sound", "special_probability", "special_image_resource", "special_image",
+            "special_meaning", "special_sound_resource", "special_sound",
+        }):
+            raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
+        if (
+            base_revision is None
+            or name is None
+            or change_mode is None
+            or change_meanings is None
+            or change_resources is None
+        ):
+            raise AvatarToolStoreError("request_fields_invalid", "Avatar tool request fields are invalid")
         if (
             len(change_resources) > store.limits["maxChangeImages"]
             or len(change_uploads) > store.limits["maxChangeImages"]
@@ -337,8 +480,7 @@ async def update_avatar_tool(
     except MaintenanceModeError as exc:
         return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
     finally:
-        for upload in uploads:
-            await upload.close()
+        await _close_uploads(all_uploads)
     return {"ok": True, "item": item}
 
 

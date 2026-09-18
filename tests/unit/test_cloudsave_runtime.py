@@ -4211,6 +4211,27 @@ def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_pa
 
 
 @pytest.mark.unit
+def test_runtime_root_preserves_an_unconfirmed_avatar_deletion(tmp_path):
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    cm = _make_config_manager(tmp_path)
+    root = Path(cm.app_docs_dir)
+    avatar_tools = root / "avatar_tools"
+    deleting = avatar_tools / ".local-12345678-1234-4123-8123-123456789abc.deleting"
+    deleting.mkdir(parents=True)
+    (deleting / "record.json").write_bytes(b"a concurrently published version")
+    assert _runtime_root_has_user_content(root) is False
+
+    marker = avatar_tools / f"{deleting.name}.unverified"
+    marker.write_bytes(b"{}")
+    assert _runtime_root_has_user_content(root) is True
+
+    marker.unlink()
+    (avatar_tools / ".local-not-a-uuid.deleting.unverified").write_bytes(b"{}")
+    assert _runtime_root_has_user_content(root) is False
+
+
+@pytest.mark.unit
 def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
     """Both sides must agree letter for letter, or a sole surviving copy is deleted."""
     from utils.avatar_tool_store import (

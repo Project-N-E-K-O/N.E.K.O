@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 主动搭话新增了喵宇宙社区来源的 key；递增版本让 Electron、Docker 等长期缓存
-    // 重新拉取完整语言包，避免设置页把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-09-14-proactive-community-chat';
+    // 修改原因：统一道具编辑器默认名称，并补齐“暂时不可用”提示；
+    // 递增版本让 Electron、Docker 等长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-16-avatar-tool-domain-names';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -928,6 +928,15 @@
             updatePageTexts();
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));
+        });
+
+        // 同源独立窗口（例如自定义道具编辑器）不会收到另一个窗口派发的
+        // localechange；通过 i18nextLng 的 storage 事件跟随主窗口语言变化。
+        window.addEventListener('storage', (event) => {
+            if (event.key !== 'i18nextLng' || !event.newValue) return;
+            const language = normalizeSupportedLanguageCode(event.newValue);
+            if (!language || language === i18next.language) return;
+            void i18next.changeLanguage(language);
         });
 
         // 导出语言切换函数

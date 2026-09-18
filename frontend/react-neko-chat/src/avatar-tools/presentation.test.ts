@@ -206,7 +206,7 @@ describe('avatar tool sound lifecycle', () => {
     vi.stubGlobal('Audio', AudioMock);
     const disposer = createAvatarToolDisposer(3, generation => generation === 3);
 
-    playAvatarToolSound('hammer-impact', disposer);
+    playAvatarToolSound('hammer', 'hammer-impact', disposer);
     expect(audioInstances).toHaveLength(1);
     expect(audioInstances[0]?.src)
       .toBe('/static/sounds/avatar-tools/hammer/impact.mp3?v=audio%201');
@@ -262,7 +262,7 @@ describe('avatar tool sound lifecycle', () => {
     vi.stubGlobal('Audio', BrokenPlayAudio);
     const disposer = createAvatarToolDisposer(6, generation => generation === 6);
 
-    expect(() => playAvatarToolSound('fist-reward-drop', disposer)).not.toThrow();
+    expect(() => playAvatarToolSound('fist', 'fist-reward-drop', disposer)).not.toThrow();
     expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);
     expect(audioInstances[0]?.src).toBe('');
     disposer.destroy();
@@ -276,7 +276,7 @@ describe('avatar tool sound lifecycle', () => {
     vi.stubGlobal('Audio', RejectedPlayAudio);
     const disposer = createAvatarToolDisposer(7, generation => generation === 7);
 
-    playAvatarToolSound('fist-reward-drop', disposer);
+    playAvatarToolSound('fist', 'fist-reward-drop', disposer);
     await Promise.resolve();
 
     expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);

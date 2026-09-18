@@ -26,6 +26,55 @@ const localDefinition = buildLocalAvatarToolDefinition({
     soundUrl: `/user_avatar_tools/${localToolId}/special.mp3?v=cross-repo`,
   },
 });
+const graphToolId = 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as const;
+const graphAsset = (name: string) => `/user_avatar_tools/${graphToolId}/${name}?v=cross-repo`;
+const graphTool = {
+  id: graphToolId,
+  iconImagePath: graphAsset('image-000.png'),
+  pointerImagePath: graphAsset('image-000.png'),
+};
+const graphDefinition = buildLocalAvatarToolDefinition({
+  recordVersion: 3,
+  id: graphToolId,
+  revision: '3-456',
+  name: 'Cross-repo graph fixture',
+  initialImageUrl: graphAsset('image-000.png'),
+  runtime: {
+    images: [
+      { id: 'img-a', url: graphAsset('image-000.png'), hasMeaning: true },
+      { id: 'img-b', url: graphAsset('image-001.png'), hasMeaning: false },
+      { id: 'img-c', url: graphAsset('image-002.png'), hasMeaning: true },
+    ],
+    initialImageId: 'img-a',
+    initialInteractionIds: ['ix-click'],
+    interactions: [
+      {
+        id: 'ix-click',
+        trigger: { kind: 'mouse-click' },
+        actions: {
+          press: { kind: 'show', imageId: 'img-b' },
+          release: { kind: 'show', imageId: 'img-c' },
+        },
+      },
+      {
+        id: 'ix-delay',
+        trigger: { kind: 'after', delayMs: 800 },
+        actions: { complete: { kind: 'show', imageId: 'img-a' } },
+      },
+    ],
+    links: [
+      { from: 'ix-click', to: 'ix-delay' },
+      { from: 'ix-delay', to: 'ix-click' },
+    ],
+    normalSoundUrl: graphAsset('normal.mp3'),
+    special: {
+      probability: 0.25,
+      imageUrl: graphAsset('special.png'),
+      hasMeaning: true,
+      soundUrl: graphAsset('special.mp3'),
+    },
+  },
+});
 
 const descriptors = AVAILABLE_COMPACT_AVATAR_TOOLS.map(activeTool => (
   buildAvatarToolSelectionStatePayload({
@@ -39,6 +88,12 @@ descriptors.push(buildAvatarToolSelectionStatePayload({
   avatarRangeVariant: 'primary',
   outsideRangeVariant: 'primary',
   definition: localDefinition,
+}));
+descriptors.push(buildAvatarToolSelectionStatePayload({
+  activeTool: graphTool,
+  avatarRangeVariant: 'primary',
+  outsideRangeVariant: 'primary',
+  definition: graphDefinition,
 }));
 
 console.log(JSON.stringify(descriptors));

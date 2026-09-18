@@ -15,6 +15,9 @@ export {
 
 export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer', 'rps'] as const;
 export const LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN = /^img-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOCAL_AVATAR_TOOL_INTERACTION_ID_PATTERN = /^ix-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH = 80;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
@@ -28,6 +31,7 @@ const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH = 64;
 const AVATAR_TOOL_RESOURCE_MAX_COUNT = 16;
 const AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT = 64;
+const AVATAR_TOOL_CUSTOM_GRAPH_MAX_DELAY_MS = 600_000;
 export const AVATAR_TOOL_ASSET_PATH_MAX_LENGTH = 2048;
 
 declare global {
@@ -88,6 +92,8 @@ export type AvatarToolInteractionIntensity = typeof AVATAR_TOOL_INTERACTION_INTE
 export type AvatarToolTouchZone = typeof AVATAR_TOOL_TOUCH_ZONES[number];
 export type AvatarToolSoundId = string;
 export type AvatarToolEffectId = string;
+export type AvatarToolImageId = `img-${string}`;
+export type AvatarToolInteractionId = `ix-${string}`;
 
 export type AvatarToolRenderedAnchor = {
   x: number;
@@ -349,14 +355,57 @@ export type RoundChoiceProfile = {
   };
 };
 
+export type AvatarToolImageAction =
+  | { kind: 'keep' }
+  | { kind: 'show'; imageId: AvatarToolImageId };
+
+export type CustomGraphProfile = {
+  kind: 'custom-graph';
+  revision: string;
+  images: ReadonlyArray<{
+    id: AvatarToolImageId;
+    frameIndex: number;
+    hasMeaning: boolean;
+  }>;
+  initialImageId: AvatarToolImageId;
+  initialInteractionIds: ReadonlyArray<AvatarToolInteractionId>;
+  interactions: ReadonlyArray<{
+    id: AvatarToolInteractionId;
+    trigger:
+      | { kind: 'mouse-click' }
+      | { kind: 'after'; delayMs: number };
+    actions:
+      | { press: AvatarToolImageAction; release: AvatarToolImageAction }
+      | { complete: AvatarToolImageAction };
+  }>;
+  links: ReadonlyArray<{ from: AvatarToolInteractionId; to: AvatarToolInteractionId }>;
+  burst: {
+    key: string;
+    windowMs: number;
+    rapidThreshold: number;
+    normalIntensity: 'normal';
+    rapidIntensity: 'rapid';
+  };
+  touchZone: 'release';
+  touchZones: ReadonlyArray<AvatarToolTouchZone>;
+  feedback?: { sound: AvatarToolSoundId };
+  chance?: {
+    field: 'specialTriggered';
+    probability: number;
+    effect: AvatarToolEffectId;
+    sound?: AvatarToolSoundId;
+  };
+};
+
 export type AvatarToolInteractionProfile =
   | ProgressiveReleaseProfile
   | PressReleaseProfile
   | LockedImpactProfile
-  | RoundChoiceProfile;
+  | RoundChoiceProfile
+  | CustomGraphProfile;
 
 export type AvatarToolDefinition = {
-  definitionVersion: 1 | 2;
+  definitionVersion: 1 | 2 | 3;
   id: AvatarToolId;
   label: {
     kind: 'i18n';
@@ -496,13 +545,15 @@ function validateVisual(definition: AvatarToolDefinition) {
   if (definition.definitionVersion === 1 && visual.frames !== undefined) {
     fail(definition, 'v1 visual must not contain frames');
   }
-  if (definition.definitionVersion === 2) {
+  if (definition.definitionVersion === 2 || definition.definitionVersion === 3) {
     if (
       !Array.isArray(visual.frames)
-      || visual.frames.length < 2
+      || visual.frames.length < (definition.definitionVersion === 2 ? 2 : 1)
       || visual.frames.length > AVATAR_TOOL_RESOURCE_MAX_COUNT + 1
     ) {
-      fail(definition, 'v2 visual.frames must contain one default frame and 1 to 16 change frames');
+      fail(definition, definition.definitionVersion === 2
+        ? 'v2 visual.frames must contain one default frame and 1 to 16 change frames'
+        : 'v3 visual.frames must contain between 1 and 17 image frames');
     }
     visual.frames.forEach((frame, index) => {
       assertNonEmpty(definition, frame?.iconImagePath, `visual.frames[${index}].iconImagePath`);
@@ -754,6 +805,159 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
   };
   const interaction = definition.interaction;
   assertNonEmpty(definition, interaction?.kind, 'interaction.kind');
+  if (interaction.kind === 'custom-graph') {
+    if (definition.definitionVersion !== 3) fail(definition, 'custom-graph requires definition v3');
+    if (!/^3-\d+$/.test(interaction.revision) || interaction.revision.length > 128) {
+      fail(definition, 'custom-graph revision must identify an authoritative v3 record');
+    }
+    const frames = definition.visual.frames ?? [];
+    if (interaction.images.length !== frames.length) {
+      fail(definition, 'custom-graph images must map every visual frame exactly once');
+    }
+    const imageIds = new Set<string>();
+    const frameIndices = new Set<number>();
+    interaction.images.forEach((image, index) => {
+      if (
+        image.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
+        || !LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.test(image.id)
+        || imageIds.has(image.id)
+      ) {
+        fail(definition, `interaction.images[${index}].id is invalid or duplicated`);
+      }
+      if (!Number.isSafeInteger(image.frameIndex) || image.frameIndex < 0 || image.frameIndex >= frames.length) {
+        fail(definition, `interaction.images[${index}].frameIndex is invalid`);
+      }
+      if (frameIndices.has(image.frameIndex)) {
+        fail(definition, `interaction.images[${index}].frameIndex is duplicated`);
+      }
+      if (typeof image.hasMeaning !== 'boolean') {
+        fail(definition, `interaction.images[${index}].hasMeaning must be boolean`);
+      }
+      imageIds.add(image.id);
+      frameIndices.add(image.frameIndex);
+    });
+    if (!imageIds.has(interaction.initialImageId)) {
+      fail(definition, 'custom-graph initialImageId must reference an image');
+    }
+    const interactionsById = new Map<string, CustomGraphProfile['interactions'][number]>();
+    const validateAction = (action: AvatarToolImageAction, field: string) => {
+      if (action?.kind === 'keep') return;
+      if (action?.kind === 'show' && imageIds.has(action.imageId)) return;
+      fail(definition, `${field} must keep or show a declared image`);
+    };
+    if (interaction.interactions.length === 0 || interaction.interactions.length > AVATAR_TOOL_RESOURCE_MAX_COUNT) {
+      fail(definition, 'custom-graph must contain between 1 and 16 interactions');
+    }
+    interaction.interactions.forEach((item, index) => {
+      if (
+        item.id.length > LOCAL_AVATAR_TOOL_STABLE_ID_MAX_LENGTH
+        || !LOCAL_AVATAR_TOOL_INTERACTION_ID_PATTERN.test(item.id)
+        || interactionsById.has(item.id)
+      ) {
+        fail(definition, `interaction.interactions[${index}].id is invalid or duplicated`);
+      }
+      if (item.trigger.kind === 'mouse-click') {
+        if (!('press' in item.actions) || !('release' in item.actions) || 'complete' in item.actions) {
+          fail(definition, `interaction.interactions[${index}] mouse click actions are invalid`);
+        }
+        validateAction(item.actions.press, `interaction.interactions[${index}].actions.press`);
+        validateAction(item.actions.release, `interaction.interactions[${index}].actions.release`);
+      } else if (item.trigger.kind === 'after') {
+        assertPositiveInteger(definition, item.trigger.delayMs, `interaction.interactions[${index}].trigger.delayMs`);
+        if (item.trigger.delayMs > AVATAR_TOOL_CUSTOM_GRAPH_MAX_DELAY_MS) {
+          fail(definition, `interaction.interactions[${index}].trigger.delayMs must not exceed 600000`);
+        }
+        if (!('complete' in item.actions) || 'press' in item.actions || 'release' in item.actions) {
+          fail(definition, `interaction.interactions[${index}] delay actions are invalid`);
+        }
+        validateAction(item.actions.complete, `interaction.interactions[${index}].actions.complete`);
+      } else {
+        fail(definition, `interaction.interactions[${index}].trigger is unsupported`);
+      }
+      interactionsById.set(item.id, item);
+    });
+    if (
+      interactionsById.size === 0
+      || interaction.initialInteractionIds.length === 0
+      || interaction.initialInteractionIds.length > AVATAR_TOOL_RESOURCE_MAX_COUNT
+    ) {
+      fail(definition, 'custom-graph requires interactions and an initial waiting position');
+    }
+    const initialIds = new Set(interaction.initialInteractionIds);
+    if (
+      initialIds.size !== interaction.initialInteractionIds.length
+      || interaction.initialInteractionIds.some(id => !interactionsById.has(id))
+    ) fail(definition, 'custom-graph initialInteractionIds are invalid');
+    const linkKeys = new Set<string>();
+    interaction.links.forEach((link, index) => {
+      const key = `${link.from}\u0000${link.to}`;
+      if (!interactionsById.has(link.from) || !interactionsById.has(link.to) || linkKeys.has(key)) {
+        fail(definition, `interaction.links[${index}] is invalid or duplicated`);
+      }
+      linkKeys.add(key);
+    });
+    if (interaction.initialInteractionIds.length + interaction.links.length > 32) {
+      fail(definition, 'custom-graph initial and interaction links must total at most 32');
+    }
+    const reachable = new Set<string>();
+    const queue = [...interaction.initialInteractionIds];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      interaction.links.forEach((link) => { if (link.from === id) queue.push(link.to); });
+    }
+    if (reachable.size !== interactionsById.size) {
+      fail(definition, 'custom-graph interactions must all be reachable');
+    }
+    const waitingPositions = [
+      interaction.initialInteractionIds,
+      ...interaction.interactions.map(item => interaction.links.filter(link => link.from === item.id).map(link => link.to)),
+    ];
+    waitingPositions.forEach((ids, index) => {
+      const candidates = ids.map(id => interactionsById.get(id)!);
+      if (candidates.filter(item => item.trigger.kind === 'mouse-click').length > 1) {
+        fail(definition, `custom-graph waiting position ${index} has ambiguous mouse clicks`);
+      }
+      const delays = candidates.flatMap(item => item.trigger.kind === 'after' ? [item.trigger.delayMs] : []);
+      if (new Set(delays).size !== delays.length) {
+        fail(definition, `custom-graph waiting position ${index} has ambiguous delays`);
+      }
+    });
+    assertNonEmpty(definition, interaction.burst.key, 'interaction.burst.key');
+    assertPositive(definition, interaction.burst.windowMs, 'interaction.burst.windowMs');
+    assertPositiveInteger(definition, interaction.burst.rapidThreshold, 'interaction.burst.rapidThreshold');
+    if (interaction.burst.normalIntensity !== 'normal' || interaction.burst.rapidIntensity !== 'rapid') {
+      fail(definition, 'custom-graph burst intensities are invalid');
+    }
+    if (interaction.touchZone !== 'release') fail(definition, 'custom-graph touchZone must be release');
+    assertTouchZones(definition, interaction.touchZones, 'interaction.touchZones');
+    if (interaction.feedback) requireSound(interaction.feedback.sound);
+    if (interaction.chance) {
+      if (interaction.chance.field !== 'specialTriggered') {
+        fail(definition, 'custom-graph chance field must be specialTriggered');
+      }
+      assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
+      if (interaction.chance.probability <= 0) fail(definition, 'custom-graph chance probability must be positive');
+      requireEffect(interaction.chance.effect);
+      if (interaction.chance.sound) requireSound(interaction.chance.sound);
+      if (definition.effects.find(effect => effect.id === interaction.chance?.effect)?.kind !== 'random-scatter') {
+        fail(definition, 'custom-graph chance effect must reference random-scatter');
+      }
+    }
+    const referencedSounds = new Set([
+      interaction.feedback?.sound,
+      interaction.chance?.sound,
+    ].filter((value): value is string => !!value));
+    const referencedEffects = new Set(interaction.chance ? [interaction.chance.effect] : []);
+    if (definition.sounds.length !== referencedSounds.size || definition.sounds.some(sound => !referencedSounds.has(sound.id))) {
+      fail(definition, 'custom-graph sounds must match references exactly');
+    }
+    if (definition.effects.length !== referencedEffects.size || definition.effects.some(effect => !referencedEffects.has(effect.id))) {
+      fail(definition, 'custom-graph effects must match references exactly');
+    }
+    return;
+  }
   if (interaction.kind === 'progressive-release') {
     const stages = interaction.stages ?? [];
     const variants = stages.map(stage => stage.variant);
@@ -963,8 +1167,8 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
 
 export function validateAvatarToolDefinition(definition: AvatarToolDefinition): void {
   if (!definition || typeof definition !== 'object') throw new Error('Invalid avatar tool definition');
-  if (definition.definitionVersion !== 1 && definition.definitionVersion !== 2) {
-    fail(definition, 'definitionVersion must be 1 or 2');
+  if (![1, 2, 3].includes(definition.definitionVersion)) {
+    fail(definition, 'definitionVersion must be 1, 2 or 3');
   }
   if (definition.definitionVersion === 1) {
     if (!AVATAR_TOOL_DEFINITION_IDS.includes(definition.id as never)) fail(definition, 'v1 id is unsupported');
@@ -972,12 +1176,16 @@ export function validateAvatarToolDefinition(definition: AvatarToolDefinition): 
     assertNonEmpty(definition, definition.label.key, 'label.key');
     assertNonEmpty(definition, definition.label.fallback, 'label.fallback');
   } else {
-    if (!LOCAL_AVATAR_TOOL_ID_PATTERN.test(definition.id)) fail(definition, 'v2 id must be a local UUID');
-    if (definition.label?.kind !== 'literal') fail(definition, 'v2 label must be literal');
+    if (!LOCAL_AVATAR_TOOL_ID_PATTERN.test(definition.id)) fail(definition, 'local definition id must be a UUID');
+    if (definition.label?.kind !== 'literal') fail(definition, 'local definition label must be literal');
     assertNonEmpty(definition, definition.label.value, 'label.value');
-    if (definition.interaction.kind !== 'press-release') fail(definition, 'v2 interaction must be press-release');
-    if (!/^\d+-\d+$/.test(definition.interaction.revision ?? '') || definition.interaction.revision!.length > 128) {
-      fail(definition, 'v2 interaction revision must identify the authoritative record');
+    if (definition.definitionVersion === 2) {
+      if (definition.interaction.kind !== 'press-release') fail(definition, 'v2 interaction must be press-release');
+      if (!/^\d+-\d+$/.test(definition.interaction.revision ?? '') || definition.interaction.revision!.length > 128) {
+        fail(definition, 'v2 interaction revision must identify the authoritative record');
+      }
+    } else if (definition.interaction.kind !== 'custom-graph') {
+      fail(definition, 'v3 interaction must be custom-graph');
     }
   }
   if (

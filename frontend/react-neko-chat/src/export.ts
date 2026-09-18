@@ -1,9 +1,16 @@
-import { mount, mountChatWindow, unmount, unmountChatWindow } from './mount';
+import {
+  mount,
+  mountAvatarToolEditor,
+  mountChatWindow,
+  unmount,
+  unmountChatWindow,
+} from './mount';
 
 const api = {
   mount,
   unmount,
   mountChatWindow,
+  mountAvatarToolEditor,
   unmountChatWindow,
 };
 
@@ -17,4 +24,4 @@ if (typeof window !== 'undefined') {
   window.NekoChatWindow = api;
 }
 
-export { mountChatWindow, unmountChatWindow };
+export { mountAvatarToolEditor, mountChatWindow, unmountChatWindow };

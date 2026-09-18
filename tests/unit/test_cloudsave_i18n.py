@@ -545,6 +545,16 @@ def test_i18n_script_prefers_manual_ui_language_override_without_persisting_it()
 
 
 @pytest.mark.unit
+def test_i18n_script_syncs_ui_language_between_same_origin_windows():
+    script = I18N_JS.read_text(encoding="utf-8")
+
+    assert "window.addEventListener('storage', (event) =>" in script
+    assert "event.key !== 'i18nextLng'" in script
+    assert "normalizeSupportedLanguageCode(event.newValue)" in script
+    assert "void i18next.changeLanguage(language)" in script
+
+
+@pytest.mark.unit
 def test_app_settings_does_not_produce_manual_ui_language_override():
     script = APP_SETTINGS_JS.read_text(encoding="utf-8")
 

@@ -24,16 +24,17 @@ import CompactExportHistoryPanel, {
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
-import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
+import AvatarToolItemManager, {
+  type AvatarToolEditorResultMessage,
+  type AvatarToolManagerAnchorRect,
+} from './AvatarToolItemManager';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
+import { useAvatarToolSurfaceSlots } from './avatar-tools/useAvatarToolSurfaceSlots';
 import {
   getAvatarToolItemLabel,
-  persistActiveAvatarToolIds,
-  readPersistedActiveAvatarToolIds,
   resolveAvatarToolMenuIconVisual,
-  sanitizeAvatarToolSlots,
   withAvatarToolAssetVersion,
   type AvatarToolId,
   type AvatarToolItem,
@@ -435,6 +436,7 @@ export default function FullChatSurface({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  userName = '',
   assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
@@ -492,7 +494,6 @@ export default function FullChatSurface({
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   // Collapse the right-side tools into an overflow menu when the composer gets
@@ -586,6 +587,18 @@ export default function FullChatSurface({
   const effectiveToolVariant = avatarToolRuntime.effectiveVariant;
   const clearAvatarTool = avatarToolRuntime.clearTool;
   const selectAvatarTool = avatarToolRuntime.selectTool;
+  const {
+    activeToolIds: activeAvatarToolIds,
+    saveSlots,
+    applyEditorResult,
+    deleteLocalTool,
+  } = useAvatarToolSurfaceSlots({
+    catalog: localAvatarToolCatalog,
+    activeToolId: activeAvatarToolId,
+    clearActiveTool: clearAvatarTool,
+    managerOpen: avatarToolManagerOpen,
+    surface: 'full',
+  });
   const configuredToolIconItems = useMemo(() => {
     const availableById = new Map(toolIconItems.map(item => [item.id, item]));
     return activeAvatarToolIds
@@ -594,26 +607,15 @@ export default function FullChatSurface({
   }, [activeAvatarToolIds, toolIconItems]);
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
-    setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    saveSlots(toolIds);
     setAvatarToolManagerOpen(false);
     setAvatarToolManagerAnchorRect(null);
-    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId as AvatarToolId)) {
-      clearAvatarTool();
-    }
-  }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.registry]);
+  }, [saveSlots]);
 
-  useEffect(() => {
-    if (!avatarToolManagerOpen) return;
-    localAvatarToolCatalog.refresh().catch(() => undefined);
-  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
-
-  useEffect(() => {
-    if (!activeAvatarToolId) return;
-    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
-    clearAvatarTool();
-  }, [activeAvatarToolIds, activeAvatarToolId, clearAvatarTool]);
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    applyEditorResult(result);
+    setAvatarToolManagerOpen(true);
+  }, [applyEditorResult]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -3128,7 +3130,6 @@ export default function FullChatSurface({
       <div
         className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
         data-compact-chat-state={effectiveCompactChatState}
-        data-compact-stage-layout="stage2"
       >
         <div
           className="compact-chat-stage-body-slot"
@@ -3175,15 +3176,24 @@ export default function FullChatSurface({
       <AvatarToolItemManager
         open={!composerHidden && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
-        availableTools={toolIconItems}
+        availableTools={localAvatarToolCatalog.items}
+        runnableToolIds={localAvatarToolCatalog.registry.validIds}
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => {
           setAvatarToolManagerOpen(false);
           setAvatarToolManagerAnchorRect(null);
         }}
+        createLimits={localAvatarToolCatalog.limits}
+        userName={userName}
+        assistantName={assistantName}
+        onCreate={localAvatarToolCatalog.create}
+        onLoadDetail={localAvatarToolCatalog.detail}
+        onUpdate={localAvatarToolCatalog.update}
+        onDelete={deleteLocalTool}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
+        onExternalEditorResult={handleAvatarToolEditorResult}
       />
       <section
         className={`chat-window ${surfaceModeClassName}`}
