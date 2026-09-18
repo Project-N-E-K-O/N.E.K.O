@@ -16,6 +16,7 @@
 import asyncio
 import contextlib
 import functools
+import time
 import uuid
 
 from main_logic.agent_event_bus import (
@@ -138,7 +139,7 @@ class _LifecycleMixin:
         # read the name the same defensive way the media helpers read it.
         lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
         try:
-            return bool(await publish_conversation_turn_observed_best_effort(
+            published = bool(await publish_conversation_turn_observed_best_effort(
                 lanlan_name,
                 content=text,
                 turn_type=turn_type,
@@ -146,6 +147,12 @@ class _LifecycleMixin:
                 source=_BUS_CONVERSATION_SOURCE,
                 message_count=message_count,
             ))
+            if published:
+                # 这条轮次已经自己上过总线；让管理器层的发布点按文本跳过它，
+                # 免得同一段主动回复在 store 里出现两条。
+                self._bus_published_text = text
+                self._bus_published_at = time.time()
+            return published
         except asyncio.CancelledError:
             raise
         except Exception as publish_error:

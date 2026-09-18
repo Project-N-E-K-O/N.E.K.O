@@ -113,6 +113,22 @@ def _record_line(item: dict) -> str:
     ])
 
 
+def _effective_ts(item: dict) -> float:
+    """Display time of a record: producer ts first, then forward time, then seq."""
+    payload = item.get("payload") if isinstance(item, dict) else None
+    if not isinstance(payload, dict):
+        payload = item if isinstance(item, dict) else {}
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    for candidate in (meta.get("ts"), payload.get("timestamp"),
+                      (item or {}).get("ts"), (item or {}).get("seq")):
+        try:
+            if candidate is not None:
+                return float(candidate)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 def _dedupe_key(item: dict) -> str:
     payload = item.get("payload") if isinstance(item, dict) else None
     if not isinstance(payload, dict):
@@ -159,7 +175,7 @@ def main() -> int:
     print(f"[probe] 端点 {endpoint}；store={args.store}")
     print("[probe] 每行：时间 | turn_type | role | channel | content")
 
-    seen: set[str] = set()
+    seen_prev: set[str] = set()
     deadline = time.time() + args.seconds if args.seconds else None
     since_ts = args.since_ts
     rounds = 0
@@ -176,13 +192,18 @@ def main() -> int:
             print(f"[probe] 查询被拒: {resp.get('error')}")
             return 2
 
-        items = list(reversed((resp.get("result") or {}).get("items") or []))  # 服务端新→旧
+        items = list((resp.get("result") or {}).get("items") or [])
+        # Order by the time the record is displayed with, not by arrival order.
+        items.sort(key=_effective_ts)
         printed = 0
+        round_keys: set[str] = set()
         for item in items:
             key = _dedupe_key(item)
-            if key in seen:
+            round_keys.add(key)
+            # Records sharing the boundary timestamp come back again next round;
+            # only the previous page's keys need remembering.
+            if key in seen_prev:
                 continue
-            seen.add(key)
             if rounds == 0 and not args.follow and not args.show_all:
                 pass  # 首轮（非跟读）就是要看现状，照常打印
             elif rounds == 0 and args.follow and not args.show_all:
@@ -194,6 +215,15 @@ def main() -> int:
             print("[probe] （store 里还没有记录：等一次对话/一次主动搭话再看，或还没重启宿主）")
         if not args.follow:
             break
+        # Advance the server-side cursor so older records can't be re-fetched and
+        # a burst larger than --limit is detected instead of silently skipped.
+        if items:
+            newest = max(_effective_ts(item) for item in items)
+            since_ts = newest if since_ts is None else max(float(since_ts), newest)
+            if len(items) >= int(args.limit):
+                print(f"[probe] 注意：本页已满（limit={args.limit}），可能有记录落在两次轮询之间"
+                      f"，需要时用更大的 --limit 重跑")
+        seen_prev = round_keys
         rounds += 1
         if deadline and time.time() >= deadline:
             break
@@ -221,15 +251,17 @@ def _self_test() -> int:
     store = registry.get(_DEFAULT_STORE)
     assert store is not None
     now = time.time()
-    store.publish("all", {
-        "kind": "conversation", "type": "conversation_turn",
-        "source": "main_logic.core", "timestamp": now - 1.5,
-        "content": "在吗", "metadata": {"role": "master", "ts": now - 1.5},
-    })
+    # Seeded out of order on purpose: display order must follow metadata.ts.
     store.publish("all", {
         "kind": "conversation", "type": "conversation_turn",
         "source": "main_logic.core", "timestamp": now - 1.0,
-        "content": "喵，我在的。", "metadata": {"role": "cat", "ts": now - 1.0, "turn_type": "proactive_reply"},
+        "content": "在吗", "metadata": {"role": "master", "ts": now - 1.0},
+    })
+    store.publish("all", {
+        "kind": "conversation", "type": "conversation_turn",
+        "source": "main_logic.core", "timestamp": now - 3.0,
+        "content": "喵，我在的。",
+        "metadata": {"role": "cat", "ts": now - 3.0, "turn_type": "proactive_reply"},
     })
 
     server = MessagePlaneRpcServer(endpoint=endpoint, stores=registry)
@@ -247,12 +279,13 @@ def _self_test() -> int:
                 time.sleep(0.1)
         resp = _query(sock, "bus.query", {"store": _DEFAULT_STORE, "topic": "all", "limit": 10},
                       "st-query")
-        items = list(reversed((resp.get("result") or {}).get("items") or []))
+        items = list((resp.get("result") or {}).get("items") or [])
+        items.sort(key=_effective_ts)
         print(f"[self-test] 读回 {len(items)} 条：")
         for item in items:
             print("[self-test] " + _record_line(item))
         lines = [_record_line(item) for item in items]
-        ok = len(lines) == 2 and "master" in lines[0] and "cat" in lines[1]
+        ok = len(lines) == 2 and "cat" in lines[0] and "master" in lines[1]
         print("[self-test]", "OK —— 插件读到的就是这两条" if ok else f"FAIL: {lines}")
         return 0 if ok else 1
     finally:

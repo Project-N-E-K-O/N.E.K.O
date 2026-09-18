@@ -332,12 +332,27 @@ class TurnMixin:
         ``turn_type`` is also the conversation-bus label
         (``assistant_message`` / ``proactive_reply``).
         """
+        # 文本与轮次身份一起取快照再清空：flush 之后旧 id 不能留给下一轮，
+        # 也不能被恢复路径的补记文本沿用。
         ai_text = self._current_ai_turn_text
+        turn_id = getattr(self, "_current_ai_turn_id", "")
+        started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
         self._note_ai_turn(text=ai_text or None)
         self._current_ai_turn_text = ''
-        self._publish_ai_message_to_plugin_bus(ai_text, turn_type)
+        self._current_ai_turn_id = ''
+        self._current_ai_turn_started_at = 0.0
+        self._publish_ai_message_to_plugin_bus(
+            ai_text, turn_type, turn_id=turn_id, started_at=started_at,
+        )
 
-    def _publish_ai_message_to_plugin_bus(self, text: Optional[str], turn_type: str) -> None:
+    def _publish_ai_message_to_plugin_bus(
+        self,
+        text: Optional[str],
+        turn_type: str,
+        *,
+        turn_id: str = "",
+        started_at: float = 0.0,
+    ) -> None:
         """Publish one finished AI turn to the plugin conversation bus.
 
         Plugins need the whole sentence plus when it was spoken. This store
@@ -346,21 +361,40 @@ class TurnMixin:
         side in ``_publish_user_utterance_to_plugin_bus``) lets plugins read
         both sides of every turn — ordered by ``metadata.ts`` — without
         touching host files or competing for the frontend websocket.
+
+        ``ts`` is the first-chunk time, not the flush time: an interrupted turn
+        would otherwise be stamped after the user's next message.
         """
         cleaned = str(text or "").strip()
         if not cleaned:
             return
+        # 离线客户端的 proactive 路径自己会发布同一段文本；别发第二遍。
+        session = getattr(self, "session", None)
+        if (
+            str(getattr(session, "_bus_published_text", "") or "").strip() == cleaned
+            and (time.time() - float(getattr(session, "_bus_published_at", 0.0) or 0.0)) < 60.0
+        ):
+            return
         try:
-            published_at = time.time()
+            finished_at = time.time()
+            spoken_at = float(started_at or 0.0) or finished_at
+            resolved_turn_id = str(turn_id or "")
+            published_user_turns = getattr(self, "_plugin_bus_user_turn_ids", None)
+            message_count = (
+                2
+                if resolved_turn_id and published_user_turns is not None
+                and resolved_turn_id in published_user_turns
+                else 1
+            )
             self._fire_task(publish_conversation_turn_observed_best_effort(
                 self.lanlan_name,
                 content=cleaned,
                 turn_type=str(turn_type or "assistant_message"),
-                conversation_id=str(getattr(self, "_current_ai_turn_id", "") or ""),
+                conversation_id=resolved_turn_id,
                 source="main_logic.core",
-                message_count=1,
-                metadata={"role": "cat", "ts": published_at},
-                ts=published_at,
+                message_count=message_count,
+                metadata={"role": "cat", "ts": spoken_at, "ts_end": finished_at},
+                ts=spoken_at,
             ))
         except Exception:
             logger.debug("[plugin-bus] ai message not published", exc_info=True)
@@ -770,6 +804,9 @@ class TurnMixin:
                     # recovery 这一路让 send 不 track，改由本步补记——它是同步
                     # 的、紧挨 _emit_turn_end，中间没有能丢产权的 await 窗口。
                     # 文本处理跟 send_lanlan_response 内部保持一致（剥表情标签）。
+                    if not self._current_ai_turn_text:
+                        self._current_ai_turn_started_at = time.time()
+                    self._current_ai_turn_id = str(recovery_turn_id or '')
                     self._current_ai_turn_text += self.emotion_pattern.sub('', body_text)
 
                 async def _append_recovery_history() -> None:
@@ -928,11 +965,14 @@ class TurnMixin:
         # 成对；时间戳用消息自身发生时刻，供插件排序还原对话先后。
         try:
             published_at = time.time()
+            # 主人轮沿用本轮 speech id，这样她的回复能带同一个 conversation_id，
+            # 插件可以把一问一答配成一轮（回复记录的 message_count=2）。
+            user_turn_id = str(getattr(self, "current_speech_id", "") or "")
             self._fire_task(publish_conversation_turn_observed_best_effort(
                 self.lanlan_name,
                 content=cleaned,
                 turn_type="user_message",
-                conversation_id="",
+                conversation_id=user_turn_id,
                 source="main_logic.core",
                 message_count=1,
                 metadata={
@@ -942,6 +982,10 @@ class TurnMixin:
                 },
                 ts=published_at,
             ))
+            if user_turn_id:
+                published_user_turns = getattr(self, "_plugin_bus_user_turn_ids", None)
+                if published_user_turns is not None:
+                    published_user_turns.append(user_turn_id)
         except Exception:
             logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
@@ -1787,6 +1831,9 @@ class TurnMixin:
         # 必须放在最终校验之后。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
+            if not self._current_ai_turn_text:
+                # 轮次开始：记下她"开口"的时刻，flush 时用它做插件总线的时间戳。
+                self._current_ai_turn_started_at = time.time()
             self._current_ai_turn_text += text_clean
             self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:

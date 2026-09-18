@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 
 import pytest
 
@@ -20,8 +21,12 @@ class _StubManager(turn_module.TurnMixin):
 
     def __init__(self) -> None:
         self.lanlan_name = "YUI"
+        self.current_speech_id = "turn-user-1"
         self._current_ai_turn_text = ""
         self._current_ai_turn_id = ""
+        self._current_ai_turn_started_at = 0.0
+        self._plugin_bus_user_turn_ids: deque = deque(maxlen=8)
+        self.session = None
         self.noted: list[str | None] = []
         self._bg: list[asyncio.Task] = []
 
@@ -62,16 +67,18 @@ def test_user_utterance_published_with_own_timestamp(published):
         await stub.drain()
         return stub, before
 
-    _, before = asyncio.run(_scenario())
+    stub, before = asyncio.run(_scenario())
     assert len(published) == 1
     call = published[0]
     assert call["lanlan_name"] == "YUI"
     assert call["content"] == "在吗"
     assert call["turn_type"] == "user_message"
+    assert call["conversation_id"] == "turn-user-1"
     assert call["metadata"]["role"] == "master"
     assert call["metadata"]["is_voice"] is True
     assert before <= call["ts"] <= time.time() + 1
     assert call["metadata"]["ts"] == call["ts"]
+    assert list(stub._plugin_bus_user_turn_ids) == ["turn-user-1"]
 
 
 def test_blank_user_utterance_is_not_published(published):
@@ -89,25 +96,64 @@ def test_blank_user_utterance_is_not_published(published):
 def test_ai_turn_publishes_whole_text_once(published):
     async def _scenario():
         stub = _StubManager()
+        stub._plugin_bus_user_turn_ids.append("turn-42")  # 同一轮的主人消息先发过
         stub._current_ai_turn_text = "喵，我在的。"
         stub._current_ai_turn_id = "turn-42"
+        stub._current_ai_turn_started_at = time.time() - 2.0
+        started_at = stub._current_ai_turn_started_at
         turn_module.TurnMixin._flush_ai_turn_text_to_tracker(
             stub, turn_type="proactive_reply",
         )
         await stub.drain()
-        return stub
+        return stub, started_at
 
-    stub = asyncio.run(_scenario())
+    stub, started_at = asyncio.run(_scenario())
     assert len(published) == 1
     call = published[0]
     assert call["content"] == "喵，我在的。"
     assert call["turn_type"] == "proactive_reply"
     assert call["conversation_id"] == "turn-42"
+    assert call["message_count"] == 2, "同一轮的主人消息已发布过，回复应标 message_count=2"
     assert call["metadata"]["role"] == "cat"
+    # ts 取首块（开口）时刻，不是 flush 时刻；ts_end 才是收尾时刻
     assert call["ts"] == call["metadata"]["ts"]
+    assert call["ts"] == pytest.approx(started_at)
+    assert call["metadata"]["ts_end"] >= call["ts"]
     # buffer 已清空，且 activity tracker 拿到同一份文本
     assert stub._current_ai_turn_text == ""
+    assert stub._current_ai_turn_id == ""
+    assert stub._current_ai_turn_started_at == 0.0
     assert stub.noted == ["喵，我在的。"]
+
+
+def test_ai_turn_without_paired_user_message_stays_single(published):
+    async def _scenario():
+        stub = _StubManager()
+        stub._current_ai_turn_text = "喵，自己说一句。"
+        stub._current_ai_turn_id = "turn-self"
+        turn_module.TurnMixin._flush_ai_turn_text_to_tracker(
+            stub, turn_type="proactive_reply",
+        )
+        await stub.drain()
+
+    asyncio.run(_scenario())
+    assert published and published[0]["message_count"] == 1
+
+
+def test_client_published_text_is_not_published_again(published):
+    class _Session:
+        _bus_published_text = "喵，这条已经发过了。"
+        _bus_published_at = time.time()
+
+    async def _scenario():
+        stub = _StubManager()
+        stub.session = _Session()
+        stub._current_ai_turn_text = "喵，这条已经发过了。"
+        turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
+        await stub.drain()
+
+    asyncio.run(_scenario())
+    assert published == [], "离线客户端已经发布过的文本不应重复上总线"
 
 
 def test_ai_flush_defaults_to_assistant_message(published):
