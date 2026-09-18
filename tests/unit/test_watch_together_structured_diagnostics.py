@@ -128,6 +128,22 @@ def test_a_cut_off_reply_never_hands_back_its_last_whole_fragment(text):
         json_object(text, _events_validator)
 
 
+@pytest.mark.parametrize('text', [
+    '{"events": []}\nNote [optional',
+    '{"events": []}\nNote {unclosed',
+    # The bracket is the last character, so the decoder runs out of input on it.
+    '{"events": []}\nNote [',
+    '{"events": []}\n参见 {',
+])
+def test_an_unclosed_bracket_in_trailing_prose_does_not_lose_the_payload(text):
+    from main_logic.watch_together.engine import json_object
+
+    # A decode failure only ends the scan; it is raised when no root was found
+    # at all, so a bracket opened in the prose behind a good payload cannot
+    # bury it.
+    assert json_object(text, _events_validator) == {'events': []}
+
+
 def test_a_nested_payload_is_not_offered_when_its_container_decoded():
     from main_logic.watch_together.engine import json_object
 
