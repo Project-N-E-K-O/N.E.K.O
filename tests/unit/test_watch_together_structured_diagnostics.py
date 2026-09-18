@@ -168,6 +168,20 @@ def test_a_live_array_of_replies_is_rejected_whole_not_spoken_first():
     assert validate(value)[1]
 
 
+@pytest.mark.parametrize('text', [
+    # A broken wrapper leaves both replies loose; speaking one drops the other.
+    '[oops {"line": "first"}, {"line": "second"}]',
+    # A schema example ahead of the answer: taking the earliest speaks the sample.
+    'Format: {"line": "what to say"}\nAnswer: {"line": "actual"}',
+])
+def test_two_schema_valid_roots_are_refused_rather_than_guessed(text):
+    from main_logic.watch_together.engine import json_object
+    from main_logic.watch_together.live import _validator
+
+    with pytest.raises(ValueError):
+        json_object(text, _validator('interject'))
+
+
 def test_live_reply_still_requires_its_own_object_schema():
     from main_logic.watch_together.live import _validator
 

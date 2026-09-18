@@ -151,9 +151,6 @@ def parse_video_url(value):
     return match.group(1), page - 1
 
 
-_NO_ROOT = object()
-
-
 def json_roots(text):
     """Yield every decodable JSON root in a reply, in the order they appear."""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
@@ -190,16 +187,20 @@ def json_roots(text):
 
 
 def json_object(text, validate=None):
-    """Return the first root the caller's schema accepts, else the first root."""
-    fallback = _NO_ROOT
-    for value in json_roots(text):
-        if validate is None or not validate(value)[1]:
-            return value
-        if fallback is _NO_ROOT:
-            fallback = value
-    # json_roots raises rather than finishing empty, so a root was seen; hand
-    # the rejected one back so the caller reports its issues as it always has.
-    return fallback
+    """Return the one root the caller's schema accepts, refusing a tie."""
+    # json_roots raises rather than finishing empty, so there is always a root.
+    roots = list(json_roots(text))
+    if validate is None:
+        return roots[0]
+    accepted = [value for value in roots if not validate(value)[1]]
+    if len(accepted) > 1:
+        # Taking the earliest would be a guess: a preamble can carry a schema
+        # example ("Format: {...}") ahead of the answer, and a broken wrapper
+        # can leave several replies loose, where earliest-wins speaks the sample
+        # or drops every entry but one. Refuse and let the caller retry.
+        raise ValueError('Ambiguous JSON roots')
+    # Hand a rejected root back so the caller reports its issues as it always has.
+    return accepted[0] if accepted else roots[0]
 
 
 def sample_danmaku(messages, length):
