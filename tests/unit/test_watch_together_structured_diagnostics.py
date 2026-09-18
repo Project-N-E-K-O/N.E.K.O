@@ -80,6 +80,20 @@ def test_malformed_array_is_not_salvaged_as_its_nested_object():
         json_object('[{"events": []}')
 
 
+@pytest.mark.parametrize('text,expected', [
+    # Providers we do not send response_format to append prose after the root.
+    ('{"events": []}\nDone. Hope this helps.', {'events': []}),
+    ('[{"kind": "laugh"}]\n以上是分析结果。', [{'kind': 'laugh'}]),
+    # Bracketed labels before the payload must not be mistaken for the root.
+    ('Result [JSON]:\n{"events": []}', {'events': []}),
+    ('分析 [timeline] 如下：\n[{"kind": "comment"}] 完毕', [{'kind': 'comment'}]),
+])
+def test_prose_around_the_root_is_ignored(text, expected):
+    from main_logic.watch_together.engine import json_object
+
+    assert json_object(text) == expected
+
+
 def test_live_reply_still_requires_its_own_object_schema():
     from main_logic.watch_together.live import _validator
 

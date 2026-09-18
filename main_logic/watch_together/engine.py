@@ -153,18 +153,32 @@ def parse_video_url(value):
 
 def json_object(text):
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    # Parse the complete root first. Providers can return an event array even
-    # with json_object requested; slicing between braces corrupts multi-event
-    # arrays and silently unwraps single-event arrays. Schema adaptation belongs
-    # to the timeline validator, not this shared parser (live replies differ).
-    if text.startswith(('{', '[')):
-        return json.loads(text)
-    starts = [at for token in ('{', '[') if (at := text.find(token)) >= 0]
-    if not starts:
-        raise ValueError('Missing JSON object or array')
-    start = min(starts)
-    closing = '}' if text[start] == '{' else ']'
-    return json.loads(text[start:text.rindex(closing) + 1])
+    # Decode the first complete JSON root and ignore whatever prose follows it.
+    # Slicing between the first brace and the last one corrupts multi-event
+    # arrays and silently unwraps single-event ones, while a plain json.loads of
+    # the whole reply rejects the providers we do not send response_format to,
+    # which append explanations. Schema adaptation belongs to the timeline
+    # validator, not this shared parser (live replies differ).
+    decoder, first_error = json.JSONDecoder(), None
+    for start, token in enumerate(text):
+        if token not in '{[':
+            continue
+        try:
+            return decoder.raw_decode(text, start)[0]
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+            inner = start + 1
+            while inner < len(text) and text[inner].isspace():
+                inner += 1
+            # Nothing decodable sat inside this bracket, so it was prose such as
+            # "Result [JSON]:" and the payload is still ahead. A bracket whose
+            # contents did decode before breaking is the real root: stop there
+            # rather than salvaging a nested object out of a truncated array.
+            if exc.pos > inner:
+                raise
+    if first_error is not None:
+        raise first_error
+    raise ValueError('Missing JSON object or array')
 
 
 def sample_danmaku(messages, length):
@@ -353,8 +367,8 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                     'stage': stage, 'label': label, 'attempt': _number,
                     'content_type': type(raw).__name__,
                     'content_length': len(raw) if isinstance(raw, str) else None,
-                    'has_object_start': isinstance(raw, str) and '{' in raw,
-                    'has_object_end': isinstance(raw, str) and '}' in raw,
+                    'has_root_start': isinstance(raw, str) and any(c in raw for c in '{['),
+                    'has_root_end': isinstance(raw, str) and any(c in raw for c in '}]'),
                     'parse_error': type(exc).__name__,
                     'finish_reason': metadata.get('finish_reason') if isinstance(metadata, dict) else None,
                 }
