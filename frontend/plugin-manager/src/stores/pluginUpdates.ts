@@ -17,7 +17,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { fetchMarketPlugin } from '@/api/market'
+import { fetchMarketPluginVersions } from '@/api/market'
 import { fetchBridge, readErrorCode } from '@/api/marketBridge'
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
@@ -271,6 +271,15 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     if (!candidate || candidate.needsManualUpgrade) return false
     if (candidate.status === 'updating') return false
 
+    // Take the shared mutex *before* creating a backend task. Without this the
+    // Market panel (which cannot see this surface) could POST concurrently, and
+    // the second worker would run untracked and uncancellable.
+    const installTask = useMarketInstallTaskStore()
+    if (installTask.running) {
+      updateLog.warn('upgrade refused: an install task is already running', { pluginId })
+      return false
+    }
+
     candidate.status = 'updating'
     candidate.errorKey = null
     updateLog.info('upgrade start', {
@@ -281,14 +290,23 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     })
 
     try {
-      // The catalog row carries the target release's package evidence; the
-      // lock only knows what is currently on disk.
-      const release = await fetchMarketPlugin(candidate.marketId)
+      // Fetch the version table for the candidate's *own* channel and pick the
+      // exact release the check detected. The plugin-detail endpoint returns
+      // whatever the default channel calls "latest", so using it here would
+      // silently pull a beta install back onto stable.
+      const versions = await fetchMarketPluginVersions(candidate.marketId, {
+        channel: candidate.channel,
+      })
+      const release = versions?.find((entry) => entry.version === candidate.latestVersion)
       if (!release) {
-        return failCandidate(candidate, 'market.marketListFetchFailed', 'release lookup failed')
+        return failCandidate(
+          candidate,
+          'market.marketListFetchFailed',
+          `release ${candidate.latestVersion} missing on channel ${candidate.channel}`,
+        )
       }
-      const packageUrl = release.download_url
-      const packageSha256 = release.latest_package_sha256
+      const packageUrl = release.package_url
+      const packageSha256 = release.package_sha256
       if (!packageUrl || !packageSha256) {
         return failCandidate(candidate, 'market.installFailed', 'release has no package_url/sha256')
       }
@@ -300,11 +318,11 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
           package_url: packageUrl,
           canonical_package_url: packageUrl,
           package_sha256: packageSha256,
-          payload_hash: release.latest_payload_hash ?? null,
+          payload_hash: release.payload_hash ?? null,
           plugin_id: candidate.marketId,
-          version: release.version || candidate.latestVersion,
-          channel: release.latest_channel || candidate.channel,
-          published_at: release.latest_published_at || null,
+          version: release.version,
+          channel: release.channel || candidate.channel,
+          published_at: release.created_at || null,
           // Matches the active lock entry: the backend looks up by plugin.toml
           // id first and only falls back to the Market id.
           expected_plugin_toml_id: candidate.pluginId,
@@ -346,15 +364,20 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         return true
       }
 
-      const outcome = await useMarketInstallTaskStore().track(String(body.task_id), {
+      const outcome = await installTask.track(String(body.task_id), {
         pluginId: candidate.pluginId,
         name: candidate.name,
         mode: 'upgrade',
         channel: candidate.channel,
         fromVersion: candidate.currentVersion,
         toVersion: candidate.latestVersion,
-      })
+      }, 'float')
       if (!outcome.ok) {
+        if (outcome.refused) {
+          updateLog.warn('upgrade refused after POST; leaving the candidate untouched', { pluginId })
+          candidate.status = 'idle'
+          return false
+        }
         if (outcome.aborted) {
           // Tracking was dropped (the popup closed mid-upgrade). Leave the row
           // alone rather than reporting a failure that never happened.

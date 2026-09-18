@@ -2,9 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-import { fetchMarketLatestVersions, fetchMarketPlugin } from '@/api/market'
+import { fetchMarketLatestVersions, fetchMarketPluginVersions } from '@/api/market'
+import { useMarketInstallTaskStore } from './marketInstallTask'
 import { collectMarketUpdateTargets, usePluginUpdatesStore } from './pluginUpdates'
-import type { MarketPlugin } from '@/api/market'
+import type { MarketPluginVersion } from '@/api/market'
 import type { PluginMeta } from '@/types/api'
 
 const mocks = vi.hoisted(() => ({
@@ -26,7 +27,7 @@ vi.mock('@/stores/plugin', () => ({
 
 vi.mock('@/api/market', () => ({
   fetchMarketLatestVersions: vi.fn(),
-  fetchMarketPlugin: vi.fn(),
+  fetchMarketPluginVersions: vi.fn(),
 }))
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -67,19 +68,21 @@ function latestRows(rows: Array<[number, string, string?]>) {
   }))
 }
 
-function release(version: string, marketId = 15): MarketPlugin {
+/** One row of the channel's version table, as the release lookup sees it. */
+function release(version: string, marketId = 15): MarketPluginVersion {
   return {
-    id: marketId,
-    rawId: marketId,
-    name: 'alpha',
+    id: 1,
+    plugin_id: marketId,
     version,
-    download_url: 'https://market.test/alpha.neko-plugin',
-    latest_package_sha256: 'b'.repeat(64),
-    latest_payload_hash: 'payload-hash',
-    latest_channel: 'stable',
-    latest_published_at: '2026-01-02T00:00:00Z',
-    has_release: true,
-  } as unknown as MarketPlugin
+    channel: 'stable',
+    package_url: 'https://market.test/alpha.neko-plugin',
+    package_sha256: 'b'.repeat(64),
+    payload_hash: 'payload-hash',
+    is_latest: true,
+    yanked_at: null,
+    yanked_reason: null,
+    created_at: '2026-01-02T00:00:00Z',
+  } as unknown as MarketPluginVersion
 }
 
 type Route = { status: number; body: unknown }
@@ -297,7 +300,7 @@ describe('plugin updates store — upgrade', () => {
   }
 
   it('upgrades through the bridge, then drops the candidate', async () => {
-    vi.mocked(fetchMarketPlugin).mockResolvedValue(release('1.1.0'))
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     const fetchMock = mockFetch((url) => {
       if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
       if (url.startsWith('/market/install')) return { status: 200, body: { task_id: 'task-1' } }
@@ -326,7 +329,7 @@ describe('plugin updates store — upgrade', () => {
   })
 
   it('reports a rollback code when the task fails', async () => {
-    vi.mocked(fetchMarketPlugin).mockResolvedValue(release('1.1.0'))
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     mockFetch((url) => {
       if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
       if (url.startsWith('/market/install')) return { status: 200, body: { task_id: 'task-2' } }
@@ -347,7 +350,7 @@ describe('plugin updates store — upgrade', () => {
   })
 
   it('sends builtin overrides to the Market page instead of failing them', async () => {
-    vi.mocked(fetchMarketPlugin).mockResolvedValue(release('1.1.0'))
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     mockFetch((url) => {
       if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
       if (url.startsWith('/market/install')) {
@@ -365,7 +368,7 @@ describe('plugin updates store — upgrade', () => {
   })
 
   it('keeps a failed upgrade flagged across a later re-check', async () => {
-    vi.mocked(fetchMarketPlugin).mockResolvedValue(null)
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue(null)
     mockFetch((url) => {
       if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
       return undefined
@@ -391,8 +394,8 @@ describe('plugin updates store — upgrade', () => {
       latestRows([[15, '1.1.0'], [18, '1.1.0'], [19, '1.1.0']]),
     )
     // beta's release cannot be resolved, so its update must fail on its own.
-    vi.mocked(fetchMarketPlugin).mockImplementation(async (pluginId) => (
-      String(pluginId) === '18' ? null : release('1.1.0', Number(pluginId))
+    vi.mocked(fetchMarketPluginVersions).mockImplementation(async (pluginId) => (
+      String(pluginId) === '18' ? null : [release('1.1.0', Number(pluginId))]
     ))
     const fetchMock = mockFetch((url) => {
       if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
@@ -419,6 +422,24 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates.find((entry) => entry.pluginId === 'beta')?.status).toBe('failed')
   })
 
+  it('refuses to POST while another surface owns an install task', async () => {
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+    const fetchMock = mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      return undefined
+    })
+
+    const store = await seedOneCandidate()
+    // A Market-panel install is in flight: the shared store says so.
+    useMarketInstallTaskStore().$patch({
+      task: { task_id: 'panel-task', status: 'downloading', stage: 'download', progress: 0.3 },
+    })
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates[0]!.status).toBe('idle')
+  })
+
   it('ignores manual-only candidates when updating everything', async () => {
     setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
     vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
@@ -431,7 +452,7 @@ describe('plugin updates store — upgrade', () => {
     })
 
     const store = await seedOneCandidate()
-    vi.mocked(fetchMarketPlugin).mockResolvedValue(release('1.1.0'))
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     // First run moves the candidate to the manual path.
     await store.updateOne('alpha')
     expect(store.candidates[0]!.needsManualUpgrade).toBe(true)

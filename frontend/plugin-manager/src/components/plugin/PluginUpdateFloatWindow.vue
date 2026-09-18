@@ -135,9 +135,10 @@ const installTask = useMarketInstallTaskStore()
 /** Only one install runs at a time, so one shared progress panel is enough. */
 const showProgress = computed(() => !!installTask.task)
 
-/** Once the popup is gone the task panel has nowhere to be shown. */
+/** Once the popup is gone the task panel has nowhere to be shown — but only
+ *  release a task this surface started, never one the Market dialog owns. */
 watch(() => updates.popupOpen, (open) => {
-  if (!open && installTask.done) installTask.dismiss()
+  if (!open && installTask.done) installTask.dismiss('float')
 })
 
 // ─── drag handle ────────────────────────────────────────────────────────────

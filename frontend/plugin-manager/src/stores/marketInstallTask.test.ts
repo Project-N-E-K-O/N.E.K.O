@@ -58,7 +58,7 @@ describe('market install task store — tracking', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never)
 
     const store = useMarketInstallTaskStore()
-    const pending = store.track('t', context())
+    const pending = store.track('t', context(), 'panel')
 
     expect(store.running).toBe(true)
     await tick()
@@ -85,7 +85,7 @@ describe('market install task store — tracking', () => {
 
     const store = useMarketInstallTaskStore()
     const outcome = await (async () => {
-      const p = store.track('t', context())
+      const p = store.track('t', context(), 'panel')
       await tick()
       return p
     })()
@@ -102,12 +102,13 @@ describe('market install task store — tracking', () => {
     )
 
     const store = useMarketInstallTaskStore()
-    const first = store.track('t', context())
+    const first = store.track('t', context(), 'panel')
     await tick()
 
-    await expect(store.track('other', context())).resolves.toEqual({
+    await expect(store.track('other', context(), 'panel')).resolves.toEqual({
       ok: false,
       errorKey: 'market.installAlreadyRunning',
+      refused: true,
     })
     expect(store.taskId).toBe('t')
 
@@ -122,7 +123,7 @@ describe('market install task store — tracking', () => {
     )
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     await tick()
 
     store.dismiss()
@@ -131,11 +132,47 @@ describe('market install task store — tracking', () => {
     await expect(p).resolves.toEqual({ ok: false, aborted: true })
   })
 
+  it('leaves the task terminal after the 404 lockout so later installs still work', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue({ status: 404 } as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    for (let i = 0; i < 15; i += 1) await tick()
+    await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.installTaskLost' })
+
+    // Regression guard: a non-terminal placeholder used to leave `running` true
+    // forever, which disabled every later install and could never be dismissed.
+    expect(store.running).toBe(false)
+    expect(store.done).toBe(true)
+    expect(store.errorKey).toBe('market.installTaskLost')
+
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 'next', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+    const next = store.track('next', context(), 'panel')
+    await tick()
+    await expect(next).resolves.toEqual({ ok: true })
+  })
+
+  it('leaves the task terminal after a rejected token', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue({ status: 403 } as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.pairRequired' })
+
+    expect(store.running).toBe(false)
+    expect(store.done).toBe(true)
+    expect(store.errorKey).toBe('market.pairRequired')
+    expect(store.barStatus).toBe('exception')
+  })
+
   it('gives up after a run of 404s', async () => {
     vi.mocked(fetchBridge).mockResolvedValue({ status: 404 } as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     for (let i = 0; i < 15; i += 1) await tick()
 
     await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.installTaskLost' })
@@ -145,7 +182,7 @@ describe('market install task store — tracking', () => {
     vi.mocked(fetchBridge).mockResolvedValue({ status: 403 } as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     await tick()
 
     await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.pairRequired' })
@@ -157,7 +194,7 @@ describe('market install task store — tracking', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     await tick()
     await tick()
 
@@ -170,7 +207,7 @@ describe('market install task store — tracking', () => {
     )
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
     await tick()
     expect(store.overtime).toBe(false)
 
@@ -189,7 +226,7 @@ describe('market install task store — download speed', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.6, downloaded_bytes: 1_600_000, total_bytes: 8_000_000 }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     expect(store.speed).toBeNull() // one sample is not a rate
@@ -214,7 +251,7 @@ describe('market install task store — download speed', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'verify', progress: 0.1, downloaded_bytes: 0, total_bytes: null }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     await tick()
@@ -231,7 +268,7 @@ describe('market install task store — download speed', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.1 }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     expect(store.percent).toBe(70)
@@ -246,7 +283,7 @@ describe('market install task store — download speed', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.3, downloaded_bytes: 400_000, total_bytes: null }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
     await tick()
     await tick()
 
@@ -264,12 +301,12 @@ describe('market install task store — step checklist', () => {
     )
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context({ mode: 'upgrade' }))
+    void store.track('t', context({ mode: 'upgrade' }), 'panel')
     await tick()
     expect(store.steps.map((step) => step.id)).toEqual(['download', 'verify', 'replace', 'completed'])
     store.dismiss()
 
-    void store.track('t2', context({ mode: 'install', fromVersion: null }))
+    void store.track('t2', context({ mode: 'install', fromVersion: null }), 'panel')
     await tick()
     expect(store.steps.map((step) => step.id)).toEqual(['download', 'verify', 'install', 'completed'])
     store.dismiss()
@@ -282,7 +319,7 @@ describe('market install task store — step checklist', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'replace', progress: 0.8 }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     expect(store.steps.map((step) => step.state)).toEqual(['active', 'pending', 'pending', 'pending'])
@@ -299,7 +336,7 @@ describe('market install task store — step checklist', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'rollback', progress: 0.9, rollback: { prepared: true, restored: false, running: true } }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     expect(store.steps.map((step) => step.id)).toEqual(['download', 'verify', 'replace', 'rollback', 'completed'])
@@ -315,7 +352,7 @@ describe('market install task store — step checklist', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.1 }) as never)
 
     const store = useMarketInstallTaskStore()
-    void store.track('t', context())
+    void store.track('t', context(), 'panel')
 
     await tick()
     await tick()
@@ -329,7 +366,7 @@ describe('market install task store — step checklist', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'canceled', stage: 'canceled', progress: 0.7, error_code: 'install_cancelled' }) as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
 
     await tick()
     await tick()
@@ -344,6 +381,39 @@ describe('market install task store — step checklist', () => {
   })
 })
 
+describe('market install task store — ownership', () => {
+  it('refuses to let the other surface dismiss a live task', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await p
+
+    store.dismiss('float')
+    expect(store.task).not.toBeNull()
+
+    store.dismiss('panel')
+    expect(store.task).toBeNull()
+  })
+
+  it('dismisses without an owner for a forced clear', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'float')
+    await tick()
+    await p
+
+    store.dismiss()
+    expect(store.task).toBeNull()
+    expect(store.owner).toBeNull()
+  })
+})
+
 describe('market install task store — cancel', () => {
   it('posts the cancel request and adopts the returned task', async () => {
     vi.mocked(fetchBridge)
@@ -351,7 +421,7 @@ describe('market install task store — cancel', () => {
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2, cancel_requested: true }) as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     await tick()
 
     await expect(store.cancel()).resolves.toBe('ok')
@@ -368,7 +438,7 @@ describe('market install task store — cancel', () => {
       .mockResolvedValueOnce({ status: 409, json: async () => ({ detail: '安装已进入写入阶段，无法安全取消' }) } as never)
 
     const store = useMarketInstallTaskStore()
-    const p = store.track('t', context())
+    const p = store.track('t', context(), 'panel')
     await tick()
 
     await expect(store.cancel()).resolves.toBe('unavailable')

@@ -402,7 +402,14 @@ async function runInstallTask(
   mode: MarketInstallMode,
 ): Promise<boolean> {
   installTaskDialogVisible.value = true
-  const outcome = await installTask.track(taskIdValue, marketInstallContext(plugin, mode))
+  const outcome = await installTask.track(taskIdValue, marketInstallContext(plugin, mode), 'panel')
+  if (outcome.refused) {
+    // Another surface won the race after the pre-check; the dialog would be
+    // showing *their* task, so close it instead.
+    installTaskDialogVisible.value = false
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return false
+  }
   if (outcome.ok) {
     ElMessage.success(
       mode === 'install'
@@ -430,7 +437,7 @@ async function handleCancelInstall(): Promise<void> {
 
 function closeInstallTaskDialog(): void {
   installTaskDialogVisible.value = false
-  if (installTask.done) installTask.dismiss()
+  if (installTask.done) installTask.dismiss('panel')
 }
 
 function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installFailed'): string {
@@ -861,7 +868,9 @@ async function resolveInstallPayload(
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
-  if (marketInstallBusy.value) {
+  // The shared task store also covers installs started from the update popup,
+  // which this component's own flag cannot see.
+  if (marketInstallBusy.value || installTask.running) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }
@@ -949,7 +958,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - 错误码识别在 runInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
-  if (marketInstallBusy.value) {
+  if (marketInstallBusy.value || installTask.running) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }

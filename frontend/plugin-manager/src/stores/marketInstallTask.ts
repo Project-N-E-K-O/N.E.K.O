@@ -38,6 +38,9 @@ const log = {
 
 export type MarketInstallMode = 'install' | 'upgrade' | 'reinstall' | 'override_builtin'
 
+/** Which surface started the task. Only that surface may dismiss it. */
+export type MarketInstallOwner = 'panel' | 'float'
+
 export interface MarketInstallContext {
   pluginId: string
   name: string
@@ -83,6 +86,8 @@ export interface TrackOutcome {
   canceled?: boolean
   /** Tracking was dropped (``dismiss`` / a newer task). Not a failure. */
   aborted?: boolean
+  /** Another surface already owns a task; the poll never started. */
+  refused?: boolean
 }
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled'])
@@ -150,6 +155,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   const task = ref<MarketInstallTask | null>(null)
   const context = ref<MarketInstallContext | null>(null)
   const taskId = ref<string | null>(null)
+  const owner = ref<MarketInstallOwner | null>(null)
   const cancelling = ref(false)
   const overtime = ref(false)
   const detailsExpanded = ref(false)
@@ -157,6 +163,12 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   const speed = ref<number | null>(null)
   /** Seconds remaining; only when the server sent a content length. */
   const eta = ref<number | null>(null)
+  /**
+   * Front-end-minted failure reason, used when the backend never reported one
+   * (bridge rejected the token, or the task vanished). ``resolvePluginInstall
+   * ErrorKey`` expects a backend *code*, so these cannot go through it.
+   */
+  const syntheticErrorKey = ref<string | null>(null)
 
   // Sticky per-task state. Plain locals on purpose: they must not re-render.
   let samples: ByteSample[] = []
@@ -201,11 +213,12 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     return step ? `market.installStage.${step}` : 'market.installStage.pending'
   })
 
-  const errorKey = computed(() => (
-    task.value?.status === 'failed'
+  const errorKey = computed(() => {
+    if (syntheticErrorKey.value) return syntheticErrorKey.value
+    return task.value?.status === 'failed'
       ? resolvePluginInstallErrorKey(task.value.error_code)
       : null
-  ))
+  })
 
   const rollback = computed(() => task.value?.rollback ?? null)
 
@@ -283,9 +296,14 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     }
   }
 
-  function beginTracking(id: string, ctx: MarketInstallContext): number {
+  function beginTracking(
+    id: string,
+    ctx: MarketInstallContext,
+    requester: MarketInstallOwner,
+  ): number {
     generation += 1
     taskId.value = id
+    owner.value = requester
     task.value = { task_id: id, status: 'pending', stage: 'pending', progress: 0 }
     samples = []
     peakProgress = 0
@@ -297,6 +315,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     eta.value = null
     overtime.value = false
     cancelling.value = false
+    syntheticErrorKey.value = null
     clearOvertimeTimer()
     const myGeneration = generation
     overtimeTimer = setTimeout(() => {
@@ -306,6 +325,31 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     context.value = ctx
     log.info('tracking', { taskId: id, pluginId: ctx.pluginId, mode: ctx.mode })
     return myGeneration
+  }
+
+  /**
+   * Force the tracked task terminal. Every path that stops polling without a
+   * backend verdict must call this, otherwise ``running`` stays true forever:
+   * the resume bar sticks, the dialog can never be dismissed, and every later
+   * ``track`` is refused — the whole update/install surface deadlocks until the
+   * window is reloaded.
+   */
+  function failTracking(errorKey: string): void {
+    const current = task.value
+    failedStep = stageToStep(current?.stage) ?? lastRunningStep
+    syntheticErrorKey.value = errorKey
+    task.value = {
+      ...(current ?? { task_id: taskId.value ?? '' }),
+      status: 'failed',
+      // Keep the stage it died on: the checklist still shows how far it got.
+      stage: current?.stage ?? 'failed',
+    }
+    clearOvertimeTimer()
+    log.warn('tracking abandoned', {
+      taskId: taskId.value,
+      errorKey,
+      stage: task.value.stage,
+    })
   }
 
   function observe(now: number, current: MarketInstallTask): void {
@@ -357,16 +401,20 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   /** Poll ``id`` to a terminal state. Resolves with the outcome; the reactive
    *  state stays populated afterwards so the caller can report success/failure
    *  until it calls :func:`dismiss`. */
-  async function track(id: string, ctx: MarketInstallContext): Promise<TrackOutcome> {
+  async function track(
+    id: string,
+    ctx: MarketInstallContext,
+    requester: MarketInstallOwner,
+  ): Promise<TrackOutcome> {
     if (running.value) {
       log.warn('refused: a task is already being tracked', {
         tracked: taskId.value,
         incoming: id,
       })
-      return { ok: false, errorKey: 'market.installAlreadyRunning' }
+      return { ok: false, errorKey: 'market.installAlreadyRunning', refused: true }
     }
 
-    const myGeneration = beginTracking(id, ctx)
+    const myGeneration = beginTracking(id, ctx, requester)
 
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
@@ -387,12 +435,14 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       }
       if (res.status === 401 || res.status === 403) {
         log.warn('task poll rejected', { taskId: id, status: res.status })
+        failTracking('market.pairRequired')
         return { ok: false, errorKey: 'market.pairRequired' }
       }
       if (res.status === 404) {
         missingPolls += 1
         if (missingPolls >= TASK_MISSING_TOLERANCE) {
           log.warn('task disappeared before reaching a terminal state', { taskId: id })
+          failTracking('market.installTaskLost')
           return { ok: false, errorKey: 'market.installTaskLost' }
         }
         continue
@@ -461,9 +511,23 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     }
   }
 
-  function dismiss(): void {
+  /**
+   * ``requester`` makes dismissal owner-checked: the update popup and the
+   * Market dialog share one task, and whichever closes first must not clear a
+   * task the other is still displaying. Omit it to force-clear.
+   */
+  function dismiss(requester?: MarketInstallOwner): void {
+    if (requester && owner.value && requester !== owner.value) {
+      log.info('dismiss ignored: task belongs to another surface', {
+        owner: owner.value,
+        requester,
+      })
+      return
+    }
     generation += 1
     clearOvertimeTimer()
+    owner.value = null
+    syntheticErrorKey.value = null
     taskId.value = null
     task.value = null
     context.value = null
@@ -487,6 +551,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     task,
     context,
     taskId,
+    owner,
     cancelling,
     overtime,
     detailsExpanded,
