@@ -148,12 +148,21 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
     }
   }
 
-  /** Trigger a refresh for the currently installed Market plugin targets. */
-  function ensureFresh(targets: MarketVersionTarget[]): Promise<void> {
+  /** Trigger a refresh for the currently installed Market plugin targets.
+   *
+   * ``force`` skips the freshness short-circuit below. It exists for callers
+   * that must not answer from a snapshot taken minutes ago (the startup
+   * update check runs right after an upgrade). It deliberately still reuses
+   * an identical in-flight request — forcing means "do not trust the cache",
+   * not "duplicate the network traffic". */
+  function ensureFresh(
+    targets: MarketVersionTarget[],
+    options: { force?: boolean } = {},
+  ): Promise<void> {
     const normalizedTargets = _normalizeTargets(targets)
     const signature = _signatureFor(normalizedTargets)
     const stale = Date.now() - lastFetchedAt.value > _REFRESH_INTERVAL_MS
-    if (!stale && !loadError.value && signature === lastTargetSignature) {
+    if (!options.force && !stale && !loadError.value && signature === lastTargetSignature) {
       return Promise.resolve()
     }
     if (inflight?.signature === signature) {

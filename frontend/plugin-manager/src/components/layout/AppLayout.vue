@@ -65,6 +65,9 @@
 
         <header class="app-header">
           <Header />
+          <!-- Absolutely positioned off the header's bottom-right so it can
+               never cover the custom titlebar's window controls above it. -->
+          <PluginUpdateFloatWindow />
         </header>
 
         <main class="app-main" data-yui-guide-id="plugin-main">
@@ -83,12 +86,17 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
+import PluginUpdateFloatWindow from '@/components/plugin/PluginUpdateFloatWindow.vue'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
+import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const pluginUpdatesStore = usePluginUpdatesStore()
 const PLUGIN_MANAGER_BOOT_SHELL_ID = 'plugin-manager-boot-shell'
+/** Let the first paint and the initial plugin fetch win the bandwidth race. */
+const UPDATE_CHECK_BOOT_DELAY_MS = 1200
 const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]
 const isMaximized = ref(false)
 const pinAvailable = ref(false)
@@ -234,6 +242,11 @@ onMounted(() => {
   void refreshMaximizeState()
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('focus', handleWindowFocus)
+  // Once per panel window; silent on failure and hidden when nothing is
+  // outdated, so it can never block the panel from being used.
+  window.setTimeout(() => {
+    void pluginUpdatesStore.checkOnBoot()
+  }, UPDATE_CHECK_BOOT_DELAY_MS)
 })
 
 onBeforeUnmount(() => {
@@ -471,6 +484,12 @@ onBeforeUnmount(() => {
 }
 
 .app-header {
+  position: relative;
+  /* The update float window is anchored off this header and hangs into the
+     page area below. `backdrop-filter` already makes the header a stacking
+     context, so without an explicit z-index the scrolling `.app-main` would
+     paint its background over that overhang. */
+  z-index: 900;
   height: 54px;
   flex-shrink: 0;
   display: flex;
