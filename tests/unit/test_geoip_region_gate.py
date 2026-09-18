@@ -21,6 +21,7 @@ outranks Steam and Steam never latches; only free-route users are probed;
 the probe never gives up; and every path that freezes a session route settles
 the region first.
 """
+import ast
 import asyncio
 import os
 import sys
@@ -1739,6 +1740,60 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
     assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
 
 
+def _calls_in_own_function_scope(function_node):
+    """Collect calls executed by one function without merging nested scopes."""
+
+    class _OwnScopeVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.calls = []
+
+        def visit_Call(self, node):
+            self.calls.append(node)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_ClassDef(self, node):
+            return
+
+        def visit_Lambda(self, node):
+            return
+
+    visitor = _OwnScopeVisitor()
+    for statement in function_node.body:
+        visitor.visit(statement)
+    return visitor.calls
+
+
+@pytest.mark.unit
+def test_agent_deduper_ast_guard_ignores_nested_fake_calls():
+    function_node = ast.parse(
+        """
+async def initialize():
+    async def unused_coroutine():
+        await manager.awarmup_region_check()
+    def unused_function():
+        return _initialize_agent_runtime_unlocked()
+    class UnusedClass:
+        fake = ensure_agent_server_runtime_initialized()
+    callback = lambda: startup()
+    TaskDeduper()
+"""
+    ).body[0]
+
+    calls = _calls_in_own_function_scope(function_node)
+    names = {
+        getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+        for call in calls
+    }
+
+    assert names == {"TaskDeduper"}
+
+
 @pytest.mark.unit
 def test_agent_deduper_is_built_after_the_region_settles():
     """``TaskDeduper`` freezes the ``summary`` base URL in ``__init__`` forever.
@@ -1748,31 +1803,58 @@ def test_agent_deduper_is_built_after_the_region_settles():
     as its own process never sees the main server's warmup. Distinct from the
     Agent proxy, which is deliberately exempt from the region rewrite.
     """
-    import ast
     import pathlib
 
     source = (pathlib.Path(__file__).resolve().parents[2]
               / 'app' / 'agent_server' / 'api_runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
-            continue
-        # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
-        # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
-        # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
-        settles = [c.lineno for c in ast.walk(node)
-                   if isinstance(c, ast.Call)
-                   and getattr(c.func, 'attr', None) == 'awarmup_region_check']
-        builds = [c.lineno for c in ast.walk(node)
-                  if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'TaskDeduper']
-        assert builds, '未找到 TaskDeduper 构造，断言失效'
-        assert settles, 'agent_server 启动未落定区域判定'
-        assert min(settles) < min(builds), \
-            f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
-        break
-    else:
-        pytest.fail('未找到 agent_server startup，断言失效')
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    initializer = functions.get('_initialize_agent_runtime_unlocked')
+    initializer_once = functions.get('_initialize_agent_runtime_once')
+    ensure = functions.get('ensure_agent_server_runtime_initialized')
+    startup = functions.get('startup')
+    assert initializer is not None, '未找到 agent_server runtime 初始化函数，断言失效'
+    assert initializer_once is not None, '未找到 agent_server process-owned 初始化函数，断言失效'
+    assert ensure is not None, '未找到 agent_server runtime 初始化门，断言失效'
+    assert startup is not None, '未找到 agent_server startup，断言失效'
+
+    # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
+    # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
+    # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
+    settles = [
+        call.lineno
+        for call in _calls_in_own_function_scope(initializer)
+        if getattr(call.func, 'attr', None) == 'awarmup_region_check'
+    ]
+    builds = [
+        call.lineno
+        for call in _calls_in_own_function_scope(initializer)
+        if getattr(call.func, 'id', None) == 'TaskDeduper'
+    ]
+    once_calls_initializer = any(
+        getattr(call.func, 'id', None) == '_initialize_agent_runtime_unlocked'
+        for call in _calls_in_own_function_scope(initializer_once)
+    )
+    ensure_calls_once = any(
+        getattr(call.func, 'id', None) == '_initialize_agent_runtime_once'
+        for call in _calls_in_own_function_scope(ensure)
+    )
+    startup_calls_ensure = any(
+        getattr(call.func, 'id', None) == 'ensure_agent_server_runtime_initialized'
+        for call in _calls_in_own_function_scope(startup)
+    )
+    assert builds, '未找到 TaskDeduper 构造，断言失效'
+    assert settles, 'agent_server runtime 初始化未落定区域判定'
+    assert min(settles) < min(builds), \
+        f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
+    assert once_calls_initializer, 'process-owned 初始化任务未调用真实初始化函数'
+    assert ensure_calls_once, 'runtime 初始化门未创建 process-owned 初始化任务'
+    assert startup_calls_ensure, 'agent_server startup 未经过 runtime 初始化门'
 
 
 @pytest.mark.unit
@@ -2314,24 +2396,36 @@ def test_memory_server_warms_the_region_before_outbox_replay():
               / 'app' / 'memory_server' / 'runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef):
-            continue
-        calls = {}
-        for c in ast.walk(node):
-            if isinstance(c, ast.Call):
-                name = getattr(c.func, 'attr', None)
-                if name:
-                    calls.setdefault(name, []).append(c.lineno)
-        if '_replay_pending_outbox' not in calls:
-            continue
-        assert 'awarmup_region_check' in calls, \
-            'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
-        assert min(calls['awarmup_region_check']) < min(calls['_replay_pending_outbox']), \
-            '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
-        break
-    else:
-        pytest.fail('未找到 outbox 补跑调用，断言失效')
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    initializer = functions.get('_initialize_memory_server_runtime')
+    replay_owner = functions.get('_replay_startup_outbox_to_completion')
+    assert initializer is not None, '未找到 memory_server runtime 初始化函数，断言失效'
+    assert replay_owner is not None, '未找到 startup outbox 补跑所有者，断言失效'
+
+    def _calls(node):
+        result = {}
+        for call_node in _calls_in_own_function_scope(node):
+            name = (
+                getattr(call_node.func, 'attr', None)
+                or getattr(call_node.func, 'id', None)
+            )
+            if name:
+                result.setdefault(name, []).append(call_node.lineno)
+        return result
+
+    init_calls = _calls(initializer)
+    replay_calls = _calls(replay_owner)
+    assert '_replay_pending_outbox' in replay_calls, '未找到 outbox 补跑调用，断言失效'
+    assert 'awarmup_region_check' in init_calls, \
+        'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
+    assert '_replay_startup_outbox_to_completion' in init_calls, \
+        'memory_server 初始化未等待 startup outbox 补跑完成'
+    assert min(init_calls['awarmup_region_check']) < min(init_calls['_replay_startup_outbox_to_completion']), \
+        '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
 
 
 @pytest.mark.unit

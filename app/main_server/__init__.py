@@ -102,10 +102,14 @@ from datetime import datetime, timezone  # noqa
 from config import (
     MAIN_SERVER_PORT,
     MONITOR_SERVER_PORT,
+    TOOL_SERVER_PORT,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
     USER_PLUGIN_BASE,
 )  # noqa
-from utils.cloudsave_autocloud import get_cloudsave_manager  # noqa
+from utils.cloudsave_autocloud import (  # noqa
+    CloudsaveImportAppliedStatusError,
+    get_cloudsave_manager,
+)
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
     MaintenanceModeError,
@@ -118,8 +122,18 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved  # noqa
+from utils.internal_http_auth import internal_http_auth_headers
 from utils.root_state_lock import root_state_transaction
-from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
+from utils.storage_location_bootstrap import (
+    clear_runtime_storage_blocking_reason,
+    get_storage_startup_blocking_reason,
+    set_runtime_storage_blocking_reason,
+)
+from utils.storage.layout import (
+    clear_storage_recovery_mode,
+    get_storage_recovery_mode,
+    set_storage_recovery_mode,
+)
 
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging  # noqa: E402
@@ -408,6 +422,7 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/continue",
             json={"reason": reason},
+            headers=internal_http_auth_headers(),
             timeout=60.0,
         )
         if response.status_code == 409:
@@ -437,7 +452,85 @@ async def _request_memory_server_continue_startup(reason: str = "") -> None:
         ) from e
 
 
-async def _request_memory_server_block_startup(reason: str = "") -> None:
+async def _request_memory_server_activate_startup(reason: str = "") -> None:
+    """Commit memory background writers after every runtime initialized."""
+
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/activate",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"memory_server activate-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to activate memory_server runtime: {exc}"
+        ) from exc
+
+
+async def _request_agent_server_continue_startup(reason: str = "") -> None:
+    """Release agent_server from limited mode after storage state is committed."""
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/continue",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server continue-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to release agent_server limited-mode startup: {exc}"
+        ) from exc
+
+
+async def _request_agent_server_activate_startup(reason: str = "") -> None:
+    """Commit agent admission after all recoverable runtime cores are ready."""
+
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/activate",
+            json={"reason": reason},
+            headers=internal_http_auth_headers(),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server activate-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to activate agent_server runtime: {exc}"
+        ) from exc
+
+
+async def _request_memory_server_block_startup(
+    reason: str = "",
+    *,
+    recovery_mode: str = "",
+) -> None:
     """Return memory_server to limited mode when main_server cannot finish startup."""
     try:
         from config import MEMORY_SERVER_PORT
@@ -446,8 +539,9 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/storage/startup/block",
-            json={"reason": reason},
-            timeout=10.0,
+            json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
+            timeout=60.0,
         )
         response.raise_for_status()
         payload = response.json()
@@ -459,6 +553,53 @@ async def _request_memory_server_block_startup(reason: str = "") -> None:
         raise RuntimeError(
             f"failed to restore memory_server limited-mode startup: {e}"
         ) from e
+
+
+async def _request_agent_server_block_startup(
+    reason: str = "",
+    *,
+    recovery_mode: str = "",
+) -> None:
+    """Compensate a failed same-session release in agent_server."""
+    try:
+        from utils.internal_http_client import get_internal_http_client
+
+        client = get_internal_http_client()
+        response = await client.post(
+            f"http://127.0.0.1:{TOOL_SERVER_PORT}/internal/storage/startup/block",
+            json={"reason": reason, "recovery_mode": recovery_mode},
+            headers=internal_http_auth_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise RuntimeError(
+                f"agent_server block-startup returned unexpected payload: {payload!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to restore agent_server limited-mode startup: {exc}"
+        ) from exc
+
+
+async def _request_runtime_services_block_startup(
+    reason: str,
+    *,
+    recovery_mode: str,
+) -> None:
+    """Restore both child-service admission guards after a failed release."""
+    results = await asyncio.gather(
+        _request_agent_server_block_startup(reason, recovery_mode=recovery_mode),
+        _request_memory_server_block_startup(reason, recovery_mode=recovery_mode),
+        return_exceptions=True,
+    )
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if failures:
+        raise RuntimeError(
+            "failed to restore one or more storage startup guards: "
+            + "; ".join(str(failure) for failure in failures)
+        )
 
 
 agent_event_bridge: MainServerAgentBridge | None = None
@@ -517,6 +658,7 @@ importlib.import_module(
 
 _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
+_MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE = 1013
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
     "/api/card-drop/active-character",
@@ -546,6 +688,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/memory_browser",
     "/cookies_login",
     "/chat",
+    "/chat_full",
     "/web_chat_compact",
     "/subtitle",
     "/agenthud",
@@ -569,12 +712,15 @@ def _enable_main_storage_limited_mode(reason: str) -> None:
     _main_runtime_limited_mode_reason = (
         str(reason or "runtime_initializing").strip() or "runtime_initializing"
     )
+    if _main_runtime_limited_mode_reason == "startup_release_failed":
+        set_runtime_storage_blocking_reason(_main_runtime_limited_mode_reason)
 
 
 def _disable_main_storage_limited_mode() -> None:
     global _main_runtime_limited_mode_enabled, _main_runtime_limited_mode_reason
     _main_runtime_limited_mode_enabled = False
     _main_runtime_limited_mode_reason = ""
+    clear_runtime_storage_blocking_reason()
 
 
 def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
@@ -590,7 +736,7 @@ def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
 
 @app.middleware("http")
 async def main_storage_limited_mode_guard(request: Request, call_next):
-    if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
+    if not _main_runtime_limited_mode_enabled:
         return await call_next(request)
 
     if _is_main_limited_mode_allowed_path(request.url.path, request.method):
@@ -612,6 +758,77 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
             "error": "Main server 正处于存储受限启动状态，请等待存储位置选择、迁移或恢复完成。",
         },
     )
+
+
+class MainStorageLimitedModeWebSocketMiddleware:
+    """Keep WebSocket business traffic behind the storage startup gate."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "websocket":
+            await self.app(scope, receive, send)
+            return
+
+        if _main_runtime_limited_mode_enabled:
+            await send(
+                {
+                    "type": "websocket.close",
+                    "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                }
+            )
+            return
+
+        close_sent = False
+
+        async def limited_mode_receive():
+            nonlocal close_sent
+            message = await receive()
+            if (
+                message.get("type") == "websocket.receive"
+                and _main_runtime_limited_mode_enabled
+            ):
+                if not close_sent:
+                    close_sent = True
+                    await send(
+                        {
+                            "type": "websocket.close",
+                            "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                        }
+                    )
+                return {
+                    "type": "websocket.disconnect",
+                    "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                }
+            return message
+
+        async def limited_mode_send(message):
+            nonlocal close_sent
+            message_type = message.get("type")
+            if close_sent and message_type in {
+                "websocket.accept",
+                "websocket.send",
+                "websocket.close",
+            }:
+                return
+            if (
+                message_type in {"websocket.accept", "websocket.send"}
+                and _main_runtime_limited_mode_enabled
+            ):
+                close_sent = True
+                await send(
+                    {
+                        "type": "websocket.close",
+                        "code": _MAIN_LIMITED_MODE_WEBSOCKET_CLOSE_CODE,
+                    }
+                )
+                return
+            if message_type == "websocket.close":
+                close_sent = True
+            await send(message)
+
+        await self.app(scope, limited_mode_receive, limited_mode_send)
 
 
 def _avatar_tool_multipart_preflight(scope):
@@ -639,6 +856,7 @@ app.add_middleware(
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
 )
+app.add_middleware(MainStorageLimitedModeWebSocketMiddleware)
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
 app.add_middleware(HostOriginGuardMiddleware)
@@ -699,30 +917,88 @@ _facts_sync_worker_task: asyncio.Task = None
 _client_registration_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
+_main_token_tracker_task: asyncio.Task | None = None
+_main_runtime_background_tasks_started = False
 
 
 from .preload import _background_preload, _sync_preload_modules  # noqa: F401
 
 
-async def _sync_memory_server_after_startup_import(import_result):
-    """Keep memory_server aligned when main_server applies a cloud snapshot on startup."""
-    if not isinstance(import_result, dict) or import_result.get("action") != "imported":
+async def _sync_memory_server_after_startup_import(
+    import_result,
+    *,
+    reload_already_applied: bool = False,
+):
+    """Keep prepared memory state aligned with the durable cloud snapshot."""
+    if not isinstance(import_result, dict):
+        return
+    action = import_result.get("action")
+    reload_required = action == "imported" or (
+        reload_already_applied
+        and action == "skipped"
+        and import_result.get("reason") == "already_applied"
+    )
+    if not reload_required:
         return
 
-    try:
-        from main_routers.characters_router import notify_memory_server_reload
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
 
-        reloaded = await notify_memory_server_reload(
-            reason="Steam Auto-Cloud startup import",
+    try:
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+            json={},
+            headers=internal_http_auth_headers(),
+            timeout=5.0,
         )
-        if not reloaded:
-            logger.warning(
-                "Steam Auto-Cloud startup import applied, but memory_server reload did not succeed"
-            )
-    except Exception as e:
-        logger.warning(
-            f"Steam Auto-Cloud startup import could not sync memory_server: {e}"
+    except Exception as exc:
+        raise RuntimeError("memory_server reload request failed after startup import") from exc
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError("memory_server reload returned an invalid response") from exc
+    if response.status_code != 200 or not isinstance(payload, dict) or payload.get(
+        "status"
+    ) != "success":
+        raise RuntimeError(
+            "memory_server reload was not confirmed after startup import"
         )
+
+
+def _activate_main_runtime_background_tasks() -> None:
+    """Start persistent Main writers only after every runtime is activated."""
+
+    global _game_cleanup_task, _main_token_tracker_task
+    global _main_runtime_background_tasks_started
+
+    if _main_runtime_background_tasks_started:
+        return
+
+    from main_routers.game_router import cleanup_expired_sessions
+
+    if _game_cleanup_task is None or _game_cleanup_task.done():
+        _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
+
+    _schedule_workshop_sync(steamworks)
+
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+
+        install_hooks()
+        tracker = TokenTracker.get_instance()
+        tracker.resume_persistence("main_server")
+        previous_save_task = getattr(tracker, "_save_task", None)
+        tracker.start_periodic_save()
+        current_save_task = getattr(tracker, "_save_task", None)
+        if current_save_task is not previous_save_task:
+            _main_token_tracker_task = current_save_task
+        tracker.record_app_start(process="main_server")
+        logger.info("Token usage tracker initialized")
+    except Exception as exc:
+        logger.warning("Token tracker initialization failed (non-critical): %s", exc)
+
+    _main_runtime_background_tasks_started = True
 
 
 def _start_neko_servers_integration_workers() -> None:
@@ -837,6 +1113,21 @@ async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
 
 async def _rollback_partial_main_runtime_startup() -> None:
     global steamworks, _preload_task, _game_cleanup_task, agent_event_bridge
+    global _main_token_tracker_task, _main_runtime_background_tasks_started
+
+    tracker = None
+    try:
+        from utils.token_tracker import TokenTracker
+
+        tracker = TokenTracker.get_existing_instance()
+        if tracker is not None:
+            tracker.suspend_persistence("main_server")
+    except Exception as exc:
+        logger.debug(
+            "Token tracker rollback suspension failed: %s",
+            exc,
+            exc_info=True,
+        )
 
     await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
     _preload_task = None
@@ -844,6 +1135,20 @@ async def _rollback_partial_main_runtime_startup() -> None:
     _game_cleanup_task = None
 
     await _cancel_workshop_background_tasks_for_startup_rollback()
+
+    token_task = _main_token_tracker_task
+    if token_task is not None:
+        await _cancel_task_if_running(token_task, name="token tracker", timeout=1.0)
+        try:
+            if tracker is not None and getattr(tracker, "_save_task", None) is token_task:
+                tracker._save_task = None
+        except Exception as exc:
+            logger.debug(
+                "Token tracker rollback reference cleanup failed: %s",
+                exc,
+                exc_info=True,
+            )
+        _main_token_tracker_task = None
 
     if agent_event_bridge is not None:
         bridge = agent_event_bridge
@@ -874,13 +1179,15 @@ async def _rollback_partial_main_runtime_startup() -> None:
         logger.debug("Sync connector rollback failed: %s", exc, exc_info=True)
     finally:
         _reset_sync_connector_shutdown_events()
+        _main_runtime_background_tasks_started = False
 
 
-async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
+async def _ensure_main_server_runtime_initialized(
+    *, reason: str, release_admission: bool = True
+) -> bool:
     global \
         steamworks, \
         _preload_task, \
-        _game_cleanup_task, \
         agent_event_bridge, \
         _runtime_startup_init_completed
 
@@ -907,15 +1214,39 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         budget_seconds=10.0,
                     )
                     logger.info("Steam Auto-Cloud startup import: %s", import_result)
+                except CloudsaveImportAppliedStatusError as exc:
+                    # The snapshot is already durable, but its follow-up status
+                    # could not be rebuilt.  Memory may still hold managers from
+                    # before that apply.  Refresh it first, then fail startup so
+                    # the outer recovery path re-blocks every service rather than
+                    # admitting business work under an ambiguous storage state.
+                    await _sync_memory_server_after_startup_import(
+                        exc.import_result
+                    )
+                    raise
                 except CloudsaveDeadlineExceeded:
+                    if not release_admission:
+                        # Memory was prepared before this recovery import. If
+                        # the durable import fact cannot be rebuilt, continuing
+                        # could activate managers from the pre-import snapshot.
+                        raise
                     logger.warning(
                         "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
                     )
                 except Exception as e:
+                    if not release_admission:
+                        raise
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
-            await _sync_memory_server_after_startup_import(import_result)
+            await _sync_memory_server_after_startup_import(
+                import_result,
+                # A failed recovery release can retry after the import became
+                # durable but before Memory confirmed its reload. Ordinary
+                # startup initializes Memory from disk after launcher phase-0
+                # and must not add an unnecessary hot reload.
+                reload_already_applied=not release_admission,
+            )
 
             logger.info("正在初始化 Steamworks...")
             steamworks = initialize_steamworks()
@@ -926,11 +1257,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             get_default_steam_info()
 
             _preload_task = asyncio.create_task(_background_preload())
-            # 启动游戏 session 超时清理后台任务
-            from main_routers.game_router import cleanup_expired_sessions
-
-            if _game_cleanup_task is None or _game_cleanup_task.done():
-                _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
             try:
                 agent_event_bridge = MainServerAgentBridge(
                     on_agent_event=_handle_agent_event
@@ -944,20 +1270,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
             # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
             await _init_and_mount_workshop()
-            _schedule_workshop_sync(steamworks)
-
-            try:
-                from utils.token_tracker import TokenTracker, install_hooks
-
-                install_hooks()
-                TokenTracker.get_instance().start_periodic_save()
-                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
-                TokenTracker.get_instance().record_app_start(process="main_server")
-                logger.info("Token usage tracker initialized")
-            except Exception as e:
-                logger.warning(
-                    f"Token tracker initialization failed (non-critical): {e}"
-                )
 
             logger.info(
                 "Startup 初始化完成，后台正在预加载音频模块... (reason=%s)", reason
@@ -979,8 +1291,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             if current_root_state is None:
                 if not is_cloudsave_disabled():
-                    logger.warning(
-                        "跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败"
+                    raise RuntimeError(
+                        "main_server failed to persist ROOT_MODE_NORMAL state: "
+                        "root_state is missing or unreadable"
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
                 # 挪进工作线程有两个理由，缺一不可：
@@ -1017,8 +1330,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
                 try:
                     if not await asyncio.to_thread(_mark_startup_successful):
-                        logger.info(
-                            "跳过 ROOT_MODE_NORMAL 写入：落盘前 root_state 已被改成阻断态"
+                        raise RuntimeError(
+                            "root_state became blocking before NORMAL publication"
                         )
                 except Exception as e:
                     logger.error(
@@ -1028,9 +1341,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         "main_server failed to persist ROOT_MODE_NORMAL state"
                     ) from e
             else:
-                logger.info(
-                    "跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                raise RuntimeError(
+                    "main_server failed to persist ROOT_MODE_NORMAL state: "
+                    f"root_state is blocking ({current_root_state.get('mode') or ROOT_MODE_NORMAL})"
                 )
 
             # GeoIP 预热必须在放开会话准入之前完成：会话的线路在 start_session 时
@@ -1047,7 +1360,9 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                 logger.debug("[GeoIP] 预热失败，留给后续调用重试", exc_info=True)
 
             _runtime_startup_init_completed = True
-            _disable_main_storage_limited_mode()
+            if release_admission:
+                _activate_main_runtime_background_tasks()
+                _disable_main_storage_limited_mode()
 
             # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
             # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
@@ -1074,31 +1389,89 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 async def release_storage_startup_barrier(
     *, reason: str = "storage_selection_continue_current_session"
 ) -> dict[str, Any]:
+    global _runtime_startup_init_completed
+
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode in {
+        "selection_required",
+        "migration_pending",
+        "recovery_required",
+    }:
+        # The storage router has already committed a normal, validated state.
+        # Clear this process's boot-generation marker before asking the child
+        # services to re-evaluate disk authority.  In merged mode the three
+        # apps share os.environ; in multi-process mode each child clears its own
+        # marker in the loopback continue endpoint below.
+        clear_storage_recovery_mode()
+    # Recovery release is a two-phase operation. Main admission stays closed
+    # until both child activations have acknowledged the same prepared state.
+    _enable_main_storage_limited_mode("runtime_initializing")
+    main_initialization_started = False
+    main_initialization_completed = False
     try:
         # The continue request has an ambiguous cancellation outcome: memory_server
         # may have applied it even when this client never receives the response.
         # Keep the request itself inside the compensation boundary so every failed
         # exit re-establishes both admission guards before storage state rolls back.
         await _request_memory_server_continue_startup(reason)
-        initialized = await _ensure_main_server_runtime_initialized(reason=reason)
-    except BaseException:
-        # Once memory_server may have accepted continue-startup, every failed exit
-        # must put its admission guard back before the storage router restores a
-        # blocking root_state snapshot. CancelledError is a BaseException, so an
-        # Exception-only handler leaves initialized memory writable against the
-        # rolled-back storage state.
-        _enable_main_storage_limited_mode("runtime_initialization_failed")
+        await _request_agent_server_continue_startup(reason)
+        main_initialization_started = True
+        initialized = await _ensure_main_server_runtime_initialized(
+            reason=reason,
+            release_admission=False,
+        )
+        main_initialization_completed = True
+        # Final commit: Agent first establishes the event/plugin side, then
+        # Memory publishes its long-lived writers. Main opens only after both.
+        await _request_agent_server_activate_startup(reason)
+        await _request_memory_server_activate_startup(reason)
+        _activate_main_runtime_background_tasks()
+    except BaseException as release_exc:
+        # Once either child service may have accepted continue-startup, every
+        # failed exit must put both admission guards back while the router keeps
+        # the already-validated root committed. CancelledError is a BaseException,
+        # so an Exception-only handler can leave initialized children writable
+        # after the caller has been told startup release failed.
+        _enable_main_storage_limited_mode("startup_release_failed")
 
         # Re-blocking is compensating work, not part of the cancelled request.  A
         # second cancellation (for example server shutdown following a client
         # disconnect) must not interrupt it halfway through.  Keep the request in
         # this handler until the HTTP call has really finished, then re-raise the
         # original exception below.
-        block_task = asyncio.ensure_future(
-            _request_memory_server_block_startup(
-                f"{reason}:main_server_init_failed"
+        if recovery_mode:
+            set_storage_recovery_mode(recovery_mode)
+        async def _compensate_failed_release() -> None:
+            global _runtime_startup_init_completed
+
+            operations = [
+                _request_runtime_services_block_startup(
+                    f"{reason}:main_server_init_failed",
+                    recovery_mode=recovery_mode,
+                )
+            ]
+            rollback_main = bool(
+                main_initialization_completed
+                or (
+                    main_initialization_started
+                    and not isinstance(release_exc, Exception)
+                )
             )
-        )
+            if rollback_main:
+                operations.append(_rollback_partial_main_runtime_startup())
+            results = await asyncio.gather(*operations, return_exceptions=True)
+            if rollback_main:
+                _runtime_startup_init_completed = False
+            failures = [
+                result for result in results if isinstance(result, BaseException)
+            ]
+            if failures:
+                raise RuntimeError(
+                    "failed to compensate storage startup release: "
+                    + "; ".join(str(failure) for failure in failures)
+                )
+
+        block_task = asyncio.ensure_future(_compensate_failed_release())
         try:
             await asyncio.shield(block_task)
         except asyncio.CancelledError:
@@ -1109,7 +1482,7 @@ async def release_storage_startup_barrier(
                     continue
         except Exception as revert_exc:
             logger.warning(
-                "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
+                "main_server 初始化失败后恢复子服务 limited-mode 失败: %s",
                 revert_exc,
                 exc_info=True,
             )
@@ -1126,7 +1499,7 @@ async def release_storage_startup_barrier(
                 block_task.result()
             except Exception as revert_exc:
                 logger.warning(
-                    "main_server 初始化取消后恢复 memory_server limited-mode 失败: %s",
+                    "main_server 初始化取消后恢复子服务 limited-mode 失败: %s",
                     revert_exc,
                     exc_info=True,
                 )
@@ -1167,6 +1540,23 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        # Keep diagnostics alive in storage limited-mode as well. The watchdog
+        # only samples counters (and optionally the fixed-anchor JSONL); it does
+        # not initialize business state or write through the selected root.
+        try:
+            _start_debug_health_watchdog()
+        except Exception as _e:
+            logger.debug(f"[debug_health] start watchdog failed: {_e}")
+
+        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
+        if blocking_reason:
+            _enable_main_storage_limited_mode(blocking_reason)
+            logger.info(
+                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
+                blocking_reason,
+            )
+            return
+
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1210,23 +1600,6 @@ async def on_startup():
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
 
-        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
-        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
-        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
-        try:
-            _start_debug_health_watchdog()
-        except Exception as _e:
-            logger.debug(f"[debug_health] start watchdog failed: {_e}")
-
-        blocking_reason = get_storage_startup_blocking_reason(_config_manager)
-        if blocking_reason:
-            _enable_main_storage_limited_mode(blocking_reason)
-            logger.info(
-                "检测到存储启动阻断态，main_server 先保持 limited-mode，等待网页端放行: %s",
-                blocking_reason,
-            )
-            return
-
         await _ensure_main_server_runtime_initialized(reason="startup")
         _start_neko_servers_integration_workers()
 
@@ -1236,6 +1609,14 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        persistence_blocked = bool(
+            get_storage_recovery_mode()
+            or _main_runtime_limited_mode_enabled
+        )
+        if persistence_blocked:
+            logger.info(
+                "存储恢复会话关闭：跳过运行态持久化、角色释放和云存档导出，继续释放资源"
+            )
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 
@@ -1304,12 +1685,13 @@ async def on_shutdown():
             logger.debug(f"Translation service cleanup failed: {e}")
 
         # 保存 Token 用量数据
-        try:
-            from utils.token_tracker import TokenTracker
+        if not persistence_blocked:
+            try:
+                from utils.token_tracker import TokenTracker
 
-            TokenTracker.get_instance().save()
-        except Exception as e:
-            logger.debug(f"Token usage save on shutdown failed: {e}")
+                TokenTracker.get_instance().save()
+            except Exception as e:
+                logger.debug(f"Token usage save on shutdown failed: {e}")
 
         # 关闭音乐爬虫连接池
         try:
@@ -1329,9 +1711,12 @@ async def on_shutdown():
         any_release_failed = False
         failed_release_characters: list[str] = []
         try:
-            from main_routers.characters_router import release_memory_server_character
+            if persistence_blocked:
+                releasable_names = []
+            else:
+                from main_routers.characters_router import release_memory_server_character
 
-            releasable_names = sorted(name for name, _mgr in _iter_session_managers())
+                releasable_names = sorted(name for name, _mgr in _iter_session_managers())
 
             # 并发释放所有角色句柄：给整体一个 3s 总预算，而不是 N*1s 串行
             # memory_server 端是独立进程，/release_character 之间没有共享状态依赖，
@@ -1391,7 +1776,9 @@ async def on_shutdown():
                 f"Steam Auto-Cloud pre-shutdown release phase failed: {e}; uploaded snapshot may be stale/incomplete"
             )
 
-        if any_release_failed:
+        if persistence_blocked:
+            logger.info("存储恢复会话关闭：未释放角色或上传 cloudsave 快照")
+        elif any_release_failed:
             logger.warning(
                 "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
                 ", ".join(sorted(set(failed_release_characters)))

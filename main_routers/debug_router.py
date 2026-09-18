@@ -29,8 +29,8 @@ runtime counter curves **while it reproduces**. This router does two things:
 2. Starts a background watchdog task on a 5-min cycle that writes the same
    snapshot into an in-memory ring buffer (keeping the last ~16 hours = 200
    entries). With ``NEKO_DEBUG_HEALTH_LOG=1`` it also persists to
-   ``<user_data>/debug_health.jsonl`` so users can send the file back for
-   curve plotting.
+   ``<user_data>/debug_health.jsonl`` during normal runtime so users can send
+   the file back for curve plotting. Recovery generations stay memory-only.
 
 Design principles
 -----------------
@@ -408,9 +408,15 @@ def _resolve_log_path() -> Path | None:
     """Return the jsonl log path; None when disabled.
 
     Enabled when env ``NEKO_DEBUG_HEALTH_LOG`` is truthy.
-    Path: the user config directory from config_manager / ``debug_health.jsonl``;
-    falls back to the sys.executable directory when config_manager is unavailable."""
+    During normal runtime, use the config directory. Storage recovery remains
+    memory-only: a pathname cannot keep an unsafe anchor/state chain pinned
+    through the later mkdir, rotation and append operations."""
     if os.environ.get("NEKO_DEBUG_HEALTH_LOG", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    from utils.storage.layout import get_storage_recovery_mode
+
+    recovery_mode = get_storage_recovery_mode()
+    if recovery_mode:
         return None
     try:
         from main_routers.shared_state import get_config_manager
@@ -419,10 +425,8 @@ def _resolve_log_path() -> Path | None:
         if config_dir:
             return Path(config_dir) / "debug_health.jsonl"
     except Exception:
-        # shared_state 没 ready / config_manager 未注入：落到下面 sys.argv[0]
-        # 兜底路径。本身就是诊断文件，写哪里都比不写好。
         pass
-    # 兜底：launcher 旁
+    # Normal startup only: retain the historical launcher-adjacent fallback.
     try:
         return Path(sys.argv[0]).resolve().parent / "debug_health.jsonl"
     except Exception:

@@ -622,9 +622,12 @@ async def test_oauth_status_resolves_login_preserved_by_rejected_cleanup(
 
     assert status["logged_in"] is True
     assert status["snapshot"]["access_token"] == "new-login-token"
-    assert status["auth"] == new_auth
+    assert status["auth"] == {**new_auth, "credential_epoch": 0}
     assert validated == ["rejected-token", "new-login-token"]
-    assert json.loads(auth.read_text(encoding="utf-8")) == new_auth
+    assert json.loads(auth.read_text(encoding="utf-8")) == {
+        **new_auth,
+        "credential_epoch": 0,
+    }
 
 
 @pytest.mark.unit
@@ -642,6 +645,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
         return None
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", record(True))
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -655,7 +659,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     result = await O.oauth_logout_endpoint(object())
 
     assert result == {"ok": True}
-    assert len(worker_threads) == 3
+    assert len(worker_threads) == 4
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
@@ -697,6 +701,7 @@ async def test_oauth_logout_revokes_against_saved_issuer(
         revoked.append(kwargs)
 
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(
         O,
         "_load_oauth_logout_records",
@@ -779,6 +784,7 @@ def test_oauth_logout_reports_local_credential_clear_failure(oauth_app, monkeypa
         return None
 
     monkeypatch.setattr(O, "_revoke_tokens_best_effort", no_revoke)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
     response = client.post("/api/card-drop/oauth/logout")
@@ -917,9 +923,9 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
         worker_threads.append(threading.get_ident())
         return pending, json.loads(pending.read_text(encoding="utf-8"))
 
-    def unlink_pending():
+    def unlink_claim(claim_path):
         worker_threads.append(threading.get_ident())
-        pending.unlink(missing_ok=True)
+        claim_path.unlink(missing_ok=True)
 
     def save_auth(_payload):
         worker_threads.append(threading.get_ident())
@@ -933,7 +939,7 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
     monkeypatch.setattr(O, "_load_oauth_pending", load_pending)
-    monkeypatch.setattr(O, "_unlink_pending", unlink_pending)
+    monkeypatch.setattr(O, "_unlink_oauth_claim", unlink_claim)
     # Both records are written inside one social-session lock scope, so the
     # callback now goes through the unlocked writers.
     monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
@@ -945,6 +951,117 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert len(worker_threads) == 4
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.unit
+async def test_oauth_callback_claim_does_not_delete_newer_pending_generation(
+    tmp_path,
+    monkeypatch,
+):
+    pending = tmp_path / "community_oauth_pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "state-a",
+                "code_verifier": "verifier-a",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 60,
+                "credential_epoch": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
+
+    async def fake_exchange(**_kwargs):
+        return {"access_token": "access-a", "refresh_token": "refresh-a"}
+
+    async def fake_bootstrap(_social_base, _access_token):
+        C._write_private_json(
+            pending,
+            {
+                "state": "state-b",
+                "code_verifier": "verifier-b",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 60,
+            },
+        )
+        return {"user": {"id": USER_ID}}
+
+    async def fake_bind(_social_base, _access_token):
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
+    monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
+    monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
+    monkeypatch.setattr(O, "_persist_oauth_credentials", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        O,
+        "_unlink_oauth_claim",
+        lambda _path: (_ for _ in ()).throw(OSError("claim cleanup denied")),
+    )
+
+    response = await O._handle_oauth_callback("auth-code", "state-a")
+
+    assert response.status_code == 200
+    assert json.loads(pending.read_text(encoding="utf-8"))["state"] == "state-b"
+
+
+@pytest.mark.unit
+def test_unlink_pending_does_not_recreate_missing_legacy_root(tmp_path, monkeypatch):
+    canonical = tmp_path / "anchor" / "state" / "community_oauth_pending.json"
+    canonical.parent.mkdir(parents=True)
+    legacy_root = tmp_path / "offline-legacy" / "N.E.K.O"
+    legacy_pending = legacy_root / "community_oauth_pending.json"
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: canonical)
+    monkeypatch.setattr(O, "_oauth_pending_paths", lambda: [canonical, legacy_pending])
+    monkeypatch.setattr(C, "_logout_private_file_paths", lambda _name: [legacy_pending])
+
+    O._unlink_pending()
+
+    assert not legacy_root.exists()
+
+
+@pytest.mark.unit
+async def test_expired_oauth_claim_cleanup_failure_keeps_expired_response(
+    tmp_path,
+    monkeypatch,
+):
+    pending = tmp_path / "community_oauth_pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "expired-state",
+                "code_verifier": "verifier",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() - 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_pending",
+        lambda: (pending, json.loads(pending.read_text(encoding="utf-8"))),
+    )
+    monkeypatch.setattr(
+        O,
+        "_unlink_oauth_claim",
+        lambda _path: (_ for _ in ()).throw(OSError("claim cleanup denied")),
+    )
+
+    response = await O._handle_oauth_callback("auth-code", "expired-state")
+
+    assert response.status_code == 400
+    assert "登录已过期" in response.body.decode("utf-8")
 
 
 @pytest.mark.unit
@@ -1009,7 +1126,10 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     assert response.status_code == 400
     assert not pending.exists()
     if with_existing_session:
-        assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+        assert json.loads(auth.read_text(encoding="utf-8")) == {
+            **old_auth,
+            "credential_epoch": 0,
+        }
         assert json.loads(social.read_text(encoding="utf-8")) == old_social
     else:
         assert not auth.exists()
@@ -1142,7 +1262,40 @@ def test_persist_oauth_credentials_leaves_an_untouched_social_file_alone(
     # fail too and make _clear_auth() delete a still-usable login.
     assert cleared == []
     assert json.loads(social.read_text(encoding="utf-8")) == old_social
-    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+    assert json.loads(auth.read_text(encoding="utf-8")) == {
+        **old_auth,
+        "credential_epoch": 0,
+    }
+
+
+@pytest.mark.unit
+def test_oauth_callback_cannot_persist_after_logout_generation_changes(
+    tmp_path,
+    monkeypatch,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    (tmp_path / "community_logout.json").write_text(
+        json.dumps({"version": 1, "logout_epoch": 1}),
+        encoding="utf-8",
+    )
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "stale-callback"},
+        social_base="https://community.example",
+        access_token="stale-callback",
+        refresh_token=None,
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+        expected_logout_epoch=0,
+    )
+
+    assert saved is False
+    assert not auth.exists()
+    assert not social.exists()
 
 
 @pytest.mark.unit
@@ -1168,6 +1321,7 @@ def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     real_write = C._write_private_json
 
@@ -1264,12 +1418,12 @@ def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
     repair_read = threading.Event()
     continue_repair = threading.Event()
     worker_ids = {}
-    real_lock = C._social_session_lock
+    real_locks = C._social_session_locks
     real_read = C._read_json_dict
 
     @contextmanager
-    def pause_after_cleanup_unlock(path):
-        with real_lock(path):
+    def pause_after_cleanup_unlock(paths, **kwargs):
+        with real_locks(paths, **kwargs):
             yield
         if threading.get_ident() == worker_ids.get("cleanup"):
             cleanup_unlocked.set()
@@ -1290,7 +1444,7 @@ def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
         worker_ids["repair"] = threading.get_ident()
         C._persist_repaired_bind("rejected-token", {"bound": True})
 
-    monkeypatch.setattr(C, "_social_session_lock", pause_after_cleanup_unlock)
+    monkeypatch.setattr(C, "_social_session_locks", pause_after_cleanup_unlock)
     monkeypatch.setattr(C, "_read_json_dict", pause_after_repair_read)
     with ThreadPoolExecutor(max_workers=2) as pool:
         cleanup = pool.submit(clear_rejected)

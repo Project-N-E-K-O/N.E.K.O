@@ -1,10 +1,15 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
-from utils.storage_layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV
+from utils.storage_layout import (
+    NEKO_STORAGE_ANCHOR_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
+    NEKO_STORAGE_SELECTED_ROOT_ENV,
+)
 from utils.storage_location_bootstrap import (
     build_storage_location_bootstrap_payload,
     get_storage_startup_blocking_reason,
@@ -13,7 +18,9 @@ from utils.storage_location_bootstrap import (
 from utils.storage_migration import (
     create_pending_storage_migration,
     delete_storage_migration,
+    get_storage_migration_path,
     run_pending_storage_migration,
+    save_storage_migration,
 )
 from utils.storage_policy import save_storage_policy
 
@@ -94,6 +101,36 @@ def test_storage_location_bootstrap_payload_exposes_stage3_web_fields(tmp_path):
 
 
 @pytest.mark.unit
+def test_runtime_release_failure_overlays_ready_disk_state_until_cleared(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+
+    storage_location_bootstrap_module.set_runtime_storage_blocking_reason(
+        "startup_release_failed"
+    )
+    try:
+        payload = build_storage_location_bootstrap_payload(config_manager)
+        assert payload["blocking_reason"] == "startup_release_failed"
+        assert payload["error_code"] == "startup_release_failed"
+        assert payload["recovery_required"] is True
+        assert payload["recovery_action"] == "safe_exit"
+        # Child-service continue gates share this module in packaged merged
+        # mode and must re-evaluate disk authority, not Main's HTTP overlay.
+        assert get_storage_startup_blocking_reason(config_manager) == ""
+        assert is_storage_startup_blocked(config_manager) is False
+    finally:
+        storage_location_bootstrap_module.clear_runtime_storage_blocking_reason()
+
+    ready_payload = build_storage_location_bootstrap_payload(config_manager)
+    assert ready_payload["blocking_reason"] == ""
+    assert ready_payload["recovery_required"] is False
+
+
+@pytest.mark.unit
 def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_or_writes(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
 
@@ -107,6 +144,61 @@ def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_
     config_manager.save_root_state = fail_root_state_write
 
     assert get_storage_startup_blocking_reason(config_manager) == "selection_required"
+    assert is_storage_startup_blocked(config_manager) is True
+
+
+@pytest.mark.unit
+def test_storage_startup_gate_keeps_http_fallback_alive_for_malformed_checkpoint(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    migration_path = get_storage_migration_path(config_manager)
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed = '{"status":'
+    migration_path.write_text(malformed, encoding="utf-8")
+
+    assert get_storage_startup_blocking_reason(config_manager) == "storage_status_unavailable"
+    assert is_storage_startup_blocked(config_manager) is True
+    assert migration_path.read_text(encoding="utf-8") == malformed
+
+
+@pytest.mark.unit
+def test_storage_startup_gate_blocks_valid_json_with_invalid_checkpoint_schema(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path, root_mode="normal")
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    migration_path = get_storage_migration_path(config_manager)
+    migration_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = {"version": 2, "status": "copying"}
+    migration_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    assert get_storage_startup_blocking_reason(config_manager) == "storage_status_unavailable"
+    assert is_storage_startup_blocked(config_manager) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "migration_pending",
+        "recovery_required",
+        "storage_policy_unavailable",
+        "storage_status_unavailable",
+    ],
+)
+def test_storage_startup_gate_honors_launcher_recovery_generation_without_disk_reads(
+    monkeypatch,
+    tmp_path,
+    reason,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager.load_root_state = lambda: (_ for _ in ()).throw(
+        AssertionError("recovery generation gate must not read mutable storage state")
+    )
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, reason)
+
+    assert get_storage_startup_blocking_reason(config_manager) == reason
     assert is_storage_startup_blocked(config_manager) is True
 
 
@@ -293,6 +385,39 @@ def test_storage_location_bootstrap_payload_marks_pending_migration_from_checkpo
 
 
 @pytest.mark.unit
+def test_storage_location_bootstrap_presents_retained_staging_as_recovery_not_live_progress(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+    )
+    checkpoint = create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=tmp_path / "new-storage" / "N.E.K.O",
+        selection_source="recommended",
+    )
+    checkpoint["status"] = "recovery_required"
+    save_storage_migration(config_manager, checkpoint)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["migration"]["status"] == "recovery_required"
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_payload_reports_unavailable_committed_root_during_recovery(
     tmp_path,
 ):
@@ -355,6 +480,98 @@ def test_storage_location_bootstrap_payload_marks_cleanup_pending_for_non_anchor
 
     root_state = reloaded_manager.load_root_state()
     assert root_state["legacy_cleanup_pending"] is True
+
+
+@pytest.mark.unit
+def test_cleanup_pending_inventory_skips_social_lock_owner_probe(tmp_path, monkeypatch):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+    (source_root / "social_session.json.lock").write_text("unclassified", encoding="utf-8")
+
+    observed = []
+    real_probe = storage_location_bootstrap_module.probe_retained_community_state
+
+    def _probe(path, **kwargs):
+        observed.append(kwargs.get("classify_social_lock_process"))
+        return real_probe(path, **kwargs)
+
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "probe_retained_community_state",
+        _probe,
+    )
+
+    payload = build_storage_location_bootstrap_payload(
+        _make_real_config_manager(tmp_path)
+    )
+
+    assert payload["legacy_cleanup_pending"] is True
+    assert observed and set(observed) == {False}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("checkpoint_status", (None, "completed", "failed"))
+def test_next_launcher_exposes_checkpointless_restart_intent_as_recovery(
+    tmp_path,
+    monkeypatch,
+    checkpoint_status,
+):
+    config_manager = _DummyConfigManager(
+        tmp_path,
+        root_mode="maintenance_readonly",
+    )
+    current_root = config_manager.app_docs_dir
+    config_manager.load_root_state = lambda: {
+        "mode": "maintenance_readonly",
+        "last_known_good_root": str(current_root),
+        "last_migration_source": str(current_root),
+        "last_migration_result": f"restart_pending:{current_root}",
+    }
+    old_checkpoint = (
+        None
+        if checkpoint_status is None
+        else {
+            "status": checkpoint_status,
+            "source_root": str(current_root),
+            "target_root": str(tmp_path / "old-target" / "N.E.K.O"),
+        }
+    )
+    monkeypatch.setenv(NEKO_STORAGE_RECOVERY_MODE_ENV, "recovery_required")
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: old_checkpoint,
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "_should_require_selection",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is True
+    assert payload["blocking_reason"] == "recovery_required"
+    assert payload["migration_phase"] == ""
+    assert payload["shutdown_retry_allowed"] is False
+    assert payload["restart_intent_recovery_required"] is True
 
 
 @pytest.mark.unit

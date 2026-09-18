@@ -1,12 +1,20 @@
+import json
+import os
+import stat
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from utils.storage import policy as storage_policy_module
+from utils.storage.entries import RuntimeStorageEntryBoundaryError, checked_runtime_entry_path
 from utils.storage_policy import (
     CLOUDSAVE_STRATEGY_FIXED_ANCHOR,
+    StoragePolicyError,
     StorageSelectionValidationError,
     get_storage_policy_path,
+    is_runtime_root_available,
     load_storage_policy,
     save_storage_policy,
     validate_selected_root,
@@ -48,6 +56,447 @@ def test_save_storage_policy_writes_stable_layout_under_anchor_state(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barriers")
+def test_save_storage_policy_flushes_every_new_first_run_ancestor(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    flushed_directories = []
+    real_fsync = storage_policy_module._fsync_policy_directory_required
+
+    def record_directory_fsync(path):
+        flushed_directories.append(path)
+        real_fsync(path)
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_fsync_policy_directory_required",
+        record_directory_fsync,
+    )
+
+    save_storage_policy(
+        config_manager,
+        selected_root=selected_root,
+        selection_source="current",
+    )
+
+    policy_path = get_storage_policy_path(config_manager)
+    assert flushed_directories == [
+        policy_path.parent,
+        policy_path.parent.parent,
+        policy_path.parent.parent.parent,
+        policy_path.parent.parent.parent.parent,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX required directory barrier")
+def test_save_storage_policy_fails_closed_when_parent_flush_fails(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    real_fsync = storage_policy_module.os.fsync
+
+    def fail_directory_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("policy directory flush failed")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(storage_policy_module.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        save_storage_policy(
+            config_manager,
+            selected_root=selected_root,
+            selection_source="current",
+        )
+
+    assert caught.value.reason == "policy_flush_failed"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinked state boundary")
+def test_write_fixed_anchor_state_json_rejects_symlinked_state_without_external_write(
+    tmp_path,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    anchor_root.mkdir(parents=True)
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    sentinel = external_state / "sentinel.json"
+    sentinel.write_text('{"owner":"foreign"}', encoding="utf-8")
+    (anchor_root / "state").symlink_to(external_state, target_is_directory=True)
+
+    with pytest.raises(StoragePolicyError):
+        storage_policy_module.write_fixed_anchor_state_json(
+            anchor_root,
+            "storage_migration.json",
+            {"status": "pending"},
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == '{"owner":"foreign"}'
+    assert not (external_state / "storage_migration.json").exists()
+
+
+@pytest.mark.unit
+def test_windows_fixed_anchor_state_writer_holds_directory_guards_around_publish(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    state_root = anchor_root / "state"
+    state_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    expected_state = state_root.lstat()
+    events = []
+
+    def open_guards(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert os.path.samestat(state_identity, expected_state)
+        events.append("open")
+        return [101, 102]
+
+    def revalidate(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert os.path.samestat(state_identity, expected_state)
+        events.append("revalidate")
+
+    def write_json(path, payload, **kwargs):
+        assert path == state_root / "storage_migration.json"
+        assert payload == {"status": "pending"}
+        assert events[-1] == "revalidate"
+        events.append("write")
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        open_guards,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_revalidate_windows_state_directories",
+        revalidate,
+    )
+    monkeypatch.setattr(storage_policy_module, "atomic_write_json", write_json)
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    storage_policy_module._write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        "storage_migration.json",
+        {"status": "pending"},
+    )
+
+    assert events == [
+        "open",
+        "revalidate",
+        "write",
+        "revalidate",
+        ("close", (101, 102)),
+    ]
+
+
+@pytest.mark.unit
+def test_windows_fixed_anchor_no_replace_publish_holds_directory_guards(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    state_root = anchor_root / "state"
+    state_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    expected_state = state_root.lstat()
+    events = []
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        lambda *_args: events.append("open") or [301, 302],
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_revalidate_windows_state_directories",
+        lambda *_args: events.append("revalidate"),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "atomic_write_json",
+        lambda path, payload, **_kwargs: (
+            path.write_text(json.dumps(payload), encoding="utf-8"),
+            events.append(("write-temp", path.name)),
+        ),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "publish_without_replacing",
+        lambda source, target: events.append(
+            ("publish", Path(source).name, Path(target).name)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_fsync_policy_directory_required",
+        lambda path: events.append(("fsync", path.name)),
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    assert storage_policy_module._write_fixed_anchor_state_json_windows(
+        anchor_root,
+        expected_anchor,
+        expected_state,
+        "community_auth.json",
+        {"access_token": "token"},
+        replace=False,
+    ) is True
+
+    assert events[0:2] == ["open", "revalidate"]
+    assert events[2][0] == "write-temp"
+    assert events[3][0] == "publish"
+    assert events[3][2] == "community_auth.json"
+    assert events[4:] == [
+        ("fsync", "state"),
+        "revalidate",
+        ("close", (301, 302)),
+    ]
+
+
+@pytest.mark.unit
+def test_windows_absent_state_delete_is_proved_while_anchor_guard_is_held(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    anchor_root.mkdir(parents=True)
+    expected_anchor = anchor_root.lstat()
+    events = []
+
+    def open_guards(path, anchor_identity, state_identity):
+        assert path == anchor_root
+        assert os.path.samestat(anchor_identity, expected_anchor)
+        assert state_identity is None
+        events.append("open")
+        return [201, 202]
+
+    def validate_anchor(path):
+        assert path == anchor_root
+        assert events == ["open"]
+        events.append("validate")
+        return expected_anchor
+
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_open_windows_policy_directory_guards",
+        open_guards,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_validate_storage_policy_anchor",
+        validate_anchor,
+    )
+    monkeypatch.setattr(
+        storage_policy_module,
+        "_close_windows_policy_directory_guards",
+        lambda handles: events.append(("close", tuple(handles))),
+    )
+
+    storage_policy_module._confirm_windows_fixed_anchor_state_absent(
+        anchor_root,
+        expected_anchor,
+    )
+
+    assert events == ["open", "validate", ("close", (201, 202))]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd restore race injection")
+@pytest.mark.parametrize("restore_existing", (False, True))
+@pytest.mark.parametrize("replaced_directory", ("anchor", "state"))
+def test_restore_storage_policy_snapshot_never_mutates_replaced_directory(
+    tmp_path,
+    monkeypatch,
+    restore_existing,
+    replaced_directory,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    original_root = tmp_path / "selected-original"
+    changed_root = tmp_path / "selected-changed"
+    replacement_root_value = tmp_path / "selected-replacement"
+    for path in (original_root, changed_root, replacement_root_value):
+        path.mkdir()
+
+    original_payload = None
+    if restore_existing:
+        original_payload = save_storage_policy(
+            config_manager,
+            selected_root=original_root,
+            selection_source="current",
+            anchor_root=anchor_root,
+        )
+    save_storage_policy(
+        config_manager,
+        selected_root=changed_root,
+        selection_source="current",
+        anchor_root=anchor_root,
+    )
+
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_payload = save_storage_policy(
+        config_manager,
+        selected_root=replacement_root_value,
+        selection_source="current",
+        anchor_root=replacement_anchor,
+    )
+    replacement_policy = replacement_anchor / "state" / "storage_policy.json"
+    replacement_bytes = replacement_policy.read_bytes()
+    detached = tmp_path / f"detached-{replaced_directory}"
+    swapped = False
+
+    def swap_directory():
+        nonlocal swapped
+        swapped = True
+        if replaced_directory == "anchor":
+            anchor_root.rename(detached)
+            replacement_anchor.rename(anchor_root)
+        else:
+            (anchor_root / "state").rename(detached)
+            (replacement_anchor / "state").rename(anchor_root / "state")
+
+    if restore_existing:
+        real_replace = os.replace
+
+        def replace_after_directory_binding(
+            source,
+            target,
+            *,
+            src_dir_fd=None,
+            dst_dir_fd=None,
+        ):
+            if (
+                not swapped
+                and target == "storage_policy.json"
+                and src_dir_fd is not None
+            ):
+                swap_directory()
+            return real_replace(
+                source,
+                target,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+        monkeypatch.setattr(storage_policy_module.os, "replace", replace_after_directory_binding)
+    else:
+        real_unlink = os.unlink
+
+        def unlink_after_directory_binding(path, *, dir_fd=None):
+            if not swapped and path == "storage_policy.json" and dir_fd is not None:
+                swap_directory()
+            return real_unlink(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(storage_policy_module.os, "unlink", unlink_after_directory_binding)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module.restore_storage_policy_snapshot(
+            config_manager,
+            original_payload,
+            anchor_root=anchor_root,
+        )
+
+    assert swapped is True
+    assert caught.value.reason == (
+        "anchor_root_changed" if replaced_directory == "anchor" else "policy_path_changed"
+    )
+    active_policy = anchor_root / "state" / "storage_policy.json"
+    assert active_policy.read_bytes() == replacement_bytes
+    assert json.loads(active_policy.read_text(encoding="utf-8")) == replacement_payload
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows fixed-anchor directory guards")
+@pytest.mark.parametrize("restore_existing", (False, True))
+def test_windows_restore_storage_policy_guards_anchor_and_state_until_complete(
+    tmp_path,
+    monkeypatch,
+    restore_existing,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    original_root = tmp_path / "selected-original"
+    changed_root = tmp_path / "selected-changed"
+    original_root.mkdir()
+    changed_root.mkdir()
+    original_payload = None
+    if restore_existing:
+        original_payload = save_storage_policy(
+            config_manager,
+            selected_root=original_root,
+            selection_source="current",
+            anchor_root=anchor_root,
+        )
+    save_storage_policy(
+        config_manager,
+        selected_root=changed_root,
+        selection_source="current",
+        anchor_root=anchor_root,
+    )
+    attempted = False
+
+    def assert_directories_guarded():
+        nonlocal attempted
+        with pytest.raises(OSError):
+            (anchor_root / "state").rename(anchor_root / "state-moved")
+        with pytest.raises(OSError):
+            anchor_root.rename(anchor_root.with_name("anchor-moved"))
+        attempted = True
+
+    if restore_existing:
+        real_write = storage_policy_module.atomic_write_json
+
+        def guarded_write(path, payload, **kwargs):
+            assert_directories_guarded()
+            return real_write(path, payload, **kwargs)
+
+        monkeypatch.setattr(storage_policy_module, "atomic_write_json", guarded_write)
+    else:
+        real_unlink = storage_policy_module.os.unlink
+
+        def guarded_unlink(path, *args, **kwargs):
+            if Path(path).name == "storage_policy.json":
+                assert_directories_guarded()
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(storage_policy_module.os, "unlink", guarded_unlink)
+
+    storage_policy_module.restore_storage_policy_snapshot(
+        config_manager,
+        original_payload,
+        anchor_root=anchor_root,
+    )
+
+    assert attempted is True
+    moved_anchor = anchor_root.with_name("anchor-moved")
+    anchor_root.rename(moved_anchor)
+    restored_path = moved_anchor / "state" / "storage_policy.json"
+    if restore_existing:
+        assert json.loads(restored_path.read_text(encoding="utf-8")) == original_payload
+    else:
+        assert not restored_path.exists()
+
+
+@pytest.mark.unit
 def test_load_storage_policy_returns_default_when_payload_is_unreadable(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     policy_path = get_storage_policy_path(config_manager)
@@ -56,7 +505,446 @@ def test_load_storage_policy_returns_default_when_payload_is_unreadable(tmp_path
 
     default_payload = {"selected_root": str(config_manager.app_docs_dir)}
 
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default=default_payload)
+
+    assert caught.value.error_code == "storage_policy_unavailable"
+    assert caught.value.reason == "malformed"
+    assert policy_path.read_text(encoding="utf-8") == "{not-json"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_uses_default_only_when_file_is_absent(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    default_payload = {"selected_root": str(config_manager.app_docs_dir)}
+
     assert load_storage_policy(config_manager, default=default_payload) == default_payload
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("existing_layer", ["anchor", "state"])
+def test_load_storage_policy_accepts_handle_bound_first_run_absence(
+    tmp_path,
+    existing_layer,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    anchor_root.mkdir(parents=True)
+    if existing_layer == "state":
+        (anchor_root / "state").mkdir()
+    default_payload = {"selected_root": str(config_manager.app_docs_dir)}
+
+    assert load_storage_policy(config_manager, default=default_payload) == default_payload
+
+
+@pytest.mark.unit
+def test_load_storage_policy_never_follows_the_policy_file(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True)
+    redirected_payload = tmp_path / "redirected-policy.json"
+    redirected_payload.write_text("{}", encoding="utf-8")
+    try:
+        policy_path.symlink_to(redirected_payload)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager)
+
+    assert caught.value.reason == "policy_path_redirect"
+
+
+@pytest.mark.unit
+def test_fixed_anchor_json_rejects_oversized_stable_handle_before_read(
+    tmp_path,
+    monkeypatch,
+):
+    anchor_root = tmp_path / "anchor"
+    policy_path = anchor_root / "state" / "oversized.json"
+    policy_path.parent.mkdir(parents=True)
+    with policy_path.open("wb") as handle:
+        handle.truncate(storage_policy_module._FIXED_ANCHOR_JSON_MAX_BYTES + 1)
+
+    if os.name == "nt":
+        import ctypes
+
+        monkeypatch.setattr(
+            ctypes,
+            "create_string_buffer",
+            lambda *_args, **_kwargs: pytest.fail(
+                "oversized fixed-anchor JSON must be rejected before ReadFile"
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            storage_policy_module,
+            "_read_open_file_descriptor",
+            lambda _fd: pytest.fail(
+                "oversized fixed-anchor JSON must be rejected before read"
+            ),
+        )
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module.read_fixed_anchor_state_json(
+            anchor_root,
+            policy_path.name,
+        )
+
+    assert caught.value.reason == "policy_payload_too_large"
+
+
+@pytest.mark.unit
+def test_fixed_anchor_json_chunk_reader_enforces_limit_after_size_precheck(
+    monkeypatch,
+):
+    monkeypatch.setattr(storage_policy_module, "_FIXED_ANCHOR_JSON_MAX_BYTES", 5)
+    chunks = iter([b"1234", b"56"])
+    requested_sizes = []
+
+    def read_chunk(size):
+        requested_sizes.append(size)
+        return next(chunks)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        storage_policy_module._read_fixed_anchor_json_chunks(read_chunk)
+
+    assert caught.value.reason == "policy_payload_too_large"
+    assert requested_sizes == [6, 2]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO race injection")
+def test_load_storage_policy_does_not_block_when_policy_becomes_fifo_before_open(
+    tmp_path,
+    monkeypatch,
+):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("POSIX FIFO creation is unavailable")
+
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    policy_path = get_storage_policy_path(config_manager)
+    save_storage_policy(
+        config_manager,
+        selected_root=selected_root,
+        selection_source="current",
+    )
+    real_open = storage_policy_module.os.open
+    opened_flags = []
+    replaced = False
+
+    def replace_with_fifo_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if path == policy_path.name and dir_fd is not None and not replaced:
+            replaced = True
+            policy_path.unlink()
+            os.mkfifo(policy_path)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(storage_policy_module.os, "open", replace_with_fifo_before_open)
+    outcome = []
+
+    def load_raced_policy():
+        try:
+            load_storage_policy(config_manager)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=load_raced_policy, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        # Release a regressed blocking reader so it cannot leak into later tests.
+        writer_fd = real_open(policy_path, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer_fd)
+        worker.join(timeout=1)
+
+    assert not worker.is_alive(), "opening a raced policy FIFO must be non-blocking"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], StoragePolicyError)
+    assert outcome[0].reason == "policy_changed_during_read"
+    assert opened_flags and opened_flags[0] & os.O_NONBLOCK
+    assert opened_flags[0] & os.O_NOFOLLOW
+
+
+@pytest.mark.unit
+def test_load_storage_policy_rejects_a_regular_file_in_the_anchor_chain(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    config_manager._standard_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "anchor_root_not_directory"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_finds_an_ancestor_file_after_windows_style_missing_child(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    blocked_parent = config_manager._standard_root
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    anchor_root = blocked_parent / config_manager.app_name
+    real_lstat = Path.lstat
+
+    def windows_style_lstat(path):
+        if path == anchor_root:
+            raise FileNotFoundError("simulated Windows child lookup")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", windows_style_lstat)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, anchor_root=anchor_root, default={})
+
+    assert caught.value.reason == "anchor_root_not_directory"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd race injection")
+def test_load_storage_policy_rejects_anchor_replacement_before_handle_open(
+    tmp_path,
+    monkeypatch,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    anchor_root.mkdir(parents=True)
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_anchor.mkdir()
+    detached_anchor = tmp_path / "detached-anchor"
+    real_open = os.open
+    replaced = False
+
+    def replace_anchor_before_handle_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if not replaced and path == anchor_root.name and dir_fd is not None:
+            replaced = True
+            anchor_root.rename(detached_anchor)
+            replacement_anchor.rename(anchor_root)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", replace_anchor_before_handle_open)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "anchor_root_changed"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd race injection")
+@pytest.mark.parametrize("replacement_kind", ["directory", "symlink"])
+def test_load_storage_policy_rejects_anchor_replacement_after_handle_binding(
+    tmp_path,
+    monkeypatch,
+    replacement_kind,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    selected_root = tmp_path / "selected-original"
+    selected_root.mkdir()
+    save_storage_policy(
+        config_manager,
+        selected_root=selected_root,
+        selection_source="current",
+    )
+
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_selected_root = tmp_path / "selected-replacement"
+    replacement_selected_root.mkdir()
+    save_storage_policy(
+        config_manager,
+        selected_root=replacement_selected_root,
+        selection_source="current",
+        anchor_root=replacement_anchor,
+    )
+
+    detached_anchor = tmp_path / "detached-anchor"
+    real_open = os.open
+    replaced = False
+
+    def replace_anchor_before_state_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        if not replaced and path == "state" and dir_fd is not None:
+            replaced = True
+            anchor_root.rename(detached_anchor)
+            if replacement_kind == "directory":
+                replacement_anchor.rename(anchor_root)
+            else:
+                try:
+                    anchor_root.symlink_to(replacement_anchor, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    pytest.skip("symbolic links are unavailable on this platform")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", replace_anchor_before_state_open)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager)
+
+    assert caught.value.reason in {"anchor_root_changed", "anchor_root_redirect"}
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir-fd race injection")
+@pytest.mark.parametrize("missing_entry", ["state", "storage_policy.json"])
+@pytest.mark.parametrize("replacement_timing", ["before", "after"])
+def test_load_storage_policy_does_not_accept_absence_from_a_detached_anchor(
+    tmp_path,
+    monkeypatch,
+    missing_entry,
+    replacement_timing,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    anchor_root = config_manager._standard_root / config_manager.app_name
+    anchor_root.mkdir(parents=True)
+    if missing_entry == "storage_policy.json":
+        (anchor_root / "state").mkdir()
+
+    replacement_anchor = tmp_path / "replacement-anchor"
+    replacement_anchor.mkdir()
+    if missing_entry == "storage_policy.json":
+        (replacement_anchor / "state").mkdir()
+    detached_anchor = tmp_path / "detached-anchor"
+    real_stat = os.stat
+    replaced = False
+
+    def replace_anchor():
+        nonlocal replaced
+        replaced = True
+        anchor_root.rename(detached_anchor)
+        replacement_anchor.rename(anchor_root)
+
+    def replace_anchor_around_absence_check(path, *args, **kwargs):
+        should_replace = (
+            not replaced
+            and path == missing_entry
+            and kwargs.get("dir_fd") is not None
+        )
+        if should_replace and replacement_timing == "before":
+            replace_anchor()
+        try:
+            return real_stat(path, *args, **kwargs)
+        except FileNotFoundError:
+            if should_replace and replacement_timing == "after":
+                replace_anchor()
+            raise
+
+    monkeypatch.setattr(os, "stat", replace_anchor_around_absence_check)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "anchor_root_changed"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_fails_closed_for_read_error(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            storage_policy_module,
+            "_read_storage_policy_json",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("private path")),
+        )
+        with pytest.raises(StoragePolicyError) as caught:
+            load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "unreadable"
+
+
+@pytest.mark.unit
+def test_load_storage_policy_fails_closed_for_non_object_payload(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager, default={})
+
+    assert caught.value.reason == "not_object"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("version", 2, "version_invalid"),
+        ("cloudsave_strategy", "movable", "cloudsave_strategy_invalid"),
+        ("selection_source", "custom", "selection_source_invalid"),
+        ("first_run_completed", False, "first_run_completed_invalid"),
+        ("updated_at", "", "updated_at_invalid"),
+    ],
+)
+def test_load_storage_policy_rejects_invalid_required_schema(
+    tmp_path,
+    field,
+    value,
+    reason,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "anchor_root": str(policy_path.parents[1]),
+        "selected_root": str(tmp_path / "selected" / "N.E.K.O"),
+        "selection_source": "user_selected",
+        "cloudsave_strategy": "fixed_anchor",
+        "first_run_completed": True,
+        "updated_at": "2026-09-11T00:00:00Z",
+    }
+    payload[field] = value
+    storage_policy_module.atomic_write_json(policy_path, payload)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager)
+
+    assert caught.value.reason == reason
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "selected_root_factory",
+    [
+        lambda config_manager, _tmp_path: Path(storage_policy_module.__file__).resolve().parents[2],
+        lambda config_manager, _tmp_path: get_storage_policy_path(config_manager).parent / "nested",
+    ],
+)
+def test_load_storage_policy_rejects_dangerous_selected_root(
+    tmp_path,
+    selected_root_factory,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_root = selected_root_factory(config_manager, tmp_path)
+    payload = {
+        "version": 1,
+        "anchor_root": str(policy_path.parents[1]),
+        "selected_root": str(selected_root),
+        "selection_source": "user_selected",
+        "cloudsave_strategy": "fixed_anchor",
+        "first_run_completed": True,
+        "updated_at": "2026-09-11T00:00:00Z",
+    }
+    storage_policy_module.atomic_write_json(policy_path, payload)
+
+    with pytest.raises(StoragePolicyError) as caught:
+        load_storage_policy(config_manager)
+
+    assert caught.value.reason in {
+        "selected_root_inside_project",
+        "selected_root_inside_reserved_root",
+    }
+    assert json.loads(policy_path.read_text(encoding="utf-8")) == payload
 
 
 @pytest.mark.unit
@@ -108,3 +996,115 @@ def test_validate_selected_root_keeps_custom_app_folder_when_already_selected(tm
     )
 
     assert normalized == selected_root
+
+
+@pytest.mark.unit
+def test_apfs_case_alias_is_the_current_physical_root_not_a_nested_custom_root(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    current_root = config_manager.app_docs_dir
+    case_alias = current_root.with_name(current_root.name.swapcase())
+    if not case_alias.exists() or not case_alias.samefile(current_root):
+        pytest.skip("test volume is case-sensitive")
+
+    assert storage_policy_module.paths_equal(case_alias, current_root) is True
+    assert storage_policy_module.path_is_within(case_alias / "pending", current_root) is True
+    assert validate_selected_root(
+        config_manager,
+        case_alias,
+        selection_source="custom",
+    ) == current_root.resolve()
+
+
+@pytest.mark.unit
+def test_missing_case_variant_remains_distinct_on_case_sensitive_filesystem(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    current_root = config_manager.app_docs_dir
+    case_variant = current_root.with_name(current_root.name.swapcase())
+    if case_variant.exists():
+        pytest.skip("test volume is case-insensitive")
+
+    assert storage_policy_module.paths_equal(case_variant, current_root) is False
+    assert storage_policy_module.path_is_within(case_variant / "pending", current_root) is False
+
+
+@pytest.mark.unit
+def test_selected_root_rejects_uninspectable_physical_identity(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    selected_root.parent.mkdir()
+
+    def deny_identity(_path):
+        raise storage_policy_module.PathIdentityUnavailable("permission denied")
+
+    monkeypatch.setattr(storage_policy_module, "_existing_path_identity", deny_identity)
+
+    with pytest.raises(StorageSelectionValidationError) as exc_info:
+        validate_selected_root(
+            config_manager,
+            selected_root,
+            selection_source="custom",
+        )
+
+    assert exc_info.value.error_code == "selected_root_identity_uninspectable"
+
+
+@pytest.mark.unit
+def test_runtime_root_availability_requires_real_write_probe(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    monkeypatch.setattr(storage_policy_module, "_can_write_existing_directory", lambda _path: False)
+
+    assert is_runtime_root_available(runtime_root) is False
+
+
+@pytest.mark.unit
+def test_validate_selected_root_rejects_symlink_in_path_chain(tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with pytest.raises(StorageSelectionValidationError) as exc_info:
+        validate_selected_root(
+            config_manager,
+            linked_parent,
+            selection_source="custom",
+        )
+
+    assert exc_info.value.error_code == "selected_root_symlink_unsupported"
+
+
+@pytest.mark.unit
+def test_runtime_entry_boundary_treats_windows_reparse_parent_as_redirect(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "runtime"
+    state_root = root / "state"
+    state_root.mkdir(parents=True)
+    real_lstat = Path.lstat
+    reparse_flag = 0x400
+    monkeypatch.setattr(
+        storage_policy_module.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_flag,
+        raising=False,
+    )
+
+    def fake_lstat(path):
+        result = real_lstat(path)
+        if path == state_root:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR,
+                st_file_attributes=reparse_flag,
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+    with pytest.raises(RuntimeStorageEntryBoundaryError, match="重解析点"):
+        checked_runtime_entry_path(root, "state/game_scores")

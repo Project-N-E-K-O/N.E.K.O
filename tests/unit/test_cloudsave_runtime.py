@@ -1,6 +1,7 @@
 import copy
 import contextlib
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -358,6 +359,1011 @@ def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_avatar_tools
 
 
 @pytest.mark.unit
+def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_game_scores(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_score = legacy_root / "state" / "game_scores" / "badminton_scores.db"
+    legacy_score.parent.mkdir(parents=True)
+    legacy_score.write_bytes(b"legacy-score")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    atomic_write_json(
+        Path(cm.get_config_path("user_preferences.json")),
+        [{"model_path": "/custom.model3.json"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "missing_state/game_scores"
+    assert (Path(cm.app_docs_dir) / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"legacy-score"
+
+
+@pytest.mark.unit
+def test_runtime_cache_does_not_hide_legacy_user_data_from_seed_repair(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text('{"Version": 3}', encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    (Path(cm.app_docs_dir) / "embedding_models").mkdir(parents=True)
+    (Path(cm.app_docs_dir) / "embedding_models" / "cache.bin").write_bytes(b"cache")
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "target_missing"
+    assert (cm.live2d_dir / "legacy-model" / "legacy.model3.json").is_file()
+    assert (Path(cm.app_docs_dir) / "embedding_models" / "cache.bin").read_bytes() == b"cache"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_legacy_import_rejects_cache_symlink_without_replacing_target(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text('{"Version": 3}', encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    external_cache = tmp_path / "external-cache"
+    external_cache.mkdir()
+    sentinel = external_cache / "sentinel.bin"
+    sentinel.write_bytes(b"outside")
+    cache_link = Path(cm.app_docs_dir) / "embedding_models"
+    cache_link.symlink_to(external_cache, target_is_directory=True)
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert cache_link.is_symlink()
+    assert sentinel.read_bytes() == b"outside"
+    assert not (cm.live2d_dir / "legacy-model").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFO semantics")
+def test_legacy_runtime_copy_rejects_fifo_without_blocking(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("{}", encoding="utf-8")
+    os.mkfifo(legacy_root / "embedding_models")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    errors = []
+
+    def copy_fifo():
+        try:
+            bootstrap_local_cloudsave_environment(cm)
+        except BaseException as exc:  # pragma: no branch - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=copy_fifo, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive(), "legacy FIFO inspection must not block startup"
+    assert len(errors) == 1
+    assert isinstance(errors[0], CloudsaveOperationError)
+    assert errors[0].code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert not (cm.live2d_dir / "legacy-model").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor merge semantics")
+def test_private_snapshot_merge_cannot_write_through_raced_directory_symlink(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+    from utils.storage import migration as storage_migration_module
+
+    base_root = tmp_path / "base"
+    overlay_root = tmp_path / "overlay"
+    external_root = tmp_path / "external"
+    (base_root / "config").mkdir(parents=True)
+    (overlay_root / "config").mkdir(parents=True)
+    external_root.mkdir()
+    (overlay_root / "config" / "victim.json").write_text("overlay", encoding="utf-8")
+    sentinel = external_root / "victim.json"
+    sentinel.write_text("outside", encoding="utf-8")
+
+    real_open = legacy_migration_module.os.open
+    raced = False
+
+    def replace_base_before_descriptor_open(path, flags, *args, **kwargs):
+        nonlocal raced
+        if path == "config" and kwargs.get("dir_fd") is not None and not raced:
+            raced = True
+            (base_root / "config").rename(base_root / "config-original")
+            (base_root / "config").symlink_to(external_root, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_migration_module.os,
+        "open",
+        replace_base_before_descriptor_open,
+    )
+
+    with pytest.raises(CloudsaveOperationError):
+        legacy_migration_module._merge_private_snapshot(base_root, overlay_root)
+
+    assert raced is True
+    assert sentinel.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX in-place write semantics")
+def test_legacy_import_rejects_torn_source_generation(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils import storage_migration as storage_migration_module
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    source_file = legacy_root / "live2d" / "model" / "payload.bin"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"A" * (2 * 1024 * 1024))
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    original_target = (Path(cm.config_dir) / "characters.json").read_bytes()
+
+    real_copyfileobj = storage_migration_module.shutil.copyfileobj
+    mutated = False
+
+    def tear_during_copy(source_handle, target_handle, *args, **kwargs):
+        nonlocal mutated
+        if (
+            not mutated
+            and os.path.samestat(os.fstat(source_handle.fileno()), source_file.stat())
+        ):
+            target_handle.write(source_handle.read(1024 * 1024))
+            with source_file.open("r+b") as writer:
+                writer.seek(1024 * 1024)
+                writer.write(b"B" * (1024 * 1024))
+            target_handle.write(source_handle.read())
+            with source_file.open("r+b") as writer:
+                writer.write(b"B" * (1024 * 1024))
+            mutated = True
+            return None
+        return real_copyfileobj(source_handle, target_handle, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.shutil, "copyfileobj", tear_during_copy)
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert mutated is True
+    assert source_file.read_bytes() == b"B" * (2 * 1024 * 1024)
+    assert (Path(cm.config_dir) / "characters.json").read_bytes() == original_target
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX publication fsync injection")
+def test_legacy_publish_fsync_failure_restores_original_target(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils import storage_migration as storage_migration_module
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    target_sentinel = Path(cm.app_docs_dir) / "target-sentinel.txt"
+    target_sentinel.write_text("current", encoding="utf-8")
+
+    real_fsync_opened = storage_migration_module._fsync_opened_migration_directory
+    injected = False
+
+    def fail_transaction_flush(fd, path):
+        nonlocal injected
+        if ".neko-storage-migration-" in str(path) and not injected:
+            injected = True
+            raise storage_migration_module.StorageMigrationError(
+                "target_flush_failed",
+                "injected transaction flush failure",
+            )
+        return real_fsync_opened(fd, path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_fsync_opened_migration_directory",
+        fail_transaction_flush,
+    )
+
+    with pytest.raises((CloudsaveOperationError, storage_migration_module.StorageMigrationError)):
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert injected is True
+    assert target_sentinel.read_text(encoding="utf-8") == "current"
+    assert not (Path(cm.app_docs_dir) / "live2d" / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_phase0_retries_shared_checkpoint_without_rewriting_anchor_state(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+    from utils.storage.policy import get_storage_policy_path, save_storage_policy
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    cm.ensure_cloudsave_state_files()
+    save_storage_policy(
+        cm,
+        selected_root=cm.app_docs_dir,
+        selection_source="default",
+        anchor_root=cm.anchor_root,
+    )
+    policy_path = get_storage_policy_path(cm, anchor_root=cm.anchor_root)
+    policy_before = policy_path.read_bytes()
+    root_state_before = Path(cm.root_state_path).read_bytes()
+
+    real_writable_check = storage_migration_module._ensure_target_root_writable
+
+    def fail_preflight(_target_root):
+        raise storage_migration_module.StorageMigrationError(
+            "injected_preflight_failure",
+            "injected preflight failure",
+        )
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        fail_preflight,
+    )
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    checkpoint = storage_migration_module.load_storage_migration(cm)
+    assert checkpoint["status"] == "recovery_required"
+    assert Path(checkpoint["source_root"]).is_dir()
+    assert policy_path.read_bytes() == policy_before
+    assert Path(cm.root_state_path).read_bytes() == root_state_before
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        real_writable_check,
+    )
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert (Path(cm.live2d_dir) / "model" / "model.json").is_file()
+    completed = storage_migration_module.load_storage_migration(cm)
+    assert completed["status"] == "completed"
+    assert completed["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_phase0_resumes_shared_checkpoint_when_cloudsave_is_disabled(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CLOUDSAVE_DISABLED_ENV,
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_writable_check = storage_migration_module._ensure_target_root_writable
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        lambda _target: (_ for _ in ()).throw(
+            storage_migration_module.StorageMigrationError(
+                "injected_preflight_failure",
+                "injected preflight failure",
+            )
+        ),
+    )
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        real_writable_check,
+    )
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "manual_disabled")
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["disabled"] is True
+    assert result["legacy_import"]["migrated"] is True
+    assert (Path(cm.live2d_dir) / "model" / "model.json").is_file()
+
+
+@pytest.mark.unit
+def test_phase0_records_root_state_before_finalizing_completed_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.storage import migration as storage_migration_module
+    from utils.storage.migration import load_storage_migration
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_save_root_state = cm.save_root_state
+    injected = False
+
+    def fail_completion_commit(payload):
+        nonlocal injected
+        if (
+            not injected
+            and str(payload.get("last_migration_result") or "").startswith(
+                "legacy_root_"
+            )
+        ):
+            injected = True
+            raise OSError("injected root-state commit failure")
+        return real_save_root_state(payload)
+
+    monkeypatch.setattr(cm, "save_root_state", fail_completion_commit)
+    with pytest.raises(OSError, match="injected root-state commit failure"):
+        bootstrap_local_cloudsave_environment(cm)
+
+    checkpoint = load_storage_migration(cm)
+    assert checkpoint["status"] == "completed"
+    assert checkpoint["legacy_import_kind"] == "phase0_legacy_runtime_import_v1"
+    assert Path(checkpoint["source_root"]).is_dir()
+    transaction_root = Path(checkpoint["transaction_root"])
+    assert transaction_root.is_dir()
+    assert (Path(cm.live2d_dir) / "model" / "model.json").is_file()
+
+    # Packaged launch resolves storage before phase-0 bootstrap.  A completed
+    # internal legacy checkpoint still belongs to its finalizer until the
+    # root_state completion fact is durable, so generic terminal cleanup must
+    # not delete its last rollback transaction.
+    terminal_result = storage_migration_module.run_pending_storage_migration(cm)
+    assert terminal_result["attempted"] is False
+    assert transaction_root.is_dir()
+
+    monkeypatch.setattr(cm, "save_root_state", real_save_root_state)
+    cm.get_legacy_app_root_candidates = lambda: pytest.fail(
+        "completed checkpoint must recover without rescanning legacy roots"
+    )
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert cm.load_root_state()["last_migration_result"].startswith("legacy_root_")
+    retained_checkpoint = load_storage_migration(cm)
+    assert retained_checkpoint["retained_source_mode"] == "manual_retention"
+    assert retained_checkpoint["legacy_private_state_source_root"] == str(
+        tmp_path / "legacy" / "N.E.K.O"
+    )
+    legacy_identity = (tmp_path / "legacy" / "N.E.K.O").lstat()
+    assert retained_checkpoint["legacy_private_state_source_identity"] == [
+        int(legacy_identity.st_dev),
+        int(legacy_identity.st_ino),
+    ]
+    retained_backup_identity = Path(
+        retained_checkpoint["retained_source_root"]
+    ).lstat()
+    assert retained_checkpoint["retained_source_identity"] == {
+        "device": int(retained_backup_identity.st_dev),
+        "inode": int(retained_backup_identity.st_ino),
+    }
+    assert "legacy_import_kind" not in retained_checkpoint
+
+
+@pytest.mark.unit
+def test_phase0_resumes_private_snapshot_cleanup_after_detach_crash(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+    from utils.storage import migration as storage_migration_module
+    from utils.storage.migration import (
+        _private_directory_quarantine_path,
+        load_storage_migration,
+    )
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_remove_owned = storage_migration_module._remove_owned_private_directory
+
+    def crash_after_detach(path, identity):
+        if ".legacy-source-" in str(path):
+            raise RuntimeError("injected cleanup crash")
+        return real_remove_owned(path, identity)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_owned_private_directory",
+        crash_after_detach,
+    )
+    with pytest.raises(RuntimeError, match="injected cleanup crash"):
+        bootstrap_local_cloudsave_environment(cm)
+
+    checkpoint = load_storage_migration(cm)
+    staged_snapshot = Path(checkpoint["source_root"])
+    quarantine = _private_directory_quarantine_path(staged_snapshot)
+    assert checkpoint["status"] == "completed"
+    assert not staged_snapshot.exists()
+    assert quarantine.is_dir()
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_owned_private_directory",
+        real_remove_owned,
+    )
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert not quarantine.exists()
+    retained_checkpoint = load_storage_migration(cm)
+    assert retained_checkpoint["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_phase0_does_not_finalize_success_if_retained_backup_disappears_during_handoff(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+    from utils.storage.migration import load_storage_migration
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_remove_transaction = (
+        storage_migration_module._remove_transaction_root_if_owned
+    )
+    removed_backup = False
+
+    def remove_backup_during_handoff(payload, transaction_root, txid):
+        nonlocal removed_backup
+        if not removed_backup:
+            shutil.rmtree(Path(payload["legacy_import_backup_path"]))
+            removed_backup = True
+        return real_remove_transaction(payload, transaction_root, txid)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_remove_transaction_root_if_owned",
+        remove_backup_during_handoff,
+    )
+
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    checkpoint = load_storage_migration(cm)
+    assert removed_backup is True
+    assert checkpoint["status"] == "completed"
+    assert checkpoint["legacy_import_kind"] == "phase0_legacy_runtime_import_v1"
+    assert not Path(checkpoint["legacy_import_backup_path"]).exists()
+
+
+@pytest.mark.unit
+def test_phase0_recovers_owned_preparation_directories_before_checkpoint(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    cm.ensure_local_state_directory()
+    attempt_id = "a" * 32
+    prepared_paths = {
+        role: Path(cm.app_docs_dir).parent
+        / f".{Path(cm.app_docs_dir).name}.{prefix}-{attempt_id}"
+        for role, prefix in legacy_migration_module._LEGACY_PREPARE_PREFIXES.items()
+    }
+    legacy_migration_module._persist_legacy_import_preparation(
+        cm,
+        attempt_id=attempt_id,
+        paths=prepared_paths,
+    )
+    identities = {}
+    for role, path in prepared_paths.items():
+        path.mkdir(mode=0o700)
+        identities[role] = path.lstat()
+    legacy_migration_module._record_all_legacy_prepared_directory_identities(
+        cm,
+        attempt_id=attempt_id,
+        paths=prepared_paths,
+        identities=identities,
+    )
+    (prepared_paths["source"] / "copied-user-data.bin").write_bytes(b"data")
+    (prepared_paths["target"] / "target-snapshot.bin").write_bytes(b"target")
+
+    legacy_migration_module.recover_abandoned_legacy_import_preparation(cm)
+
+    assert all(not path.exists() for path in prepared_paths.values())
+    assert "legacy_import_preparation" not in cm.load_root_state()
+
+
+@pytest.mark.unit
+def test_phase0_preparation_recovery_preserves_unidentified_replacement(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    cm.ensure_local_state_directory()
+    attempt_id = "c" * 32
+    prepared_paths = {
+        role: Path(cm.app_docs_dir).parent
+        / f".{Path(cm.app_docs_dir).name}.{prefix}-{attempt_id}"
+        for role, prefix in legacy_migration_module._LEGACY_PREPARE_PREFIXES.items()
+    }
+    legacy_migration_module._persist_legacy_import_preparation(
+        cm,
+        attempt_id=attempt_id,
+        paths=prepared_paths,
+    )
+    for path in prepared_paths.values():
+        path.mkdir(mode=0o700)
+    original = prepared_paths["source"].with_name(
+        f"{prepared_paths['source'].name}.original"
+    )
+    prepared_paths["source"].rename(original)
+    prepared_paths["source"].mkdir(mode=0o700)
+
+    legacy_migration_module.recover_abandoned_legacy_import_preparation(cm)
+
+    assert prepared_paths["source"].is_dir()
+    assert original.is_dir()
+    assert "legacy_import_preparation" not in cm.load_root_state()
+
+
+@pytest.mark.unit
+def test_phase0_preparation_recovery_preserves_shared_checkpoint_authority(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+    from utils.storage.migration import (
+        build_pending_storage_migration_payload,
+        save_storage_migration,
+    )
+
+    cm.ensure_local_state_directory()
+    attempt_id = "b" * 32
+    prepared_paths = {
+        role: Path(cm.app_docs_dir).parent
+        / f".{Path(cm.app_docs_dir).name}.{prefix}-{attempt_id}"
+        for role, prefix in legacy_migration_module._LEGACY_PREPARE_PREFIXES.items()
+    }
+    legacy_migration_module._persist_legacy_import_preparation(
+        cm,
+        attempt_id=attempt_id,
+        paths=prepared_paths,
+    )
+    identities = {}
+    for role, path in prepared_paths.items():
+        path.mkdir(mode=0o700)
+        identities[role] = path.lstat()
+    legacy_migration_module._record_all_legacy_prepared_directory_identities(
+        cm,
+        attempt_id=attempt_id,
+        paths=prepared_paths,
+        identities=identities,
+    )
+    (prepared_paths["source"] / "source.bin").write_bytes(b"source")
+    (prepared_paths["backup"] / "backup.bin").write_bytes(b"backup")
+    checkpoint = build_pending_storage_migration_payload(
+        source_root=prepared_paths["source"],
+        target_root=cm.app_docs_dir,
+        selection_source="legacy",
+        confirmed_existing_target_content=True,
+    )
+    checkpoint.update(
+        legacy_import_kind="phase0_legacy_runtime_import_v1",
+        legacy_import_backup_path=str(prepared_paths["backup"]),
+    )
+    save_storage_migration(
+        cm,
+        checkpoint,
+        anchor_root=cm.anchor_root,
+    )
+
+    legacy_migration_module.recover_abandoned_legacy_import_preparation(cm)
+
+    assert prepared_paths["source"].is_dir()
+    assert prepared_paths["backup"].is_dir()
+    assert all(
+        not prepared_paths[role].exists()
+        for role in ("target", "anchor", "config")
+    )
+    assert "legacy_import_preparation" not in cm.load_root_state()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_legacy_config_staging_rejects_prepared_root_replacement_without_external_write(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_config = legacy_root / "config"
+    legacy_config.mkdir(parents=True)
+    characters = cm.get_default_characters()
+    template = copy.deepcopy(next(iter(characters["猫娘"].values())))
+    characters["猫娘"] = {"旧角色": template}
+    characters["当前猫娘"] = "旧角色"
+    atomic_write_json(
+        legacy_config / "characters.json",
+        characters,
+        ensure_ascii=False,
+        indent=2,
+    )
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    real_validate = legacy_migration_module._validate_prepared_legacy_directory
+    real_summary = legacy_migration_module._runtime_root_summary
+    config_validations = 0
+
+    def force_seed_shell_repair(config_manager, root, *args, **kwargs):
+        summary = real_summary(config_manager, root, *args, **kwargs)
+        if ".legacy-target-" in Path(root).name:
+            summary = dict(summary)
+            summary["has_user_content"] = True
+            summary["seeded_character_shell"] = True
+        return summary
+
+    def replace_after_config_validation(path, expected_identity):
+        nonlocal config_validations
+        result = real_validate(path, expected_identity)
+        if ".legacy-config-" in path.name:
+            config_validations += 1
+            if config_validations == 3:
+                original = path.with_name(f"{path.name}.original")
+                path.rename(original)
+                path.symlink_to(external_root, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_runtime_root_summary",
+        force_seed_shell_repair,
+    )
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_validate_prepared_legacy_directory",
+        replace_after_config_validation,
+    )
+
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert config_validations >= 3
+    assert not (external_root / "config" / "characters.json").exists()
+    assert not (Path(cm.live2d_dir) / "legacy-model" / "model.json").exists()
+
+
+@pytest.mark.unit
+def test_legacy_import_rejects_prepared_source_replacement_after_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    original_model = legacy_root / "live2d" / "original"
+    original_model.mkdir(parents=True)
+    (original_model / "model.json").write_text("original", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_summary = legacy_migration_module._runtime_root_summary
+    replaced = False
+
+    def replace_private_source_after_summary(config_manager, root, *args, **kwargs):
+        nonlocal replaced
+        summary = real_summary(config_manager, root, *args, **kwargs)
+        if ".legacy-source-" in Path(root).name and not replaced:
+            original_inode = Path(root).with_name(f"{Path(root).name}.original-inode")
+            Path(root).rename(original_inode)
+            injected_model = Path(root) / "live2d" / "injected"
+            injected_model.mkdir(parents=True)
+            (injected_model / "model.json").write_text("injected", encoding="utf-8")
+            replaced = True
+        return summary
+
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_runtime_root_summary",
+        replace_private_source_after_summary,
+    )
+
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert replaced is True
+    assert not (Path(cm.app_docs_dir) / "live2d" / "original").exists()
+    assert not (Path(cm.app_docs_dir) / "live2d" / "injected").exists()
+
+
+@pytest.mark.unit
+def test_legacy_import_uses_fixed_anchor_tombstones_with_separate_selected_root(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.config_manager import ConfigManager
+
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    monkeypatch.setenv("NEKO_STORAGE_ANCHOR_ROOT", str(anchor_root))
+    monkeypatch.delenv("NEKO_STORAGE_RECOVERY_MODE", raising=False)
+    with (
+        patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path),
+        patch.object(
+            ConfigManager,
+            "_get_standard_data_directory_candidates",
+            return_value=[tmp_path],
+        ),
+    ):
+        cm = ConfigManager("N.E.K.O")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    cm.ensure_cloudsave_state_files()
+
+    legacy_config = legacy_root / "config"
+    legacy_config.mkdir(parents=True)
+    characters = cm.get_default_characters()
+    template = copy.deepcopy(next(iter(characters["猫娘"].values())))
+    characters["猫娘"] = {"旧角色": template}
+    characters["当前猫娘"] = "旧角色"
+    atomic_write_json(
+        legacy_config / "characters.json",
+        characters,
+        ensure_ascii=False,
+        indent=2,
+    )
+    tombstones = cm.load_character_tombstones_state()
+    tombstones["tombstones"] = [
+        {
+            "character_name": "旧角色",
+            "deleted_at": "2026-09-16T00:00:00Z",
+            "sequence_number": 1,
+        }
+    ]
+    cm.save_character_tombstones_state(tombstones)
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert Path(cm.app_docs_dir) == selected_root
+    assert Path(cm.anchor_root) == anchor_root
+    assert "旧角色" not in cm.load_characters()["猫娘"]
+    assert cm.load_characters()["当前猫娘"] == ""
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_legacy_import_rejects_redirected_root_before_reading_external_config(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    external_root = tmp_path / "external"
+    external_config = external_root / "config"
+    external_config.mkdir(parents=True)
+    sentinel = external_config / "characters.json"
+    sentinel.write_text('{"external": true}', encoding="utf-8")
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_root.parent.mkdir()
+    legacy_root.symlink_to(external_root, target_is_directory=True)
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert legacy_root.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == '{"external": true}'
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_legacy_import_rejects_config_symlink_before_summary(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    external_config = tmp_path / "external-config"
+    external_config.mkdir()
+    sentinel = external_config / "characters.json"
+    sentinel.write_text('{"external": true}', encoding="utf-8")
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_root.mkdir(parents=True)
+    (legacy_root / "config").symlink_to(external_config, target_is_directory=True)
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert (legacy_root / "config").is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == '{"external": true}'
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+def test_legacy_import_rejects_optional_state_symlink_without_publishing(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("{}", encoding="utf-8")
+    external_state = tmp_path / "external-state.json"
+    external_state.write_text('{"external": true}', encoding="utf-8")
+    (legacy_root / "state").mkdir()
+    (legacy_root / "state" / "cloudsave_local_state.json").symlink_to(external_state)
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert external_state.read_text(encoding="utf-8") == '{"external": true}'
+    assert not (cm.live2d_dir / "legacy-model").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(os, "mkfifo"),
+    reason="POSIX FIFO semantics",
+)
+def test_legacy_import_rejects_target_config_fifo_without_blocking(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        _runtime_root_has_user_content,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("{}", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    characters_path = Path(cm.config_dir) / "characters.json"
+    characters_path.unlink()
+    os.mkfifo(characters_path)
+    probe_results = []
+
+    probe_worker = threading.Thread(
+        target=lambda: probe_results.append(
+            _runtime_root_has_user_content(
+                Path(cm.app_docs_dir),
+                config_manager=cm,
+            )
+        ),
+        daemon=True,
+    )
+    probe_worker.start()
+    probe_worker.join(timeout=1)
+
+    assert not probe_worker.is_alive(), "content probe must not block on a FIFO"
+    assert probe_results == [True]
+    errors = []
+
+    def bootstrap_with_fifo():
+        try:
+            bootstrap_local_cloudsave_environment(cm)
+        except BaseException as exc:  # pragma: no branch - asserted below
+            errors.append(exc)
+
+    worker = threading.Thread(target=bootstrap_with_fifo, daemon=True)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive(), "target FIFO must not block phase-0"
+    assert len(errors) == 1
+    assert getattr(errors[0], "code", "") == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert not (cm.live2d_dir / "legacy-model").exists()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance
@@ -389,7 +1395,10 @@ def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_
 
 
 @pytest.mark.unit
-def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_import(tmp_path):
+def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_import(
+    tmp_path,
+    monkeypatch,
+):
     new_root_base = tmp_path / "new_root_base"
     legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
     snapshot_source_base = tmp_path / "snapshot_source"
@@ -397,6 +1406,7 @@ def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_imp
     snapshot_source_cm = _make_config_manager(snapshot_source_base)
 
     from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment, export_local_cloudsave_snapshot
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
 
     legacy_config_dir = legacy_root / "config"
     legacy_config_dir.mkdir(parents=True, exist_ok=True)
@@ -412,6 +1422,22 @@ def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_imp
 
     cm.get_legacy_app_root_candidates = lambda: [legacy_root]
     shutil.copytree(snapshot_source_cm.cloudsave_dir, cm.cloudsave_dir, dirs_exist_ok=True)
+    (cm.cloudsave_dir / "payload.bin").write_bytes(b"x" * (3 * 1024 * 1024))
+    real_snapshot = legacy_migration_module._create_private_runtime_snapshot
+    anchor_payload_copied = None
+
+    def observe_anchor_snapshot(*args, **kwargs):
+        nonlocal anchor_payload_copied
+        snapshot = real_snapshot(*args, **kwargs)
+        if "legacy-anchor" in str(kwargs.get("prefix") or ""):
+            anchor_payload_copied = (snapshot[0] / "cloudsave").exists()
+        return snapshot
+
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_create_private_runtime_snapshot",
+        observe_anchor_snapshot,
+    )
 
     result = bootstrap_local_cloudsave_environment(cm)
 
@@ -419,6 +1445,108 @@ def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_imp
     assert result["legacy_import"]["result"] == "target_root_preserves_staged_cloudsave_snapshot"
     assert json.loads(cm.cloudsave_manifest_path.read_text(encoding="utf-8")).get("files")
     assert cm.load_characters()["当前猫娘"] != "旧角色"
+    assert anchor_payload_copied is False
+
+
+@pytest.mark.unit
+def test_empty_cloudsave_skeleton_does_not_block_legacy_runtime_import(tmp_path):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    for name in ("overrides", "memory", "catalog", "meta", "bindings", "profiles"):
+        (Path(cm.cloudsave_dir) / name).mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        Path(cm.cloudsave_dir) / "manifest.json",
+        {"files": {}},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert (Path(cm.live2d_dir) / "legacy-model" / "model.json").is_file()
+
+
+@pytest.mark.unit
+def test_phase0_capacity_reserves_future_copy_entries(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_free_entry_count",
+        # Enough for the old 2S + 2T estimate, but not the actual peak after
+        # the merged S + T generation is handed to the shared transaction.
+        lambda _path: 70,
+    )
+    monkeypatch.setattr(
+        storage_migration_module.shutil,
+        "disk_usage",
+        lambda _path: shutil._ntuple_diskusage(10**12, 0, 10**12),
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert "insufficient_space" in str(caught.value)
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_phase0_capacity_counts_nested_directories(tmp_path, monkeypatch):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+    from utils.storage import migration as storage_migration_module
+
+    source_root = tmp_path / "legacy" / "N.E.K.O"
+    current = source_root / "live2d"
+    for index in range(30):
+        current = current / f"level-{index}"
+        current.mkdir(parents=True, exist_ok=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_filesystem_free_entry_count",
+        lambda _path: 90,
+    )
+    monkeypatch.setattr(
+        storage_migration_module.shutil,
+        "disk_usage",
+        lambda _path: shutil._ntuple_diskusage(10**12, 0, 10**12),
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        legacy_migration_module._create_private_runtime_snapshot(
+            source_root,
+            workspace,
+            prefix=".phase0-capacity-",
+            optional_names=(),
+            future_copy_multiplier=2,
+        )
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert "insufficient_space" in str(caught.value)
 
 
 @pytest.mark.unit
@@ -488,6 +1616,8 @@ def test_bootstrap_repairs_legacy_root_while_launcher_fence_is_active(tmp_path):
     cm = _make_config_manager(new_root_base)
 
     from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, bootstrap_local_cloudsave_environment, cloud_apply_fence
+    from utils.cloudsave_runtime import fence as fence_module
+    from utils.storage.policy import get_storage_policy_path, save_storage_policy
 
     legacy_config_dir = legacy_root / "config"
     legacy_config_dir.mkdir(parents=True, exist_ok=True)
@@ -496,17 +1626,47 @@ def test_bootstrap_repairs_legacy_root_while_launcher_fence_is_active(tmp_path):
     legacy_characters["猫娘"] = {"旧角色": template_character}
     legacy_characters["当前猫娘"] = "旧角色"
     atomic_write_json(legacy_config_dir / "characters.json", legacy_characters, ensure_ascii=False, indent=2)
+    legacy_cloudsave = legacy_root / "cloudsave"
+    legacy_cloudsave.mkdir()
+    (legacy_cloudsave / "must-not-publish.json").write_text("legacy", encoding="utf-8")
 
     cm.get_legacy_app_root_candidates = lambda: [legacy_root]
     cm.migrate_config_files()
     cm.migrate_memory_files()
+    cm.ensure_cloudsave_structure()
+    save_storage_policy(
+        cm,
+        selected_root=cm.app_docs_dir,
+        selection_source="default",
+        anchor_root=cm.anchor_root,
+    )
+    policy_path = get_storage_policy_path(cm, anchor_root=cm.anchor_root)
+    policy_before = policy_path.read_bytes()
+    community_auth = Path(cm.local_state_dir) / "community_auth.json"
+    community_auth.write_text('{"token":"private"}', encoding="utf-8")
+    cloudsave_identity_before = Path(cm.cloudsave_dir).stat()
+    unknown_sentinel = Path(cm.app_docs_dir) / "user-note.txt"
+    unknown_sentinel.write_text("keep", encoding="utf-8")
 
     with cloud_apply_fence(cm, mode=ROOT_MODE_BOOTSTRAP_IMPORTING, reason="launcher_phase0_bootstrap"):
+        assert fence_module._process_holds_cloud_apply_lock()
+        if os.name != "nt":
+            lock_path = Path(cm.local_state_dir) / "cloud_apply.lock"
+            lock_identity_before = lock_path.stat()
         result = bootstrap_local_cloudsave_environment(cm)
         assert result["legacy_import"]["migrated"] is True
         assert result["root_state"]["mode"] == ROOT_MODE_BOOTSTRAP_IMPORTING
+        assert fence_module._process_holds_cloud_apply_lock()
+        if os.name != "nt":
+            lock_identity_after = lock_path.stat()
+            assert os.path.samestat(lock_identity_before, lock_identity_after)
 
     assert cm.load_characters()["当前猫娘"] == "旧角色"
+    assert policy_path.read_bytes() == policy_before
+    assert community_auth.read_text(encoding="utf-8") == '{"token":"private"}'
+    assert os.path.samestat(cloudsave_identity_before, Path(cm.cloudsave_dir).stat())
+    assert not (Path(cm.cloudsave_dir) / "must-not-publish.json").exists()
+    assert unknown_sentinel.read_text(encoding="utf-8") == "keep"
 
 
 @pytest.mark.unit
@@ -608,6 +1768,767 @@ def test_bootstrap_does_not_reimport_same_legacy_root_after_local_deletion(tmp_p
 
 
 @pytest.mark.unit
+def test_phase0_preserves_completed_storage_checkpoint_and_does_not_reimport(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+    from utils.storage.migration import (
+        build_pending_storage_migration_payload,
+        get_storage_migration_path,
+        save_storage_migration,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "old-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("OLD", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    current_marker = Path(cm.live2d_dir) / "current-model" / "model.json"
+    current_marker.parent.mkdir(parents=True)
+    current_marker.write_text("CURRENT", encoding="utf-8")
+
+    checkpoint = build_pending_storage_migration_payload(
+        source_root=legacy_root,
+        target_root=cm.app_docs_dir,
+        selection_source="recommended",
+        confirmed_existing_target_content=True,
+    )
+    checkpoint.update(
+        status="completed",
+        backup_root=str(legacy_root),
+        retained_source_root=str(legacy_root),
+        retained_source_mode="manual_retention",
+        completed_at="2026-09-16T00:00:00Z",
+    )
+    save_storage_migration(cm, checkpoint, anchor_root=cm.anchor_root)
+    checkpoint_path = get_storage_migration_path(cm, anchor_root=cm.anchor_root)
+    checkpoint_before = checkpoint_path.read_bytes()
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is False
+    assert result["legacy_import"]["result"] == "target_root_already_initialized"
+    assert checkpoint_path.read_bytes() == checkpoint_before
+    assert current_marker.read_text(encoding="utf-8") == "CURRENT"
+    assert not (Path(cm.live2d_dir) / "old-model").exists()
+    assert (legacy_model / "model.json").read_text(encoding="utf-8") == "OLD"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory alias semantics")
+def test_bootstrap_does_not_reimport_same_physical_legacy_root_through_alias(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    real_documents = tmp_path / "real-documents"
+    alias_documents = tmp_path / "alias-documents"
+    legacy_root = real_documents / "N.E.K.O"
+    alias_legacy_root = alias_documents / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_NORMAL,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    legacy_config_dir = legacy_root / "config"
+    legacy_memory_dir = legacy_root / "memory" / "旧角色"
+    legacy_config_dir.mkdir(parents=True)
+    legacy_memory_dir.mkdir(parents=True)
+    alias_documents.symlink_to(real_documents, target_is_directory=True)
+
+    legacy_characters = cm.get_default_characters()
+    template_character = next(iter(legacy_characters["猫娘"].values()))
+    legacy_characters["猫娘"] = {"旧角色": template_character}
+    legacy_characters["当前猫娘"] = "旧角色"
+    atomic_write_json(
+        legacy_config_dir / "characters.json",
+        legacy_characters,
+        ensure_ascii=False,
+        indent=2,
+    )
+    atomic_write_json(
+        legacy_memory_dir / "recent.json",
+        [{"role": "user", "content": "旧记忆"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    cm.get_legacy_app_root_candidates = lambda: [alias_legacy_root, legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    first_result = bootstrap_local_cloudsave_environment(cm)
+    assert first_result["legacy_import"]["migrated"] is True
+    assert first_result["legacy_import"]["source"] == str(legacy_root.resolve())
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_NORMAL,
+        current_root=str(cm.app_docs_dir),
+        last_known_good_root=str(cm.app_docs_dir),
+        last_successful_boot_at="2026-04-08T00:00:00Z",
+    )
+    old_style_state = cm.load_root_state()
+    old_style_state["last_migration_source"] = str(alias_legacy_root)
+    old_style_state["last_migration_result"] = "legacy_root_imported"
+    cm.save_root_state(old_style_state)
+    characters = cm.load_characters()
+    characters["猫娘"] = {}
+    characters["当前猫娘"] = ""
+    cm.save_characters(characters, bypass_write_fence=True)
+    shutil.rmtree(Path(cm.memory_dir) / "旧角色")
+
+    second_result = bootstrap_local_cloudsave_environment(cm)
+
+    assert second_result["legacy_import"]["migrated"] is False
+    assert second_result["legacy_import"]["result"] == "target_root_already_initialized"
+    assert cm.load_characters()["猫娘"] == {}
+    assert not (Path(cm.memory_dir) / "旧角色").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX root rename semantics")
+def test_legacy_snapshot_rejects_cross_entry_root_generation_swap(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils import storage_migration as storage_migration_module
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    (legacy_root / "config").mkdir(parents=True)
+    (legacy_root / "config" / "user_preferences.json").write_text(
+        '{"generation":"old"}',
+        encoding="utf-8",
+    )
+    (legacy_root / "memory" / "old").mkdir(parents=True)
+    (legacy_root / "memory" / "old" / "recent.json").write_text("[]", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    target_characters = (Path(cm.config_dir) / "characters.json").read_bytes()
+
+    real_copy_directory = storage_migration_module._copy_posix_directory_tree_durably
+    swapped = False
+
+    def swap_root_after_first_entry(source_path, target_path, **kwargs):
+        nonlocal swapped
+        result = real_copy_directory(source_path, target_path, **kwargs)
+        if not swapped and str(source_path).startswith(str(legacy_root)):
+            swapped = True
+            legacy_root.rename(legacy_root.with_name("N.E.K.O-original"))
+            (legacy_root / "memory" / "new").mkdir(parents=True)
+            (legacy_root / "memory" / "new" / "recent.json").write_text(
+                "[]",
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_posix_directory_tree_durably",
+        swap_root_after_first_entry,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert swapped is True
+    assert (Path(cm.config_dir) / "characters.json").read_bytes() == target_characters
+
+
+@pytest.mark.unit
+def test_legacy_publish_rejects_target_write_after_snapshot(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [
+        tmp_path / "legacy" / "N.E.K.O"
+    ]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_validate = legacy_migration_module._validate_private_snapshot_source_boundary
+    injected = False
+    late_file = Path(cm.config_dir) / "late-user-write.json"
+
+    def inject_before_validation(source_root, boundary, **kwargs):
+        nonlocal injected
+        if Path(source_root) == Path(cm.app_docs_dir) and not injected:
+            late_file.write_text('{"late":true}', encoding="utf-8")
+            injected = True
+        return real_validate(source_root, boundary, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_validate_private_snapshot_source_boundary",
+        inject_before_validation,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert injected is True
+    assert late_file.read_text(encoding="utf-8") == '{"late":true}'
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_legacy_publish_rejects_target_write_after_initial_boundary_validation(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [
+        tmp_path / "legacy" / "N.E.K.O"
+    ]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_save_checkpoint = storage_migration_module.save_storage_migration
+    injected = False
+    late_file = Path(cm.config_dir) / "late-after-validation.json"
+
+    def inject_after_checkpoint(*args, **kwargs):
+        nonlocal injected
+        saved = real_save_checkpoint(*args, **kwargs)
+        if not injected:
+            late_file.write_text('{"late":true}', encoding="utf-8")
+            injected = True
+        return saved
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "save_storage_migration",
+        inject_after_checkpoint,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert injected is True
+    assert late_file.read_text(encoding="utf-8") == '{"late":true}'
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_legacy_publish_rejects_same_content_target_generation_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    target_root = Path(cm.app_docs_dir)
+    moved_target = target_root.with_name(f"{target_root.name}.original-generation")
+    real_writable_check = storage_migration_module._ensure_target_root_writable
+    replaced = False
+
+    def replace_target_with_same_content(path):
+        nonlocal replaced
+        if not replaced:
+            target_root.rename(moved_target)
+            shutil.copytree(moved_target, target_root)
+            replaced = True
+        return real_writable_check(path)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_ensure_target_root_writable",
+        replace_target_with_same_content,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert replaced is True
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+    assert moved_target.is_dir()
+
+
+@pytest.mark.unit
+def test_legacy_publish_rejects_same_content_staged_source_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    real_iter_entries = storage_migration_module._iter_existing_runtime_entries
+    replacement_attempted = False
+    replaced = False
+    moved_source = None
+
+    def replace_staged_source_with_same_content(root):
+        nonlocal moved_source, replaced, replacement_attempted
+        root = Path(root)
+        if ".legacy-source-" in root.name and not replaced:
+            moved_source = root.with_name(f"{root.name}.original-generation")
+            replacement_attempted = True
+            root.rename(moved_source)
+            shutil.copytree(moved_source, root)
+            replaced = True
+        return real_iter_entries(root)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_iter_existing_runtime_entries",
+        replace_staged_source_with_same_content,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert replacement_attempted is True
+    if os.name == "nt":
+        assert replaced is False
+    else:
+        assert replaced is True
+        assert moved_source is not None and moved_source.is_dir()
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_legacy_publish_does_not_overwrite_checkpoint_created_after_initial_gate(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    real_load = storage_migration_module.load_storage_migration
+    real_save = storage_migration_module.save_storage_migration
+    injected_bytes = None
+
+    def inject_completed_checkpoint_after_preparation(*args, **kwargs):
+        nonlocal injected_bytes
+        current = real_load(*args, **kwargs)
+        prepared_exists = any(
+            Path(cm.app_docs_dir).parent.glob(
+                f".{Path(cm.app_docs_dir).name}.legacy-source-*"
+            )
+        )
+        if current is None and prepared_exists and injected_bytes is None:
+            payload = storage_migration_module.build_pending_storage_migration_payload(
+                source_root=legacy_root,
+                target_root=cm.app_docs_dir,
+                selection_source="recommended",
+                confirmed_existing_target_content=True,
+            )
+            payload.update(
+                status="completed",
+                retained_source_root=str(legacy_root),
+                retained_source_mode="manual_retention",
+                completed_at="2026-09-16T00:00:00Z",
+            )
+            real_save(cm, payload, anchor_root=cm.anchor_root)
+            checkpoint_path = storage_migration_module.get_storage_migration_path(
+                cm,
+                anchor_root=cm.anchor_root,
+            )
+            injected_bytes = checkpoint_path.read_bytes()
+            return payload
+        return current
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "load_storage_migration",
+        inject_completed_checkpoint_after_preparation,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert "storage_migration_checkpoint_conflict" in str(caught.value)
+    checkpoint_path = storage_migration_module.get_storage_migration_path(
+        cm,
+        anchor_root=cm.anchor_root,
+    )
+    assert injected_bytes is not None
+    assert checkpoint_path.read_bytes() == injected_bytes
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+def test_legacy_finalizer_does_not_overwrite_new_checkpoint_generation(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    real_replace = storage_migration_module.replace_storage_migration_if_unchanged
+    real_save = storage_migration_module.save_storage_migration
+    replace_calls = 0
+    foreign_checkpoint = None
+
+    def inject_before_finalizer_compare(*args, **kwargs):
+        nonlocal replace_calls, foreign_checkpoint
+        replace_calls += 1
+        if replace_calls == 2:
+            foreign_checkpoint = storage_migration_module.build_pending_storage_migration_payload(
+                source_root=legacy_root,
+                target_root=tmp_path / "foreign-target" / "N.E.K.O",
+                selection_source="custom",
+            )
+            real_save(cm, foreign_checkpoint, anchor_root=cm.anchor_root)
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "replace_storage_migration_if_unchanged",
+        inject_before_finalizer_compare,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert "legacy_import_checkpoint_changed" in str(caught.value)
+    assert foreign_checkpoint is not None
+    assert storage_migration_module.load_storage_migration(cm) == foreign_checkpoint
+
+
+@pytest.mark.unit
+def test_legacy_publish_rejects_staged_source_replacement_during_copy(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    real_copy = storage_migration_module._copy_runtime_entry
+    replacement_attempted = False
+    replaced = False
+    moved_source = None
+
+    def replace_source_when_shared_copy_starts(source, target, **kwargs):
+        nonlocal moved_source, replaced, replacement_attempted
+        source = Path(source)
+        source_root = next(
+            (
+                parent
+                for parent in (source, *source.parents)
+                if ".legacy-source-" in parent.name
+            ),
+            None,
+        )
+        if source_root is not None and not replaced:
+            moved_source = source_root.with_name(
+                f"{source_root.name}.original-generation"
+            )
+            replacement_attempted = True
+            source_root.rename(moved_source)
+            shutil.copytree(moved_source, source_root)
+            replaced = True
+        return real_copy(source, target, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_copy_runtime_entry",
+        replace_source_when_shared_copy_starts,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert replacement_attempted is True
+    if os.name == "nt":
+        assert replaced is False
+    else:
+        assert replaced is True
+        assert moved_source is not None and moved_source.is_dir()
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned source descriptor semantics")
+def test_legacy_publish_rejects_same_content_source_replacement_at_final_scan(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path / "new")
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.storage import migration as storage_migration_module
+
+    legacy_model = tmp_path / "legacy" / "N.E.K.O" / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [tmp_path / "legacy" / "N.E.K.O"]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    real_snapshot = storage_migration_module._snapshot_posix_runtime_entries_at
+    replaced = False
+    moved_source = None
+
+    def replace_source_at_final_scan(root_fd, root_display, **kwargs):
+        nonlocal moved_source, replaced
+        root_display = Path(root_display)
+        if ".legacy-source-" in root_display.name and not replaced:
+            moved_source = root_display.with_name(
+                f"{root_display.name}.original-generation"
+            )
+            root_display.rename(moved_source)
+            shutil.copytree(moved_source, root_display)
+            replaced = True
+        return real_snapshot(root_fd, root_display, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_snapshot_posix_runtime_entries_at",
+        replace_source_at_final_scan,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert replaced is True
+    assert moved_source is not None and moved_source.is_dir()
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned cloudsave descriptor semantics")
+def test_empty_cloudsave_fact_rejects_same_content_directory_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    anchor_root = tmp_path / "anchor"
+    cloudsave_root = anchor_root / "cloudsave"
+    cloudsave_root.mkdir(parents=True)
+    anchor_identity = anchor_root.lstat()
+    real_stat = legacy_migration_module.os.stat
+    cloud_stat_calls = 0
+    moved_cloudsave = anchor_root / "cloudsave-original-generation"
+
+    def replace_cloudsave_before_final_identity_check(path, *args, **kwargs):
+        nonlocal cloud_stat_calls
+        if path == "cloudsave" and kwargs.get("dir_fd") is not None:
+            cloud_stat_calls += 1
+            if cloud_stat_calls == 2:
+                cloudsave_root.rename(moved_cloudsave)
+                cloudsave_root.mkdir()
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_migration_module.os,
+        "stat",
+        replace_cloudsave_before_final_identity_check,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        legacy_migration_module._snapshot_staged_cloudsave_fact(
+            anchor_root,
+            expected_root_identity=(
+                int(anchor_identity.st_dev),
+                int(anchor_identity.st_ino),
+            ),
+        )
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert cloud_stat_calls >= 2
+    assert moved_cloudsave.is_dir()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX named-pipe open semantics")
+def test_cloudsave_manifest_swap_to_fifo_cannot_block_startup(tmp_path, monkeypatch):
+    from utils.cloudsave_runtime import CloudsaveOperationError
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    anchor_root = tmp_path / "anchor"
+    cloudsave_root = anchor_root / "cloudsave"
+    cloudsave_root.mkdir(parents=True)
+    manifest_path = cloudsave_root / "manifest.json"
+    manifest_path.write_text('{"files": {}}', encoding="utf-8")
+    anchor_identity = anchor_root.lstat()
+    real_open = legacy_migration_module.os.open
+    swapped = False
+
+    def replace_manifest_with_fifo_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if (
+            path == "manifest.json"
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+        ):
+            assert flags & os.O_NONBLOCK, "manifest open can block after a FIFO swap"
+            swapped = True
+            os.unlink(manifest_path)
+            os.mkfifo(manifest_path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_migration_module.os,
+        "open",
+        replace_manifest_with_fifo_before_open,
+    )
+
+    with pytest.raises(CloudsaveOperationError) as caught:
+        legacy_migration_module._snapshot_staged_cloudsave_fact(
+            anchor_root,
+            expected_root_identity=(
+                int(anchor_identity.st_dev),
+                int(anchor_identity.st_ino),
+            ),
+        )
+
+    assert caught.value.code == "LEGACY_RUNTIME_ENTRY_UNSAFE"
+    assert swapped is True
+
+
+@pytest.mark.unit
+def test_legacy_import_rejects_source_origin_change_after_snapshot(tmp_path, monkeypatch):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+
+    from utils.cloudsave_runtime import (
+        CloudsaveOperationError,
+        bootstrap_local_cloudsave_environment,
+    )
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+
+    legacy_config_dir = legacy_root / "config"
+    legacy_config_dir.mkdir(parents=True)
+    original_payload = cm.get_default_characters()
+    template_character = next(iter(original_payload["猫娘"].values()))
+    original_payload["猫娘"] = {"快照角色": template_character}
+    original_payload["当前猫娘"] = "快照角色"
+    atomic_write_json(
+        legacy_config_dir / "characters.json",
+        original_payload,
+        ensure_ascii=False,
+        indent=2,
+    )
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "model.json").write_text("legacy", encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+
+    real_snapshot = legacy_migration_module._create_private_runtime_snapshot
+    changed_origin = False
+
+    def snapshot_then_change_origin(source_root, *args, **kwargs):
+        nonlocal changed_origin
+        result = real_snapshot(source_root, *args, **kwargs)
+        if Path(source_root).resolve() == legacy_root.resolve() and not changed_origin:
+            replacement_payload = copy.deepcopy(original_payload)
+            replacement_payload["猫娘"] = {"竞态角色": template_character}
+            replacement_payload["当前猫娘"] = "竞态角色"
+            atomic_write_json(
+                legacy_config_dir / "characters.json",
+                replacement_payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+            changed_origin = True
+        return result
+
+    monkeypatch.setattr(
+        legacy_migration_module,
+        "_create_private_runtime_snapshot",
+        snapshot_then_change_origin,
+    )
+
+    with pytest.raises(CloudsaveOperationError):
+        bootstrap_local_cloudsave_environment(cm)
+
+    assert changed_origin is True
+    characters = cm.load_characters()
+    assert characters["当前猫娘"] != "快照角色"
+    assert "竞态角色" not in characters["猫娘"]
+    assert not (Path(cm.live2d_dir) / "legacy-model").exists()
+
+
+@pytest.mark.unit
 def test_bootstrap_does_not_reimport_after_non_launcher_boot_success_marker(tmp_path):
     new_root_base = tmp_path / "new_root_base"
     legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
@@ -652,6 +2573,39 @@ def test_bootstrap_does_not_reimport_after_non_launcher_boot_success_marker(tmp_
     assert second_result["legacy_import"]["migrated"] is False
     assert cm.load_characters()["猫娘"] == {}
     assert cm.load_characters()["当前猫娘"] == ""
+
+
+@pytest.mark.unit
+def test_legacy_import_identity_failure_does_not_resurrect_old_source(
+    tmp_path,
+    monkeypatch,
+):
+    from utils.cloudsave_runtime import legacy_migration as legacy_migration_module
+    from utils.storage.policy import PathIdentityUnavailable
+
+    target_root = tmp_path / "current" / "N.E.K.O"
+    source_root = tmp_path / "legacy" / "N.E.K.O"
+    calls = 0
+
+    def fail_source_identity(_left, _right):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return True
+        raise PathIdentityUnavailable("injected source identity failure")
+
+    monkeypatch.setattr(legacy_migration_module, "paths_equal", fail_source_identity)
+
+    assert legacy_migration_module._legacy_source_was_already_imported(
+        {
+            "current_root": str(target_root),
+            "last_migration_source": str(source_root),
+            "last_migration_result": "legacy_root_imported",
+            "last_successful_boot_at": "2026-04-08T00:00:00Z",
+        },
+        source_root=source_root,
+        target_root=target_root,
+    ) is True
 
 
 @pytest.mark.unit
@@ -720,6 +2674,26 @@ def test_runtime_root_summary_ignores_dotfiles_in_memory(tmp_path):
 
     assert summary["memory_character_names"] == set()
     assert summary["has_user_content"] is False
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "relative_path",
+    ("embedding_models/model.bin", "runtimes/runtime.bin", "plugin-runtime/plugin.bin"),
+)
+def test_runtime_root_does_not_count_rebuildable_cache_as_user_content(
+    tmp_path,
+    relative_path,
+):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    cache_file = Path(cm.app_docs_dir) / relative_path
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(b"rebuildable-cache")
+
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
 
 
@@ -824,6 +2798,63 @@ def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_l
 
     with patch("utils.storage_migration.load_storage_migration", side_effect=OSError("unreadable")):
         assert cloudsave_runtime_module._should_preserve_write_blocking_mode(cm, root_state) is True
+
+
+@pytest.mark.unit
+def test_bootstrap_does_not_self_heal_maintenance_mode_for_malformed_migration_checkpoint(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+    from utils.storage_migration import get_storage_migration_path
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+    checkpoint_path = get_storage_migration_path(cm)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('{"status":', encoding="utf-8")
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert cm.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+
+
+@pytest.mark.unit
+def test_bootstrap_does_not_self_heal_maintenance_mode_for_checkpoint_read_error(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'target-root' / 'N.E.K.O'}",
+    )
+
+    with patch(
+        "utils.storage.migration.read_fixed_anchor_state_json",
+        side_effect=PermissionError("checkpoint permission denied"),
+    ):
+        result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert cm.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
 
 
 @pytest.mark.unit
@@ -1205,6 +3236,46 @@ def test_win32_mutex_apis_use_pointer_sized_handle_signatures():
     assert kernel32.WaitForSingleObject.argtypes[0] is ctypes.c_void_p
     assert kernel32.ReleaseMutex.argtypes == [ctypes.c_void_p]
     assert kernel32.CloseHandle.argtypes == [ctypes.c_void_p]
+
+
+@pytest.mark.unit
+def test_windows_cloud_apply_mutex_is_keyed_by_fixed_anchor_not_selected_root(
+    tmp_path,
+):
+    from utils.cloudsave_runtime import fence as fence_module
+
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    first = SimpleNamespace(
+        app_docs_dir=tmp_path / "selected-a" / "N.E.K.O",
+        anchor_root=anchor_root,
+    )
+    second = SimpleNamespace(
+        app_docs_dir=tmp_path / "selected-b" / "N.E.K.O",
+        anchor_root=anchor_root,
+    )
+
+    assert fence_module._cloud_apply_mutex_name(
+        first
+    ) == fence_module._cloud_apply_mutex_name(second)
+
+
+@pytest.mark.unit
+def test_cloud_apply_lock_api_failure_fails_closed(monkeypatch, tmp_path):
+    from utils.cloudsave_runtime import fence as fence_module
+
+    cm = SimpleNamespace(
+        app_docs_dir=tmp_path / "selected" / "N.E.K.O",
+        anchor_root=tmp_path / "anchor" / "N.E.K.O",
+        ensure_local_state_directory=lambda: True,
+    )
+    monkeypatch.setattr(fence_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        fence_module,
+        "_configure_win32_mutex_apis",
+        lambda _kernel32: (_ for _ in ()).throw(OSError("injected Win32 API failure")),
+    )
+
+    assert fence_module.acquire_cloud_apply_lock(cm) is False
 
 
 @pytest.mark.unit
@@ -5191,6 +7262,29 @@ def test_clearing_read_only_keeps_a_directory_traversable(tmp_path, monkeypatch)
     for mode in directory_modes:
         assert mode & stat_module.S_IREAD, "a directory was left unreadable"
         assert mode & stat_module.S_IEXEC, "a directory was left untraversable"
+
+
+def test_migration_chmod_falls_back_without_follow_symlinks_support(tmp_path, monkeypatch):
+    import os
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    target = tmp_path / "read-only.bin"
+    target.write_bytes(b"x")
+    calls = []
+    real_chmod = os.chmod
+
+    def _record(path, mode, **kwargs):
+        calls.append((Path(path), mode, kwargs))
+        return real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(migrations_module.os, "chmod", _record)
+    monkeypatch.setattr(migrations_module.os, "supports_follow_symlinks", set())
+
+    migrations_module._chmod_without_following(target, stat_module.S_IREAD | stat_module.S_IWRITE)
+
+    assert calls == [(target, stat_module.S_IREAD | stat_module.S_IWRITE, {})]
 
 
 def test_a_deletion_is_recorded_even_with_cloudsave_disabled(tmp_path, monkeypatch):

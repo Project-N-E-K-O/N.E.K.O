@@ -259,7 +259,13 @@ def get_config_manager(app_name=None, *, migrate=True):
     if _config_manager is None:
         _config_manager = ConfigManager(app_name)
         _config_manager_migrated = False
-    if migrate:
+    # A recovery generation exists only to expose health, diagnostics and the
+    # storage safe-exit surface.  Running legacy/default config migrations here
+    # would turn a deliberately read-only bootstrap into writes against a root
+    # whose routing authority has not been established yet.
+    from utils.storage.layout import get_storage_recovery_mode
+
+    if migrate and not get_storage_recovery_mode():
         _ensure_config_manager_migrated()
     return _config_manager
 

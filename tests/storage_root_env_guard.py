@@ -52,6 +52,7 @@ import pytest
 from utils.storage.layout import (
     NEKO_STORAGE_ANCHOR_ROOT_ENV,
     NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
     NEKO_STORAGE_SELECTED_ROOT_ENV,
 )
 
@@ -59,6 +60,7 @@ STORAGE_ROOT_ENV_KEYS: tuple[str, ...] = (
     NEKO_STORAGE_SELECTED_ROOT_ENV,
     NEKO_STORAGE_ANCHOR_ROOT_ENV,
     NEKO_STORAGE_CLOUDSAVE_ROOT_ENV,
+    NEKO_STORAGE_RECOVERY_MODE_ENV,
 )
 
 _SNAPSHOT_KEY: pytest.StashKey[dict[str, str | None]] = pytest.StashKey()

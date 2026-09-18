@@ -127,6 +127,10 @@ class ReportingMixin:
         return self._config_manager.config_dir / ".telemetry_unsent.json"
 
     def _atexit_save(self):
+        with self._persistence_gate:
+            self._atexit_save_under_persistence_gate()
+
+    def _atexit_save_under_persistence_gate(self):
         """atexit safety net: a final best effort to save before process exit.
 
         Covers: SIGTERM / uncaught exceptions / normal exit / sys.exit()
@@ -143,6 +147,9 @@ class ReportingMixin:
         # global 声明提到函数开头：下面 3b 步骤会读 _TELEMETRY_SERVER_URL，
         # Python 要求 global 声明先于任何使用（否则 SyntaxError）。
         global _TELEMETRY_SERVER_URL
+        if self.is_persistence_suspended():
+            return
+
         # ── 1) session_end 先落 instrument buffer，让随后的 save() 带上 ──
         try:
             from utils.instrument import (
@@ -286,6 +293,12 @@ class ReportingMixin:
             logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
 
     def save(self):
+        """Persist pending data unless a lifecycle owner has suspended writes."""
+
+        with self._persistence_gate:
+            self._save_under_persistence_gate()
+
+    def _save_under_persistence_gate(self):
         """Persist incremental data to disk. Multi-process safe.
 
         Flow:
@@ -300,6 +313,8 @@ class ReportingMixin:
         it decide internally via has_data() whether to actually POST.
         """
         with self._lock:
+            if self._persistence_suspensions:
+                return
             if not self._dirty:
                 report_only = True
                 delta_daily: dict = {}
@@ -585,9 +600,21 @@ class ReportingMixin:
             self._save_task = asyncio.create_task(self._periodic_save_loop())
             logger.info("Token tracker periodic save started")
 
+    def flush_event_logger_if_persistence_active(self) -> None:
+        """Flush crash/events only while persistence admission is active."""
+
+        with self._persistence_gate:
+            if self.is_persistence_suspended():
+                return
+            from utils.event_logger import EventLogger
+
+            EventLogger.get_instance().flush()
+
     async def _periodic_save_loop(self):
         while True:
             await asyncio.sleep(self._save_interval)
+            if self.is_persistence_suspended():
+                continue
             # 两种触发 save() 的条件：
             #   (a) self._dirty —— 有 LLM token delta 要本地写盘 + 远程上报
             #   (b) instrument has_data —— 纯前端互动（前端 ws telemetry /
@@ -613,7 +640,8 @@ class ReportingMixin:
             # event_logger.flush 自带节流（cleanup 5min 一次），nothing-to-do
             # 路径 ~微秒级。
             try:
-                from utils.event_logger import EventLogger
-                await asyncio.to_thread(EventLogger.get_instance().flush)
+                await asyncio.to_thread(
+                    self.flush_event_logger_if_persistence_active
+                )
             except Exception as e:
                 logger.debug(f"Token tracker: event_logger flush failed (non-critical): {e}")

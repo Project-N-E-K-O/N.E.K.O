@@ -31,6 +31,7 @@ from pathlib import Path
 from config import APP_NAME, CONFIG_FILES
 from utils.file_utils import atomic_write_json
 from utils.root_state_lock import root_state_transaction
+from utils.storage_policy import StoragePolicyError
 
 from ._shared import LocalStateDirectoryError, logger
 
@@ -93,10 +94,20 @@ class StorageRootsMixin:
 
             env_selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
             env_anchor_root = os.environ.get("NEKO_STORAGE_ANCHOR_ROOT", "").strip()
+            recovery_mode = os.environ.get("NEKO_STORAGE_RECOVERY_MODE", "").strip()
             default_anchor_root = compute_anchor_root(self, current_root=default_app_docs_dir)
             resolved_anchor_root = default_anchor_root
             policy_anchor_root = normalize_runtime_root(env_anchor_root or default_anchor_root)
-            policy = load_storage_policy(self, anchor_root=policy_anchor_root)
+            # The launcher may deliberately start an anchor-only, read-only
+            # recovery generation when the policy itself is corrupt.  It is the
+            # only case where parsing that same policy again would make every
+            # service die during import before the diagnostics/safe-exit UI can
+            # bind a port.  Normal routing never bypasses persisted authority.
+            policy = (
+                None
+                if recovery_mode == "storage_policy_unavailable"
+                else load_storage_policy(self, anchor_root=policy_anchor_root)
+            )
 
             if env_selected_root:
                 resolved_app_docs_dir = normalize_runtime_root(env_selected_root)
@@ -137,6 +148,11 @@ class StorageRootsMixin:
                         ):
                             resolved_app_docs_dir = resolved_anchor_root
                             recovery_committed_root_unavailable = True
+        except StoragePolicyError:
+            # A malformed or unsafe persisted policy is routing authority that
+            # we cannot replace with a guessed default.  Callers must keep the
+            # storage gate closed until the policy is explicitly recovered.
+            raise
         except Exception as e:
             logger.warning(
                 "Failed to resolve storage policy paths; falling back to default runtime root: %s",
@@ -304,14 +320,10 @@ class StorageRootsMixin:
         # migrate=False)），而那一刻变更路由的写序列已经在工作线程上跑了。拿锁外读到
         # 的 pre-image 去存，会把它刚提交的 mode / current_root / 迁移字段整份盖掉。
         with root_state_transaction():
-            state: dict = {}
-            try:
-                loaded = self._load_json_file(self.root_state_path, default_value={})
-                if isinstance(loaded, dict):
-                    state = loaded
-            except Exception:
-                # 读不出来就按空状态重建恢复态——这条路径本来就是给"root 不可用"兜底的
-                state = {}
+            loaded = self._load_json_file(self.root_state_path, default_value={})
+            if not isinstance(loaded, dict):
+                raise ValueError("storage root state is not an object")
+            state = loaded
             self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
@@ -1010,6 +1022,8 @@ class StorageRootsMixin:
             default_value,
             "loading root_state",
         )
+        if not isinstance(state, dict):
+            raise ValueError("storage root state is not an object")
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state

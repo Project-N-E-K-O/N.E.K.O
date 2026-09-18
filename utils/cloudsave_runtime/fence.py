@@ -146,7 +146,20 @@ def cloudsave_writable_transaction(
 
 
 def _cloud_apply_mutex_name(config_manager) -> str:
-    digest = hashlib.sha1(str(config_manager.app_docs_dir).encode("utf-8")).hexdigest()[:12]
+    # The protected root_state/cloudsave authority never moves with the selected
+    # runtime root.  Keying the Windows mutex by app_docs_dir would let two
+    # processes using different selected roots mutate the same fixed anchor
+    # concurrently.
+    from utils.storage.policy import compute_anchor_root, normalize_runtime_root
+
+    configured_anchor = getattr(config_manager, "anchor_root", None)
+    anchor_root = normalize_runtime_root(
+        configured_anchor or compute_anchor_root(config_manager)
+    )
+    canonical_anchor = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.fspath(anchor_root)))
+    )
+    digest = hashlib.sha1(canonical_anchor.encode("utf-8")).hexdigest()[:12]
     return rf"Global\NEKO_CLOUD_APPLY_LOCK_{digest}"
 
 
@@ -193,7 +206,8 @@ def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
             kernel32.CloseHandle(handle)
             return False
         except Exception:
-            return True
+            logger.exception("Failed to acquire Windows cloud apply mutex")
+            return False
 
     lock_file = None
     try:
@@ -218,10 +232,10 @@ def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
             try:
                 lock_file.close()
             except Exception:
-                # Best-effort cleanup only; the acquisition fallback below keeps
-                # the existing fail-open behavior when cleanup itself fails.
+                # Best-effort cleanup only; acquisition itself still fails closed.
                 pass
-        return True
+        logger.exception("Failed to acquire POSIX cloud apply lock")
+        return False
 
 
 def release_cloud_apply_lock(config_manager) -> None:

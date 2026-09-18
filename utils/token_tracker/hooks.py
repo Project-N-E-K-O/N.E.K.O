@@ -260,8 +260,18 @@ def _install_crash_excepthook():
                 _c("crash", error_class=exc_type.__name__)
                 # 强制 flush event_logger —— 进程接下来可能立刻 die，不 flush
                 # 就丢了。flush 自身有 try/except 不会再抛。
-                from utils.event_logger import EventLogger
-                EventLogger.get_instance().flush()
+                from utils.token_tracker import TokenTracker
+
+                tracker = TokenTracker.get_existing_instance()
+                if tracker is None:
+                    from utils.storage.layout import get_storage_recovery_mode
+
+                    if not get_storage_recovery_mode():
+                        from utils.event_logger import EventLogger
+
+                        EventLogger.get_instance().flush()
+                else:
+                    tracker.flush_event_logger_if_persistence_active()
         except Exception:
             # crash hook 自己绝不能 raise —— 否则原始 traceback 被它的异常
             # 替换，用户看不到真正 crash 在哪。telemetry 失败相比之下不值一提。
@@ -305,8 +315,12 @@ def install_hooks():
         logger.warning("Token tracker: openai package not found, hooks not installed")
         return
 
-    # 已装则直接返回（cheap path），避免叠加 wrapper。真正的安装走下面的双检锁。
-    if getattr(Completions.create, "_neko_token_tracker_hooked", False):
+    # 两条 SDK 路径都已装才可返回。只看同步路径会掩盖异步路径被替换或尚未
+    # 安装的状态，而 conversation 的主路径恰好是 AsyncCompletions。
+    if (
+        getattr(Completions.create, "_neko_token_tracker_hooked", False)
+        and getattr(AsyncCompletions.create, "_neko_token_tracker_hooked", False)
+    ):
         return
 
     _original_create = Completions.create
@@ -358,13 +372,21 @@ def install_hooks():
     patched_async_create._neko_token_tracker_hooked = True
 
     # 双检锁：合并模式下三个 startup 协程在同一 event loop 串行跑，cheap path 已能
-    # 挡住；锁是为多线程初始化路径（agent / memory watchdog 线程）兜底，确保
-    # "检测已装 → 赋值"这段不被并发穿插成叠加安装。
+    # 挡住；锁是为多线程初始化路径（agent / memory watchdog 线程）兜底。同步与
+    # 异步路径独立修复，避免其中一条已有 hook 时另一条被错误跳过。
     with _hooks_install_lock:
-        if getattr(Completions.create, "_neko_token_tracker_hooked", False):
+        sync_hooked = getattr(
+            Completions.create, "_neko_token_tracker_hooked", False
+        )
+        async_hooked = getattr(
+            AsyncCompletions.create, "_neko_token_tracker_hooked", False
+        )
+        if sync_hooked and async_hooked:
             return
-        Completions.create = patched_create
-        AsyncCompletions.create = patched_async_create
+        if not sync_hooked:
+            Completions.create = patched_create
+        if not async_hooked:
+            AsyncCompletions.create = patched_async_create
     logger.info("Token tracker: OpenAI SDK hooks installed")
 
 def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):

@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -667,6 +668,36 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
     _with_busy_retry(lambda: os.replace(temp_path, target_path))
 
 
+def fsync_directory_best_effort(path: str | os.PathLike[str]) -> None:
+    """Flush directory entries on platforms that expose directory fsync.
+
+    POSIX needs this after rename/unlink/mkdir to make the *name* durable, not
+    only the file contents.  Windows normally refuses opening directories this
+    way, so inability to open/fsync is intentionally best-effort and must not
+    turn an otherwise recoverable metadata write into an application failure.
+    """
+
+    try:
+        handle = os.open(
+            os.fspath(path),
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError:
+        return
+    try:
+        if stat.S_ISDIR(os.fstat(handle).st_mode):
+            os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        with suppress(OSError):
+            os.close(handle)
+
+
 def _publish_once(source: str, target_path: Path) -> None:
     """One no-replace attempt, by whichever primitive the platform has."""
     if os.name == "nt":
@@ -743,6 +774,7 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             temp_file.flush()
             os.fsync(temp_file.fileno())
         _replace_with_busy_retry(temp_path, target_path)
+        fsync_directory_best_effort(target_path.parent)
     except BaseException:
         # BaseException 而不是 Exception：Ctrl-C / SystemExit 落在 write/fsync 上很常见，
         # 只收 Exception 的话 tmp 直接留盘（要等到下一个清扫窗口 + 24h 才清）。
@@ -776,6 +808,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
             temp_file.flush()
             os.fsync(temp_file.fileno())
         _replace_with_busy_retry(temp_path, target_path)
+        fsync_directory_best_effort(target_path.parent)
     except BaseException:
         with suppress(OSError):
             os.remove(temp_path)

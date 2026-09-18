@@ -543,7 +543,7 @@ def test_every_memory_server_background_spawn_is_drainable():
     covered_elsewhere = {
         # 进程级常驻循环 + embedding bootstrap：不属于任何角色，
         # release 不该、也不能取消它们。
-        ("runtime.py", "ensure_memory_server_runtime_initialized"),
+        ("runtime.py", "_spawn_activated"),
         # 按角色登记进 compress_backup_tasks，由 cancel_character_derived_tasks 排空。
         ("review.py", "_on_compress_done"),
     }

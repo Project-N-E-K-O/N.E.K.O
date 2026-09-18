@@ -87,6 +87,93 @@ def test_atomic_write_json_roundtrips_unicode_without_escaping(tmp_path):
     assert read_json(target) == {"名字": "妮可", "n": 1}
 
 
+def test_atomic_write_json_flushes_published_parent_directory(tmp_path, monkeypatch):
+    target = tmp_path / "state" / "storage_policy.json"
+    flushed = []
+    monkeypatch.setattr(
+        file_utils,
+        "fsync_directory_best_effort",
+        lambda path: flushed.append(Path(path)),
+    )
+
+    atomic_write_json(target, {"version": 1})
+
+    assert flushed == [target.parent]
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
+    reason="requires POSIX nonblocking FIFO opens",
+)
+def test_directory_flush_does_not_block_when_directory_becomes_fifo(tmp_path, monkeypatch):
+    victim = tmp_path / "flush"
+    victim.mkdir()
+    saved = tmp_path / "saved-directory"
+    real_open = os.open
+    opened_flags = []
+    completed = []
+
+    def replace_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        if Path(path) == victim and not opened_flags:
+            victim.rename(saved)
+            os.mkfifo(victim)
+            opened_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(file_utils.os, "open", replace_before_open)
+    worker = threading.Thread(
+        target=lambda: (file_utils.fsync_directory_best_effort(victim), completed.append(True)),
+        daemon=True,
+    )
+    try:
+        worker.start()
+        worker.join(timeout=1)
+        blocked = worker.is_alive()
+        if blocked:
+            writer = real_open(victim, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(writer)
+            worker.join(timeout=1)
+        assert not blocked, "directory flush blocked on a substituted FIFO"
+        assert completed == [True]
+        assert opened_flags[0] & os.O_NONBLOCK
+        if hasattr(os, "O_DIRECTORY"):
+            assert opened_flags[0] & os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            assert opened_flags[0] & os.O_NOFOLLOW
+    finally:
+        if not worker.is_alive():
+            victim.unlink(missing_ok=True)
+            saved.rename(victim)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not open directories for fsync")
+def test_directory_close_error_does_not_report_published_write_as_failed(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    real_open = os.open
+    real_close = os.close
+    directory_fd = []
+
+    def record_directory_open(path, flags, mode=0o777, *, dir_fd=None):
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if Path(path) == tmp_path:
+            directory_fd.append(fd)
+        return fd
+
+    def fail_directory_close(fd):
+        real_close(fd)
+        if fd in directory_fd:
+            raise OSError("directory close failed after publication")
+
+    monkeypatch.setattr(file_utils.os, "open", record_directory_open)
+    monkeypatch.setattr(file_utils.os, "close", fail_directory_close)
+
+    atomic_write_json(target, {"version": 1})
+
+    assert directory_fd
+    assert target.read_text(encoding="utf-8")
+    assert read_json(target) == {"version": 1}
+
+
 def test_atomic_write_json_forwards_dumps_options(tmp_path):
     target = tmp_path / "state.json"
 
