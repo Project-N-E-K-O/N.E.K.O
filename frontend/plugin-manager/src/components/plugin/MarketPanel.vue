@@ -873,10 +873,7 @@ async function resolveInstallPayload(
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
-  // The shared slot also covers installs started from the update popup, which
-  // this component's own flag cannot see — and it is claimed atomically, since
-  // this handler awaits resolveInstallPayload before it POSTs.
-  if (marketInstallBusy.value || !installTask.reserve('panel')) {
+  if (marketInstallBusy.value) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }
@@ -887,6 +884,13 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   marketInstallBusy.value = true
   let packageUrl = ''
   try {
+    // Claimed inside the try on purpose: any early return above must not be
+    // able to leak the slot, since a leaked slot refuses every later install
+    // until the window is reloaded.
+    if (!installTask.reserve('panel')) {
+      ElMessage.warning(t('market.installAlreadyRunning'))
+      return
+    }
     const payload = await resolveInstallPayload(plugin)
     if (!payload) {
       ElMessage.warning(t('market.noDownloadUrl'))
@@ -965,7 +969,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - 错误码识别在 runInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
-  if (marketInstallBusy.value || !installTask.reserve('panel')) {
+  if (marketInstallBusy.value) {
     ElMessage.warning(t('market.installAlreadyRunning'))
     return
   }
@@ -975,6 +979,11 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
   }
   marketInstallBusy.value = true
   try {
+    // See handleInstall: claimed inside the try so `finally` always releases it.
+    if (!installTask.reserve('panel')) {
+      ElMessage.warning(t('market.installAlreadyRunning'))
+      return
+    }
     const action = getMarketAction(plugin)
     if (action.kind !== 'upgrade' && action.kind !== 'override_builtin') {
       if (action.kind === 'blocked') ElMessage.error(t('market.autoUpgradeBlocked'))

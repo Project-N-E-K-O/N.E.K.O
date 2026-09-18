@@ -412,6 +412,26 @@ describe('market install task store — install slot reservation', () => {
     expect(store.reserve('float')).toBe(true)
   })
 
+  it('does not clear a reservation held by the other surface', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'float')
+    await tick()
+    await p
+
+    // The Market panel claims the slot for its own preflight while the finished
+    // float task is still displayed.
+    expect(store.reserve('panel')).toBe(true)
+    store.dismiss('float')
+
+    // Regression guard: this used to wipe the panel's claim, letting a third
+    // request start a concurrent backend install.
+    expect(store.reservation).toBe('panel')
+    expect(store.reserve('float')).toBe(false)
+  })
+
   it('clears the claim when the task is dismissed', async () => {
     vi.mocked(fetchBridge).mockResolvedValue(
       task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,

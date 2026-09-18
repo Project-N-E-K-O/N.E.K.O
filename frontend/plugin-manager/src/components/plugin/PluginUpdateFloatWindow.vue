@@ -93,7 +93,12 @@
     </div>
 
     <div v-if="showProgress" class="update-float__progress-panel">
-      <MarketInstallProgress compact :show-version-transition="false" />
+      <MarketInstallProgress
+        compact
+        show-cancel
+        :show-version-transition="false"
+        @cancel="handleCancelUpdate"
+      />
     </div>
 
     <div v-if="showFooter" class="update-float__footer">
@@ -314,6 +319,11 @@ async function handleUpdate(pluginId: string): Promise<void> {
   const name = updates.candidates.find((entry) => entry.pluginId === pluginId)?.name || pluginId
   await updates.updateOne(pluginId)
   announceOutcome(pluginId, name)
+}
+
+async function handleCancelUpdate(): Promise<void> {
+  const result = await installTask.cancel()
+  if (result !== 'ok') ElMessage.warning(t('market.cancelInstallUnavailable'))
 }
 
 async function handleUpdateAll(): Promise<void> {

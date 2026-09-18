@@ -553,8 +553,11 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     }
     generation += 1
     clearOvertimeTimer()
+    // Release only what the requester actually holds: the *other* surface may
+    // have claimed the slot for its own in-flight preflight, and clearing that
+    // would let a third request slip in and create a concurrent backend task.
+    if (!requester || reservation.value === requester) reservation.value = null
     owner.value = null
-    reservation.value = null
     syntheticErrorKey.value = null
     taskId.value = null
     task.value = null

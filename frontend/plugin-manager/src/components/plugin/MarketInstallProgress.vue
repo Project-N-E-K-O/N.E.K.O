@@ -63,6 +63,18 @@
       </ul>
     </div>
 
+    <div v-if="props.showCancel && !store.done" class="install-progress__actions">
+      <el-button
+        size="small"
+        :loading="store.cancelling"
+        :disabled="store.task?.cancel_requested"
+        data-yui-guide-id="market-install-cancel"
+        @click="emit('cancel')"
+      >
+        {{ t('market.cancelInstall') }}
+      </el-button>
+    </div>
+
     <el-alert
       v-if="store.overtime && !store.done"
       type="info"
@@ -104,6 +116,8 @@ import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 interface Props {
   /** Tighter layout for the update float window: no bar label, thin bar. */
   compact?: boolean
+  /** Render a cancel control. The Market dialog keeps its own in the footer. */
+  showCancel?: boolean
   /** The float window already lists `current → latest` on the row itself. */
   showVersionTransition?: boolean
 }
@@ -111,7 +125,10 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   compact: false,
   showVersionTransition: true,
+  showCancel: false,
 })
+
+const emit = defineEmits<{ cancel: [] }>()
 
 const { t } = useI18n()
 const store = useMarketInstallTaskStore()
@@ -189,6 +206,11 @@ const rollbackIncomplete = computed(() => (
 
 .install-progress__status--error {
   color: var(--el-color-danger);
+}
+
+.install-progress__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .install-progress__steps-block {

@@ -63,10 +63,10 @@ function makeStore(overrides: StoreOverrides = {}) {
 
 let cleanup = () => {}
 
-function mount(props: Record<string, unknown> = {}) {
+function mount(props: Record<string, unknown> = {}, on: Record<string, unknown> = {}) {
   const root = document.createElement('div')
   document.body.append(root)
-  const app = createApp(MarketInstallProgress, props)
+  const app = createApp(MarketInstallProgress, { ...props, ...on })
   app.component('ElIcon', defineComponent({ setup: (_, { slots }) => () => h('span', slots.default?.()) }))
   app.component('ElProgress', defineComponent({
     props: { percentage: Number, status: String, strokeWidth: Number, showText: { type: Boolean, default: true } },
@@ -197,6 +197,24 @@ describe('market install progress', () => {
       running: false,
     })
     expect(text(mount())).toContain('market.installCancelled')
+  })
+
+  it('offers a cancel control only when the caller asks for one', async () => {
+    makeStore({ running: true })
+    expect(mount().querySelector('[data-yui-guide-id="market-install-cancel"]')).toBeNull()
+
+    cleanup()
+    let cancelled = 0
+    const root = mount({ showCancel: true }, { onCancel: () => { cancelled += 1 } })
+    const button = root.querySelector('[data-yui-guide-id="market-install-cancel"]') as HTMLButtonElement
+    expect(button).not.toBeNull()
+    button.click()
+    expect(cancelled).toBe(1)
+
+    // A finished task has nothing left to cancel.
+    cleanup()
+    makeStore({ done: true, running: false })
+    expect(mount({ showCancel: true }).querySelector('[data-yui-guide-id="market-install-cancel"]')).toBeNull()
   })
 
   it('surfaces overtime and rollback outcomes', () => {
