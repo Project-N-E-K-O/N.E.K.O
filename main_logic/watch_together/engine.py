@@ -151,9 +151,56 @@ def parse_video_url(value):
     return match.group(1), page - 1
 
 
-def json_object(text):
+def json_roots(text):
+    """Yield every decodable JSON root in a reply, in the order they appear."""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    return json.loads(text[text.index("{"):text.rindex("}") + 1])
+    # Neither end of the reply is trustworthy. Slicing the first brace to the
+    # last one corrupts multi-event arrays and silently unwraps single-event
+    # ones, while decoding the whole reply rejects the providers we do not send
+    # response_format to, which append explanations. Decoding from the earliest
+    # bracket is no better: a prose label such as "Step [1]:" is itself valid
+    # JSON, so no syntactic rule here can tell a label from the payload. Offer
+    # every root instead and let the caller's schema pick.
+    decoder, first_error, found, cursor = json.JSONDecoder(), None, False, 0
+    while cursor < len(text):
+        opened = [at for at in (text.find('{', cursor), text.find('[', cursor)) if at >= 0]
+        if not opened:
+            break
+        start = min(opened)
+        try:
+            value, cursor = decoder.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+            # Resume past everything the decoder swallowed before it broke.
+            # Brackets behind that point are pieces of this broken root, not
+            # alternatives to it, so a cut-off array cannot hand back the last
+            # object it happens to contain. A bracket that broke immediately was
+            # prose and barely moves the cursor, which keeps the labels ahead of
+            # the payload reachable. A reply that ran out of input ends the scan
+            # with nothing found, so it raises instead of being salvaged.
+            cursor = max(exc.pos, start + 1)
+            continue
+        found = True
+        yield value
+    if not found:
+        raise first_error or ValueError('Missing JSON object or array')
+
+
+def json_object(text, validate=None):
+    """Return the one root the caller's schema accepts, refusing a tie."""
+    # json_roots raises rather than finishing empty, so there is always a root.
+    roots = list(json_roots(text))
+    if validate is None:
+        return roots[0]
+    accepted = [value for value in roots if not validate(value)[1]]
+    if len(accepted) > 1:
+        # Taking the earliest would be a guess: a preamble can carry a schema
+        # example ("Format: {...}") ahead of the answer, and a broken wrapper
+        # can leave several replies loose, where earliest-wins speaks the sample
+        # or drops every entry but one. Refuse and let the caller retry.
+        raise ValueError('Ambiguous JSON roots')
+    # Hand a rejected root back so the caller reports its issues as it always has.
+    return accepted[0] if accepted else roots[0]
 
 
 def sample_danmaku(messages, length):
@@ -329,9 +376,38 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                     {"role":"user", "content":bounded}],
                 **options)
             record_usage(job, response, cfg["model"], stage)
+            metadata = getattr(response, 'response_metadata', None) or {}
+            finish_reason = metadata.get('finish_reason') if isinstance(metadata, dict) else None
             try:
-                return json_object(response.content or "")
+                if finish_reason == 'length':
+                    # The provider cut the reply off, so anything that still
+                    # parses is a prefix of the answer rather than the answer:
+                    # a worked example ahead of a half-written reply, or a
+                    # timeline missing its tail. No syntactic rule can tell that
+                    # from a complete reply carrying prose, but the provider
+                    # already told us, so refuse and let the retry happen.
+                    raise ValueError('truncated_response')
+                return json_object(response.content or "", validate)
             except (ValueError, TypeError, IndexError) as exc:
+                # Keep only structural diagnostics: model replies can contain
+                # private video/persona text. An exception class alone hides
+                # empty replies, truncation and malformed JSON behind the same
+                # retry-exhausted error, making provider changes guesswork.
+                raw = response.content
+                diagnostic = {
+                    'stage': stage, 'label': label, 'attempt': _number,
+                    'content_type': type(raw).__name__,
+                    'content_length': len(raw) if isinstance(raw, str) else None,
+                    'has_root_start': isinstance(raw, str) and any(c in raw for c in '{['),
+                    'has_root_end': isinstance(raw, str) and any(c in raw for c in '}]'),
+                    'parse_error': type(exc).__name__,
+                    'finish_reason': finish_reason,
+                }
+                if isinstance(exc, json.JSONDecodeError):
+                    diagnostic.update(json_error=exc.msg, json_error_position=exc.pos)
+                failures = job.setdefault('structured_output_failures', [])
+                if len(failures) < 16:
+                    failures.append(diagnostic)
                 raise StructuredOutputContentError(f"invalid_{label}_json") from exc
         finally:
             await client.aclose()
@@ -365,6 +441,8 @@ class Engine:
     async def llm(self, content, job):
         cfg = await self.vision_config()
         def validate(value):
+            if isinstance(value, list) and all(isinstance(event, dict) for event in value):
+                value = {'events': value}
             valid = isinstance(value, dict) and isinstance(value.get("events"), list)
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]
         return await structured_json_completion(
@@ -538,7 +616,9 @@ When supported by changing content, aim for 5–7 reactions per minute, more com
 than laughs, at least five seconds apart. Stay quiet without evidence; never fill quotas.
 Keep each comment one short phrase in {self.language}, no lengthy narration or attacks
 on identity. Laugh only at clear humor, once per joke. Prefer gaps in subtitles.
-Return JSON with events: at (trigger seconds), evidence_at (past evidence seconds),
+Return a JSON object with exactly this root shape: {{"events": [...]}}.
+Use {{"events": []}} when no reaction is supported. Each event has:
+at (trigger seconds), evidence_at (past evidence seconds),
 kind (laugh or comment), text (short spoken phrase, empty for laugh), reason (specific
 visual/subtitle/danmaku evidence in {self.language}), confidence (0 to 1).
 at must be inside this window and at least evidence_at. Use only evidence at or before at.
