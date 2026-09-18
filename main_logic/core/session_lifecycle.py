@@ -146,19 +146,31 @@ class SessionOwnershipMixin:
                 # A cancelled handshake can still own network work. Keep its
                 # slot until it has stopped, and close once more if it finished
                 # after the first close attempt.
-                connecting = record.connect_task
-                if connecting is not None and not connecting.done():
-                    connecting.cancel()
+                try:
+                    connecting = record.connect_task
+                    if connecting is not None and not connecting.done():
+                        connecting.cancel()
+                        try:
+                            await record.close()
+                        except Exception as error:
+                            # The join and the authoritative close below still
+                            # have to run, or a cancelled handshake keeps
+                            # writing past this boundary.
+                            logger.warning('Session close before handshake join failed: %s', error)
+                        await asyncio.gather(connecting, return_exceptions=True)
                     await record.close()
-                    await asyncio.gather(connecting, return_exceptions=True)
-                await record.close()
-                # Hot-swap uses this close boundary before promotion. Provider
-                # output may run outside the receive loop, so stopping only
-                # that loop does not stop all old writes. Keep the resource
-                # registered until every other owned callback has unwound.
-                if callbacks:
-                    await asyncio.gather(*callbacks, return_exceptions=True)
-                record.closed = True
+                    # Hot-swap uses this close boundary before promotion.
+                    # Provider output may run outside the receive loop, so
+                    # stopping only that loop does not stop all old writes.
+                    # Keep the resource registered until every other owned
+                    # callback has unwound.
+                    if callbacks:
+                        await asyncio.gather(*callbacks, return_exceptions=True)
+                finally:
+                    # A provider close that raises must not strand the record:
+                    # capacity counting and pruning both key off `closed`, so
+                    # leaving it unset costs a slot for the process lifetime.
+                    record.closed = True
             record.close_task = self._own_cleanup_task(close())
         return record.close_task
 
