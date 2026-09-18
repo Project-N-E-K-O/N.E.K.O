@@ -31,14 +31,10 @@ import AvatarToolItemManager, {
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
-import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
+import { useAvatarToolSurfaceSlots } from './avatar-tools/useAvatarToolSurfaceSlots';
 import {
-  forgetPersistedAvatarToolId,
   getAvatarToolItemLabel,
-  persistActiveAvatarToolIds,
-  readPersistedActiveAvatarToolIds,
   resolveAvatarToolMenuIconVisual,
-  sanitizeAvatarToolSlots,
   withAvatarToolAssetVersion,
   type AvatarToolId,
   type AvatarToolItem,
@@ -498,7 +494,6 @@ export default function FullChatSurface({
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   // Collapse the right-side tools into an overflow menu when the composer gets
@@ -592,6 +587,17 @@ export default function FullChatSurface({
   const effectiveToolVariant = avatarToolRuntime.effectiveVariant;
   const clearAvatarTool = avatarToolRuntime.clearTool;
   const selectAvatarTool = avatarToolRuntime.selectTool;
+  const {
+    activeToolIds: activeAvatarToolIds,
+    saveSlots,
+    applyEditorResult,
+    deleteLocalTool,
+  } = useAvatarToolSurfaceSlots({
+    catalog: localAvatarToolCatalog,
+    activeToolId: activeAvatarToolId,
+    clearActiveTool: clearAvatarTool,
+    managerOpen: avatarToolManagerOpen,
+  });
   const configuredToolIconItems = useMemo(() => {
     const availableById = new Map(toolIconItems.map(item => [item.id, item]));
     return activeAvatarToolIds
@@ -600,56 +606,15 @@ export default function FullChatSurface({
   }, [activeAvatarToolIds, toolIconItems]);
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
-    setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    saveSlots(toolIds);
     setAvatarToolManagerOpen(false);
     setAvatarToolManagerAnchorRect(null);
-    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId as AvatarToolId)) {
-      clearAvatarTool();
-    }
-  }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.registry]);
+  }, [saveSlots]);
 
   const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
-    if (result.action === 'deleted' && result.toolId) {
-      const deletedId = result.toolId as AvatarToolId;
-      setActiveAvatarToolIds(current => current.filter(toolId => toolId !== deletedId));
-      forgetPersistedAvatarToolId(deletedId);
-      if (activeAvatarToolId === deletedId) clearAvatarTool();
-    }
+    applyEditorResult(result);
     setAvatarToolManagerOpen(true);
-  }, [activeAvatarToolId, clearAvatarTool]);
-
-  const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
-    await localAvatarToolCatalog.remove(toolId);
-    if (activeAvatarToolId === toolId) clearAvatarTool();
-    setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
-    forgetPersistedAvatarToolId(toolId);
-  }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.remove]);
-
-  const handleConfirmedAvatarToolDeletion = useCallback((toolIds: ReadonlyArray<`local-${string}`>) => {
-    const deletedIds = new Set<AvatarToolId>(toolIds);
-    setActiveAvatarToolIds(current => current.filter(toolId => !deletedIds.has(toolId)));
-    toolIds.forEach(forgetPersistedAvatarToolId);
-  }, []);
-
-  useAvatarToolSlotReconciliation({
-    activeToolIds: activeAvatarToolIds,
-    authoritativeItems: localAvatarToolCatalog.items,
-    authoritativeLoaded: localAvatarToolCatalog.authoritativeLoaded,
-    onConfirmedDeleted: handleConfirmedAvatarToolDeletion,
-  });
-
-  useEffect(() => {
-    if (!avatarToolManagerOpen) return;
-    localAvatarToolCatalog.refresh().catch(() => undefined);
-  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
-
-  useEffect(() => {
-    if (!activeAvatarToolId) return;
-    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
-    clearAvatarTool();
-  }, [activeAvatarToolIds, activeAvatarToolId, clearAvatarTool]);
+  }, [applyEditorResult]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -3164,7 +3129,6 @@ export default function FullChatSurface({
       <div
         className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
         data-compact-chat-state={effectiveCompactChatState}
-        data-compact-stage-layout="stage2"
       >
         <div
           className="compact-chat-stage-body-slot"
@@ -3225,7 +3189,7 @@ export default function FullChatSurface({
         onCreate={localAvatarToolCatalog.create}
         onLoadDetail={localAvatarToolCatalog.detail}
         onUpdate={localAvatarToolCatalog.update}
-        onDelete={handleLocalAvatarToolDelete}
+        onDelete={deleteLocalTool}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
         onExternalEditorResult={handleAvatarToolEditorResult}

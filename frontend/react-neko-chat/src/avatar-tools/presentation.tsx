@@ -327,7 +327,6 @@ export function prepareAvatarToolVisuals(
   return preparation;
 }
 
-export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer): () => void;
 export function playAvatarToolSound(
   toolId: AvatarToolId,
   sound: AvatarToolSoundId,
@@ -335,18 +334,11 @@ export function playAvatarToolSound(
   registry?: AvatarToolRegistrySnapshot,
 ): () => void;
 export function playAvatarToolSound(
-  toolOrSound: AvatarToolId | AvatarToolSoundId,
-  soundOrDisposer: AvatarToolSoundId | AvatarToolDisposer,
-  maybeDisposer?: AvatarToolDisposer,
+  toolId: AvatarToolId,
+  sound: AvatarToolSoundId,
+  disposer: AvatarToolDisposer,
   registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
 ) {
-  const legacyCall = typeof soundOrDisposer !== 'string';
-  const sound = legacyCall ? String(toolOrSound) : soundOrDisposer;
-  const disposer = legacyCall ? soundOrDisposer : maybeDisposer;
-  const toolId = legacyCall
-    ? registry.definitions.find(definition => definition.sounds.some(resource => resource.id === sound))?.id
-    : toolOrSound as AvatarToolId;
-  if (!toolId || !disposer) return () => {};
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return () => {};
   let cleanup = () => {};
   try {

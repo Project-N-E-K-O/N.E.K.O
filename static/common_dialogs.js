@@ -1545,7 +1545,7 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
-     * @param {{navigateOnReuse?: boolean, onReuse?: Function}} [options] - 复用同名窗口时的行为
+     * @param {{navigateOnReuse?: boolean, onReuse?: Function, shouldNavigateOnReuse?: Function}} [options] - 复用同名窗口时的行为
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features, options) {
@@ -1569,7 +1569,9 @@
                 requestOpenedWindowRestoreIfMinimized(existingWindow);
                 return existingWindow;
             }
-            if (normalizedOptions.navigateOnReuse) {
+            if (normalizedOptions.navigateOnReuse
+                && (typeof normalizedOptions.shouldNavigateOnReuse !== 'function'
+                    || normalizedOptions.shouldNavigateOnReuse(existingWindow, targetUrl) !== false)) {
                 navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
             }
             applyOpenedWindowFeatures(existingWindow, features);

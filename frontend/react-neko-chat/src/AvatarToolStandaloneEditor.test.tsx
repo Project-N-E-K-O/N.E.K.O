@@ -64,6 +64,31 @@ describe('AvatarToolStandaloneEditor', () => {
     close.mockRestore();
   });
 
+  it('protects an edited draft from target reuse without prompting for an untouched form', () => {
+    const { unmount } = render(<AvatarToolStandaloneEditor />);
+    expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
+    unmount();
+    expect(window.avatarToolEditorHasUnsavedChanges).toBeUndefined();
+  });
+
+  it('tracks content edits as unsaved changes', () => {
+    render(<AvatarToolStandaloneEditor />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Tool name' }), {
+      target: { value: 'New tool' },
+    });
+    expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
+  });
+
+  it('tracks applying a preset even though it resets the graph state', () => {
+    render(<AvatarToolStandaloneEditor />);
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Press swap' }));
+    expect(window.avatarToolEditorHasUnsavedChanges?.()).toBe(true);
+  });
+
   it('loads an existing tool directly from the shared catalog API', async () => {
     window.history.replaceState({}, '', `/avatar_tool_editor?mode=edit&toolId=${LOCAL_ID}`);
     catalog.detail.mockResolvedValue({

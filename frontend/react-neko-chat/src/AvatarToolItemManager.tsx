@@ -140,8 +140,12 @@ declare global {
       url: string,
       windowName: string,
       features?: string,
-      options?: { navigateOnReuse?: boolean },
+      options?: {
+        navigateOnReuse?: boolean;
+        shouldNavigateOnReuse?: (existingWindow: Window, targetUrl: string) => boolean;
+      },
     ) => Window | null;
+    avatarToolEditorHasUnsavedChanges?: () => boolean;
   }
 }
 
@@ -218,8 +222,31 @@ export function openAvatarToolEditorWindow(
   const popup = typeof window.openOrFocusWindow === 'function'
     ? window.openOrFocusWindow(url.href, AVATAR_TOOL_EDITOR_WINDOW_NAME, features, {
       navigateOnReuse: true,
+      shouldNavigateOnReuse: (existingWindow, targetUrl) => {
+        try {
+          const current = new URL(existingWindow.location.href);
+          const target = new URL(targetUrl);
+          if (
+            current.origin === target.origin
+            && current.pathname === target.pathname
+            && current.searchParams.get('mode') === target.searchParams.get('mode')
+            && current.searchParams.get('toolId') === target.searchParams.get('toolId')
+          ) return false;
+          if (!existingWindow.avatarToolEditorHasUnsavedChanges) return false;
+          if (!existingWindow.avatarToolEditorHasUnsavedChanges()) return true;
+          return window.confirm(i18n(
+            'dialogs.unsavedChanges',
+            'You have unsaved settings, are you sure you want to leave?',
+          ));
+        } catch {
+          // An uninspectable window must not silently replace an unknown draft.
+          return false;
+        }
+      },
     })
-    : window.open(url.href, AVATAR_TOOL_EDITOR_WINDOW_NAME, features);
+    // If the shared window manager is unavailable, a new window is safer than
+    // navigating an existing named editor whose draft cannot be inspected.
+    : window.open(url.href, '_blank', features);
   try { popup?.focus(); } catch (_) {}
   return popup;
 }

@@ -34,7 +34,7 @@ const DETAIL: LocalAvatarToolDetail = {
   }],
 };
 
-describe('AvatarToolCreatePage stage 2 image references', () => {
+describe('AvatarToolCreatePage image references and v3 conversion', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });

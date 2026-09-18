@@ -542,7 +542,8 @@ function OverviewPositionIcon({ position }: { position: AvatarToolOverviewPositi
 
 export function AvatarToolInteractionCanvas({
   limits,
-}: { limits?: LocalAvatarToolLimits | null } = {}) {
+  onApplyPreset,
+}: { limits?: LocalAvatarToolLimits | null; onApplyPreset?(): void } = {}) {
   const {
     state,
     dispatch,
@@ -850,6 +851,7 @@ export function AvatarToolInteractionCanvas({
       'chat.avatarToolPresetReplaceConfirm',
       'Applying a preset replaces the current interaction flow. Continue?',
     ))) return;
+    onApplyPreset?.();
     dispatch({
       type: 'reset',
       state: createAvatarToolInteractionPresetState({
@@ -863,6 +865,7 @@ export function AvatarToolInteractionCanvas({
     canApplyPreset,
     dispatch,
     flow,
+    onApplyPreset,
     state.initialImagePosition,
     state.items.length,
   ]);

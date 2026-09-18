@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import AvatarToolCreatePage from './AvatarToolCreatePage';
 import AvatarToolEditorWorkspace from './AvatarToolEditorWorkspace';
 import { i18n } from './i18n';
@@ -51,6 +51,19 @@ export default function AvatarToolStandaloneEditor() {
   const [specialEnabled, setSpecialEnabled] = useState(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const loadRequestRef = useRef(0);
+  const dirtyRef = useRef(false);
+
+  useEffect(() => {
+    const hasUnsavedChanges = () => dirtyRef.current;
+    window.avatarToolEditorHasUnsavedChanges = hasUnsavedChanges;
+    return () => {
+      if (window.avatarToolEditorHasUnsavedChanges === hasUnsavedChanges) {
+        delete window.avatarToolEditorHasUnsavedChanges;
+      }
+    };
+  }, []);
+
+  const markEdited = useCallback(() => { dirtyRef.current = true; }, []);
 
   const title = request.mode === 'edit'
     ? i18n('chat.avatarToolUpdateTitle', 'Edit custom tool')
@@ -147,6 +160,7 @@ export default function AvatarToolStandaloneEditor() {
           .filter(item => item.id !== request.toolId)
           .map(getAvatarToolItemLabel)}
         notice={notice}
+        onEdit={markEdited}
         onSpecialEnabledChange={setSpecialEnabled}
         onCancel={closeEditorWindow}
         showCancelAction={false}
@@ -156,6 +170,7 @@ export default function AvatarToolStandaloneEditor() {
               await catalog.update(request.toolId, input as UpdateLocalAvatarToolInput);
             } catch (cause) {
               if (cause instanceof LocalAvatarToolRevisionConflictError) {
+                dirtyRef.current = false;
                 setDetail(cause.currentDetail);
                 setSpecialEnabled(!!cause.currentDetail.special);
                 setNotice(i18n(
@@ -172,11 +187,13 @@ export default function AvatarToolStandaloneEditor() {
             await catalog.create(createInput);
             notifyOpener('created', createInput.toolId);
           }
+          dirtyRef.current = false;
           closeEditorWindow();
         }}
         onDelete={request.mode === 'edit' && request.toolId ? async () => {
           await catalog.remove(request.toolId!);
           notifyOpener('deleted', request.toolId!);
+          dirtyRef.current = false;
           closeEditorWindow();
         } : undefined}
       />
@@ -188,6 +205,7 @@ export default function AvatarToolStandaloneEditor() {
       title={title}
       limits={catalog.limits}
       dialogRef={workspaceRef}
+      onInteractionEdit={markEdited}
       showHeader={false}
     >
       <div data-avatar-tool-editor-special={specialEnabled ? 'true' : 'false'}>

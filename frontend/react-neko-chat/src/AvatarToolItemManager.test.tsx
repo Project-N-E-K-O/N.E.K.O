@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import AvatarToolItemManager from './AvatarToolItemManager';
+import AvatarToolItemManager, { openAvatarToolEditorWindow } from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
 import { type LocalAvatarToolDetail } from './avatar-tools/localTools';
 import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
@@ -641,7 +641,7 @@ describe('AvatarToolItemManager local creation', () => {
       expect(open).toHaveBeenCalledTimes(1);
       expect(open.mock.calls[0]?.[0]).toContain('/avatar_tool_editor?mode=create');
       expect(open.mock.calls[0]?.[0]).toContain('ui_lang=ja');
-      expect(open.mock.calls[0]?.[1]).toBe('neko_avatar_tool_editor_singleton');
+      expect(open.mock.calls[0]?.[1]).toBe('_blank');
       expect(open.mock.calls[0]?.[2]).toContain('resizable=yes');
       expect(open.mock.calls[0]?.[2]).toContain('width=1280');
       expect(open.mock.calls[0]?.[2]).toContain('height=900');
@@ -651,6 +651,35 @@ describe('AvatarToolItemManager local creation', () => {
       Reflect.deleteProperty(window, 'i18n');
       open.mockRestore();
     }
+  });
+
+  it('focuses the same editor target and asks the existing editor before switching targets', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const existing = {
+      location: { href: `${window.location.origin}/avatar_tool_editor?mode=create&ui_lang=ja` },
+      avatarToolEditorHasUnsavedChanges: vi.fn().mockReturnValue(true),
+      focus: vi.fn(),
+    } as unknown as Window;
+    window.openOrFocusWindow = vi.fn((url, _name, _features, options) => {
+      const mayNavigate = options?.shouldNavigateOnReuse;
+      expect(mayNavigate?.(existing, `${window.location.origin}/avatar_tool_editor?mode=create`)).toBe(false);
+      expect(existing.avatarToolEditorHasUnsavedChanges).not.toHaveBeenCalled();
+      expect(mayNavigate?.(existing, url)).toBe(false);
+      expect(existing.avatarToolEditorHasUnsavedChanges).toHaveBeenCalledTimes(1);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      confirm.mockReturnValue(true);
+      expect(mayNavigate?.(existing, url)).toBe(true);
+      return existing;
+    });
+    expect(openAvatarToolEditorWindow('edit', LOCAL_ID)).toBe(existing);
+    expect(window.openOrFocusWindow).toHaveBeenCalledWith(
+      expect.stringContaining(`mode=edit&toolId=${LOCAL_ID}`),
+      'neko_avatar_tool_editor_singleton',
+      expect.any(String),
+      expect.objectContaining({ navigateOnReuse: true }),
+    );
+    expect(existing.focus).toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it('keeps the inline Web fallback when the shared chat template only has its static class', () => {

@@ -44,7 +44,10 @@ function actionChangesGraphValidation(action: AvatarToolInteractionEditorAction)
     || action.type === 'duplicate-interaction';
 }
 
-export function AvatarToolInteractionEditorProvider({ children }: { children: ReactNode }) {
+export function AvatarToolInteractionEditorProvider({
+  children,
+  onMutation,
+}: { children: ReactNode; onMutation?(): void }) {
   const [state, baseDispatch] = useReducer(
     avatarToolInteractionEditorReducer,
     undefined,
@@ -57,6 +60,12 @@ export function AvatarToolInteractionEditorProvider({ children }: { children: Re
   }>({ images: [], initialImageId: null });
   const [graphRevision, setGraphRevision] = useState(0);
   const dispatch = useCallback<Dispatch<AvatarToolInteractionEditorAction>>((action) => {
+    if (
+      action.type !== 'reset'
+      && action.type !== 'select-interaction'
+      && action.type !== 'select-link'
+      && action.type !== 'select-initial-link'
+    ) onMutation?.();
     if (action.type === 'reset') {
       setIssues([]);
       setGraphRevision(revision => revision + 1);
@@ -64,7 +73,7 @@ export function AvatarToolInteractionEditorProvider({ children }: { children: Re
       setGraphRevision(revision => revision + 1);
     }
     baseDispatch(action);
-  }, []);
+  }, [onMutation]);
   const setImageState = useCallback((
     images: AvatarToolImageDraft[],
     initialImageId: AvatarToolImageId | null,

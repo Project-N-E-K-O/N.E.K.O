@@ -81,7 +81,7 @@ async function addImage(file: File) {
   await waitFor(() => expect(document.querySelectorAll('[data-avatar-tool-image-id]')).toHaveLength(expectedCount));
 }
 
-describe('avatar tool stage 3 editor', () => {
+describe('avatar tool editor interaction flow', () => {
   beforeEach(() => {
     saveTool = vi.fn(async (_input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput) => undefined);
     Object.defineProperty(URL, 'createObjectURL', {
@@ -204,10 +204,6 @@ describe('avatar tool stage 3 editor', () => {
     )).toBeVisible();
 
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
-    expect(screen.queryByText(
-      'The interaction flow is valid. Saving it will be connected in the next implementation stage.',
-    )).not.toBeInTheDocument();
-
     fireEvent.change(screen.getByLabelText('Image name'), { target: { value: 'Open palm' } });
     expect(screen.getByLabelText('Image name')).not.toHaveAttribute('aria-invalid');
     expect(screen.queryByText(/already used by another image/)).not.toBeInTheDocument();

@@ -59,6 +59,7 @@ type AvatarToolCreatePageProps = {
   existingToolNames?: readonly string[];
   onSpecialEnabledChange(enabled: boolean): void;
   onSave(input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput): Promise<void>;
+  onEdit?(): void;
   onDelete?(): Promise<void>;
   onCancel(): void;
   showCancelAction?: boolean;
@@ -170,6 +171,7 @@ export default function AvatarToolCreatePage({
   existingToolNames = [],
   onSpecialEnabledChange,
   onSave,
+  onEdit,
   onDelete,
   onCancel,
   showCancelAction = true,
@@ -373,6 +375,7 @@ export default function AvatarToolCreatePage({
       return;
     }
     accept(file);
+    onEdit?.();
     clearFieldError(errorKey);
     setError('');
   };
@@ -429,6 +432,7 @@ export default function AvatarToolCreatePage({
       const ownedBytes = new Uint8Array(sourceBytes.byteLength);
       ownedBytes.set(sourceBytes);
       setFile(new File([ownedBytes.buffer as ArrayBuffer], result.name, { type: 'audio/mpeg' }));
+      onEdit?.();
       clearFieldError(errorKey);
       setError('');
     } catch {
@@ -470,6 +474,7 @@ export default function AvatarToolCreatePage({
 
   const chooseInitialImage = (imageId: AvatarToolImageId) => {
     dispatchImage({ type: 'choose-initial', imageId });
+    if (initialImageId !== imageId) onEdit?.();
     clearFieldError('initial_image');
     clearImageRemovalErrors();
     setError('');
@@ -495,6 +500,7 @@ export default function AvatarToolCreatePage({
     }
 
     dispatchImage({ type: 'remove', imageId });
+    onEdit?.();
     setFieldErrors(current => Object.fromEntries(
       Object.entries(current).filter(([key]) => !key.endsWith(`:${imageId}`)),
     ));
@@ -783,12 +789,14 @@ export default function AvatarToolCreatePage({
   };
 
   const removeNormalSound = () => {
+    onEdit?.();
     setNormalSound(null);
     setNormalSoundResource(undefined);
     clearFieldError('normal_sound');
   };
 
   const removeSpecialSound = () => {
+    onEdit?.();
     setSpecialSound(null);
     setSpecialSoundResource(undefined);
     clearFieldError('special_sound');
@@ -832,7 +840,16 @@ export default function AvatarToolCreatePage({
   };
 
   return (
-    <form className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`} noValidate onSubmit={submit}>
+    <form
+      className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`}
+      noValidate
+      onSubmit={submit}
+      onChangeCapture={(event) => {
+        // File pickers may emit change after cancellation; mark only accepted files below.
+        if (event.target instanceof HTMLInputElement && event.target.type === 'file') return;
+        onEdit?.();
+      }}
+    >
       <div className="avatar-tool-create-pane-tabs" role="tablist" aria-label={i18n(
         'chat.avatarToolCreateEditArea',
         'Edit area',
@@ -962,6 +979,7 @@ export default function AvatarToolCreatePage({
                   const file = event.target.files?.[0] ?? null;
                   event.target.value = '';
                   setNormalSound(file);
+                  if (file) onEdit?.();
                   clearFieldError('normal_sound');
                 }}
               />
@@ -1118,6 +1136,7 @@ export default function AvatarToolCreatePage({
                         const file = event.target.files?.[0] ?? null;
                         event.target.value = '';
                         setSpecialSound(file);
+                        if (file) onEdit?.();
                         clearFieldError('special_sound');
                       }}
                     />

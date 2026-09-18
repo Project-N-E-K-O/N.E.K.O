@@ -24,6 +24,7 @@ type AvatarToolEditorWorkspaceProps = {
   showHeader?: boolean;
   onPointerDown?(event: ReactPointerEvent<HTMLElement>): void;
   onMouseDown?(event: ReactMouseEvent<HTMLElement>): void;
+  onInteractionEdit?(): void;
   children: ReactNode;
 };
 
@@ -36,10 +37,11 @@ export default function AvatarToolEditorWorkspace({
   showHeader = true,
   onPointerDown,
   onMouseDown,
+  onInteractionEdit,
   children,
 }: AvatarToolEditorWorkspaceProps) {
   return (
-    <AvatarToolInteractionEditorProvider>
+    <AvatarToolInteractionEditorProvider onMutation={onInteractionEdit}>
       <section
         className="avatar-tool-editor-workspace"
         ref={dialogRef}
@@ -86,7 +88,7 @@ export default function AvatarToolEditorWorkspace({
                 'Drag nodes freely; they align on release · Connect from any edge point · Scroll to pan',
               )}</p>
             </div>
-            <AvatarToolInteractionCanvas limits={limits} />
+            <AvatarToolInteractionCanvas limits={limits} onApplyPreset={onInteractionEdit} />
           </section>
 
           <aside

@@ -22,7 +22,7 @@ import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
-import { useAvatarToolSlotReconciliation } from './avatar-tools/useAvatarToolSlotReconciliation';
+import { useAvatarToolSurfaceSlots } from './avatar-tools/useAvatarToolSurfaceSlots';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -64,12 +64,7 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
-  forgetPersistedAvatarToolId,
   getAvatarToolItemLabel,
-  persistActiveAvatarToolIds,
-  readPersistedActiveAvatarToolIds,
-  sanitizeAvatarToolSlots,
   type AvatarToolId,
   type AvatarToolItem,
 } from './avatarTools';
@@ -956,7 +951,6 @@ function CompactChatApp({
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   const appShellRef = useRef<HTMLElement | null>(null);
@@ -1132,62 +1126,28 @@ function CompactChatApp({
   const effectiveAvatarToolVariant = avatarToolRuntime.effectiveVariant;
   const clearActiveAvatarToolSelection = avatarToolRuntime.clearTool;
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
-
-  const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
-    setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
-    setAvatarToolManagerOpen(false);
-    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId)) {
-      clearActiveAvatarToolSelection();
-    }
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
-
-  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
-    if (result.action === 'deleted' && result.toolId) {
-      const deletedId = result.toolId as AvatarToolId;
-      setActiveAvatarToolIds(current => current.filter(toolId => toolId !== deletedId));
-      forgetPersistedAvatarToolId(deletedId);
-      if (activeAvatarToolId === deletedId) clearActiveAvatarToolSelection();
-    }
-    setAvatarToolManagerOpen(true);
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection]);
-
-  const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
-    await localAvatarToolCatalog.remove(toolId);
-    // 这里读的是闭包捕获值，当前是安全的：管理器入口在快捷栏里，而快捷栏只在
-    // 没有选中道具时才展开（点道具按钮的第一下是退出选择），所以发起删除时
-    // activeAvatarToolId 必然为 null，这个判断恒为假。将来如果新增「选中状态下
-    // 直接删除」的入口，就必须改读运行时的同步当前 ID —— 但别在 render 阶段
-    // 往 ref 里写，那样会把未提交的 render 结果泄进共享状态。
-    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
-    setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
-    forgetPersistedAvatarToolId(toolId);
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
-
-  const handleConfirmedAvatarToolDeletion = useCallback((toolIds: ReadonlyArray<`local-${string}`>) => {
-    const deletedIds = new Set<AvatarToolId>(toolIds);
-    setActiveAvatarToolIds(current => current.filter(toolId => !deletedIds.has(toolId)));
-    toolIds.forEach(forgetPersistedAvatarToolId);
-  }, []);
-
-  useAvatarToolSlotReconciliation({
+  const {
     activeToolIds: activeAvatarToolIds,
-    authoritativeItems: localAvatarToolCatalog.items,
-    authoritativeLoaded: localAvatarToolCatalog.authoritativeLoaded,
-    onConfirmedDeleted: handleConfirmedAvatarToolDeletion,
+    saveSlots,
+    restoreDefaultsInMemory,
+    applyEditorResult,
+    deleteLocalTool,
+  } = useAvatarToolSurfaceSlots({
+    catalog: localAvatarToolCatalog,
+    activeToolId: activeAvatarToolId,
+    clearActiveTool: clearActiveAvatarToolSelection,
+    managerOpen: avatarToolManagerOpen,
   });
 
-  useEffect(() => {
-    if (!avatarToolManagerOpen) return;
-    localAvatarToolCatalog.refresh().catch(() => undefined);
-  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
+  const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
+    saveSlots(toolIds);
+    setAvatarToolManagerOpen(false);
+  }, [saveSlots]);
 
-  useEffect(() => {
-    if (!activeAvatarToolId) return;
-    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
-    clearActiveAvatarToolSelection();
-  }, [activeAvatarToolIds, activeAvatarToolId, clearActiveAvatarToolSelection]);
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    applyEditorResult(result);
+    setAvatarToolManagerOpen(true);
+  }, [applyEditorResult]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -4785,14 +4745,14 @@ function CompactChatApp({
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
-        setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
+        restoreDefaultsInMemory();
       }
       clearActiveAvatarToolSelection();
       setToolMenuOpen(opened);
       return;
     }
     setToolMenuOpen(false);
-  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, clearActiveAvatarToolSelection, openCompactInputToolFan]);
+  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, clearActiveAvatarToolSelection, openCompactInputToolFan, restoreDefaultsInMemory]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
@@ -5825,7 +5785,6 @@ function CompactChatApp({
       <div
         className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
         data-compact-chat-state={effectiveCompactChatState}
-        data-compact-stage-layout="stage2"
       >
         <div
           className="compact-chat-stage-body-slot"
@@ -5882,7 +5841,7 @@ function CompactChatApp({
         onCreate={localAvatarToolCatalog.create}
         onLoadDetail={localAvatarToolCatalog.detail}
         onUpdate={localAvatarToolCatalog.update}
-        onDelete={handleLocalAvatarToolDelete}
+        onDelete={deleteLocalTool}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
         onExternalEditorResult={handleAvatarToolEditorResult}
