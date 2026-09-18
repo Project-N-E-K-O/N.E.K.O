@@ -164,20 +164,24 @@ def json_roots(text):
     # bracket is no better: a prose label such as "Step [1]:" is itself valid
     # JSON, so no syntactic rule here can tell a label from the payload. Offer
     # every root instead and let the caller's schema pick.
-    decoder, first_error, found = json.JSONDecoder(), None, False
-    for start, token in enumerate(text):
-        if token not in '{[':
-            continue
+    decoder, first_error, found, cursor = json.JSONDecoder(), None, False, 0
+    while cursor < len(text):
+        opened = [at for at in (text.find('{', cursor), text.find('[', cursor)) if at >= 0]
+        if not opened:
+            break
+        start = min(opened)
         try:
-            value = decoder.raw_decode(text, start)[0]
+            value, cursor = decoder.raw_decode(text, start)
         except json.JSONDecodeError as exc:
             first_error = first_error or exc
-            # Running out of input means the reply was cut off mid-value, so
-            # every bracket behind this one is a fragment of a broken root:
-            # refuse rather than salvaging a nested object out of it. Breaking
-            # with text still to come is just prose, so keep looking.
-            if exc.pos >= len(text):
-                raise
+            # Resume past everything the decoder swallowed before it broke.
+            # Brackets behind that point are pieces of this broken root, not
+            # alternatives to it, so a cut-off array cannot hand back the last
+            # object it happens to contain. A bracket that broke immediately was
+            # prose and barely moves the cursor, which keeps the labels ahead of
+            # the payload reachable. A reply that ran out of input ends the scan
+            # with nothing found, so it raises instead of being salvaged.
+            cursor = max(exc.pos, start + 1)
             continue
         found = True
         yield value

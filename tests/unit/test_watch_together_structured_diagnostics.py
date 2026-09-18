@@ -116,6 +116,27 @@ def test_decodable_prose_labels_lose_to_the_schema(text, expected):
     assert json_object(text, _events_validator) == expected
 
 
+@pytest.mark.parametrize('text', [
+    '[{"events": []}',            # cut off at the end of the reply
+    '[{"events": []} extra',      # cut off, then a stray token
+    '{"events": [{"kind": "laugh"}]',
+])
+def test_a_cut_off_reply_never_hands_back_its_last_whole_fragment(text):
+    from main_logic.watch_together.engine import json_object
+
+    with pytest.raises(json.JSONDecodeError):
+        json_object(text, _events_validator)
+
+
+def test_a_nested_payload_is_not_offered_when_its_container_decoded():
+    from main_logic.watch_together.engine import json_object
+
+    # The wrapper decoded whole, so it is the model's answer and the schema
+    # rejecting it must reach the retry path rather than the inner object.
+    text = '{"result": {"events": [{"kind": "laugh"}]}}'
+    assert json_object(text, _events_validator) == json.loads(text)
+
+
 @pytest.mark.parametrize('text', ['[oops {"events": []}]', '{oops {"events": []}}'])
 def test_complete_reply_wrapped_in_junk_still_yields_its_payload(text):
     from main_logic.watch_together.engine import json_object
@@ -134,6 +155,17 @@ def test_first_root_is_returned_when_the_schema_accepts_nothing():
 
     # The caller reports the issues and retries, as it did before candidates.
     assert json_object('[1] {"other": true}', _events_validator) == [1]
+
+
+def test_a_live_array_of_replies_is_rejected_whole_not_spoken_first():
+    from main_logic.watch_together.engine import json_object
+    from main_logic.watch_together.live import _validator
+
+    # Yielding the first nested object would speak one line and drop the rest.
+    validate = _validator('interject')
+    value = json_object('[{"line": "first"}, {"line": "second"}]', validate)
+    assert value == [{'line': 'first'}, {'line': 'second'}]
+    assert validate(value)[1]
 
 
 def test_live_reply_still_requires_its_own_object_schema():
