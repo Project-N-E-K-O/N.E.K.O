@@ -68,7 +68,7 @@ export async function ensureBridgeToken(forceRefresh = false): Promise<string> {
   }
 }
 
-export function bridgeUrl(path: string, token: string): string {
+function bridgeUrl(path: string, token: string): string {
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}token=${encodeURIComponent(token)}`
 }

@@ -412,6 +412,9 @@ async function runInstallTask(
     await yankSweep().catch(() => undefined)
   } else if (outcome.canceled) {
     ElMessage.info(t('market.installCancelled'))
+  } else if (outcome.aborted) {
+    // Dialog closed mid-install: the task keeps running server-side and the
+    // resume bar still reaches it, so say nothing.
   } else {
     ElMessage.error(t(outcome.errorKey || 'market.installFailed'))
   }

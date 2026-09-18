@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => ({ store: null as unknown as Record<string, unkno
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => mocks.store,
-  formatByteCount: (v: number) => String(v),
 }))
 
 function step(id: InstallStep['id'], state: InstallStep['state']): InstallStep {

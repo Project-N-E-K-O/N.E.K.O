@@ -81,6 +81,8 @@ export interface TrackOutcome {
   ok: boolean
   errorKey?: string
   canceled?: boolean
+  /** Tracking was dropped (``dismiss`` / a newer task). Not a failure. */
+  aborted?: boolean
 }
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled'])
@@ -128,7 +130,7 @@ function orderOf(step: InstallStepId): number {
   return CANONICAL_ORDER.indexOf(step)
 }
 
-export function formatByteCount(value: number): string {
+function formatByteCount(value: number): string {
   if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
@@ -366,7 +368,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
       if (myGeneration !== generation) {
-        return { ok: false, errorKey: 'market.installFailed' }
+        return { ok: false, aborted: true }
       }
 
       let res: Response | null = null
@@ -478,10 +480,6 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     detailsExpanded.value = !detailsExpanded.value
   }
 
-  function setDetailsExpanded(expanded: boolean): void {
-    detailsExpanded.value = expanded
-  }
-
   return {
     task,
     context,
@@ -504,6 +502,5 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     cancel,
     dismiss,
     toggleDetails,
-    setDetailsExpanded,
   }
 })

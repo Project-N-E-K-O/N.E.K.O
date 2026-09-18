@@ -355,6 +355,12 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         toVersion: candidate.latestVersion,
       })
       if (!outcome.ok) {
+        if (outcome.aborted) {
+          // Tracking was dropped (the popup closed mid-upgrade). Leave the row
+          // alone rather than reporting a failure that never happened.
+          candidate.status = 'idle'
+          return false
+        }
         return failCandidate(candidate, outcome.errorKey || 'market.installFailed', 'task not ok')
       }
 

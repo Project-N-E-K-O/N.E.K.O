@@ -113,7 +113,22 @@ describe('market install task store — tracking', () => {
 
     store.dismiss()
     await tick()
-    await expect(first).resolves.toEqual({ ok: false, errorKey: 'market.installFailed' })
+    await expect(first).resolves.toEqual({ ok: false, aborted: true })
+  })
+
+  it('reports a dropped track as aborted, not as a failure', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never,
+    )
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context())
+    await tick()
+
+    store.dismiss()
+    await tick()
+
+    await expect(p).resolves.toEqual({ ok: false, aborted: true })
   })
 
   it('gives up after a run of 404s', async () => {
