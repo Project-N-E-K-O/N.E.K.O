@@ -133,6 +133,11 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
                 "maxRequestBytes": 2097152,
                 "maxTimeoutMs": 350000,
             },
+            "round:live": {
+                "path": "live",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 30000,
+            },
         },
     }
     assert html.index("neko-minigame-avatar-host.js") < html.index("neko-minigame-host-launch")
@@ -202,8 +207,14 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
         "round:choose-word",
         "round:timeout",
         "round:vision-guess",
+        "round:live",
     ):
         assert f"'{command}'" in script
+    assert "function liveIdlePhaseAcceptsInterject()" in script
+    assert "function syncLivePoll()" in script
+    assert "function pollLiveInterject()" in script
+    assert "LIVE_POLL_INTERVAL_MS = 5000" in script
+    assert "LIVE_REQUEST_TIMEOUT_MS = 30000" in script
     assert "client.commands.execute(command, payload || {}" in script
     assert "client.speech.speak({" in script
     assert "client.voice.onState(handleSdkVoiceState)" in script
@@ -524,6 +535,10 @@ def test_drawing_guess_static_route_contract():
             r"executeRoundCommand\(ROUND_COMMANDS\.VISION_GUESS,\s*"
             r"roundCommandPayload\(\{[^}]*image_data_url:[^}]*\}\),\s*"
             r"AI_GUESS_REQUEST_TIMEOUT_MS\)"
+        ),
+        "live interject": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.LIVE,\s*"
+            r"roundCommandPayload\(\),\s*LIVE_REQUEST_TIMEOUT_MS\)"
         ),
     }
     for flow, pattern in command_timeout_patterns.items():

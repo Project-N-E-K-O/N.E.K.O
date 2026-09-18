@@ -131,6 +131,11 @@ async function main() {
               maxRequestBytes: 2097152,
               maxTimeoutMs: 350000,
             },
+            'round:live': {
+              path: 'live',
+              maxRequestBytes: 65536,
+              maxTimeoutMs: 30000,
+            },
           },
         },
       },
