@@ -439,6 +439,23 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates.find((entry) => entry.pluginId === 'beta')?.status).toBe('failed')
   })
 
+  it('refuses to POST while an update check is in flight', async () => {
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+    const fetchMock = mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      return undefined
+    })
+
+    const store = await seedOneCandidate()
+    // A check in flight will rebuild `candidates` when it finishes, orphaning
+    // whatever object updateOne is mutating.
+    store.$patch({ checking: true })
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates[0]!.status).toBe('idle')
+  })
+
   it('refuses to POST while another surface owns an install task', async () => {
     vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
     const fetchMock = mockFetch((url) => {

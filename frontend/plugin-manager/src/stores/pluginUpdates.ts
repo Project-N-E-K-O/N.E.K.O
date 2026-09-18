@@ -283,6 +283,15 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     if (!candidate || candidate.needsManualUpgrade) return false
     if (candidate.status === 'updating') return false
 
+    // Symmetric with `check`'s own `updating` guard: a check in flight will
+    // rebuild `candidates` after its await, which would orphan the very object
+    // this method is about to mutate. The popup already disables its buttons
+    // while checking, so this only closes the hole structurally.
+    if (checking.value) {
+      updateLog.warn('upgrade refused: an update check is in flight', { pluginId })
+      return false
+    }
+
     // Claim the shared slot atomically, before the async version lookup and the
     // POST: a plain `running` read is racy because this method awaits in
     // between, so the Market panel could create a second, untracked worker.

@@ -519,6 +519,28 @@ describe('market install task store — cancel', () => {
     await p
   })
 
+  it('does not restore a dismissed task from a stale cancel response', async () => {
+    let releaseCancel: (value: unknown) => void = () => {}
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseCancel = resolve as (value: unknown) => void }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+
+    const cancelling = store.cancel('panel')
+    store.dismiss('panel')
+    releaseCancel(task({ task_id: 't', status: 'canceled', stage: 'canceled', progress: 0.2 }))
+    await tick()
+
+    await expect(cancelling).resolves.toBe('unavailable')
+    // Regression guard: the stale body used to be written back, resurrecting
+    // the task and hiding whatever replaced it.
+    expect(store.task).toBeNull()
+    await p
+  })
+
   it('refuses to cancel a task owned by the other surface', async () => {
     vi.mocked(fetchBridge).mockResolvedValue(
       task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never,

@@ -528,12 +528,20 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       return 'unavailable'
     }
 
+    // The response belongs to `id`. Dismissing (or replacing) the tracked task
+    // while this request is in flight must not let the stale body be written
+    // back — that would resurrect a task the UI already dropped, and hide the
+    // replacement task's own state behind it.
+    const myGeneration = generation
     cancelling.value = true
     try {
       const res = await fetchBridge(`/market/tasks/${id}/cancel`, { method: 'POST' })
+      if (myGeneration !== generation) return 'unavailable'
       if (!res) return 'failed'
       if (res.ok) {
-        task.value = (await res.json()) as MarketInstallTask
+        const body = (await res.json().catch(() => null)) as MarketInstallTask | null
+        if (myGeneration !== generation) return 'unavailable'
+        if (body) task.value = body
         return 'ok'
       }
       // 409 = already inside a stage that cannot be torn down safely.
