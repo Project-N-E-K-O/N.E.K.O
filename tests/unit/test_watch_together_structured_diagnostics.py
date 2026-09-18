@@ -80,18 +80,60 @@ def test_malformed_array_is_not_salvaged_as_its_nested_object():
         json_object('[{"events": []}')
 
 
+def _events_validator(value):
+    if isinstance(value, list) and all(isinstance(event, dict) for event in value):
+        value = {'events': value}
+    valid = isinstance(value, dict) and isinstance(value.get('events'), list)
+    return value, [] if valid else [{'field': 'events', 'reason': 'expected_array'}]
+
+
 @pytest.mark.parametrize('text,expected', [
     # Providers we do not send response_format to append prose after the root.
     ('{"events": []}\nDone. Hope this helps.', {'events': []}),
     ('[{"kind": "laugh"}]\n以上是分析结果。', [{'kind': 'laugh'}]),
-    # Bracketed labels before the payload must not be mistaken for the root.
+    # A bracketed label that cannot decode at all is prose.
     ('Result [JSON]:\n{"events": []}', {'events': []}),
     ('分析 [timeline] 如下：\n[{"kind": "comment"}] 完毕', [{'kind': 'comment'}]),
+    # A bracketed label that breaks partway through is still prose: the decoder
+    # read the 1 before failing, but text remained after the break.
+    ('Result [1 of 1]:\n{"events": []}', {'events': []}),
 ])
 def test_prose_around_the_root_is_ignored(text, expected):
     from main_logic.watch_together.engine import json_object
 
-    assert json_object(text) == expected
+    assert json_object(text, _events_validator) == expected
+
+
+@pytest.mark.parametrize('text,expected', [
+    # A label such as "Step [1]:" is itself valid JSON, so only the schema can
+    # say it is not the payload.
+    ('Step [1]: {"events": [{"kind": "laugh"}]}', {'events': [{'kind': 'laugh'}]}),
+    ('[2] 结果：\n[{"kind": "comment"}]', [{'kind': 'comment'}]),
+])
+def test_decodable_prose_labels_lose_to_the_schema(text, expected):
+    from main_logic.watch_together.engine import json_object
+
+    assert json_object(text, _events_validator) == expected
+
+
+@pytest.mark.parametrize('text', ['[oops {"events": []}]', '{oops {"events": []}}'])
+def test_complete_reply_wrapped_in_junk_still_yields_its_payload(text):
+    from main_logic.watch_together.engine import json_object
+
+    # Deliberate: junk around a complete payload is the same shape as the prose
+    # prefixes we must skip ("Result [1 of 1]:"), so refusing here would bring
+    # back the retry exhaustion this module exists to fix. The reply is whole,
+    # the schema accepts the payload, and nothing is lost by reading it. Only a
+    # reply that ran out of input is refused, because there the nested object
+    # can be a prefix of an answer the model never finished writing.
+    assert json_object(text, _events_validator) == {'events': []}
+
+
+def test_first_root_is_returned_when_the_schema_accepts_nothing():
+    from main_logic.watch_together.engine import json_object
+
+    # The caller reports the issues and retries, as it did before candidates.
+    assert json_object('[1] {"other": true}', _events_validator) == [1]
 
 
 def test_live_reply_still_requires_its_own_object_schema():

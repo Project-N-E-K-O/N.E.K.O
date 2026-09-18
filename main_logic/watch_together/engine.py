@@ -151,34 +151,51 @@ def parse_video_url(value):
     return match.group(1), page - 1
 
 
-def json_object(text):
+_NO_ROOT = object()
+
+
+def json_roots(text):
+    """Yield every decodable JSON root in a reply, in the order they appear."""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    # Decode the first complete JSON root and ignore whatever prose follows it.
-    # Slicing between the first brace and the last one corrupts multi-event
-    # arrays and silently unwraps single-event ones, while a plain json.loads of
-    # the whole reply rejects the providers we do not send response_format to,
-    # which append explanations. Schema adaptation belongs to the timeline
-    # validator, not this shared parser (live replies differ).
-    decoder, first_error = json.JSONDecoder(), None
+    # Neither end of the reply is trustworthy. Slicing the first brace to the
+    # last one corrupts multi-event arrays and silently unwraps single-event
+    # ones, while decoding the whole reply rejects the providers we do not send
+    # response_format to, which append explanations. Decoding from the earliest
+    # bracket is no better: a prose label such as "Step [1]:" is itself valid
+    # JSON, so no syntactic rule here can tell a label from the payload. Offer
+    # every root instead and let the caller's schema pick.
+    decoder, first_error, found = json.JSONDecoder(), None, False
     for start, token in enumerate(text):
         if token not in '{[':
             continue
         try:
-            return decoder.raw_decode(text, start)[0]
+            value = decoder.raw_decode(text, start)[0]
         except json.JSONDecodeError as exc:
             first_error = first_error or exc
-            inner = start + 1
-            while inner < len(text) and text[inner].isspace():
-                inner += 1
-            # Nothing decodable sat inside this bracket, so it was prose such as
-            # "Result [JSON]:" and the payload is still ahead. A bracket whose
-            # contents did decode before breaking is the real root: stop there
-            # rather than salvaging a nested object out of a truncated array.
-            if exc.pos > inner:
+            # Running out of input means the reply was cut off mid-value, so
+            # every bracket behind this one is a fragment of a broken root:
+            # refuse rather than salvaging a nested object out of it. Breaking
+            # with text still to come is just prose, so keep looking.
+            if exc.pos >= len(text):
                 raise
-    if first_error is not None:
-        raise first_error
-    raise ValueError('Missing JSON object or array')
+            continue
+        found = True
+        yield value
+    if not found:
+        raise first_error or ValueError('Missing JSON object or array')
+
+
+def json_object(text, validate=None):
+    """Return the first root the caller's schema accepts, else the first root."""
+    fallback = _NO_ROOT
+    for value in json_roots(text):
+        if validate is None or not validate(value)[1]:
+            return value
+        if fallback is _NO_ROOT:
+            fallback = value
+    # json_roots raises rather than finishing empty, so a root was seen; hand
+    # the rejected one back so the caller reports its issues as it always has.
+    return fallback
 
 
 def sample_danmaku(messages, length):
@@ -355,7 +372,7 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                 **options)
             record_usage(job, response, cfg["model"], stage)
             try:
-                return json_object(response.content or "")
+                return json_object(response.content or "", validate)
             except (ValueError, TypeError, IndexError) as exc:
                 # Keep only structural diagnostics: model replies can contain
                 # private video/persona text. An exception class alone hides
