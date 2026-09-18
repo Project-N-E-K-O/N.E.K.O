@@ -108,10 +108,10 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
         1,
     )[1]
     drag_end = drag_source.split("const onDragEnd = async (event) => {", 1)[1].split(
-        "const onDragMove = (event) => {",
+        "const onDragMove = (event, fromTouchGesture = false) => {",
         1,
     )[0]
-    drag_move = drag_source.split("const onDragMove = (event) => {", 1)[1].split(
+    drag_move = drag_source.split("const onDragMove = (event, fromTouchGesture = false) => {", 1)[1].split(
         "// 清理旧的监听器",
         1,
     )[0]

@@ -3210,7 +3210,9 @@
             if (!state.moved) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
-            if (this.isLayeredActive()) this.drawLayeredState();
+            // Keep motion/physics on the animation clock, even when pointer
+            // events arrive faster than the display can present frames.
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
@@ -3390,7 +3392,7 @@
             if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
-            if (this.isLayeredActive()) this.drawLayeredState();
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
         }
 
         async endTouchZoom() {

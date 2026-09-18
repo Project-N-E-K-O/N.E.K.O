@@ -41,7 +41,7 @@ def _run_harness(harness: str) -> list[dict]:
 def _live2d_wheel_zoom_source() -> str:
     source = LIVE2D_INTERACTION.read_text(encoding="utf-8")
     start = source.index("Live2DManager.prototype.setupWheelZoom = function (model)")
-    end = source.index("// 设置触摸缩放", start)
+    end = source.index("Live2DManager.prototype.setupTouchZoom = function (model)", start)
     return source[start:end]
 
 
