@@ -137,6 +137,23 @@ def _dedupe_key(item: dict) -> str:
     return f"{payload.get('id')}|{meta.get('ts')}|{payload.get('content')}"
 
 
+def _fetch_page(sock: zmq.Socket, *, store: str, limit: int,
+                since_ts: float | None, until_ts: float | None,
+                req_id: str) -> list[dict]:
+    """One bus.query page, oldest-first by the timestamp it is displayed with."""
+    payload: dict = {"store": store, "topic": "all", "limit": int(limit)}
+    if since_ts is not None:
+        payload["since_ts"] = float(since_ts)
+    if until_ts is not None:
+        payload["until_ts"] = float(until_ts)
+    resp = _query(sock, "bus.query", payload, req_id)
+    if not resp.get("ok"):
+        raise RuntimeError(f"bus.query rejected: {resp.get('error')}")
+    items = list((resp.get("result") or {}).get("items") or [])
+    items.sort(key=_effective_ts)
+    return items
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rpc", default=None, help=f"插件服务器 RPC 端点（默认 {_DEFAULT_RPC}）")
@@ -180,21 +197,39 @@ def main() -> int:
     since_ts = args.since_ts
     rounds = 0
     while True:
-        args_payload: dict = {"store": args.store, "topic": "all", "limit": int(args.limit)}
-        if since_ts is not None:
-            args_payload["since_ts"] = float(since_ts)
         try:
-            resp = _query(sock, "bus.query", args_payload, f"q-{rounds}")
+            items = _fetch_page(
+                sock, store=args.store, limit=int(args.limit),
+                since_ts=since_ts, until_ts=None, req_id=f"q-{rounds}",
+            )
         except Exception as exc:
             print(f"[probe] 查询失败: {exc}")
             return 2
-        if not resp.get("ok"):
-            print(f"[probe] 查询被拒: {resp.get('error')}")
-            return 2
+        # A full page means the server handed back only the newest slice: walk
+        # backwards with until_ts so a burst bigger than --limit loses nothing.
+        if items and len(items) >= int(args.limit):
+            older: list[dict] = []
+            boundary = _effective_ts(items[0])
+            for hop in range(20):
+                try:
+                    batch = _fetch_page(
+                        sock, store=args.store, limit=int(args.limit),
+                        since_ts=since_ts, until_ts=boundary - 1e-6,
+                        req_id=f"q-{rounds}-b{hop}",
+                    )
+                except Exception as exc:
+                    print(f"[probe] 回补失败: {exc}")
+                    break
+                if not batch:
+                    break
+                older = batch + older
+                if len(batch) < int(args.limit):
+                    break
+                boundary = _effective_ts(batch[0])
+            items = older + items
+            if len(older) >= 20 * int(args.limit):
+                print("[probe] 注意：回补达到上限，可能仍有记录未取到，请调大 --limit")
 
-        items = list((resp.get("result") or {}).get("items") or [])
-        # Order by the time the record is displayed with, not by arrival order.
-        items.sort(key=_effective_ts)
         printed = 0
         round_keys: set[str] = set()
         for item in items:
@@ -220,9 +255,6 @@ def main() -> int:
         if items:
             newest = max(_effective_ts(item) for item in items)
             since_ts = newest if since_ts is None else max(float(since_ts), newest)
-            if len(items) >= int(args.limit):
-                print(f"[probe] 注意：本页已满（limit={args.limit}），可能有记录落在两次轮询之间"
-                      f"，需要时用更大的 --limit 重跑")
         seen_prev = round_keys
         rounds += 1
         if deadline and time.time() >= deadline:

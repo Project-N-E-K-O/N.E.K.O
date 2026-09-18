@@ -143,17 +143,37 @@ def test_ai_turn_without_paired_user_message_stays_single(published):
 def test_client_published_text_is_not_published_again(published):
     class _Session:
         _bus_published_text = "喵，这条已经发过了。"
-        _bus_published_at = time.time()
 
     async def _scenario():
         stub = _StubManager()
         stub.session = _Session()
+        # 客户端发布发生在本轮窗口内 → 同一条，跳过
+        stub._current_ai_turn_started_at = time.time() - 2.0
+        stub.session._bus_published_at = time.time() - 1.0
         stub._current_ai_turn_text = "喵，这条已经发过了。"
         turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
         await stub.drain()
 
     asyncio.run(_scenario())
     assert published == [], "离线客户端已经发布过的文本不应重复上总线"
+
+
+def test_identical_text_in_a_later_turn_is_still_published(published):
+    class _Session:
+        _bus_published_text = "喵，我在的。"
+        _bus_published_at = time.time() - 30.0  # 上一轮留下的标记
+
+    async def _scenario():
+        stub = _StubManager()
+        stub.session = _Session()
+        # 新的一轮：起始时刻晚于那次发布 → 不是同一条，必须照发
+        stub._current_ai_turn_started_at = time.time()
+        stub._current_ai_turn_text = "喵，我在的。"
+        turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
+        await stub.drain()
+
+    asyncio.run(_scenario())
+    assert len(published) == 1, "相同文本但属于新轮次时不能被当成重复丢掉"
 
 
 def test_ai_flush_defaults_to_assistant_message(published):
@@ -239,3 +259,13 @@ def test_forward_conversation_turn_falls_back_to_now(monkeypatch):
     before = time.time()
     api_runtime._forward_conversation_turn({"content": "没有 ts 的旧事件"})
     assert records and before <= records[0]["timestamp"] <= time.time() + 1
+
+
+def test_non_finite_producer_ts_falls_back_to_now():
+    from app.agent_server import api_runtime
+
+    before = time.time()
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        resolved = api_runtime._resolve_conversation_ts({"ts": bad})
+        assert before <= resolved <= time.time() + 1, f"{bad} 必须回退到当前时间"
+    assert api_runtime._resolve_conversation_ts({"ts": 123.5}) == 123.5

@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+import math
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -277,9 +279,12 @@ def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
     if raw is None:
         return time.time()
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         return time.time()
+    # NaN/Inf would poison the store index: since_ts/until_ts filtering and any
+    # consumer-side sort stop being reliable.
+    return value if math.isfinite(value) else time.time()
 
 
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:

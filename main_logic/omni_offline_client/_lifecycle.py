@@ -152,6 +152,9 @@ class _LifecycleMixin:
                 # 免得同一段主动回复在 store 里出现两条。
                 self._bus_published_text = text
                 self._bus_published_at = time.time()
+                # 这一轮用的是本客户端现铸的 id（管理器那边的轮次 id 与之不可比），
+                # 记录下来便于排查「哪条记录是谁发的」。
+                self._bus_published_turn_id = str(conversation_id or "")
             return published
         except asyncio.CancelledError:
             raise

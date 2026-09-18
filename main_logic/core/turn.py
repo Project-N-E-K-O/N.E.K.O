@@ -368,11 +368,17 @@ class TurnMixin:
         cleaned = str(text or "").strip()
         if not cleaned:
             return
-        # 离线客户端的 proactive 路径自己会发布同一段文本；别发第二遍。
+        # 离线客户端的 proactive 路径自己会发布这段文本（它那一轮的 id 是现铸的，
+        # 与管理器轮次 id 不可比）。判据用时间而不是只看文本：只有客户端发布
+        # 落在**本轮窗口内**才算同一条，避免把之后独立轮次里一模一样的回复删掉。
         session = getattr(self, "session", None)
+        client_text = str(getattr(session, "_bus_published_text", "") or "").strip()
+        client_at = float(getattr(session, "_bus_published_at", 0.0) or 0.0)
         if (
-            str(getattr(session, "_bus_published_text", "") or "").strip() == cleaned
-            and (time.time() - float(getattr(session, "_bus_published_at", 0.0) or 0.0)) < 60.0
+            client_text
+            and client_text == cleaned
+            and started_at
+            and client_at >= float(started_at) - 0.5
         ):
             return
         try:
