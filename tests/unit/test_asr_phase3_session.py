@@ -994,6 +994,67 @@ async def test_detector_handler_failure_still_delivers_fail_closed_notifications
     await _drain_fail_closed_teardown(runtime)
 
 
+async def test_asr_failure_settles_a_prepared_turns_core_pause():
+    """A failure that discards a prepared turn must still settle it.
+
+    Preparation arms a dispatch pause inside Core keyed to this turn. Nothing
+    downstream can release it: the pause blocks the arbiter barrier that sits
+    *before* the first provider send, so a turn abandoned silently here leaves
+    Core unable to answer anything for the rest of the session, with no
+    provider event, no bounded wait and no escalation to say so.
+    """
+
+    runtime, _lifecycle_states, failures, _statuses = _build_fail_closed_runtime()
+    session = SimpleNamespace(
+        is_ready=True,
+        signal_user_activity_end=AsyncMock(),
+        close=AsyncMock(),
+    )
+    turn_token, _lifecycle = _install_independent_asr_turn(runtime, session)
+    runtime._asr_turn_prepared = True
+    runtime._asr_prepared_turn_token = turn_token
+
+    await runtime._handle_independent_asr_error(
+        runtime._asr_session_epoch,
+        "qwen",
+        status_code="ASR_INDEPENDENT_FAILED",
+    )
+    await _drain_fail_closed_teardown(runtime)
+
+    assert [event.code for event in failures] == ["ASR_INDEPENDENT_FAILED"]
+    runtime._callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+    assert runtime._asr_prepared_turn_token is None
+    assert runtime._asr_turn_prepared is False
+
+
+async def test_asr_failure_without_a_prepared_turn_settles_nothing():
+    """Counter-test: the settlement is owed only when a promise was made.
+
+    Without this, the assertion above would also pass for an implementation
+    that abandons some turn on every failure — which would release a pause
+    belonging to a turn that is still live.
+    """
+
+    runtime, _lifecycle_states, failures, _statuses = _build_fail_closed_runtime()
+    session = SimpleNamespace(
+        is_ready=True,
+        signal_user_activity_end=AsyncMock(),
+        close=AsyncMock(),
+    )
+    _turn_token, _lifecycle = _install_independent_asr_turn(runtime, session)
+    assert runtime._asr_turn_prepared is False
+
+    await runtime._handle_independent_asr_error(
+        runtime._asr_session_epoch,
+        "qwen",
+        status_code="ASR_INDEPENDENT_FAILED",
+    )
+    await _drain_fail_closed_teardown(runtime)
+
+    assert [event.code for event in failures] == ["ASR_INDEPENDENT_FAILED"]
+    runtime._callbacks.on_turn_abandoned.assert_not_awaited()
+
+
 def _make_provider_endpoint_session(events: list[str]) -> _RealtimeAsrSessionImpl:
     async def on_transcript(text: str) -> None:
         events.append(f"final:{text}")

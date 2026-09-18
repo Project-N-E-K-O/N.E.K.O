@@ -29,6 +29,7 @@ from main_logic.asr_client.runtime import (
     AsrStartResult,
     AsrStartStatus,
     IndependentAsrRuntime,
+    _CandidateRejectionSuppression,
 )
 from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
@@ -1778,6 +1779,80 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
     assert runtime._omni_mic_audio_bytes == 0
 
 
+async def test_rejected_transcript_submission_settles_the_prepared_turn() -> None:
+    """A refused envelope must still release the turn's dispatch pause.
+
+    Submission is where the preparation promise was to be handed to Core, and
+    the prepared-turn slot is cleared just before it, so no later teardown can
+    name this turn. What settles it is the voice-input registry cancelling the
+    route, which abandons the turn through the Core-chat consumer. Should that
+    owner stop covering this path, the pause would only be released by its own
+    bound, and the warning doing so would describe a leak rather than this
+    rejection.
+    """
+
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    # The dispatcher refuses the envelope: its contract raises RuntimeError
+    # once the slot backing this final is no longer reserved, which an
+    # identity barrier can do while the final is still in flight.
+    runtime._asr_runtime._asr_transcript_dispatcher.submit = MagicMock(
+        side_effect=RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED"),
+    )
+
+    await runtime._handle_independent_asr_final(
+        "hello",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
+
+
+async def test_teardown_settles_a_turn_parked_on_the_rejection_suppression() -> None:
+    """A teardown must adopt the debt the rejection path left on the suppression.
+
+    The candidate rejection clears the prepared slot inside the final lock and
+    parks the promise on its suppression, then releases the lock to await the
+    lease, the session close and the detector reset. A teardown landing in that
+    window clears the suppression, which makes
+    ``_complete_candidate_rejection`` return without notifying Core -- so the
+    reset is the only settler left and must be able to name the turn.
+    """
+
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    prepared = runtime._asr_prepared_turn_token
+    assert prepared is not None
+
+    runtime._asr_prepared_turn_token = None
+    runtime._asr_candidate_rejection = _CandidateRejectionSuppression(
+        request=MagicMock(),
+        turn_token=prepared,
+        final_key=MagicMock(),
+        lifecycle=runtime._asr_lifecycle,
+        detector=runtime._asr_detector,
+    )
+
+    runtime._settle_discarded_prepared_turn(runtime._reset_asr_turn_state())
+    settling = tuple(runtime._asr_close_tasks)
+    assert settling, "the reset found nobody to settle"
+    await asyncio.gather(*settling)
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
+
+
 async def test_blocked_consumer_callback_does_not_block_next_turn_lifecycle() -> (
     None
 ):
@@ -1994,7 +2069,7 @@ async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() 
     )
 
     barrier = source.index("async with core_voice_session_lock")
-    close = source.index("await old_main_session.close()")
+    close = source.index("await self._close_owned_session(old_main_session)")
     promote = source.index("self.session = new_session")
     assert barrier < close < promote
 
@@ -7570,6 +7645,7 @@ async def test_old_pipeline_failure_does_not_report_replacement_provider() -> No
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     order: list[str] = []
     manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager._bg_tasks = set()
     manager.lock = asyncio.Lock()
     manager.input_cache_lock = asyncio.Lock()
     manager.is_active = False
@@ -7599,6 +7675,9 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
         async def handle_messages(self) -> None:
             await stop.wait()
 
+        async def close(self) -> None:
+            stop.set()
+
     manager.session = _Session()
 
     await LLMSessionManager._start_session_activate(
@@ -7611,6 +7690,8 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     assert order == ["asr", "started"]
     stop.set()
     await manager.message_handler_task
+    await asyncio.gather(*tuple(manager._bg_tasks))
+    manager._flush_pending_input_data.assert_awaited_once()
 
 
 async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> None:
