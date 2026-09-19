@@ -129,6 +129,21 @@ def _effective_ts(item: dict) -> float:
     return 0.0
 
 
+def _index_ts(item: dict) -> float:
+    """The timestamp the store filters on (``index.timestamp``).
+
+    `since_ts` / `until_ts` compare against this field, so the follow cursor has
+    to use it too; `_effective_ts` (producer time) is only for display order.
+    """
+    index = item.get("index") if isinstance(item, dict) else None
+    if isinstance(index, dict) and index.get("timestamp") is not None:
+        try:
+            return float(index["timestamp"])
+        except (TypeError, ValueError):
+            pass
+    return _effective_ts(item)
+
+
 def _dedupe_key(item: dict) -> str:
     payload = item.get("payload") if isinstance(item, dict) else None
     if not isinstance(payload, dict):
@@ -207,14 +222,16 @@ def main() -> int:
             return 2
         # A full page means the server handed back only the newest slice: walk
         # backwards with until_ts so a burst bigger than --limit loses nothing.
+        # until_ts is INCLUSIVE, so the boundary is reused as-is (records sharing
+        # that timestamp must not be cut off) and duplicates are dropped below.
         if items and len(items) >= int(args.limit):
             older: list[dict] = []
-            boundary = _effective_ts(items[0])
+            boundary = min(_index_ts(item) for item in items)
             for hop in range(20):
                 try:
                     batch = _fetch_page(
                         sock, store=args.store, limit=int(args.limit),
-                        since_ts=since_ts, until_ts=boundary - 1e-6,
+                        since_ts=since_ts, until_ts=boundary,
                         req_id=f"q-{rounds}-b{hop}",
                     )
                 except Exception as exc:
@@ -223,21 +240,26 @@ def main() -> int:
                 if not batch:
                     break
                 older = batch + older
-                if len(batch) < int(args.limit):
+                oldest = min(_index_ts(item) for item in batch)
+                if len(batch) < int(args.limit) or oldest >= boundary:
+                    # 页不满 → 已到窗口边缘；时间戳不再前移 → 同一时间戳的记录多于
+                    # limit，这个 store API 无法再往下分页。
                     break
-                boundary = _effective_ts(batch[0])
+                boundary = oldest
             items = older + items
             if len(older) >= 20 * int(args.limit):
                 print("[probe] 注意：回补达到上限，可能仍有记录未取到，请调大 --limit")
+        items.sort(key=_effective_ts)
 
         printed = 0
         round_keys: set[str] = set()
         for item in items:
             key = _dedupe_key(item)
+            seen_this_round = key in round_keys
             round_keys.add(key)
             # Records sharing the boundary timestamp come back again next round;
             # only the previous page's keys need remembering.
-            if key in seen_prev:
+            if seen_this_round or key in seen_prev:
                 continue
             if rounds == 0 and not args.follow and not args.show_all:
                 pass  # 首轮（非跟读）就是要看现状，照常打印
@@ -253,7 +275,9 @@ def main() -> int:
         # Advance the server-side cursor so older records can't be re-fetched and
         # a burst larger than --limit is detected instead of silently skipped.
         if items:
-            newest = max(_effective_ts(item) for item in items)
+            # 游标必须用查询索引时间（since_ts 过滤的就是它），且保持包含语义：
+            # 同时间戳的兄弟记录下一轮会再取一次，由 seen_prev 去重。
+            newest = max(_index_ts(item) for item in items)
             since_ts = newest if since_ts is None else max(float(since_ts), newest)
         seen_prev = round_keys
         rounds += 1
@@ -289,6 +313,13 @@ def _self_test() -> int:
         "source": "main_logic.core", "timestamp": now - 1.0,
         "content": "在吗", "metadata": {"role": "master", "ts": now - 1.0},
     })
+    # Same index timestamp as the record above: a cursor that advanced past it
+    # would skip this sibling, so the boundary query below must see both.
+    store.publish("all", {
+        "kind": "conversation", "type": "conversation_turn",
+        "source": "main_logic.core", "timestamp": now - 1.0,
+        "content": "在的", "metadata": {"role": "master", "ts": now - 1.0},
+    })
     store.publish("all", {
         "kind": "conversation", "type": "conversation_turn",
         "source": "main_logic.core", "timestamp": now - 3.0,
@@ -299,7 +330,7 @@ def _self_test() -> int:
     server = MessagePlaneRpcServer(endpoint=endpoint, stores=registry)
     thread = threading.Thread(target=server.serve_forever, name="probe-self-test", daemon=True)
     thread.start()
-    print(f"[self-test] 内存总线起在 {endpoint}，塞了 1 条主人 + 1 条猫娘对话")
+    print(f"[self-test] 内存总线起在 {endpoint}，塞了 2 条主人（同时间戳）+ 1 条猫娘对话")
 
     sock = _connect(endpoint)
     try:
@@ -317,8 +348,19 @@ def _self_test() -> int:
         for item in items:
             print("[self-test] " + _record_line(item))
         lines = [_record_line(item) for item in items]
-        ok = len(lines) == 2 and "cat" in lines[0] and "master" in lines[1]
-        print("[self-test]", "OK —— 插件读到的就是这两条" if ok else f"FAIL: {lines}")
+        boundary = _query(sock, "bus.query", {
+            "store": _DEFAULT_STORE, "topic": "all", "limit": 10,
+            "since_ts": now - 1.0,
+        }, "st-boundary")
+        boundary_items = (boundary_resp := (boundary.get("result") or {})).get("items") or []
+        ok_order = len(lines) == 3 and "cat" in lines[0]
+        # since_ts 是包含语义：同时间戳的两条必须都还在，游标才不会跳过它们。
+        ok_boundary = len(boundary_items) == 2
+        ok = ok_order and ok_boundary
+        if not ok:
+            print(f"[self-test] FAIL: order={ok_order} boundary={ok_boundary} lines={lines}")
+        print("[self-test]", "OK —— 顺序按 metadata.ts，同时间戳记录不会被游标跳过" if ok
+              else "[self-test] FAIL")
         return 0 if ok else 1
     finally:
         sock.close(linger=0)
