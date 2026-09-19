@@ -471,6 +471,12 @@ class LLMSessionManager(
         # 文本判断是否问问号 → 触发 unfinished_thread 机制（5 分钟内允许至多 2
         # 次跟进）；topic sink 独立消费同一 turn，不和 activity tracker 耦合。
         self._current_ai_turn_text: str = ''
+        # 当前 AI 轮的身份，随 _current_ai_turn_text 一起在轮次结束时发布给插件总线。
+        self._current_ai_turn_id: str = ''
+        # 当前 AI 轮首块到达的时刻（插件总线上的 "她开口的时间"）。
+        self._current_ai_turn_started_at: float = 0.0
+        # 已发布到插件总线的主人轮 id，用于给同一轮的 AI 记录标注 message_count=2。
+        self._plugin_bus_user_turn_ids: deque = deque(maxlen=64)
         self._recent_ai_voice_echo_text: str = ''
         self._recent_ai_voice_echo_at: float = 0.0
         self._pending_ai_voice_echo_text: str = ''

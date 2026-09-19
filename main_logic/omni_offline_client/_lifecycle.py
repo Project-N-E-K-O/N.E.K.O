@@ -138,7 +138,7 @@ class _LifecycleMixin:
         # read the name the same defensive way the media helpers read it.
         lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
         try:
-            return bool(await publish_conversation_turn_observed_best_effort(
+            published = bool(await publish_conversation_turn_observed_best_effort(
                 lanlan_name,
                 content=text,
                 turn_type=turn_type,
@@ -146,6 +146,7 @@ class _LifecycleMixin:
                 source=_BUS_CONVERSATION_SOURCE,
                 message_count=message_count,
             ))
+            return published
         except asyncio.CancelledError:
             raise
         except Exception as publish_error:
