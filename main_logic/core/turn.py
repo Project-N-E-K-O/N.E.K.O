@@ -971,7 +971,7 @@ class TurnMixin:
             # 主人轮沿用本轮 speech id，这样她的回复能带同一个 conversation_id，
             # 插件可以把一问一答配成一轮（回复记录的 message_count=2）。
             user_turn_id = str(getattr(self, "current_speech_id", "") or "")
-            self._fire_task(publish_conversation_turn_observed_best_effort(
+            task = self._fire_task(publish_conversation_turn_observed_best_effort(
                 self.lanlan_name,
                 content=cleaned,
                 turn_type="user_message",
@@ -985,10 +985,22 @@ class TurnMixin:
                 },
                 ts=published_at,
             ))
-            if user_turn_id:
-                published_user_turns = getattr(self, "_plugin_bus_user_turn_ids", None)
-                if published_user_turns is not None:
-                    published_user_turns.append(user_turn_id)
+            if user_turn_id and task is not None and hasattr(task, "add_done_callback"):
+                def _remember_published_user_turn(finished, turn_id=user_turn_id):
+                    # 只有真的发出去才登记，否则她的回复会带上一个不存在的主人记录
+                    # 的 message_count=2。
+                    try:
+                        if finished.cancelled() or finished.exception() is not None:
+                            return
+                        if not finished.result():
+                            return
+                        published_user_turns = getattr(self, "_plugin_bus_user_turn_ids", None)
+                        if published_user_turns is not None:
+                            published_user_turns.append(turn_id)
+                    except Exception:
+                        logger.debug("[plugin-bus] user turn id not registered", exc_info=True)
+
+                task.add_done_callback(_remember_published_user_turn)
         except Exception:
             logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {

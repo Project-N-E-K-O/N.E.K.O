@@ -41,6 +41,7 @@ class _StubManager(turn_module.TurnMixin):
     async def drain(self) -> None:
         if self._bg:
             await asyncio.gather(*self._bg, return_exceptions=True)
+            await asyncio.sleep(0)  # 让 add_done_callback 排到本帧执行
 
 
 @pytest.fixture
@@ -91,6 +92,30 @@ def test_blank_user_utterance_is_not_published(published):
 
     asyncio.run(_scenario())
     assert published == []
+
+
+def test_user_turn_id_is_registered_only_after_publish_succeeds(monkeypatch):
+    calls: list[dict] = []
+
+    async def _fake_failed(lanlan_name, **kwargs):
+        calls.append(kwargs)
+        return False  # 总线没收到
+
+    monkeypatch.setattr(
+        turn_module, "publish_conversation_turn_observed_best_effort", _fake_failed,
+    )
+
+    async def _scenario():
+        stub = _StubManager()
+        turn_module.TurnMixin._publish_user_utterance_to_plugin_bus(
+            stub, "发不出去的一句", is_voice_source=False,
+        )
+        await stub.drain()
+        return stub
+
+    stub = asyncio.run(_scenario())
+    assert calls, "仍然尝试发布"
+    assert list(stub._plugin_bus_user_turn_ids) == [], "发布失败不得登记轮次 id"
 
 
 def test_ai_turn_publishes_whole_text_once(published):
