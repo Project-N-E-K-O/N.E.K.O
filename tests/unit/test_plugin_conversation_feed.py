@@ -140,40 +140,52 @@ def test_ai_turn_without_paired_user_message_stays_single(published):
     assert published and published[0]["message_count"] == 1
 
 
-def test_client_published_text_is_not_published_again(published):
-    class _Session:
-        _bus_published_text = "喵，这条已经发过了。"
+def test_offline_ephemeral_turn_is_not_published_twice(published):
+    """The offline client publishes ephemeral turns itself; the manager steps aside."""
+    from main_logic.omni_offline_client import OmniOfflineClient
 
     async def _scenario():
         stub = _StubManager()
-        stub.session = _Session()
-        # 客户端发布发生在本轮窗口内 → 同一条，跳过
-        stub._current_ai_turn_started_at = time.time() - 2.0
-        stub.session._bus_published_at = time.time() - 1.0
-        stub._current_ai_turn_text = "喵，这条已经发过了。"
+        stub.session = object.__new__(OmniOfflineClient)  # 只做 isinstance 判定
+        stub._current_ai_turn_text = "喵，这条由客户端自己发。"
+        token = turn_module._proactive_expected_sid.set("turn-ephemeral")
+        try:
+            turn_module.TurnMixin._flush_ai_turn_text_to_tracker(
+                stub, turn_type="proactive_reply",
+            )
+            await stub.drain()
+        finally:
+            turn_module._proactive_expected_sid.reset(token)
+
+    asyncio.run(_scenario())
+    assert published == [], "客户端已发布的主动轮不应再被管理层发布一次"
+
+
+def test_offline_normal_turn_is_published(published):
+    """Ordinary turns (no _proactive_expected_sid pinned) are still published."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def _scenario():
+        stub = _StubManager()
+        stub.session = object.__new__(OmniOfflineClient)
+        stub._current_ai_turn_text = "普通回复。"
         turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
         await stub.drain()
 
     asyncio.run(_scenario())
-    assert published == [], "离线客户端已经发布过的文本不应重复上总线"
+    assert len(published) == 1
 
 
 def test_identical_text_in_a_later_turn_is_still_published(published):
-    class _Session:
-        _bus_published_text = "喵，我在的。"
-        _bus_published_at = time.time() - 30.0  # 上一轮留下的标记
-
     async def _scenario():
         stub = _StubManager()
-        stub.session = _Session()
-        # 新的一轮：起始时刻晚于那次发布 → 不是同一条，必须照发
         stub._current_ai_turn_started_at = time.time()
-        stub._current_ai_turn_text = "喵，我在的。"
+        stub._current_ai_turn_text = "喵，我在的。"  # 与上一轮完全相同的文本
         turn_module.TurnMixin._flush_ai_turn_text_to_tracker(stub)
         await stub.drain()
 
     asyncio.run(_scenario())
-    assert len(published) == 1, "相同文本但属于新轮次时不能被当成重复丢掉"
+    assert len(published) == 1, "相同文本属于新轮次时不能被当成重复丢掉"
 
 
 def test_ai_flush_defaults_to_assistant_message(published):

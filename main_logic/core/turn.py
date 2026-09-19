@@ -368,17 +368,14 @@ class TurnMixin:
         cleaned = str(text or "").strip()
         if not cleaned:
             return
-        # 离线客户端的 proactive 路径自己会发布这段文本（它那一轮的 id 是现铸的，
-        # 与管理器轮次 id 不可比）。判据用时间而不是只看文本：只有客户端发布
-        # 落在**本轮窗口内**才算同一条，避免把之后独立轮次里一模一样的回复删掉。
-        session = getattr(self, "session", None)
-        client_text = str(getattr(session, "_bus_published_text", "") or "").strip()
-        client_at = float(getattr(session, "_bus_published_at", 0.0) or 0.0)
+        # 离线客户端的 prompt_ephemeral 轮自己会把这轮的 instruction + reply 抄到
+        # 总线（它是该轮副本的拥有者）；这些调用方在整轮期间钉住
+        # _proactive_expected_sid，据此跳过，避免同一句话出现两条。
+        # 实时链路的 proactive 没有别的发布者，所以只对离线客户端生效——用轮次
+        # 身份而不是文本判断，之后独立轮次里一模一样的回复不会被误删。
         if (
-            client_text
-            and client_text == cleaned
-            and started_at
-            and client_at >= float(started_at) - 0.5
+            _proactive_expected_sid.get() is not None
+            and isinstance(getattr(self, "session", None), OmniOfflineClient)
         ):
             return
         try:
