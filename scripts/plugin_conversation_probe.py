@@ -129,29 +129,6 @@ def _effective_ts(item: dict) -> float:
     return 0.0
 
 
-def _index_ts(item: dict) -> float:
-    """The timestamp the store filters on (``index.timestamp``).
-
-    `since_ts` / `until_ts` compare against this field, so the follow cursor has
-    to use it too; `_effective_ts` (producer time) is only for display order.
-    """
-    index = item.get("index") if isinstance(item, dict) else None
-    if isinstance(index, dict) and index.get("timestamp") is not None:
-        try:
-            return float(index["timestamp"])
-        except (TypeError, ValueError):
-            pass
-    return _effective_ts(item)
-
-
-def _dedupe_key(item: dict) -> str:
-    payload = item.get("payload") if isinstance(item, dict) else None
-    if not isinstance(payload, dict):
-        payload = item if isinstance(item, dict) else {}
-    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return f"{payload.get('id')}|{meta.get('ts')}|{payload.get('content')}"
-
-
 def _fetch_page(sock: zmq.Socket, *, store: str, limit: int,
                 since_ts: float | None, until_ts: float | None,
                 req_id: str) -> list[dict]:
@@ -207,79 +184,53 @@ def main() -> int:
     print(f"[probe] 端点 {endpoint}；store={args.store}")
     print("[probe] 每行：时间 | turn_type | role | channel | content")
 
-    seen_prev: set[str] = set()
     deadline = time.time() + args.seconds if args.seconds else None
+    # 跟随用的是写入序号 seq，不是时间戳：bus.query 按写入顺序倒序截取，而一条
+    # 记录的时间戳可能早于它的写入时刻（AI 回复用首块时间、轮次末才落库），
+    # 按时间戳推进游标会在突发时漏读。
     since_ts = args.since_ts
+    seen_seq = -1
+    if args.follow and not args.show_all:
+        try:
+            baseline = _fetch_page(
+                sock, store=args.store, limit=int(args.limit),
+                since_ts=since_ts, until_ts=None, req_id="q-baseline",
+            )
+        except Exception as exc:
+            print(f"[probe] 查询失败: {exc}")
+            return 2
+        seen_seq = max((int(item.get("seq") or 0) for item in baseline), default=-1)
+        print(f"[probe] 跟读基线：写入序号 {seen_seq}（只打印之后的新记录）")
     rounds = 0
     while True:
         try:
             items = _fetch_page(
                 sock, store=args.store, limit=int(args.limit),
-                since_ts=since_ts, until_ts=None, req_id=f"q-{rounds}",
+                since_ts=since_ts if rounds == 0 else None,
+                until_ts=None, req_id=f"q-{rounds}",
             )
         except Exception as exc:
             print(f"[probe] 查询失败: {exc}")
             return 2
-        # A full page means the server handed back only the newest slice: walk
-        # backwards with until_ts so a burst bigger than --limit loses nothing.
-        # until_ts is INCLUSIVE, so the boundary is reused as-is (records sharing
-        # that timestamp must not be cut off) and duplicates are dropped below.
-        if items and len(items) >= int(args.limit):
-            older: list[dict] = []
-            boundary = min(_index_ts(item) for item in items)
-            for hop in range(20):
-                try:
-                    batch = _fetch_page(
-                        sock, store=args.store, limit=int(args.limit),
-                        since_ts=since_ts, until_ts=boundary,
-                        req_id=f"q-{rounds}-b{hop}",
-                    )
-                except Exception as exc:
-                    print(f"[probe] 回补失败: {exc}")
-                    break
-                if not batch:
-                    break
-                older = batch + older
-                oldest = min(_index_ts(item) for item in batch)
-                if len(batch) < int(args.limit) or oldest >= boundary:
-                    # 页不满 → 已到窗口边缘；时间戳不再前移 → 同一时间戳的记录多于
-                    # limit，这个 store API 无法再往下分页。
-                    break
-                boundary = oldest
-            items = older + items
-            if len(older) >= 20 * int(args.limit):
-                print("[probe] 注意：回补达到上限，可能仍有记录未取到，请调大 --limit")
         items.sort(key=_effective_ts)
 
+        seqs = [int(item.get("seq") or 0) for item in items]
+        if seqs and seen_seq >= 0 and min(seqs) > seen_seq + 1:
+            print(f"[probe] 注意：两次轮询之间写入了 {min(seqs) - seen_seq - 1} 条未取到的记录"
+                  f"（写入序号跳号），请调大 --limit 或缩短 --interval")
         printed = 0
-        round_keys: set[str] = set()
         for item in items:
-            key = _dedupe_key(item)
-            seen_this_round = key in round_keys
-            round_keys.add(key)
-            # Records sharing the boundary timestamp come back again next round;
-            # only the previous page's keys need remembering.
-            if seen_this_round or key in seen_prev:
-                continue
-            if rounds == 0 and not args.follow and not args.show_all:
-                pass  # 首轮（非跟读）就是要看现状，照常打印
-            elif rounds == 0 and args.follow and not args.show_all:
-                continue  # 跟读模式默认只看之后的
+            if int(item.get("seq") or 0) <= seen_seq:
+                continue  # 已打印过的写入序号
             print("[probe] " + _record_line(item))
             printed += 1
 
-        if rounds == 0 and printed == 0:
+        if seqs:
+            seen_seq = max(seen_seq, max(seqs))
+        if rounds == 0 and printed == 0 and not items:
             print("[probe] （store 里还没有记录：等一次对话/一次主动搭话再看，或还没重启宿主）")
         if not args.follow:
             break
-        # Advance the server-side cursor so older records can't be re-fetched and
-        # a burst larger than --limit is detected instead of silently skipped.
-        if items:
-            # 游标必须用查询索引时间（since_ts 过滤的就是它），且保持包含语义：
-            # 同时间戳的兄弟记录下一轮会再取一次，由 seen_prev 去重。
-            newest = max(_index_ts(item) for item in items)
-            since_ts = newest if since_ts is None else max(float(since_ts), newest)
-        seen_prev = round_keys
         rounds += 1
         if deadline and time.time() >= deadline:
             break
@@ -359,7 +310,7 @@ def _self_test() -> int:
         ok = ok_order and ok_boundary
         if not ok:
             print(f"[self-test] FAIL: order={ok_order} boundary={ok_boundary} lines={lines}")
-        print("[self-test]", "OK —— 顺序按 metadata.ts，同时间戳记录不会被游标跳过" if ok
+        print("[self-test]", "OK —— 顺序按 metadata.ts，since_ts 为包含语义" if ok
               else "[self-test] FAIL")
         return 0 if ok else 1
     finally:
