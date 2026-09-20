@@ -61,5 +61,6 @@ def test_stepfun_legacy_public_voice_labels_remain_observable() -> None:
         "elegantgentle-female": "高雅女声",
         "livelybreezy-female": "活力女声",
         "qingchunshaonv": "青春少女",
+        "voice-tone-RcH2svtsrw": "青春少女（旧版映射）",
         "wenrounansheng": "温柔男声",
     }
