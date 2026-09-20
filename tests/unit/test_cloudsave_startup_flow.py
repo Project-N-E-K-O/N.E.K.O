@@ -287,6 +287,59 @@ def test_launcher_checkpoint_corruption_starts_committed_layout_recovery_generat
 
 
 @pytest.mark.unit
+def test_launcher_failed_checkpoint_stays_in_recovery_before_cloudsave(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    root_state = {
+        "mode": launcher.ROOT_MODE_DEFERRED_INIT,
+        "current_root": str(selected_root),
+        "last_migration_result": "failed:copy_failed",
+    }
+    config_manager = SimpleNamespace(
+        app_docs_dir=selected_root,
+        load_root_state=lambda: dict(root_state),
+    )
+    layout = {
+        "selected_root": str(selected_root),
+        "anchor_root": str(anchor_root),
+        "cloudsave_root": str(anchor_root / "cloudsave"),
+        "source": "policy",
+    }
+
+    monkeypatch.setenv("NEKO_STORAGE_RECOVERY_MODE", "")
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda *_args, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "load_storage_migration",
+        lambda *_args, **_kwargs: {
+            "status": launcher.STORAGE_MIGRATION_STATUS_FAILED,
+            "source_root": str(selected_root),
+            "target_root": str(tmp_path / "target" / "N.E.K.O"),
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda *_args, **_kwargs: {
+            "attempted": False,
+            "completed": False,
+        },
+    )
+    monkeypatch.setattr(launcher, "resolve_storage_layout", lambda *_args, **_kwargs: layout)
+    monkeypatch.setattr(launcher, "export_storage_layout_to_env", lambda *_args, **_kwargs: None)
+
+    result = launcher._resolve_storage_layout_for_launch()
+
+    assert result["startup_blocked"] is False
+    assert result["startup_limited"] is True
+    assert result["limited_mode_reason"] == "recovery_required"
+    assert launcher.os.environ["NEKO_STORAGE_RECOVERY_MODE"] == "recovery_required"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("migration_result", "terminal_event", "terminal_field"),
     [
