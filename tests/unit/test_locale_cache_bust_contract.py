@@ -63,8 +63,6 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
-        "2026-09-15-storage-location-migration",
-        "2026-09-14-proactive-community-chat",
         "2026-09-12-watch-together-image-generation",
         "2026-09-12-watch-together-automatic",
         "2026-09-12-core-image-generation",
@@ -161,7 +159,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "13fb0ed60aac78e4a92815b63312bcc3b6d6b216d32ea06e307c2809aebc7b71"
+LOCALE_KEY_SIGNATURE = "ef0e2719738513864cbff825510c155695db5e5e1d59c73f11eda3a04145a184"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

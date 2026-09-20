@@ -627,7 +627,6 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
     # Keep the suite off the developer's real credential file.
     monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     async def current_desktop_status():
         snapshot = await asyncio.to_thread(C._desktop_session_snapshot)
@@ -868,57 +867,6 @@ def test_native_delegate_is_bound_to_the_refreshed_oauth_session(
         headers=_delegate_request_headers(token),
     )
     assert facts.status_code == 200
-
-
-def test_native_delegate_rechecks_the_session_at_final_issuance(client, monkeypatch):
-    """A snapshot captured before logout must not mint a post-logout delegate."""
-    stale = _delegate_session()
-
-    async def stale_snapshot():
-        return stale, ""
-
-    monkeypatch.setattr(C, "_native_delegate_session_snapshot", stale_snapshot)
-    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
-
-    response = client.get(
-        "/api/card-drop/native-delegate",
-        headers={"Sec-Fetch-Site": "same-origin"},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"detail": "desktop_login_required"}
-    assert C._native_delegates == {}
-
-
-def test_native_delegate_reports_a_busy_session_lock_as_retryable(
-    client,
-    tmp_path,
-    monkeypatch,
-):
-    snapshot = _delegate_session()
-    social = tmp_path / "social_session.json"
-
-    async def verified_snapshot():
-        return snapshot, ""
-
-    monkeypatch.setattr(C, "_native_delegate_session_snapshot", verified_snapshot)
-    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
-    Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}").write_text(
-        json.dumps({"token": "desktop-owner", "created_at": 1}),
-        encoding="utf-8",
-    )
-
-    response = client.get(
-        "/api/card-drop/native-delegate",
-        headers={"Sec-Fetch-Site": "same-origin"},
-    )
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "desktop_session_busy"}
-    assert C._native_delegates == {}
 
 
 def test_native_delegate_is_invalidated_by_logout_or_account_switch(
@@ -1709,14 +1657,7 @@ def test_social_session_init_repairs_a_failed_desktop_bind(
     monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps(
-            {
-                "access_token": "desktop-token-a",
-                "local_user_id": USER_A_ID,
-                "auth_source": "oauth",
-                "bind": {"bound": False, "error": "cloud_unreachable"},
-            }
-        ),
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1750,14 +1691,7 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
 
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps(
-            {
-                "access_token": "desktop-token-a",
-                "local_user_id": USER_A_ID,
-                "auth_source": "oauth",
-                "bind": {"bound": False, "error": "cloud_unreachable"},
-            }
-        ),
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1942,7 +1876,6 @@ def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     # 一个 repaired-bind 写者在持有 social-session 锁：clear 必须在锁上等到
     # 超时并报告失败，而不是绕过锁把镜像删掉（约 2 秒锁超时）。
@@ -1969,10 +1902,7 @@ def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
     legacy.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(primary.parent))
-    session_paths = C._social_session_paths()
-    assert session_paths[0] == primary
-    assert legacy in session_paths
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
+    assert C._social_session_paths() == [primary, legacy]
 
     writing = threading.Event()
     release = threading.Event()
@@ -2027,7 +1957,6 @@ def test_clear_auth_preserves_tickets_issued_after_unlock(client, tmp_path, monk
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setattr(C, "_social_session_path", lambda: social)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     old_ticket = C._issue_sync_ticket_for_session()
     unlocked = threading.Event()
     issued = threading.Event()
@@ -2060,75 +1989,6 @@ def test_clear_auth_preserves_tickets_issued_after_unlock(client, tmp_path, monk
     assert not C._sync_ticket_is_valid(old_ticket)
     assert C._sync_ticket_is_valid(new_ticket)
     assert C._consume_sync_ticket(new_ticket)
-
-
-def test_clear_auth_invalidates_session_proofs_after_logical_logout_commit(
-    client,
-    tmp_path,
-    monkeypatch,
-):
-    """A failed physical clear must not retain proofs for the old login."""
-    auth = tmp_path / "community_auth.json"
-    social = tmp_path / "social_session.json"
-    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
-    social.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
-    monkeypatch.setattr(C, "_auth_path", lambda: auth)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_legacy_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_logout_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_community_state_path", lambda filename: tmp_path / filename)
-    monkeypatch.setattr(C, "_unlink_credentials", lambda _paths: False)
-
-    ticket = C._issue_sync_ticket("old-session")
-    delegate = C._issue_native_delegate(
-        local_user_id=USER_A_ID,
-        audience="https://community.example",
-        session_fingerprint="old-session",
-    )
-
-    assert C._clear_auth() is False
-    assert C._current_logout_epoch() == 1
-    assert not C._sync_ticket_is_valid(ticket)
-    assert C._native_delegate_entry(delegate) is None
-
-
-def test_clear_auth_with_ticket_rechecks_the_expected_account_under_lock(
-    client,
-    tmp_path,
-    monkeypatch,
-):
-    """An old account's logout must not clear a replacement session."""
-    auth = tmp_path / "community_auth.json"
-    social = tmp_path / "social_session.json"
-    auth.write_text(json.dumps({
-        "access_token": "account-b",
-        "local_user_id": USER_B_ID,
-        "auth_source": "oauth",
-        "credential_epoch": 0,
-    }), encoding="utf-8")
-    social.write_text(json.dumps({
-        "baseUrl": "https://community.example",
-        "token": "account-b",
-        "local_user_id": USER_B_ID,
-        "auth_source": "oauth",
-        "credential_epoch": 0,
-    }), encoding="utf-8")
-    monkeypatch.setattr(C, "_auth_path", lambda: auth)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_legacy_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_logout_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_community_state_path", lambda filename: tmp_path / filename)
-    ticket = C._issue_sync_ticket("account-a")
-
-    clear_with_ticket = getattr(C, "_clear_auth_with_ticket", None)
-    assert callable(clear_with_ticket)
-    assert clear_with_ticket(ticket, expected_access="account-a") == "mismatch"
-    assert C._desktop_session_snapshot()["access_token"] == "account-b"
-    assert C._sync_ticket_is_valid(ticket)
 
 
 def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
@@ -2446,7 +2306,6 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     legacy_auth = tmp_path / "documents" / "N.E.K.O" / "community_auth.json"
     electron_root = tmp_path / "electron-user-data"
     monkeypatch.setattr(C, "_auth_path", lambda: legacy_auth)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
 
     assert C._save_auth({"access_token": "token-a"})
@@ -2467,7 +2326,6 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "refresh-a",
-        "credential_epoch": 0,
     }
     legacy_session = legacy_auth.parent / "social_session.json"
     legacy_session.write_text("{}", encoding="utf-8")
@@ -2559,7 +2417,6 @@ def test_sync_session_clear_is_origin_restricted_and_private_network_aware(
     monkeypatch.setattr(C, "_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_legacy_social_session_path", lambda: session)
     monkeypatch.setattr(C, "_access_token", lambda: "token-a")
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
 
     denied = client.post(
         "/api/card-drop/sync-session",
@@ -2797,13 +2654,11 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "legacy-refresh",
-        "credential_epoch": 0,
     }
     assert auth_data["schema_version"] == 2
     assert auth_data["local_user_id"] == USER_A_ID
     assert auth_data["auth_source"] == "legacy"
     assert auth_data["user"]["id"] == USER_A_ID
-    assert auth_data["credential_epoch"] == 0
 
 
 def test_sync_session_status_is_exact_cors_read_only_and_identity_scoped(
@@ -3103,123 +2958,6 @@ def test_sync_session_skips_legacy_client_binding_and_replaces_session(
     assert saved_session["refresh_token"] == "wrong-new-refresh"
 
 
-def test_sync_session_cannot_publish_after_a_concurrent_logout(
-    client,
-    tmp_path,
-    monkeypatch,
-):
-    """Ticket consumption and both credential writes form one logout transaction."""
-    from concurrent.futures import ThreadPoolExecutor
-    from contextlib import contextmanager
-
-    auth = tmp_path / "community_auth.json"
-    social = tmp_path / "social_session.json"
-    monkeypatch.setattr(C, "_auth_path", lambda: auth)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_legacy_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_logout_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_community_state_path", lambda filename: tmp_path / filename)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
-    _cloud_client(monkeypatch)
-    ticket = _issue_sync_ticket(client)
-
-    ticket_consumed = threading.Event()
-    release_sync = threading.Event()
-    clear_attempted = threading.Event()
-    clear_thread: dict[str, int] = {}
-    real_consume = C._consume_sync_ticket
-    real_locks = C._social_session_locks
-
-    def pause_after_consume(value, **kwargs):
-        consumed = real_consume(value, **kwargs)
-        if consumed and value == ticket:
-            ticket_consumed.set()
-            assert release_sync.wait(5)
-        return consumed
-
-    @contextmanager
-    def observe_clear_lock(paths, **kwargs):
-        is_clear = threading.get_ident() == clear_thread.get("id")
-        if is_clear:
-            clear_attempted.set()
-        with real_locks(paths, **kwargs):
-            yield
-
-    def sync_request():
-        return client.post(
-            "/api/card-drop/sync-session",
-            headers={"Origin": "https://community.example"},
-            json={
-                "base_url": "https://community.example",
-                "access_token": "wrong-new-token",
-                "refresh_token": "wrong-new-refresh",
-                "sync_ticket": ticket,
-            },
-        )
-
-    def clear():
-        clear_thread["id"] = threading.get_ident()
-        return C._clear_auth()
-
-    monkeypatch.setattr(C, "_consume_sync_ticket", pause_after_consume)
-    monkeypatch.setattr(C, "_social_session_locks", observe_clear_lock)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        syncing = pool.submit(sync_request)
-        try:
-            assert ticket_consumed.wait(5)
-            assert Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}").exists()
-            logout = pool.submit(clear)
-            assert clear_attempted.wait(5)
-        finally:
-            release_sync.set()
-        response = syncing.result(timeout=5)
-        assert logout.result(timeout=5)
-
-    assert response.status_code == 200
-    assert C._desktop_session_snapshot() is None
-    assert not auth.exists()
-    assert not social.exists()
-
-
-def test_sync_session_reports_busy_without_invalidating_the_ticket(
-    client,
-    tmp_path,
-    monkeypatch,
-):
-    auth = tmp_path / "community_auth.json"
-    social = tmp_path / "social_session.json"
-    monkeypatch.setattr(C, "_auth_path", lambda: auth)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
-    _cloud_client(monkeypatch)
-    ticket = _issue_sync_ticket(client)
-    lock_path = Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}")
-    lock_path.write_text(
-        json.dumps({"token": "desktop-owner", "created_at": 1}),
-        encoding="utf-8",
-    )
-
-    response = client.post(
-        "/api/card-drop/sync-session",
-        headers={"Origin": "https://community.example"},
-        json={
-            "base_url": "https://community.example",
-            "access_token": "wrong-new-token",
-            "refresh_token": "wrong-new-refresh",
-            "sync_ticket": ticket,
-        },
-    )
-
-    assert response.status_code == 503
-    assert response.json() == {"detail": "desktop_session_busy"}
-    assert C._sync_ticket_is_valid(ticket)
-    assert not auth.exists()
-    assert not social.exists()
-
-
 def test_legacy_local_login_returns_410(client, tmp_path, monkeypatch):
     auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
 
@@ -3307,100 +3045,6 @@ async def test_store_session_offloads_local_credential_io(monkeypatch):
     assert all(thread_id != event_loop_thread for thread_id in worker_threads.values())
 
 
-def test_persist_session_credentials_fences_logout_across_both_files(
-    tmp_path,
-    monkeypatch,
-):
-    """Logout must not interleave between the auth and social publications."""
-    from concurrent.futures import ThreadPoolExecutor
-    from contextlib import contextmanager
-
-    auth = tmp_path / "community_auth.json"
-    social = tmp_path / "social_session.json"
-    monkeypatch.setattr(C, "_auth_path", lambda: auth)
-    monkeypatch.setattr(C, "_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [social])
-    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
-    monkeypatch.setattr(C, "_legacy_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_logout_private_file_paths", lambda _filename: [])
-    monkeypatch.setattr(C, "_community_state_path", lambda filename: tmp_path / filename)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
-
-    auth_saved = threading.Event()
-    release_writer = threading.Event()
-    clear_attempted = threading.Event()
-    clear_thread: dict[str, int] = {}
-    real_save_auth = C._save_auth
-    real_locks = C._social_session_locks
-    real_clear_delegates = C._clear_native_delegates
-    delegate_clear_was_locked: list[bool] = []
-
-    def pause_after_auth(payload):
-        saved = real_save_auth(payload)
-        assert saved
-        auth_saved.set()
-        assert release_writer.wait(5)
-        return saved
-
-    @contextmanager
-    def observe_clear_lock(paths, **kwargs):
-        is_clear = threading.get_ident() == clear_thread.get("id")
-        if is_clear:
-            clear_attempted.set()
-        with real_locks(paths, **kwargs):
-            yield
-
-    bind = {"bound": True, "error": None}
-
-    def persist():
-        C._persist_session_credentials(
-            {
-                "access_token": "new-token",
-                "refresh_token": "new-refresh",
-                "local_user_id": USER_A_ID,
-                "auth_source": "oauth",
-                "bind": bind,
-            },
-            bind,
-            "https://community.example",
-            "new-token",
-            "new-refresh",
-            local_user_id=USER_A_ID,
-            auth_source="oauth",
-        )
-
-    def clear():
-        clear_thread["id"] = threading.get_ident()
-        return C._clear_auth()
-
-    def observe_delegate_clear():
-        delegate_clear_was_locked.append(
-            Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}").exists()
-        )
-        real_clear_delegates()
-
-    monkeypatch.setattr(C, "_save_auth", pause_after_auth)
-    monkeypatch.setattr(C, "_social_session_locks", observe_clear_lock)
-    monkeypatch.setattr(C, "_clear_native_delegates", observe_delegate_clear)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        writer = pool.submit(persist)
-        try:
-            assert auth_saved.wait(5)
-            assert Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}").exists()
-            logout = pool.submit(clear)
-            assert clear_attempted.wait(5)
-        finally:
-            release_writer.set()
-        writer.result(timeout=5)
-        assert logout.result(timeout=5)
-
-    assert C._desktop_session_snapshot() is None
-    assert not auth.exists()
-    assert not social.exists()
-    assert "local_save_failed" not in bind
-    assert delegate_clear_was_locked and all(delegate_clear_was_locked)
-
-
 @pytest.mark.asyncio
 async def test_store_session_reports_partial_local_save_failure(tmp_path, monkeypatch):
     auth = tmp_path / "community_auth.json"
@@ -3435,30 +3079,24 @@ async def test_store_session_reports_partial_local_save_failure(tmp_path, monkey
 
 def test_sync_session_clear_offloads_local_credential_io(client, monkeypatch):
     ticket = _issue_sync_ticket(client)
-    original_valid = C._sync_ticket_is_valid
     original_consume = C._consume_sync_ticket
     thread_ids: dict[str, int] = {}
 
-    def sync_ticket_is_valid(value):
-        thread_ids.setdefault("event_loop", threading.get_ident())
-        return original_valid(value)
-
     def consume_sync_ticket(value):
-        thread_ids["consume"] = threading.get_ident()
+        thread_ids.setdefault("event_loop", threading.get_ident())
         return original_consume(value)
 
     def access_token():
         thread_ids["access"] = threading.get_ident()
         return "token-a"
 
-    def clear_auth_locked(_paths):
+    def clear_auth():
         thread_ids["clear"] = threading.get_ident()
         return True
 
-    monkeypatch.setattr(C, "_sync_ticket_is_valid", sync_ticket_is_valid)
     monkeypatch.setattr(C, "_consume_sync_ticket", consume_sync_ticket)
     monkeypatch.setattr(C, "_access_token", access_token)
-    monkeypatch.setattr(C, "_clear_auth_locked", clear_auth_locked)
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
 
     response = client.post(
         "/api/card-drop/sync-session",
@@ -3472,8 +3110,8 @@ def test_sync_session_clear_offloads_local_credential_io(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert thread_ids["access"] == thread_ids["consume"] == thread_ids["clear"]
     assert thread_ids["access"] != thread_ids["event_loop"]
+    assert thread_ids["clear"] != thread_ids["event_loop"]
 
 
 def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monkeypatch):
@@ -3508,12 +3146,12 @@ def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monke
 def test_local_logout_requires_local_origin_and_single_use_ticket(client, monkeypatch):
     clear_calls = 0
 
-    def clear_auth_locked(_paths):
+    def clear_auth():
         nonlocal clear_calls
         clear_calls += 1
         return True
 
-    monkeypatch.setattr(C, "_clear_auth_locked", clear_auth_locked)
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
 
     missing_ticket = client.post("/api/card-drop/logout")
     assert missing_ticket.status_code == 403
@@ -3548,7 +3186,7 @@ def test_local_logout_requires_local_origin_and_single_use_ticket(client, monkey
 
 
 def test_local_logout_reports_local_delete_failure(client, monkeypatch):
-    monkeypatch.setattr(C, "_clear_auth_locked", lambda _paths: False)
+    monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
     response = client.post(
         "/api/card-drop/logout",

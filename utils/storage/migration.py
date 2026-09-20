@@ -2265,19 +2265,6 @@ def _durable_publish_without_replacing_at(
         _fsync_opened_migration_directory(source_parent_fd, source_parent_display)
 
 
-def _durable_replace(source: Path, target: Path) -> None:
-    """Rename and flush both directory-entry sides where supported."""
-
-    os.replace(source, target)
-    # Persist the destination name before the source-name removal. If the
-    # second barrier fails or power is lost between them, recovery may see two
-    # names, but it never has to recover an entry whose only durable name was
-    # removed first.
-    _fsync_migration_directory(target.parent)
-    if source.parent != target.parent:
-        _fsync_migration_directory(source.parent)
-
-
 def _durable_publish_without_replacing(source: Path, target: Path) -> None:
     """Publish a staged runtime entry without erasing a late external write."""
 

@@ -690,6 +690,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     lanlan_name,
                 )
                 return
+            logger.info(
+                "[%s] superseded recorder requested pause_session; ending its audio session",
+                lanlan_name,
+            )
             voice_mgr.active_session_is_idle = True
             # expected_session pins the identity for the gap between this check
             # and the fired task actually running. getattr-guarded like the rest
@@ -1070,11 +1074,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 end_reason = str(message.get("reason") or "").strip().lower()[:64]
+                logger.info(
+                    "[%s] frontend requested end_session (reason=%s goodbye_active=%s)",
+                    lanlan_name,
+                    end_reason or "-",
+                    bool(message.get("goodbye_active")),
+                )
                 if bool(message.get("goodbye_active")) or end_reason == "goodbye":
                     session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
                 _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "pause_session":
+                logger.info("[%s] frontend requested pause_session", lanlan_name)
                 session_manager[lanlan_name].active_session_is_idle = True
                 _fire_task(session_manager[lanlan_name].end_session())
 

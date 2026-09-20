@@ -25,7 +25,6 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
-from utils.storage.community_private_state import read_private_json_state
 import random
 import re
 import time
@@ -123,17 +122,6 @@ def _neko_community_legacy_session_path() -> Path | None:
         return None
 
 
-def _neko_community_canonical_session_path() -> Path | None:
-    """Return the fixed-anchor OAuth session path without router imports."""
-
-    try:
-        from utils.config_manager import get_config_manager
-
-        return Path(get_config_manager().local_state_dir) / "social_session.json"
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _neko_community_legacy_auth_path() -> Path | None:
     """Return the pre-Electron community credential file without router imports."""
 
@@ -153,16 +141,15 @@ def _neko_community_session_path() -> Path | None:
         candidate = Path(user_data_dir).expanduser()
         if candidate.is_absolute():
             return candidate / "social_session.json"
-    return _neko_community_canonical_session_path()
+    return _neko_community_legacy_session_path()
 
 
 def _neko_community_session_paths() -> list[Path]:
-    """Return override, fixed-anchor, then legacy session paths."""
+    """Return desktop then legacy OAuth-session paths, deduplicated."""
 
     paths: list[Path] = []
     for candidate in (
         _neko_community_session_path(),
-        _neko_community_canonical_session_path(),
         _neko_community_legacy_session_path(),
     ):
         if candidate is not None and candidate not in paths:
@@ -174,10 +161,12 @@ def _load_neko_community_access_token(feed_api: str) -> str:
     """Read a matching desktop OAuth token without validating or refreshing it."""
 
     for path in _neko_community_session_paths():
-        state, data = read_private_json_state(path)
-        if state != "valid":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
             continue
-        data = data or {}
+        if not isinstance(data, dict):
+            continue
         access_token = ""
         for token_candidate in (data.get("token"), data.get("access_token")):
             access_token = str(token_candidate or "").strip()
@@ -192,12 +181,9 @@ def _load_neko_community_access_token(feed_api: str) -> str:
             return access_token
 
     legacy_auth_path = _neko_community_legacy_auth_path()
-    legacy_state, legacy_auth = (
-        read_private_json_state(legacy_auth_path)
-        if legacy_auth_path is not None
-        else ("absent", None)
-    )
-    if legacy_state != "valid":
+    try:
+        legacy_auth = json.loads(legacy_auth_path.read_text(encoding="utf-8"))
+    except (AttributeError, OSError, ValueError, TypeError):
         legacy_auth = None
     legacy_access_token = str(
         legacy_auth.get("access_token") if isinstance(legacy_auth, dict) else ""

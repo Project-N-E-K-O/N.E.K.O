@@ -75,6 +75,8 @@ class RealtimeProtocolCapabilities:
     multimodal_turn_delivery: MultimodalTurnDelivery = (
         MultimodalTurnDelivery.HANDOFF_REQUIRED
     )
+    responds_to_conversation_items: bool = False
+    function_call_ids_match_terminal: bool = True
 
     @property
     def accepts_id_bearing_content_start(self) -> bool:
@@ -106,6 +108,8 @@ LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES = RealtimeProtocolCapabilities(
     response_start_evidence=(
         ResponseStartEvidence.ANNOUNCEMENT_OR_ID_BEARING_CONTENT
     ),
+    responds_to_conversation_items=True,
+    function_call_ids_match_terminal=False,
 )
 
 LANLAN_TECH_REALTIME_PROTOCOL_CAPABILITIES = RealtimeProtocolCapabilities(
