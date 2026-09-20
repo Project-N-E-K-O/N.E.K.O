@@ -182,7 +182,7 @@ def test_electron_social_session_remains_host_owned_while_backend_state_is_ancho
     assert O._oauth_pending_path() == anchor_state / "community_oauth_pending.json"
 
 
-def test_completed_storage_migration_moves_credentials_from_retained_root_once(
+def test_completed_storage_migration_copies_credentials_from_retained_root_once(
     tmp_path,
     monkeypatch,
 ):
@@ -219,8 +219,8 @@ def test_completed_storage_migration_moves_credentials_from_retained_root_once(
     assert snapshot and snapshot["access_token"] == "retained-token"
     assert json.loads((anchor_state / "community_auth.json").read_text(encoding="utf-8")) == auth
     assert json.loads((anchor_state / "social_session.json").read_text(encoding="utf-8")) == social
-    assert not (retained_root / "community_auth.json").exists()
-    assert not (retained_root / "social_session.json").exists()
+    assert (retained_root / "community_auth.json").exists()
+    assert (retained_root / "social_session.json").exists()
 
 
 
@@ -310,6 +310,35 @@ def test_malformed_canonical_credential_fails_closed_without_legacy_fallback(
         config_manager=SimpleNamespace(local_state_dir=anchor_state),
     )
     assert legacy.exists()
+
+
+def test_lazy_private_state_migration_keeps_legacy_source(tmp_path, monkeypatch):
+    anchor_state = tmp_path / "anchor" / "state"
+    selected_root = tmp_path / "target" / "N.E.K.O"
+    retained_root = tmp_path / "source" / "N.E.K.O"
+    _install_roots(
+        monkeypatch,
+        anchor_state=anchor_state,
+        selected_root=selected_root,
+        retained_root=retained_root,
+    )
+    anchor_state.mkdir(parents=True)
+    retained_root.mkdir(parents=True)
+    canonical = anchor_state / "community_auth.json"
+    legacy = retained_root / "community_auth.json"
+    legacy_record = {"access_token": "legacy-token"}
+    legacy.write_text(json.dumps(legacy_record), encoding="utf-8")
+
+    migrated = C._load_or_migrate_private_json(
+        canonical,
+        [legacy],
+        validator=lambda value: bool(value.get("access_token")),
+        retain_legacy_source=True,
+    )
+
+    assert migrated == legacy_record
+    assert json.loads(canonical.read_text(encoding="utf-8")) == legacy_record
+    assert json.loads(legacy.read_text(encoding="utf-8")) == legacy_record
 
 
 @pytest.mark.parametrize(

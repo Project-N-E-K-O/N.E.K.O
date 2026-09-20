@@ -232,6 +232,50 @@ def _build_mutation_request() -> Request:
 
 
 @pytest.mark.unit
+def test_retained_root_cleanup_rejects_replaced_directory(tmp_path, monkeypatch):
+    retained_root = tmp_path / "retained"
+    retained_root.mkdir()
+    observed = {}
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "probe_retained_community_state",
+        lambda _path: type("State", (), {"has_managed_content": False})(),
+    )
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "is_retained_root_cleanup_available",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "main_routers.card_drop_router.prepare_retained_community_state_cleanup",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def refuse_replaced_path(path, expected_identity):
+        observed["path"] = path
+        observed["identity"] = expected_identity
+        return False
+
+    monkeypatch.setattr(
+        storage_location_router_module,
+        "_remove_owned_private_directory",
+        refuse_replaced_path,
+    )
+
+    with pytest.raises(ValueError, match="清理期间被替换"):
+        storage_location_router_module._cleanup_retained_runtime_root(
+            retained_root,
+            current_root=tmp_path / "current",
+            anchor_root=tmp_path / "anchor",
+            target_root=tmp_path / "target",
+        )
+
+    assert observed["path"] == retained_root
+    assert os.path.samestat(observed["identity"], retained_root.lstat())
+    assert retained_root.is_dir()
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_storage_location_mutation_routes_share_serialization_lock():
     payload = storage_location_router_module.StorageLocationSelectionRequest(

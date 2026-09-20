@@ -94,6 +94,7 @@ from utils.storage_migration import (
     storage_migration_checkpoint_transaction,
     storage_migration_retains_recovery_evidence,
     validate_storage_migration_preflight_boundaries,
+    _remove_owned_private_directory,
     _snapshot_runtime_entries,
 )
 from utils.storage_policy import (
@@ -2191,15 +2192,16 @@ def _cleanup_retained_runtime_root(
     ):
         raise ValueError("旧数据目录当前不可清理。")
 
+    # Retry the small credential copy when the migration could not publish it;
+    # the old root remains available until this explicit cleanup succeeds.
     from main_routers.card_drop_router import prepare_retained_community_state_cleanup
 
-    # Credentials are promoted first.  If this write fails, the old directory
-    # remains intact and the already-completed migration is unaffected.
     prepare_retained_community_state_cleanup(
         retained_path,
         config_manager=config_manager,
     )
-    shutil.rmtree(retained_path)
+    if not _remove_owned_private_directory(retained_path, metadata):
+        raise ValueError("旧数据目录在清理期间被替换。")
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:

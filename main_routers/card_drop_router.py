@@ -1308,6 +1308,7 @@ def _load_or_migrate_private_json(
     *,
     validator,
     conflict_paths: list[Path] | None = None,
+    retain_legacy_source: bool = False,
 ) -> dict | None:
     """Read canonical state, or copy one known checkpointed record once."""
     del conflict_paths
@@ -1335,8 +1336,9 @@ def _load_or_migrate_private_json(
             if not _write_private_json_no_replace(canonical_path, legacy_data or {}):
                 winner_state, winner_data = _read_fixed_anchor_private_json_state(canonical_path)
                 return winner_data if winner_state == "valid" and usable(winner_data or {}) else None
-            legacy_path.unlink(missing_ok=True)
-            fsync_directory_best_effort(legacy_path.parent)
+            if not retain_legacy_source:
+                legacy_path.unlink(missing_ok=True)
+                fsync_directory_best_effort(legacy_path.parent)
         except OSError as exc:
             logger.warning("card_drop: private state migration failed for %s: %s", canonical_path.name, exc)
         return legacy_data
@@ -1370,6 +1372,7 @@ def _load_auth() -> dict | None:
         canonical,
         _legacy_private_file_paths(_AUTH_FILENAME),
         validator=lambda data: bool(str(data.get("access_token") or "").strip()),
+        retain_legacy_source=True,
     )
 
 
@@ -1383,6 +1386,7 @@ def _load_social_session() -> dict | None:
             canonical,
             [path for path in _social_session_paths() if path != canonical],
             validator=lambda data: bool(str(data.get("token") or "").strip()),
+            retain_legacy_source=True,
         )
 
     if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
