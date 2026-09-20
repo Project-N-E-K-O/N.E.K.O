@@ -5,16 +5,15 @@ import { createPinia } from 'pinia'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
 import { i18n } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
-import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
+import { initTutorialBootstrap } from './tutorialBootstrap'
 
 initDarkMode()
-initPluginDashboardYuiGuideRuntime()
+const tutorialStartup = initTutorialBootstrap()
 
 function initNativeDragGuard() {
   const handleDragStart = (event: DragEvent) => {
@@ -49,10 +48,14 @@ app.use(router)
 
 app.use(i18n)
 
-app.use(MotionPlugin)
+function mountApp() {
+  app.mount('#app')
+  const connectionStore = useConnectionStore()
+  connectionStore.startHealthCheck()
+  window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
+}
 
-app.mount('#app')
-
-const connectionStore = useConnectionStore()
-connectionStore.startHealthCheck()
-window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
+// Preserve preactivation before mount for opener handoffs; ordinary tabs do not
+// load the tutorial graph. A missing optional chunk must not strand the shell.
+if (tutorialStartup) void tutorialStartup.catch(console.warn).then(mountApp)
+else mountApp()

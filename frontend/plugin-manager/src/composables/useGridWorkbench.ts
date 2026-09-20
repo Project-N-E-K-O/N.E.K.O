@@ -13,6 +13,7 @@
  */
 import { computed, ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue'
 import { pinyin } from 'pinyin-pro'
+import { boundedMemo } from '@/utils/boundedMemo'
 
 import { tryCompileSafeRegex, warnReDoSOnce } from '@/utils/safeRegex'
 
@@ -114,19 +115,15 @@ export function safePinyin(value: string, pattern: 'pinyin' | 'first'): string {
   if (!value.trim() || !isCjkText(value)) {
     return ''
   }
-  try {
-    return pinyin(value, {
-      toneType: 'none',
-      type: 'string',
-      pattern,
-      nonZh: 'consecutive',
-      v: true,
-      traditional: true,
-    }).trim()
-  } catch {
-    return ''
-  }
+  return memoizedPinyin(JSON.stringify([value, pattern]))
 }
+
+const memoizedPinyin = boundedMemo(1024, (key) => {
+  const [value, pattern] = JSON.parse(key) as [string, 'pinyin' | 'first']
+  try {
+    return pinyin(value, { toneType: 'none', type: 'string', pattern, nonZh: 'consecutive', v: true, traditional: true }).trim()
+  } catch { return '' }
+})
 
 export function normalizeSearchPart(value?: string | null): string {
   return (value || '').trim().toLowerCase()
@@ -187,10 +184,18 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     const raw = toValue(source)
     const builder = config.buildSearchIndex
     if (!builder) return raw
-    return raw.map((item) => ({
-      ...item,
-      searchIndex: item.searchIndex || builder(item),
-    })) as T[]
+    return raw.map((item) => {
+      // Rendering/group counts need no search index. Build it on first actual
+      // search, and only once for this item snapshot (the plugin builder also
+      // caches by text inputs across new API object identities).
+      let index: string | undefined
+      return {
+        ...item,
+        get searchIndex() {
+          return index ??= item.searchIndex || builder(item)
+        },
+      }
+    }) as T[]
   })
 
   const availableIdSet = computed(() => new Set(items.value.map((item) => item.id)))
@@ -211,8 +216,7 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     return matcher(item, value, { selectedIds: state.selectedIds.value })
   }
 
-  function matchesAdvancedQuery(item: T, input: string): boolean {
-    const tokens = tokenizeQuery(input)
+  function matchesAdvancedQuery(item: T, tokens: QueryToken[]): boolean {
     if (tokens.length === 0) return true
     return tokens.every((token) => {
       const matches = token.kind === 'term'
@@ -258,8 +262,8 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
         : visibleByGroup.filter(matches)
     }
 
-    const lowered = text.toLowerCase()
-    const matches = (item: T) => matchesAdvancedQuery(item, lowered)
+    const tokens = tokenizeQuery(text.toLowerCase())
+    const matches = (item: T) => matchesAdvancedQuery(item, tokens)
     return state.filterMode.value === 'blacklist'
       ? visibleByGroup.filter((item) => !matches(item))
       : visibleByGroup.filter(matches)

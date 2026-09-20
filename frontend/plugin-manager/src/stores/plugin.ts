@@ -14,6 +14,7 @@ import {
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
+import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -107,7 +108,7 @@ export const usePluginStore = defineStore('plugin', () => {
         )
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
-        plugins.value = response.plugins || []
+        plugins.value = reconcilePluginSnapshot(plugins.value, response.plugins || [])
       } catch (err: any) {
         if (seq !== fetchPluginsSeq) return
         error.value = err.message || '获取插件列表失败'

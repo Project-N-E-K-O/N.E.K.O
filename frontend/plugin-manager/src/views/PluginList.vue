@@ -27,9 +27,7 @@
     <section
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
-      v-motion
-      :initial="{ opacity: 0, y: 16, filter: 'blur(4px)' }"
-      :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 360, type: 'spring', stiffness: 240, damping: 24 } }"
+      v-entrance="{ y: 16, stiffness: 240, damping: 24, duration: 360, blur: 4 }"
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
@@ -249,9 +247,7 @@
           <div
             v-for="(section, si) in pluginSections"
             :key="section.key"
-            v-motion
-            :initial="{ opacity: 0, y: 20 }"
-            :enter="{ opacity: 1, y: 0, transition: { delay: 120 + si * 80, duration: 420, type: 'spring', stiffness: 220, damping: 22 } }"
+            v-entrance="{ y: 20, stiffness: 220, damping: 22, duration: 420, delay: 120 + si * 80 }"
           >
             <PluginGridSection
               :title="section.title"
@@ -473,7 +469,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { vEntrance } from '@/composables/entranceMotion'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
@@ -484,9 +481,9 @@ import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marke
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
-import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
-import GithubMirrorSourcePanel from '@/components/plugin/GithubMirrorSourcePanel.vue'
-import MarketPanel from '@/components/plugin/MarketPanel.vue'
+const PackageManagerPanel = defineAsyncComponent(() => import('@/components/plugin/PackageManagerPanel.vue'))
+const GithubMirrorSourcePanel = defineAsyncComponent(() => import('@/components/plugin/GithubMirrorSourcePanel.vue'))
+const MarketPanel = defineAsyncComponent(() => import('@/components/plugin/MarketPanel.vue'))
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'

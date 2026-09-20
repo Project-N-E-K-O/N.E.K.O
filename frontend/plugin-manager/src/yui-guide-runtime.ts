@@ -3994,7 +3994,7 @@ export function startPluginDashboardTutorial(options: StartPluginDashboardTutori
   })
 }
 
-export function initPluginDashboardYuiGuideRuntime() {
+export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = []) {
   if (pluginDashboardRuntimeInitialized) {
     return
   }
@@ -4098,4 +4098,10 @@ export function initPluginDashboardYuiGuideRuntime() {
   window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
   window.addEventListener('pagehide', handleRuntimePageHide, true)
+  for (const event of queuedEvents) {
+    if (event.type === 'message') handleRuntimeMessage(event as MessageEvent)
+    else if (event.type === DESKTOP_INTERRUPT_ACK_EVENT) handleDesktopInterruptAckEvent(event)
+    else if (event.type === DESKTOP_NARRATION_FINISHED_EVENT) handleDesktopNarrationFinishedEvent(event)
+    else if (event.type === DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT) handleDesktopSystemCursorTemporaryRevealEvent(event)
+  }
 }

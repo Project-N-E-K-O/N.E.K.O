@@ -20,9 +20,7 @@
       <div
         v-for="(stat, i) in statCards"
         :key="stat.key"
-        v-motion
-        :initial="{ opacity: 0, scale: 0.92, y: 18, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)', transition: { delay: i * 60, duration: 420, type: 'spring', stiffness: 260, damping: 24 } }"
+        v-entrance="{ y: 18, stiffness: 260, damping: 24, duration: 420, scale: 0.92, blur: 6, delay: i * 60 }"
         class="stat-card"
         :class="`stat-card--${stat.key}`"
       >
@@ -40,9 +38,7 @@
     <div class="main-grid">
       <!-- Global metrics -->
       <div
-        v-motion
-        :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 280, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
+        v-entrance="{ y: 24, stiffness: 220, damping: 22, duration: 460, blur: 6, delay: 280 }"
         class="panel panel--metrics"
         data-yui-guide-id="plugin-dashboard-metrics"
       >
@@ -104,9 +100,7 @@
 
       <!-- Server info -->
       <div
-        v-motion
-        :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 380, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
+        v-entrance="{ y: 24, stiffness: 220, damping: 22, duration: 460, blur: 6, delay: 380 }"
         class="panel panel--server"
         data-yui-guide-id="plugin-dashboard-server"
       >
@@ -143,12 +137,15 @@
 </template>
 
 <script setup lang="ts">
+import { vEntrance } from '@/composables/entranceMotion'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { getServerInfo } from '@/api/plugins'
-import { startPluginDashboardTutorial, type PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
+import { startPluginDashboardTutorial } from '@/tutorialBootstrap'
+import type { PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
+import { ElMessage } from 'element-plus'
 import { PluginStatus, METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
 import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refresh } from '@element-plus/icons-vue'
@@ -406,12 +403,15 @@ function handleStartTutorial() {
     },
   ]
 
-  startPluginDashboardTutorial({
+  void startPluginDashboardTutorial({
     steps,
     labels: {
       skip: t('yuiTutorial.dismiss'),
       keyboardHint: t('yuiTutorial.keyboardSkipHint'),
     },
+  }).catch(error => {
+    console.warn('Could not start tutorial', error)
+    ElMessage.error(t('messages.operationFailed'))
   })
 }
 

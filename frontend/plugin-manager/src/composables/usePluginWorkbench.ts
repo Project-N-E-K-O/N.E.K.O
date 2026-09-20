@@ -19,6 +19,7 @@ import {
   type QualifierMatcher,
 } from '@/composables/useGridWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import { boundedMemo } from '@/utils/boundedMemo'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
 export type PluginWorkbenchFilterMode = FilterMode
@@ -58,7 +59,14 @@ function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
     plugin.version,
   ]
 
-  const pinyinParts = [name, description, shortDescription].flatMap((value) => {
+  return memoizedSearchIndex(JSON.stringify(textParts))
+}
+
+// The key includes the resolved locale text, ID, type and version; status-only
+// responses reuse it, while edits/localization changes cannot return stale text.
+const memoizedSearchIndex = boundedMemo(512, (key) => {
+  const textParts = JSON.parse(key) as (string | null)[]
+  const pinyinParts = textParts.slice(1, 4).flatMap((value) => {
     const source = value || ''
     const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
     const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
@@ -69,7 +77,7 @@ function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
     .map(normalizeSearchPart)
     .filter(Boolean)
     .join('\n')
-}
+})
 
 // ─── qualifier matchers ─────────────────────────────────────────────
 
