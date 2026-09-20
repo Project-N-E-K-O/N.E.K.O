@@ -320,6 +320,16 @@ function injectPopupStyles(prefix) {
             min-height: 20px;
             text-align: center;
         }
+        /* 间隔输入框：隐藏 number 自带的上下步进按钮，避免遮挡数字 */
+        .${prefix}-interval-input::-webkit-inner-spin-button,
+        .${prefix}-interval-input::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .${prefix}-interval-input {
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
         /* 间隔输入框：抑制获得焦点时浏览器自带的粗边框/外圈，只保留下划线 */
         .${prefix}-interval-input:focus,
         .${prefix}-interval-input:focus-visible {
@@ -2070,7 +2080,7 @@ function createIntervalControl(manager, prefix, toggle) {
         valueDisplay.step = '1';
         valueDisplay.value = currentValue;
         Object.assign(valueDisplay.style, {
-            width: '52px',
+            width: '44px',
             textAlign: 'left',
             fontFamily: 'monospace',
             fontSize: '12px',
