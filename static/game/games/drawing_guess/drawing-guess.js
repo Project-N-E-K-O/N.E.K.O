@@ -178,6 +178,7 @@
     lastVoiceTranscriptRequestId: '',
     livePollTimer: null,
     liveInFlight: false,
+    liveInFlightToken: null,
     playerTextQueueGeneration: 0,
     playerTextChain: Promise.resolve(),
     canvasContextLastHash: '',
@@ -1427,9 +1428,17 @@
     if (!liveIdlePhaseAcceptsInterject()) return;
     var flowToken = state.roundFlowToken;
     state.liveInFlight = true;
+    state.liveInFlightToken = flowToken;
     executeRoundCommand(ROUND_COMMANDS.LIVE, roundCommandPayload(), LIVE_REQUEST_TIMEOUT_MS)
       .then(function (res) {
-        if (!isCurrentRoundFlow(flowToken) || !res || res.ok === false) return;
+        if (!isCurrentRoundFlow(flowToken)
+          || !res
+          || res.ok === false
+          || LIVE_IDLE_PHASES.indexOf(state.phase) < 0
+          || state.routeEnding
+          || state.chatInFlight
+          || state.aiGuessInFlight
+          || state.nekoVoiceInFlight) return;
         var lines = Array.isArray(res.lines) ? res.lines : [];
         for (var i = 0; i < lines.length; i += 1) {
           var text = lines[i] && lines[i].text ? String(lines[i].text) : '';
@@ -1438,8 +1447,9 @@
       })
       .catch(function () { /* live interject is best effort */ })
       .finally(function () {
-        if (!isCurrentRoundFlow(flowToken)) return;
+        if (state.liveInFlightToken !== flowToken) return;
         state.liveInFlight = false;
+        state.liveInFlightToken = null;
       });
   }
 
@@ -1651,6 +1661,7 @@
     stopAiGuessSchedule();
     stopLivePoll();
     state.liveInFlight = false;
+    state.liveInFlightToken = null;
   }
 
   function handleSdkRuntimeState(event) {
@@ -3315,6 +3326,7 @@
     stopAiGuessSchedule();
     stopLivePoll();
     state.liveInFlight = false;
+    state.liveInFlightToken = null;
     setPhase('loading_round');
     showPlaceholder();
     setBadge(t('drawingGuess.phases.loading_round', 'Loading'));

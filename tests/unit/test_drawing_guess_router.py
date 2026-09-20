@@ -5656,16 +5656,9 @@ async def test_live_drops_a_line_that_leaks_the_hidden_answer(monkeypatch):
     state = _put_sdk_drawing_route("dg-live-leak", "")
     inbox = _attach_live_inbox(state)
     inbox.accept(_plugin_cue("是猫吧"))
+    _install_fake_character_llm(monkeypatch, "对，就是猫。")
+    monkeypatch.setattr(dgr, "_render_live_audience_messages", lambda *_args, **_kwargs: "是猫吧")
 
-    async def guarded_line(**kwargs):
-        line, blocked = dgr._guard_hidden_answer_model_line(
-            "对，就是猫。",
-            session=session,
-            allow_answer_reveal=False,
-        )
-        return ("", "fallback") if blocked else (line, "persona_model")
-
-    monkeypatch.setattr(dgr, "_generate_persona_game_line", guarded_line)
     result = await dgr.drawing_guess_live(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-live-leak",
@@ -5674,6 +5667,69 @@ async def test_live_drops_a_line_that_leaks_the_hidden_answer(monkeypatch):
     }))
     assert result == {"ok": True, "lines": []}
     assert not any(item.get("kind") == "live_reply" for item in session.get("game_chat_history") or [])
+    assert inbox.pending == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_live_returns_cues_when_phase_changes_during_generation(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-live-phase-race",
+        "i18n_language": "zh-CN",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-live-phase-race"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "cat"
+    state = _put_sdk_drawing_route("dg-live-phase-race", "")
+    inbox = _attach_live_inbox(state)
+    inbox.accept(_plugin_cue("主播加油"))
+
+    async def advance_phase(**_kwargs):
+        session["phase"] = "word_picking"
+        return "谢谢弹幕，我们继续猜。", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", advance_phase)
+    monkeypatch.setattr(dgr, "_render_live_audience_messages", lambda *_args, **_kwargs: "主播加油")
+    result = await dgr.drawing_guess_live(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-live-phase-race",
+        "i18n_language": "zh-CN",
+        "client_round_token": session["client_round_token"],
+    }))
+    assert result == {"ok": True, "lines": []}
+    assert inbox.pending == 1
+    assert not any(item.get("kind") == "live_reply" for item in session.get("game_chat_history") or [])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_live_returns_cues_on_cancellation(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-live-cancel",
+        "i18n_language": "zh-CN",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-live-cancel"]
+    session["phase"] = "user_guessing"
+    state = _put_sdk_drawing_route("dg-live-cancel", "")
+    inbox = _attach_live_inbox(state)
+    inbox.accept(_plugin_cue("好看"))
+
+    async def cancel_line(**_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", cancel_line)
+    monkeypatch.setattr(dgr, "_render_live_audience_messages", lambda *_args, **_kwargs: "好看")
+    with pytest.raises(asyncio.CancelledError):
+        await dgr.drawing_guess_live(_FakeRequest({
+            "lanlan_name": "YUI",
+            "session_id": "dg-live-cancel",
+            "i18n_language": "zh-CN",
+            "client_round_token": session["client_round_token"],
+        }))
+    assert inbox.pending == 1
+    assert state[dgr._LIVE_BUSY_KEY] is False
 
 
 @pytest.mark.unit

@@ -215,6 +215,8 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "function pollLiveInterject()" in script
     assert "LIVE_POLL_INTERVAL_MS = 5000" in script
     assert "LIVE_REQUEST_TIMEOUT_MS = 30000" in script
+    assert "liveInFlightToken: null" in script
+    assert "if (state.liveInFlightToken !== flowToken) return;" in script
     assert "client.commands.execute(command, payload || {}" in script
     assert "client.speech.speak({" in script
     assert "client.voice.onState(handleSdkVoiceState)" in script

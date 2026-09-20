@@ -3399,6 +3399,23 @@ def _drawing_guess_live_inbox(
     return state, state.get(_TAKEOVER_CALLBACK_INBOX_KEY)
 
 
+def _live_prompt_snapshot(session: dict[str, Any]) -> tuple[str, str, list[dict[str, str]]]:
+    return (
+        str(session.get("phase") or ""),
+        str(session.get("round_id") or ""),
+        _recent_game_chat_payload(session),
+    )
+
+
+def _return_live_callbacks(inbox, callbacks, live_lines) -> None:
+    remaining: list[dict[str, Any]] = []
+    for callback in callbacks:
+        if inbox is None or not inbox.accept(callback):
+            remaining.append(callback)
+    if remaining:
+        live_lines.settle(remaining, False)
+
+
 async def _generate_persona_game_line(
     *,
     session: dict[str, Any],
@@ -5072,6 +5089,7 @@ async def drawing_guess_live(request: Request):
             lanlan_name=lanlan_name,
         )
         details["allow_answer_reveal"] = False
+        prompt_snapshot = _live_prompt_snapshot(session)
         line, source = await _generate_persona_game_line(
             session=session,
             locale=locale,
@@ -5080,19 +5098,32 @@ async def drawing_guess_live(request: Request):
             fallback="",
             details=details,
         )
-        identity_error = _drawing_guess_session_identity_error(data, session)
-        stale = all(callback_is_expired(callback) for callback in callbacks)
-        if (
-            identity_error
-            or stale
-            or str(session.get("phase") or "") not in _LIVE_IDLE_PHASES
-            or not line
-        ):
-            live_lines.settle(callbacks, False)
-            return _empty_live_lines()
-        _append_game_chat(session, "assistant", line, kind="live_reply")
-        live_lines.settle(callbacks, True)
-        return {"ok": True, "lines": [{"text": line}], "source": source}
+        lock, busy = await _acquire_session_lock(session, locale)
+        if busy is not None:
+            _return_live_callbacks(inbox, callbacks, live_lines)
+            return _empty_live_lines(busy=True)
+        try:
+            identity_error = _drawing_guess_session_identity_error(data, session)
+            stale = all(callback_is_expired(callback) for callback in callbacks)
+            if stale or not line:
+                live_lines.settle(callbacks, False)
+                return _empty_live_lines()
+            if (
+                identity_error
+                or _live_prompt_snapshot(session) != prompt_snapshot
+                or str(session.get("phase") or "") not in _LIVE_IDLE_PHASES
+            ):
+                _return_live_callbacks(inbox, callbacks, live_lines)
+                return _empty_live_lines()
+            _append_game_chat(session, "assistant", line, kind="live_reply")
+            live_lines.settle(callbacks, True)
+            return {"ok": True, "lines": [{"text": line}], "source": source}
+        finally:
+            if lock is not None:
+                lock.release()
+    except asyncio.CancelledError:
+        _return_live_callbacks(inbox, callbacks, live_lines)
+        raise
     except Exception as exc:
         live_lines.settle(callbacks, False)
         logger.info(
