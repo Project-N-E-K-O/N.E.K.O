@@ -330,13 +330,14 @@ function injectPopupStyles(prefix) {
             -moz-appearance: textfield;
             appearance: textfield;
         }
-        /* 间隔输入框：抑制获得焦点时浏览器自带的粗边框/外圈，只保留下划线 */
+        /* 间隔输入框：抑制获得焦点时浏览器自带的粗边框/外圈；焦点态下划线用
+           强调色，给键盘用户可见的焦点指示（常态保持灰色细下划线） */
         .${prefix}-interval-input:focus,
         .${prefix}-interval-input:focus-visible {
             outline: none !important;
             box-shadow: none !important;
             border: none !important;
-            border-bottom: 1px solid rgba(128,128,128,0.4) !important;
+            border-bottom: 1px solid var(--neko-popup-accent, #44b7fe) !important;
         }
         /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
         body.neko-model-dragging .${prefix}-popup,
@@ -2118,11 +2119,20 @@ function createIntervalControl(manager, prefix, toggle) {
     };
 
     const commitIntervalInput = () => {
-        const parsed = parseInt(valueDisplay.value, 10);
-        // 非法/清空输入回退为当前生效值；低于下限钳到 10s，高于契约上限钳到 3600s
-        let value = Number.isFinite(parsed) ? parsed : Number(window[toggle.intervalKey]);
-        if (!Number.isFinite(value)) value = minVal;
-        value = Math.min(3600, Math.max(minVal, value));
+        // 用 valueAsNumber + 整数校验而非 parseInt：type=number 允许 1e2 这类
+        // 指数输入（parseInt 会解析成 1），12.5 这类小数也不该被静默截断
+        const parsed = valueDisplay.valueAsNumber;
+        let value;
+        if (Number.isInteger(parsed)) {
+            // 用户主动键入的数值：按需求钳到 [下限 10s, 契约上限 3600s]
+            value = Math.min(3600, Math.max(minVal, parsed));
+        } else {
+            // 非法/清空/小数输入：回退为当前生效值并原样显示，不走过界钳制——
+            // 当前值可能是低于 UI 下限的合法预设值（如 frequent 预设 5s），回退
+            // 后与当前值相等走下方 no-op，不会把预设改写并持久化
+            value = Number(window[toggle.intervalKey]);
+            if (!Number.isFinite(value)) value = minVal;
+        }
         valueDisplay.value = String(value);
         if (Number(value) === Number(window[toggle.intervalKey])) return;
         syncSliderToValue(value);
