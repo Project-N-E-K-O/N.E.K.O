@@ -4843,61 +4843,12 @@ def validate_storage_migration_preflight_boundaries(
     source_root: Path | str,
     target_root: Path | str,
 ) -> None:
-    """Reject unsafe runtime-entry boundaries without traversing their trees.
+    """Check the selected runtime entries without walking user data twice."""
 
-    Live preflight must not enter a nested mount before it has written a
-    recovery checkpoint. Enumerate the POSIX mount table once, then compare
-    names lexically so a stalled child mount can be rejected without touching
-    it. Mounts elsewhere below either root are intentionally allowed because
-    migration never reads or writes those unrelated paths.
-
-    The canonical runtime-entry check remains the cross-platform boundary for
-    symlinks and Windows reparse points. It runs only after the mount-table
-    check so POSIX never has to inspect a known nested mount first.
-    """
-
-    roots = tuple(
-        Path(os.path.abspath(os.fspath(Path(root).expanduser())))
-        for root in (source_root, target_root)
-    )
-    entry_paths_by_root = tuple(
-        (
-            root,
-            tuple(root / entry.relative_path for entry in RUNTIME_STORAGE_ENTRIES),
-        )
-        for root in roots
-    )
-
-    if os.name != "nt":
-        mounted_paths = _mounted_paths()
-        for root, entry_paths in entry_paths_by_root:
-            for mount_path in mounted_paths:
-                if mount_path == root:
-                    # The selected storage root may itself be an external
-                    # volume. Only mounts nested below that root are unsafe.
-                    continue
-                try:
-                    mount_path.relative_to(root)
-                except ValueError:
-                    continue
-                for entry_path in entry_paths:
-                    try:
-                        mount_path.relative_to(entry_path)
-                        intersects_entry = True
-                    except ValueError:
-                        try:
-                            entry_path.relative_to(mount_path)
-                            intersects_entry = True
-                        except ValueError:
-                            intersects_entry = False
-                    if intersects_entry:
-                        raise StorageMigrationError(
-                            "nested_mount_unsupported",
-                            "迁移运行时条目路径包含嵌套挂载，"
-                            f"已停止以避免访问挂载外数据: {mount_path}",
-                        )
-
-    for root, _entry_paths in entry_paths_by_root:
+    for root in (
+        Path(os.path.abspath(os.fspath(Path(source_root).expanduser()))),
+        Path(os.path.abspath(os.fspath(Path(target_root).expanduser()))),
+    ):
         for entry in RUNTIME_STORAGE_ENTRIES:
             _checked_migration_entry_path(root, entry)
 
@@ -6500,18 +6451,17 @@ def load_storage_migration(
         )
     ):
         malformed("source_root_identity")
-    for identity_field in ("retained_source_identity", "cleanup_root_identity"):
-        identity = payload.get(identity_field)
-        if identity is not None and (
-            not isinstance(identity, dict)
-            or set(identity) != {"device", "inode"}
-            or any(
-                isinstance(identity[key], bool)
-                or not isinstance(identity[key], int)
-                for key in ("device", "inode")
-            )
-        ):
-            malformed(identity_field)
+    retained_identity = payload.get("retained_source_identity")
+    if retained_identity is not None and (
+        not isinstance(retained_identity, dict)
+        or set(retained_identity) != {"device", "inode"}
+        or any(
+            isinstance(retained_identity[key], bool)
+            or not isinstance(retained_identity[key], int)
+            for key in ("device", "inode")
+        )
+    ):
+        malformed("retained_source_identity")
 
     selection_source = payload.get("selection_source")
     if (
@@ -6696,25 +6646,6 @@ def retained_source_identity_from_checkpoint(
             return {
                 "device": int(explicit["device"]),
                 "inode": int(explicit["inode"]),
-            }
-        except (TypeError, ValueError):
-            return None
-    cleanup_identity = payload.get("cleanup_root_identity")
-    if (
-        str(payload.get("retained_source_mode") or "").strip()
-        == "cleanup_in_progress"
-        and isinstance(cleanup_identity, dict)
-        and set(cleanup_identity) == {"device", "inode"}
-        and all(
-            not isinstance(cleanup_identity[key], bool)
-            and isinstance(cleanup_identity[key], int)
-            for key in ("device", "inode")
-        )
-    ):
-        try:
-            return {
-                "device": int(cleanup_identity["device"]),
-                "inode": int(cleanup_identity["inode"]),
             }
         except (TypeError, ValueError):
             return None
@@ -7229,7 +7160,6 @@ def _run_pending_storage_migration_locked(
                     last_migration_source=recovery_source_root,
                     last_migration_result=f"failed:{error_code}",
                     last_migration_backup=recovery_source_root,
-                    legacy_cleanup_pending=False,
                 )
                 root_state_persisted = True
             except Exception as root_state_exc:
@@ -8614,14 +8544,6 @@ def _run_pending_storage_migration_locked(
         if not preserve_existing_layout:
             from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
 
-            legacy_cleanup_pending = is_retained_root_cleanup_available(
-                source_root,
-                current_root=target_root,
-                anchor_root=normalized_anchor_root,
-                target_root=target_root,
-                require_exists=False,
-                allow_anchor_root=True,
-            )
             set_root_mode(
                 config_manager,
                 ROOT_MODE_NORMAL,
@@ -8630,7 +8552,6 @@ def _run_pending_storage_migration_locked(
                 last_migration_source=str(source_root),
                 last_migration_result=f"completed:{target_root}",
                 last_migration_backup=str(source_root),
-                legacy_cleanup_pending=legacy_cleanup_pending,
             )
         else:
             # The exact pre-import target backup is recovery authority, not a
@@ -8675,6 +8596,19 @@ def _run_pending_storage_migration_locked(
             committed_at=completed_at,
             completed_at=completed_at,
         )
+        # Community credentials are a small fixed set outside the runtime
+        # directory inventory.  Copy them after the new root is committed;
+        # failure leaves the retained source untouched and can be retried when
+        # the user later chooses to delete that source.
+        try:
+            from .community_private_state import migrate_legacy_private_state
+
+            migrate_legacy_private_state(source_root, config_manager)
+        except OSError as private_state_exc:
+            logger.warning(
+                "Legacy community private state was not copied during storage migration: %s",
+                private_state_exc,
+            )
         if preserve_existing_layout:
             current_backup_identity = legacy_backup_root.lstat()
             if (

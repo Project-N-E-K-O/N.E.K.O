@@ -2263,7 +2263,6 @@
         "awaitingShutdownRetryFailed": "安全關閉請求仍未完成；應用程式保持阻斷，你可以稍後再次重試。",
         "restartScheduleRollbackFailed": "無法確認受控重新啟動是否已撤銷，正在重新讀取實際儲存狀態。",
         "restartOutcomeUnknown": "無法確認受控重新啟動結果，正在重新讀取實際儲存狀態。",
-        "cleanupRetainedRootOutcomeUnknown": "暫時無法確認舊資料是否已清理。為避免重複刪除，按鈕會保持鎖定；請重新整理狀態後再操作。",
         "maintenanceRetryFailed": "恢復服務仍未成功，請稍後重試或安全退出應用程式。",
         "maintenanceRetryService": "重試恢復服務",
         "maintenanceSafeQuit": "安全退出應用程式",

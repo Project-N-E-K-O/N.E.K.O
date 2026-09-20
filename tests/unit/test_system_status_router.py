@@ -151,7 +151,6 @@ def test_system_status_reports_migration_required_when_storage_selection_is_bloc
     assert payload["lifecycle_state"] == "selection_required"
     assert payload["ready"] is False
     assert payload["storage"]["selection_required"] is True
-    assert payload["storage"]["legacy_cleanup_pending"] is False
     assert payload["storage"]["blocking_reason"] == "selection_required"
 
 
@@ -204,7 +203,6 @@ def test_system_status_reports_ready_after_storage_policy_when_dev_override_disa
     assert payload["lifecycle_state"] == "ready"
     assert payload["ready"] is True
     assert payload["storage"]["selection_required"] is False
-    assert payload["storage"]["legacy_cleanup_pending"] is False
     assert payload["storage"]["blocking_reason"] == ""
 
 
@@ -283,7 +281,6 @@ def test_system_status_treats_blocking_reason_as_not_ready(tmp_path):
             "selection_required": False,
             "migration_pending": False,
             "recovery_required": False,
-            "legacy_cleanup_pending": False,
             "blocking_reason": "runtime_initializing",
             "last_error_summary": "",
             "stage": "stage3_web_restart",

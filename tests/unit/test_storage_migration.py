@@ -300,7 +300,6 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
     assert root_state["current_root"] == str(target_root.resolve())
     assert root_state["last_known_good_root"] == str(target_root.resolve())
     assert root_state["last_migration_result"].startswith("completed:")
-    assert root_state["legacy_cleanup_pending"] is True
 
 
 @pytest.mark.unit
@@ -434,6 +433,37 @@ def test_run_pending_storage_migration_copies_every_selected_root_data_class(tmp
     assert result["completed"] is True
     for relative_path, content in representative_files.items():
         assert (target_root / relative_path).read_bytes() == content
+
+
+@pytest.mark.unit
+def test_run_pending_storage_migration_promotes_legacy_community_state(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    records = {
+        "community_auth.json": {"access_token": "access"},
+        "social_session.json": {"token": "session"},
+        "community_oauth_pending.json": {"state": "oauth"},
+        "community_steam_pending.json": {"state": "steam"},
+    }
+    source_root.mkdir(parents=True, exist_ok=True)
+    for filename, payload in records.items():
+        (source_root / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    for filename, payload in records.items():
+        assert json.loads(
+            (config_manager.local_state_dir / filename).read_text(encoding="utf-8")
+        ) == payload
+    assert all((source_root / filename).exists() for filename in records)
 
 
 @pytest.mark.unit

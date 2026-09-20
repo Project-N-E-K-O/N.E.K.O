@@ -193,7 +193,6 @@ def _mock_selection_required_state(
                     "migration_pending": migration_pending,
                     "recovery_required": recovery_required,
                     "blocking_reason": blocking_reason,
-                    "legacy_cleanup_pending": False,
                     "last_known_good_root": current_root,
                     "last_error_summary": last_error,
                     "migration": {
@@ -824,7 +823,6 @@ def test_unknown_restart_waits_for_backend_operation_terminal_state(
                     "migration_pending": False,
                     "recovery_required": False,
                     "blocking_reason": "selection_required",
-                    "legacy_cleanup_pending": False,
                     "stage": "stage3_web_restart",
                 }
             ),
@@ -1067,7 +1065,6 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
               "migration_pending": false,
               "recovery_required": false,
               "blocking_reason": "selection_required",
-              "legacy_cleanup_pending": false,
               "last_known_good_root": "/tmp/runtime/N.E.K.O",
               "last_error_summary": "",
               "migration": {
@@ -1271,7 +1268,6 @@ def test_storage_location_existing_target_requires_second_confirmation_before_re
                         "selection_required": False,
                         "migration_pending": True,
                         "recovery_required": False,
-                        "legacy_cleanup_pending": False,
                         "stage": "stage3_web_restart",
                     },
                     "migration": {
@@ -1347,7 +1343,6 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
               "migration_pending": true,
               "recovery_required": false,
               "blocking_reason": "migration_pending",
-              "legacy_cleanup_pending": false,
               "last_known_good_root": "/tmp/runtime/N.E.K.O",
               "last_error_summary": "",
               "migration": {

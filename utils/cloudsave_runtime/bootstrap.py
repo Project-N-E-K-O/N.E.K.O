@@ -158,7 +158,6 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             recovered_root_state["last_migration_backup"] = str(
                 recovered_legacy_import["backup_path"]
             )
-            recovered_root_state["legacy_cleanup_pending"] = True
             config_manager.save_root_state(recovered_root_state)
         finalize_legacy_runtime_import_completion(
             config_manager,
@@ -261,7 +260,6 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             root_changed = True
             if legacy_import.get("backup_path"):
                 root_state["last_migration_backup"] = str(legacy_import["backup_path"])
-                root_state["legacy_cleanup_pending"] = True
                 root_changed = True
         elif recovered_stale_mode:
             root_changed = True

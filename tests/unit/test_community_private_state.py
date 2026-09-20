@@ -223,76 +223,6 @@ def test_completed_storage_migration_moves_credentials_from_retained_root_once(
     assert not (retained_root / "social_session.json").exists()
 
 
-def test_conflicting_target_and_retained_records_fail_closed_for_all_private_state(
-    tmp_path,
-    monkeypatch,
-):
-    anchor_state = tmp_path / "anchor" / "state"
-    target_root = tmp_path / "target" / "N.E.K.O"
-    retained_root = tmp_path / "source" / "N.E.K.O"
-    manager = _install_roots(
-        monkeypatch,
-        anchor_state=anchor_state,
-        selected_root=target_root,
-        retained_root=retained_root,
-    )
-    monkeypatch.delenv("NEKO_USER_DATA_DIR", raising=False)
-    target_root.mkdir(parents=True)
-    retained_root.mkdir(parents=True)
-    now = time.time()
-    source_records = {
-        "community_auth.json": {"access_token": "source-token"},
-        "social_session.json": {"token": "source-token"},
-        "community_oauth_pending.json": {
-            "state": "source-oauth",
-            "code_verifier": "source-verifier",
-            "expires_at": now + 300,
-        },
-        "community_steam_pending.json": {
-            "state": "source-steam",
-            "code_verifier": "source-verifier",
-            "ts": now,
-        },
-    }
-    target_records = {
-        "community_auth.json": {"access_token": "target-token"},
-        "social_session.json": {"token": "target-token"},
-        "community_oauth_pending.json": {
-            "state": "target-oauth",
-            "code_verifier": "target-verifier",
-            "expires_at": now + 300,
-        },
-        "community_steam_pending.json": {
-            "state": "target-steam",
-            "code_verifier": "target-verifier",
-            "ts": now,
-        },
-    }
-    for filename, payload in source_records.items():
-        (retained_root / filename).write_text(json.dumps(payload), encoding="utf-8")
-    for filename, payload in target_records.items():
-        (target_root / filename).write_text(json.dumps(payload), encoding="utf-8")
-
-    assert C._legacy_selected_roots() == [retained_root]
-    assert C._legacy_conflict_witness_roots() == [retained_root, target_root]
-    assert C._load_auth() is None
-    assert C._load_social_session() is None
-    assert O._load_oauth_pending()[1] is None
-    assert C._consume_steam_pending("source-steam") == (False, None)
-    with pytest.raises(OSError, match="conflicting legacy"):
-        C.prepare_retained_community_state_cleanup(
-            retained_root,
-            config_manager=manager,
-        )
-    assert not anchor_state.exists() or not any(anchor_state.glob("*.json"))
-    for filename in source_records:
-        assert (retained_root / filename).exists()
-        assert (target_root / filename).exists()
-
-    assert C._clear_auth() is True
-    for filename in source_records:
-        assert not (retained_root / filename).exists()
-        assert not (target_root / filename).exists()
 
 
 def test_offline_committed_target_makes_logout_zero_delete_until_remount(
@@ -375,11 +305,10 @@ def test_malformed_canonical_credential_fails_closed_without_legacy_fallback(
     assert C._load_auth() is None
     assert canonical.read_text(encoding="utf-8") == "{bad-json"
     assert legacy.exists()
-    with pytest.raises(OSError, match="credential"):
-        C.prepare_retained_community_state_cleanup(
-            retained_root,
-            config_manager=SimpleNamespace(local_state_dir=anchor_state),
-        )
+    C.prepare_retained_community_state_cleanup(
+        retained_root,
+        config_manager=SimpleNamespace(local_state_dir=anchor_state),
+    )
     assert legacy.exists()
 
 

@@ -1,16 +1,7 @@
-"""Guards for the root_state writer lock and the read-path no-write rule.
+"""Guards for the root_state writer lock and storage write ordering.
 
-Three invariants are pinned here, each with its dual so that "the guard is
-green" cannot mean "the guard never ran":
-
-1. writes take ``utils.root_state_lock``; reads never do (and a worker holding
-   the lock cannot stall a read);
-2. ``build_storage_location_bootstrap_payload`` only persists a reconciled
-   ``legacy_cleanup_pending`` when the caller opts in, and every opt-in call
-   site sits behind ``_storage_mutation_lock``;
-3. the ``delete_storage_migration`` → ``save_storage_policy`` →
-   ``set_root_mode`` write sequences stay inside synchronous functions, so no
-   await — and therefore no cancellation point — can be introduced between them.
+The tests below keep root_state writes inside the lock and ensure storage write
+sequences cannot be split by an async cancellation point.
 """
 import ast
 import asyncio
@@ -311,119 +302,12 @@ async def test_lifecycle_transaction_keeps_loop_live_for_unrelated_worker():
 # ── 2. 读路径不写 root_state（对偶 + 调用点） ─────────────────────────
 
 
-@pytest.mark.unit
-def test_bootstrap_payload_does_not_persist_reconcile_by_default(tmp_path, monkeypatch):
-    config_manager = _make_real_config_manager(tmp_path)
-    base_state = dict(config_manager.build_default_root_state())
-    base_state["legacy_cleanup_pending"] = False
-    config_manager.save_root_state(base_state)
-
-    monkeypatch.setattr(bootstrap_module, "_derive_legacy_cleanup_pending", lambda **_kwargs: True)
-
-    payload = bootstrap_module.build_storage_location_bootstrap_payload(config_manager)
-
-    assert payload["legacy_cleanup_pending"] is True, "派生值应该照常出现在 payload 里"
-    assert config_manager.load_root_state().get("legacy_cleanup_pending") is False, (
-        "默认参数下把 reconcile 落盘了：这条路径挂在被持续轮询的 GET /status 上，"
-        "会跟变更路由的回滚互相盖"
-    )
 
 
-@pytest.mark.unit
-def test_bootstrap_payload_persists_reconcile_when_opted_in(tmp_path, monkeypatch):
-    config_manager = _make_real_config_manager(tmp_path)
-    base_state = dict(config_manager.build_default_root_state())
-    base_state["legacy_cleanup_pending"] = False
-    config_manager.save_root_state(base_state)
-
-    monkeypatch.setattr(bootstrap_module, "_derive_legacy_cleanup_pending", lambda **_kwargs: True)
-
-    bootstrap_module.build_storage_location_bootstrap_payload(config_manager, persist_reconcile=True)
-
-    assert config_manager.load_root_state().get("legacy_cleanup_pending") is True, (
-        "显式 opt-in 也没落盘，那 reconcile 这条自愈路径就整个没了"
-    )
 
 
-@pytest.mark.unit
-def test_storage_location_read_routes_leave_root_state_untouched(tmp_path, monkeypatch):
-    """Drive the real read endpoints, not just the helper they call.
-
-    Testing only ``build_storage_location_bootstrap_payload``'s default would
-    stay green if a route started passing ``persist_reconcile=True``.
-    """
-    config_manager = _make_real_config_manager(tmp_path)
-    monkeypatch.setattr(bootstrap_module, "_derive_legacy_cleanup_pending", lambda **_kwargs: True)
-
-    read_paths = sorted(
-        route.path
-        for route in router_module.router.routes
-        if "GET" in getattr(route, "methods", set()) and "{" not in route.path
-    )
-    assert read_paths, "一条 GET 路由都没发现，说明发现逻辑坏了，不是真的没有"
-
-    client = _build_client(config_manager)
-    for path in read_paths + ["/api/storage/location/exit"]:
-        base_state = dict(config_manager.build_default_root_state())
-        base_state["legacy_cleanup_pending"] = False
-        config_manager.save_root_state(base_state)
-
-        if path.endswith("/exit"):
-            response = client.post(path, headers={"X-Neko-Storage-Action": "exit"})
-        else:
-            response = client.get(path)
-
-        # 500 = 未处理异常，说明路由根本没跑通；其余状态码（含 /exit 在没有
-        # shutdown 回调时的 503）都算真的跑到了业务分支。
-        assert response.status_code != 500, f"{path} -> {response.status_code}"
-        assert config_manager.load_root_state().get("legacy_cleanup_pending") is False, (
-            f"{path} 在读路径上写了 root_state"
-        )
 
 
-@pytest.mark.unit
-def test_persist_reconcile_opt_in_only_happens_behind_the_mutation_lock():
-    """Every ``persist_reconcile=True`` must sit in a ``*_locked`` helper.
-
-    ``_storage_mutation_lock`` is only ever taken by the thin route wrappers that
-    delegate to ``_..._locked``; that naming is the machine-checkable shape of
-    "this call holds the lock".
-    """
-    offenders: list[str] = []
-    for path in _project_python_files():
-        try:
-            tree = parse_source_file(path)
-        except (SyntaxError, UnicodeDecodeError):
-            continue
-
-        enclosing: list[ast.AST] = []
-
-        def _visit(node: ast.AST) -> None:
-            is_function = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            if is_function:
-                enclosing.append(node)
-            if isinstance(node, ast.Call):
-                for keyword in node.keywords:
-                    if keyword.arg != "persist_reconcile":
-                        continue
-                    if not (isinstance(keyword.value, ast.Constant) and keyword.value.value is True):
-                        continue
-                    owner = enclosing[-1].name if enclosing else "<module>"
-                    if not owner.endswith("_locked"):
-                        offenders.append(
-                            f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno} in {owner}()"
-                        )
-            for child in ast.iter_child_nodes(node):
-                _visit(child)
-            if is_function:
-                enclosing.pop()
-
-        _visit(tree)
-
-    assert not offenders, (
-        "这些调用点在没拿 _storage_mutation_lock 的地方要求把 reconcile 落盘：\n  "
-        + "\n  ".join(offenders)
-    )
 
 
 @pytest.mark.unit
@@ -1043,16 +927,9 @@ def test_storage_write_primitives_never_sit_directly_in_an_async_body():
         if isinstance(node, ast.Call) and async_owner is not None:
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            persist_reconcile = name == "build_storage_location_bootstrap_payload" and any(
-                keyword.arg == "persist_reconcile"
-                and isinstance(keyword.value, ast.Constant)
-                and keyword.value.value is True
-                for keyword in node.keywords
-            )
             if (
                 name in _STORAGE_WRITE_PRIMITIVES
                 or name == "_restore_storage_mutation_state"
-                or persist_reconcile
             ):
                 offenders.append(f"{name}() at line {node.lineno} in async {async_owner}()")
         for child in ast.iter_child_nodes(node):

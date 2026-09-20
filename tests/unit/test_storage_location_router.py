@@ -79,12 +79,6 @@ from config import AUTOSTART_CSRF_TOKEN
 from tests.fake_clock import patch_module_clock
 
 
-_POSIX_RETAINED_CLEANUP_ONLY = pytest.mark.skipif(
-    not storage_location_router_module._secure_retained_cleanup_supported(),
-    reason="automatic retained-root cleanup requires POSIX directory handles",
-)
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_polled_storage_status_builds_off_the_event_loop(monkeypatch):
@@ -311,7 +305,6 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
         await asyncio.sleep(0)
         assert restart_task.done() is False
         assert cleanup_task.done() is False
-        assert storage_location_router_module._retained_cleanup_requests_in_flight == 1
 
         release_first_call.set()
         select_result, restart_result, cleanup_result = await asyncio.gather(select_task, restart_task, cleanup_task)
@@ -320,7 +313,6 @@ async def test_storage_location_mutation_routes_share_serialization_lock():
     assert restart_result == {"route": "restart"}
     assert cleanup_result == {"route": "cleanup"}
     assert max_active_calls == 1
-    assert storage_location_router_module._retained_cleanup_requests_in_flight == 0
 
 
 @pytest.mark.unit

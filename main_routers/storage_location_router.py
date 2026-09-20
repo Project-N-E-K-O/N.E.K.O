@@ -42,7 +42,6 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -76,11 +75,7 @@ from utils.storage.entries import (
     RuntimeStorageEntryBoundaryError,
     checked_runtime_entry_path,
 )
-from utils.storage.community_private_state import (
-    COMMUNITY_PRIVATE_STATE_FILENAMES,
-    probe_retained_community_state,
-    snapshot_retained_community_state,
-)
+from utils.storage.community_private_state import probe_retained_community_state
 from utils.storage_migration import (
     StorageMigrationError,
     STORAGE_MIGRATION_STATUS_COMPLETED,
@@ -95,7 +90,6 @@ from utils.storage_migration import (
     is_storage_migration_rollback_required,
     load_storage_migration,
     replace_storage_migration_if_unchanged,
-    retained_source_identity_from_checkpoint,
     save_storage_migration,
     storage_migration_checkpoint_transaction,
     storage_migration_retains_recovery_evidence,
@@ -123,7 +117,6 @@ logger = logging.getLogger(__name__)
 _DIRECTORY_PICKER_TIMEOUT_SECONDS = 120.0
 _TARGET_CONFIRMATION_SNAPSHOT_KEY = "_target_confirmation_snapshot"
 _storage_mutation_lock = asyncio.Lock()
-_retained_cleanup_requests_in_flight = 0
 _STORAGE_RESTART_OPERATION_TTL_SECONDS = 10 * 60
 _STORAGE_RESTART_OPERATION_MAX_ENTRIES = 256
 _STORAGE_RESTART_OPERATION_TOKEN_SECRET = secrets.token_bytes(32)
@@ -154,11 +147,7 @@ _storage_preflight_operations: dict[str, dict[str, Any]] = {}
 #     CancelledError 出去，否则 _storage_mutation_lock 会在工作线程还在写的时候松开，
 #     下一个变更请求就能跟它交错。
 #
-# 二、root_state 的无锁写者 —— 已经不存在了。
-#     build_storage_location_bootstrap_payload 现在默认 persist_reconcile=False，
-#     GET /bootstrap、/status、/diagnostics、/retained-source、POST /exit 全是纯读；
-#     只有已经拿着 _storage_mutation_lock 的 *_locked 路由才 opt-in 落盘。另外
-#     root_state 有了真锁（utils/root_state_lock.py），读—改—写整段进锁、锁内重读。
+# 二、root_state 有真锁（utils/root_state_lock.py），读—改—写整段进锁、锁内重读。
 #
 # 仍然刻意留在循环上的只有**回滚**（_restore_storage_mutation_state 及
 # /restart 的两处内联回滚）：它们全在 except handler 里，await 会让回滚自己变成取消
@@ -629,14 +618,6 @@ def _get_storage_anchor_root(config_manager, *, current_root: Path) -> Path:
     return compute_anchor_root(config_manager, current_root=current_root)
 
 
-def _storage_cleanup_intent_active(payload: dict[str, Any] | None) -> bool:
-    return bool(
-        isinstance(payload, dict)
-        and str(payload.get("retained_source_mode") or "").strip()
-        == "cleanup_in_progress"
-    )
-
-
 def _snapshot_storage_mutation_state(config_manager, *, anchor_root: Path) -> dict[str, Any]:
     return {
         "root_state": config_manager.load_root_state(),
@@ -964,12 +945,6 @@ def _resolve_same_root_restart_plan(
         return {
             "error_code": "storage_recovery_evidence_retained",
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
-            "blocking_reason": "recovery_required",
-        }
-    if _storage_cleanup_intent_active(raw_blocking_migration):
-        return {
-            "error_code": "retained_source_cleanup_in_progress",
-            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
             "blocking_reason": "recovery_required",
         }
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
@@ -1835,7 +1810,6 @@ def _build_status_payload(config_manager) -> dict[str, Any]:
             "migration_pending": bool(bootstrap_payload.get("migration_pending")),
             "recovery_required": bool(bootstrap_payload.get("recovery_required")),
             "rollback_required": migration_stage == STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
-            "legacy_cleanup_pending": bool(bootstrap_payload.get("legacy_cleanup_pending")),
             "stage": bootstrap_payload.get("stage") or "",
             "migration_phase": migration_phase,
             "shutdown_retry_allowed": shutdown_retry_allowed,
@@ -1869,7 +1843,6 @@ def _build_storage_policy_unavailable_status() -> dict[str, Any]:
             "migration_pending": False,
             "recovery_required": True,
             "rollback_required": False,
-            "legacy_cleanup_pending": False,
             "stage": "",
             "status_unavailable": True,
             "error_code": "storage_policy_unavailable",
@@ -1904,7 +1877,6 @@ def _build_storage_status_unavailable_status(error_code: str = "storage_status_u
             "migration_pending": False,
             "recovery_required": False,
             "rollback_required": False,
-            "legacy_cleanup_pending": False,
             "stage": "",
             "status_unavailable": True,
             "error_code": normalized_error_code,
@@ -2058,62 +2030,16 @@ def _build_storage_location_diagnostics_payload(config_manager) -> dict[str, Any
     }
 
 
-def _secure_retained_cleanup_supported() -> bool:
-    if os.name == "nt" or not shutil.rmtree.avoids_symlink_attacks:
-        return False
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    root_fd = -1
-    try:
-        root_fd = os.open(os.path.abspath(os.sep), flags)
-        _directory_mount_identity(root_fd)
-        return True
-    except OSError:
-        return False
-    finally:
-        if root_fd >= 0:
-            os.close(root_fd)
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _retained_root_matches_identity(
-    retained_path: Path,
-    expected_identity: dict[str, int] | None,
-) -> bool:
-    if expected_identity is None:
-        return False
-    try:
-        metadata = retained_path.lstat()
-        expected_device = int(expected_identity["device"])
-        expected_inode = int(expected_identity["inode"])
-    except (OSError, KeyError, TypeError, ValueError):
-        return False
-    return bool(
-        not stat.S_ISLNK(metadata.st_mode)
-        and stat.S_ISDIR(metadata.st_mode)
-        and int(metadata.st_dev) == expected_device
-        and int(metadata.st_ino) == expected_inode
-    )
-
-
 def _build_completed_migration_notice(
     config_manager,
     *,
     bootstrap_payload: dict[str, Any] | None = None,
     require_existing_retained_root: bool = False,
-    persist_reconcile: bool = False,
 ) -> dict[str, Any]:
-    # persist_reconcile 只有已经拿着 _storage_mutation_lock 的调用方能传 True，
-    # 见 build_storage_location_bootstrap_payload 的说明。
     bootstrap = (
         bootstrap_payload
         if isinstance(bootstrap_payload, dict)
-        else build_storage_location_bootstrap_payload(
-            config_manager,
-            persist_reconcile=persist_reconcile,
-        )
+        else build_storage_location_bootstrap_payload(config_manager)
     )
     migration_payload = bootstrap.get("migration") if isinstance(bootstrap.get("migration"), dict) else {}
     if str(migration_payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
@@ -2165,29 +2091,12 @@ def _build_completed_migration_notice(
     except (OSError, ValueError):
         retained_is_target_preimage = False
     retained_exists = bool(retained_root and Path(retained_root).exists())
-    retained_identity = retained_source_identity_from_checkpoint(
-        authoritative_migration_payload,
-        retained_root,
-    )
-    retained_identity_matches = bool(
-        retained_root
-        and _retained_root_matches_identity(
-            Path(retained_root),
-            retained_identity,
-        )
-    )
     retained_has_runtime_entries = False
-    secure_cleanup_supported = _secure_retained_cleanup_supported()
     retained_private_state = probe_retained_community_state(
         retained_root,
-        classify_social_lock_process=secure_cleanup_supported,
+        classify_social_lock_process=False,
     )
-    retained_mode = str(migration_payload.get("retained_source_mode") or "").strip()
     retained_has_private_state = retained_private_state.has_managed_content
-    if retained_mode == "cleanup_in_progress":
-        retained_has_private_state = retained_private_state.has_expected_content(
-            set(migration_payload.get("cleanup_private_names") or [])
-        )
     if retained_exists:
         try:
             retained_has_runtime_entries = any(
@@ -2208,7 +2117,7 @@ def _build_completed_migration_notice(
         return {
             "completed": False,
         }
-    cleanup_available = retained_identity_matches and secure_cleanup_supported and is_retained_root_cleanup_available(
+    cleanup_available = is_retained_root_cleanup_available(
         retained_root,
         current_root=current_root,
         anchor_root=anchor_root,
@@ -2216,7 +2125,7 @@ def _build_completed_migration_notice(
         require_exists=True,
         allow_anchor_root=True,
         anchor_has_managed_private_state=retained_has_private_state,
-    ) and not retained_private_state.cleanup_blocked
+    )
     if require_existing_retained_root and not cleanup_available:
         return {
             "completed": False,
@@ -2247,274 +2156,6 @@ def _build_completed_migration_notice(
     }
 
 
-def _open_directory_chain_no_follow(path: Path) -> int:
-    """Open an absolute POSIX directory one component at a time without links."""
-    if not path.is_absolute() or os.name == "nt":
-        raise OSError("secure directory handles are unavailable")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    current_fd = os.open(path.anchor, flags)
-    try:
-        for component in path.parts[1:]:
-            if component in {"", ".", ".."}:
-                raise OSError("unsafe directory component")
-            before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
-            if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
-                raise OSError("directory component is not a real directory")
-            child_fd = os.open(component, flags, dir_fd=current_fd)
-            after = os.fstat(child_fd)
-            if not os.path.samestat(before, after):
-                os.close(child_fd)
-                raise OSError("directory component changed while opening")
-            os.close(current_fd)
-            current_fd = child_fd
-        return current_fd
-    except BaseException:
-        os.close(current_fd)
-        raise
-
-
-def _open_retained_root_no_follow(
-    retained_path: Path,
-    initial_metadata,
-) -> tuple[int, int]:
-    parent_fd = _open_directory_chain_no_follow(retained_path.parent)
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        before = os.stat(retained_path.name, dir_fd=parent_fd, follow_symlinks=False)
-        if not os.path.samestat(initial_metadata, before):
-            raise OSError("retained root changed before handle acquisition")
-        root_fd = os.open(retained_path.name, flags, dir_fd=parent_fd)
-        if not os.path.samestat(before, os.fstat(root_fd)):
-            os.close(root_fd)
-            raise OSError("retained root changed while opening")
-        return parent_fd, root_fd
-    except BaseException:
-        os.close(parent_fd)
-        raise
-
-
-def _directory_mount_identity(directory_fd: int) -> tuple[str, int]:
-    """Return a stable mount identity for an already-open POSIX directory."""
-    metadata = os.fstat(directory_fd)
-    if sys.platform.startswith("linux"):
-        try:
-            with open(
-                f"/proc/self/fdinfo/{directory_fd}",
-                encoding="ascii",
-            ) as fdinfo:
-                for line in fdinfo:
-                    field, separator, value = line.partition(":")
-                    if field == "mnt_id" and separator:
-                        return "linux-mnt-id", int(value.strip())
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise OSError("Linux mount identity is unavailable") from exc
-        raise OSError("Linux mount identity is unavailable")
-    # macOS and the other supported POSIX filesystems expose a distinct device
-    # id at a mount boundary. Linux needs mnt_id above because bind mounts may
-    # deliberately retain the same st_dev as their source.
-    return "device", int(metadata.st_dev)
-
-
-def _ensure_same_cleanup_mount(
-    directory_fd: int,
-    expected_mount_identity: tuple[str, int],
-    display_path: str,
-) -> None:
-    if _directory_mount_identity(directory_fd) != expected_mount_identity:
-        raise ValueError(f"运行时条目包含嵌套挂载，拒绝自动清理: {display_path}")
-
-
-def _secure_clear_directory_tree(
-    directory_fd: int,
-    *,
-    expected_mount_identity: tuple[str, int],
-    display_path: str,
-) -> None:
-    """Clear a pinned directory without following links or crossing mounts."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    _ensure_same_cleanup_mount(
-        directory_fd,
-        expected_mount_identity,
-        display_path,
-    )
-    with os.scandir(directory_fd) as children:
-        child_names = [child.name for child in children]
-    mutated = False
-    for child_name in child_names:
-        child_display = f"{display_path}/{child_name}"
-        try:
-            metadata = os.stat(
-                child_name,
-                dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(metadata.st_mode):
-            raise ValueError(f"运行时条目超出安全边界: {child_display}")
-        if stat.S_ISDIR(metadata.st_mode):
-            child_fd = os.open(child_name, flags, dir_fd=directory_fd)
-            try:
-                if not os.path.samestat(metadata, os.fstat(child_fd)):
-                    raise ValueError(f"运行时条目在清理时发生变化: {child_display}")
-                _secure_clear_directory_tree(
-                    child_fd,
-                    expected_mount_identity=expected_mount_identity,
-                    display_path=child_display,
-                )
-            finally:
-                os.close(child_fd)
-            os.rmdir(child_name, dir_fd=directory_fd)
-            mutated = True
-        elif stat.S_ISREG(metadata.st_mode):
-            os.unlink(child_name, dir_fd=directory_fd)
-            mutated = True
-        else:
-            raise ValueError(f"运行时条目包含不支持的文件类型: {child_display}")
-    if mutated:
-        os.fsync(directory_fd)
-
-
-def _secure_remove_runtime_entry(
-    root_fd: int,
-    entry,
-    *,
-    expected_mount_identity: tuple[str, int] | None = None,
-) -> None:
-    """Delete one inventory entry relative to a pinned root directory handle."""
-    relative_path = getattr(entry, "relative_path", entry)
-    parts = Path(relative_path).parts
-    if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"invalid runtime entry: {relative_path}")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    base_fd = os.dup(root_fd)
-    opened: list[tuple[int, str, int]] = []
-    current_fd = base_fd
-    mount_identity = expected_mount_identity or _directory_mount_identity(root_fd)
-    try:
-        for component in parts[:-1]:
-            try:
-                before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return
-            if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
-                raise ValueError(f"运行时条目超出安全边界: {relative_path}")
-            child_fd = os.open(component, flags, dir_fd=current_fd)
-            if not os.path.samestat(before, os.fstat(child_fd)):
-                os.close(child_fd)
-                raise ValueError(f"runtime entry parent changed: {relative_path}")
-            _ensure_same_cleanup_mount(child_fd, mount_identity, str(relative_path))
-            opened.append((current_fd, component, child_fd))
-            current_fd = child_fd
-
-        name = parts[-1]
-        try:
-            metadata = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return
-        if stat.S_ISLNK(metadata.st_mode):
-            raise ValueError(f"运行时条目超出安全边界: {relative_path}")
-        if stat.S_ISDIR(metadata.st_mode):
-            child_fd = os.open(name, flags, dir_fd=current_fd)
-            try:
-                if not os.path.samestat(metadata, os.fstat(child_fd)):
-                    raise ValueError(f"运行时条目在清理时发生变化: {relative_path}")
-                _secure_clear_directory_tree(
-                    child_fd,
-                    expected_mount_identity=mount_identity,
-                    display_path=str(relative_path),
-                )
-            finally:
-                os.close(child_fd)
-            os.rmdir(name, dir_fd=current_fd)
-        else:
-            os.unlink(name, dir_fd=current_fd)
-        os.fsync(current_fd)
-
-        for parent_fd, component, child_fd in reversed(opened):
-            os.close(child_fd)
-            current_fd = parent_fd
-            try:
-                os.rmdir(component, dir_fd=parent_fd)
-            except OSError:
-                pass
-            else:
-                os.fsync(parent_fd)
-        opened.clear()
-        os.fsync(root_fd)
-    finally:
-        for _parent_fd, _component, child_fd in reversed(opened):
-            with suppress(OSError):
-                os.close(child_fd)
-        with suppress(OSError):
-            os.close(base_fd)
-
-
-def _preflight_runtime_entry(
-    root_fd: int,
-    entry,
-    *,
-    expected_mount_identity: tuple[str, int] | None = None,
-) -> None:
-    """Reject unsafe retained content before the first cleanup mutation."""
-    relative_path = getattr(entry, "relative_path", entry)
-    parts = Path(relative_path).parts
-    if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"invalid runtime entry: {relative_path}")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    mount_identity = expected_mount_identity or _directory_mount_identity(root_fd)
-
-    def _validate_tree(directory_fd: int, display_path: str) -> None:
-        _ensure_same_cleanup_mount(directory_fd, mount_identity, display_path)
-        with os.scandir(directory_fd) as children:
-            for child in children:
-                metadata = child.stat(follow_symlinks=False)
-                child_display = f"{display_path}/{child.name}"
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise ValueError(f"运行时条目超出安全边界: {child_display}")
-                if stat.S_ISDIR(metadata.st_mode):
-                    child_fd = os.open(child.name, flags, dir_fd=directory_fd)
-                    try:
-                        if not os.path.samestat(metadata, os.fstat(child_fd)):
-                            raise ValueError(f"运行时条目在预检时发生变化: {child_display}")
-                        _ensure_same_cleanup_mount(
-                            child_fd,
-                            mount_identity,
-                            child_display,
-                        )
-                        _validate_tree(child_fd, child_display)
-                    finally:
-                        os.close(child_fd)
-                elif not stat.S_ISREG(metadata.st_mode):
-                    raise ValueError(f"运行时条目包含不支持的文件类型: {child_display}")
-
-    current_fd = os.dup(root_fd)
-    try:
-        for index, component in enumerate(parts):
-            try:
-                before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return
-            if stat.S_ISLNK(before.st_mode):
-                raise ValueError(f"运行时条目超出安全边界: {relative_path}")
-            is_leaf = index == len(parts) - 1
-            if not stat.S_ISDIR(before.st_mode):
-                if not is_leaf or not stat.S_ISREG(before.st_mode):
-                    raise ValueError(f"运行时条目包含不支持的文件类型: {relative_path}")
-                return
-            child_fd = os.open(component, flags, dir_fd=current_fd)
-            if not os.path.samestat(before, os.fstat(child_fd)):
-                os.close(child_fd)
-                raise ValueError(f"运行时条目在预检时发生变化: {relative_path}")
-            _ensure_same_cleanup_mount(child_fd, mount_identity, str(relative_path))
-            os.close(current_fd)
-            current_fd = child_fd
-            if is_leaf:
-                _validate_tree(current_fd, str(relative_path))
-    finally:
-        os.close(current_fd)
-
-
 def _cleanup_retained_runtime_root(
     retained_path: Path,
     *,
@@ -2525,34 +2166,20 @@ def _cleanup_retained_runtime_root(
     expected_private_snapshot: dict[str, str] | None = None,
     expected_root_identity: dict[str, int] | None = None,
 ) -> None:
-    if not _secure_retained_cleanup_supported():
-        raise ValueError("当前平台无法提供句柄锚定的无跟随删除，请手动清理保留目录。")
+    del expected_private_snapshot, expected_root_identity
     try:
-        initial_metadata = retained_path.lstat()
+        metadata = retained_path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("旧数据目录不存在。") from exc
     except OSError as exc:
-        raise ValueError("无法安全识别保留目录。") from exc
-    if stat.S_ISLNK(initial_metadata.st_mode):
-        raise ValueError("保留目录是符号链接，拒绝执行清理。")
-    if not stat.S_ISDIR(initial_metadata.st_mode):
-        raise ValueError("保留目录不是可安全清理的真实目录。")
-    if expected_root_identity is not None:
-        try:
-            expected_device = int(expected_root_identity["device"])
-            expected_inode = int(expected_root_identity["inode"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("清理意图缺少有效的保留目录身份。") from exc
-        if (
-            int(initial_metadata.st_dev) != expected_device
-            or int(initial_metadata.st_ino) != expected_inode
-        ):
-            raise ValueError("保留目录与已持久化的清理意图不一致，已停止。")
+        raise ValueError("无法读取旧数据目录。") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("旧数据目录不是普通目录。")
     if path_chain_has_symlink(retained_path):
-        raise ValueError("保留目录或其父路径包含符号链接，拒绝执行清理。")
+        raise ValueError("旧数据目录路径包含符号链接。")
+    if paths_equal(retained_path, current_root) or paths_equal(retained_path, target_root):
+        raise ValueError("不能删除当前正在使用的新数据目录。")
     retained_private_state = probe_retained_community_state(retained_path)
-    if retained_private_state.cleanup_blocked:
-        raise ValueError(
-            f"保留目录的社区私有状态无法安全清理: {retained_private_state.state}"
-        )
     if not is_retained_root_cleanup_available(
         retained_path,
         current_root=current_root,
@@ -2562,54 +2189,17 @@ def _cleanup_retained_runtime_root(
         allow_anchor_root=True,
         anchor_has_managed_private_state=retained_private_state.has_managed_content,
     ):
-        raise ValueError("保留目录当前不满足安全清理条件。")
+        raise ValueError("旧数据目录当前不可清理。")
 
-    try:
-        parent_fd, root_fd = _open_retained_root_no_follow(
-            retained_path,
-            initial_metadata,
-        )
-    except OSError as exc:
-        raise ValueError("保留目录在清理前发生变化，已停止。") from exc
-    try:
-        from main_routers.card_drop_router import prepare_retained_community_state_cleanup
+    from main_routers.card_drop_router import prepare_retained_community_state_cleanup
 
-        root_mount_identity = _directory_mount_identity(root_fd)
-        for entry in RUNTIME_STORAGE_ENTRIES:
-            _preflight_runtime_entry(
-                root_fd,
-                entry,
-                expected_mount_identity=root_mount_identity,
-            )
-        prepare_retained_community_state_cleanup(
-            retained_path,
-            config_manager=config_manager,
-            expected_snapshot=expected_private_snapshot,
-            retained_dir_fd=root_fd,
-        )
-        for entry in RUNTIME_STORAGE_ENTRIES:
-            _secure_remove_runtime_entry(
-                root_fd,
-                entry,
-                expected_mount_identity=root_mount_identity,
-            )
-
-        if not paths_equal(retained_path, anchor_root):
-            try:
-                current_metadata = os.stat(
-                    retained_path.name,
-                    dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError as exc:
-                raise ValueError("保留目录在清理期间被移动，已停止。") from exc
-            if not os.path.samestat(current_metadata, os.fstat(root_fd)):
-                raise ValueError("保留目录在清理期间被替换，已停止。")
-            with suppress(OSError):
-                os.rmdir(retained_path.name, dir_fd=parent_fd)
-    finally:
-        os.close(root_fd)
-        os.close(parent_fd)
+    # Credentials are promoted first.  If this write fails, the old directory
+    # remains intact and the already-completed migration is unaffected.
+    prepare_retained_community_state_cleanup(
+        retained_path,
+        config_manager=config_manager,
+    )
+    shutil.rmtree(retained_path)
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
@@ -2804,12 +2394,6 @@ async def get_storage_location_retained_source(response: Response):
     return {
         "ok": True,
         **notice,
-        # The cleanup request deliberately remains in flight until its worker has
-        # reached a terminal result, even if the client-side fetch timed out.
-        # Expose that operation fact so the UI cannot queue a second destructive
-        # request merely because the retained directory is still visible while
-        # the first deletion is running.
-        "cleanup_in_progress": _retained_cleanup_requests_in_flight > 0,
     }
 
 
@@ -2890,20 +2474,14 @@ async def post_storage_location_retained_source_cleanup(
     request: Request,
     response: Response,
 ):
-    global _retained_cleanup_requests_in_flight
-
     validation_error = _validate_local_mutation_request(
         request,
         error_defaults={"ok": False},
     )
     if validation_error is not None:
         return validation_error
-    _retained_cleanup_requests_in_flight += 1
-    try:
-        async with _storage_mutation_lock:
-            return await _post_storage_location_retained_source_cleanup_locked(payload, response)
-    finally:
-        _retained_cleanup_requests_in_flight -= 1
+    async with _storage_mutation_lock:
+        return await _post_storage_location_retained_source_cleanup_locked(payload, response)
 
 
 async def _post_storage_location_retained_source_cleanup_locked(
@@ -2921,7 +2499,6 @@ async def _post_storage_location_retained_source_cleanup_locked(
         lambda: _build_completed_migration_notice(
             config_manager,
             require_existing_retained_root=True,
-            persist_reconcile=True,
         )
     )
     if notice.get("completed") is not True:
@@ -2932,9 +2509,9 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "error": "当前没有可清理的旧数据保留目录。",
         }
 
-    expected_retained_root = str(notice.get("retained_root") or "").strip()
-    requested_retained_root = str(payload.retained_root or "").strip() or expected_retained_root
-    if not paths_equal(requested_retained_root, expected_retained_root):
+    expected_root = str(notice.get("retained_root") or "").strip()
+    requested_root = str(payload.retained_root or "").strip() or expected_root
+    if not paths_equal(requested_root, expected_root):
         response.status_code = 409
         return {
             "ok": False,
@@ -2942,114 +2519,19 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "error": "请求的清理路径与当前保留目录不一致，请刷新后重试。",
         }
 
-    retained_path = Path(expected_retained_root)
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
-    anchor_root = _get_storage_anchor_root(config_manager, current_root=current_root)
-
-    def _persist_cleanup_intent() -> tuple[
-        dict[str, str],
-        dict[str, int],
-        dict[str, Any],
-    ]:
-        migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
-        if not isinstance(migration_payload, dict):
-            raise OSError("storage migration checkpoint is unavailable")
-        authoritative_identity = retained_source_identity_from_checkpoint(
-            migration_payload,
-            retained_path,
-        )
-        if authoritative_identity is None:
-            raise OSError("retained root has no migration-time identity")
-        mode = str(migration_payload.get("retained_source_mode") or "").strip()
-        if mode == "cleanup_in_progress":
-            snapshot = migration_payload.get("retained_private_snapshot")
-            if not isinstance(snapshot, dict):
-                raise OSError("cleanup intent is missing its private-state snapshot")
-            root_identity = migration_payload.get("cleanup_root_identity")
-            if not isinstance(root_identity, dict):
-                raise OSError("cleanup intent is missing its retained-root identity")
-            normalized_identity = {
-                "device": int(root_identity["device"]),
-                "inode": int(root_identity["inode"]),
-            }
-            if normalized_identity != authoritative_identity:
-                raise OSError("cleanup intent identity changed")
-            normalized_snapshot = {
-                str(filename): str(digest)
-                for filename, digest in snapshot.items()
-                if filename in COMMUNITY_PRIVATE_STATE_FILENAMES
-            }
-            return normalized_snapshot, normalized_identity, migration_payload
-
-        try:
-            initial_metadata = retained_path.lstat()
-            parent_fd, root_fd = _open_retained_root_no_follow(
-                retained_path,
-                initial_metadata,
-            )
-        except OSError as exc:
-            raise OSError("retained root changed before cleanup intent") from exc
-        try:
-            pinned_metadata = os.fstat(root_fd)
-            if (
-                int(pinned_metadata.st_dev) != authoritative_identity["device"]
-                or int(pinned_metadata.st_ino)
-                != authoritative_identity["inode"]
-            ):
-                raise OSError("retained root changed before cleanup intent")
-            snapshot = snapshot_retained_community_state(
-                retained_path,
-                dir_fd=root_fd,
-            )
-            root_identity = dict(authoritative_identity)
-        finally:
-            os.close(root_fd)
-            os.close(parent_fd)
-        updated_payload = dict(migration_payload)
-        updated_payload["retained_source_mode"] = "cleanup_in_progress"
-        updated_payload["retained_private_snapshot"] = snapshot
-        updated_payload["cleanup_root_identity"] = root_identity
-        updated_payload["cleanup_private_names"] = sorted(snapshot)
-        updated_payload["cleanup_started_at"] = (
-            str(updated_payload.get("cleanup_started_at") or "").strip()
-            or _utc_now_iso()
-        )
-        updated_payload["updated_at"] = _utc_now_iso()
-        persisted_payload = replace_storage_migration_if_unchanged(
-            config_manager,
-            migration_payload,
-            updated_payload,
-            anchor_root=anchor_root,
-        )
-        return snapshot, root_identity, persisted_payload
-
+    anchor_root = _get_storage_anchor_root(
+        config_manager,
+        current_root=current_root,
+    )
     try:
-        # The intent must survive before the first deletion. If final metadata
-        # writes later fail and the same path is reused, compatibility reads can
-        # distinguish it from the retained snapshot and refuse credential import.
-        (
-            cleanup_private_snapshot,
-            cleanup_root_identity,
-            cleanup_intent_payload,
-        ) = await _run_locked_storage_job(_persist_cleanup_intent)
-    except Exception as exc:
-        response.status_code = 503
-        return {
-            "ok": False,
-            "error_code": "retained_source_cleanup_intent_failed",
-            "error": f"无法在清理前持久化安全意图，未删除任何数据: {exc}",
-        }
-    try:
-        # 选择性清理同样不能在取消时把 _storage_mutation_lock 让出去。
         await _run_locked_storage_job(
             lambda: _cleanup_retained_runtime_root(
-                retained_path,
+                Path(expected_root),
                 current_root=current_root,
                 anchor_root=anchor_root,
                 target_root=notice.get("target_root") or "",
                 config_manager=config_manager,
-                expected_private_snapshot=cleanup_private_snapshot,
-                expected_root_identity=cleanup_root_identity,
             )
         )
     except Exception as exc:
@@ -3060,70 +2542,53 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "error": f"清理旧数据保留目录失败: {exc}",
         }
 
-    def _persist_cleanup_result() -> dict[str, bool]:
-        # 迁移检查点和 root_state 两次落盘放同一个 job：中间插一个 await 就能造出
-        # "检查点已标记 cleaned、root_state 还挂着 legacy_cleanup_pending" 的窗口，
-        # 而这个窗口正好会被存储页那条 1200ms 的轮询看到。
-        checkpoint_persisted = False
-        try:
-            updated_payload = dict(cleanup_intent_payload)
+    def _mark_cleanup_complete() -> None:
+        migration_payload = load_storage_migration(
+            config_manager,
+            anchor_root=anchor_root,
+        )
+        if isinstance(migration_payload, dict):
+            updated_payload = dict(migration_payload)
             updated_payload["backup_root"] = ""
             updated_payload["retained_source_root"] = ""
-            updated_payload.pop("retained_source_identity", None)
             updated_payload["retained_source_mode"] = "cleaned"
-            updated_payload.pop("retained_private_snapshot", None)
-            updated_payload.pop("cleanup_private_names", None)
-            updated_payload.pop("cleanup_root_identity", None)
-            updated_payload["updated_at"] = _utc_now_iso()
-            updated_payload["cleanup_completed_at"] = _utc_now_iso()
-            replace_storage_migration_if_unchanged(
-                config_manager,
-                cleanup_intent_payload,
-                updated_payload,
-                anchor_root=anchor_root,
-            )
-            checkpoint_persisted = True
-        except Exception:
-            # The filesystem deletion is already committed. Status derives the
-            # cleanup fact from the retained inventory, so a metadata write
-            # failure must not turn success into a false "delete failed" result.
-            logger.exception("failed to persist retained-source cleanup checkpoint")
-
-        # root_state 这一半保持 best-effort（与改动前一致）：清理已经真的做完了，
-        # 标记没落上不该把整个请求判失败。
-        root_state_persisted = False
+            for key in (
+                "retained_source_identity",
+            ):
+                updated_payload.pop(key, None)
+            try:
+                replace_storage_migration_if_unchanged(
+                    config_manager,
+                    migration_payload,
+                    updated_payload,
+                    anchor_root=anchor_root,
+                )
+            except Exception:
+                logger.warning(
+                    "retained root was deleted but migration metadata could not be updated",
+                    exc_info=True,
+                )
         try:
-            if not checkpoint_persisted:
-                return {
-                    "checkpoint_persisted": False,
-                    "root_state_persisted": False,
-                }
             with root_state_transaction():
                 root_state = config_manager.load_root_state()
                 if isinstance(root_state, dict):
                     updated_root_state = dict(root_state)
-                    updated_root_state["legacy_cleanup_pending"] = False
-                    if paths_equal(updated_root_state.get("last_migration_backup") or "", expected_retained_root):
+                    if paths_equal(
+                        updated_root_state.get("last_migration_backup") or "",
+                        expected_root,
+                    ):
                         updated_root_state["last_migration_backup"] = ""
                     config_manager.save_root_state(updated_root_state)
-            root_state_persisted = True
         except Exception:
-            # best-effort：清理本身已经做完了，标记没落上不该把整个请求判失败
-            pass
-        return {
-            "checkpoint_persisted": checkpoint_persisted,
-            "root_state_persisted": root_state_persisted,
-        }
+            logger.warning(
+                "retained root was deleted but root state could not be updated",
+                exc_info=True,
+            )
 
-    persistence = await _run_locked_storage_job(_persist_cleanup_result)
-
+    await _run_locked_storage_job(_mark_cleanup_complete)
     return {
         "ok": True,
-        "cleaned_root": expected_retained_root,
-        "metadata_persisted": bool(
-            persistence.get("checkpoint_persisted")
-            and persistence.get("root_state_persisted")
-        ),
+        "cleaned_root": expected_root,
     }
 
 
@@ -3187,11 +2652,7 @@ async def _post_storage_location_select_locked(
 
     try:
         blocking_bootstrap = await _run_locked_storage_job(
-            partial(
-                build_storage_location_bootstrap_payload,
-                config_manager,
-                persist_reconcile=True,
-            )
+            partial(build_storage_location_bootstrap_payload, config_manager)
         )
     except StoragePolicyError:
         return _reject_storage_mutation_for_unavailable_policy(response)
@@ -3221,14 +2682,6 @@ async def _post_storage_location_select_locked(
             "ok": False,
             "error_code": "storage_recovery_evidence_retained",
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
-            "blocking_reason": "recovery_required",
-        }
-    if _storage_cleanup_intent_active(raw_blocking_migration):
-        response.status_code = 409
-        return {
-            "ok": False,
-            "error_code": "retained_source_cleanup_in_progress",
-            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
             "blocking_reason": "recovery_required",
         }
     if paths_equal(normalized_selected_root, current_root):
@@ -3582,11 +3035,7 @@ async def _post_storage_location_restart_locked(
     if paths_equal(normalized_selected_root, current_root):
         try:
             blocking_bootstrap = await _run_locked_storage_job(
-                partial(
-                    build_storage_location_bootstrap_payload,
-                    config_manager,
-                    persist_reconcile=True,
-                )
+                partial(build_storage_location_bootstrap_payload, config_manager)
             )
         except StoragePolicyError:
             return _reject_storage_mutation_for_unavailable_policy(response)
@@ -3626,11 +3075,7 @@ async def _post_storage_location_restart_locked(
 
     try:
         blocking_bootstrap = await _run_locked_storage_job(
-            partial(
-                build_storage_location_bootstrap_payload,
-                config_manager,
-                persist_reconcile=True,
-            )
+            partial(build_storage_location_bootstrap_payload, config_manager)
         )
     except StoragePolicyError:
         return _reject_storage_mutation_for_unavailable_policy(response)
@@ -3660,14 +3105,6 @@ async def _post_storage_location_restart_locked(
             "ok": False,
             "error_code": "storage_recovery_evidence_retained",
             "error": "迁移事务仍保留可能唯一的数据副本，当前不能清除检查点或启动新的迁移。请恢复原数据路径，然后安全退出并重新启动以继续自动恢复。",
-            "blocking_reason": "recovery_required",
-        }
-    if _storage_cleanup_intent_active(raw_blocking_migration):
-        response.status_code = 409
-        return {
-            "ok": False,
-            "error_code": "retained_source_cleanup_in_progress",
-            "error": "旧数据保留目录的清理尚未收口，请先重试清理或重新启动恢复。",
             "blocking_reason": "recovery_required",
         }
     if bool(blocking_bootstrap.get("migration_pending")):
@@ -3879,12 +3316,6 @@ async def _post_storage_location_restart_locked(
                 previous_migration
             ) or storage_migration_retains_recovery_evidence(
                 previous_migration
-            ) or (
-                isinstance(previous_migration, dict)
-                and str(
-                    previous_migration.get("retained_source_mode") or ""
-                ).strip()
-                == "cleanup_in_progress"
             ):
                 raise StorageMigrationError(
                     "storage_migration_checkpoint_active",

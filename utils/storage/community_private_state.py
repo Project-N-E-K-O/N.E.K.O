@@ -17,7 +17,6 @@ managed data without importing either FastAPI router.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
@@ -26,6 +25,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from utils.file_utils import atomic_write_json
 from .policy import path_chain_has_symlink
 
 COMMUNITY_AUTH_FILENAME = "community_auth.json"
@@ -45,6 +45,51 @@ COMMUNITY_PRIVATE_STATE_FILENAMES = (
     COMMUNITY_STEAM_PENDING_FILENAME,
 )
 COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
+
+
+def migrate_legacy_private_state(
+    retained_root: Path | str,
+    config_manager,
+) -> tuple[str, ...]:
+    """Copy the known legacy community records before a user deletes a root.
+
+    These four files are the complete legacy private-state contract.  They are
+    copied only when the fixed local-state destination is absent; an existing
+    destination remains authoritative.  A malformed legacy record is ignored
+    because it cannot restore a session and the user explicitly requested root
+    deletion; a write failure is raised so the old root stays available.
+    """
+
+    source_root = Path(retained_root).expanduser()
+    state_root = Path(config_manager.local_state_dir).expanduser()
+    if not source_root.is_absolute() or not state_root.is_absolute():
+        raise OSError("private state paths must be absolute")
+    if path_chain_has_symlink(source_root) or path_chain_has_symlink(state_root):
+        raise OSError("private state path contains a symlink")
+    state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    for filename in COMMUNITY_PRIVATE_STATE_FILENAMES:
+        source = source_root / filename
+        state, payload = read_private_json_state(source)
+        if state != "valid" or not isinstance(payload, dict):
+            continue
+        destinations = [state_root / filename]
+        if filename == SOCIAL_SESSION_FILENAME:
+            override = os.environ.get("NEKO_USER_DATA_DIR", "").strip()
+            if override and Path(override).expanduser().is_absolute():
+                override_path = Path(override).expanduser()
+                if not path_chain_has_symlink(override_path):
+                    destinations.append(override_path / filename)
+        for destination in destinations:
+            destination_state, _destination_payload = read_private_json_state(destination)
+            if destination_state != "absent":
+                continue
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            atomic_write_json(destination, payload, ensure_ascii=False, indent=2)
+            if filename not in copied:
+                copied.append(filename)
+    return tuple(copied)
 
 
 @dataclass(frozen=True)
@@ -538,93 +583,4 @@ def probe_retained_community_state(
         unreadable_names=tuple(unreadable),
         active_social_lock=active_social_lock,
         orphaned_social_lock=orphaned_social_lock,
-    )
-
-
-def snapshot_retained_community_state(
-    retained_root: Path | str,
-    *,
-    allow_active_social_lock: bool = False,
-    dir_fd: int | None = None,
-) -> dict[str, str]:
-    """Hash exact managed private files for a durable cleanup intent."""
-    root = Path(retained_root).expanduser()
-    if dir_fd is None:
-        inventory = probe_retained_community_state(root)
-        if inventory.unsafe_names or inventory.unreadable_names or (
-            inventory.active_social_lock and not allow_active_social_lock
-        ):
-            raise OSError(f"retained community state is {inventory.state}")
-
-    snapshot: dict[str, str] = {}
-    for filename in COMMUNITY_PRIVATE_STATE_FILENAMES:
-        path = root / filename
-        try:
-            before = (
-                path.lstat()
-                if dir_fd is None
-                else os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
-            )
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise OSError(f"retained {filename} is unreadable") from exc
-        if not stat.S_ISREG(before.st_mode) or (
-            dir_fd is None and path_chain_has_symlink(path)
-        ):
-            raise OSError(f"retained {filename} is unsafe")
-        try:
-            content, after = _read_stable_regular_file(
-                path,
-                before,
-                dir_fd=dir_fd,
-                max_bytes=COMMUNITY_PRIVATE_STATE_SNAPSHOT_MAX_BYTES,
-            )
-        except _PrivateStateSnapshotChanged as exc:
-            raise OSError(f"retained {filename} changed while snapshotting") from exc
-        except OSError as exc:
-            raise OSError(f"retained {filename} is unreadable") from exc
-        identity_before = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        )
-        identity_after = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        )
-        if identity_before != identity_after or len(content) != after.st_size:
-            raise OSError(f"retained {filename} changed while snapshotting")
-        snapshot[filename] = hashlib.sha256(content).hexdigest()
-    return snapshot
-
-
-def retained_community_snapshot_matches(
-    retained_root: Path | str,
-    expected: dict[str, str],
-    *,
-    dir_fd: int | None = None,
-) -> bool:
-    """Allow a partially deleted intent, but reject changed or new private files."""
-    if not isinstance(expected, dict) or any(
-        filename not in COMMUNITY_PRIVATE_STATE_FILENAMES
-        or not isinstance(digest, str)
-        or len(digest) != 64
-        for filename, digest in expected.items()
-    ):
-        return False
-    try:
-        current = snapshot_retained_community_state(
-            retained_root,
-            allow_active_social_lock=True,
-            dir_fd=dir_fd,
-        )
-    except OSError:
-        return False
-    return all(
-        filename in expected and expected[filename] == digest
-        for filename, digest in current.items()
     )

@@ -2263,7 +2263,6 @@
         "awaitingShutdownRetryFailed": "La solicitud de cierre seguro aún no se completó. La aplicación permanece bloqueada; vuelve a intentarlo más tarde.",
         "restartScheduleRollbackFailed": "No se pudo confirmar la reversión del reinicio controlado. Leyendo de nuevo el estado real del almacenamiento.",
         "restartOutcomeUnknown": "Se desconoce el resultado del reinicio controlado. Leyendo de nuevo el estado real del almacenamiento.",
-        "cleanupRetainedRootOutcomeUnknown": "Aún no se puede confirmar la limpieza de los datos anteriores. El botón permanece bloqueado para evitar una eliminación duplicada; actualiza el estado antes de intentarlo de nuevo.",
         "maintenanceRetryFailed": "El servicio aún no pudo recuperarse. Inténtalo más tarde o sal de la app de forma segura.",
         "maintenanceRetryService": "Reintentar recuperación",
         "maintenanceSafeQuit": "Salir de forma segura",

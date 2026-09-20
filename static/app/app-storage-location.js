@@ -2145,49 +2145,6 @@
         state.completionPollTimer = window.setTimeout(tick, 0);
     }
 
-    async function reconcileRetainedCleanupOutcome(retainedRoot) {
-        var consecutiveUnknown = 0;
-        while (consecutiveUnknown < 6) {
-            await sleep(400);
-            try {
-                var response = await fetchWithTimeout('/api/storage/location/retained-source', {
-                    cache: 'no-store',
-                    headers: { 'Accept': 'application/json' }
-                }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
-                if (!response.ok) {
-                    consecutiveUnknown += 1;
-                    continue;
-                }
-                var payload = await response.json();
-                if (!payload || payload.ok !== true) {
-                    consecutiveUnknown += 1;
-                    continue;
-                }
-                if (payload.completed !== true || payload.retained_root_exists === false) {
-                    return 'cleaned';
-                }
-                if (pathEquals(payload.retained_root, retainedRoot)
-                    && payload.retained_root_exists === true) {
-                    if (payload.cleanup_in_progress === false) {
-                        return 'present';
-                    }
-                    if (payload.cleanup_in_progress === true) {
-                        consecutiveUnknown = 0;
-                        continue;
-                    }
-                }
-                consecutiveUnknown += 1;
-                // True means the original request still owns the server-side
-                // mutation lock. A missing field is an older backend and is
-                // intentionally treated as unknown, never as permission to
-                // submit a second delete.
-            } catch (_) {
-                consecutiveUnknown += 1;
-            }
-        }
-        return 'unknown';
-    }
-
     function finishRetainedCleanupUi() {
         state.completionCleanupBlockedKey = '';
         applyCompletionNotice({ completed: false });
@@ -2218,7 +2175,6 @@
             state.completionCleanupButton.disabled = true;
         }
 
-        var cleanupError = null;
         try {
             var response = await fetchWithTimeout('/api/storage/location/retained-source/cleanup', {
                 method: 'POST',
@@ -2237,37 +2193,15 @@
             if (!response.ok || !payload || payload.ok !== true) {
                 throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
             }
-
             finishRetainedCleanupUi();
-            return;
         } catch (error) {
-            cleanupError = error;
-        }
-
-        // A timeout, truncated body, or late 5xx can arrive after the delete
-        // actually committed. Query the authoritative retained-source state
-        // before enabling a second destructive request.
-        var reconciledOutcome = await reconcileRetainedCleanupOutcome(retainedRoot);
-        if (reconciledOutcome === 'cleaned') {
-            finishRetainedCleanupUi();
-            return;
-        }
-        if (reconciledOutcome === 'present' && state.completionCleanupButton) {
             state.completionCleanupBlockedKey = '';
-            state.completionCleanupButton.disabled = false;
-        }
-        if (typeof window.showStatusToast === 'function') {
-            if (reconciledOutcome === 'unknown') {
+            if (state.completionCleanupButton) {
+                state.completionCleanupButton.disabled = false;
+            }
+            if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
-                    translate(
-                        'storage.cleanupRetainedRootOutcomeUnknown',
-                        '暂时无法确认旧数据是否已清理。为避免重复删除，按钮会保持锁定；请刷新状态后再操作。'
-                    ),
-                    6000
-                );
-            } else {
-                window.showStatusToast(
-                    String((cleanupError && cleanupError.message) || cleanupError || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
+                    String(error && error.message || error || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
                     5000
                 );
             }

@@ -302,7 +302,6 @@ class StorageRootsMixin:
         state.setdefault("last_migration_source", "")
         state.setdefault("last_migration_backup", "")
         state.setdefault("last_successful_boot_at", "")
-        state.setdefault("legacy_cleanup_pending", False)
         return state
 
     def _has_selected_root_unavailable_recovery_override(self) -> bool:
@@ -974,7 +973,6 @@ class StorageRootsMixin:
             "last_migration_backup": "",
             "last_migration_result": "",
             "last_successful_boot_at": "",
-            "legacy_cleanup_pending": False,
         }
 
     def build_default_cloudsave_local_state(self, *, client_id=None):

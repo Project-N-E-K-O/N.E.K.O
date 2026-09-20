@@ -2263,7 +2263,6 @@
         "awaitingShutdownRetryFailed": "The safe shutdown request still did not complete. The app remains blocked; retry later.",
         "restartScheduleRollbackFailed": "The controlled restart rollback could not be confirmed. Reading the actual storage state again.",
         "restartOutcomeUnknown": "The controlled restart result is unknown. Reading the actual storage state again.",
-        "cleanupRetainedRootOutcomeUnknown": "The old-data cleanup result cannot be confirmed yet. The button remains locked to avoid a duplicate delete; refresh the status before trying again.",
         "maintenanceRetryFailed": "The service still could not recover. Try again later or safely quit the app.",
         "maintenanceRetryService": "Retry service recovery",
         "maintenanceSafeQuit": "Safely quit app",

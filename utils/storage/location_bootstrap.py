@@ -25,24 +25,14 @@ from utils.cloudsave_runtime import (
     runtime_root_has_user_content,
 )
 from .policy import StoragePolicyError, compute_anchor_root, should_require_storage_selection
-from .entries import (
-    RUNTIME_STORAGE_ENTRIES,
-    RuntimeStorageEntryBoundaryError,
-    checked_runtime_entry_path,
-)
-from .community_private_state import (
-    COMMUNITY_PRIVATE_STATE_FILENAMES,
-    probe_retained_community_state,
-)
+from .entries import RUNTIME_STORAGE_ENTRIES
 from .migration import (
     STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED,
-    is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
 )
 from .layout import get_storage_recovery_mode
 from utils.logger_config import get_module_logger
-from utils.root_state_lock import root_state_transaction
 
 logger = get_module_logger(__name__)
 
@@ -168,16 +158,6 @@ def _is_awaiting_controlled_shutdown(
 def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_migration_result: str) -> dict[str, Any]:
     checkpoint = migration_checkpoint if isinstance(migration_checkpoint, dict) else {}
     error_message = str(checkpoint.get("error_message") or "").strip()
-    raw_cleanup_private_names = checkpoint.get("cleanup_private_names")
-    cleanup_private_names = (
-        [
-            str(name)
-            for name in raw_cleanup_private_names
-            if isinstance(name, str) and name in COMMUNITY_PRIVATE_STATE_FILENAMES
-        ]
-        if isinstance(raw_cleanup_private_names, list)
-        else []
-    )
 
     def _opt_normalize(value: Any) -> str:
         raw_value = str(value or "").strip()
@@ -196,7 +176,6 @@ def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_m
         "backup_root": _opt_normalize(checkpoint.get("backup_root")),
         "retained_source_root": _opt_normalize(checkpoint.get("retained_source_root")),
         "retained_source_mode": str(checkpoint.get("retained_source_mode") or "").strip(),
-        "cleanup_private_names": cleanup_private_names,
         "error_code": str(checkpoint.get("error_code") or "").strip(),
         "error_message": error_message,
         "last_error": error_message or _extract_last_error(last_migration_result),
@@ -208,102 +187,6 @@ def _get_configured_anchor_root(config_manager, *, current_root: Path) -> Path:
     if anchor_root:
         return Path(anchor_root).expanduser().resolve(strict=False)
     return compute_anchor_root(config_manager, current_root=current_root)
-
-
-def _derive_legacy_cleanup_pending(
-    *,
-    root_state: dict[str, Any],
-    migration_payload: dict[str, Any],
-    current_root: Path,
-    anchor_root: Path,
-) -> bool:
-    retained_root = str(
-        migration_payload.get("retained_source_root")
-        or migration_payload.get("backup_root")
-        or root_state.get("last_migration_backup")
-        or ""
-    ).strip()
-    if not retained_root:
-        return False
-
-    retained_path = Path(retained_root).expanduser()
-    try:
-        retained_path.lstat()
-    except FileNotFoundError:
-        # Filesystem truth wins over stale cleanup metadata after a successful
-        # delete whose checkpoint/root_state update was interrupted.
-        return False
-    except OSError:
-        # Inaccessible is not absent: retain the cleanup intent fail-closed.
-        return True
-
-    try:
-        has_retained_runtime_entries = any(
-            (
-                checked_runtime_entry_path(retained_path, entry).exists()
-                or checked_runtime_entry_path(retained_path, entry).is_symlink()
-            )
-            for entry in RUNTIME_STORAGE_ENTRIES
-        )
-    except RuntimeStorageEntryBoundaryError:
-        # Existing unsafe entries are still pending cleanup, but the mutation
-        # route will refuse to follow them.
-        has_retained_runtime_entries = True
-    retained_private_state = probe_retained_community_state(
-        retained_path,
-        classify_social_lock_process=False,
-    )
-    retained_mode = str(migration_payload.get("retained_source_mode") or "").strip()
-    has_retained_private_state = retained_private_state.has_managed_content
-    if retained_mode == "cleanup_in_progress":
-        has_retained_private_state = retained_private_state.has_expected_content(
-            set(migration_payload.get("cleanup_private_names") or [])
-        )
-    if not (
-        has_retained_runtime_entries
-        or has_retained_private_state
-    ):
-        return False
-
-    if bool(root_state.get("legacy_cleanup_pending")):
-        return True
-    if str(root_state.get("last_migration_backup") or "").strip():
-        return True
-
-    migration_completed = str(migration_payload.get("status") or "").strip() == "completed"
-    return bool(migration_completed)
-
-
-def _reconcile_legacy_cleanup_pending_root_state(
-    config_manager,
-    *,
-    root_state: dict[str, Any],
-    derived_legacy_cleanup_pending: bool,
-) -> dict[str, Any]:
-    if bool(root_state.get("legacy_cleanup_pending")) == bool(derived_legacy_cleanup_pending):
-        return root_state
-
-    try:
-        with root_state_transaction():
-            # 锁内重读一次，别拿调用方手里那份 pre-image 去盖。调用方 load 到这里之间
-            # 变更路由可能已经写过一轮 root_state（回滚就是典型），直接 dict(root_state)
-            # 会把那一轮整份抹掉——PR #2598 里"回滚被 /status 盖掉"就是这个形状。
-            current_state = config_manager.load_root_state()
-            if not isinstance(current_state, dict):
-                current_state = root_state
-            if bool(current_state.get("legacy_cleanup_pending")) == bool(derived_legacy_cleanup_pending):
-                return current_state
-
-            updated_root_state = dict(current_state)
-            updated_root_state["legacy_cleanup_pending"] = bool(derived_legacy_cleanup_pending)
-            config_manager.save_root_state(updated_root_state)
-            return updated_root_state
-    except Exception as exc:
-        logger.warning(
-            "_reconcile_legacy_cleanup_pending_root_state: config_manager.save_root_state failed: %s",
-            exc,
-        )
-        return root_state
 
 
 def _should_require_selection(config_manager, *, current_root: Path, anchor_root: Path) -> bool:
@@ -320,23 +203,8 @@ def _should_require_selection(config_manager, *, current_root: Path, anchor_root
 
 def _build_storage_location_bootstrap_payload_from_disk(
     config_manager,
-    *,
-    persist_reconcile: bool = False,
 ) -> dict[str, Any]:
-    """Build the storage-location bootstrap payload.
-
-    ``persist_reconcile`` decides whether a drifted ``legacy_cleanup_pending``
-    flag is written back to root_state.json. It defaults to False so that read
-    endpoints stay read-only: this payload backs ``GET /bootstrap``,
-    ``GET /status`` (the storage page polls it on a 1200ms timer), ``GET /diagnostics``,
-    ``GET /retained-source`` and ``POST /exit``, none of which hold
-    ``_storage_mutation_lock``. A write from there races the mutation routes'
-    rollback and can clobber it wholesale, which is what stopped the offload in
-    PR #2598. Only callers already holding that lock pass True.
-
-    The returned payload carries the freshly derived flag either way — turning
-    persistence off changes what lands on disk, not what the client sees.
-    """
+    """Build the storage-location bootstrap payload."""
     recovery_mode = get_storage_recovery_mode()
     if recovery_mode in {"storage_policy_unavailable", "storage_status_unavailable"}:
         # The launcher owns this generation-level failure.  A phase-0 failure
@@ -353,7 +221,6 @@ def _build_storage_location_bootstrap_payload_from_disk(
             "migration_pending": False,
             "recovery_required": policy_unavailable,
             "blocking_reason": recovery_mode,
-            "legacy_cleanup_pending": False,
             "last_known_good_root": "",
             "last_error_summary": (
                 "无法安全读取存储位置策略。"
@@ -387,7 +254,6 @@ def _build_storage_location_bootstrap_payload_from_disk(
             "migration_pending": False,
             "recovery_required": False,
             "blocking_reason": "",
-            "legacy_cleanup_pending": False,
             "last_known_good_root": _normalize_path(current_root),
             "last_error_summary": "",
             "migration_phase": "",
@@ -446,19 +312,6 @@ def _build_storage_location_bootstrap_payload_from_disk(
         last_migration_result,
     )
     last_error_summary = migration_payload.get("last_error", "")
-    legacy_cleanup_pending = _derive_legacy_cleanup_pending(
-        root_state=root_state,
-        migration_payload=migration_payload,
-        current_root=current_root,
-        anchor_root=anchor_root,
-    )
-    if persist_reconcile:
-        root_state = _reconcile_legacy_cleanup_pending_root_state(
-            config_manager,
-            root_state=root_state,
-            derived_legacy_cleanup_pending=legacy_cleanup_pending,
-        )
-
     return {
         "current_root": _normalize_path(display_current_root),
         "recommended_root": _normalize_path(anchor_root),
@@ -478,7 +331,6 @@ def _build_storage_location_bootstrap_payload_from_disk(
             migration_pending=migration_pending,
             recovery_required=recovery_required,
         ),
-        "legacy_cleanup_pending": legacy_cleanup_pending,
         "last_known_good_root": _normalize_path(root_state.get("last_known_good_root") or current_root),
         "last_error_summary": str(last_error_summary or "").strip(),
         "migration_phase": "awaiting_shutdown" if awaiting_shutdown else "",
@@ -493,13 +345,8 @@ def _build_storage_location_bootstrap_payload_from_disk(
 
 def build_storage_location_bootstrap_payload(
     config_manager,
-    *,
-    persist_reconcile: bool = False,
 ) -> dict[str, Any]:
-    payload = _build_storage_location_bootstrap_payload_from_disk(
-        config_manager,
-        persist_reconcile=persist_reconcile,
-    )
+    payload = _build_storage_location_bootstrap_payload_from_disk(config_manager)
     runtime_blocking_reason = get_runtime_storage_blocking_reason()
     if not runtime_blocking_reason:
         return payload
