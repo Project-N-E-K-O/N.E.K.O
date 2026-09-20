@@ -2051,18 +2051,23 @@ function createIntervalControl(manager, prefix, toggle) {
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
     // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
     // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
-    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
-    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
-    const numericValue = Number(currentValue);
-    if (Number.isFinite(numericValue)) {
-        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
-        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+    // 滑条边界始终由当前值重新推导而非单向放宽：值超出默认边界时按契约放宽如实
+    // 显示，绝不钳制或改写运行时/持久化配置——否则打开设置面板就会把服务端配
+    // 置的值静默改回 UI 边界；值回到默认边界内则收回默认边界——否则先填 600 再
+    // 改回 100，滑条会一直停在 [10,600]。
+    const syncSliderToValue = (numericValue) => {
+        if (!Number.isFinite(numericValue)) return;
+        slider.min = String(Math.max(1, Math.min(minVal, numericValue)));
+        slider.max = String(Math.max(120, Math.min(3600, numericValue)));
         // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
         // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
         // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
         const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
-        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
-    }
+        slider.step = (sliderShownValue - Number(slider.min)) % 5 === 0 ? '5' : '1';
+        slider.value = String(numericValue);
+    };
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) syncSliderToValue(numericValue);
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
@@ -2080,7 +2085,7 @@ function createIntervalControl(manager, prefix, toggle) {
         valueDisplay.step = '1';
         valueDisplay.value = currentValue;
         Object.assign(valueDisplay.style, {
-            width: '44px',
+            width: '36px',
             textAlign: 'left',
             fontFamily: 'monospace',
             fontSize: '12px',
@@ -2101,17 +2106,6 @@ function createIntervalControl(manager, prefix, toggle) {
         valueSuffix.textContent = 's';
         Object.assign(valueSuffix.style, { fontSize: '12px', flexShrink: '0' });
     }
-
-    // 键入的值可能超出滑条默认边界或不在 5s 格点上，按创建时的同一套规则
-    // 放宽边界/调整步进并回写滑条，避免显示与滑块分叉。
-    const syncSliderToValue = (numericValue) => {
-        if (!Number.isFinite(numericValue)) return;
-        if (numericValue < Number(slider.min)) slider.min = String(Math.max(1, numericValue));
-        if (numericValue > Number(slider.max)) slider.max = String(Math.min(3600, numericValue));
-        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
-        slider.step = (sliderShownValue - Number(slider.min)) % 5 === 0 ? '5' : '1';
-        slider.value = String(numericValue);
-    };
 
     const applyIntervalValue = (value) => {
         window[toggle.intervalKey] = value;
@@ -2142,6 +2136,8 @@ function createIntervalControl(manager, prefix, toggle) {
     });
     slider.addEventListener('change', () => {
         const value = parseInt(slider.value, 10);
+        // 松手后同样按当前值重推滑条边界，拖回 120 以内时 max 收回默认值
+        syncSliderToValue(value);
         applyIntervalValue(value);
     });
     if (intervalEditable) {
