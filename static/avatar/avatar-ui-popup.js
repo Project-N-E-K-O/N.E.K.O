@@ -320,6 +320,14 @@ function injectPopupStyles(prefix) {
             min-height: 20px;
             text-align: center;
         }
+        /* 间隔输入框：抑制获得焦点时浏览器自带的粗边框/外圈，只保留下划线 */
+        .${prefix}-interval-input:focus,
+        .${prefix}-interval-input:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-bottom: 1px solid rgba(128,128,128,0.4) !important;
+        }
         /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
         body.neko-model-dragging .${prefix}-popup,
         body.neko-model-dragging .${prefix}-popup *,
@@ -2048,27 +2056,102 @@ function createIntervalControl(manager, prefix, toggle) {
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
-    const valueDisplay = document.createElement('span');
-    valueDisplay.textContent = `${currentValue}s`;
-    Object.assign(valueDisplay.style, { minWidth: '26px', textAlign: 'right', fontFamily: 'monospace', fontSize: '12px', flexShrink: '0' });
+    // 主动搭话间隔的数值改为可输入框：滑条上限 120s，允许直接键入更大的值
+    // （后端契约上限 3600s，见 utils/preferences.py），但不允许低于 10s。
+    // 感知间隔保持只读数值展示。
+    const intervalEditable = toggle.id === 'proactive-chat';
+    const valueDisplay = document.createElement(intervalEditable ? 'input' : 'span');
+    if (intervalEditable) {
+        valueDisplay.type = 'number';
+        valueDisplay.className = `${prefix}-interval-input`;
+        valueDisplay.id = `${prefix}-${toggle.id}-interval-input`;
+        valueDisplay.min = String(minVal);
+        valueDisplay.max = '3600';
+        valueDisplay.step = '1';
+        valueDisplay.value = currentValue;
+        Object.assign(valueDisplay.style, {
+            width: '52px',
+            textAlign: 'left',
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            flexShrink: '0',
+            padding: '0 2px',
+            color: 'inherit',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: '1px solid rgba(128,128,128,0.4)',
+            outline: 'none'
+        });
+    } else {
+        valueDisplay.textContent = `${currentValue}s`;
+        Object.assign(valueDisplay.style, { minWidth: '26px', textAlign: 'right', fontFamily: 'monospace', fontSize: '12px', flexShrink: '0' });
+    }
+    const valueSuffix = intervalEditable ? document.createElement('span') : null;
+    if (valueSuffix) {
+        valueSuffix.textContent = 's';
+        Object.assign(valueSuffix.style, { fontSize: '12px', flexShrink: '0' });
+    }
 
-    slider.addEventListener('input', () => { valueDisplay.textContent = `${parseInt(slider.value, 10)}s`; });
-    slider.addEventListener('change', () => {
-        const value = parseInt(slider.value, 10);
+    // 键入的值可能超出滑条默认边界或不在 5s 格点上，按创建时的同一套规则
+    // 放宽边界/调整步进并回写滑条，避免显示与滑块分叉。
+    const syncSliderToValue = (numericValue) => {
+        if (!Number.isFinite(numericValue)) return;
+        if (numericValue < Number(slider.min)) slider.min = String(Math.max(1, numericValue));
+        if (numericValue > Number(slider.max)) slider.max = String(Math.min(3600, numericValue));
+        const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
+        slider.step = (sliderShownValue - Number(slider.min)) % 5 === 0 ? '5' : '1';
+        slider.value = String(numericValue);
+    };
+
+    const applyIntervalValue = (value) => {
         window[toggle.intervalKey] = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
-        // 滑块变更后立即重排定时器，让新间隔马上生效
+        // 间隔变更后立即重排定时器，让新间隔马上生效
         if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
             window.resetProactiveChatBackoff();
         }
+    };
+
+    const commitIntervalInput = () => {
+        const parsed = parseInt(valueDisplay.value, 10);
+        // 非法/清空输入回退为当前生效值；低于下限钳到 10s，高于契约上限钳到 3600s
+        let value = Number.isFinite(parsed) ? parsed : Number(window[toggle.intervalKey]);
+        if (!Number.isFinite(value)) value = minVal;
+        value = Math.min(3600, Math.max(minVal, value));
+        valueDisplay.value = String(value);
+        if (Number(value) === Number(window[toggle.intervalKey])) return;
+        syncSliderToValue(value);
+        applyIntervalValue(value);
+    };
+
+    slider.addEventListener('input', () => {
+        const text = `${parseInt(slider.value, 10)}`;
+        if (intervalEditable) valueDisplay.value = text;
+        else valueDisplay.textContent = `${text}s`;
     });
+    slider.addEventListener('change', () => {
+        const value = parseInt(slider.value, 10);
+        applyIntervalValue(value);
+    });
+    if (intervalEditable) {
+        valueDisplay.addEventListener('change', commitIntervalInput);
+        valueDisplay.addEventListener('keydown', (e) => {
+            // 输入框获得焦点时拦截按键冒泡，避免触发全局快捷键
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+                commitIntervalInput();
+                valueDisplay.blur();
+            }
+        });
+    }
     slider.addEventListener('click', (e) => e.stopPropagation());
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
 
     sliderRow.appendChild(labelText);
     sliderRow.appendChild(slider);
     sliderRow.appendChild(valueDisplay);
+    if (valueSuffix) sliderRow.appendChild(valueSuffix);
     container.appendChild(sliderRow);
 
     if (toggle.id === 'proactive-chat') {
