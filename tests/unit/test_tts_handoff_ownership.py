@@ -182,6 +182,34 @@ async def test_fallback_cannot_create_third_worker(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_respawn_capacity_failure_is_deferred_without_callback_exception():
+    """A dead worker callback must not fail while retired workers still drain."""
+    manager = Manager()
+    releases = [Event(), Event()]
+    first = install(manager, releases[0])
+    second = install(manager, releases[1])
+    manager._tts_runtime = None
+    manager.tts_thread = None
+    manager._tts_capacity_exhausted = False
+    manager._last_tts_error_code = None
+    manager._last_tts_respawn_time = 0.0
+    manager._tts_respawn_task = None
+    manager._tts_excluded_provider_keys = frozenset()
+    try:
+        manager._respawn_tts_worker()
+        assert not manager._tts_capacity_exhausted
+        assert manager._live_tts_runtime_count() == 2
+    finally:
+        for release in releases:
+            release.set()
+        await asyncio.gather(
+            manager._finish_retired_tts_runtime(first),
+            manager._finish_retired_tts_runtime(second),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_old_runtime_audio_waiting_for_frame_lock_is_not_sent():
     from tests.unit.test_tts_audio_done_forward import _RecordingWebsocket
 
