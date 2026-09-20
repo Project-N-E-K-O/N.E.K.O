@@ -38,11 +38,6 @@ except ImportError:
 
 if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
-    if os.environ.get("NEKO_MEDIA_RELEASE_SMOKE") == "1":
-        from multiprocessing import freeze_support as _media_freeze_support
-        _media_freeze_support()
-        from main_logic.watch_together.media_smoke import main as _media_smoke
-        sys.exit(_media_smoke())
     if sys.argv[1:] == ["--neko-plugin-metadata-worker"]:
         from plugin.server.application.plugins.metadata_scanner import _worker_main
 

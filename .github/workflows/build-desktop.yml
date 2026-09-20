@@ -474,7 +474,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=av"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
@@ -625,7 +624,6 @@ jobs:
           rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           rem 纯数据目录，漏了引导页内容/图片打包后 404。
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=av
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
@@ -867,10 +865,8 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
-            .venv/Scripts/python.exe scripts/check_frozen_media.py dist/Xiao8
           else
             .venv/bin/python scripts/check_nuitka_dist.py "$NEKO_NUITKA_RUNTIME_DIR" --plugin-stage build/nuitka-plugins
-            .venv/bin/python scripts/check_frozen_media.py "$NEKO_NUITKA_RUNTIME_DIR"
           fi
 
       # 产物架构闸门（#2898）。`macos-15` 是 Apple Silicon 镜像，mac-x64 那条腿曾经在

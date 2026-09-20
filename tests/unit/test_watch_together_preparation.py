@@ -7,19 +7,22 @@ from main_logic.watch_together import preparation
 
 
 @pytest.fixture(autouse=True)
-def media_codecs_available(monkeypatch):
-    monkeypatch.setattr(preparation.media, 'check_available', lambda: None)
+def media_tools_available(monkeypatch):
+    monkeypatch.setattr(preparation, 'media_binary', lambda name: name)
 
 
 @pytest.mark.asyncio
-async def test_missing_media_codec_prevents_speech(tmp_path, monkeypatch):
+@pytest.mark.parametrize('missing', ['ffmpeg', 'ffprobe'])
+async def test_missing_media_tool_prevents_speech(tmp_path, monkeypatch, missing):
     probes = []
-    def binary():
-        raise RuntimeError("Required codec unavailable")
+    def binary(name):
+        if name == missing:
+            raise FileNotFoundError(name)
+        return name
     async def probe(*args, **kwargs):
         probes.append(True)
         return {'ok': True}
-    monkeypatch.setattr(preparation.media, 'check_available', binary)
+    monkeypatch.setattr(preparation, 'media_binary', binary)
     monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
     monkeypatch.setattr(preparation, 'tasks', set())
     monkeypatch.setattr(preparation, 'jobs', {})
@@ -28,7 +31,7 @@ async def test_missing_media_codec_prevents_speech(tmp_path, monkeypatch):
     result = await preparation.prepare('video', manager, 'cat')
     await asyncio.gather(*preparation.tasks)
     assert not probes
-    assert preparation.jobs[result['id']]['error'] == 'RuntimeError'
+    assert preparation.jobs[result['id']]['error'] == 'FileNotFoundError'
 
 
 async def speech_ready(*args, **kwargs):
