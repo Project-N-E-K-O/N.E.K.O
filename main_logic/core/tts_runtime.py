@@ -1516,11 +1516,21 @@ class TtsRuntimeMixin:
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
-        self._start_tts_thread(
-            preserve_provider_exclusions=bool(
-                getattr(self, "_tts_excluded_provider_keys", frozenset())
+        try:
+            self._start_tts_thread(
+                preserve_provider_exclusions=bool(
+                    getattr(self, "_tts_excluded_provider_keys", frozenset())
+                )
             )
-        )
+        except TtsCapacityError as error:
+            # Capacity is a normal transient state while a retired worker is
+            # still draining.  Respawn is called from provider callbacks, so
+            # letting this escape would abort the current text delivery.  The
+            # startup path owns the terminal capacity flag; this lazy retry
+            # path must clear it or the delayed retry would return immediately.
+            self._tts_capacity_exhausted = False
+            logger.warning("TTS respawn deferred: %s", error)
+            return
 
         # 重新启动 tts_response_handler 以监听新队列
         if self.tts_handler_task and not self.tts_handler_task.done():
