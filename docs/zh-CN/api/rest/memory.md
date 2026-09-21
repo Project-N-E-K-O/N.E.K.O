@@ -18,8 +18,6 @@
 | `POST` | `/api/memory/review_config` | 更新近期记忆自动复核开关 |
 | `GET` | `/api/memory/powerful_memory_config` | 读取强力记忆开关 |
 | `POST` | `/api/memory/powerful_memory_config` | 更新强力记忆开关，并执行必要迁移 |
-| `GET` | `/api/memory/legacy/scan` | 只读扫描用户可见的遗留记忆根目录 |
-| `POST` | `/api/memory/legacy/purge` | 删除从遗留根目录中明确选中的条目 |
 
 ## 近期记忆文件
 
@@ -180,69 +178,3 @@
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
-
-## 遗留记忆清理
-
-遗留清理是明确的两步操作：先扫描，再提交选中的绝对路径。扫描不会迁移或删除任何数据。
-
-### `GET /api/memory/legacy/scan`
-
-无参数。
-
-响应会标识活动运行时记忆目录之外的候选根目录，并描述每个根目录的直接子项。无法计算大小或超过安全扫描上限时，`size_bytes` 为 `-1`。
-
-```json
-{
-  "success": true,
-  "runtime_memory_dir": "C:\\...\\memory",
-  "legacy_roots": [
-    {
-      "root": "C:\\...\\old-root\\memory",
-      "source": "legacy_app_root",
-      "exists": true,
-      "entries": [
-        {
-          "name": "小天",
-          "path": "C:\\...\\old-root\\memory\\小天",
-          "is_dir": true,
-          "size_bytes": 12345,
-          "is_unlinked": false,
-          "runtime_has_same_name": true
-        }
-      ]
-    }
-  ],
-  "total_entries": 1,
-  "total_size_bytes": 12345
-}
-```
-
-意外的扫描失败返回 `500` 和 `success: false`。
-
-### `POST /api/memory/legacy/purge`
-
-这是破坏性操作。只应提交最近一次扫描作为条目返回的路径。
-
-```json
-{
-  "paths": [
-    "C:\\...\\old-root\\memory\\小天"
-  ]
-}
-```
-
-`paths` 必须是非空的绝对路径数组。每个路径都必须严格位于当前识别出的遗留根目录之下。该路由拒绝相对路径、`..` 段、根目录本身和活动运行时记忆目录。目标不存在会被视为已删除，因此重试是幂等的。
-
-删除按条目尽力执行，因此成功请求可以同时包含 `removed` 和 `errors`：
-
-```json
-{
-  "success": true,
-  "removed": ["C:\\...\\old-root\\memory\\小天"],
-  "errors": [
-    { "path": "C:\\...\\not-allowed", "error": "..." }
-  ]
-}
-```
-
-请求体非法返回 `400`；没有可识别的遗留根目录返回 `409`；初始化失败返回 `500`。

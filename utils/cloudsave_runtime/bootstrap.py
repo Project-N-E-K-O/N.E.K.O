@@ -195,13 +195,20 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
         if not root_state.get("last_successful_boot_at"):
             root_state["last_successful_boot_at"] = ""
             root_changed = True
-        if legacy_import.get("source"):
-            root_state["last_migration_source"] = str(legacy_import["source"])
+        # A storage restart already owns these fields while the current
+        # generation is closing.  Legacy import may still copy ordinary data,
+        # but it must not erase restart_rebind/restart_pending authority before
+        # the launcher emits the owner handoff event.
+        if legacy_import.get("source") and str(root_state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_NORMAL:
+            legacy_source = str(legacy_import["source"])
+            root_state["last_migration_source"] = legacy_source
             root_state["last_migration_result"] = str(legacy_import.get("result") or "")
+            # The import is a copy. Keep the original root visible for the
+            # existing post-restart cleanup action instead of treating an
+            # internal merge backup as the user's old storage directory.
+            root_state["last_migration_backup"] = legacy_source
+            root_state["legacy_cleanup_pending"] = True
             root_changed = True
-            if legacy_import.get("backup_path"):
-                root_state["last_migration_backup"] = str(legacy_import["backup_path"])
-                root_changed = True
         elif recovered_stale_mode:
             root_changed = True
         elif not root_state.get("last_migration_result"):

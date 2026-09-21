@@ -605,6 +605,19 @@ def test_open_from_minimized_restores_surface_mode_before_mounting():
     assert open_block.index(restore_assignment) < open_block.index("if (!mountWindow())")
 
 
+def test_open_reports_each_bundle_load_failure_once_without_mislabeling_mount_errors():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    open_block = source.split("function openWindow()", 1)[1].split(
+        "function closeWindow()",
+        1,
+    )[0]
+
+    assert "var bundleLoad = ensureBundleLoaded();" in open_block
+    assert "lastBundleLoadFailureToastPromise === bundleLoad" in open_block
+    assert "}, function (error) {" in open_block
+    assert ".catch(function (error)" not in open_block
+
+
 def test_minimized_restore_uses_previous_real_surface_mode():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

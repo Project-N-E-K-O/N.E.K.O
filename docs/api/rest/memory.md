@@ -18,8 +18,6 @@ All routes are declared without a trailing slash. Write operations can return `4
 | `POST` | `/api/memory/review_config` | Update the automatic recent-memory review toggle |
 | `GET` | `/api/memory/powerful_memory_config` | Read the powerful-memory toggle |
 | `POST` | `/api/memory/powerful_memory_config` | Update the powerful-memory toggle and run any required migration |
-| `GET` | `/api/memory/legacy/scan` | Scan user-visible legacy memory roots without changing them |
-| `POST` | `/api/memory/legacy/purge` | Delete explicitly selected entries from scanned legacy roots |
 
 ## Recent memory files
 
@@ -199,69 +197,3 @@ Migration or persistence failure:
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
-
-## Legacy memory cleanup
-
-Legacy cleanup is an explicit two-step operation: scan first, then submit selected absolute paths. The scan never migrates or deletes data.
-
-### `GET /api/memory/legacy/scan`
-
-No parameters.
-
-The response identifies candidate roots outside the active runtime memory directory and describes each direct child. `size_bytes` is `-1` when size calculation is unavailable or exceeds the safety scan limit.
-
-```json
-{
-  "success": true,
-  "runtime_memory_dir": "C:\\...\\memory",
-  "legacy_roots": [
-    {
-      "root": "C:\\...\\old-root\\memory",
-      "source": "legacy_app_root",
-      "exists": true,
-      "entries": [
-        {
-          "name": "小天",
-          "path": "C:\\...\\old-root\\memory\\小天",
-          "is_dir": true,
-          "size_bytes": 12345,
-          "is_unlinked": false,
-          "runtime_has_same_name": true
-        }
-      ]
-    }
-  ],
-  "total_entries": 1,
-  "total_size_bytes": 12345
-}
-```
-
-Unexpected scan failures return `500` with `success: false`.
-
-### `POST /api/memory/legacy/purge`
-
-This is destructive. Send only paths returned as entries by the latest scan.
-
-```json
-{
-  "paths": [
-    "C:\\...\\old-root\\memory\\小天"
-  ]
-}
-```
-
-`paths` must be a non-empty array of absolute paths. Every path must resolve strictly below a currently recognized legacy root. The route rejects relative paths, `..` segments, the root directory itself, and the active runtime memory directory. Missing targets count as already removed, making retries idempotent.
-
-Deletion is best-effort per entry. A successful request can therefore contain both `removed` and `errors`:
-
-```json
-{
-  "success": true,
-  "removed": ["C:\\...\\old-root\\memory\\小天"],
-  "errors": [
-    { "path": "C:\\...\\not-allowed", "error": "..." }
-  ]
-}
-```
-
-Malformed bodies return `400`; no recognized legacy roots returns `409`; initialization failure returns `500`.

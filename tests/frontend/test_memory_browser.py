@@ -5625,7 +5625,12 @@ def test_memory_browser_desktop_storage_restart_uses_host_close_window(
     mock_page.add_init_script(
         """
         window.__hostCloseWindowCalls = 0;
+        window.__storageRestartIntentCalls = 0;
         window.nekoHost = {
+            beginStorageRestart: async () => {
+                window.__storageRestartIntentCalls += 1;
+                return { ok: true };
+            },
             closeWindow: async () => {
                 window.__hostCloseWindowCalls += 1;
                 return { ok: true };
@@ -5690,6 +5695,7 @@ def test_memory_browser_desktop_storage_restart_uses_host_close_window(
             mock_page.locator("#storage-location-restart-btn").click()
 
     mock_page.wait_for_function("window.__hostCloseWindowCalls === 1", timeout=5000)
+    assert mock_page.evaluate("window.__storageRestartIntentCalls") == 1
     expect(mock_page.locator("#storage-location-overlay")).to_have_count(0)
     assert storage_status_requests["count"] == 0
 

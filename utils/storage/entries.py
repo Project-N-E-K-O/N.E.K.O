@@ -22,11 +22,8 @@ part of that workflow aware of it.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
-
-from .policy import path_chain_has_symlink
 
 
 RUNTIME_ENTRY_KIND_USER_DATA = "user_data"
@@ -110,15 +107,14 @@ def checked_runtime_entry_path(
     root: Path | str,
     entry: RuntimeStorageEntry | str,
 ) -> Path:
-    """Return an entry path only when its complete lexical chain is safe.
+    """Return the canonical inventory entry below a normalized storage root.
 
-    Do not use ``resolve`` here: resolving first would hide the symlink/junction
-    that this boundary is meant to detect.  Missing leaves are valid, but every
-    existing ancestor from the storage root through the leaf must be an ordinary
-    path.  ``path_chain_has_symlink`` also treats Windows reparse points as links.
+    This helper rejects absolute and parent-traversing inventory names. Runtime
+    migration validates existing file types and links when it snapshots the
+    returned path.
     """
 
-    root_path = Path(os.path.abspath(os.fspath(Path(root).expanduser())))
+    root_path = Path(root).expanduser().resolve(strict=False)
     relative_value = entry.relative_path if isinstance(entry, RuntimeStorageEntry) else str(entry)
     relative_path = Path(relative_value)
     if relative_path.is_absolute() or any(part == ".." for part in relative_path.parts):
@@ -134,8 +130,4 @@ def checked_runtime_entry_path(
             f"运行时存储条目不在存储根目录内: {relative_value}"
         ) from exc
 
-    if path_chain_has_symlink(entry_path):
-        raise RuntimeStorageEntryBoundaryError(
-            f"运行时存储条目路径包含符号链接或重解析点: {relative_value}"
-        )
     return entry_path

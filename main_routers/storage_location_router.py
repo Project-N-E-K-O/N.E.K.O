@@ -2031,38 +2031,31 @@ def _build_completed_migration_notice(
         else build_storage_location_bootstrap_payload(config_manager)
     )
     migration_payload = bootstrap.get("migration") if isinstance(bootstrap.get("migration"), dict) else {}
-    if str(migration_payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
-        return {
-            "completed": False,
-        }
-    if str(migration_payload.get("retained_source_mode") or "").strip() == "cleaned":
-        return {
-            "completed": False,
-        }
+    checkpoint_completed = (
+        str(migration_payload.get("status") or "").strip()
+        == STORAGE_MIGRATION_STATUS_COMPLETED
+        and str(migration_payload.get("retained_source_mode") or "").strip()
+        != "cleaned"
+    )
 
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = _get_storage_anchor_root(config_manager, current_root=current_root)
-    try:
-        authoritative_migration_payload = load_storage_migration(
-            config_manager,
-            anchor_root=anchor_root,
-        )
-    except StorageMigrationError:
-        authoritative_migration_payload = None
-    try:
-        authoritative_checkpoint_matches = bool(
-            isinstance(authoritative_migration_payload, dict)
-            and str(authoritative_migration_payload.get("status") or "").strip()
-            == STORAGE_MIGRATION_STATUS_COMPLETED
-            and paths_equal(
-                authoritative_migration_payload.get("target_root") or "",
-                migration_payload.get("target_root") or "",
-            )
-        )
-    except (OSError, ValueError):
-        authoritative_checkpoint_matches = False
-    if not authoritative_checkpoint_matches:
-        authoritative_migration_payload = migration_payload
+    if not checkpoint_completed:
+        root_state = config_manager.load_root_state()
+        if not bool(root_state.get("legacy_cleanup_pending")):
+            return {"completed": False}
+        retained_root = str(root_state.get("last_migration_backup") or "").strip()
+        if not retained_root:
+            return {"completed": False}
+        migration_payload = {
+            "status": STORAGE_MIGRATION_STATUS_COMPLETED,
+            "source_root": retained_root,
+            "target_root": str(current_root),
+            "selection_source": "legacy_import",
+            "retained_source_root": retained_root,
+            "retained_source_mode": "manual_retention",
+            "completed_at": "",
+        }
     target_root = str(migration_payload.get("target_root") or "").strip()
     source_root = str(migration_payload.get("source_root") or "").strip()
     retained_root = str(
@@ -2111,7 +2104,7 @@ def _build_completed_migration_notice(
         "retained_root_exists": retained_exists,
         "cleanup_available": cleanup_available,
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
-        "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
+        "message": "存储位置迁移已完成，原存储目录当前仍保留，需手动清理。",
     }
 
 
@@ -2127,13 +2120,13 @@ def _cleanup_retained_runtime_root(
     try:
         metadata = retained_path.lstat()
     except FileNotFoundError as exc:
-        raise ValueError("旧数据目录不存在。") from exc
+        raise ValueError("原存储目录不存在。") from exc
     except OSError as exc:
-        raise ValueError("无法读取旧数据目录。") from exc
+        raise ValueError("无法读取原存储目录。") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise ValueError("旧数据目录不是普通目录。")
+        raise ValueError("原存储目录不是普通目录。")
     if path_chain_has_symlink(retained_path):
-        raise ValueError("旧数据目录路径包含符号链接。")
+        raise ValueError("原存储目录路径包含符号链接。")
     if paths_equal(retained_path, current_root) or paths_equal(retained_path, target_root):
         raise ValueError("不能删除当前正在使用的新数据目录。")
     if not is_retained_root_cleanup_available(
@@ -2144,7 +2137,7 @@ def _cleanup_retained_runtime_root(
         require_exists=True,
         allow_anchor_root=True,
     ):
-        raise ValueError("旧数据目录当前不可清理。")
+        raise ValueError("原存储目录当前不可清理。")
 
     for entry in RUNTIME_STORAGE_ENTRIES:
         candidate = checked_runtime_entry_path(retained_path, entry)
@@ -2464,7 +2457,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         return {
             "ok": False,
             "error_code": "retained_source_not_found",
-            "error": "当前没有可清理的旧数据保留目录。",
+            "error": "当前没有可清理的原存储目录。",
         }
 
     expected_root = str(notice.get("retained_root") or "").strip()
@@ -2474,7 +2467,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         return {
             "ok": False,
             "error_code": "retained_source_mismatch",
-            "error": "请求的清理路径与当前保留目录不一致，请刷新后重试。",
+            "error": "请求的清理路径与原存储目录不一致，请刷新后重试。",
         }
 
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
@@ -2497,7 +2490,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         return {
             "ok": False,
             "error_code": "retained_source_cleanup_failed",
-            "error": f"清理旧数据保留目录失败: {exc}",
+            "error": f"清理原存储目录失败: {exc}",
         }
 
     def _mark_cleanup_complete() -> None:
@@ -2536,6 +2529,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
                         expected_root,
                     ):
                         updated_root_state["last_migration_backup"] = ""
+                    updated_root_state["legacy_cleanup_pending"] = False
                     config_manager.save_root_state(updated_root_state)
         except Exception:
             logger.warning(
@@ -2699,14 +2693,14 @@ async def _post_storage_location_select_locked(
             return {
                 "ok": False,
                 "error_code": "recovery_source_unavailable",
-                "error": "原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。",
+                "error": "原存储目录当前不可用。请先重连该目录，或切回推荐存储位置继续当前会话。",
             }
         if not is_runtime_root_available(committed_selected_root):
             response.status_code = 409
             return {
                 "ok": False,
                 "error_code": "selected_root_unavailable",
-                "error": "原始数据路径当前仍不可用，请先恢复该路径后再重试。",
+                "error": "原存储目录当前仍不可用，请恢复该目录后再重试。",
             }
         restart_preflight = await _run_locked_storage_job(
             partial(
@@ -3088,14 +3082,14 @@ async def _post_storage_location_restart_locked(
             return {
                 "ok": False,
                 "error_code": "recovery_source_unavailable",
-                "error": "原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。",
+                "error": "原存储目录当前不可用。请先重连该目录，或切回推荐存储位置继续当前会话。",
             }
         if not is_runtime_root_available(committed_selected_root):
             response.status_code = 409
             return {
                 "ok": False,
                 "error_code": "selected_root_unavailable",
-                "error": "原始数据路径当前仍不可用，请先恢复该路径后再重试。",
+                "error": "原存储目录当前仍不可用，请恢复该目录后再重试。",
             }
 
         restart_preflight = await _run_locked_storage_job(
@@ -3286,6 +3280,11 @@ async def _post_storage_location_restart_locked(
                 target_root=normalized_selected_root,
                 selection_source=payload.selection_source,
                 confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
+                additional_source_roots=(
+                    blocking_bootstrap.get("legacy_sources", [])
+                    if blocking_bootstrap.get("selection_required")
+                    else []
+                ),
             )
             if (
                 payload.confirm_existing_target_content

@@ -338,6 +338,49 @@ def test_storage_location_error_retry_is_invalidated_by_controlled_shutdown(
 
 
 @pytest.mark.frontend
+def test_storage_location_intro_recommended_action_submits_recommended_root(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    current_root = "/tmp/current/N.E.K.O"
+    recommended_root = "/tmp/recommended/N.E.K.O"
+    _mock_selection_required_state(
+        page,
+        current_root=current_root,
+        recommended_root=recommended_root,
+    )
+
+    page.route(
+        "**/api/storage/location/select",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "ok": True,
+                "result": "restart_required",
+                "selected_root": recommended_root,
+                "selection_source": "recommended",
+                "estimated_required_bytes": 0,
+                "target_free_bytes": 1024,
+                "permission_ok": True,
+                "warning_codes": [],
+                "blocking_error_code": "",
+                "blocking_error_message": "",
+            },
+        ),
+    )
+
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    with page.expect_request("**/api/storage/location/select") as request_info:
+        page.get_by_role("button", name="推荐存储位置").click()
+
+    request_payload = request_info.value.post_data_json
+    assert request_payload["selected_root"] == recommended_root
+    assert request_payload["selection_source"] == "recommended"
+
+
+@pytest.mark.frontend
 def test_storage_location_current_path_confirmation_keeps_page_blocked_for_safe_restart(
     mock_page: Page,
     running_server: str,
@@ -771,162 +814,6 @@ def test_storage_location_maintenance_refuses_active_and_stale_ready_close(
 
 
 @pytest.mark.frontend
-def test_unknown_restart_waits_for_backend_operation_terminal_state(
-    mock_page: Page,
-    running_server: str,
-):
-    page = mock_page
-    instance_id = "backend-same-instance"
-    operation_id = "0123456789abcdef0123456789abcdef"
-    target_root = "/tmp/target/N.E.K.O"
-    system_requests = {"count": 0}
-    storage_requests = {"count": 0}
-    storage_request_urls = []
-    cancel_requests = {"count": 0}
-    operation_state = {"value": "in_flight"}
-    lifecycle_state = {"value": "maintenance"}
-
-    def handle_system_status(route):
-        system_requests["count"] += 1
-        ready = system_requests["count"] > 1
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "ok": True,
-                    "instance_id": instance_id,
-                    "status": "ready" if ready else "migration_required",
-                    "ready": ready,
-                    "storage": {
-                        "selection_required": not ready,
-                        "migration_pending": False,
-                        "recovery_required": False,
-                        "blocking_reason": "" if ready else "selection_required",
-                    },
-                }
-            ),
-        )
-
-    page.route("**/api/system/status", handle_system_status)
-    page.route(
-        "**/api/storage/location/bootstrap",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "autostart_csrf_token": STORAGE_CSRF_TOKEN,
-                    "current_root": "/tmp/current/N.E.K.O",
-                    "recommended_root": target_root,
-                    "selection_required": True,
-                    "migration_pending": False,
-                    "recovery_required": False,
-                    "blocking_reason": "selection_required",
-                    "stage": "stage3_web_restart",
-                }
-            ),
-        ),
-    )
-
-    def handle_storage_status(route):
-        storage_requests["count"] += 1
-        storage_request_urls.append(route.request.url)
-        maintenance_active = lifecycle_state["value"] == "maintenance"
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "ok": True,
-                    "instance_id": instance_id,
-                    "ready": False,
-                    "status": "maintenance" if maintenance_active else "selection_required",
-                    "lifecycle_state": "maintenance" if maintenance_active else "selection_required",
-                    "migration_stage": "pending" if maintenance_active else "",
-                    "blocking_reason": "migration_pending" if maintenance_active else "selection_required",
-                    "poll_interval_ms": 50,
-                    "storage": {
-                        "selection_required": not maintenance_active,
-                        "migration_pending": maintenance_active,
-                        "recovery_required": False,
-                    },
-                    "migration": {},
-                    "restart_operation": {
-                        "operation_id": operation_id,
-                        "state": operation_state["value"],
-                        "target_root": target_root,
-                        "instance_id": instance_id,
-                    },
-                }
-            ),
-        )
-
-    def handle_cancel(route):
-        cancel_requests["count"] += 1
-        assert route.request.headers.get("x-csrf-token") == STORAGE_CSRF_TOKEN
-        assert json.loads(route.request.post_data or "{}")["restart_operation_id"] == operation_id
-        operation_state["value"] = "cancelled"
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "ok": True,
-                    "restart_operation": {
-                        "operation_id": operation_id,
-                        "state": "cancelled",
-                        "target_root": target_root,
-                        "instance_id": instance_id,
-                    },
-                }
-            ),
-        )
-
-    page.route("**/api/storage/location/status**", handle_storage_status)
-    page.route("**/api/storage/location/restart/cancel", handle_cancel)
-    page.goto(f"{running_server}/", wait_until="domcontentloaded")
-    expect(page.locator("#storage-location-overlay")).to_be_visible(timeout=15_000)
-
-    page.evaluate(
-        """
-        ([operationId, targetRoot, instanceId]) => {
-            window.appStorageLocation.enterExternalMaintenanceMode({
-                result: 'restart_outcome_unknown',
-                restart_operation_id: operationId,
-                target_root: targetRoot,
-                instance_id: instanceId,
-                migration: { status: 'pending', target_root: targetRoot },
-            });
-        }
-        """,
-        [operation_id, target_root, instance_id],
-    )
-
-    page.wait_for_function("() => document.querySelector('[role=progressbar]') !== null")
-    page.wait_for_timeout(250)
-    assert storage_requests["count"] >= 1
-    assert cancel_requests["count"] == 0
-    expect(page.locator("#storage-location-overlay")).to_be_visible()
-
-    # A different tab's migration can set the sticky observation while this
-    # operation is still queued. Once that other migration rolls back, the
-    # current in-flight operation must still prevent reopening selection.
-    lifecycle_state["value"] = "selection_required"
-    page.wait_for_timeout(250)
-    expect(page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible()
-    assert cancel_requests["count"] == 0
-
-    operation_state["value"] = "prepared"
-    expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=10_000)
-    assert cancel_requests["count"] == 1
-    assert any(
-        f"restart_operation_id={operation_id}" in url
-        for url in storage_request_urls
-    )
-
-
-@pytest.mark.frontend
 def test_storage_location_restart_confirmation_enters_maintenance_page_and_recovers_when_service_is_ready(
     mock_page: Page,
     running_server: str,
@@ -936,6 +823,21 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     status_requests = {"count": 0}
     storage_status_requests = {"count": 0}
     target_root = str((tmp_path / "alt-storage" / "N.E.K.O").resolve())
+    page.add_init_script(
+        """
+        window.__storageRestartIntent = { begin: 0, cancel: 0 };
+        window.nekoHost = {
+            beginStorageRestart: async () => {
+                window.__storageRestartIntent.begin += 1;
+                return { ok: true };
+            },
+            cancelStorageRestart: async () => {
+                window.__storageRestartIntent.cancel += 1;
+                return { ok: true };
+            },
+        };
+        """
+    )
 
     def handle_status(route):
         status_requests["count"] += 1
@@ -1159,6 +1061,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     confirm_restart_button.click()
 
     expect(maintenance_title).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.__storageRestartIntent") == {"begin": 1, "cancel": 0}
     expect(maintenance_progress).to_be_visible(timeout=10_000)
     _expect_storage_migration_has_no_scrollbars(page)
     assert int(maintenance_progress.get_attribute("aria-valuenow") or "0") >= 10

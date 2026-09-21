@@ -30,16 +30,13 @@ from typing import Any
 
 from config import DEFAULT_CONFIG_DATA
 from utils.file_utils import atomic_write_json
+from utils.storage.entries import RUNTIME_STORAGE_ENTRIES, RUNTIME_USER_DATA_ENTRIES
 from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 from ._shared import (
-    LEGACY_OPTIONAL_STATE_FILES,
-    LEGACY_RUNTIME_DIR_NAMES,
-    NON_RUNTIME_CONTENT_DIR_NAMES,
     ROOT_CONFIG_MERGE_FILES,
     TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
     RUNTIME_ASSET_DIR_NAMES,
-    TARGET_OPTIONAL_STATE_FILES,
 )
 from .staging import (
     _json_canonical_dumps,
@@ -98,10 +95,8 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
             config_dir = Path(config_manager.config_dir)
         except Exception:
             config_dir = None
-    for name in LEGACY_RUNTIME_DIR_NAMES:
-        if name in NON_RUNTIME_CONTENT_DIR_NAMES:
-            continue
-        candidate = root / name
+    for entry in RUNTIME_USER_DATA_ENTRIES:
+        candidate = root / entry.relative_path
         if candidate.is_file():
             return True
         if candidate.is_dir():
@@ -109,7 +104,7 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
                 if _runtime_config_dir_has_user_content(config_manager):
                     return True
                 continue
-            transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(name)
+            transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(entry.relative_path)
             try:
                 for child in candidate.iterdir():
                     if _is_ignorable_runtime_entry(
@@ -145,7 +140,8 @@ def _is_ignorable_runtime_entry(path: Path, *, transactional_pattern=None) -> bo
 
 def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> list[str]:
     copied_paths: list[str] = []
-    for name in LEGACY_RUNTIME_DIR_NAMES:
+    for entry in RUNTIME_STORAGE_ENTRIES:
+        name = entry.relative_path
         source_path = source_root / name
         if not source_path.exists():
             continue
@@ -527,23 +523,6 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         atomic_write_json(config_dir / filename, merged_payload, ensure_ascii=False, indent=2)
 
 
-def _copy_optional_legacy_state(*, source_root: Path, target_root: Path, temp_root: Path) -> list[str]:
-    copied_paths: list[str] = []
-    for filename in TARGET_OPTIONAL_STATE_FILES:
-        target_path = target_root / "state" / filename
-        if not target_path.is_file():
-            continue
-        _stage_file_copy(temp_root, f"state/{filename}", target_path)
-        copied_paths.append(f"state/{filename}")
-    for filename in LEGACY_OPTIONAL_STATE_FILES:
-        source_path = source_root / "state" / filename
-        if not source_path.is_file() or (temp_root / "state" / filename).is_file():
-            continue
-        _stage_file_copy(temp_root, f"state/{filename}", source_path)
-        copied_paths.append(f"state/{filename}")
-    return copied_paths
-
-
 def _create_legacy_import_backup_path(target_root: Path) -> Path:
     backup_pool = target_root.parent / f".{target_root.name}.legacy-import-backups"
     backup_pool.mkdir(parents=True, exist_ok=True)
@@ -552,22 +531,42 @@ def _create_legacy_import_backup_path(target_root: Path) -> Path:
 
 
 def _replace_runtime_root(target_root: Path, temp_root: Path, *, backup_path: Path | None = None) -> None:
-    if backup_path is None:
-        if target_root.exists():
-            shutil.rmtree(target_root, ignore_errors=True)
-        os.replace(temp_root, target_root)
-        return
-
-    restore_required = False
+    target_root.mkdir(parents=True, exist_ok=True)
+    published: list[tuple[Path, Path | None]] = []
     try:
-        if target_root.exists():
-            os.replace(target_root, backup_path)
-            restore_required = True
-        os.replace(temp_root, target_root)
+        for entry in RUNTIME_STORAGE_ENTRIES:
+            staged_entry = temp_root / entry.relative_path
+            if not staged_entry.exists():
+                continue
+            target_entry = target_root / entry.relative_path
+            saved_entry = None
+            if target_entry.exists():
+                if backup_path is not None:
+                    saved_entry = backup_path / entry.relative_path
+                    saved_entry.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target_entry, saved_entry)
+                elif target_entry.is_dir():
+                    shutil.rmtree(target_entry)
+                else:
+                    target_entry.unlink()
+            target_entry.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_entry, target_entry)
+            published.append((target_entry, saved_entry))
     except Exception:
-        if restore_required and backup_path.exists() and not target_root.exists():
-            os.replace(backup_path, target_root)
+        for target_entry, saved_entry in reversed(published):
+            if target_entry.is_dir():
+                shutil.rmtree(target_entry, ignore_errors=True)
+            else:
+                try:
+                    target_entry.unlink()
+                except FileNotFoundError:
+                    pass
+            if saved_entry is not None and saved_entry.exists():
+                target_entry.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(saved_entry, target_entry)
         raise
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _legacy_source_was_already_imported(
@@ -618,11 +617,42 @@ def _root_has_staged_cloudsave_snapshot(root: Path) -> bool:
     return False
 
 
+def _import_legacy_cloudsave_if_needed(config_manager) -> str:
+    """Import historical cloud data only into the fixed anchor cloudsave root."""
+
+    target_root = Path(config_manager.cloudsave_dir)
+    anchor_root = Path(config_manager.anchor_root)
+    if _root_has_staged_cloudsave_snapshot(anchor_root):
+        return ""
+    for candidate in config_manager.get_legacy_app_root_candidates():
+        source_root = Path(candidate)
+        try:
+            if source_root.resolve(strict=False) == anchor_root.resolve(strict=False):
+                continue
+        except OSError:
+            continue
+        source_cloudsave = source_root / "cloudsave"
+        if not _root_has_staged_cloudsave_snapshot(source_root):
+            continue
+        target_root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_cloudsave, target_root, dirs_exist_ok=True)
+        source_state = source_root / "state" / "cloudsave_local_state.json"
+        target_state = Path(config_manager.cloudsave_local_state_path)
+        if source_state.is_file():
+            target_state.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_state, target_state)
+        return str(source_root)
+    return ""
+
+
 def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
     """One-time bootstrap import from legacy roots into the deterministic app data root."""
+    try:
+        legacy_cloudsave_source = _import_legacy_cloudsave_if_needed(config_manager)
+    except Exception:
+        legacy_cloudsave_source = ""
     target_root = Path(config_manager.app_docs_dir)
     target_has_user_content = _runtime_root_has_user_content(target_root, config_manager=config_manager)
-    target_has_staged_cloudsave_snapshot = _root_has_staged_cloudsave_snapshot(target_root)
     target_summary = _runtime_root_summary(config_manager, target_root)
     existing_root_state = None
     try:
@@ -630,16 +660,6 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
             existing_root_state = config_manager.load_root_state()
     except Exception:
         existing_root_state = None
-
-    if target_has_staged_cloudsave_snapshot and not target_has_user_content:
-        return {
-            "migrated": False,
-            "source": "",
-            "copied_paths": [],
-            "backup_path": "",
-            "repair_reason": "",
-            "result": "target_root_preserves_staged_cloudsave_snapshot",
-        }
 
     saw_legacy_source = False
 
@@ -683,8 +703,6 @@ def import_legacy_runtime_root_if_needed(config_manager) -> dict[str, Any]:
                     target_summary=target_summary,
                 )
                 backup_path = _create_legacy_import_backup_path(target_root)
-            copied_paths.extend(_copy_optional_legacy_state(source_root=source_root, target_root=target_root, temp_root=temp_root))
-
             if not copied_paths:
                 shutil.rmtree(temp_root, ignore_errors=True)
                 continue

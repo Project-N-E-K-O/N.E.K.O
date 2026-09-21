@@ -67,8 +67,6 @@
         maintenancePollGeneration: 0,
         maintenanceEntryInstanceId: '',
         maintenanceObservedMigrationBlock: false,
-        maintenanceRestartOperationId: '',
-        maintenanceOutcomeUnknown: false,
         maintenanceRecoveryActionInFlight: false,
         completionPollTimer: null,
         completionPollAttempts: 0,
@@ -898,7 +896,7 @@
             case 'insufficient_space':
                 return translate('storage.blockingInsufficientSpace', '目标卷剩余空间不足，无法安全迁移。');
             case 'recovery_source_unavailable':
-                return translate('storage.recoverySourceUnavailable', '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。');
+                return translate('storage.recoverySourceUnavailable', '原存储目录当前不可用。请先重连该目录，或切回推荐存储位置继续当前会话。');
             case 'restart_not_required':
                 return translate('storage.restartNotRequired', '目标路径与当前路径一致，不需要重启。');
             case 'restart_schedule_failed':
@@ -908,23 +906,18 @@
                     'storage.restartScheduleRollbackFailed',
                     '无法确认受控重启是否已撤销，正在重新读取实际存储状态。'
                 );
-            case 'restart_outcome_unknown':
-                return translate(
-                    'storage.restartOutcomeUnknown',
-                    '无法确认受控重启结果，正在重新读取实际存储状态。'
-                );
             case 'restart_unavailable':
                 return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
-                return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
+                return translate('storage.retainedSourceCleanupFailed', '清理原存储目录失败，请稍后重试。');
             case 'retained_source_mismatch':
-                return translate('storage.retainedSourceMismatch', '请求的清理路径与当前保留目录不一致，请刷新后重试。');
+                return translate('storage.retainedSourceMismatch', '请求的清理路径与原存储目录不一致，请刷新后重试。');
             case 'retained_source_not_found':
-                return translate('storage.retainedSourceNotFound', '当前没有可清理的旧数据保留目录。');
+                return translate('storage.retainedSourceNotFound', '当前没有可清理的原存储目录。');
             case 'selected_root_inside_state':
                 return translate('storage.selectedRootInsideState', '该位置位于 N.E.K.O 运行时状态目录内，不能作为存储根目录。');
             case 'selected_root_unavailable':
-                return translate('storage.selectedRootUnavailable', '原始数据路径当前仍不可用，请先恢复该路径后再重试。');
+                return translate('storage.selectedRootUnavailable', '原存储目录当前仍不可用，请恢复该目录后再重试。');
             case 'startup_release_failed':
                 return translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。');
             case 'storage_bootstrap_blocking':
@@ -1236,37 +1229,6 @@
         }
     }
 
-    function correlatedTerminalRestartOperationState(statusPayload) {
-        var restartOperation = statusPayload && statusPayload.restart_operation;
-        var operationState = String(restartOperation && restartOperation.state || '').trim();
-        if (['cancelled', 'rejected', 'expired', 'indeterminate'].indexOf(operationState) === -1) {
-            return '';
-        }
-
-        var operationId = String(restartOperation && restartOperation.operation_id || '').trim();
-        var operationTarget = String(restartOperation && restartOperation.target_root || '').trim();
-        var operationInstanceId = String(restartOperation && restartOperation.instance_id || '').trim();
-        var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
-        if (!state.maintenanceRestartOperationId
-            || operationId !== state.maintenanceRestartOperationId
-            || !operationInstanceId
-            || operationInstanceId !== payloadInstanceId) {
-            return '';
-        }
-
-        var expectedTarget = String(state.pendingSelection.path || '').trim();
-        if (operationTarget && expectedTarget && operationTarget === expectedTarget) {
-            return operationState;
-        }
-        var operationErrorCode = String(restartOperation && restartOperation.error_code || '').trim();
-        if (!operationTarget
-            && operationState === 'expired'
-            && operationErrorCode === 'restart_operation_retired') {
-            return operationState;
-        }
-        return '';
-    }
-
     function isConfirmedMaintenanceReady(payload) {
         if (!payload || payload.ready !== true
             || shouldBlockMainUi(payload)
@@ -1277,13 +1239,6 @@
         var restartedInstance = !!entryInstanceId
             && !!readyInstanceId
             && entryInstanceId !== readyInstanceId;
-        if (state.maintenanceOutcomeUnknown
-            && state.maintenanceRestartOperationId) {
-            return restartedInstance || ['cancelled', 'rejected', 'expired'].indexOf(
-                correlatedTerminalRestartOperationState(payload)
-            ) !== -1;
-        }
-
         if (state.maintenanceObservedMigrationBlock) return true;
 
         // A successful migration/rebind always starts a new backend instance.
@@ -1328,23 +1283,6 @@
     async function leaveMaintenanceForSelection(statusPayload, pollGeneration) {
         if (!shouldLeaveMaintenanceForSelection(statusPayload)) return false;
 
-        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
-            var payloadInstanceId = String(statusPayload && statusPayload.instance_id || '').trim();
-            var entryInstanceId = String(state.maintenanceEntryInstanceId || '').trim();
-            var restartedInstance = !!entryInstanceId
-                && !!payloadInstanceId
-                && entryInstanceId !== payloadInstanceId;
-            var correlatedTerminal = !!correlatedTerminalRestartOperationState(statusPayload);
-
-            // A prepared/in-flight (or uncorrelated) operation may still mutate
-            // storage after this poll. Do not expose a second selection request
-            // until the same backend proves a terminal outcome, or a new backend
-            // generation proves the old request can no longer run.
-            if (!restartedInstance && !correlatedTerminal) {
-                return false;
-            }
-        }
-
         var bootstrapPayload = await fetchStorageLocationBootstrap();
         if (pollGeneration && shouldAbortMaintenancePoll(pollGeneration)) {
             return false;
@@ -1388,10 +1326,6 @@
 
     async function fetchStorageLocationStatus() {
         var statusUrl = '/api/storage/location/status';
-        if (state.maintenanceOutcomeUnknown && state.maintenanceRestartOperationId) {
-            statusUrl += '?restart_operation_id='
-                + encodeURIComponent(state.maintenanceRestartOperationId);
-        }
         var response = await fetchWithTimeout(statusUrl, {
             cache: 'no-store',
             headers: {
@@ -1409,35 +1343,6 @@
             );
         }
         return payload;
-    }
-
-    async function reconcileUnknownRestartOperation(statusPayload) {
-        if (!state.maintenanceOutcomeUnknown || !state.maintenanceRestartOperationId) {
-            return statusPayload;
-        }
-        var operation = statusPayload && statusPayload.restart_operation;
-        if (!operation || String(operation.state || '').trim() !== 'prepared') {
-            return statusPayload;
-        }
-        try {
-            var response = await fetchWithTimeout('/api/storage/location/restart/cancel', {
-                method: 'POST',
-                headers: storageMutationHeaders({
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                }),
-                body: JSON.stringify({
-                    restart_operation_id: state.maintenanceRestartOperationId
-                })
-            }, STORAGE_STATUS_REQUEST_TIMEOUT_MS);
-            var payload = await response.json();
-            if (response.ok && payload && payload.ok === true && payload.restart_operation) {
-                statusPayload.restart_operation = payload.restart_operation;
-            }
-        } catch (error) {
-            console.warn('[storage-location] restart operation reconcile failed', error);
-        }
-        return statusPayload;
     }
 
     async function waitForSystemStatus(flowGeneration) {
@@ -1823,7 +1728,7 @@
                     percent = 34;
                     activeIndex = 1;
                     label = isRebindOnly
-                        ? translate('storage.progressRebindPreflight', '正在准备重连原始存储位置')
+                        ? translate('storage.progressRebindPreflight', '正在准备重连原存储目录')
                         : translate('storage.progressPreflight', '正在检查目标位置并准备迁移');
                     break;
                 case 'copying':
@@ -1844,7 +1749,7 @@
                 case 'retaining_source':
                     percent = 94;
                     activeIndex = 2;
-                    label = translate('storage.progressRetaining', '正在保留旧数据目录以便后续手动清理');
+                    label = translate('storage.progressRetaining', '正在保留原存储目录以便后续手动清理');
                     break;
                 case 'completed':
                     percent = 98;
@@ -1870,7 +1775,7 @@
                     percent = isRebindOnly ? 38 : 14;
                     activeIndex = isRebindOnly ? 1 : 0;
                     label = isRebindOnly
-                        ? translate('storage.progressRebinding', '正在关闭并重连原始路径')
+                        ? translate('storage.progressRebinding', '正在关闭并重连原存储目录')
                         : translate('storage.progressWaitingShutdown', '正在关闭');
                     break;
             }
@@ -1929,7 +1834,7 @@
         var pathList = createElement('div', 'storage-location-path-list storage-location-completion-path-list');
 
         var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget', 'storage-location-completion-path-item');
-        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '旧数据目录'), 'completionRetained', 'storage-location-completion-path-item');
+        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '原存储目录'), 'completionRetained', 'storage-location-completion-path-item');
         var openTargetButton = createElement('button', 'storage-location-completion-link', translate('storage.openTargetRoot', '打开当前路径'));
         openTargetButton.type = 'button';
         openTargetButton.addEventListener('click', function () {
@@ -1937,7 +1842,7 @@
         });
         targetItem.appendChild(openTargetButton);
 
-        var openRetainedButton = createElement('button', 'storage-location-completion-link', translate('storage.openRetainedRoot', '打开旧数据目录'));
+        var openRetainedButton = createElement('button', 'storage-location-completion-link', translate('storage.openRetainedRoot', '打开原存储目录'));
         openRetainedButton.type = 'button';
         openRetainedButton.addEventListener('click', function () {
             openPathWithHostBridge(state.completionNotice && state.completionNotice.retained_root);
@@ -2148,7 +2053,7 @@
         applyCompletionNotice({ completed: false });
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(
-                translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                translate('storage.cleanupRetainedRootDone', '原存储目录中的可迁移数据已清理，当前运行目录不受影响。'),
                 4000
             );
         }
@@ -2164,7 +2069,7 @@
             return;
         }
 
-        if (!window.confirm(translate('storage.cleanupRetainedRootConfirm', '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？'))) {
+        if (!window.confirm(translate('storage.cleanupRetainedRootConfirm', '这会删除原存储目录中的 N.E.K.O 可迁移数据；其他文件、存储控制数据和云存档不会受影响。要继续吗？'))) {
             return;
         }
 
@@ -2189,7 +2094,7 @@
                 payload = await response.json();
             } catch (_) {}
             if (!response.ok || !payload || payload.ok !== true) {
-                throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
+                throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理原存储目录失败，请稍后重试。')));
             }
             finishRetainedCleanupUi();
         } catch (error) {
@@ -2199,7 +2104,7 @@
             }
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
-                    String(error && error.message || error || translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')),
+                    String(error && error.message || error || translate('storage.cleanupRetainedRootFailed', '清理原存储目录失败，请稍后重试。')),
                     5000
                 );
             }
@@ -2233,18 +2138,8 @@
                 }
                 return codedText;
             }
-            // 未在 translateResponseErrorCode 命中的 error_code 走通用兜底：
-            // 本仓 i18n 设计哲学是「错误码翻译完整性在评审时强制，不做运行时
-            // hit 兜底」，所以这里不要把后端 raw payload.error 透出给 UI——
-            // 详情打到 console 给开发者，UI 走调用方传入的 fallbackText 概括语。
             if (rawError) {
-                try {
-                    console.warn(
-                        '[storage-location] unhandled storage error_code, raw detail:',
-                        code || '(none)',
-                        rawError
-                    );
-                } catch (_) {}
+                return truncateErrorDetail(rawError);
             }
         }
         return fallbackText;
@@ -2263,8 +2158,6 @@
         var selectionGeneration = ++state.selectionAttemptGeneration;
         setSubmitting(true);
         setSelectionStatus('', false);
-        var selectionOutcomeUnknown = false;
-
         try {
             var response = null;
             var payload = null;
@@ -2288,7 +2181,6 @@
                         })
                     }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
                 } catch (requestError) {
-                    selectionOutcomeUnknown = true;
                     throw requestError;
                 }
                 try {
@@ -2329,11 +2221,6 @@
             }
 
             if (!response.ok) {
-                var selectionErrorCode = String(payload && payload.error_code || '').trim();
-                if (selectionErrorCode === 'restart_schedule_rollback_failed'
-                    || selectionErrorCode === 'restart_outcome_unknown') {
-                    selectionOutcomeUnknown = true;
-                }
                 throw new Error(
                     extractResponseError(
                         payload,
@@ -2343,7 +2230,6 @@
             }
 
             if (!payload || payload.ok !== true) {
-                selectionOutcomeUnknown = true;
                 throw new Error(
                     translate('storage.selectionSubmitUnexpected', '存储位置选择接口返回了未识别的结果。')
                 );
@@ -2387,15 +2273,6 @@
             if (selectionGeneration !== state.selectionAttemptGeneration
                 || state.shutdownRequested || state.closeAttemptInFlight) return;
             if (error && error.preflightTerminal) state.pendingPreflightOperation = null;
-            if (selectionOutcomeUnknown) {
-                setPhase('loading');
-                setLoadingCopy(
-                    translate('storage.loadingTitle', '正在确认存储布局状态'),
-                    translate('storage.loadingWaitSubtitle', '主业务界面会在存储状态确认完成后再继续加载。')
-                );
-                beginSentinelFlow();
-                return;
-            }
             resetPreviewState();
             setSelectionStatus(
                 String((error && error.message) || error || translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。')),
@@ -2497,7 +2374,6 @@
                     var statusPayload = await fetchStorageLocationStatus();
                     if (shouldAbortMaintenancePoll(pollGeneration)) return;
                     captureStorageCsrfToken(statusPayload);
-                    statusPayload = await reconcileUnknownRestartOperation(statusPayload);
                     if (shouldAbortMaintenancePoll(pollGeneration)) return;
                     failureCount = 0;
                     pollIntervalMs = Number(statusPayload.poll_interval_ms || 0);
@@ -2680,14 +2556,6 @@
             previousSystemStatus.instance_id || payload && payload.instance_id || ''
         ).trim();
         state.maintenanceObservedMigrationBlock = false;
-        state.maintenanceRestartOperationId = String(
-            payload && payload.restart_operation_id || ''
-        ).trim();
-        state.maintenanceOutcomeUnknown = !!(
-            payload
-            && payload.result === 'restart_outcome_unknown'
-            && state.maintenanceRestartOperationId
-        );
         state.maintenanceRollbackRequired = false;
         state.maintenanceStatusUnavailable = false;
         state.maintenanceAwaitingShutdown = false;
@@ -2758,9 +2626,16 @@
 
         setSubmitting(true);
         setSelectionStatus('', false);
-        var restartOutcomeUnknown = false;
+        var restartAccepted = false;
+        var restartIntentArmed = false;
 
         try {
+            if (window.nekoHost && typeof window.nekoHost.beginStorageRestart === 'function') {
+                try {
+                    var intentResult = await window.nekoHost.beginStorageRestart();
+                    restartIntentArmed = !intentResult || intentResult.ok !== false;
+                } catch (_) {}
+            }
             var confirmExistingTargetContent = false;
             while (true) {
                 var preflight = state.pendingSelection.preflight || {};
@@ -2791,7 +2666,6 @@
                         })
                     }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
                 } catch (requestError) {
-                    restartOutcomeUnknown = true;
                     throw requestError;
                 }
 
@@ -2801,11 +2675,6 @@
                 } catch (_) {}
 
                 if (!response.ok) {
-                    var responseErrorCode = String(payload && payload.error_code || '').trim();
-                    if (responseErrorCode === 'restart_schedule_rollback_failed'
-                        || responseErrorCode === 'restart_outcome_unknown') {
-                        restartOutcomeUnknown = true;
-                    }
                     if (payload && state.previewPanel) {
                         state.pendingSelection.preflight = extractPreflightDetails(payload, state.pendingSelection.path);
                         updateRestartPreviewPreflight(state.pendingSelection.preflight);
@@ -2832,43 +2701,27 @@
                 }
 
                 if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
-                    restartOutcomeUnknown = true;
                     throw new Error(
                         translate('storage.restartRequestUnexpected', '重启和迁移准备接口返回了未识别的结果。')
                     );
                 }
 
+                restartAccepted = true;
                 enterMaintenanceMode(payload);
                 return;
             }
         } catch (error) {
             console.warn('[storage-location] restart failed', error);
-            if (restartOutcomeUnknown) {
-                enterMaintenanceMode({
-                    result: 'restart_outcome_unknown',
-                    restart_operation_id: String(
-                        state.pendingSelection.preflight
-                        && state.pendingSelection.preflight.restart_operation_id
-                        || ''
-                    ).trim(),
-                    restart_mode: state.pendingSelection
-                        && state.pendingSelection.preflight
-                        && state.pendingSelection.preflight.restart_mode,
-                    target_root: state.pendingSelection.path,
-                    selection_source: state.pendingSelection.source,
-                    migration: {
-                        status: 'pending',
-                        target_root: state.pendingSelection.path
-                    }
-                });
-                return;
-            }
             setSelectionStatus(
                 String((error && error.message) || error || translate('storage.restartRequestFailed', '准备重启与迁移失败，请稍后重试。')),
                 true
             );
             setPhase('selection_required');
         } finally {
+            if (restartIntentArmed && !restartAccepted
+                && window.nekoHost && typeof window.nekoHost.cancelStorageRestart === 'function') {
+                try { await window.nekoHost.cancelStorageRestart(); } catch (_) {}
+            }
             setSubmitting(false);
         }
     }
@@ -3100,7 +2953,7 @@
             createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '推荐存储位置'))
         );
         useDedicatedButton.type = 'button';
-        useDedicatedButton.addEventListener('click', continueWithCurrentPath);
+        useDedicatedButton.addEventListener('click', continueWithRecommendedPath);
         actions.appendChild(useDedicatedButton);
 
         var chooseOtherButton = registerActionButton(

@@ -71,28 +71,6 @@ def test_save_storage_policy_writes_stable_layout_under_anchor_state(tmp_path):
     assert payload["first_run_completed"] is True
 
 
-@pytest.mark.unit
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinked state boundary")
-def test_write_fixed_anchor_state_json_rejects_symlinked_state_without_external_write(
-    tmp_path,
-):
-    anchor_root = tmp_path / "anchor" / "N.E.K.O"
-    anchor_root.mkdir(parents=True)
-    external_state = tmp_path / "external-state"
-    external_state.mkdir()
-    sentinel = external_state / "sentinel.json"
-    sentinel.write_text('{"owner":"foreign"}', encoding="utf-8")
-    (anchor_root / "state").symlink_to(external_state, target_is_directory=True)
-
-    with pytest.raises(StoragePolicyError):
-        storage_policy_module.write_fixed_anchor_state_json(
-            anchor_root,
-            "storage_migration.json",
-            {"status": "pending"},
-        )
-
-    assert sentinel.read_text(encoding="utf-8") == '{"owner":"foreign"}'
-    assert not (external_state / "storage_migration.json").exists()
 
 
 @pytest.mark.unit
@@ -223,7 +201,7 @@ def test_runtime_root_availability_requires_real_write_probe(tmp_path, monkeypat
 
 
 @pytest.mark.unit
-def test_validate_selected_root_rejects_symlink_in_path_chain(tmp_path):
+def test_validate_selected_root_allows_normal_symlinked_parent(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     real_parent = tmp_path / "real-parent"
     real_parent.mkdir()
@@ -233,11 +211,10 @@ def test_validate_selected_root_rejects_symlink_in_path_chain(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symbolic links are unavailable on this platform")
 
-    with pytest.raises(StorageSelectionValidationError) as exc_info:
-        validate_selected_root(
-            config_manager,
-            linked_parent,
-            selection_source="custom",
-        )
+    selected = validate_selected_root(
+        config_manager,
+        linked_parent,
+        selection_source="custom",
+    )
 
-    assert exc_info.value.error_code == "selected_root_symlink_unsupported"
+    assert selected == (real_parent / "N.E.K.O").resolve()

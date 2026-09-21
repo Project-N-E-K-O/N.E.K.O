@@ -358,6 +358,41 @@ def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_avatar_tools
 
 
 @pytest.mark.unit
+def test_legacy_root_with_only_login_credential_is_user_data(tmp_path):
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_root.mkdir(parents=True)
+    (legacy_root / "community_auth.json").write_text("{}", encoding="utf-8")
+
+    assert _runtime_root_has_user_content(legacy_root) is True
+
+
+@pytest.mark.unit
+def test_legacy_cloudsave_import_stays_in_fixed_anchor(tmp_path):
+    from utils.cloudsave_runtime.legacy_migration import _import_legacy_cloudsave_if_needed
+
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    selected_root = tmp_path / "selected" / "N.E.K.O"
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    (legacy_root / "cloudsave").mkdir(parents=True)
+    (legacy_root / "cloudsave" / "snapshot.bin").write_bytes(b"cloud")
+    config_manager = SimpleNamespace(
+        anchor_root=anchor_root,
+        app_docs_dir=selected_root,
+        cloudsave_dir=anchor_root / "cloudsave",
+        cloudsave_local_state_path=anchor_root / "state" / "cloudsave_local_state.json",
+        get_legacy_app_root_candidates=lambda: [legacy_root],
+    )
+
+    source = _import_legacy_cloudsave_if_needed(config_manager)
+
+    assert source == str(legacy_root)
+    assert (anchor_root / "cloudsave" / "snapshot.bin").read_bytes() == b"cloud"
+    assert not (selected_root / "cloudsave").exists()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance
@@ -389,7 +424,7 @@ def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_
 
 
 @pytest.mark.unit
-def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_import(tmp_path):
+def test_bootstrap_imports_legacy_runtime_without_replacing_fixed_anchor_cloudsave(tmp_path):
     new_root_base = tmp_path / "new_root_base"
     legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
     snapshot_source_base = tmp_path / "snapshot_source"
@@ -405,6 +440,7 @@ def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_imp
     legacy_characters["猫娘"] = {"旧角色": template_character}
     legacy_characters["当前猫娘"] = "旧角色"
     atomic_write_json(legacy_config_dir / "characters.json", legacy_characters, ensure_ascii=False, indent=2)
+    (legacy_root / "community_auth.json").write_text("LEGACY-CREDENTIAL", encoding="utf-8")
 
     bootstrap_local_cloudsave_environment(snapshot_source_cm)
     _write_runtime_state(snapshot_source_cm, character_name="云端角色")
@@ -415,10 +451,43 @@ def test_bootstrap_preserves_staged_cloudsave_snapshot_before_legacy_runtime_imp
 
     result = bootstrap_local_cloudsave_environment(cm)
 
-    assert result["legacy_import"]["migrated"] is False
-    assert result["legacy_import"]["result"] == "target_root_preserves_staged_cloudsave_snapshot"
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["source"] == str(legacy_root)
     assert json.loads(cm.cloudsave_manifest_path.read_text(encoding="utf-8")).get("files")
-    assert cm.load_characters()["当前猫娘"] != "旧角色"
+    assert cm.load_characters()["当前猫娘"] == "旧角色"
+    assert (cm.app_docs_dir / "community_auth.json").read_text(encoding="utf-8") == "LEGACY-CREDENTIAL"
+    root_state = cm.load_root_state()
+    assert root_state["last_migration_source"] == str(legacy_root)
+    assert root_state["last_migration_backup"] == str(legacy_root)
+    assert root_state["legacy_cleanup_pending"] is True
+    assert root_state["last_migration_result"] == "legacy_root_imported"
+
+
+@pytest.mark.unit
+def test_legacy_import_during_shutdown_preserves_storage_restart_handoff(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base, legacy_candidates=[str(legacy_root)])
+
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    legacy_root.mkdir(parents=True)
+    (legacy_root / "community_auth.json").write_text("LEGACY-CREDENTIAL", encoding="utf-8")
+    cm.save_root_state({
+        **cm.load_root_state(),
+        "mode": "maintenance_readonly",
+        "last_migration_source": str(cm.app_docs_dir),
+        "last_migration_result": f"restart_rebind:{cm.app_docs_dir}",
+    })
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert (cm.app_docs_dir / "community_auth.json").read_text(encoding="utf-8") == "LEGACY-CREDENTIAL"
+    root_state = cm.load_root_state()
+    assert root_state["mode"] == "maintenance_readonly"
+    assert root_state["last_migration_source"] == str(cm.app_docs_dir)
+    assert root_state["last_migration_result"] == f"restart_rebind:{cm.app_docs_dir}"
 
 
 @pytest.mark.unit

@@ -776,8 +776,38 @@ def test_storage_location_status_reports_completed_migration_notice(tmp_path, mo
         "retained_root_exists": True,
         "cleanup_available": True,
         "completed_at": "2026-09-21T00:00:00Z",
-        "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
+        "message": "存储位置迁移已完成，原存储目录当前仍保留，需手动清理。",
     }
+
+
+@pytest.mark.unit
+def test_storage_location_status_reports_first_upgrade_import_for_cleanup(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    retained_root = tmp_path / "Documents" / "N.E.K.O"
+    retained_root.mkdir(parents=True)
+    (retained_root / "community_auth.json").write_text("{}", encoding="utf-8")
+    config_manager.save_root_state(
+        {
+            **config_manager.load_root_state(),
+            "last_migration_backup": str(retained_root),
+            "legacy_cleanup_pending": True,
+        }
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get("/api/storage/location/status")
+
+    assert response.status_code == 200
+    notice = response.json()["completion_notice"]
+    assert notice["completed"] is True
+    assert notice["selection_source"] == "legacy_import"
+    assert notice["retained_root"] == str(retained_root)
+    assert notice["cleanup_available"] is True
 
 
 @pytest.mark.unit
@@ -798,20 +828,13 @@ def test_storage_location_rollback_required_is_explicit_and_cannot_be_replaced(t
         target_root,
         checkpoint["txid"],
     )
-    storage_migration_module._write_transaction_owner_marker(
-        checkpoint,
-        transaction_root,
-        checkpoint["txid"],
-    )
+    transaction_root.mkdir(parents=True)
     save_storage_migration(
         config_manager,
         {
             **checkpoint,
             "status": "rollback_required",
             "transaction_root": str(transaction_root),
-            "source_runtime_baseline": storage_migration_module._snapshot_runtime_entries(
-                config_manager.app_docs_dir
-            ),
             "original_target_entries": [],
             "publish_entry_names": [],
             "publish_entry_snapshots": {},

@@ -226,22 +226,6 @@ def _ensure_config_manager_migrated():
             "[ConfigManager] migrate_openclaw_url_port 抛异常（已忽略）: %s",
             type(exc).__name__,
         )
-    # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
-    # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目
-    # 留给前端 legacy cleanup UI 手动清理（不在启动时自动清除）。
-    # 失败只打日志不抛异常，绝不阻塞启动。
-    try:
-        _config_manager.migrate_legacy_documents_memory()
-    except Exception as exc:
-        # "shouldn't happen" 路径（方法内部已吞所有异常），但 OSError 的 str(exc)
-        # 带 filename 会泄露 Documents 用户名，只打类名避免绕过脱敏。
-        try:
-            _config_manager._log(
-                f"[ConfigManager] migrate_legacy_documents_memory 抛异常（已忽略）: "
-                f"{type(exc).__name__}"
-            )
-        except Exception:
-            pass
     _config_manager_migrated = True
     return _config_manager
 

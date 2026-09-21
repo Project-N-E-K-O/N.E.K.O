@@ -311,15 +311,8 @@ def iter_character_memory_roots(config_manager) -> list[Path]:
       - ``memory_dir``: the current runtime's ``<app_docs>/memory``.
       - ``project_memory_dir``: the seed/default memory location under the project directory.
 
-    Legacy paths (``Documents\\N.E.K.O\\memory`` and other CFA fallbacks or roots
-    written by old versions) are **not** included. That data is handled separately by
-    the two paths below, so deletion/cleanup logic never accidentally touches
-    non-runtime locations:
-
-      - Startup soft migration: ``ConfigManager.migrate_legacy_documents_memory`` only
-        moves directories still present in ``characters.json[猫娘]`` to the runtime.
-      - Manual cleanup button: the Workshop page's "clean up legacy memory" scan +
-        user-checked deletion.
+    Legacy paths (``Documents\\N.E.K.O\\memory`` and other old roots) are not
+    included; storage-location migration owns those roots as a whole.
     """  # noqa: DOCSTRING_CJK
     roots: list[Path] = []
     seen: set[str] = set()

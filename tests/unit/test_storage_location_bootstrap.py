@@ -380,6 +380,8 @@ def test_storage_location_bootstrap_presents_retained_staging_as_recovery_not_li
     assert payload["migration_pending"] is False
     assert payload["recovery_required"] is True
     assert payload["blocking_reason"] == "recovery_required"
+    assert get_storage_startup_blocking_reason(config_manager) == "recovery_required"
+    assert is_storage_startup_blocked(config_manager) is True
 
 
 @pytest.mark.unit

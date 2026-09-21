@@ -1967,7 +1967,8 @@
         if (!overlay) return;
 
         I.prewarmUserDisplayName();
-        I.ensureBundleLoaded()
+        var bundleLoad = I.ensureBundleLoaded();
+        bundleLoad
             .then(function () {
                 if (!I.isElectronChatWindow() && isMainUIHiddenByModelManager()) {
                     pendingOpenAfterModelManagerHidden = true;
@@ -2035,9 +2036,10 @@
                         I.fetchPendingIcebreakerGalgameHandoffOrLatest();
                     });
                 }
-            })
-            .catch(function (error) {
+            }, function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
+                if (I.lastBundleLoadFailureToastPromise === bundleLoad) return;
+                I.lastBundleLoadFailureToastPromise = bundleLoad;
                 I.showToast(I.getI18nText('chat.reactWindowLoadFailed', '聊天框资源加载失败'), 3500);
             });
     }

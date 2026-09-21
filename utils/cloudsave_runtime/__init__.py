@@ -134,7 +134,6 @@ from .legacy_migration import (  # noqa: F401
     _collect_memory_character_names,
     _config_payload_looks_default,
     _config_payload_looks_seeded,
-    _copy_optional_legacy_state,
     _copy_runtime_root_entries,
     _create_legacy_import_backup_path,
     _deep_merge_json_dicts,

@@ -367,7 +367,14 @@ def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
             anchor_root=anchor_root,
         )
 
-        migration_pending = is_storage_migration_pending(migration_checkpoint)
+        migration_status = str((migration_checkpoint or {}).get("status") or "").strip()
+        migration_recovery_required = (
+            migration_status == STORAGE_MIGRATION_STATUS_RECOVERY_REQUIRED
+        )
+        migration_pending = (
+            is_storage_migration_pending(migration_checkpoint)
+            and not migration_recovery_required
+        )
         migration_pending = migration_pending or _is_awaiting_controlled_shutdown(
             root_mode=root_mode,
             last_migration_result=str(root_state.get("last_migration_result") or ""),
@@ -381,7 +388,10 @@ def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
                 anchor_root=anchor_root,
             ),
             migration_pending=migration_pending,
-            recovery_required=root_mode == ROOT_MODE_DEFERRED_INIT,
+            recovery_required=(
+                root_mode == ROOT_MODE_DEFERRED_INIT
+                or migration_recovery_required
+            ),
         )
     except StoragePolicyError as exc:
         logger.warning("Storage policy unavailable during startup gate: %s", exc)

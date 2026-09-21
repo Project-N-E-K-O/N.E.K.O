@@ -2818,10 +2818,16 @@
             restartBtn.disabled = true;
         }
         let restartAccepted = false;
-        let restartOutcomeUnknown = false;
+        let restartIntentArmed = false;
         setStoragePreflightBusy(true);
         setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
         try {
+            if (window.nekoHost && typeof window.nekoHost.beginStorageRestart === 'function') {
+                try {
+                    const intentResult = await window.nekoHost.beginStorageRestart();
+                    restartIntentArmed = !intentResult || intentResult.ok !== false;
+                } catch (_) {}
+            }
             while (true) {
                 let resp;
                 try {
@@ -2838,19 +2844,10 @@
                         })
                     }, STORAGE_MUTATION_REQUEST_TIMEOUT_MS);
                 } catch (requestError) {
-                    restartOutcomeUnknown = true;
                     throw requestError;
                 }
                 const payload = await readJsonResponse(resp);
                 const responseErrorCode = String(payload && payload.error_code || '').trim();
-                if (resp.ok && (!payload || payload.ok !== true)) {
-                    restartOutcomeUnknown = true;
-                }
-                if (!resp.ok && ['restart_schedule_rollback_failed', 'restart_outcome_unknown'].includes(
-                    responseErrorCode
-                )) {
-                    restartOutcomeUnknown = true;
-                }
                 if (
                     !resp.ok
                     && payload
@@ -2888,33 +2885,14 @@
             }
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
-            if (restartOutcomeUnknown) {
-                restartAccepted = true;
-                const unknownPayload = {
-                    result: 'restart_outcome_unknown',
-                    restart_operation_id: String(
-                        storagePreflightState && storagePreflightState.restart_operation_id || ''
-                    ).trim(),
-                    selected_root: selectedRoot,
-                    target_root: selectedRoot,
-                    migration: { status: 'pending' }
-                };
-                setStoragePreflightResult(
-                    translate('storage.restartOutcomeUnknown', '无法确认受控重启结果，正在重新读取实际存储状态。'),
-                    'success'
-                );
-                notifyStorageRestartInitiated(unknownPayload, selectedRoot);
-                storagePreflightState = null;
-                const input = document.getElementById('storage-target-root-input');
-                if (input) input.disabled = true;
-                renderStorageRestartButton();
-                await showStandaloneStorageMaintenanceOverlay(unknownPayload);
-                return true;
-            }
             setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '重启请求失败')), 'error');
             renderStorageRestartButton();
             return false;
         } finally {
+            if (restartIntentArmed && !restartAccepted
+                && window.nekoHost && typeof window.nekoHost.cancelStorageRestart === 'function') {
+                try { await window.nekoHost.cancelStorageRestart(); } catch (_) {}
+            }
             if (!restartAccepted && !keepBusy) {
                 setStoragePreflightBusy(false);
             }
