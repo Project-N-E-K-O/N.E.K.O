@@ -1929,7 +1929,7 @@
         var pathList = createElement('div', 'storage-location-path-list storage-location-completion-path-list');
 
         var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget', 'storage-location-completion-path-item');
-        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '迁移保留备份'), 'completionRetained', 'storage-location-completion-path-item');
+        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '旧数据目录'), 'completionRetained', 'storage-location-completion-path-item');
         var openTargetButton = createElement('button', 'storage-location-completion-link', translate('storage.openTargetRoot', '打开当前路径'));
         openTargetButton.type = 'button';
         openTargetButton.addEventListener('click', function () {
@@ -1937,7 +1937,7 @@
         });
         targetItem.appendChild(openTargetButton);
 
-        var openRetainedButton = createElement('button', 'storage-location-completion-link', translate('storage.openRetainedRoot', '打开迁移备份'));
+        var openRetainedButton = createElement('button', 'storage-location-completion-link', translate('storage.openRetainedRoot', '打开旧数据目录'));
         openRetainedButton.type = 'button';
         openRetainedButton.addEventListener('click', function () {
             openPathWithHostBridge(state.completionNotice && state.completionNotice.retained_root);
@@ -1947,7 +1947,7 @@
         pathList.appendChild(retainedItem);
 
         var actions = createElement('div', 'storage-location-actions storage-location-completion-actions');
-        var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理迁移备份'));
+        var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据'));
         cleanupButton.type = 'button';
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
         actions.appendChild(cleanupButton);
@@ -2148,7 +2148,7 @@
         applyCompletionNotice({ completed: false });
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(
-                translate('storage.cleanupRetainedRootDone', '迁移备份已清理；其他历史数据目录未被修改。'),
+                translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
                 4000
             );
         }
@@ -2164,7 +2164,7 @@
             return;
         }
 
-        if (!window.confirm(translate('storage.cleanupRetainedRootConfirm', '这会删除迁移时保留的备份目录，且不会影响当前已经生效的新目录；其他历史数据目录不会被修改。要继续吗？'))) {
+        if (!window.confirm(translate('storage.cleanupRetainedRootConfirm', '这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？'))) {
             return;
         }
 

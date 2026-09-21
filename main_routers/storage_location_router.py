@@ -2071,14 +2071,6 @@ def _build_completed_migration_notice(
         or source_root
         or ""
     ).strip()
-    try:
-        retained_is_target_preimage = bool(
-            source_root
-            and retained_root
-            and not paths_equal(source_root, retained_root)
-        )
-    except (OSError, ValueError):
-        retained_is_target_preimage = False
     retained_exists = bool(retained_root and Path(retained_root).exists())
     retained_has_runtime_entries = False
     if retained_exists:
@@ -2116,21 +2108,10 @@ def _build_completed_migration_notice(
         "source_root": source_root,
         "target_root": target_root,
         "retained_root": retained_root,
-        "retained_kind": (
-            "target_preimport_backup"
-            if retained_is_target_preimage
-            else "migration_source_backup"
-        ),
-        "legacy_runtime_entries_preserved": retained_is_target_preimage,
         "retained_root_exists": retained_exists,
         "cleanup_available": cleanup_available,
-        "retained_identity_matches": retained_identity_matches,
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
-        "message": (
-            "存储位置迁移已完成，迁移前目标备份仍保留；旧版本根的运行时条目未被清理。"
-            if retained_is_target_preimage
-            else "存储位置迁移已完成，迁移源备份当前仍保留，需手动清理。"
-        ),
+        "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
     }
 
 

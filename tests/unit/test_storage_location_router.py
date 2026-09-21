@@ -734,6 +734,53 @@ def test_storage_location_status_reports_pending_checkpoint_as_maintenance(tmp_p
 
 
 @pytest.mark.unit
+def test_storage_location_status_reports_completed_migration_notice(tmp_path, monkeypatch):
+    config_manager = _DummyConfigManager(tmp_path)
+    retained_root = tmp_path / "old-storage" / "N.E.K.O"
+    (retained_root / "memory").mkdir(parents=True)
+    (retained_root / "memory" / "history.json").write_text("{}", encoding="utf-8")
+    save_storage_migration(
+        config_manager,
+        {
+            "version": 1,
+            "txid": "a" * 32,
+            "status": "completed",
+            "source_root": str(retained_root),
+            "target_root": str(config_manager.app_docs_dir),
+            "selection_source": "custom",
+            "confirmed_existing_target_content": False,
+            "backup_root": str(retained_root),
+            "retained_source_root": str(retained_root),
+            "retained_source_mode": "manual_retention",
+            "completed_at": "2026-09-21T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+
+    with _build_client(config_manager) as client:
+        response = client.get("/api/storage/location/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["completion_notice"] == {
+        "completed": True,
+        "selection_source": "custom",
+        "source_root": str(retained_root),
+        "target_root": str(config_manager.app_docs_dir),
+        "retained_root": str(retained_root),
+        "retained_root_exists": True,
+        "cleanup_available": True,
+        "completed_at": "2026-09-21T00:00:00Z",
+        "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
+    }
+
+
+@pytest.mark.unit
 def test_storage_location_rollback_required_is_explicit_and_cannot_be_replaced(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
