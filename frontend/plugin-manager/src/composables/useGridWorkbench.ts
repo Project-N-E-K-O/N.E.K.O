@@ -185,14 +185,13 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     const builder = config.buildSearchIndex
     if (!builder) return raw
     return raw.map((item) => {
-      // Rendering/group counts need no search index. Build it on first actual
-      // search, and only once for this item snapshot (the plugin builder also
-      // caches by text inputs across new API object identities).
-      let index: string | undefined
+      // Computed remains lazy, but tracks nested author/tag/localization reads.
+      // A plain closure cache loses these dependencies after its first hit.
+      const index = computed(() => item.searchIndex || builder(item))
       return {
         ...item,
         get searchIndex() {
-          return index ??= item.searchIndex || builder(item)
+          return index.value
         },
       }
     }) as T[]

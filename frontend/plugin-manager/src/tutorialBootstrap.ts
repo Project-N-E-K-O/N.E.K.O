@@ -1,4 +1,5 @@
 import type { startPluginDashboardTutorial as StartTutorial } from './yui-guide-runtime'
+import { retryableModule } from './utils/retryableModule'
 
 const messagePrefix = 'neko:yui-guide:plugin-dashboard:'
 const desktopEvents = ['neko:yui-guide:desktop-interrupt-ack', 'neko:yui-guide:desktop-narration-finished', 'neko:yui-guide:desktop-system-cursor-temporary-reveal']
@@ -7,12 +8,14 @@ let loading: Promise<Runtime> | null = null
 let ready = false
 let installed = false
 let generation = 0
+let handoffAbandoned = false
+const importRuntime = retryableModule(() => import('./yui-guide-runtime'), 8000)
 const pending: Event[] = []
 
 // Queue original Event objects (including source/origin). The runtime performs
 // its existing authorization checks on replay; do not reconstruct MessageEvents.
 function receive(event: Event) {
-  if (ready) return
+  if (ready || handoffAbandoned) return
   if (event instanceof MessageEvent) {
     if (!window.opener || event.source !== window.opener) return
     if (typeof event.data?.type !== 'string' || !event.data.type.startsWith(messagePrefix)) return
@@ -24,12 +27,24 @@ function receive(event: Event) {
 async function loadRuntime(): Promise<Runtime> {
   if (loading) return loading
   const epoch = generation
-  loading = import('./yui-guide-runtime').then(runtime => {
+  loading = importRuntime().then(runtime => {
     if (epoch !== generation) return runtime
-    runtime.initPluginDashboardYuiGuideRuntime(pending.splice(0))
+    if (handoffAbandoned) runtime.initPluginDashboardYuiGuideRuntime([], { preactivate: false, acceptOpenerMessages: false })
+    else runtime.initPluginDashboardYuiGuideRuntime(pending.splice(0))
     ready = true
     return runtime
-  }).catch(error => { if (epoch === generation) loading = null; throw error })
+  }).catch(error => {
+    if (epoch === generation) {
+      // Release main.ts's mount barrier. Never replay delayed takeover messages
+      // into the page after the user has regained control; a local button click
+      // may explicitly retry loading the optional tutorial later.
+      handoffAbandoned = true
+      generation += 1
+      pending.length = 0
+      loading = null
+    }
+    throw error
+  })
   return loading
 }
 
@@ -53,7 +68,7 @@ export function initTutorialBootstrap(): Promise<unknown> | undefined {
     generation++; ready = false; loading = null; pending.length = 0
   }, true)
   window.addEventListener('pageshow', event => {
-    if (event.persisted && window.opener) void loadRuntime().catch(console.warn)
+    if (event.persisted && window.opener && !handoffAbandoned) void loadRuntime().catch(console.warn)
   })
   if (window.opener && !window.opener.closed && hasPendingTutorialHandoff()) return loadRuntime()
 }

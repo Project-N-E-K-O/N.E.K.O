@@ -3994,7 +3994,7 @@ export function startPluginDashboardTutorial(options: StartPluginDashboardTutori
   })
 }
 
-export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = []) {
+export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = [], options: { preactivate?: boolean; acceptOpenerMessages?: boolean } = {}) {
   if (pluginDashboardRuntimeInitialized) {
     return
   }
@@ -4002,7 +4002,7 @@ export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = []) {
 
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
-  runtime.preactivatePendingOverlay()
+  if (options.preactivate !== false) runtime.preactivatePendingOverlay()
 
   const handleDesktopInterruptAckEvent = (event: Event) => {
     runtime.handleDesktopInterruptAckEvent(event)
@@ -4015,6 +4015,7 @@ export function initPluginDashboardYuiGuideRuntime(queuedEvents: Event[] = []) {
   }
 
   const handleRuntimeMessage = (event: MessageEvent) => {
+    if (options.acceptOpenerMessages === false) return
     const data = event.data
     if (!data || typeof data !== 'object') {
       return

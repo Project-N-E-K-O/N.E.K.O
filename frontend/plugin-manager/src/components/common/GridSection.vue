@@ -112,11 +112,14 @@ const props = withDefaults(defineProps<{
   variant?: string
   /** 可选：用于 data-yui-guide-id 的前缀（如 "plugin-list"）。 */
   guidePrefix?: string
+  /** False only when a parent already owns this grid's initial entrance. */
+  animateInitial?: boolean
 }>(), {
   title: undefined,
   icon: undefined,
   variant: 'default',
   guidePrefix: undefined,
+  animateInitial: true,
 })
 
 defineEmits<{
@@ -135,7 +138,7 @@ const {
   beforeSectionLeave,
   leaveSection,
   afterSectionLeave,
-} = useAnimatedGridTransition()
+} = useAnimatedGridTransition({ animateInitial: () => props.animateInitial })
 
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 

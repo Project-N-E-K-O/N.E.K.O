@@ -4,6 +4,7 @@
     :icon="icon"
     :items="items"
     :layout-mode="layoutMode"
+    :animate-initial="animateInitial"
     :multi-select-enabled="multiSelectEnabled"
     :selected-ids="selectedPluginIds"
     :variant="variant"
@@ -35,7 +36,7 @@ import PluginListRow from '@/components/plugin/PluginListRow.vue'
 import type { PluginWorkbenchItem, PluginWorkbenchLayoutMode } from '@/composables/usePluginWorkbench'
 import type { PluginListAction } from '@/types/api'
 
-defineProps<{
+withDefaults(defineProps<{
   title: string
   icon?: Component
   items: PluginWorkbenchItem[]
@@ -46,7 +47,8 @@ defineProps<{
   showSourceDetail?: boolean
   identityPluginIds: string[]
   variant?: 'default' | 'adapter'
-}>()
+  animateInitial?: boolean
+}>(), { animateInitial: true })
 
 defineEmits<{
   'item-click': [pluginId: string]
