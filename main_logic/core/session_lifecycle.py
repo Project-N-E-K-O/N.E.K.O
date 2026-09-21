@@ -143,6 +143,7 @@ class SessionOwnershipMixin:
                 for callback in callbacks:
                     if not callback.done():
                         callback.cancel()
+                close_error = None
                 # A cancelled handshake can still own network work. Keep its
                 # slot until it has stopped, and close once more if it finished
                 # after the first close attempt.
@@ -159,18 +160,22 @@ class SessionOwnershipMixin:
                             logger.warning('Session close before handshake join failed: %s', error)
                         await asyncio.gather(connecting, return_exceptions=True)
                     await record.close()
+                except BaseException as error:
+                    close_error = error
+                finally:
                     # Hot-swap uses this close boundary before promotion.
                     # Provider output may run outside the receive loop, so
                     # stopping only that loop does not stop all old writes.
                     # Keep the resource registered until every other owned
-                    # callback has unwound.
+                    # callback has unwound, even when provider close failed.
                     if callbacks:
                         await asyncio.gather(*callbacks, return_exceptions=True)
-                finally:
                     # A provider close that raises must not strand the record:
                     # capacity counting and pruning both key off `closed`, so
                     # leaving it unset costs a slot for the process lifetime.
                     record.closed = True
+                if close_error is not None:
+                    raise close_error
             record.close_task = self._own_cleanup_task(close())
         return record.close_task
 

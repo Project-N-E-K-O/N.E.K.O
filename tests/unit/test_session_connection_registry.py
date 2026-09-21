@@ -81,6 +81,40 @@ async def test_failed_provider_close_still_frees_the_capacity_slot():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_failed_provider_close_still_joins_cancel_resistant_callbacks():
+    """A close failure must not release the slot before owned writers unwind."""
+    manager = SessionOwnershipMixin()
+    provider = FailingCloseProvider()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    exited = asyncio.Event()
+
+    async def callback():
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+        finally:
+            exited.set()
+
+    record = manager._register_connection(provider)
+    record.callbacks.add(asyncio.create_task(callback()))
+    closing = asyncio.create_task(manager._close_owned_session(provider))
+    await asyncio.wait_for(entered.wait(), 1)
+    await asyncio.sleep(0)
+    assert not closing.done()
+    assert not record.closed
+    release.set()
+    with pytest.raises(RuntimeError, match="transport already gone"):
+        await closing
+    assert exited.is_set()
+    assert record.closed
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_manager_close_is_idempotent_and_survives_caller_cancellation():
     manager = SessionOwnershipMixin()
     provider = ReconnectingProvider()
