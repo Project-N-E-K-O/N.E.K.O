@@ -228,7 +228,8 @@ async def test_reflection_synthesis_loop_load_characters_failure_skips_round_doe
 
 @pytest.mark.unit
 def test_reflection_synthesis_loop_registered_in_background_tasks():
-    """运行态激活必须注册 ``_periodic_reflection_synthesis_loop``。
+    """``ensure_memory_server_runtime_initialized`` 必须把
+    ``_periodic_reflection_synthesis_loop`` 注册到 ``_spawn_background_task``。
 
     用源码扫描而非 runtime instrumentation：这里要钉的是"loop 被挂上去"这件事
     本身（regression：删除注册行是单字符级别的、容易疏漏的退化），不需要也不
@@ -236,11 +237,11 @@ def test_reflection_synthesis_loop_registered_in_background_tasks():
     """
     import inspect
 
-    from app.memory_server import runtime
+    from app import memory_server
 
-    src = inspect.getsource(runtime._activate_memory_runtime_background_tasks)
+    src = inspect.getsource(memory_server.ensure_memory_server_runtime_initialized)
     assert "_periodic_reflection_synthesis_loop()" in src, (
-        "运行态激活必须注册 "
+        "ensure_memory_server_runtime_initialized 必须 _spawn_background_task("
         "_periodic_reflection_synthesis_loop()) —— 没有它，pending reflection 增长会停摆"
     )
 

@@ -1088,8 +1088,8 @@ async def test_deferred_append_failure_preserves_locale_admission_order(tmp_path
 # ── startup ordering: reconcile must finish before the outbox is resumed ──
 
 
-def _runtime_function_ast(name):
-    """Return one async runtime function's AST."""
+def _startup_function_ast():
+    """AST of ensure_memory_server_runtime_initialized (the startup sequencer)."""
     import ast
     import pathlib
 
@@ -1097,15 +1097,15 @@ def _runtime_function_ast(name):
               / 'app' / 'memory_server' / 'runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
     for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+        if (isinstance(node, ast.AsyncFunctionDef)
+                and node.name == 'ensure_memory_server_runtime_initialized'):
             return ast, node
-    raise AssertionError(f'未找到 {name}，断言失效')
+    raise AssertionError('未找到 ensure_memory_server_runtime_initialized，断言失效')
 
 
 def _calls_named(ast, node, name):
     return [c for c in ast.walk(node)
-            if isinstance(c, ast.Call)
-            and (getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)) == name]
+            if isinstance(c, ast.Call) and getattr(c.func, 'attr', None) == name]
 
 
 def _reconcile_gathers(ast, node):
@@ -1130,13 +1130,10 @@ def test_startup_reconciles_before_it_resumes_the_outbox():
     replays it again. Resumed ops are fire-and-forget background tasks, so
     the only thing separating them from the replay is this ordering.
     """
-    ast, fn = _runtime_function_ast('_initialize_memory_server_runtime')
-    _, replay_fn = _runtime_function_ast('_replay_startup_outbox_to_completion')
+    ast, fn = _startup_function_ast()
 
-    replay_calls = _calls_named(ast, fn, '_replay_startup_outbox_to_completion')
-    assert replay_calls, '初始化里找不到 outbox 补跑阶段，断言失效'
-    pending_calls = _calls_named(ast, replay_fn, '_replay_pending_outbox')
-    assert pending_calls, 'outbox 补跑阶段未调用 pending replay，断言失效'
+    replay_calls = _calls_named(ast, fn, '_replay_pending_outbox')
+    assert replay_calls, 'startup 里找不到 outbox 补跑调用，断言失效'
     gathers = _reconcile_gathers(ast, fn)
     assert gathers, 'startup 里找不到 per-character reconcile 的 gather，断言失效'
 

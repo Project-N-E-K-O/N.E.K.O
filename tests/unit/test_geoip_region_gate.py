@@ -1756,10 +1756,7 @@ def test_agent_deduper_is_built_after_the_region_settles():
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
     for node in ast.walk(tree):
-        if (
-            not isinstance(node, ast.AsyncFunctionDef)
-            or node.name != '_initialize_agent_runtime_unlocked'
-        ):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
             continue
         # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
         # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
@@ -1775,7 +1772,7 @@ def test_agent_deduper_is_built_after_the_region_settles():
             f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
         break
     else:
-        pytest.fail('未找到 agent_server 运行态初始化函数，断言失效')
+        pytest.fail('未找到 agent_server startup，断言失效')
 
 
 @pytest.mark.unit
@@ -2317,35 +2314,24 @@ def test_memory_server_warms_the_region_before_outbox_replay():
               / 'app' / 'memory_server' / 'runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-    }
-    initializer = functions.get('_initialize_memory_server_runtime')
-    assert initializer is not None, '未找到 memory_server 运行态初始化函数'
-
-    calls = {}
-    for call in ast.walk(initializer):
-        if not isinstance(call, ast.Call):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
             continue
-        name = getattr(call.func, 'attr', None) or getattr(call.func, 'id', None)
-        if name:
-            calls.setdefault(name, []).append(call.lineno)
-
-    assert 'awarmup_region_check' in calls, \
-        'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
-    assert '_replay_startup_outbox_to_completion' in calls, '未找到 outbox 补跑阶段'
-    assert min(calls['awarmup_region_check']) < min(calls['_replay_startup_outbox_to_completion']), \
-        '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
-
-    replay = functions.get('_replay_startup_outbox_to_completion')
-    assert replay is not None
-    assert any(
-        isinstance(call, ast.Call)
-        and getattr(call.func, 'attr', None) == '_replay_pending_outbox'
-        for call in ast.walk(replay)
-    ), '补跑阶段未调用 pending outbox replay'
+        calls = {}
+        for c in ast.walk(node):
+            if isinstance(c, ast.Call):
+                name = getattr(c.func, 'attr', None)
+                if name:
+                    calls.setdefault(name, []).append(c.lineno)
+        if '_replay_pending_outbox' not in calls:
+            continue
+        assert 'awarmup_region_check' in calls, \
+            'memory_server 启动未做区域预热（独立进程不经过 main_server 的预热）'
+        assert min(calls['awarmup_region_check']) < min(calls['_replay_pending_outbox']), \
+            '预热必须早于 outbox 补跑，否则补跑的 LLM 调用会读到临时大陆快照'
+        break
+    else:
+        pytest.fail('未找到 outbox 补跑调用，断言失效')
 
 
 @pytest.mark.unit

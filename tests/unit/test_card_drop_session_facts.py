@@ -22,19 +22,6 @@ USER_A_ID = "11111111-1111-4111-8111-111111111111"
 USER_B_ID = "22222222-2222-4222-8222-222222222222"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_private_community_state(monkeypatch, tmp_path):
-    """Keep fixed-anchor credentials isolated between randomized test cases."""
-    state_dir = tmp_path / "fixed-community-state"
-
-    def state_path(filename: str, *, config_manager=None):
-        del config_manager
-        return state_dir / filename
-
-    monkeypatch.setattr(C, "_community_state_path", state_path)
-    monkeypatch.setattr(C, "_logout_storage_ready", lambda: True)
-
-
 @pytest.mark.parametrize(
     "malformed_origin",
     [
@@ -1670,12 +1657,7 @@ def test_social_session_init_repairs_a_failed_desktop_bind(
     monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps({
-            "access_token": "desktop-token-a",
-            "local_user_id": USER_A_ID,
-            "auth_source": "oauth",
-            "bind": {"bound": False, "error": "cloud_unreachable"},
-        }),
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1709,12 +1691,7 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
 
     auth = tmp_path / "community_auth.json"
     auth.write_text(
-        json.dumps({
-            "access_token": "desktop-token-a",
-            "local_user_id": USER_A_ID,
-            "auth_source": "oauth",
-            "bind": {"bound": False, "error": "cloud_unreachable"},
-        }),
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
@@ -1925,18 +1902,7 @@ def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
     legacy.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(primary.parent))
-    monkeypatch.setattr(
-        C,
-        "_legacy_private_file_paths",
-        lambda filename: [auth.parent / filename],
-    )
-    monkeypatch.setattr(
-        C,
-        "_legacy_conflict_witness_roots",
-        lambda config_manager=None: [auth.parent],
-    )
-    canonical = C._community_state_path("social_session.json")
-    assert C._social_session_paths() == [primary, canonical, legacy]
+    assert C._social_session_paths() == [primary, legacy]
 
     writing = threading.Event()
     release = threading.Event()
@@ -2341,16 +2307,6 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     electron_root = tmp_path / "electron-user-data"
     monkeypatch.setattr(C, "_auth_path", lambda: legacy_auth)
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(electron_root))
-    monkeypatch.setattr(
-        C,
-        "_legacy_private_file_paths",
-        lambda filename: [legacy_auth.parent / filename],
-    )
-    monkeypatch.setattr(
-        C,
-        "_legacy_conflict_witness_roots",
-        lambda config_manager=None: [legacy_auth.parent],
-    )
 
     assert C._save_auth({"access_token": "token-a"})
     assert C._save_social_session(
@@ -2370,7 +2326,6 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "refresh-a",
-        "credential_epoch": 0,
     }
     legacy_session = legacy_auth.parent / "social_session.json"
     legacy_session.write_text("{}", encoding="utf-8")
@@ -2699,7 +2654,6 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "legacy-refresh",
-        "credential_epoch": 0,
     }
     assert auth_data["schema_version"] == 2
     assert auth_data["local_user_id"] == USER_A_ID
@@ -3125,24 +3079,24 @@ async def test_store_session_reports_partial_local_save_failure(tmp_path, monkey
 
 def test_sync_session_clear_offloads_local_credential_io(client, monkeypatch):
     ticket = _issue_sync_ticket(client)
-    original_ticket_is_valid = C._sync_ticket_is_valid
+    original_consume = C._consume_sync_ticket
     thread_ids: dict[str, int] = {}
 
-    def ticket_is_valid(value, **kwargs):
+    def consume_sync_ticket(value):
         thread_ids.setdefault("event_loop", threading.get_ident())
-        return original_ticket_is_valid(value, **kwargs)
+        return original_consume(value)
 
     def access_token():
         thread_ids["access"] = threading.get_ident()
         return "token-a"
 
-    def clear_auth(_paths):
+    def clear_auth():
         thread_ids["clear"] = threading.get_ident()
         return True
 
-    monkeypatch.setattr(C, "_sync_ticket_is_valid", ticket_is_valid)
+    monkeypatch.setattr(C, "_consume_sync_ticket", consume_sync_ticket)
     monkeypatch.setattr(C, "_access_token", access_token)
-    monkeypatch.setattr(C, "_clear_auth_locked", clear_auth)
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
 
     response = client.post(
         "/api/card-drop/sync-session",
@@ -3192,12 +3146,12 @@ def test_sync_session_clear_reports_local_delete_failure(client, tmp_path, monke
 def test_local_logout_requires_local_origin_and_single_use_ticket(client, monkeypatch):
     clear_calls = 0
 
-    def clear_auth(_paths):
+    def clear_auth():
         nonlocal clear_calls
         clear_calls += 1
         return True
 
-    monkeypatch.setattr(C, "_clear_auth_locked", clear_auth)
+    monkeypatch.setattr(C, "_clear_auth", clear_auth)
 
     missing_ticket = client.post("/api/card-drop/logout")
     assert missing_ticket.status_code == 403
@@ -3232,7 +3186,7 @@ def test_local_logout_requires_local_origin_and_single_use_ticket(client, monkey
 
 
 def test_local_logout_reports_local_delete_failure(client, monkeypatch):
-    monkeypatch.setattr(C, "_clear_auth_locked", lambda _paths: False)
+    monkeypatch.setattr(C, "_clear_auth", lambda: False)
 
     response = client.post(
         "/api/card-drop/logout",

@@ -2928,11 +2928,16 @@ def test_dedup_resolver_is_ready_before_optional_embedding_bootstrap():
 
     from app.memory_server import runtime
 
-    initializer = inspect.getsource(runtime._initialize_memory_server_runtime)
-    activation = inspect.getsource(runtime._activate_memory_runtime_background_tasks)
-    assert "fact_dedup_resolver = FactDedupResolver(fact_store)" in initializer
-    assert "_spawn_activated(_bootstrap_embedding_worker())" in activation
-    assert "not _memory_runtime_init_completed" in activation
+    startup = inspect.getsource(
+        runtime.ensure_memory_server_runtime_initialized,
+    )
+    resolver_ready = startup.index(
+        "fact_dedup_resolver = FactDedupResolver(fact_store)"
+    )
+    worker_spawned = startup.index(
+        "_spawn_background_task(_bootstrap_embedding_worker())"
+    )
+    assert resolver_ready < worker_spawned
     assert "FactDedupResolver(" not in inspect.getsource(
         runtime._bootstrap_embedding_worker,
     )
