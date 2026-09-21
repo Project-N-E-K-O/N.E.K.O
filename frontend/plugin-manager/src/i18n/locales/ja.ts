@@ -42,6 +42,14 @@ export default {
     removeHint: "プラグインを停止して関連付けを解除しますか？ソースと実行データは保持されます。",
   },
   common: {
+    surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
+    surfaceApplyLanguage: "言語を適用してパネルを再読み込み",
+
+    languageLoading: "言語を読み込み中です。画面は引き続き利用できます",
+    languageLoadFailed: "言語を読み込めませんでした。現在の言語を維持します。",
+    languageRetry: "言語を再試行",
+    languageReload: "ページを再読み込み",
+
     loading: '読み込み中...',
     refresh: '更新',
     search: '検索',

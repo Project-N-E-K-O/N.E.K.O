@@ -42,6 +42,14 @@ export default {
     removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
   },
   common: {
+    surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
+    surfaceApplyLanguage: "Apply language and reload panel",
+
+    languageLoading: "Loading language; the interface remains available",
+    languageLoadFailed: "Language could not load. The current language was kept.",
+    languageRetry: "Retry language",
+    languageReload: "Reload page",
+
     loading: 'Loading...',
     refresh: 'Refresh',
     search: 'Search',

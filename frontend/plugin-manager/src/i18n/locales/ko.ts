@@ -42,6 +42,14 @@ export default {
     removeHint: "플러그인을 중지하고 연결을 해제할까요? 소스와 실행 데이터는 유지됩니다.",
   },
   common: {
+    surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",
+    surfaceApplyLanguage: "언어 적용 및 패널 새로고침",
+
+    languageLoading: "언어를 불러오는 중입니다. 화면은 계속 사용할 수 있습니다",
+    languageLoadFailed: "언어를 불러오지 못했습니다. 현재 언어를 유지합니다.",
+    languageRetry: "언어 다시 시도",
+    languageReload: "페이지 새로고침",
+
     loading: '로딩 중...',
     refresh: '새로고침',
     search: '검색',

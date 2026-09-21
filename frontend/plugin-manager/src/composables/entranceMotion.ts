@@ -15,9 +15,10 @@ export function sampleEntrance(spec: EntranceSpec) {
   const blurString = interpolate([0, 100], [`blur(${spec.blur ?? 0}px)`, 'blur(0px)'], { clamp: false })
   const frames: Keyframe[] = []
   let duration = 0
-  // 240 Hz sampling; browsers interpolate between samples. Keep the same spring
-  // rest thresholds per property (opacity and transform settle at different times).
-  for (let t = 0; t <= 5000; t += 1000 / 240) {
+  // 60 Hz keyframes are enough for a browser compositor to interpolate a
+  // spring. Keep the same spring rest thresholds per property (opacity and
+  // transform settle at different times).
+  for (let t = 0; t <= 5000; t += 1000 / 60) {
     const ys = y.next(t), os = opacity.next(t), ss = scale.next(t), bs = blur.next(t)
     frames.push({ opacity: Math.max(0, Math.min(1, os.value)),
       transform: `translate3d(0px, ${ys.value}px, 0px) scale(${ss.value})`,
@@ -29,6 +30,7 @@ export function sampleEntrance(spec: EntranceSpec) {
   return { frames, duration }
 }
 const samples = boundedMemo(32, key => sampleEntrance(JSON.parse(key) as EntranceSpec))
+
 const active = new WeakMap<HTMLElement, () => void>()
 function finalStyle(el: HTMLElement, spec: EntranceSpec) {
   el.style.opacity = '1'

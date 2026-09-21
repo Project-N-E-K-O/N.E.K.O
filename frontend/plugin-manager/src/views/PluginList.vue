@@ -245,14 +245,14 @@
 
         <template v-else>
           <div
-            v-for="(section, si) in pluginSections"
+            v-for="section in pluginSections"
             :key="section.key"
-            v-entrance="{ y: 20, stiffness: 220, damping: 22, duration: 420, delay: 120 + si * 80 }"
           >
             <PluginGridSection
               :title="section.title"
               :icon="section.icon"
               :items="section.items"
+              :animate-initial="false"
               :layout-mode="layoutMode"
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
@@ -470,7 +470,7 @@
 
 <script setup lang="ts">
 import { vEntrance } from '@/composables/entranceMotion'
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
@@ -481,9 +481,10 @@ import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marke
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
-const PackageManagerPanel = defineAsyncComponent(() => import('@/components/plugin/PackageManagerPanel.vue'))
-const GithubMirrorSourcePanel = defineAsyncComponent(() => import('@/components/plugin/GithubMirrorSourcePanel.vue'))
-const MarketPanel = defineAsyncComponent(() => import('@/components/plugin/MarketPanel.vue'))
+import { deferredPanel } from '@/components/common/deferredPanel'
+const PackageManagerPanel = deferredPanel(() => import('@/components/plugin/PackageManagerPanel.vue'))
+const GithubMirrorSourcePanel = deferredPanel(() => import('@/components/plugin/GithubMirrorSourcePanel.vue'))
+const MarketPanel = deferredPanel(() => import('@/components/plugin/MarketPanel.vue'))
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'

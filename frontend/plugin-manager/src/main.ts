@@ -1,18 +1,19 @@
 import './assets/main.css'
 
-import { createApp } from 'vue'
+import { createApp, watch } from 'vue'
 import { createPinia } from 'pinia'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
-import { i18n } from './i18n'
+import { i18n, initializeLocale } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
 import { initTutorialBootstrap } from './tutorialBootstrap'
 
 initDarkMode()
+void initializeLocale()
 const tutorialStartup = initTutorialBootstrap()
 
 function initNativeDragGuard() {
@@ -50,6 +51,13 @@ app.use(i18n)
 
 function mountApp() {
   app.mount('#app')
+  // Former language switching reloaded the whole page. Refresh localized
+  // plugin metadata on a committed locale only, without resetting user work.
+  watch(i18n.global.locale, () => {
+    void import('./stores/plugin')
+      .then(({ usePluginStore }) => usePluginStore().fetchPlugins(true))
+      .catch(error => console.warn('Could not refresh localized plugin metadata', error))
+  })
   const connectionStore = useConnectionStore()
   connectionStore.startHealthCheck()
   window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())

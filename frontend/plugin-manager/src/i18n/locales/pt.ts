@@ -42,6 +42,14 @@ export default {
     removeHint: "Parar o plugin e remover o vínculo? O código e os dados de execução serão mantidos.",
   },
   common: {
+    surfaceLanguagePending: "O idioma da aplicação mudou. O painel mantém o idioma para preservar o trabalho não guardado.",
+    surfaceApplyLanguage: "Aplicar idioma e recarregar painel",
+
+    languageLoading: "A carregar idioma; a interface continua disponível",
+    languageLoadFailed: "Não foi possível carregar o idioma. O idioma atual foi mantido.",
+    languageRetry: "Tentar novamente",
+    languageReload: "Recarregar página",
+
     loading: 'Carregando...',
     refresh: 'Atualizar',
     search: 'Pesquisar',
