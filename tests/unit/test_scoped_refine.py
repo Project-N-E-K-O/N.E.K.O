@@ -2239,7 +2239,7 @@ def test_runtime_registers_scoped_refine_loop():
     import inspect
     from app.memory_server import runtime as runtime_module
 
-    src = inspect.getsource(runtime_module.ensure_memory_server_runtime_initialized)
+    src = inspect.getsource(runtime_module._activate_memory_runtime_background_tasks)
     assert "_periodic_scoped_refine_loop()" in src
 
 
