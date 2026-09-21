@@ -228,11 +228,10 @@ async def test_reflection_synthesis_loop_load_characters_failure_skips_round_doe
 
 @pytest.mark.unit
 def test_reflection_synthesis_loop_registered_in_background_tasks():
-    """运行态激活必须注册 ``_periodic_reflection_synthesis_loop``。
+    """Runtime activation must register the reflection synthesis loop.
 
-    用源码扫描而非 runtime instrumentation：这里要钉的是"loop 被挂上去"这件事
-    本身（regression：删除注册行是单字符级别的、容易疏漏的退化），不需要也不
-    应该跑完整 server startup。
+    Source inspection pins the registration itself without starting the full
+    server just to detect an accidentally removed spawn call.
     """
     import inspect
 
