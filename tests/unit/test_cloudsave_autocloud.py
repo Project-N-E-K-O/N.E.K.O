@@ -7,11 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.cloudsave_autocloud import (
-    STEAM_AUTO_CLOUD_SYNC_BACKEND,
-    CloudsaveImportAppliedStatusError,
-    CloudSaveManager,
-)
+from utils.cloudsave_autocloud import CloudSaveManager, STEAM_AUTO_CLOUD_SYNC_BACKEND
 from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
     CloudsaveDeadlineExceeded,
@@ -100,44 +96,6 @@ def test_cloudsave_manager_imports_snapshot_when_runtime_is_empty():
 
 
 @pytest.mark.unit
-def test_cloudsave_manager_preserves_imported_fact_when_post_import_status_fails():
-    with TemporaryDirectory() as td:
-        source_cm = _make_config_manager(Path(td) / "source")
-        target_cm = _make_config_manager(Path(td) / "target")
-        bootstrap_local_cloudsave_environment(source_cm)
-        bootstrap_local_cloudsave_environment(target_cm)
-        _write_runtime_state(source_cm, character_name="小满")
-        export_local_cloudsave_snapshot(source_cm)
-        shutil.copytree(
-            source_cm.cloudsave_dir,
-            target_cm.cloudsave_dir,
-            dirs_exist_ok=True,
-        )
-
-        manager = CloudSaveManager(target_cm)
-        real_build_status = manager.build_status
-        status_calls = 0
-
-        def _fail_after_import(*, steamworks=None):
-            nonlocal status_calls
-            status_calls += 1
-            if status_calls == 2:
-                raise OSError("post-import status unavailable")
-            return real_build_status(steamworks=steamworks)
-
-        with patch.object(manager, "build_status", side_effect=_fail_after_import):
-            with pytest.raises(CloudsaveImportAppliedStatusError) as error:
-                manager.import_if_needed(reason="post_import_status_failure")
-
-        assert error.value.import_result == {
-            "success": True,
-            "action": "imported",
-            "requested_reason": "post_import_status_failure",
-        }
-        assert target_cm.load_characters()["当前猫娘"] == "小满"
-
-
-@pytest.mark.unit
 def test_cloudsave_manager_imports_snapshot_when_runtime_only_has_pristine_migrated_defaults():
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
@@ -163,39 +121,6 @@ def test_cloudsave_manager_imports_snapshot_when_runtime_only_has_pristine_migra
         assert result["action"] == "imported"
         assert target_cm.load_characters()["当前猫娘"] == "小满"
         assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
-
-
-@pytest.mark.unit
-def test_cloudsave_manager_imports_snapshot_when_runtime_only_has_rebuildable_caches():
-    with TemporaryDirectory() as td:
-        source_cm = _make_config_manager(Path(td) / "source")
-        target_cm = _make_config_manager(Path(td) / "target")
-        bootstrap_local_cloudsave_environment(source_cm)
-        bootstrap_local_cloudsave_environment(target_cm)
-        _write_runtime_state(source_cm, character_name="小满")
-        export_result = export_local_cloudsave_snapshot(source_cm)
-        shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
-
-        cache_files = [
-            Path(target_cm.app_docs_dir) / "embedding_models" / "model.bin",
-            Path(target_cm.app_docs_dir) / "runtimes" / "runtime.bin",
-            Path(target_cm.app_docs_dir) / "plugin-runtime" / "plugin.bin",
-        ]
-        for cache_file in cache_files:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            cache_file.write_bytes(b"rebuildable-cache")
-
-        manager = CloudSaveManager(target_cm)
-        pre_status = manager.build_status()
-        result = manager.import_if_needed(reason="unit_test_runtime_cache_only")
-
-        assert pre_status["runtime_has_user_content"] is False
-        assert pre_status["startup_import_required"] is True
-        assert result["success"] is True
-        assert result["action"] == "imported"
-        assert target_cm.load_characters()["当前猫娘"] == "小满"
-        assert target_cm.load_cloudsave_local_state()["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
-        assert all(cache_file.read_bytes() == b"rebuildable-cache" for cache_file in cache_files)
 
 
 @pytest.mark.unit

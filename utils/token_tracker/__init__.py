@@ -98,7 +98,6 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
 
     _instance: Optional['TokenTracker'] = None
     _init_lock = threading.Lock()
-
     @classmethod
     def get_instance(cls) -> 'TokenTracker':
         if cls._instance is None:
@@ -106,13 +105,6 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
-
-    @classmethod
-    def get_existing_instance(cls) -> Optional['TokenTracker']:
-        """Return the process singleton without constructing or migrating it."""
-
-        with cls._init_lock:
-            return cls._instance
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -126,8 +118,6 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         self._save_interval = 60  # 秒
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
-        self._persistence_suspensions: set[str] = set()
-        self._persistence_gate = threading.RLock()
 
         # 远程遥测上报
         self._device_id: str = ""  # 延迟生成
@@ -160,24 +150,6 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # atexit 兜底：不管进程如何退出（SIGTERM / 异常 / 正常结束），都尝试保存
         # 注意：SIGKILL (kill -9) 无法被拦截，此时最多丢 60s 数据
         atexit.register(self._atexit_save)
-
-    def suspend_persistence(self, owner: str) -> None:
-        """Prevent every persistence exit while ``owner`` remains blocked."""
-
-        with self._persistence_gate:
-            with self._lock:
-                self._persistence_suspensions.add(str(owner))
-
-    def resume_persistence(self, owner: str) -> None:
-        """Release one owner's block without overriding other services."""
-
-        with self._persistence_gate:
-            with self._lock:
-                self._persistence_suspensions.discard(str(owner))
-
-    def is_persistence_suspended(self) -> bool:
-        with self._lock:
-            return bool(self._persistence_suspensions)
 
 
 

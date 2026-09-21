@@ -20,8 +20,6 @@ from typing import Any
 from utils.cloudsave_runtime import (
     ROOT_MODE_DEFERRED_INIT,
     ROOT_MODE_MAINTENANCE_READONLY,
-    cloudsave_disabled_reason,
-    is_cloudsave_disabled_due_to_local_state_unavailable,
     runtime_root_has_user_content,
 )
 from .policy import StoragePolicyError, compute_anchor_root, should_require_storage_selection
@@ -242,30 +240,6 @@ def _build_storage_location_bootstrap_payload_from_disk(
         getattr(config_manager, "reported_current_root", current_root)
     ).expanduser().resolve(strict=False)
     anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)
-    if is_cloudsave_disabled_due_to_local_state_unavailable():
-        migration_payload = _build_migration_payload(None, "")
-        return {
-            "current_root": _normalize_path(display_current_root),
-            "recommended_root": _normalize_path(anchor_root),
-            "legacy_sources": [],
-            "anchor_root": _normalize_path(anchor_root),
-            "cloudsave_root": _normalize_path(anchor_root / "cloudsave"),
-            "selection_required": False,
-            "migration_pending": False,
-            "recovery_required": False,
-            "blocking_reason": "",
-            "last_known_good_root": _normalize_path(current_root),
-            "last_error_summary": "",
-            "migration_phase": "",
-            "shutdown_retry_allowed": False,
-            "recovery_action": "",
-            "migration": migration_payload,
-            "stage": STORAGE_LOCATION_STAGE,
-            "poll_interval_ms": STORAGE_STATUS_POLL_INTERVAL_MS,
-            "cloudsave_disabled": True,
-            "cloudsave_disabled_reason": cloudsave_disabled_reason(),
-        }
-
     root_state = config_manager.load_root_state()
     root_mode = str(root_state.get("mode") or "")
     last_migration_result = str(root_state.get("last_migration_result") or "")
@@ -383,9 +357,6 @@ def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
     recovery_mode = get_storage_recovery_mode()
     if recovery_mode:
         return recovery_mode
-    if is_cloudsave_disabled_due_to_local_state_unavailable():
-        return ""
-
     try:
         current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
         anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)

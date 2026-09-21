@@ -2227,7 +2227,6 @@
         "blockingGeneric": "La ubicación de almacenamiento seleccionada no se puede usar ahora mismo. Elige otra ubicación o vuelve a intentarlo más tarde.",
         "blockingInsufficientSpace": "El volumen de destino no tiene espacio libre suficiente para una migración segura.",
         "blockingTargetNotWritable": "La ruta de destino no tiene permiso de escritura, así que no se puede iniciar la migración.",
-        "cloudsaveLocalStateUnavailable": "El directorio de estado local no está disponible. El guardado en la nube está desactivado en esta sesión; corrige la ruta de state y reinicia la app antes de cambiar la ubicación de almacenamiento.",
         "cleanupRetainedRoot": "Limpiar copia de migración",
         "deferRetainedRootCleanup": "Ahora no",
         "cleanupRetainedRootConfirm": "Esto eliminará la copia conservada durante la migración sin afectar al directorio activo. No se modificarán otros directorios históricos. ¿Continuar?",

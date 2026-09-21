@@ -1,577 +1,143 @@
-# 存储位置迁移架构与维护
+# 存储位置选择与迁移设计
 
-> **文档状态：Current contract（当前合同）。** 本文由历史上的“存储位置常驻入口优化设计”恢复，并按当前 N.E.K.O 与 N.E.K.O-PC 实现重写。当前代码与测试优先于本文；修改相关行为时必须同步更新本文。
+## 目标
 
-## 1. 范围
+桌面端启动时让用户选择 N.E.K.O 的运行数据目录，并在以后从记忆浏览器中更改它。迁移必须满足：
 
-本文记录桌面端“存储位置”功能的长期架构、迁移流程、跨仓库边界和维护检查项，覆盖：
+- 后端负责路径校验、复制、校验和最终切换；
+- 桌面端负责启动门禁、目录选择和重启衔接；
+- 迁移失败时继续使用旧目录，并向用户显示失败原因；
+- 迁移成功后保留旧目录，只有用户明确点击清理才删除迁移清单内的旧数据；
+- 云存档不参与运行目录迁移。
 
-- 首次启动选择存储位置；
-- 在记忆浏览器中查看和更改存储位置；
-- 运行时数据从旧根目录迁移到新根目录；
-- 已选择目录不可用时的恢复或重新绑定；
-- 迁移后的旧目录保留与手动清理；
-- N.E.K.O-PC 在启动和迁移期间提供的桌面宿主能力。
+本功能不解决同一用户主动篡改迁移临时目录、挂载点瞬时替换或恶意并发改写等系统级对抗场景。正常的进程退出、复制失败、空间不足、应用崩溃和再次启动必须可恢复。
 
-本文**不是云存档设计文档**。云存档只作为固定锚点中的受保护目录出现在边界说明中；其同步协议、Steam Auto-Cloud 和冲突处理由其他文档维护。
+## 职责边界
 
-## 2. 核心原则
+| 组件 | 职责 |
+| --- | --- |
+| N.E.K.O Web | 展示当前、推荐和目标路径；发起预检；确认已有目标数据；展示进度、失败和完成提示 |
+| N.E.K.O API | 校验请求和路径，创建迁移检查点，提供状态及旧目录清理接口 |
+| N.E.K.O launcher | 在业务服务启动前执行待处理迁移，完成后按新路径启动 |
+| N.E.K.O-PC | 在启动和重启期间保护窗口，调用后端接口，选择或打开本机目录 |
 
-1. **N.E.K.O 后端是业务状态和文件安全的唯一权威。** 路径校验、空间检查、迁移检查点、复制、验证、策略提交、失败恢复和旧目录清理都由后端执行。
-2. **N.E.K.O Web 负责产品交互。** 首次选择、预检展示、已有目标内容确认、维护遮罩、完成提示和旧目录清理入口都属于 Web。
-3. **N.E.K.O-PC 只提供宿主能力和桌面生命周期协调。** 它可以选择目录、打开路径、关闭窗口、阻止过早打开卫星窗口，但不能复制后端的存储状态机或绕过后端校验。
-4. **策略只在迁移验证完成后提交。** `selected_root` 不能先于数据复制和核验切换。
-5. **源目录默认保留。** 自动迁移不是移动操作；只有用户在完成提示中明确清理，后端再次验证安全边界后，旧目录才会删除。
-6. **读取接口不得意外写状态。** 启动状态轮询不能覆盖并发迁移失败时刚恢复的状态。
+桌面端不复制文件，也不自行判断迁移是否成功。后端不管理 Electron 窗口。
 
-## 3. 跨仓库职责
+## 路径模型
 
-| 层 | 当前职责 | 不应承担的职责 |
-| --- | --- | --- |
-| N.E.K.O `utils/storage/` | 根目录布局、策略、路径校验、迁移检查点、复制与验证、路径重写 | UI 和 Electron 窗口管理 |
-| N.E.K.O `main_routers/storage_location_router.py` | HTTP 合同、并发串行化、预检、受控重启、回滚、诊断、旧目录清理 | 原生目录选择器的具体实现 |
-| N.E.K.O Web | 首次启动与常驻入口 UI、确认语义、跨页面迁移通知 | 决定某个路径是否安全、直接迁移文件 |
-| N.E.K.O launcher | 服务启动前执行待处理迁移，重建并导出布局，发出启动事件 | 更改 Web 交互语义 |
-| N.E.K.O-PC main/preload | 后端状态轮询、启动门禁、维护期间窗口保护、通用宿主桥 | 存储策略、迁移数据、已有内容覆盖决策 |
+系统使用两个路径：
 
-这条边界是跨仓库兼容合同：Web 在普通浏览器中也必须能使用后端回退；N.E.K.O-PC 缺失时，存储功能不能因为没有 Electron API 而失去业务正确性。
+- `selected_root`：配置、记忆、插件、模型和本机凭证实际使用的运行目录；
+- `anchor_root`：平台推荐位置中的固定控制目录，保存存储策略、迁移检查点和云存档。
 
-## 4. 根目录模型
+推荐锚点：
 
-### 4.1 运行根目录与固定锚点
-
-系统区分两个根目录：
-
-- **selected root / runtime root**：用户选择的运行时数据根目录。配置、记忆、插件、模型和其他运行数据从这里读取和写入。
-- **anchor root**：平台推荐位置下的固定锚点。它不随用户选择迁移，用于保存策略、迁移状态、云存档和云存档临时/备份数据。
-
-平台推荐锚点为：
-
-| 平台 | 推荐位置 |
+| 平台 | 路径 |
 | --- | --- |
 | Windows | `%LOCALAPPDATA%/N.E.K.O` |
 | macOS | `~/Library/Application Support/N.E.K.O` |
-| Linux | `$XDG_DATA_HOME/N.E.K.O`，未设置时为 `~/.local/share/N.E.K.O` |
+| Linux | `$XDG_DATA_HOME/N.E.K.O`，否则 `~/.local/share/N.E.K.O` |
 
-历史 Documents、可执行文件目录和工作目录只是旧数据导入候选或最后回退，不再是正常情况下的推荐根目录。
+`anchor_root/state/storage_policy.json` 记录已成功提交的 `selected_root`。`anchor_root/state/storage_migration.json` 只记录正在执行或最近完成的迁移。云存档继续位于固定锚点，不复制到用户选择的运行目录。
 
-锚点内的长期文件和目录：
+## 迁移内容
 
-```text
-<anchor_root>/
-├── state/
-│   ├── storage_policy.json
-│   ├── storage_migration.json
-│   ├── community_auth.json
-│   ├── social_session.json              # 普通浏览器回退
-│   ├── community_oauth_pending.json     # 有效期内的一次性 PKCE 状态
-│   └── community_steam_pending.json     # 有效期内的一次性 PKCE 状态
-├── cloudsave/
-├── .cloudsave_staging/
-└── cloudsave_backups/
-```
+`utils/storage/entries.py` 是唯一迁移清单。当前包含：
 
-迁移和清理逻辑不得把 `state`、`cloudsave`、`.cloudsave_staging` 或 `cloudsave_backups` 当成运行时数据迁走或删除。
+- 配置、记忆、插件、角色与模型资源；
+- workshop、点唱机、头像工具和游戏分数；
+- 可重建但离线运行仍需要的模型与插件运行缓存；
+- `community_auth.json`、`social_session.json` 和有效期内的 OAuth/Steam pending 文件。
 
-社区登录凭据属于固定本机私有状态，不跟随 selected root。桌面宿主提供 `NEKO_USER_DATA_DIR` 时，`social_session.json` 以宿主 userData 为权威；普通浏览器回退才使用 anchor 的 `state`。这组文件不属于云存档，也不加入运行根迁移清单。
+社区凭证按普通本机状态随运行目录复制。桌面宿主自己的 `userData/social_session.json` 不在 selected root 中，存储位置变化不会改变它。迁移不建立凭证 epoch、多副本仲裁或固定锚点凭证协议；复制失败时旧目录仍在，用户也可以重新登录。
 
-### 4.2 进程间布局环境变量
+## 启动流程
 
-launcher 在确定布局后导出：
+1. N.E.K.O-PC 启动后端并保持存储门禁，普通业务窗口暂不放行。
+2. launcher 读取固定锚点中的策略和迁移检查点。
+3. 没有待处理迁移时，launcher 按已提交的 `selected_root` 启动服务。
+4. 首次选择或用户更改路径时，Web 请求后端预检。
+5. 后端确认目标路径可用、可写、空间足够，并要求用户确认目标中已有的受管数据。
+6. 后端保存待处理检查点并请求受控退出。
+7. 新 launcher 在业务服务启动前执行迁移。
+8. 复制和校验成功后提交策略，再启动业务服务；失败则保留旧策略和旧目录并返回失败状态。
 
-- `NEKO_STORAGE_SELECTED_ROOT`
-- `NEKO_STORAGE_ANCHOR_ROOT`
-- `NEKO_STORAGE_CLOUDSAVE_ROOT`
+迁移不依赖云存档导入、导出或冲突处理。云存档仍按其原有启动流程工作。
 
-这些变量是 N.E.K.O 进程间传递已解析布局的内部合同，不是用户配置接口。布局解析实现在 `utils/storage/layout.py`，`ConfigManager` 的目录绑定实现在 `utils/config_manager/storage_roots.py`。
-运行期读取或写入迁移检查点时必须优先使用 `ConfigManager.anchor_root`；只有布局尚未解析、且调用方没有提供锚点时，才允许重新计算平台推荐位置。否则 owner 导出的布局、自定义测试布局和实际检查点可能落在不同目录。
+## 迁移事务
 
-### 4.3 选择目录不可用
+迁移使用复制语义：
 
-策略中已经提交的 `selected_root` 不可访问时，运行时会临时回退到锚点，以便启动最小服务和展示恢复 UI；同时保留：
+1. 读取源清单和用户确认时的目标清单；
+2. 在目标同一文件系统创建私有临时目录；
+3. 复制源清单并重写需要跟随根目录变化的配置路径；
+4. 对复制结果重新计算清单并与源清单比较；
+5. 将目标中已有的同名受管条目移入事务备份；
+6. 发布已验证的新条目；
+7. 保存新的存储策略；
+8. 将检查点标记为完成并保留源目录。
 
-- `committed_selected_root`：策略中原本提交的路径；
-- `reported_current_root`：对 UI 报告的原路径；
-- `recovery_committed_root_unavailable = true`：进入恢复流程的事实。
+在策略提交前失败时，恢复目标原有受管条目并继续使用旧策略。发布已经开始而回滚失败时保留事务目录和检查点，下一次启动继续恢复，不启动普通业务写入。
 
-回退不能被误写成新的用户选择。用户可以重新连接原路径并执行 `rebind_only`，或明确选择推荐位置/其他位置。
+检查点只需要表达恢复所需事实：源、目标、事务编号、阶段、目标确认、源/目标清单、已发布条目和错误。临时目录名本身不能覆盖用户目录。
 
-## 5. 持久化状态
+## 旧目录清理
 
-### 5.1 存储策略
+完成页显示当前路径和保留的旧路径。用户可以立即清理，也可以稍后处理。
 
-`<anchor_root>/state/storage_policy.json` 当前版本为 `1`，关键字段为：
+清理规则：
 
-- `version`
-- `anchor_root`
-- `selected_root`
-- `selection_source`：`default`、`user_selected` 或 `recovered`
-- `cloudsave_strategy`：固定为 `fixed_anchor`
-- `first_run_completed`
-- `updated_at`
+- 只允许清理完成检查点记录的旧路径；
+- 当前运行目录和迁移目标不能清理；
+- 只删除迁移清单中的条目；
+- 不删除未知文件；
+- 旧路径等于固定锚点时，必须保留 `state`、`cloudsave` 和其他锚点控制数据；
+- 清理失败只提示失败并保留路径，不改变已经成功的迁移结果。
 
-策略表示最后一次**已经提交并可用**的选择，不表示正在进行的迁移目标。
+## HTTP 接口
 
-策略读取同样采用 fail-closed 语义。只有策略文件不存在时才使用首次启动默认值；坏 JSON、非对象、未知版本、缺少必填字段、非法 `selection_source`/`cloudsave_strategy`，以及指向项目目录、锚点保留区、文件系统根、符号链接或 Windows 重解析点的路径，都返回 `storage_policy_unavailable`。`ConfigManager` 不得吞掉这个错误并临时把运行根改成默认目录，否则同一实例可能在错误根产生一套新数据。已经提交但暂时离线的外置盘不是坏策略，仍走“选择目录不可用”的恢复流程并保留原路径。策略和迁移检查点属于应用自有的有界 JSON：读取必须固定文件句柄、先核对稳定句柄大小并在分块读取中继续限制为 4 MiB；超限与读取期间增长都按权威状态不可用处理，不能让异常文件耗尽启动进程内存。策略快照恢复也必须固定同一条 anchor/state 目录链：POSIX 通过已打开的 `state` 描述符相对写入、删除和刷盘，Windows 在操作期间持有拒绝 rename/delete 的全路径目录 guard；操作前后身份不一致时回滚失败，不能继续把 `root_state` 标成已恢复。
+主要接口：
 
-### 5.2 迁移检查点
+- `GET /api/storage/location/bootstrap`：首次页面状态；
+- `GET /api/storage/location/status`：迁移和恢复状态；
+- `POST /api/storage/location/preflight`：检查目标目录；
+- `POST /api/storage/location/select`：首次选择；
+- `POST /api/storage/location/restart`：运行中更改路径；
+- `POST /api/storage/location/exit`：受控退出；
+- `GET /api/storage/location/retained-source`：迁移完成提示；
+- `POST /api/storage/location/retained-source/cleanup`：用户明确清理旧数据；
+- `POST /api/storage/location/pick-directory`、`open-current`、`open-path`：普通浏览器回退能力。
 
-`<anchor_root>/state/storage_migration.json` 当前版本为 `2`。活动状态包括：
+所有修改接口使用已有的本机来源和 CSRF 校验。同一进程内的选择、重启和清理操作串行执行。
 
-```text
-pending -> preflight -> copying -> verifying -> publishing -> committing
-        -> retaining_source -> completed
-```
+## 状态
 
-恢复相关状态包括 `rollback_required`，终态还包括 `failed`。检查点除源目录、目标目录、选择来源、进度和错误外，还保存事务编号、随机 `transaction_owner_token`、受约束的事务目录、源数据暂存前基线、目标确认时的摘要、发布入口、目标原有入口和保留源目录状态。事务目录只能是当前目标卷内布局，或旧版已经写入检查点的目标同级布局；不得接受任意路径。目录内的 `.neko-storage-transaction-owner.json` 必须与检查点中的事务编号和随机 token 同时匹配，路径本身不能证明目录归属。缺失、损坏、不匹配或符号链接形式的 marker 一律视为未知第三方目录，保留原内容并 fail-closed。版本 1 检查点仍可读取，但恢复后统一按复制语义执行。
+对用户有意义的阻塞状态：
 
-只要存在活动检查点，启动门禁必须把系统视为 `migration_pending`，而不能同时继续普通业务初始化。
+- `selection_required`：尚未选择初始路径；
+- `migration_pending`：已经保存迁移请求，等待退出或 launcher 执行；
+- `recovery_required`：上次迁移未能自动恢复；
+- `storage_policy_unavailable` / `storage_status_unavailable`：固定控制文件无法读取。
 
-检查点读取采用 fail-closed 语义：只有文件确实不存在才等价于“没有迁移”；坏 JSON、非对象内容、权限错误或其他读取异常都必须作为 `storage_status_unavailable` 阻断启动。schema 只接受版本 1、2 和已知状态，且所有状态都必须带 32 位十六进制 `txid`、绝对的源/目标根、非空选择来源以及布尔型的目标覆盖确认；版本 2 还必须带随机 owner token、`migration_mode=copy` 和用户确认时的目标基线，任何已经绑定事务目录的状态都必须同时带源基线，发布及之后阶段还必须带互相一致的目标原有入口、发布入口和发布快照。`recovery_required` 允许两种形态：已有受约束事务目录时必须满足上述绑定字段；仅发现派生路径被未知内容占用时保持未绑定并保留现场，不能伪造事务所有权。版本 1 可缺省复制模式和目标基线，但不能声明新状态或任何事务目录/owner token；执行器先从无破坏的 pending 边界重验路径并补取缺失的目标基线，再一次性升级落盘为完整的版本 2 pending，然后才允许绑定事务目录和源基线。未来版本或缺失阶段必填字段不能由旧执行器猜测执行。不得把损坏或暂时不可读的检查点吞掉后切回普通根目录，否则可能在未完成发布旁边启动一套新的业务写入。持久化的 `error_message` 最多保留 16 KiB UTF-8；POSIX 无法解码的文件名字节必须先转成可持久化的显式转义，异常中携带的海量路径不能把检查点本身撑到固定锚点读取上限之外。
+迁移阶段用于展示进度，不作为另一套业务状态机。前端以 `/status` 返回为准；N.E.K.O-PC 只映射状态并保护窗口。
 
-检查点发布和删除也必须固定同一条 anchor/state 目录链，不能只在读取时做锚定。POSIX 使用已打开的 `state` 描述符相对创建临时文件、replace/unlink 和 required fsync，并在发布前后复验公开名称仍指向同一目录；Windows 在完整目录链上持有拒绝 rename/delete 的原生 guard 后才允许路径式原子写。若 `state` 在操作中被换名、替换为链接/junction 或身份变化，本次操作必须失败关闭，不能把恢复权威写到外部目录后继续迁移。
+## 验证
 
-### 5.3 启动阻塞原因与生命周期
+后端至少验证：
 
-后端对外的三个业务引导原因是：
+- 首次选择当前路径和推荐路径；
+- 自定义目标的预检、空间不足和已有内容确认；
+- 文件与目录复制、摘要校验、配置路径重写；
+- 复制失败后旧策略和目标原内容保持可用；
+- 成功后策略指向目标且旧目录仍存在；
+- 用户清理只删除清单条目，保留未知文件及固定锚点内容；
+- 凭证文件随运行目录复制；
+- launcher 在服务启动前处理待迁移检查点。
 
-- `selection_required`
-- `migration_pending`
-- `recovery_required`
+桌面端至少验证：
 
-另有 `rollback_required`、`storage_policy_unavailable` 和 `storage_status_unavailable` 三类完整性阻塞。它们不能被降级成业务引导或普通启动等待。同时出现多个条件时，优先级为策略/检查点不可用、未完成回滚、迁移、恢复、首次选择。HTTP 的 canonical 生命周期使用 `ready`、`maintenance`、`rollback_required`、`recovery_required`、`selection_required` 和 `storage_policy_unavailable`/`storage_status_unavailable`；`/api/system/status` 的 legacy `status=migration_required` 继续保留给旧调用方，新增逻辑应读取 `lifecycle_state` 及 `storage.*`。每个状态响应还带本进程随机 `instance_id`，宿主在受管代次内必须校验它，不能把复用端口上的另一实例当成本代恢复。前端和 N.E.K.O-PC 不应自行读取策略文件。
-
-launcher 必须在 cloudsave phase-0 和三个服务的业务初始化之前解析策略与迁移检查点；`root_state` 在 phase-0 读取，其失败同样必须先进入恢复代次再启动服务。任一权威损坏或读取失败时，不能直接退出，也不能猜测一个默认业务根继续启动。当前启动代次通过进程内 `NEKO_STORAGE_RECOVERY_MODE` 标记进入受限恢复；合法原因只有 `selection_required`、`migration_pending`、`recovery_required`、`storage_policy_unavailable` 和 `storage_status_unavailable`。首次策略缺失也必须在 phase-0 前设置 `selection_required`，确保 Main、Memory、Agent 都不在用户确认运行根之前初始化或写入临时默认根。该标记不写回用户状态，下一次显式启动仍重新检查磁盘事实。坏策略只能使用固定锚点承载恢复 HTTP 表面；坏检查点和坏 `root_state` 保留已提交策略对应的根，但不执行迁移、配置升级或普通业务写入。策略在首次读取后、检查点处理时或最终布局重建时发生变化，也必须落到同一个锚点恢复代次，不能留下先检查后使用的 fail-dead 窗口。受限代次不能在网页选择后直接依次释放 Memory、Agent、Main：Cloud Save 导入和配置迁移尚未执行时，先初始化任一子服务都会缓存导入前状态，甚至制造本地内容而改变云快照判定。有效选择必须在同一事务中提交策略和 `restart_rebind` 交接状态，再请求受控退出；launcher 在任何 phase-0 之前统一核对策略根、交接目标和迁移状态并原子消费该标记，正常接力和旧代崩溃/断电后的显式冷启动使用同一入口。只有消费成功，下一代才按标准顺序执行 phase-0、初始化三个服务；目标不一致或写入失败必须保留 maintenance 证据并只启动固定恢复表面。退出请求未被接受时恢复策略、检查点和根状态前像。`startup_release_failed` 仅作为旧代/异常嵌入路径的防御性进程覆盖层，不能污染 Memory/Agent 对持久化状态的重新检查。受限状态下的 shutdown 必须跳过普通持久化和云导出。
-
-`maintenance` 还有一个可操作的子阶段 `migration_phase=awaiting_shutdown`：迁移检查点已经建立，但当前服务尚未完成受控退出，迁移 worker 还没有开始。此时仅允许再次调用 `/exit`，并暴露 `shutdown_retry_allowed=true`、`recovery_action=retry_safe_exit`；不得关闭桌面壳、启动本地 replacement 或把状态翻回 ready。一旦 launcher 报告 processing/copying，安全关闭重试权限永久撤销。
-
-如果在线旧代在记录 `restart_pending` 后无法确认检查点是否落盘，当前进程仍保持 `awaiting_shutdown`，防止用户继续写入；下一次 launcher 看到 `maintenance_readonly + restart_pending + 检查点缺失` 时则必须在 phase-0 前转为 `recovery_required`。恢复页允许用户重新确认当前根或目标根并建立新的完整接力，但不得只凭一个 root-state 字符串猜测、重建迁移检查点，也不能无限要求安全退出。
-
-`STORAGE_LOCATION_STAGE` 当前为 `stage3_web_restart`。这个名字是兼容字段，不代表功能仍处于未完成阶段。
-
-## 6. 数据迁移语义
-
-### 6.1 当前迁移清单
-
-`utils/storage/entries.py` 的 `RUNTIME_STORAGE_ENTRIES` 是迁移、旧数据识别、预检、诊断和选择性清理的唯一权威清单。`MIGRATED_RUNTIME_ENTRY_NAMES` 只是由它派生的兼容名称：
-
-```text
-config
-memory
-plugins
-live2d
-vrm
-mmd
-pngtuber
-workshop
-character_cards
-card_faces
-jukebox
-avatar_tools
-state/game_scores
-embedding_models
-runtimes
-plugin-runtime
-```
-
-前 13 项属于用户数据；`embedding_models`、`runtimes` 和 `plugin-runtime` 属于随运行根变化的可重建运行缓存，但为保证迁移后离线可用和插件任务连续性也一并复制。迁移/旧根复制使用完整清单，Cloud Save 的“本地已有用户内容”判定只使用用户数据子集；纯缓存不能阻止一个尚未应用的云快照自动恢复，也不能在恢复时被无故删除。`state` 本身是固定锚点控制数据，只有其子项 `state/game_scores` 随 selected root 迁移。
-
-phase-0 旧版本根导入以操作系统／配置返回的 `<base>/N.E.K.O` 为逻辑边界：允许该边界上方的 macOS 路径别名、Windows Known Folder 重定向或 Linux XDG／挂载位置，但根本身及根内清单路径仍拒绝符号链接、namespace reparse、特殊文件和嵌套挂载。候选根只先做不打开用户文件的保守探测；一旦可能有用户数据，旧源、selected runtime 目标和固定 anchor 分别通过存储迁移复制原语写入同卷的随机私有快照。目标快照只包含迁移清单；anchor 快照只复制受限的 `root_state` 和 tombstone 状态。cloudsave 暂存事实直接在固定 anchor 的同一已固定根代次上读取：manifest 最多 4 MiB，空目录骨架不算内容，缺少有效 manifest 时只安全遍历“是否存在实际文件”，绝不把 cloudsave payload 复制进 phase-0 工作区。固定锚点的 `state`、`cloudsave` 以及锁文件绝不进入发布清单。内容判定、修复评分、配置合并、tombstone 和可选 state 读取只能使用对应快照，不能在复制后重新读取原根；只有 cloudsave gate 使用上述受限事实，并在允许发布前对同一 anchor 代次复验。普通缓存仍不算用户内容，但缓存路径若是链接／reparse／特殊类型必须中止导入并进入受限恢复。旧根来源按规范物理路径持久化和比较，两个词法别名不得绕过一次性导入边界而复活用户已经删除的数据。
-
-旧源、selected runtime 目标和固定 anchor 的私有快照必须固定各自根边界，按清单记录复制前、复制后和暂存副本的 SHA-256／长度／相对路径摘要；三者不一致即停止，不能发布跨条目的混合代次。每个私有准备目录创建后都必须立即把随机路径和该目录身份写入固定 anchor 的 `root_state.legacy_import_preparation`，前一项身份持久化后才能创建下一项；若进程恰在 `mkdir` 与身份落盘之间崩溃，名称本身不构成删除授权，恢复必须保留这个无法认证的孤儿目录、不作读取或删除，同时安全退役本次 preparation ledger，并以新的随机 attempt 重试，不能让一次普通断电永久阻塞启动。共享迁移检查点建立前崩溃时，下一次启动只按已记录身份清理确属本次尝试的目录；已记录路径被替换、重定向或身份不符时仍停止。准备阶段在每次复制前执行权威容量门禁，并覆盖 source 快照、target 快照与原像备份、最终合并后的 `S+T` 共享事务副本、固定元数据、安全余量以及 POSIX 可用 inode；不能让各快照分别通过却在 `2S+3T` 量级的总峰值处耗尽。配置合并输出通过固定 POSIX 目录描述符或 Windows deny-delete guard 写入，不能在身份检查后重新按可替换路径创建文件。私有 source、target、anchor、backup 和 config 的初始目录身份必须贯穿评分、合并、摘要与共享检查点交接，后续步骤不得重新按路径接受另一代同名目录。发布前再次核对原旧源、目标实时基线、anchor 实时基线和目标原像备份；任一变化都不得进入发布。
-
-phase-0 不移动或替换整个 selected root，而是把合并后的旧源快照作为共享存储迁移引擎的源，按统一迁移清单逐入口复制、发布和回滚。当前只要已有 completed 检查点且其 target 是当前运行根，显式迁移结果即为权威，phase-0 不再扫描旧根；其他活动检查点也只保留并让出，不得覆盖。真正写入内部检查点时以跨进程检查点事务执行 compare-and-swap，发现并发出现的任何检查点即中止发布。内部 `state/storage_migration.json` 检查点使用 `layout_commit_mode=preserve_existing`：它记录源／目标身份和基线、完成事实以及 retained target preimage backup，但绝不改写 storage policy，也不把私有快照写成 selected root。目标发布前的完整运行时原像保存在同级随机 `.legacy-backup-*`，成功后作为界面可发现、可手动清理的 retained backup；原旧版本根的运行时条目不被 phase-0 清理，但受管社区私有状态会按固定锚点规则一次性迁移并删除已成功迁移的旧文件，不能笼统声称整个旧根字节不变。共享事务完成后，必须先把导入结果和 retained backup 原子写入固定 anchor 的 `root_state`，再按身份清理旧源私有快照和共享事务，最后才以 compare-and-swap 把仍属同一 txid 的内部 legacy 检查点转换成普通 completed/manual-retention 检查点。普通 retained 字段继续只指向 target preimage，并携带从迁移期继承的设备号/inode 删除授权；清理请求只能复核和消费该授权，不能以请求发生时的当前路径身份重新授权。旧检查点缺少该身份时仍可展示完成事实，但自动清理关闭。真实旧版本根及其设备号/inode 另存为不暴露给 UI 的私有状态兼容来源。界面把 retained 对象称为“迁移保留备份”，phase-0 只提示旧版本根的运行时条目未被清理，并明确受管私有状态可能已迁移；不能声称清理后只剩新运行目录。retained backup 被清理后，身份仍匹配且与 committed target 不同的真实旧根可以继续完成旧社区凭据的一次性导入；身份不匹配、路径含链接／reparse、或与 target/被清理 retained 物理相同时零读零删。任一步失败都保留内部检查点并阻止业务写入；普通 terminal cleanup 不得越过 finalizer 提前删除其回滚事务，finalizer 在交接前后都必须重验 retained backup。启动先建立本地状态诊断，再恢复 preparation／共享检查点，随后才进入 cloud apply fence；Cloud Save provider 禁用不能跳过这些纯本地恢复步骤。
-
-迁移拒绝源入口、内部条目及源/目标路径链上的符号链接；Windows junction 等重解析点按同一边界处理，避免复制越过用户确认的目录。这个检查覆盖每个清单条目的**完整词法父链**，包括 `state/game_scores` 的中间 `state`，并在源扫描、暂存、发布、回滚和旧根清理的不可逆边界重复检查；不能只检查末级入口是否为链接。POSIX 还必须在进入清单条目和事务树前拒绝相交的嵌套挂载，并在移动目标备份、回滚及清理前重复确认；存储根自身可以是挂载点，清单外无关路径中的挂载不应误阻断。Linux 以打开句柄的 mount ID 区分同设备 bind mount，macOS 以设备身份约束递归边界；源复制、暂存树持久化和事务清理都通过固定目录句柄逐级访问，并在进入每个子项前再次核对挂载身份，不能让预扫描后的新挂载被普通路径递归进入。POSIX 暂存目标的目录与文件也必须相对已经验证并固定的父目录句柄创建，完成后重新核对命名身份；事务根的目录持久化必须直接作用于已经固定的描述符，并在 `copying` 检查点落盘前后复验该描述符仍对应原命名目录，不能在身份检查后重新按路径打开。进入发布后还要同时固定目标根、事务根、`staged` 和 `backup`：当前卷内事务根必须从已固定的目标根描述符相对打开，入口摘要、目标备份、暂存发布和回滚只能相对这些描述符及逐级固定的父目录执行；发布或回滚新建嵌套父目录时，记录该名称的 containing parent 必须在入口 rename 前完成 required fsync，即使该目录由并发方先创建也不能省略。即使事务根或目标路径被改名并在原名放置链接，也只能操作原先固定的树并完成回滚，不能沿新路径向事务外写入；策略和根状态提交前后还要复验完整祖先链未出现符号链接。Windows 对 owner marker 复验后的事务根、`staged`、`backup`、目标根以及发布入口的各级父目录使用带 `FILE_TRAVERSE`/读取属性且拒绝删除共享的原生句柄，避免属性查询句柄绕过共享核算，并持有到发布或回滚结束，防止普通目录重命名绕过所有权边界；复制目录树时使用单次受控递归，创建每个暂存子目录后立即持有同类 guard，不能先扫描一遍再让通用 `copytree` 创建未固定的新目录。`workshop_config.json` 的 Windows 暂存重写还必须从卷根或 UNC share root 之后逐级固定到 `staged/config` 的完整祖先链，并从读取开始持有拒绝 write/delete 的文件句柄；句柄改名统一使用 `RootDirectory=NULL` 和完整绝对目标路径（SMB/SMB2 不接受非零 RootDirectory），先把所读对象改到私有备份名，再用 `ReplaceIfExists=FALSE` 把已刷盘临时文件发布到空出的公开名。若并发文件抢先占名，发布必须失败且保留赢家，不能以过期 payload 覆盖；异常退出后必须释放 guard，避免阻塞后续发布或恢复。每个文件按 SHA-256、长度和相对路径生成确定性清单摘要，空目录也进入摘要；POSIX 摘要中的路径使用文件系统原始字节语义，无法解码的文件名不能因严格 UTF-8 编码导致迁移失败。复制前后的源摘要必须一致，暂存和最终发布摘要必须与预期一致。复制普通权限、时间及非阻断扩展元数据时，不得把 macOS/BSD 的 immutable、append-only 或 nounlink 标志带入私有暂存区，否则会让发布、回滚和事务清理永久失败；源文件标志保持不变。`workshop_config.json` 中绑定旧运行根的路径只在暂存副本中重写到最终目标，不修改源目录；迁移读取沿用桌面 JSON 入口的 16 MiB 上限，并同时核对打开时大小和累计读取量，超限时保留源数据并受控停止，不能在 launcher 内无界聚合。临时文件在原子替换后必须仍与已刷盘的打开句柄指向同一文件，重写前后的兄弟条目清单不得变化，供发布使用的配置摘要必须在固定目录句柄释放前生成，不能用稍后的路径重扫结果覆盖预期事实。
-
-目标根的物理身份必须在可写探针前后保持稳定，并在事务创建前记录、发布固定时复核；发布前目标摘要必须在目标根固定后通过同一描述符生成。POSIX 的私有事务准备目录、owner marker 和事务公开名也必须相对这一个持续固定的目标根描述符创建、刷盘和 no-replace 发布，不能在身份检查后重新按可替换路径建立信任。
-
-### 6.2 目标目录已有内容
-
-目标目录含有用户数据时，预检返回已有内容提示，并要求 `confirmed_existing_target_content`。确认只允许迁移继续，不改变后端规则：
-
-- 与迁移清单同名的目标入口会被源入口替换；
-- 目标目录中无关的其他文件会保留；
-- `selection_source` 只用于展示和审计，`legacy`、`recovered` 等来源不能把复制变成“直接采用目标内容”。
-
-确认建立时，后端把目标中受管入口的内容摘要绑定到本次 `restart_operation_id`；确认请求先与该摘要比较，并在构造持久检查点的同一事务内再比较一次。任一时点发现变化都返回新的 `target_confirmation_required`，刷新本次操作的观察代并要求用户再次确认；不能在请求级检查通过后把随后出现的数据纳入已确认基线。launcher 在复制前和发布前还各复核一次，目标受管内容只要发生变化，迁移就以 `target_changed_since_confirmation` 停止，不能用过期确认覆盖新数据。
-
-### 6.3 目标路径约束
-
-目标必须是绝对路径，并且满足以下条件：
-
-- 不是普通文件；
-- 已存在时可写，未存在时可安全创建；
-- 不是文件系统根目录，且目标及其现存父路径不包含符号链接；
-- 不位于项目/仓库目录内；
-- 与源目录不同，且源、目标不能互相嵌套；
-- 不位于锚点的 `state`、`cloudsave`、`.cloudsave_staging` 或 `cloudsave_backups` 保留区域内；
-- 用户在原生选择器中选择父目录时，若末级名称不是 `N.E.K.O`，规范化逻辑会追加应用目录名。
-
-同一路径在首次选择 `/select` 中不写策略、不建立复制检查点，也不直接关闭；它只返回 `restart_required + restart_operation_id + rebind_only`。用户确认后由 `/restart` 在互斥锁内重新读取当前事实、建立 `restart_rebind` 受控接力并请求关闭，让下一代在任何业务服务初始化前完成 Cloud Save/config phase-0。这样 `/select` 的响应丢失不会留下一个仍可能迟到落盘的一阶段变更。普通 ready 会话的 `/preflight` 对同根仍返回 `restart_not_required`。
-
-### 6.4 提交、失败与旧目录
-
-正常迁移顺序是：
-
-1. 在锁内重新预检并记录写入前快照；
-2. 写入迁移检查点，并把根状态切到 `maintenance_readonly`；
-3. 请求当前服务受控退出；
-4. launcher 再次实际探测目标可写性和磁盘空间，先在目标卷创建带完整 ownership marker 的私有临时目录，再以平台原子 no-replace rename 公开为目标根内的隐藏事务目录；随后在其中完整暂存并核验数据，确保目标根本身是挂载点时仍与发布入口同卷。若该随机事务路径已经存在但 marker 不能证明归属，必须停止而不能递归删除未知内容；
-5. 先 flush 暂存文件和目录，再记录并持久化 `publishing` 检查点；把目标同名入口以 no-replace 原子移动到事务备份，再把已验证的暂存入口逐项 no-replace 原子发布；POSIX 两侧均使用已固定父目录描述符，不能重新解析可替换路径；每次 rename 后 flush 对应父目录；
-6. 通过同一组固定根描述符对最终目标再次做内容摘要核验，并在策略提交前后复验命名路径和祖先链，之后才提交正常根状态；
-7. N.E.K.O-PC 关闭旧一代 launcher/Job/supervisor 所有权后启动新一代服务；没有桌面属主时 launcher 才走 self relaunch 回退；
-8. 源目录保持不变，等待用户手动清理。
-
-如果请求退出失败或调用在持久化期间被取消，路由会用写入前快照精确恢复。若恢复 root state 和保留 recovery checkpoint 又同时失败，同进程的退化标记仍必须让后续 `/status` 保持 `awaiting_shutdown`，不能因检查点缺失而翻回 ready。暂存、发布、最终核验或策略提交失败时，后端先把本次发布入口无覆盖地移回事务暂存区，再把目标原有入口无覆盖地恢复；每一步掉电后都能从同一 `publishing` 检查点幂等续跑。回滚完成后必须先把清单清空并持久化 `preflight` 检查点，之后才能清理事务目录，再让策略和根状态回到源目录；恢复策略、根状态或终态检查点有任一无法落盘时，launcher 使用迁移结果中的 source root 强制构建只读恢复布局并阻止普通服务启动，不能重新解析到已经回滚的空目标。自动回滚本身失败时保留事务目录并进入 `rollback_required`，不得假装迁移成功。早期残留、回滚完成和 completed 收尾三个事务目录删除入口都必须在删除前重新验证 ownership marker；仅有检查点路径不构成删除授权。验证通过后先用原子 no-replace rename 把目录项移到确定的 `.deleting` 隔离名，再核对目录身份和 marker，最后才递归删除；隔离后掉电时，`completed` 可在下一次启动继续清理，活动 `preflight/copying/verifying` 还必须再次证明源目录与持久化基线一致。`failed` 本身不证明暂存副本冗余，默认保留隔离目录，防止源盘随后离线时删掉唯一副本。隔离和恢复必须移动目录项本身，不能通过可能跟随符号链接的文件硬链接实现。回滚还只有在发布清单、备份摘要和目标最终摘要全部能证明与 `target_baseline` 一致时才可删除事务目录；备份缺失只允许“此前已经恢复且目标正好等于基线”的幂等恢复。任何目标并发改写、清单缺失、事务目录缺失、marker 不可信或摘要不一致都继续保留恢复证据。
-
-策略快照回滚同样属于掉电和目录身份安全合同：无论重写旧策略还是恢复为“原本不存在”，替换或删除都只能发生在已固定的 `state` 目录内，之后必须执行严格父目录持久化屏障并再次核对 anchor/state 命名身份；屏障失败或目录被替换都属于结果未知，不能继续把 root state 恢复成功当作整组回滚完成。
-
-原子写和 rename 的掉电顺序是安全合同：POSIX 在文件 `fsync` 后同步父目录；即使恢复时只剩 owner marker 已删除的空 `.deleting` 目录，`rmdir` 后的父目录同步失败也不能报告清理成功或推进检查点。清理前先持久化 `transaction_cleanup_pending`；只要删除后的父目录同步尚未成功，该检查点就不可被 `/select`、`/restart` 或下一次迁移覆盖，即使事务名当前不可见。Windows 对目录句柄能力不一致，目录 flush 为 best-effort，但仍依赖同卷原子 replace、检查点和内容摘要在下次启动恢复。运行目录从暂存区公开时还必须拒绝覆盖切换窗口中新出现的名字：Windows 使用拒绝覆盖的 `os.rename`，Linux 使用 `renameat2(RENAME_NOREPLACE)`，macOS 使用 `renameatx_np(RENAME_EXCL)`；缺少原子 no-replace 原语时 fail-closed，不能用会替换空目录的普通 POSIX rename。任何平台都不能把“API 返回成功”当成磁盘已持久化的替代证据。
-
-进程在 `publishing` 或 `committing` 中崩溃时，下次启动先按检查点恢复目标，再从源目录重新执行。复制阶段若源目录离线或内容已变化，而事务目录仍可能保有唯一暂存副本，检查点进入活动的 `recovery_required`：HTTP 控制面不得覆盖或删除它；源目录恢复到持久化基线后，下一次显式启动会校验并清理旧事务，再从源重新迁移。旧版本遗留的 `failed` 检查点只要仍映射事务/隔离目录，也必须先升级为该活动恢复态。
-
-一个由普通 pending 进入 `rollback_required` 或 `recovery_required` 的启动代次最多交接给宿主一次；若本次启动进入时已经是其中任一状态，launcher 不再自动重启，避免失败代次无限循环。此时在线受限服务只提供状态与受控退出；用户安全退出后，下一次显式启动再做一次恢复尝试，不在业务服务在线时执行危险回滚。
-
-在线 `/select`、`/preflight` 和 `/restart` 预检不得为了展示估算值而递归进入源数据；在恢复检查点落盘前，这种遍历可能跨入嵌套挂载或慢文件系统，并把持有存储互斥锁的请求永久卡住。没有调用方提供的可信估算时，接口返回 `estimated_required_bytes_available=false`，界面显示未知值；在线阶段仍检查非遍历式挂载/重解析边界、目标卷可用空间、写权限和已有目标内容。检查点持久化后，launcher 对受管清单做精确快照并执行权威容量门禁：所需空间按目标卷分配单元计算，至少覆盖文件逻辑大小、源已分配块、每个文件和目录的条目成本以及固定事务元数据分配，再加 64 MiB 与估算值 5% 中较大的安全余量；即使受管源清单为空，事务目录、owner marker、`staged`、`backup` 等固定分配及余量也不能省略。POSIX 在文件系统提供固定 inode 池时还必须检查可用条目数。这样空源、零字节文件、空目录和大量小文件都不能以“0 字节/0 条目”通过。launcher 无法读取分配单元、剩余空间或必要的文件系统容量事实时必须阻断迁移，不能把在线预检结果当作复制授权。
-
-旧目录清理再次校验当前根、目标根和锚点边界：
-
-- 当前根、锚点、目标根及它们的祖先或子目录都不能作为旧根删除；只有“旧运行根恰好就是锚点”这一历史兼容场景允许选择性删除锚点内的运行条目，锚点本身和固定状态始终保留；
-- 旧版本可能写在 selected root 顶层的 `community_auth.json`、`social_session.json` 和仍有效的 OAuth/Steam pending，必须先无覆盖地发布到固定私有状态并再次核验，之后才能删除旧副本；清理前快照的每个私有 JSON 最多读取 4 MiB，稳定句柄初始大小或累计读取量超限时在任何删除前中止，不能在持有存储写锁时无界聚合；损坏凭据、目标落盘失败或活动中/无法验证的 social lock 都必须中止整次清理；
-- 过期或损坏的项目自有 pending 可以在用户明确发起清理时删除，但 `.lock` 永不迁移。wall-clock 年龄不能证明一个挂起或慢 I/O 进程已放弃所有权；空文件、损坏 JSON、身份探测失败、权限拒绝或无法确认来自本机的 lock 一律保留并继续阻断；
-- 新 social lock 必须先在同目录临时文件中完整写入并 `fsync`，再用 no-replace 原语一次性公开：backend 在 Windows 使用 Python 明确拒绝覆盖目标的 `os.rename`、在 macOS/Linux 使用 hard-link；PC 的 Node/libuv `rename` 在 Windows 可能覆盖目标，因此三平台统一使用同卷 hard-link。文件系统不支持时必须 fail-closed，不能退回覆盖 rename 或“先创建公开空 lock、再填内容”的窗口。公开记录包含兼容 `token`、PID 和可用时的启动身份；
-- 自动接管必须同时满足三项：lock 是可完整解析的记录、OS 确证 PID 已消失或同 PID 的可靠启动身份已经变化、当前进程持有唯一 recovery authority。PID 存活且身份一致继续视为活动；证据 unknown 时 fail-closed；
-- orphan recovery 按 lock 中不可变的 `owner_kind` 分区：backend 只接管 `neko` 和缺少该字段的历史 lock，PC 只接管 `pc` lock，任何未知类型均 fail-closed。这样即使 remote 标记与仍存活的本地 backend 重叠，两端也不会对同一个 orphan 执行 compare-delete。backend 覆盖 canonical、legacy 和 retained 路径，且只有在 launcher 单实例锁已正向证明后才能接管，并在重验、删除和新 lock 原子发布期间持有固定 runtime-state 下的 `flock`/`msvcrt` 恢复锁及进程内互斥锁；PC 还必须持有 Electron 单实例锁；
-- Windows 使用进程启动时间、Linux 使用 boot ID 与 `/proc/<pid>/stat` starttime、macOS 使用 `ps lstart` 关闭 PID 复用窗口；缺少相同方案的可靠启动身份时只接受“PID 已确证不存在”，不把可疑差异当作死亡。固定私有状态的合同仅覆盖本机 userData，本版本没有跨主机身份，明确不支持把该目录配置到跨主机共享文件系统；若未来支持，必须先禁用自动接管或增加可靠主机身份，不能拿本机 PID 证据判断远端 owner；
-- social session 的多个路径锁按物理父目录身份统一排序；正常释放仍只删除本进程持有且 token/文件身份匹配的 lock。旧格式只有在 token 可解析出 PID且唯一 authority 确证 PID 已不存在时才可接管；历史空/坏 lock 无法自动证明 owner，保留安全退出并要求显式人工恢复；
-- 所有旧根都只删除权威清单中的受管入口；未知文件、导出、笔记或未来版本数据一律保留；
-- 受管入口清理后，非锚点旧根仅在已经为空时删除；锚点本身始终保留；
-- 第一次删除前先把 `retained_source_mode=cleanup_in_progress`、私有文件摘要和旧根设备号/inode 持久化；落盘失败时零删除。重试只能清理同一物理目录，原路径被复用为另一真实目录时必须停止；
-- POSIX 清理逐级以 `O_NOFOLLOW` 打开并固定目录句柄，运行条目和社区私有文件都只通过该句柄的相对路径访问。即使旧根或祖先在清理期间被改名、替换或改成链接，也不能转而删除新路径指向的数据；
-- 每个受管入口或社区私有文件删除后都必须 required fsync 其已固定父目录；任一刷盘失败都保留已经落盘的 `cleanup_in_progress` 并返回失败，不能发布 `cleaned` 或让界面失去恢复入口；
-- Windows 的 Python 标准库不能提供与 POSIX `dir_fd` 等价的 handle-relative 安全删除合同，因此当前不显示自动清理入口，也不写清理意图，只提示用户手动清理保留目录。不能退回到普通 `rmtree(path)`；
-- 兼容读取只从已完成检查点确认且身份仍匹配的 retained/source 导入，target 只能作为冲突见证，不能在源凭据缺失时反向成为权威。`cleanup_in_progress` 和 `cleaned` 禁止从对应 retained backup 懒导入；phase-0 单独记录、与该 backup 物理不同且始终保留的真实旧版本根不受这个 UI 清理状态误伤；登出还必须先在固定 anchor 持久化单调递增的 `community_logout.json.logout_epoch`，凭据和 OAuth/Steam pending 记录只在自身 epoch 等于当前 epoch 时有效。旧记录缺字段按 epoch 0 兼容；一旦登出推进代次，临时离线的旧源即使以同一 inode 重挂也只能保留为不可导入证据，不能让旧 token 或旧回调复活；新登录在同一 social-session 锁内核对并写入当前 epoch；
-- logout 在删除任何权威凭据前必须证明已提交 selected root 可访问；外置盘离线时零删除，重新挂载后才允许重试。删除顺序为旧副本在前、固定权威在后，任一步失败立即停止。
-
-清理事实以文件系统中的受管条目为准：如果删除已完成而检查点或 `root_state` 落盘失败，接口仍返回成功并标记 `metadata_persisted=false`；后续状态不得因为陈旧的 `legacy_cleanup_pending` 或 `last_migration_backup` 再显示假待清理。旧根不可访问与旧根不存在必须区分，前者继续 fail-closed。
-
-## 7. HTTP 合同
-
-路由前缀为 `/api/storage/location`，所有路由声明都不带尾部斜杠。
-
-| 方法与路径 | 用途 | 是否允许改变状态 |
-| --- | --- | --- |
-| `GET /bootstrap` | 首次加载或受限启动所需的完整快照 | 否；默认不执行持久化 reconcile |
-| `GET /status` | 维护轮询和完成提示 | 否；默认不执行持久化 reconcile |
-| `GET /diagnostics` | 布局、运行时读写路径和状态诊断 | 否 |
-| `GET /retained-source` | 查询可清理的旧目录 | 否 |
-| `POST /pick-directory` | 浏览器环境下的原生/后端目录选择回退 | 只调用选择器，不提交策略 |
-| `POST /open-current` | 打开后端当前运行根目录 | 不改变存储状态 |
-| `POST /select` | 首次启动或恢复阶段校验选择并生成一次性重启预检；不提交持久状态 | 是 |
-| `POST /preflight` | 常驻入口迁移预检 | 否；只做临时写探测并立即删除，不持久化业务状态 |
-| `POST /restart` | 建立迁移或 `rebind_only` 意图，并请求受控重启 | 是，必须串行化和可回滚 |
-| `POST /retained-source/cleanup` | 清理预期旧目录 | 是，必须在锁内重新验证目标 |
-| `POST /exit` | 阻塞/维护页退出应用 | 是；要求 `X-Neko-Storage-Action: exit` |
-
-关键约束：
-
-- 只读端点的 `persist_reconcile` 默认必须为 `false`；
-- `/preflight` 返回空间、权限、非空目标和风险提示，但不写策略、检查点或根状态；
-- Web 的 `/select`、`/preflight` 请求带 `Prefer: respond-async`：短预检继续返回原有完整响应；超过短等待时返回 `202 preflight_pending + preflight_operation_id + instance_id`，后台只保留有界数量的预检任务，浏览器通过 `/status?preflight_operation_id=` 取得与同一实例、同一操作绑定的完整结果。同入口、同路径和同来源的在途请求复用操作 ID，暂时的状态请求失败或界面等待超时也保留 ID 供重试继续查询，不能反复重扫大目录。HTTP 请求断开不取消已经开始的扫描，也不释放其持有的存储互斥锁；超过界面等待时间只提示可恢复重试或安全退出，不把超时当作迁移成功。未带该 Prefer 的旧调用方维持原同步合同。真正提交时 `/restart` 仍重新预检并绑定目标快照，不能以异步结果替代提交门禁。
-- 等待异步预检期间不属于已提交迁移：选择动作保持冻结，但允许走既有受控安全退出；关闭尝试使该页面的预检响应失效，迟到结果不得重新打开预览或业务准入。
-- `/restart` 必须在 `_storage_mutation_lock` 内重新验证，不能信任较早的预检结果；
-- 磁盘写通过工作线程执行时，取消请求不能提前释放互斥锁；
-- 本地状态目录不可用并导致云存档被禁用时，状态读取仍可返回 ready，但所有存储变更端点必须拒绝执行。
-- `/bootstrap` 和 `/status` 返回 `autostart_csrf_token`；包括 `/preflight` 在内的所有 POST 都必须同时通过本机 Origin/Referer 与 `X-CSRF-Token` 校验。Electron 和普通浏览器回退路径使用同一合同。
-- `/select` 和 `/restart` 在 `rollback_required` 时返回 `409 storage_rollback_required`，不能覆盖检查点或事务证据；`/exit` 仍然允许受控关闭。
-- `/restart` 的关闭回调失败且状态恢复不完整时返回显式的结果未知/`awaiting_shutdown`；Web 只可重试 `/exit`，不能重复建立迁移事务。
-- `/api/system/status` 的策略或存储探针异常必须返回显式 `storage_policy_unavailable`/`storage_status_unavailable`，不能伪装为会无限重试的普通 `starting`。
-- `/api/system/status` 与 `/api/storage/location/status` 必须返回相同进程的 `instance_id`、canonical lifecycle、`migration_phase` 和 `shutdown_retry_allowed`。
-- 高频状态端点不得在事件循环执行进程身份等同步慢探测；只关心 retained 文件是否存在的状态计算必须关闭 owner 分类，仍需完整探测的工作整体移入工作线程。
-- 策略、迁移检查点或 root state 无法可靠读取时，`/status` 仍要返回带 CSRF token 的 `storage_status_unavailable`；Web 保持主功能阻断并显示“安全退出”。`/exit` 不修复、不覆盖这些文件，只请求受控关闭；PC 若仍能证明受管迁移代次活动则继续拒绝退出，否则按 safe-exit-only 恢复态处理。
-
-## 8. N.E.K.O 启动与 Web 交互
-
-### 8.1 受限启动
-
-首次选择、迁移和恢复期间，主服务与记忆服务可以先以受限模式启动：
-
-- 主服务只放行存储页面、静态资源、状态/健康检查、存储 API 和调试入口；普通 API 返回 `409 storage_startup_blocked`；
-- 记忆服务只放行 `/health`、`/shutdown`、`/internal/storage/startup/continue`、`/internal/storage/startup/activate` 和 `/internal/storage/startup/block`；Agent 只放行健康检查和它定义的存储启动控制端点；其他请求返回 409；
-- 内部控制端点只保留为异常嵌入与旧代补偿边界，并用单调代次防止超时或取消后的迟到初始化覆盖新阻断。Memory 与 Agent 的 `continue` 只完成由进程自有、不会随 HTTP 断连取消的核心初始化，并保持业务门禁和长期写任务关闭；Memory 启动重放产生的子任务必须在该初始化所有权内全部静止。Main 核心完成后，按 Agent `activate` → Memory `activate` 的顺序提交；Memory 必须在同一 root-state 事务内确认非阻断态、发布 `NORMAL`、登记本代任务所有权并开放准入。两个子服务均确认激活后，Main 才启动 game cleanup、Workshop sync 与 TokenTracker 等持久写者，最后开放业务准入。任一阶段失败、Cloud 导入后 Memory reload 未确认，或激活响应不确定，都必须重新 `block` 两个子服务并回滚 Main 本代运行资源；补偿只能在准入已关闭、初始化写入自然结束且激活资源已静止后确认完成。所有 Agent/Memory 控制入口都必须同时验证 launcher 通过一次性交付缓冲区传给三个服务的独立随机 token 和安全 Origin/Referer，无来源的原生进程请求仍须携带 token。该 token 不得进入环境变量、不可擦除的长期进程参数，也不得复用或暴露为网页可读取的 CSRF token；服务必须在导入应用代码前原位清零交付缓冲区，fork 产生的服务后代还要自动轮换各自副本。网页存储选择不得调用这条同代释放链，而必须走受控重启，使下一代 launcher 统一掌握 phase-0 顺序。
-
-完整性恢复代次比普通首次选择更严格：`ConfigManager` 不运行默认配置、旧配置或根目录迁移；launcher 不自动安装 Playwright 浏览器；main 不初始化 voice、Avatar Tool 和后台业务运行时；Agent 不启动 token tracker、插件宿主或 LLM 探测，也不发外部请求。普通 main、memory 和 Agent API 都返回 409，只保留健康检查、存储状态/bootstrap、受控安全退出以及服务间恢复控制所需的最小白名单。受限 main 可以返回不触发业务初始化的页面壳；`/chat` 与桌面独立窗口使用的 `/chat_full` 必须保持同一 GET/HEAD 可达性，但它们后续的业务 API 和 WebSocket 仍受门禁。退出钩子不得写 token、角色释放、插件状态、记忆状态、`root_state` 或上传 cloudsave；launcher 也不得在三个服务 ready 后把 `root_state` 改回 normal。只有能够把固定锚点目录身份固定到落盘结束的诊断写入才可持久化；普通基于路径的 `debug_health` 日志在恢复代次保持内存态。受损权威文件和已提交用户数据必须保持逐字节不变。
-
-打包版默认走 merged launcher，因此上述约束不能只存在于源码多进程分支：merged 和 multi 都必须在同一布局解析之后才 import/启动服务，并共享同一个恢复标记、API 门禁和退出不持久化合同。N.E.K.O-PC 看到受限服务 ready 只表示恢复表面可用，不表示业务 ready；任何互相矛盾的 `ready:true` 都不能覆盖 maintenance、recovery、selection 或完整性阻塞。
-
-### 8.2 首页入口
-
-共享控制器位于 `static/app/app-storage-location.js`。首页通过 `window.appStorageLocation`、`window.__nekoStorageLocationStartupBarrier` 和 `waitUntilMainUiAllowed` 与正常初始化衔接。
-
-页面先查询系统状态，只在被阻塞时获取完整 bootstrap，然后展示对应阶段：
-
-- 首次选择；
-- 重启前预览与已有内容确认；
-- 维护遮罩和 `/status` 轮询；
-- 完成提示、打开新/旧目录和旧目录清理。
-
-维护轮询同时兼容 `/storage/location/status` 顶层字段与 `/system/status` 的 `storage.*` 字段。每次重启轮询都分配 generation，旧请求、旧 bootstrap 和旧定时器不能覆盖新的外部维护事件。维护页不能因第一拍同实例、缺失身份或字段互相矛盾的 `ready` 立即 reload；必须先观察到明确迁移阻塞，或确认响应来自不同 `instance_id`，且当前响应没有任何 pending/publishing/阻塞字段。预检还要生成单次 `restart_operation_id`：`/restart` 在进入互斥队列前认领为 `in_flight`，状态轮询按该 ID 读取权威阶段；结果未知时只允许取消仍为 `prepared` 的预约，已在途或已受理的操作不能由网页猜测取消。结果未知且带操作 ID 时，其他标签页产生的迁移阻塞不能替当前操作背书：同一实例只允许当前 ID、目标和实例完全匹配且状态为 `cancelled/rejected/expired` 后恢复 ready，或在 `indeterminate` 等终态下进入相应恢复/选择面；成功请求则必须看到新的 `instance_id`。这些终态操作记录在当前后端实例生命周期内不得按普通 TTL 删除，否则丢失响应、页面挂起后会把同实例 `not_found` 误判为仍可能执行而永久留在维护门禁；实例重启本身由新的 `instance_id` 提供终结证据。进入 `failed`、`recovery_required` 或 `selection_required` 时必须重新读取 bootstrap 后再切换选择页，不能复用迁移前快照；`rollback_required` 则保持业务门禁，显示真实错误和“安全退出并在下次启动恢复”，不能画成仍会自动重启的假进度。
-
-所有状态、退出和迁移变更请求都必须有界；截止时间覆盖 `fetch()`、响应体读取和 JSON 解析，而不只覆盖响应头。`/select` 或 `/restart` 在网络超时后属于“结果未知”，前端必须查询当前状态确认事实，不能直接重试一次可能已经成功的变更。
-
-目录选择器使用独立于普通 15 秒 mutation 的 125 秒前端预算；后端原生选择器的总预算为 120 秒。Linux 的多个候选程序共享同一个绝对截止时间，不能每个候选各获得 120 秒；Windows 与 macOS 的子进程输出解码失败按选择器不可用处理，不能把 Unicode 异常泄漏成无兜底的 500。
-
-### 8.3 记忆浏览器常驻入口
-
-记忆浏览器入口由以下文件共同维护：
-
-- `templates/memory_browser.html`
-- `static/css/memory_browser.css`
-- `static/js/memory_browser.js`
-- `static/app/app-storage-location.js`
-
-页面必须 bootstrap-first：受限时不启动普通记忆数据加载，只渲染存储占位和恢复 UI。系统已经 ready 时，“更改存储位置”使用 `/preflight` 和 `/restart`，不能调用首次启动语义的 `/select`。
-
-重启请求被接受后，页面立即锁定控件，并通过以下方式通知其他页面进入维护：
-
-- `BroadcastChannel("neko_storage_location_channel")`；
-- 向 opener/parent 发送 `postMessage`；
-- Electron 存在时调用 `window.nekoHost.closeWindow()`；
-- 无法关闭时，在当前页启用共享维护遮罩继续轮询。
-
-目录选择和打开路径的调用顺序为宿主优先、后端回退。普通浏览器环境必须仍然可工作。
-
-## 9. N.E.K.O-PC 集成合同
-
-### 9.1 启动门禁
-
-`src/main/storage-gate.js` 轮询 N.E.K.O 的 `/api/system/status`；维护期间优先查询 `/api/storage/location/status`，两者互为回退。当前轮询间隔为：
-
-- 未 ready：1000 ms；
-- ready：3000 ms；
-- 单次请求超时：2500 ms。
-
-PC 只把后端字段映射为 `checking`、`selection_required`、`maintenance`、`recovery_required`、`ready` 或 `backend_unreachable`。每次启动轮询都分配单调递增的 generation；异步响应、回退请求、UI 更新和下一次定时器都必须仍属于当前 generation，旧轮询不能在 stop/start 或维护切换后覆盖新状态。`guardStorageStartupGate()` 在 ready 前阻止聊天、字幕、Agent HUD、点唱机等卫星窗口动作，并把焦点带回 Pet 窗口。托盘 Reload、移动模式和直播模式也必须在修改配置、停止轮询或重建窗口之前经过同一门禁，不能销毁正在承担进度与兜底职责的维护页。
-
-新版 PC 与 launcher 还建立双侧因果 bootstrap guard，关闭“launcher 已进入存储解析/迁移，但 stdout 事件尚未被 Electron 消费”这一窗口。PC 只有在显式声明 `NEKO_STORAGE_BOOTSTRAP_GUARD_V1=1`、提供专用 fd 5，且已按当前 `launch_id` 接收带随机 `guard_id` 的认证 `storage_bootstrap_guard_request` 后，才通过私有管道回复严格 ACK；launcher 在 ACK 前不得读取迁移权威、执行迁移或运行 cloudsave phase-0。初始启动和退出后的重启判定是两个独立 phase，后者必须重新申请新的 guard，不能复用旧 ACK。fd 由 launcher 立即设为不可继承并从环境删除，POSIX fork 子进程也关闭副本；响应为 ABORT、EOF、无效帧、过期 ID 或 5 秒超时时，本代在接触该存储边界前有界失败并退出，PC 保持保护直到进程终止。危险边界结束后 launcher 发送带相同 ID、phase 和封闭 outcome 的 release；更强的 processing/completed/failure/restart 状态不被 release 覆盖。旧 PC 不声明 capability，独立运行也没有该环境与 fd，因此保持原启动行为，不因协议升级而卡死。
-
-这个运行时握手只关闭活跃桌面属主的进程内竞态，不是持久化恢复证据。系统关机、强杀、掉电或旧版宿主没有机会完成握手时，数据安全仍由固定锚点中的迁移检查点、事务 marker、摘要核验和幂等回滚保证；不能用 guard 的内存状态替代或清理 checkpoint。
-
-迁移进入维护时，PC 记录当前可见的 compact/full chat、字幕、Agent HUD 和点唱机，隐藏或暂停它们；后端恢复 ready 后，PC 通过文档重载 fence 刷新 Pet，再恢复之前可见的卫星窗口。
-
-### 9.2 通用宿主桥
-
-`src/preload/shared/common.js` 只暴露通用能力：
-
-- `window.nekoHost.pickDirectory()`
-- `window.nekoHost.openPath()`
-- `window.nekoHost.closeWindow()`
-- `window.nekoHost.getBackendRecoveryState()`
-- `window.nekoHost.retryBackendRecovery()`
-- `window.nekoHost.requestSafeQuit()`
-
-对应 IPC 处理器位于 `src/main/storage-gate.js`：
-
-- `neko:host:pick-directory`
-- `neko:host:open-path`
-- `neko:host:close-window`
-- `neko:host:get-backend-recovery-state`
-- `neko:host:retry-backend-recovery`
-- `neko:host:request-safe-quit`
-
-preload 不得暴露 `window.nekoStorageLocation`，也不得实现路径是否合法、目标是否可覆盖或迁移处于哪个业务阶段。Pet preload 发送的 `neko:storage-location-phase` 只接受当前 Pet 主窗口 sender，且只是用于更快保护窗口的尽力通知；后端轮询仍是最终权威。
-
-宿主恢复状态和允许操作为：
-
-| 宿主状态 | 含义与允许操作 |
-| --- | --- |
-| `ready/backend_ready` | 后端正常；非维护页可以先走后端受控退出再关闭。维护页不得因刚进入页面时的一拍陈旧 ready 而退出 |
-| `ready/backend_recovery_required` | 在线 `rollback_required`，没有迁移线程继续运行；不提供本地 retry，后端 `/exit` 成功后可以普通关闭，下次启动恢复 |
-| `ready/unmanaged_backend` | attached/remote 后端不归 PC 管理；只关闭 PC 壳，不请求外部后端退出，也不启动本地替代进程 |
-| `active/owner_handoff_awaiting_shutdown` | 在线 pending，迁移尚未开始；只允许 Web 重试后端 `/exit`，普通退出、本地 retry 和 replacement 均禁止 |
-| 其他 `active` / `transient` | 受管迁移代次或 replacement 仍在运行；Web 不得调用 `/exit`，IPC、原生关闭/Alt+F4 和 loading 窗口关闭都必须拒绝 |
-| `terminal` | 已没有仍在执行迁移的受管代次；只允许 `requestSafeQuit()`，仅在所有权清算有明确证据时才允许 `retryBackendRecovery()` |
-
-renderer 传入的布尔值不能作为“后端已经安全退出”的凭据。关闭与重试权限必须由 main 进程根据 ownership、代次和进程退出事实计算。
-
-### 9.3 重启所有权
-
-N.E.K.O-PC 启动后端时设置 `NEKO_OWNER_RELAUNCH=1`。launcher 完成迁移或 rebind 后发出 `NEKO_EVENT storage_migration_restart`，其中 `relaunch=owner` 表示把下一代交回桌面属主：
-
-- POSIX 先关闭 supervisor 的父管道保持端，并在有界时间内等待旧 launcher 的 `close`；
-- Windows 必须先确认本代收到 `NEKO_JOB_OK`，再释放对应 Job Object holder，并确认 holder 退出；holder 未建立、分配失败、提前退出或退休超时都不能证明旧代已经清空；
-- 清除旧代 ownership、shutdown deadline 和并发启动状态后，只调用一次统一的 `startPythonBackend()`；
-- 新一代仍须通过既有 `startup_ready`/健康检查，才解除启动门禁；失败保持失败提示，不能把旧代事件当成新代就绪。
-
-旧 launcher 没有在 handoff deadline 内关闭时，PC 只能执行已有的 ownership-aware 清算；仍不能确认停止时进入 `terminal`、保留 ownership/lease、禁用 retry，绝不能在旁边启动新代。冷启动期间发生 handoff 时，replacement 的成功或失败必须结算原来的 startup Promise，不能让 loading 窗口永远等待。
-
-没有声明 owner relaunch 的宿主仍由 N.E.K.O launcher 使用 self relaunch 兼容路径。
-
-launcher 的 stdout 与普通后端/模型日志共用，因此 `NEKO_EVENT` 不是“看起来像 JSON”就可信的日志。PC 只接受行首精确前缀、JSON 对象、`source=neko_launcher`、非空随机 `launch_id`；`startup_begin` 建立本进程会话，后续事件必须严格匹配该 ID，非活动 ChildProcess、行中嵌入前缀、缺失/错误 source 或 ID 的内容全部忽略。macOS/Linux 的 `NEKO_SUPERVISOR_CHILD_EXIT` 不经过共享 stdout：POSIX spawn 为 supervisor 提供专用 fd4 控制管道，真实 backend 与 watcher 显式关闭 fd4，只有 wrapper 能写退出帧，Electron 也只从当前代 `stdio[4]` 读取。这样普通日志即使输出完全相同的独立行，也不能伪造 child-exit 证据或提前释放持久化关闭屏障。
-
-### 9.4 平台生命周期差异
-
-| 平台 | 旧代清算证据 | 文件系统边界 | 系统退出与普通退出 |
-| --- | --- | --- | --- |
-| Windows | 当前代 `NEKO_JOB_OK` + 对应 Job holder 已退出；单独 launcher `exit/close` 不足以证明 descendants 消失 | 拒绝 symlink 与所有 reparse point/junction；目录 flush 仅 best-effort | 普通 Alt+F4、菜单、托盘和更新重启受门禁；`query-session-end` 不阻塞 OS，并启动有界 ownership-aware 清算 |
-| macOS | POSIX supervisor 父管道关闭、进程组及端口/身份清算 | 拒绝完整路径链上的 symlink；存在路径用 `samefile`/设备号+inode 识别默认 APFS 大小写别名；目录 `fsync` | Cmd+Q、应用菜单、窗口关闭受门禁；`powerMonitor.shutdown` 允许 OS 继续并执行有界清算 |
-| Linux | POSIX supervisor/进程组；X11、Wayland、Niri 的窗口输入策略不能改变后端所有权结论 | 拒绝完整路径链上的 symlink；大小写敏感文件系统保持词法大小写语义；目录 `fsync` | window-all-closed、托盘、X11/Wayland 原生关闭受门禁；`powerMonitor.shutdown` 和进程信号走有界清算 |
-
-attached/remote 模式在三个平台都没有本地进程所有权；状态异常时只能保持门禁或关闭桌面壳，不能杀远端服务、清本地 lease 后冒充已退出，也不能启动替代实例。
-
-## 10. 并发与恢复不变量
-
-以下行为属于必须由测试保护的硬约束：
-
-1. 所有存储变更必须经过同一把进程内互斥锁。
-2. 状态前像、策略/检查点/根状态写入必须位于同一根状态事务中。
-3. `/restart` 在锁内重新预检；预检结果只是 UI 信息，不能当作写入授权。
-4. 请求取消后要等待后台磁盘任务真正结束再释放锁。
-5. 只读轮询不能持久化 reconcile，避免覆盖并发失败恢复。
-6. 受控退出未被接受时必须恢复所有已写状态。
-7. 策略提交必须晚于复制验证。
-8. 目标原有受管入口在任何失败路径上都必须恢复，目标未知入口不得被修改；发布前须复用同一份基线逐项 CAS，最终切换不得覆盖检查后才出现的外部数据。
-9. 清理必须比较请求中的预期旧根与锁内重新读取的当前旧根，并只删除清单入口。
-10. 所有会改变本机状态的 Web 请求必须通过本机来源和 CSRF 校验；Agent/Memory 的内部启动控制还必须携带 launcher 通过可擦除的一次性缓冲区交付、且不向网页或服务后代暴露的控制 token。
-11. PC 维护保护必须恢复迁移前真实可见的窗口集合，不能把原本关闭的窗口打开。
-12. PC 只能让当前 polling generation 和当前 launcher generation 改变状态。
-13. 任何旧代退出或 Job holder 缺失都不能自动等价为“所有后端子进程已停止”；只有平台所有权屏障的肯定证据才能启动 replacement。
-14. Web 在宿主 `active/transient` 时不得先请求后端 `/exit`；宿主明确拒绝关闭时也不得回落到 `window.close()`。
-15. attached/remote 后端永远不能被 PC 当作本地所有权恢复对象。
-16. ConfigManager、launcher、两个状态 API 与 PC 状态轮询都不能把坏策略、坏检查点或错误实例降级成默认 ready。
-17. 维护页只有在见过迁移阻塞、确认后端实例已更换，或同一预检操作被后端明确终结且当前无检查点后，才能接受无矛盾字段的 ready；连续 ready 次数不是操作终态证据。
-18. stdout 中的 launcher 控制事件必须绑定 launcher source、活动 ChildProcess 和随机 launch ID；POSIX supervisor 的 child-exit 证据只能走真实 backend 无法继承的专用控制 FD，普通日志永远不是退出控制通道。
-19. 交互式退出在迁移活动期一律阻止并聚焦维护界面；OS 关机/注销和进程信号不能无限阻塞系统，只执行有界、所有权感知的清算。
-20. 社区凭据、会话和一次性 PKCE 状态不能随 selected root 漂移；兼容旧文件时必须先无覆盖发布并验证新权威，再删除旧副本，且不得迁移活动 lock；一次性 pending 消费成功前必须删除所有已接受的同记录副本，并证明本次至少实际 claim 一份。
-21. 清理状态必须由旧根中仍存在的受管数据推导；未知文件应保留，但不能单独制造永久的假待清理状态。
-22. 旧根清理必须先持久化私有摘要和物理目录身份，再以固定目录句柄执行；原路径被复用、身份不符或平台缺少安全删除能力时一律零删除。
-23. 存在路径的相等与包含关系以物理身份为准；macOS 默认 APFS 的大小写别名不能绕过同源、嵌套和当前根保护，Linux 不得被无条件大小写折叠。
-24. 已完成迁移中的 retained/source 是旧私有状态唯一导入候选；target 仅参与冲突检测。外置 selected root 不可用时 logout 必须保持所有副本不变。
-25. 策略、检查点或 root state 不可判定时不能永久只显示假进度；状态端点必须保留证据并提供受 ownership 约束的安全退出，所有正常业务与迁移写操作继续阻断。
-26. 事务目录只能在检查点路径、事务编号、随机 token 和 no-follow marker 文件全部匹配时删除；任何删除入口都必须在执行前重新验证，并通过可恢复的确定性隔离名封闭验证到递归删除之间的换名窗口。
-
-## 11. 维护入口与代码锚点
-
-### N.E.K.O
-
-| 主题 | 代码位置 |
-| --- | --- |
-| 根目录绑定与平台候选 | `utils/config_manager/storage_roots.py` |
-| 布局解析与环境变量 | `utils/storage/layout.py` |
-| selected root 权威数据清单 | `utils/storage/entries.py` |
-| 固定社区私有状态与旧根清理摘要 | `utils/storage/community_private_state.py` |
-| 策略、规范化和路径验证 | `utils/storage/policy.py` |
-| 检查点、迁移、核验和清理 | `utils/storage/migration.py` |
-| 启动阻塞快照 | `utils/storage/location_bootstrap.py` |
-| workshop 路径重写 | `utils/storage/path_rewrite.py` |
-| HTTP API 与事务边界 | `main_routers/storage_location_router.py` |
-| 启动前迁移和重启事件 | `launcher_core/runtime.py` |
-| 主服务门禁 | `app/main_server/` |
-| 记忆服务门禁 | `app/memory_server/` |
-| 共享 Web 状态机 | `static/app/app-storage-location.js` |
-| 记忆浏览器入口 | `templates/memory_browser.html`、`static/js/memory_browser.js` |
-
-`utils/storage_layout.py`、`utils/storage_policy.py`、`utils/storage_migration.py`、`utils/storage_location_bootstrap.py` 和 `utils/storage_path_rewrite.py` 是历史导入兼容别名。新实现应放在 `utils/storage/` 包中；兼容别名及 monkeypatch 目标由 `tests/unit/test_storage_package_compatibility.py` 保护。
-
-### N.E.K.O-PC
-
-| 主题 | 代码位置 |
-| --- | --- |
-| 后端状态轮询、启动门禁、维护窗口保护、宿主 IPC | `src/main/storage-gate.js` |
-| 组件注入与受保护动作 | `src/main.js`、`src/main/hotkey-manager.js`、`src/main/tray-menu.js` |
-| 通用 preload 宿主桥 | `src/preload/shared/common.js` |
-| Web 维护阶段通知 | `src/preload/bridges/pet-input-region-bridge.js` |
-| launcher 事件接收 | `src/main/backend-runtime.js` |
-
-## 12. 变更检查清单
-
-### 新增或调整运行时目录
-
-不能只在 `ConfigManager` 中增加一个目录属性。至少检查：
-
-1. 是否属于用户选择的运行根，还是固定锚点；
-2. 是否需要加入 `RUNTIME_STORAGE_ENTRIES`，并标明用户数据或运行缓存；
-3. 是否需要路径重写或额外一致性验证；
-4. 非空目标替换规则是否安全；
-5. 精确锚点旧根清理是否应删除它；
-6. `/diagnostics` 是否需要报告它；
-7. 云存档包含/排除边界是否因此变化；
-8. 成功、失败、恢复和清理测试是否覆盖。
-
-### 调整 API 或状态
-
-同时核对：
-
-- N.E.K.O router、bootstrap 和共享 Web 控制器；
-- 首页与记忆浏览器两个入口；
-- 主服务和记忆服务的受限路由；
-- N.E.K.O-PC `deriveStorageGateState()` 与维护窗口恢复；
-- `test/integration/neko-web-contract.test.js` 的跨仓库合同。
-
-### 调整重启方式
-
-任何 owner/self relaunch 协议调整都必须同步验证 N.E.K.O-PC 的进程采纳状态机以及 Windows、macOS 和 Linux 下：
-
-- 旧后端确实退出；
-- 新后端只启动一次；
-- loading/Pet 窗口绑定到新一代；
-- stdout/stderr、job/supervisor 关系和退出语义正确；
-- 失败后仍能从检查点恢复。
-
-不要用固定 wall-clock timeout 强杀正在做文件 I/O 的迁移线程，尤其不能在 `publishing` 阶段中断原子发布/回滚。当前未解决的“进程仍存活但底层磁盘或网络文件系统永久不返回”需要独立受监督迁移进程、分阶段 heartbeat/checkpoint，以及只在安全 copy 边界生效的协作取消协议；在这套协议落地前，UI 必须继续 fail-closed 并允许 OS 级有界退出，不能猜测迁移已经结束。
-
-## 13. 验证
-
-N.E.K.O 的核心回归：
-
-```bash
-uv run pytest \
-  tests/unit/test_storage_layout.py \
-  tests/unit/test_storage_policy.py \
-  tests/unit/test_storage_migration.py \
-  tests/unit/test_storage_location_bootstrap.py \
-  tests/unit/test_storage_location_router.py \
-  tests/unit/test_community_private_state.py \
-  tests/unit/test_system_status_router.py \
-  tests/unit/test_storage_path_rewrite.py \
-  tests/unit/test_storage_package_compatibility.py \
-  tests/frontend/test_storage_location_startup.py
-```
-
-涉及主/记忆服务门禁时，再运行对应的 server startup/limited-mode 测试。涉及文档站时，在 `docs/` 中运行 `npm ci` 和 `npm run build`。
-
-启动验收还必须使用隔离锚点和运行根，分别注入坏策略、坏迁移检查点和坏 `root_state`，并从 launcher 入口验证：三个健康检查可达、存储状态为对应完整性阻塞、普通 API 返回 409、安全退出能在有界时间完成、端口全部释放。验收前后应比较受损权威文件和用户数据哨兵的内容摘要，确认没有被“修复”、覆盖或迁移到猜测目录。该验收可以使用源码入口验证状态机，但发布前仍须在目标平台对实际携带的二进制重复；两者不能互相替代。
-
-N.E.K.O-PC 的核心回归：
-
-```bash
-node --test \
-  test/backend-runtime-ownership.test.js \
-  test/exit-retention-dialog-contract.test.js \
-  test/external-close-quit-contract.test.js \
-  test/main-composition-contract.test.js \
-  test/storage-window-display-contract.test.js \
-  test/widget-mode-tray-contract.test.js \
-  test/update-check-service.test.js
-NEKO_WEB_REPO_PATH=/path/to/N.E.K.O \
-  node --test test/integration/neko-web-contract.test.js
-```
-
-涉及 main 组合、托盘或快捷键保护时，再运行相应 contract tests；准备交付桌面包时按平台执行完整 `npm test`、lint 和打包验证。
-
-## 14. 维护判定标准
-
-一次存储位置修改只有在以下事实同时成立时才算完成：
-
-- 最终交付以打包版为准：Nuitka 后端必须包含当前 Python 状态机与 `static/app/app-storage-location.js`，Electron 包必须携带对应平台的 `bin/projectneko_server[.exe]` 并从该入口建立 owner handoff；源码模式验证不能替代这条打包合同；
-- 新旧根目录的读写边界明确；
-- 迁移中断不会让已提交策略指向未验证目标；
-- 已有目标内容能在失败和崩溃恢复路径上原样恢复；
-- 首次启动、常驻入口和恢复入口没有混用写接口；
-- 普通浏览器与 N.E.K.O-PC 宿主环境都能走通；
-- 维护期间普通业务不会抢跑；
-- 请求半开、owner handoff 失败和回滚失败都有可见终态，且不会无限自动重启；
-- 活跃迁移不可由 renderer、原生关闭或外部窗口生命周期绕过；
-- 旧目录只有在用户明确操作且后端复核后才会清理；
-- 两个仓库的合同测试与本文同步更新。
+- 启动门禁在 ready 前阻止普通窗口；
+- 选择路径后只触发一次受控重启；
+- 迁移期间不能启动第二个后端；
+- 成功后恢复原先窗口；
+- 失败时显示后端错误并允许安全退出或再次启动。

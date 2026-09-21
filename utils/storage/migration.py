@@ -264,7 +264,6 @@ def is_retained_root_cleanup_available(
     target_root: Path | str | None = None,
     require_exists: bool = True,
     allow_anchor_root: bool = False,
-    anchor_has_managed_private_state: bool = False,
 ) -> bool:
     raw_retained_root = str(retained_root or "").strip()
     if not raw_retained_root:
@@ -286,7 +285,7 @@ def is_retained_root_cleanup_available(
         if paths_equal(normalized_retained_root, normalized_anchor_root):
             if not allow_anchor_root:
                 return False
-            return bool(anchor_has_managed_private_state) or any(
+            return any(
                 (normalized_retained_root / name).exists()
                 for name in MIGRATED_RUNTIME_ENTRY_NAMES
             )
@@ -1506,23 +1505,21 @@ def _snapshot_posix_runtime_entries_with_user_content(
     """Bind overwrite-confirmation facts to the exact bytes in the baseline."""
 
     snapshots: dict[str, dict[str, int | str]] = {}
-    user_content_result = [False]
+    has_user_content = False
     for entry in RUNTIME_STORAGE_ENTRIES:
-        is_cache = entry.kind == RUNTIME_ENTRY_KIND_RUNTIME_CACHE
         snapshot = _snapshot_posix_relative_entry(
             root_fd,
             root_display,
             entry.relative_path,
             expected_mount_identity=expected_mount_identity,
-            user_content_entry=None if is_cache else entry.relative_path,
-            config_manager=config_manager,
-            user_content_result=None if is_cache else user_content_result,
         )
         if snapshot["kind"] != "missing":
             snapshots[entry.relative_path] = snapshot
-        if is_cache and snapshot["kind"] not in {"missing", "dir"}:
-            user_content_result[0] = True
-    return snapshots, user_content_result[0]
+            if entry.kind != RUNTIME_ENTRY_KIND_RUNTIME_CACHE and (
+                snapshot["kind"] == "file" or int(snapshot.get("file_count") or 0) > 0
+            ):
+                has_user_content = True
+    return snapshots, has_user_content
 
 
 def _snapshot_posix_runtime_entries(
@@ -4882,24 +4879,22 @@ def _snapshot_runtime_entries_with_user_content(
     """Bind Windows overwrite-confirmation facts to the snapshot generation."""
 
     snapshots: dict[str, dict[str, int | str]] = {}
-    user_content_result = [False]
+    has_user_content = False
     runtime_mount_identity = _runtime_root_mount_identity(root)
     for entry in RUNTIME_STORAGE_ENTRIES:
         entry_path = _checked_migration_entry_path(root, entry)
         if not (entry_path.exists() or entry_path.is_symlink()):
             continue
-        is_cache = entry.kind == RUNTIME_ENTRY_KIND_RUNTIME_CACHE
         snapshot = _snapshot_path(
             entry_path,
             expected_mount_identity=runtime_mount_identity,
-            user_content_entry=None if is_cache else entry.relative_path,
-            config_manager=config_manager,
-            user_content_result=None if is_cache else user_content_result,
         )
         snapshots[entry.relative_path] = snapshot
-        if is_cache and snapshot["kind"] != "dir":
-            user_content_result[0] = True
-    return snapshots, user_content_result[0]
+        if entry.kind != RUNTIME_ENTRY_KIND_RUNTIME_CACHE and (
+            snapshot["kind"] == "file" or int(snapshot.get("file_count") or 0) > 0
+        ):
+            has_user_content = True
+    return snapshots, has_user_content
 
 
 def _runtime_root_mount_identity(root: Path) -> tuple[str, int] | None:
@@ -8596,19 +8591,6 @@ def _run_pending_storage_migration_locked(
             committed_at=completed_at,
             completed_at=completed_at,
         )
-        # Community credentials are a small fixed set outside the runtime
-        # directory inventory.  Copy them after the new root is committed;
-        # failure leaves the retained source untouched and can be retried when
-        # the user later chooses to delete that source.
-        try:
-            from .community_private_state import migrate_legacy_private_state
-
-            migrate_legacy_private_state(source_root, config_manager)
-        except OSError as private_state_exc:
-            logger.warning(
-                "Legacy community private state was not copied during storage migration: %s",
-                private_state_exc,
-            )
         if preserve_existing_layout:
             current_backup_identity = legacy_backup_root.lstat()
             if (

@@ -60,11 +60,6 @@ sys.path.insert(0, _PROJECT_ROOT)
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
-from utils.internal_http_auth import (
-    get_internal_http_auth_token,
-    install_internal_http_auth_token,
-    rotate_internal_http_auth_token,
-)
 from utils.port_utils import (
     probe_neko_health,
     acquire_startup_lock,
@@ -83,11 +78,9 @@ from utils.cloudsave_runtime import (
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
     cloud_apply_fence,
-    recover_interrupted_legacy_runtime_import,
     set_root_mode,
     should_write_root_mode_normal_after_startup,
 )
-from utils.cloudsave_runtime.fence import _recover_stale_write_blocking_mode
 from utils.cloudsave_autocloud import get_cloudsave_manager
 from utils.config_manager import get_config_manager, reset_config_manager_cache
 from utils.storage_layout import (
@@ -368,11 +361,6 @@ def _initialize_launcher_context() -> None:
     if not _storage_bootstrap_guard_initialized:
         _storage_bootstrap_guard = StorageBootstrapGuardChannel.from_environment()
         _storage_bootstrap_guard_initialized = True
-
-    # Keep the credential out of the environment: every launcher-owned server
-    # receives it through multiprocessing's private argument channel, while
-    # merged mode shares this process-local value directly.
-    rotate_internal_http_auth_token()
 
     # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
     # httpx 优先读小写 no_proxy，因此大小写都需要设置
@@ -1871,30 +1859,14 @@ def run_merged_servers() -> int:
     return 0
 
 
-def _consume_internal_control_token(buffer: bytearray | None) -> None:
-    """Install and erase the credential carried by a one-shot process argument."""
-    if buffer is None:
-        return
-    try:
-        token = bytes(buffer).decode("ascii")
-        install_internal_http_auth_token(token)
-    finally:
-        # multiprocessing retains target args for the process lifetime.  All
-        # references point at this mutable object, so an in-place wipe removes
-        # the credential before any application/plugin import or later fork.
-        buffer[:] = b"\0" * len(buffer)
-
-
 def run_memory_server(
     ready_event: Event,
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
-    internal_control_buffer=None,
 ):
     """Run the Memory Server"""
     try:
-        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2006,11 +1978,9 @@ def run_agent_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
-    internal_control_buffer=None,
 ):
     """Run the Agent Server (no need to wait for initialization)"""
     try:
-        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2099,11 +2069,9 @@ def run_main_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
-    internal_control_buffer=None,
 ):
     """Run the Main Server"""
     try:
-        _consume_internal_control_token(internal_control_buffer)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2611,13 +2579,6 @@ def start_server(server: Dict) -> bool:
         server['shutdown_event'] = Event()
         server['shutdown_complete_event'] = Event()
 
-        # Do not pass an immutable plaintext string: multiprocessing retains
-        # target args for the child lifetime.  The child installs this private
-        # mutable copy first and erases it in place before importing app code.
-        internal_control_buffer = bytearray(
-            get_internal_http_auth_token().encode("ascii")
-        )
-
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
@@ -2627,15 +2588,10 @@ def start_server(server: Dict) -> bool:
                 server['import_event'],
                 server['shutdown_event'],
                 server['shutdown_complete_event'],
-                internal_control_buffer,
             ),
             daemon=False,
         )
-        try:
-            server['process'].start()
-        finally:
-            # start() has already forked or serialized the child copy.
-            internal_control_buffer[:] = b"\0" * len(internal_control_buffer)
+        server['process'].start()
 
         print(f"✓ {server['name']} 已启动 (PID: {server['process'].pid})", flush=True)
         return True
@@ -3370,18 +3326,6 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         if diagnostic is not None:
             raise diagnostic
         raise OSError("failed to ensure local state directory")
-
-    # A previous launcher can die after persisting bootstrap_importing but
-    # before creating a legacy checkpoint.  Recover that orphaned mode under
-    # the real cross-process cloud-apply lock before entering a new fence.
-    current_root_state = config_manager.load_root_state()
-    if isinstance(current_root_state, dict):
-        _recover_stale_write_blocking_mode(config_manager, current_root_state)
-
-    # Resolve a completed internal legacy checkpoint before the new fence.
-    # Pending checkpoints are normally resumed by storage layout resolution;
-    # this call also covers direct packaged-launcher bootstrap entry paths.
-    recover_interrupted_legacy_runtime_import(config_manager)
 
     with cloud_apply_fence(
         config_manager,

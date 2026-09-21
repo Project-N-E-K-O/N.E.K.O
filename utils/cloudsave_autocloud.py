@@ -39,18 +39,6 @@ from utils.steam_cloud_bundle import (
 STEAM_AUTO_CLOUD_SYNC_BACKEND = "steam_auto_cloud"
 
 
-class CloudsaveImportAppliedStatusError(RuntimeError):
-    """Report a durable import whose follow-up diagnostic status is unavailable."""
-
-    def __init__(self, *, requested_reason: str):
-        self.import_result = {
-            "success": True,
-            "action": "imported",
-            "requested_reason": str(requested_reason or ""),
-        }
-        super().__init__("cloudsave import applied but post-import status is unavailable")
-
-
 def _get_app_root() -> Path:
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
@@ -403,20 +391,14 @@ class CloudSaveManager:
             deadline_monotonic=deadline_monotonic,
             use_cloud_apply_fence=not fence_already_active,
         )
-        import_result = {
+        return {
             "success": True,
             "action": "imported",
             "requested_reason": str(reason or ""),
             "result": result,
             "remote_bundle_result": remote_bundle_result,
+            "status": self.build_status(steamworks=steamworks),
         }
-        try:
-            import_result["status"] = self.build_status(steamworks=steamworks)
-        except Exception as exc:
-            raise CloudsaveImportAppliedStatusError(
-                requested_reason=reason,
-            ) from exc
-        return import_result
 
     def export_snapshot(
         self,

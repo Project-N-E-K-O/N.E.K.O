@@ -26,9 +26,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
-from utils.storage.community_private_state import (
-    COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
-)
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -36,6 +33,7 @@ router = APIRouter(prefix="/api/card-drop", tags=["community-oauth"])
 callback_router = APIRouter(tags=["community-oauth"])
 
 _OAUTH_SCOPE = "openid email profile offline"
+_OAUTH_PENDING_FILENAME = "community_oauth_pending.json"
 _OAUTH_PENDING_TTL_SEC = 600
 _OAUTH_REDIRECT_PATH = "/oauth/callback"
 _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
@@ -123,16 +121,13 @@ def _oauth_redirect_uri(request: Request | None = None) -> str:
 
 
 def _oauth_pending_path() -> Path | None:
-    return C._community_state_path(_OAUTH_PENDING_FILENAME)
-
-
-def _oauth_pending_paths() -> list[Path]:
-    canonical = _oauth_pending_path()
-    paths = [canonical] if canonical is not None else []
-    for candidate in C._legacy_private_file_paths(_OAUTH_PENDING_FILENAME):
-        if candidate not in paths:
-            paths.append(candidate)
-    return paths
+    auth_path = C._auth_path()
+    if auth_path is not None:
+        return auth_path.parent / _OAUTH_PENDING_FILENAME
+    social = C._social_session_path()
+    if social is not None:
+        return social.parent / _OAUTH_PENDING_FILENAME
+    return None
 
 
 def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
@@ -146,23 +141,13 @@ def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLR
 
 
 def _unlink_pending() -> None:
-    paths = _oauth_pending_paths() + C._logout_private_file_paths(_OAUTH_PENDING_FILENAME)
-    unique_paths = list(dict.fromkeys(paths))
-    canonical = _oauth_pending_path()
-    if canonical is None:
+    path = _oauth_pending_path()
+    if path is None:
         return
     try:
-        # Only the fixed-anchor canonical path participates in new start/claim
-        # writes. Locking every historical candidate would recreate an offline
-        # legacy root merely to place a lock beside a file that no longer exists.
-        with C._social_session_lock(canonical):
-            for path in unique_paths:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError as exc:
-                    logger.debug("community_oauth: pending unlink failed: %s", exc)
-    except (OSError, TimeoutError) as exc:
-        logger.debug("community_oauth: pending unlink lock failed: %s", exc)
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("community_oauth: pending unlink failed: %s", exc)
 
 
 def _load_oauth_status_records() -> tuple[dict | None, dict]:
@@ -489,131 +474,9 @@ def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
 
 
 def _load_oauth_pending() -> tuple[Path | None, dict | None]:
-    """Resolve one claimable fixed-anchor pending OAuth record."""
+    """Resolve and read the pending OAuth record on a worker thread."""
     path = _oauth_pending_path()
-    if path is None:
-        return None, None
-    pending = C._load_or_migrate_private_json(
-        path,
-        [candidate for candidate in _oauth_pending_paths() if candidate != path],
-        validator=C._oauth_pending_record_is_fresh,
-        conflict_paths=C._legacy_private_conflict_paths(_OAUTH_PENDING_FILENAME),
-    )
-    # The generic private-state loader may return the last usable legacy copy
-    # when publishing the canonical record fails. Credentials can safely use
-    # that read-only fallback, but a one-shot PKCE generation cannot: claim
-    # must atomically rename the fixed-anchor file. Do not expose a generation
-    # that start would reuse but callback could never detach.
-    if pending is not None and C._read_json_dict(path) != pending:
-        logger.warning("community_oauth: pending is not published at the fixed anchor")
-        return path, None
-    return path, pending
-
-
-def _prepare_oauth_pending(
-    pending_path: Path,
-    *,
-    redirect_uri: str,
-    client_id: str,
-    auth_url_base: str,
-) -> tuple[str, str, float, bool]:
-    """Reuse or create one PKCE attempt while holding its cross-process lock."""
-
-    with C._social_session_lock(pending_path):
-        now = time.time()
-        _resolved_pending_path, pending = _load_oauth_pending()
-        try:
-            pending_expires_at = float((pending or {}).get("expires_at") or 0)
-        except (TypeError, ValueError):
-            pending_expires_at = 0.0
-        pending_state = str((pending or {}).get("state") or "")
-        pending_verifier = str((pending or {}).get("code_verifier") or "")
-        if (
-            pending_expires_at > now
-            and pending_state
-            and pending_verifier
-            and str((pending or {}).get("redirect_uri") or "") == redirect_uri
-            and str((pending or {}).get("client_id") or "") == client_id
-            and str((pending or {}).get("auth_public_url") or "").rstrip("/")
-            == auth_url_base
-        ):
-            return pending_state, pending_verifier, pending_expires_at, True
-
-        state = secrets.token_urlsafe(32)
-        code_verifier = secrets.token_urlsafe(64)
-        expires_at = now + _OAUTH_PENDING_TTL_SEC
-        C._write_private_json(
-            pending_path,
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": redirect_uri,
-                "client_id": client_id,
-                "auth_public_url": auth_url_base,
-                "created_at": now,
-                "expires_at": expires_at,
-            },
-        )
-        return state, code_verifier, expires_at, False
-
-
-def _claim_oauth_pending(
-    state: str | None,
-) -> tuple[str, Path | None, dict | None]:
-    """Atomically detach exactly one matching PKCE generation for callback use."""
-
-    from utils.storage.migration import _durable_rename_without_replacing
-
-    canonical = _oauth_pending_path()
-    if canonical is None:
-        return "missing", None, None
-    with C._social_session_lock(canonical):
-        pending_path, pending = _load_oauth_pending()
-        if pending_path is None or not pending:
-            return "missing", None, None
-        try:
-            expires_at = float(pending.get("expires_at") or 0)
-        except (TypeError, ValueError):
-            expires_at = 0.0
-        expected_state = str(pending.get("state") or "")
-        if not expected_state or not state or not secrets.compare_digest(
-            state,
-            expected_state,
-        ):
-            return "state_mismatch", None, pending
-
-        claim_path = pending_path.with_name(
-            f".{pending_path.name}.claim-{secrets.token_hex(16)}"
-        )
-        _durable_rename_without_replacing(pending_path, claim_path)
-        claimed = C._read_json_dict(claim_path)
-        if claimed != pending:
-            try:
-                _durable_rename_without_replacing(claim_path, pending_path)
-            except OSError:
-                logger.exception(
-                    "community_oauth: raced pending generation could not be restored"
-                )
-            return "generation_changed", None, None
-        if time.time() > expires_at:
-            return "expired", claim_path, pending
-        return "claimed", claim_path, pending
-
-
-def _unlink_oauth_claim(claim_path: Path) -> None:
-    try:
-        claim_path.unlink(missing_ok=True)
-    finally:
-        from utils.file_utils import fsync_directory_best_effort
-
-        fsync_directory_best_effort(claim_path.parent)
-
-
-def _unlink_oauth_claim_best_effort(claim_path: Path) -> None:
-    try:
-        _unlink_oauth_claim(claim_path)
-    except OSError as exc:
-        logger.warning("community_oauth: claim cleanup failed: %s", exc)
+    return path, C._read_json_dict(path) if path else None
 
 
 def _persist_oauth_credentials(
@@ -625,8 +488,6 @@ def _persist_oauth_credentials(
     local_user_id: str,
     auth_public_url: str,
     client_id: str,
-    expected_logout_epoch: int | None = None,
-    expected_expires_at: float | None = None,
 ) -> bool:
     """Persist both OAuth credential files or restore their previous state."""
     auth_path = C._auth_path()
@@ -642,22 +503,6 @@ def _persist_oauth_credentials(
         # inside the same scope, or a refresh committing between the read and
         # the lock would be rolled back onto an already-consumed refresh token.
         with C._social_session_lock(social_path):
-            if (
-                expected_expires_at is not None
-                and time.time() > expected_expires_at
-            ):
-                logger.info(
-                    "community_oauth: pending generation expired before credential persist"
-                )
-                return False
-            if (
-                expected_logout_epoch is not None
-                and C._current_logout_epoch() != expected_logout_epoch
-            ):
-                logger.info(
-                    "community_oauth: logout generation changed before credential persist"
-                )
-                return False
             snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
             try:
                 for path in (auth_path, social_path):
@@ -737,21 +582,53 @@ async def oauth_start_endpoint(request: Request):
     if pending_path is None:
         raise HTTPException(status_code=503, detail="oauth_pending_unavailable")
 
+    reused_pending = False
     async with _oauth_start_lock:
+        now = time.time()
+        pending = await asyncio.to_thread(C._read_json_dict, pending_path)
         try:
-            state, code_verifier, expires_at, reused_pending = await asyncio.to_thread(
-                _prepare_oauth_pending,
-                pending_path,
-                redirect_uri=redirect_uri,
-                client_id=client_id,
-                auth_url_base=auth_url_base,
-            )
-        except (OSError, TimeoutError) as exc:
-            logger.warning("community_oauth: failed to persist pending: %s", exc)
-            raise HTTPException(
-                status_code=503,
-                detail="oauth_pending_unavailable",
-            ) from exc
+            pending_expires_at = float((pending or {}).get("expires_at") or 0)
+        except (TypeError, ValueError):
+            pending_expires_at = 0.0
+        pending_state = str((pending or {}).get("state") or "")
+        pending_verifier = str((pending or {}).get("code_verifier") or "")
+        if (
+            pending_expires_at > now
+            and pending_state
+            and pending_verifier
+            and str((pending or {}).get("redirect_uri") or "") == redirect_uri
+            and str((pending or {}).get("client_id") or "") == client_id
+            and str((pending or {}).get("auth_public_url") or "").rstrip("/")
+            == auth_url_base
+        ):
+            state = pending_state
+            code_verifier = pending_verifier
+            expires_at = pending_expires_at
+            reused_pending = True
+        else:
+            state = secrets.token_urlsafe(32)
+            code_verifier = secrets.token_urlsafe(64)
+            expires_at = now + _OAUTH_PENDING_TTL_SEC
+            try:
+                await asyncio.to_thread(
+                    C._write_private_json,
+                    pending_path,
+                    {
+                        "state": state,
+                        "code_verifier": code_verifier,
+                        "redirect_uri": redirect_uri,
+                        "client_id": client_id,
+                        "auth_public_url": auth_url_base,
+                        "created_at": now,
+                        "expires_at": expires_at,
+                    },
+                )
+            except OSError as exc:
+                logger.warning("community_oauth: failed to persist pending: %s", exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail="oauth_pending_unavailable",
+                ) from exc
 
     code_challenge = _pkce_s256_challenge(code_verifier)
     query = urlencode(
@@ -808,8 +685,6 @@ async def oauth_status_endpoint(request: Request):
 async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
-    if not await asyncio.to_thread(C._logout_storage_ready):
-        raise HTTPException(status_code=503, detail="local_clear_deferred")
 
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
@@ -840,174 +715,156 @@ async def _handle_oauth_callback(
     state: str | None,
     error: str | None = None,
 ) -> HTMLResponse:
-    async with _oauth_start_lock:
-        try:
-            claim_status, claim_path, pending = await asyncio.to_thread(
-                _claim_oauth_pending,
-                state,
-            )
-        except (OSError, TimeoutError) as exc:
-            logger.warning("community_oauth: pending claim failed: %s", exc)
-            return _callback_html(
-                "登录状态暂不可用",
-                "请回到 NEKO 重新点击社区登录。",
-                status_code=503,
-            )
-
-    if claim_status == "missing":
+    _pending_path, pending = await asyncio.to_thread(_load_oauth_pending)
+    if not pending:
         return _callback_html(
             "登录尚未开始",
             "请回到 NEKO 重新点击社区登录。",
             status_code=400,
         )
-    if claim_status == "state_mismatch":
-        return _callback_html(
-            "登录校验失败",
-            "OAuth state 不匹配，请回到 NEKO 重试。",
-            status_code=400,
-        )
-    if claim_status == "generation_changed":
-        return _callback_html(
-            "登录状态已更新",
-            "检测到新的登录流程，本次旧回调未被处理。",
-            status_code=409,
-        )
-    if claim_path is None or pending is None:
-        return _callback_html(
-            "登录状态暂不可用",
-            "请回到 NEKO 重新点击社区登录。",
-            status_code=503,
-        )
-    if claim_status == "expired":
-        await asyncio.to_thread(_unlink_oauth_claim_best_effort, claim_path)
+
+    try:
+        expires_at = float(pending.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    if time.time() > expires_at:
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录已过期",
             "请回到 NEKO 重新点击社区登录。",
             status_code=400,
         )
 
-    try:
-        if error:
-            if error == "access_denied":
-                return _callback_html(
-                    "登录已取消",
-                    "你已取消社区登录，可关闭此页并回到 NEKO。",
-                    status_code=400,
-                )
-            return _callback_html(
-                "登录未完成",
-                "Auth 未完成授权，请回到 NEKO 重试。",
-                status_code=400,
-            )
-        if not code:
-            return _callback_html(
-                "登录未完成",
-                "Auth 未返回授权码，请回到 NEKO 重试。",
-                status_code=400,
-            )
-
-        code_verifier = str(pending.get("code_verifier") or "")
-        redirect_uri = str(pending.get("redirect_uri") or _oauth_redirect_uri())
-        client_id = str(pending.get("client_id") or _desktop_client_id())
-        auth_public_url = str(
-            pending.get("auth_public_url") or _auth_public_url()
-        ).rstrip("/")
-        if not code_verifier:
-            return _callback_html(
-                "登录数据不完整",
-                "请回到 NEKO 重新点击社区登录。",
-                status_code=400,
-            )
-
-        try:
-            token_payload = await _exchange_oauth_code(
-                code=code,
-                code_verifier=code_verifier,
-                redirect_uri=redirect_uri,
-                client_id=client_id,
-                auth_public_url=auth_public_url,
-            )
-        except HTTPException as exc:
-            detail = str(exc.detail) if exc.detail else "换取登录凭证失败"
-            return _callback_html("登录失败", detail, status_code=400)
-
-        access_token = str(token_payload.get("access_token") or "").strip()
-        refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
-        if not access_token:
-            return _callback_html(
-                "登录失败",
-                "Auth 未返回有效 access token。",
-                status_code=400,
-            )
-
-        social_base = C._social_base_url()
-        try:
-            bootstrap = await _bootstrap_session(social_base, access_token)
-        except HTTPException as exc:
-            detail = str(exc.detail) if exc.detail else "无法建立社区会话"
-            return _callback_html("登录失败", detail, status_code=400)
-
-        user = bootstrap.get("user") if isinstance(bootstrap.get("user"), dict) else {}
-        local_user_id = C._normalize_local_user_id(user.get("id"))
-        if not local_user_id:
-            return _callback_html(
-                "登录失败",
-                "社区身份响应无效。",
-                status_code=400,
-            )
-
-        bind = await _oauth_guest_bind(social_base, access_token)
-        if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-            return _callback_html(
-                "登录冲突",
-                "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
-                status_code=400,
-            )
-
-        auth_payload = {
-            "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "local_user_id": local_user_id,
-            "auth_source": "oauth",
-            "auth_public_url": auth_public_url,
-            "client_id": client_id,
-            "user": {
-                "id": local_user_id,
-                "display_name": user.get("display_name"),
-                "email": user.get("email"),
-            },
-            "bind": bind,
-        }
-        credentials_saved = await asyncio.to_thread(
-            _persist_oauth_credentials,
-            auth_payload,
-            social_base=social_base,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            local_user_id=local_user_id,
-            auth_public_url=auth_public_url,
-            client_id=client_id,
-            expected_logout_epoch=C._private_record_epoch(pending),
-            expected_expires_at=float(pending.get("expires_at") or 0),
-        )
-        if not credentials_saved:
-            return _callback_html(
-                "登录未完成",
-                "凭证未能完成本地保存，请回到 NEKO 重试。",
-                status_code=400,
-            )
-
+    expected_state = str(pending.get("state") or "")
+    if not expected_state or not state or not secrets.compare_digest(state, expected_state):
         return _callback_html(
-            "社区登录已完成",
-            "可关闭此页，回到 NEKO 继续使用社区功能。",
-            status_code=200,
+            "登录校验失败",
+            "OAuth state 不匹配，请回到 NEKO 重试。",
+            status_code=400,
         )
-    finally:
-        # The claim is no longer discoverable as a canonical pending login.
-        # Cleanup failure must not turn a durably saved login into an ambiguous
-        # client-visible failure.
-        await asyncio.to_thread(_unlink_oauth_claim_best_effort, claim_path)
+
+    if error:
+        await asyncio.to_thread(_unlink_pending)
+        if error == "access_denied":
+            return _callback_html(
+                "登录已取消",
+                "你已取消社区登录，可关闭此页并回到 NEKO。",
+                status_code=400,
+            )
+        return _callback_html(
+            "登录未完成",
+            "Auth 未完成授权，请回到 NEKO 重试。",
+            status_code=400,
+        )
+
+    if not code:
+        await asyncio.to_thread(_unlink_pending)
+        return _callback_html(
+            "登录未完成",
+            "Auth 未返回授权码，请回到 NEKO 重试。",
+            status_code=400,
+        )
+
+    code_verifier = str(pending.get("code_verifier") or "")
+    redirect_uri = str(pending.get("redirect_uri") or _oauth_redirect_uri())
+    client_id = str(pending.get("client_id") or _desktop_client_id())
+    auth_public_url = str(pending.get("auth_public_url") or _auth_public_url()).rstrip("/")
+    if not code_verifier:
+        await asyncio.to_thread(_unlink_pending)
+        return _callback_html(
+            "登录数据不完整",
+            "请回到 NEKO 重新点击社区登录。",
+            status_code=400,
+        )
+
+    try:
+        token_payload = await _exchange_oauth_code(
+            code=code,
+            code_verifier=code_verifier,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+            auth_public_url=auth_public_url,
+        )
+    except HTTPException as exc:
+        await asyncio.to_thread(_unlink_pending)
+        detail = str(exc.detail) if exc.detail else "换取登录凭证失败"
+        return _callback_html("登录失败", detail, status_code=400)
+
+    access_token = str(token_payload.get("access_token") or "").strip()
+    refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
+    if not access_token:
+        await asyncio.to_thread(_unlink_pending)
+        return _callback_html(
+            "登录失败",
+            "Auth 未返回有效 access token。",
+            status_code=400,
+        )
+
+    social_base = C._social_base_url()
+    try:
+        bootstrap = await _bootstrap_session(social_base, access_token)
+    except HTTPException as exc:
+        await asyncio.to_thread(_unlink_pending)
+        detail = str(exc.detail) if exc.detail else "无法建立社区会话"
+        return _callback_html("登录失败", detail, status_code=400)
+
+    user = bootstrap.get("user") if isinstance(bootstrap.get("user"), dict) else {}
+    local_user_id = C._normalize_local_user_id(user.get("id"))
+    if not local_user_id:
+        await asyncio.to_thread(_unlink_pending)
+        return _callback_html(
+            "登录失败",
+            "社区身份响应无效。",
+            status_code=400,
+        )
+
+    bind = await _oauth_guest_bind(social_base, access_token)
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        await asyncio.to_thread(_unlink_pending)
+        return _callback_html(
+            "登录冲突",
+            "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
+            status_code=400,
+        )
+
+    auth_payload = {
+        "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "local_user_id": local_user_id,
+        "auth_source": "oauth",
+        "auth_public_url": auth_public_url,
+        "client_id": client_id,
+        "user": {
+            "id": local_user_id,
+            "display_name": user.get("display_name"),
+            "email": user.get("email"),
+        },
+        "bind": bind,
+    }
+    credentials_saved = await asyncio.to_thread(
+        _persist_oauth_credentials,
+        auth_payload,
+        social_base=social_base,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        local_user_id=local_user_id,
+        auth_public_url=auth_public_url,
+        client_id=client_id,
+    )
+    await asyncio.to_thread(_unlink_pending)
+    if not credentials_saved:
+        return _callback_html(
+            "登录未完成",
+            "凭证未能完成本地保存，请回到 NEKO 重试。",
+            status_code=400,
+        )
+
+    return _callback_html(
+        "社区登录已完成",
+        "可关闭此页，回到 NEKO 继续使用社区功能。",
+        status_code=200,
+    )
 
 
 @callback_router.get("/oauth/callback", response_class=HTMLResponse)

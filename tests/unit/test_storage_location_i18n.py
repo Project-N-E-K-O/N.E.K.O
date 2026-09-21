@@ -73,19 +73,6 @@ def test_storage_location_completion_actions_match_locale(locale_name, expected_
 
 
 @pytest.mark.unit
-def test_storage_location_cloudsave_local_state_error_code_is_translated():
-    source = STORAGE_LOCATION_JS.read_text(encoding="utf-8")
-
-    branch_pattern = re.compile(
-        r"case\s+['\"]cloudsave_local_state_unavailable['\"]\s*:"
-        r"(?:(?!\n\s*(?:case\s+['\"]|default\s*:)).)*"
-        r"storage\.cloudsaveLocalStateUnavailable",
-        re.DOTALL | re.MULTILINE,
-    )
-    assert branch_pattern.search(source)
-
-
-@pytest.mark.unit
 def test_backend_directory_picker_uses_its_own_interactive_timeout_budget():
     shared_source = STORAGE_LOCATION_JS.read_text(encoding="utf-8")
     memory_source = MEMORY_BROWSER_JS.read_text(encoding="utf-8")

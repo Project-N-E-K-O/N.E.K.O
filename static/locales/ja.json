@@ -2227,7 +2227,6 @@
         "blockingGeneric": "選択した保存場所は現在使用できません。別の場所を選ぶか、しばらくしてからもう一度お試しください。",
         "blockingInsufficientSpace": "移行を安全に行うための空き容量が、保存先ボリュームに足りません。",
         "blockingTargetNotWritable": "保存先のパスに書き込み権限がないため、移行を開始できません。",
-        "cloudsaveLocalStateUnavailable": "ローカル状態ディレクトリを利用できません。このセッションではクラウドセーブが無効です。保存場所を変更する前に state パスを修復し、アプリを再起動してください。",
         "cleanupRetainedRoot": "移行バックアップを削除",
         "deferRetainedRootCleanup": "今はしない",
         "cleanupRetainedRootConfirm": "移行時に保持されたバックアップを削除します。現在使用中のフォルダーやその他の履歴データは変更されません。続けますか？",

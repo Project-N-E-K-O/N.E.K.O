@@ -35,7 +35,7 @@ import asyncio
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -61,14 +61,8 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
-from utils.internal_http_auth import is_internal_http_request_authorized
 from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
-from utils.storage.layout import (
-    clear_storage_recovery_mode,
-    get_storage_recovery_mode,
-    set_storage_recovery_mode,
-)
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
 
@@ -78,7 +72,6 @@ from ._shared import logger, validate_lanlan_name
 
 class ContinueStorageStartupRequest(BaseModel):
     reason: str = ""
-    recovery_mode: str = ""
 
 
 app = FastAPI()
@@ -123,7 +116,6 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
     "/internal/storage/startup/continue",
-    "/internal/storage/startup/activate",
     "/internal/storage/startup/block",
 }
 
@@ -256,23 +248,10 @@ async def character_publication_guard(request: Request, call_next):
 
 @app.middleware("http")
 async def storage_limited_mode_guard(request: Request, call_next):
-    if (
-        _memory_runtime_init_completed
-        and not _memory_storage_blocked_after_init
-        and not get_storage_recovery_mode()
-    ):
+    if _memory_runtime_init_completed and not _memory_storage_blocked_after_init:
         return await call_next(request)
 
     if request.url.path in _STORAGE_LIMITED_MODE_ALLOWED_PATHS:
-        return await call_next(request)
-    if (
-        request.url.path == "/reload"
-        and _memory_runtime_prepared_generation
-        == _memory_storage_admission_generation
-        and is_internal_http_request_authorized(request.scope, request.headers)
-    ):
-        # Main may import a cloud snapshot after core preparation. Allow only
-        # its authenticated reload while business admission remains closed.
         return await call_next(request)
 
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
@@ -373,14 +352,8 @@ _reload_lock = asyncio.Lock()
 _deferred_time_managers: list[TimeIndexedMemory] = []
 _memory_runtime_init_lock = asyncio.Lock()
 _memory_runtime_init_completed = False
-_memory_runtime_init_task: asyncio.Task | None = None
-_memory_runtime_bootstrap_ok = False
-_memory_runtime_prepared_generation: int | None = None
 _memory_storage_blocked_after_init = False
-_memory_storage_admission_generation = 0
 _memory_background_tasks_started = False
-_memory_activation_tasks: set[asyncio.Task] = set()
-_memory_token_tracker_task: asyncio.Task | None = None
 
 
 def _share_subject_forget_state(old_component, new_component) -> None:
@@ -957,23 +930,13 @@ async def _bootstrap_embedding_worker() -> None:
         # Resolver 已在核心初始化中发布；可选 worker 失败不得影响删除队列。
 
 
-async def _replay_startup_outbox_to_completion() -> None:
-    """Keep startup replay writes owned by the core initializer until quiescent."""
-
-    from . import outbox_infra
-
-    replay_tasks = await outbox_infra._replay_pending_outbox()
-    if replay_tasks:
-        await asyncio.gather(*replay_tasks, return_exceptions=True)
-
-
-async def _initialize_memory_server_runtime(*, reason: str = "") -> bool:
-    from . import evidence_loops
+async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
+    from . import evidence_loops, outbox_infra, refine_loops, routes, signal_extraction
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
     global embedding_warmup_worker, fact_dedup_resolver
-    global _memory_runtime_init_completed, _memory_runtime_bootstrap_ok
+    global _memory_runtime_init_completed, _memory_background_tasks_started
 
     if _memory_runtime_init_completed:
         return False
@@ -1024,6 +987,16 @@ async def _initialize_memory_server_runtime(*, reason: str = "") -> bool:
         outbox = Outbox()
         reconciler = Reconciler(event_log)
         _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
+
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+            TokenTracker.get_instance().record_app_start(process="memory_server")
+        except Exception as e:
+            logger.warning(f"[Memory] Token tracker init failed: {e}")
 
         # GeoIP 预热：memory_server 是独立进程，主进程的预热只暖主进程的类级缓存。
         # 不预热的话，下面 outbox 补跑 / 首个记忆更新的免费路由 LLM 调用会读到临时
@@ -1095,7 +1068,7 @@ async def _initialize_memory_server_runtime(*, reason: str = "") -> bool:
             )
 
         try:
-            await _replay_startup_outbox_to_completion()
+            await outbox_infra._replay_pending_outbox()
         except Exception as e:
             logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
 
@@ -1115,166 +1088,67 @@ async def _initialize_memory_server_runtime(*, reason: str = "") -> bool:
                 return_exceptions=True,
             )
 
-        _memory_runtime_bootstrap_ok = bootstrap_ok
-        _memory_runtime_init_completed = True
-        logger.info("[Memory] 核心运行态初始化完成 (reason=%s)", reason or "manual")
-        return True
-
-
-async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
-    """Await one process-owned initializer without lending it request cancellation."""
-
-    global _memory_runtime_init_task
-
-    if _memory_runtime_init_completed:
-        return False
-    initializer_task = _memory_runtime_init_task
-    if initializer_task is None or initializer_task.done():
-        initializer_task = asyncio.create_task(
-            _initialize_memory_server_runtime(reason=reason)
-        )
-        _memory_runtime_init_task = initializer_task
-
-        def _clear_initializer_task(done_task: asyncio.Task) -> None:
-            global _memory_runtime_init_task
-            if _memory_runtime_init_task is done_task:
-                _memory_runtime_init_task = None
-            if not done_task.cancelled():
-                # Retrieve a failure even if every HTTP waiter disconnected.
-                # Awaiting the task later still receives the same exception.
-                done_task.exception()
-
-        initializer_task.add_done_callback(_clear_initializer_task)
-    return await asyncio.shield(initializer_task)
-
-
-async def _run_admitted_background_task(coro, *, generation: int) -> None:
-    """Do not enter a newly activated worker after a compensating block won."""
-
-    await asyncio.sleep(0)
-    if (
-        _memory_storage_blocked_after_init
-        or generation != _memory_storage_admission_generation
-    ):
-        coro.close()
-        return
-    await coro
-
-
-async def _bootstrap_memory_token_tracker() -> None:
-    global _memory_token_tracker_task
-
-    try:
-        from utils.token_tracker import TokenTracker, install_hooks
-
-        install_hooks()
-        tracker = TokenTracker.get_instance()
-        tracker.resume_persistence("memory_server")
-        previous_save_task = getattr(tracker, "_save_task", None)
-        tracker.start_periodic_save()
-        current_save_task = getattr(tracker, "_save_task", None)
-        if current_save_task is not previous_save_task:
-            _memory_token_tracker_task = current_save_task
-        tracker.record_app_start(process="memory_server")
-    except Exception as exc:
-        logger.warning("[Memory] Token tracker init failed: %s", exc)
-
-
-def _activate_memory_runtime_background_tasks(*, expected_generation: int) -> bool:
-    """Publish NORMAL and start long-lived work as one no-await admission commit."""
-
-    from . import evidence_loops, refine_loops, routes, signal_extraction
-
-    global _memory_background_tasks_started, _memory_storage_blocked_after_init
-
-    if (
-        not _memory_runtime_init_completed
-        or expected_generation != _memory_storage_admission_generation
-        or expected_generation != _memory_runtime_prepared_generation
-        or get_storage_recovery_mode()
-    ):
-        return False
-
-    def _spawn_activated(coro) -> None:
-        task = _spawn_background_task(
-            _run_admitted_background_task(coro, generation=expected_generation)
-        )
-        _memory_activation_tasks.add(task)
-        task.add_done_callback(_memory_activation_tasks.discard)
-
-    def _publish_activation() -> bool:
-        global _memory_background_tasks_started, _memory_storage_blocked_after_init
-
-        if not _memory_background_tasks_started:
-            _spawn_activated(_bootstrap_memory_token_tracker())
-            _spawn_activated(evidence_loops._periodic_rebuttal_loop())
-            _spawn_activated(evidence_loops._periodic_auto_promote_loop())
-            _spawn_activated(evidence_loops._periodic_idle_maintenance_loop())
-            if EVIDENCE_SIGNAL_CHECK_ENABLED:
-                _spawn_activated(signal_extraction._periodic_signal_extraction_loop())
-            _spawn_activated(evidence_loops._periodic_archive_sweep_loop())
-            _spawn_activated(routes._periodic_new_dialog_qps_log_loop())
-            if MEMORY_RECHECK_ENABLED:
-                _spawn_activated(evidence_loops._periodic_slow_memory_recheck_loop())
-            _spawn_activated(refine_loops._periodic_persona_refine_loop())
-            _spawn_activated(refine_loops._periodic_reflection_refine_loop())
-            _spawn_activated(refine_loops._periodic_reflection_synthesis_loop())
-            _spawn_activated(refine_loops._periodic_scoped_refine_loop())
-            _spawn_activated(_bootstrap_embedding_worker())
-            _memory_background_tasks_started = True
-        _memory_storage_blocked_after_init = False
-        return True
-
-    # A disabled cloudsave session deliberately has no authoritative root state.
-    # Preserve that contract while still publishing task ownership synchronously.
-    if is_cloudsave_disabled():
-        return _publish_activation()
-
-    # Cross-thread storage writers use the same transaction. Keep the final
-    # root-state decision, optional NORMAL write, task-handle publication, and
-    # admission opening in one no-await commit so maintenance cannot land in
-    # between the check and writer startup.
-    with root_state_transaction():
-        current_root_state = _config_manager.load_root_state()
-        if not should_write_root_mode_normal_after_startup(current_root_state):
-            logger.info(
-                "[Memory] 拒绝激活：当前仍处于阻断态: %s",
-                (
-                    current_root_state.get("mode")
-                    if isinstance(current_root_state, dict)
-                    else None
-                )
-                or ROOT_MODE_NORMAL,
-            )
-            return False
-
-        if _memory_runtime_bootstrap_ok:
-            try:
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_NORMAL,
-                    current_root=str(_config_manager.app_docs_dir),
-                    last_known_good_root=str(_config_manager.app_docs_dir),
-                    last_successful_boot_at=datetime.now(timezone.utc)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                )
-            except Exception as exc:
-                logger.error("[Memory] 写入启动成功标记失败: %s", exc)
-                raise RuntimeError(
-                    "memory_server failed to persist ROOT_MODE_NORMAL state"
-                ) from exc
+        if bootstrap_ok:
+            # ⚠️ 判定和写必须在同一个锁内事务里。它们以前靠"中间没有 await"隐式原子，
+            # 但那只挡得住同一条事件循环上的协程 —— merged 模式下存储变更路由跟这段同
+            # 进程，而它的写现在跑在工作线程上，完全可以插在判定和写之间提交
+            # ROOT_MODE_MAINTENANCE_READONLY，随后被这里无条件写回 NORMAL，留下一个
+            # 没有写闸的待迁移。
+            with root_state_transaction():
+                current_root_state = _config_manager.load_root_state()
+                if should_write_root_mode_normal_after_startup(current_root_state):
+                    try:
+                        set_root_mode(
+                            _config_manager,
+                            ROOT_MODE_NORMAL,
+                            current_root=str(_config_manager.app_docs_dir),
+                            last_known_good_root=str(_config_manager.app_docs_dir),
+                            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+                else:
+                    logger.info(
+                        "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                        current_root_state.get("mode") or ROOT_MODE_NORMAL,
+                    )
         else:
             logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
-        return _publish_activation()
+        if not _memory_background_tasks_started:
+            _spawn_background_task(evidence_loops._periodic_rebuttal_loop())
+            _spawn_background_task(evidence_loops._periodic_auto_promote_loop())
+            _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
+            if EVIDENCE_SIGNAL_CHECK_ENABLED:
+                _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
+            _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
+            _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
+            if MEMORY_RECHECK_ENABLED:
+                _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
+            # Phase A-4 / A-5: MemoryRefineEngine cron 接入
+            _spawn_background_task(refine_loops._periodic_persona_refine_loop())
+            _spawn_background_task(refine_loops._periodic_reflection_refine_loop())
+            _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
+            # 群记忆系列 5/7: scoped 轻量 refine cron
+            _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            _memory_background_tasks_started = True
+
+        # memory-enhancements P2: vector embedding warmup + backfill worker.
+        # 这块的 import（embedding 栈 ~0.6s）+ 服务构造原本同步跑在 startup
+        # handler 里，uvicorn 要等 handler 返回才开端口，于是把 memory 端口
+        # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
+        # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
+        # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
+        _spawn_background_task(_bootstrap_embedding_worker())
+
+        _memory_runtime_init_completed = True
+        logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
+        return True
 
 
 @app.on_event("startup")
 async def startup_event_handler():
     """Initialization at application startup"""
-    global _memory_runtime_prepared_generation
-
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(
@@ -1283,42 +1157,14 @@ async def startup_event_handler():
         )
         return
 
-    admission_generation = _memory_storage_admission_generation
     await ensure_memory_server_runtime_initialized(reason="startup")
-    if (
-        admission_generation != _memory_storage_admission_generation
-        or _memory_storage_blocked_after_init
-    ):
-        return
-    _memory_runtime_prepared_generation = admission_generation
-    _activate_memory_runtime_background_tasks(
-        expected_generation=admission_generation
-    )
 
 
-def _require_storage_startup_control_auth(request: Request) -> None:
-    if not is_internal_http_request_authorized(request.scope, request.headers):
-        raise HTTPException(status_code=403, detail="forbidden")
-
-
-@app.post(
-    "/internal/storage/startup/continue",
-    dependencies=[Depends(_require_storage_startup_control_auth)],
-)
+@app.post("/internal/storage/startup/continue")
 async def continue_storage_startup(payload: ContinueStorageStartupRequest | None = None):
-    global _memory_runtime_prepared_generation, _memory_storage_blocked_after_init
-    admission_generation = _memory_storage_admission_generation
-    recovery_mode = get_storage_recovery_mode()
-    if recovery_mode in {
-        "selection_required",
-        "migration_pending",
-        "recovery_required",
-    }:
-        clear_storage_recovery_mode()
+    global _memory_storage_blocked_after_init
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
-        if recovery_mode:
-            set_storage_recovery_mode(recovery_mode)
         return JSONResponse(
             status_code=409,
             content={
@@ -1333,28 +1179,12 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         initialized = await ensure_memory_server_runtime_initialized(
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
-        if admission_generation != _memory_storage_admission_generation:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "ok": False,
-                    "error_code": "storage_startup_reblocked",
-                    "blocking_reason": "storage_startup_blocked_after_init",
-                    "error": "Memory server 初始化期间存储启动闸门已重新关闭。",
-                },
-            )
-        _memory_runtime_prepared_generation = admission_generation
-        # Core state is ready, but business admission and every long-lived
-        # writer stay closed until main_server confirms the entire chain.
-        _memory_storage_blocked_after_init = True
+        _memory_storage_blocked_after_init = False
         return {
             "ok": True,
             "initialized": bool(initialized),
         }
     except Exception as e:
-        _memory_storage_blocked_after_init = True
-        if recovery_mode:
-            set_storage_recovery_mode(recovery_mode)
         logger.error(f"[Memory] 释放 limited-mode 启动失败: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
@@ -1365,160 +1195,11 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         )
 
 
-@app.post(
-    "/internal/storage/startup/activate",
-    dependencies=[Depends(_require_storage_startup_control_auth)],
-)
-async def activate_storage_startup(
-    payload: ContinueStorageStartupRequest | None = None,
-):
-    """Commit long-lived memory work only after every runtime is ready."""
-
-    admission_generation = _memory_storage_admission_generation
-    if get_storage_startup_blocking_reason(_config_manager):
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "error_code": "storage_startup_blocked",
-                "blocking_reason": get_storage_startup_blocking_reason(
-                    _config_manager
-                ),
-            },
-        )
-    activated = _activate_memory_runtime_background_tasks(
-        expected_generation=admission_generation
-    )
-    if not activated:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "error_code": "storage_startup_reblocked",
-                "blocking_reason": "storage_startup_blocked_after_init",
-            },
-        )
-    return {
-        "ok": True,
-        "activated": True,
-        "reason": str(getattr(payload, "reason", "") or ""),
-    }
-
-
-async def _quiesce_memory_activation_tasks() -> None:
-    """Stop this activation generation before acknowledging compensation.
-
-    Main's activation timeout is 10 seconds, while activated persistence loops
-    have a minimum 20-second first-write delay (embedding 30s, token save 60s).
-    Therefore ambiguous activation compensation reaches this cancellation set
-    before any of these long-lived tasks can begin a persistent write. Keep the
-    timeout/delay contract in sync if either side changes.
-    """
-
-    global embedding_warmup_worker, _memory_background_tasks_started
-    global _memory_token_tracker_task
-
-    tracker = None
-    try:
-        from utils.token_tracker import TokenTracker
-
-        tracker = TokenTracker.get_existing_instance()
-        if tracker is not None:
-            tracker.suspend_persistence("memory_server")
-    except Exception as exc:
-        logger.warning("[Memory] token tracker suspension failed: %s", exc)
-
-    activation_tasks = tuple(_memory_activation_tasks)
-    for task in activation_tasks:
-        task.cancel()
-    if activation_tasks:
-        await asyncio.gather(*activation_tasks, return_exceptions=True)
-
-    token_task = _memory_token_tracker_task
-    if token_task is not None:
-        try:
-            if not token_task.done():
-                token_task.cancel()
-                await asyncio.gather(token_task, return_exceptions=True)
-            if tracker is not None and getattr(tracker, "_save_task", None) is token_task:
-                tracker._save_task = None
-        except Exception as exc:
-            logger.warning("[Memory] token tracker compensation failed: %s", exc)
-        _memory_token_tracker_task = None
-
-    worker = embedding_warmup_worker
-    if worker is not None:
-        try:
-            await worker.stop()
-        except Exception as exc:
-            logger.warning("[Memory] embedding worker compensation failed: %s", exc)
-        embedding_warmup_worker = None
-    _memory_background_tasks_started = False
-
-
-async def _finish_memory_storage_block() -> None:
-    await _quiesce_memory_activation_tasks()
-    initializer_task = _memory_runtime_init_task
-    if initializer_task is not None and not initializer_task.done():
-        # The initializer owns real to_thread writes. Cancellation would only
-        # detach those threads, so a compensating block waits for natural
-        # quiescence and never reports success while they can still publish.
-        try:
-            await asyncio.shield(initializer_task)
-        except asyncio.CancelledError:
-            # Finish the safety barrier even if this HTTP waiter disconnects;
-            # cancellation is re-raised after the initializer is quiescent.
-            while not initializer_task.done():
-                try:
-                    await asyncio.shield(initializer_task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            raise
-        except Exception:
-            logger.warning(
-                "[Memory] runtime initializer failed while restoring limited-mode",
-                exc_info=True,
-            )
-
-    # Covers a task that finished between the snapshot and the wait.
-    async with _memory_runtime_init_lock:
-        pass
-
-
-@app.post(
-    "/internal/storage/startup/block",
-    dependencies=[Depends(_require_storage_startup_control_auth)],
-)
+@app.post("/internal/storage/startup/block")
 async def block_storage_startup(payload: ContinueStorageStartupRequest | None = None):
-    global _memory_runtime_prepared_generation
-    global _memory_storage_blocked_after_init, _memory_storage_admission_generation
+    global _memory_storage_blocked_after_init
     reason = str(getattr(payload, "reason", "") or "").strip()
-    recovery_mode = str(getattr(payload, "recovery_mode", "") or "").strip()
-    if recovery_mode:
-        try:
-            set_storage_recovery_mode(recovery_mode)
-        except ValueError:
-            return JSONResponse(
-                status_code=400,
-                content={"ok": False, "error": "invalid storage recovery mode"},
-            )
-    _memory_storage_admission_generation += 1
-    _memory_runtime_prepared_generation = None
     _memory_storage_blocked_after_init = True
-    safety_task = asyncio.create_task(_finish_memory_storage_block())
-    try:
-        await asyncio.shield(safety_task)
-    except asyncio.CancelledError:
-        while not safety_task.done():
-            try:
-                await asyncio.shield(safety_task)
-            except asyncio.CancelledError:
-                continue
-        if not safety_task.cancelled():
-            safety_task.result()
-        raise
     logger.warning("[Memory] limited-mode restored after main_server startup failure: %s", reason or "-")
     return {
         "ok": True,
@@ -1551,21 +1232,13 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
-    persistence_blocked = bool(
-        not _memory_runtime_init_completed
-        or get_storage_recovery_mode()
-        or _memory_storage_blocked_after_init
-    )
-    if persistence_blocked:
-        logger.info("[Memory] 存储恢复会话关闭：跳过运行态持久化，继续释放资源")
-    else:
-        try:
-            from utils.token_tracker import TokenTracker
-            TokenTracker.get_instance().save()
-        except Exception:
-            # Best-effort final flush — the shutdown path must never fail on
-            # tracker IO, and the periodic save loop already persisted recent data.
-            pass
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().save()
+    except Exception:
+        # Best-effort final flush — the shutdown path must never fail on
+        # tracker IO, and the periodic save loop already persisted recent data.
+        pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.

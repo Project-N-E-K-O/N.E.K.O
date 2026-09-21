@@ -232,46 +232,23 @@ def _build_mutation_request() -> Request:
 
 
 @pytest.mark.unit
-def test_retained_root_cleanup_rejects_replaced_directory(tmp_path, monkeypatch):
+def test_retained_root_cleanup_removes_only_migrated_entries(tmp_path):
     retained_root = tmp_path / "retained"
-    retained_root.mkdir()
-    observed = {}
-    monkeypatch.setattr(
-        storage_location_router_module,
-        "probe_retained_community_state",
-        lambda _path: type("State", (), {"has_managed_content": False})(),
-    )
-    monkeypatch.setattr(
-        storage_location_router_module,
-        "is_retained_root_cleanup_available",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        "main_routers.card_drop_router.prepare_retained_community_state_cleanup",
-        lambda *_args, **_kwargs: None,
+    (retained_root / "memory").mkdir(parents=True)
+    (retained_root / "memory" / "history.json").write_text("{}", encoding="utf-8")
+    (retained_root / "community_auth.json").write_text("{}", encoding="utf-8")
+    (retained_root / "notes.txt").write_text("keep", encoding="utf-8")
+
+    storage_location_router_module._cleanup_retained_runtime_root(
+        retained_root,
+        current_root=tmp_path / "current",
+        anchor_root=tmp_path / "anchor",
+        target_root=tmp_path / "target",
     )
 
-    def refuse_replaced_path(path, expected_identity):
-        observed["path"] = path
-        observed["identity"] = expected_identity
-        return False
-
-    monkeypatch.setattr(
-        storage_location_router_module,
-        "_remove_owned_private_directory",
-        refuse_replaced_path,
-    )
-
-    with pytest.raises(ValueError, match="清理期间被替换"):
-        storage_location_router_module._cleanup_retained_runtime_root(
-            retained_root,
-            current_root=tmp_path / "current",
-            anchor_root=tmp_path / "anchor",
-            target_root=tmp_path / "target",
-        )
-
-    assert observed["path"] == retained_root
-    assert os.path.samestat(observed["identity"], retained_root.lstat())
+    assert not (retained_root / "memory").exists()
+    assert not (retained_root / "community_auth.json").exists()
+    assert (retained_root / "notes.txt").read_text(encoding="utf-8") == "keep"
     assert retained_root.is_dir()
 
 

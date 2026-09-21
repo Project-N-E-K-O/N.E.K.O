@@ -4,18 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 
-from config import AUTOSTART_CSRF_TOKEN
 from utils.host_origin_guard import HostOriginGuardMiddleware
-from utils.internal_http_auth import (
-    INTERNAL_HTTP_AUTH_HEADER,
-    get_internal_http_auth_token,
-    internal_http_auth_headers,
-    is_internal_http_request_authorized,
-)
 
 
 def _run(coro):
@@ -186,63 +178,6 @@ def test_http_only_checks_host_not_origin():
     )
     assert hit is True
     assert sent[0]["status"] == 200
-
-
-def test_internal_control_auth_requires_launch_token_and_safe_origin():
-    scope = _scope("http", "127.0.0.1:48911")
-    headers = internal_http_auth_headers()
-
-    assert is_internal_http_request_authorized(scope, headers) is True
-    assert is_internal_http_request_authorized(scope, {}) is False
-    assert is_internal_http_request_authorized(
-        scope,
-        {INTERNAL_HTTP_AUTH_HEADER: "wrong-token"},
-    ) is False
-    assert headers[INTERNAL_HTTP_AUTH_HEADER] != AUTOSTART_CSRF_TOKEN
-    assert is_internal_http_request_authorized(
-        scope,
-        {INTERNAL_HTTP_AUTH_HEADER: AUTOSTART_CSRF_TOKEN},
-    ) is False
-
-    malicious_scope = _scope(
-        "http",
-        "127.0.0.1:48911",
-        origin="https://attacker.example",
-    )
-    assert is_internal_http_request_authorized(malicious_scope, headers) is False
-
-    loopback_scope = _scope(
-        "http",
-        "127.0.0.1:48911",
-        origin="http://localhost:48911",
-    )
-    assert is_internal_http_request_authorized(loopback_scope, headers) is True
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
-def test_internal_control_token_is_rotated_before_forked_child_code_runs():
-    parent_token = get_internal_http_auth_token()
-    read_fd, write_fd = os.pipe()
-    child_pid = os.fork()
-    if child_pid == 0:  # pragma: no cover - assertions execute in the parent
-        try:
-            os.close(read_fd)
-            child_token = get_internal_http_auth_token()
-            os.write(write_fd, b"same" if child_token == parent_token else b"different")
-        finally:
-            os.close(write_fd)
-        os._exit(0)
-
-    os.close(write_fd)
-    try:
-        observed = os.read(read_fd, 32)
-    finally:
-        os.close(read_fd)
-        _, status = os.waitpid(child_pid, 0)
-
-    assert os.waitstatus_to_exitcode(status) == 0
-    assert observed == b"different"
-    assert get_internal_http_auth_token() == parent_token
 
 
 def test_websocket_without_origin_is_allowed_for_native_clients():

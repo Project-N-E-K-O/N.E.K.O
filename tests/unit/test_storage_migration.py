@@ -436,7 +436,7 @@ def test_run_pending_storage_migration_copies_every_selected_root_data_class(tmp
 
 
 @pytest.mark.unit
-def test_run_pending_storage_migration_promotes_legacy_community_state(tmp_path):
+def test_run_pending_storage_migration_copies_community_state_with_runtime_root(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
@@ -460,9 +460,7 @@ def test_run_pending_storage_migration_promotes_legacy_community_state(tmp_path)
 
     assert result["completed"] is True
     for filename, payload in records.items():
-        assert json.loads(
-            (config_manager.local_state_dir / filename).read_text(encoding="utf-8")
-        ) == payload
+        assert json.loads((target_root / filename).read_text(encoding="utf-8")) == payload
     assert all((source_root / filename).exists() for filename in records)
 
 

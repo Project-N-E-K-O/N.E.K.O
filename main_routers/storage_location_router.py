@@ -60,8 +60,6 @@ from main_routers.shared_state import (
 from utils.cloudsave_runtime import (
     ROOT_MODE_MAINTENANCE_READONLY,
     ROOT_MODE_NORMAL,
-    cloudsave_disabled_reason,
-    is_cloudsave_disabled_due_to_local_state_unavailable,
     set_root_mode,
 )
 from utils.storage_location_bootstrap import (
@@ -75,7 +73,6 @@ from utils.storage.entries import (
     RuntimeStorageEntryBoundaryError,
     checked_runtime_entry_path,
 )
-from utils.storage.community_private_state import probe_retained_community_state
 from utils.storage_migration import (
     StorageMigrationError,
     STORAGE_MIGRATION_STATUS_COMPLETED,
@@ -94,7 +91,7 @@ from utils.storage_migration import (
     storage_migration_checkpoint_transaction,
     storage_migration_retains_recovery_evidence,
     validate_storage_migration_preflight_boundaries,
-    _remove_owned_private_directory,
+    _remove_existing_path,
     _snapshot_runtime_entries,
 )
 from utils.storage_policy import (
@@ -558,16 +555,7 @@ def _reject_storage_mutation_when_startup_unavailable(response: Response) -> dic
             "blocking_reason": recovery_mode,
             "error": "存储启动状态无法可靠确认，当前只能安全退出，不能修改存储位置。",
         }
-    if not is_cloudsave_disabled_due_to_local_state_unavailable():
-        return None
-    response.status_code = 409
-    return {
-        "ok": False,
-        "error_code": "cloudsave_local_state_unavailable",
-        "error": "本机状态目录不可用，当前会话已禁用云存档。请先修复本机 state 路径后重启应用，再进行存储位置变更。",
-        "cloudsave_disabled": True,
-        "cloudsave_disabled_reason": cloudsave_disabled_reason(),
-    }
+    return None
 
 
 def _normalize_optional_path(value: Any) -> str:
@@ -2093,11 +2081,6 @@ def _build_completed_migration_notice(
         retained_is_target_preimage = False
     retained_exists = bool(retained_root and Path(retained_root).exists())
     retained_has_runtime_entries = False
-    retained_private_state = probe_retained_community_state(
-        retained_root,
-        classify_social_lock_process=False,
-    )
-    retained_has_private_state = retained_private_state.has_managed_content
     if retained_exists:
         try:
             retained_has_runtime_entries = any(
@@ -2111,10 +2094,7 @@ def _build_completed_migration_notice(
             # Unsafe existing content is still retained content; expose the
             # notice but keep cleanup_available false.
             retained_has_runtime_entries = True
-    if not retained_exists or not (
-        retained_has_runtime_entries
-        or retained_has_private_state
-    ):
+    if not retained_exists or not retained_has_runtime_entries:
         return {
             "completed": False,
         }
@@ -2125,7 +2105,6 @@ def _build_completed_migration_notice(
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
-        anchor_has_managed_private_state=retained_has_private_state,
     )
     if require_existing_retained_root and not cleanup_available:
         return {
@@ -2143,14 +2122,12 @@ def _build_completed_migration_notice(
             else "migration_source_backup"
         ),
         "legacy_runtime_entries_preserved": retained_is_target_preimage,
-        "legacy_private_state_may_be_moved": retained_is_target_preimage,
         "retained_root_exists": retained_exists,
         "cleanup_available": cleanup_available,
         "retained_identity_matches": retained_identity_matches,
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
         "message": (
-            "存储位置迁移已完成，迁移前目标备份仍保留；旧版本根的运行时条目未被清理，"
-            "其中受管社区私有状态可能已一次性迁移到固定状态目录。"
+            "存储位置迁移已完成，迁移前目标备份仍保留；旧版本根的运行时条目未被清理。"
             if retained_is_target_preimage
             else "存储位置迁移已完成，迁移源备份当前仍保留，需手动清理。"
         ),
@@ -2164,10 +2141,8 @@ def _cleanup_retained_runtime_root(
     anchor_root: Path,
     target_root: Path | str | None = None,
     config_manager=None,
-    expected_private_snapshot: dict[str, str] | None = None,
-    expected_root_identity: dict[str, int] | None = None,
 ) -> None:
-    del expected_private_snapshot, expected_root_identity
+    del config_manager
     try:
         metadata = retained_path.lstat()
     except FileNotFoundError as exc:
@@ -2180,7 +2155,6 @@ def _cleanup_retained_runtime_root(
         raise ValueError("旧数据目录路径包含符号链接。")
     if paths_equal(retained_path, current_root) or paths_equal(retained_path, target_root):
         raise ValueError("不能删除当前正在使用的新数据目录。")
-    retained_private_state = probe_retained_community_state(retained_path)
     if not is_retained_root_cleanup_available(
         retained_path,
         current_root=current_root,
@@ -2188,20 +2162,21 @@ def _cleanup_retained_runtime_root(
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
-        anchor_has_managed_private_state=retained_private_state.has_managed_content,
     ):
         raise ValueError("旧数据目录当前不可清理。")
 
-    # Retry the small credential copy when the migration could not publish it;
-    # the old root remains available until this explicit cleanup succeeds.
-    from main_routers.card_drop_router import prepare_retained_community_state_cleanup
+    for entry in RUNTIME_STORAGE_ENTRIES:
+        candidate = checked_runtime_entry_path(retained_path, entry)
+        if candidate.exists() or candidate.is_symlink():
+            _remove_existing_path(candidate)
 
-    prepare_retained_community_state_cleanup(
-        retained_path,
-        config_manager=config_manager,
-    )
-    if not _remove_owned_private_directory(retained_path, metadata):
-        raise ValueError("旧数据目录在清理期间被替换。")
+    # The fixed anchor also contains policy and cloud-save state, so it must
+    # remain.  Other old roots are removed only when no unrelated files remain.
+    if not paths_equal(retained_path, anchor_root):
+        try:
+            retained_path.rmdir()
+        except OSError:
+            pass
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:

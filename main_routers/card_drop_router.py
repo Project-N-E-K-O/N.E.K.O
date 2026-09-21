@@ -19,12 +19,10 @@ import json
 import logging
 import os
 import secrets
-import stat
-import tempfile
 import threading
 import time
 import uuid
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -34,35 +32,6 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
-from utils import single_instance
-from utils.file_utils import (
-    atomic_write_json,
-    fsync_directory_best_effort,
-    publish_without_replacing,
-)
-from utils.storage.community_private_state import (
-    COMMUNITY_AUTH_FILENAME as _AUTH_FILENAME,
-    COMMUNITY_OAUTH_PENDING_FILENAME as _OAUTH_PENDING_FILENAME,
-    COMMUNITY_STEAM_PENDING_FILENAME as _STEAM_PENDING_FILENAME,
-    SOCIAL_SESSION_FILENAME as _SOCIAL_SESSION_FILENAME,
-    SOCIAL_LOCK_OWNER_ORPHANED,
-    SOCIAL_LOCK_SCHEMA_VERSION,
-    backend_can_recover_social_lock_owner,
-    classify_social_lock_owner,
-    migrate_legacy_private_state,
-    parse_social_lock_owner,
-    probe_social_lock_process,
-    probe_retained_community_state,
-    read_private_json_state,
-)
-from utils.storage_policy import (
-    StoragePolicyError,
-    path_chain_has_symlink,
-    paths_equal,
-    publish_fixed_anchor_state_json,
-    read_fixed_anchor_state_json,
-    write_fixed_anchor_state_json,
-)
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -70,37 +39,12 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
+_SOCIAL_SESSION_FILENAME = "social_session.json"
 _SOCIAL_SESSION_LOCK_SUFFIX = ".lock"
+_SOCIAL_SESSION_LOCK_STALE_SEC = 30.0
 _SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
 _SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
-_COMMUNITY_LOGOUT_STATE_FILENAME = "community_logout.json"
-_PRIVATE_EPOCH_FILENAMES = {
-    _AUTH_FILENAME,
-    _SOCIAL_SESSION_FILENAME,
-    _OAUTH_PENDING_FILENAME,
-    _STEAM_PENDING_FILENAME,
-}
-_SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV = "NEKO_LAUNCHER_SINGLE_INSTANCE_PROVEN"
-# Orphan reclamation publishes while holding this mutex; publication-failure
-# bookkeeping protects the same recovery state and therefore re-enters it.
-_SOCIAL_LOCK_RECOVERY_MUTEX = threading.RLock()
-_SOCIAL_LOCK_RECOVERY_GUARD_FILE = "social-session-recovery.lock"
-_SOCIAL_LOCK_OWNER_IDENTITY_MUTEX = threading.Lock()
-_SOCIAL_LOCK_OWNER_IDENTITY: tuple[str, str, str] | None = None
-_SOCIAL_LOCK_ABANDONED_OWNERSHIP: dict[
-    tuple[object, ...], tuple[object | None, str]
-] = {}
-_SOCIAL_SESSION_LOCK_CONTEXT = threading.local()
-_WINDOWS_DELETE_ACCESS = 0x00010000
-_WINDOWS_GENERIC_READ = 0x80000000
-_WINDOWS_FILE_SHARE_READ = 0x00000001
-_WINDOWS_FILE_SHARE_DELETE = 0x00000004
-_WINDOWS_OPEN_EXISTING = 3
-_WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
-_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_WINDOWS_FILE_DISPOSITION_INFO_CLASS = 4
-_WINDOWS_ERROR_SHARING_VIOLATION = 32
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
@@ -134,20 +78,6 @@ class _InvalidIdentityResponse(Exception):
     """The cloud accepted a token but did not return the frozen identity contract."""
 
     detail = "invalid_identity_response"
-
-
-class _InvalidSyncTicket(Exception):
-    """The final locked sync-ticket consume lost to logout or another request."""
-
-    detail = "invalid_sync_ticket"
-
-
-class _SocialLockReplacedError(OSError):
-    """The lock name moved to another inode during a stable snapshot read."""
-
-
-class _SocialLockBusyError(OSError):
-    """The exact Windows lock object is temporarily unavailable for sharing."""
 
 
 @dataclass(frozen=True)
@@ -442,16 +372,15 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
     )
 
 
-def _require_local_mutation_ticket(request: Request, payload: dict | None) -> object:
-    """Authorize a local state mutation; the operation consumes under its lock."""
+def _require_local_mutation_ticket(request: Request, payload: dict | None) -> None:
+    """Authorize a local state mutation and atomically consume its ticket."""
     if not _local_mutation_origin_allowed(request):
         raise HTTPException(status_code=403, detail="origin_not_allowed")
     sync_ticket = (payload or {}).get("sync_ticket") or (payload or {}).get(
         "syncTicket"
     )
-    if not _sync_ticket_is_valid(sync_ticket):
+    if not _consume_sync_ticket(sync_ticket):
         raise HTTPException(status_code=403, detail="invalid_sync_ticket")
-    return sync_ticket
 
 
 def _local_request_source_allowed(request: Request) -> bool:
@@ -580,251 +509,21 @@ def _credit_cors_headers(request: Request) -> dict[str, str] | None:
 
 
 # ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
-_OAUTH_PENDING_TTL_SEC = 600
-
-
-def _oauth_pending_record_has_shape(data: dict) -> bool:
-    if not (
-        str(data.get("state") or "").strip()
-        and str(data.get("code_verifier") or "").strip()
-    ):
-        return False
-    try:
-        return float(data.get("expires_at") or 0) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _oauth_pending_record_is_fresh(data: dict) -> bool:
-    return _oauth_pending_record_has_shape(data) and float(data["expires_at"]) > time.time()
-
-
-def _steam_pending_record_has_shape(data: dict) -> bool:
-    if not str(data.get("state") or "").strip():
-        return False
-    try:
-        return float(data.get("ts") or 0) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _steam_pending_record_is_fresh(data: dict) -> bool:
-    if not _steam_pending_record_has_shape(data):
-        return False
-    timestamp = float(data["ts"])
-    return bool(timestamp) and (time.time() - timestamp) <= _STEAM_PENDING_TTL_SEC
-
-
-def _community_state_dir(config_manager=None) -> Path | None:
-    """Return the fixed-anchor directory for private community state."""
-    try:
-        if config_manager is None:
-            from utils.config_manager import get_config_manager
-
-            config_manager = get_config_manager()
-        state_dir = Path(config_manager.local_state_dir)
-        if path_chain_has_symlink(state_dir):
-            logger.warning("card_drop: community state directory is unsafe")
-            return None
-        return state_dir
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("card_drop: community state path resolve failed: %s", exc)
-        return None
-
-
-def _community_state_path(filename: str, *, config_manager=None) -> Path | None:
-    state_dir = _community_state_dir(config_manager)
-    return state_dir / filename if state_dir is not None else None
-
-
-def _current_logout_epoch(*, config_manager=None) -> int:
-    """Read the fixed-anchor logout generation; malformed state fails closed."""
-
-    auth_path = (
-        _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
-        if config_manager is not None
-        else _auth_path()
-    )
-    path = (
-        auth_path.parent / _COMMUNITY_LOGOUT_STATE_FILENAME
-        if auth_path is not None
-        else None
-    )
-    if path is None:
-        raise OSError("community logout state is unavailable")
-    state, payload = _read_fixed_anchor_private_json_state(path)
-    if state == "absent":
-        return 0
-    if state != "valid" or not isinstance(payload, dict):
-        raise OSError("community logout state is unreadable")
-    epoch = payload.get("logout_epoch")
-    if (
-        payload.get("version") != 1
-        or isinstance(epoch, bool)
-        or not isinstance(epoch, int)
-        or epoch < 0
-    ):
-        raise OSError("community logout state is malformed")
-    return epoch
-
-
-def _private_record_epoch(data: dict) -> int | None:
-    epoch = data.get("credential_epoch", 0)
-    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
-        return None
-    return epoch
-
-
-def _fsync_logout_epoch_directory_required(path: Path) -> None:
-    """Require POSIX durability for the logout tombstone's directory entry."""
-
-    if os.name == "nt":
-        # atomic_write_json already attempts the platform's best available
-        # directory barrier. Windows does not expose POSIX directory fsync.
-        return
-    directory_fd = -1
-    try:
-        directory_fd = os.open(
-            os.fspath(path),
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-        os.fsync(directory_fd)
-    finally:
-        if directory_fd >= 0:
-            with suppress(OSError):
-                os.close(directory_fd)
-
-
-def _advance_logout_epoch(*, config_manager=None) -> int:
-    auth_path = (
-        _community_state_path(_AUTH_FILENAME, config_manager=config_manager)
-        if config_manager is not None
-        else _auth_path()
-    )
-    path = (
-        auth_path.parent / _COMMUNITY_LOGOUT_STATE_FILENAME
-        if auth_path is not None
-        else None
-    )
-    if path is None:
-        raise OSError("community logout state is unavailable")
-    next_epoch = _current_logout_epoch(config_manager=config_manager) + 1
-    payload = {
-        "version": 1,
-        "logout_epoch": next_epoch,
-        "updated_at": int(time.time()),
-    }
-    if path.parent.name == "state":
-        try:
-            write_fixed_anchor_state_json(
-                path.parent.parent,
-                path.name,
-                payload,
-                ensure_ascii=False,
-                indent=2,
-            )
-        except StoragePolicyError as exc:
-            raise OSError("community logout state publication failed") from exc
-    else:
-        # Preserve the existing behavior for explicit non-anchor path overrides.
-        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
-        _fsync_logout_epoch_directory_required(path.parent)
-    if _current_logout_epoch(config_manager=config_manager) != next_epoch:
-        raise OSError("community logout state verification failed")
-    return next_epoch
-
-
-def _logout_storage_ready() -> bool:
-    """Prove the committed selected root is reachable before deleting secrets."""
-    try:
-        from utils.config_manager import get_config_manager
-        config_manager = get_config_manager()
-        if bool(getattr(config_manager, "recovery_committed_root_unavailable", False)):
-            return False
-        committed_root = Path(
-            getattr(config_manager, "committed_selected_root", Path(config_manager.memory_dir).parent)
-        ).expanduser()
-        metadata = committed_root.lstat()
-        return bool(
-            stat.S_ISDIR(metadata.st_mode)
-            and not path_chain_has_symlink(committed_root)
-            and os.access(committed_root, os.R_OK | os.W_OK | os.X_OK)
-        )
-    except (AttributeError, OSError):
-        return False
+_AUTH_FILENAME = "community_auth.json"
 
 
 def _auth_path() -> Path | None:
-    return _community_state_path(_AUTH_FILENAME)
-
-
-def _legacy_root_candidates(config_manager=None) -> tuple[list[Path], list[Path]]:
-    """Return the one checkpointed source root for simple first-read migration."""
     try:
         from utils.config_manager import get_config_manager
-        from utils.storage_migration import load_storage_migration
-        manager = config_manager or get_config_manager()
-        current_root = Path(manager.memory_dir).parent
-        committed_root = Path(getattr(manager, "committed_selected_root", current_root)).expanduser()
-        migration = load_storage_migration(manager)
-        if not isinstance(migration, dict) or str(migration.get("status") or "") != "completed":
-            return [], []
-        if not paths_equal(migration.get("target_root") or "", committed_root):
-            return [], []
-        retained = str(migration.get("retained_source_root") or migration.get("backup_root") or "").strip()
-        if not retained:
-            return [], []
-        source = Path(retained).expanduser()
-        if not source.is_absolute() or not source.exists() or paths_equal(source, committed_root):
-            return [], []
-        return [source], [source, committed_root]
-    except Exception:
-        return [], []
-
-
-def _legacy_selected_roots(config_manager=None) -> list[Path]:
-    return _legacy_root_candidates(config_manager)[0]
-
-
-def _legacy_conflict_witness_roots(config_manager=None) -> list[Path]:
-    return _legacy_root_candidates(config_manager)[1]
-
-
-def _legacy_private_file_paths(filename: str) -> list[Path]:
-    return [root / filename for root in _legacy_selected_roots()]
-
-
-def _legacy_private_conflict_paths(filename: str) -> list[Path]:
-    return [root / filename for root in _legacy_conflict_witness_roots()]
-
-
-def _logout_private_file_paths(filename: str) -> list[Path]:
-    paths = [root / filename for root in _legacy_conflict_witness_roots()]
-    try:
-        from utils.config_manager import get_config_manager
-        manager = get_config_manager()
-        for root in (
-            Path(manager.memory_dir).parent,
-            Path(getattr(manager, "committed_selected_root", manager.memory_dir)).expanduser(),
-        ):
-            candidate = root / filename
-            if candidate not in paths:
-                paths.append(candidate)
-    except (AttributeError, OSError):
-        pass
-    return paths
+        return Path(get_config_manager().memory_dir).parent / _AUTH_FILENAME
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card_drop: auth path resolve failed: %s", exc)
+        return None
 
 
 def _legacy_social_session_path() -> Path | None:
-    auth_path = _auth_path()
-    canonical_auth = _community_state_path(_AUTH_FILENAME)
-    if auth_path is not None and auth_path != canonical_auth:
-        return auth_path.parent / _SOCIAL_SESSION_FILENAME
-    paths = _legacy_private_file_paths(_SOCIAL_SESSION_FILENAME)
-    return paths[0] if paths else None
+    p = _auth_path()
+    return (p.parent / _SOCIAL_SESSION_FILENAME) if p else None
 
 
 def _social_session_path() -> Path | None:
@@ -835,564 +534,38 @@ def _social_session_path() -> Path | None:
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME
         logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")
-    return _community_state_path(_SOCIAL_SESSION_FILENAME)
+    return _legacy_social_session_path()
 
 
 def _social_session_paths() -> list[Path]:
     paths: list[Path] = []
-    candidates = [
-        _social_session_path(),
-        _community_state_path(_SOCIAL_SESSION_FILENAME),
-        _legacy_social_session_path(),
-        *_legacy_private_file_paths(_SOCIAL_SESSION_FILENAME),
-    ]
-    for candidate in candidates:
+    for candidate in (_social_session_path(), _legacy_social_session_path()):
         if candidate is not None and candidate not in paths:
             paths.append(candidate)
     return paths
 
 
-def _social_lock_fingerprint(raw: bytes) -> str:
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError, TypeError):
-        payload = None
-    token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
-    if token:
-        return f"token:{token}"
-    # A digest lets the creating process clean up a malformed partial write.
-    # Existing locks are never taken over based on their age.
-    return f"digest:{hashlib.sha256(raw).hexdigest()}"
-
-
-def _backend_social_lock_recovery_authority() -> bool:
-    """Require the launcher's positive backend-singleton proof before reaping."""
-    return bool(
-        os.environ.get(_SOCIAL_LOCK_SINGLE_INSTANCE_PROOF_ENV, "").strip()
-    )
-
-
-def _current_social_lock_record(token: str, *, owner_kind: str = "neko") -> dict:
-    global _SOCIAL_LOCK_OWNER_IDENTITY
-    with _SOCIAL_LOCK_OWNER_IDENTITY_MUTEX:
-        if _SOCIAL_LOCK_OWNER_IDENTITY is None:
-            _SOCIAL_LOCK_OWNER_IDENTITY = probe_social_lock_process(os.getpid())
-        state, start_token, scheme = _SOCIAL_LOCK_OWNER_IDENTITY
-    return {
-        "schema_version": SOCIAL_LOCK_SCHEMA_VERSION,
-        "token": token,
-        "owner_kind": owner_kind,
-        "pid": os.getpid(),
-        "start_token": start_token if state != "unknown" else "",
-        "start_token_scheme": scheme if start_token else "",
-        "created_at": int(time.time() * 1000),
-    }
-
-
-def _social_lock_metadata_equal(left, right) -> bool:
-    return bool(
-        os.path.samestat(left, right)
-        and int(left.st_size) == int(right.st_size)
-        and int(left.st_mtime_ns) == int(right.st_mtime_ns)
-    )
-
-
-def _open_windows_social_lock_fd(
-    lock_path: Path | str,
-    *,
-    delete_access: bool,
-) -> int:
-    """Open a Windows lock snapshot without forfeiting exact-handle deletion."""
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    create_file.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    desired_access = _WINDOWS_GENERIC_READ
-    if delete_access:
-        desired_access |= _WINDOWS_DELETE_ACCESS
-    # Published lock records are immutable. Sharing reads keeps contenders
-    # observable and sharing deletion lets the owner retire the exact object;
-    # deliberately deny new writers so its verified bytes cannot change before
-    # the handle disposition is committed.
-    share_mode = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_DELETE
-    handle = create_file(
-        os.fspath(lock_path),
-        desired_access,
-        share_mode,
-        None,
-        _WINDOWS_OPEN_EXISTING,
-        _WINDOWS_FILE_ATTRIBUTE_NORMAL | _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT,
-        None,
-    )
-    invalid_handle = wintypes.HANDLE(-1).value
-    if handle == invalid_handle:
-        error_number = ctypes.get_last_error()
-        message = ctypes.FormatError(error_number).strip()
-        if error_number in {2, 3}:
-            raise FileNotFoundError(error_number, message, os.fspath(lock_path))
-        if error_number == 5:
-            raise PermissionError(error_number, message, os.fspath(lock_path))
-        if error_number == _WINDOWS_ERROR_SHARING_VIOLATION:
-            raise _SocialLockBusyError(error_number, message, os.fspath(lock_path))
-        raise OSError(error_number, message, os.fspath(lock_path))
-    try:
-        return msvcrt.open_osfhandle(
-            int(handle),
-            os.O_RDONLY | getattr(os, "O_BINARY", 0),
-        )
-    except BaseException:
-        kernel32.CloseHandle(handle)
-        raise
-
-
-def _open_social_lock_fd(
-    lock_path: Path | str,
-    *,
-    dir_fd: int | None = None,
-    delete_access: bool = False,
-) -> int:
-    if os.name == "nt":
-        if dir_fd is not None:
-            raise NotImplementedError("Windows social lock dir_fd is unavailable")
-        return _open_windows_social_lock_fd(
-            lock_path,
-            delete_access=delete_access,
-        )
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    return os.open(lock_path, flags, dir_fd=dir_fd)
-
-
-def _delete_windows_social_lock_handle(fd: int) -> None:
-    """Mark the exact verified Windows handle for deletion on close."""
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    class _FileDispositionInfo(ctypes.Structure):
-        # Win32 FILE_DISPOSITION_INFO uses BOOLEAN (one byte), not BOOL.
-        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    set_file_information = kernel32.SetFileInformationByHandle
-    set_file_information.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    ]
-    set_file_information.restype = wintypes.BOOL
-    disposition = _FileDispositionInfo(True)
-    handle = msvcrt.get_osfhandle(fd)
-    if not set_file_information(
-        handle,
-        _WINDOWS_FILE_DISPOSITION_INFO_CLASS,
-        ctypes.byref(disposition),
-        ctypes.sizeof(disposition),
-    ):
-        error_number = ctypes.get_last_error()
-        raise OSError(error_number, ctypes.FormatError(error_number).strip())
-
-
-def _open_social_lock_snapshot(
-    lock_path: Path | str,
-    *,
-    dir_fd: int | None = None,
-    delete_access: bool = False,
-) -> tuple[int, object, str, dict | None]:
-    """Open a lock without following it and prove the name still names that inode."""
-    before = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
-    if not stat.S_ISREG(before.st_mode):
-        raise OSError("unsafe social session lock")
-    fd = _open_social_lock_fd(
-        lock_path,
-        dir_fd=dir_fd,
-        delete_access=delete_access,
-    )
-    try:
-        opened = os.fstat(fd)
-        if not os.path.samestat(before, opened):
-            raise _SocialLockReplacedError(
-                "social session lock was replaced while opening"
-            )
-        if not _social_lock_metadata_equal(before, opened):
-            raise OSError("social session lock changed while opening")
-        chunks: list[bytes] = []
-        remaining = 4097
-        while remaining:
-            chunk = os.read(fd, min(remaining, 4096))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        raw = b"".join(chunks)
-        after = os.fstat(fd)
-        if len(raw) > 4096 or not _social_lock_metadata_equal(opened, after):
-            raise OSError("social session lock changed while reading")
-        named = os.stat(lock_path, dir_fd=dir_fd, follow_symlinks=False)
-        if not os.path.samestat(after, named):
-            raise _SocialLockReplacedError(
-                "social session lock was replaced while reading"
-            )
-        if not _social_lock_metadata_equal(after, named):
-            raise OSError("social session lock changed while resolving its name")
-        return fd, after, _social_lock_fingerprint(raw), parse_social_lock_owner(raw)
-    except BaseException:
-        os.close(fd)
-        raise
-
-
-def _read_social_lock_snapshot(
-    lock_path: Path | str,
-    *,
-    dir_fd: int | None = None,
-) -> tuple[object, str, dict | None]:
-    fd, metadata, fingerprint, owner = _open_social_lock_snapshot(
-        lock_path,
-        dir_fd=dir_fd,
-    )
-    os.close(fd)
-    return metadata, fingerprint, owner
-
-
-def _unlink_social_lock_if_unchanged(
-    lock_path: Path | str,
-    expected_metadata,
-    expected_fingerprint: str,
-    *,
-    dir_fd: int | None = None,
-) -> bool:
-    """Delete only the exact open-and-reverified lock inode/token snapshot."""
-    try:
-        fd, current_metadata, current_fingerprint, _owner = _open_social_lock_snapshot(
-            lock_path,
-            dir_fd=dir_fd,
-            delete_access=os.name == "nt",
-        )
-    except FileNotFoundError:
-        return False
-    try:
-        if (
-            not _social_lock_metadata_equal(expected_metadata, current_metadata)
-            or current_fingerprint != expected_fingerprint
-        ):
-            return False
-        # Keep the verified object open through deletion. POSIX unlink names
-        # the still-open inode; Windows must mark that same DELETE-capable
-        # handle instead, because path deletion while a normal fd is open is
-        # rejected and close-then-unlink would restore a name-replacement race.
-        if os.name == "nt":
-            _delete_windows_social_lock_handle(fd)
-        else:
-            os.unlink(lock_path, dir_fd=dir_fd)
-        return True
-    finally:
-        os.close(fd)
-
-
-def _social_lock_location_key(
-    lock_path: Path | str,
-    *,
-    dir_fd: int | None = None,
-) -> tuple[object, ...]:
-    """Identify one public lock name without trusting path spelling aliases."""
-    name = os.fspath(lock_path)
-    if dir_fd is not None:
-        parent = os.fstat(dir_fd)
-        return "dirfd", int(parent.st_dev), int(parent.st_ino), name
-    path = Path(lock_path)
-    parent_path = path.parent
-    parent = parent_path.stat()
-    return (
-        "path",
-        os.path.normcase(os.path.abspath(os.fspath(parent_path))),
-        int(parent.st_dev),
-        int(parent.st_ino),
-        path.name,
-    )
-
-
-def _forget_abandoned_social_lock(
-    lock_path: Path | str,
-    *,
-    dir_fd: int | None = None,
-) -> None:
-    try:
-        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
-    except OSError:
-        return
-    with _SOCIAL_LOCK_RECOVERY_MUTEX:
-        _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
-
-
-def _remember_abandoned_social_lock(
-    lock_path: Path | str,
-    metadata: object | None,
-    fingerprint: str,
-    *,
-    dir_fd: int | None = None,
-) -> None:
-    try:
-        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
-    except OSError:
-        return
-    with _SOCIAL_LOCK_RECOVERY_MUTEX:
-        _SOCIAL_LOCK_ABANDONED_OWNERSHIP[location] = (metadata, fingerprint)
-
-
-def _retry_abandoned_social_lock_release(
-    lock_path: Path | str,
-    current_metadata,
-    current_fingerprint: str,
-    *,
-    dir_fd: int | None = None,
-) -> bool:
-    """Retry only a lock this process previously failed to release exactly."""
-    try:
-        location = _social_lock_location_key(lock_path, dir_fd=dir_fd)
-    except OSError:
-        return False
-    with _SOCIAL_LOCK_RECOVERY_MUTEX:
-        abandoned = _SOCIAL_LOCK_ABANDONED_OWNERSHIP.get(location)
-        if abandoned is None:
-            return False
-        abandoned_metadata, abandoned_fingerprint = abandoned
-        if (
-            abandoned_fingerprint != current_fingerprint
-            or (
-                abandoned_metadata is not None
-                and not _social_lock_metadata_equal(
-                    abandoned_metadata,
-                    current_metadata,
-                )
-            )
-        ):
-            _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
-            return False
-        try:
-            _unlink_social_lock_if_unchanged(
-                lock_path,
-                abandoned_metadata or current_metadata,
-                abandoned_fingerprint,
-                dir_fd=dir_fd,
-            )
-        except OSError:
-            # The exact object is still ours but temporarily cannot be retired.
-            return True
-        _SOCIAL_LOCK_ABANDONED_OWNERSHIP.pop(location, None)
-        # Whether it was removed or replaced during the second snapshot, retry
-        # acquisition from the public name instead of using an older observation.
-        return True
-
-
-def _release_owned_social_lock(
-    lock_path: Path | str,
-    owned_metadata,
-    owned_fingerprint: str,
-    *,
-    dir_fd: int | None = None,
-) -> None:
-    try:
-        _unlink_social_lock_if_unchanged(
-            lock_path,
-            owned_metadata,
-            owned_fingerprint,
-            dir_fd=dir_fd,
-        )
-    except OSError:
-        _remember_abandoned_social_lock(
-            lock_path,
-            owned_metadata,
-            owned_fingerprint,
-            dir_fd=dir_fd,
-        )
-        return
-    # False means the public name changed before deletion, so the remembered
-    # exact object is no longer the lock that can block this location either.
-    _forget_abandoned_social_lock(lock_path, dir_fd=dir_fd)
-
-
-def _read_private_json_state(path: Path) -> tuple[str, dict | None]:
-    """Distinguish absence from corrupt/unreadable credential authority."""
-    return read_private_json_state(path)
-
-
-def _read_private_json_state_at(dir_fd: int, filename: str) -> tuple[str, dict | None]:
-    """Read one retained-root file through an already verified directory handle."""
-    return read_private_json_state(filename, dir_fd=dir_fd)
-
-
-def _read_fixed_anchor_private_json_state(path: Path) -> tuple[str, dict | None]:
-    """Read canonical private state through the fixed anchor directory chain."""
-
-    if path.parent.name != "state":
-        return _read_private_json_state(path)
-    try:
-        payload = read_fixed_anchor_state_json(
-            path.parent.parent,
-            path.name,
-            deny_leaf_write=True,
-        )
-    except FileNotFoundError:
-        return "absent", None
-    except (StoragePolicyError, OSError):
-        return "unreadable", None
-    except (UnicodeError, ValueError, TypeError):
-        return "invalid", None
-    if not isinstance(payload, dict):
-        return "invalid", None
-    return "valid", payload
-
-
-def _write_private_json_no_replace(path: Path, data: dict) -> bool:
-    """Atomically publish a private JSON file without replacing a race winner."""
-    if path.parent.name != "state":
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path_chain_has_symlink(path.parent):
-            raise OSError("unsafe private state directory")
-        fd, raw_tmp = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=path.parent,
-        )
-        tmp = Path(raw_tmp)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False, indent=2)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                tmp.chmod(0o600)
-            except OSError:
-                pass
-            try:
-                publish_without_replacing(tmp, path)
-            except FileExistsError:
-                return False
-            fsync_directory_best_effort(path.parent)
-            return True
-        finally:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-    try:
-        return publish_fixed_anchor_state_json(
-            path.parent.parent,
-            path.name,
-            data,
-            ensure_ascii=False,
-            indent=2,
-        )
-    except StoragePolicyError as exc:
-        raise OSError("unsafe private state directory") from exc
-
-
-def _load_or_migrate_private_json(
-    canonical_path: Path | None,
-    legacy_paths: list[Path],
-    *,
-    validator,
-    conflict_paths: list[Path] | None = None,
-    retain_legacy_source: bool = False,
-) -> dict | None:
-    """Read canonical state, or copy one known checkpointed record once."""
-    del conflict_paths
-    if canonical_path is None:
-        return None
-    try:
-        logout_epoch = _current_logout_epoch()
-    except OSError as exc:
-        logger.warning("card_drop: logout generation is unavailable: %s", exc)
-        return None
-
-    def usable(data: dict) -> bool:
-        return bool(validator(data) and _private_record_epoch(data) == logout_epoch)
-
-    state, data = _read_fixed_anchor_private_json_state(canonical_path)
-    if state == "valid" and usable(data or {}):
-        return data
-    if state != "absent":
-        return None
-    for legacy_path in legacy_paths:
-        legacy_state, legacy_data = _read_private_json_state(legacy_path)
-        if legacy_state != "valid" or not usable(legacy_data or {}):
-            continue
-        try:
-            if not _write_private_json_no_replace(canonical_path, legacy_data or {}):
-                winner_state, winner_data = _read_fixed_anchor_private_json_state(canonical_path)
-                return winner_data if winner_state == "valid" and usable(winner_data or {}) else None
-            if not retain_legacy_source:
-                legacy_path.unlink(missing_ok=True)
-                fsync_directory_best_effort(legacy_path.parent)
-        except OSError as exc:
-            logger.warning("card_drop: private state migration failed for %s: %s", canonical_path.name, exc)
-        return legacy_data
-    return None
-
-
-def prepare_retained_community_state_cleanup(
-    retained_root: Path | str,
-    *,
-    config_manager=None,
-    expected_snapshot: dict[str, str] | None = None,
-    retained_dir_fd: int | None = None,
-) -> None:
-    """Promote the fixed credential files before explicit old-root deletion."""
-    del expected_snapshot, retained_dir_fd
-    if config_manager is None:
-        from utils.config_manager import get_config_manager
-        config_manager = get_config_manager()
-    migrate_legacy_private_state(retained_root, config_manager)
-
 def _read_json_dict(path: Path | None) -> dict | None:
-    if not path:
+    if not path or not path.exists():
         return None
-    state, data = read_private_json_state(path)
-    return data if state == "valid" else None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def _load_auth() -> dict | None:
-    canonical = _auth_path()
-    return _load_or_migrate_private_json(
-        canonical,
-        _legacy_private_file_paths(_AUTH_FILENAME),
-        validator=lambda data: bool(str(data.get("access_token") or "").strip()),
-        retain_legacy_source=True,
-    )
+    return _read_json_dict(_auth_path())
 
 
 def _load_social_session() -> dict | None:
-    """Load the session from the fixed state path (or the host override)."""
-    canonical = _social_session_path()
-    lock_paths = [canonical] if canonical is not None else []
-
-    def _load_while_locked() -> dict | None:
-        return _load_or_migrate_private_json(
-            canonical,
-            [path for path in _social_session_paths() if path != canonical],
-            validator=lambda data: bool(str(data.get("token") or "").strip()),
-            retain_legacy_source=True,
-        )
-
-    if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
-        return _load_while_locked()
-    with _social_session_locks(lock_paths):
-        return _load_while_locked()
+    """Load the authoritative Electron session, with the legacy path as fallback."""
+    for path in _social_session_paths():
+        data = _read_json_dict(path)
+        if data and isinstance(data.get("token"), str) and data["token"].strip():
+            return data
+    return None
 
 
 def _normalize_local_user_id(value: object) -> str:
@@ -1411,9 +584,6 @@ def _normalize_auth_source(value: object) -> str:
 
 def _desktop_session_snapshot() -> dict | None:
     """Normalize the desktop session while preferring Electron's refreshed token."""
-    # Migrate the mirror first so a legacy social record can be checked against
-    # the same account instead of combining credentials from different roots.
-    auth = _load_auth()
     social = _load_social_session()
     if social is not None:
         return {
@@ -1428,6 +598,7 @@ def _desktop_session_snapshot() -> dict | None:
             "client_id": str(social.get("client_id") or "").strip(),
         }
 
+    auth = _load_auth()
     if auth is None:
         return None
     access = auth.get("access_token")
@@ -1448,16 +619,10 @@ def _desktop_session_snapshot() -> dict | None:
 
 def _write_private_json(path: Path, data: dict) -> None:
     """Atomically persist local credentials with owner-only permissions where supported."""
-    payload = dict(data)
-    if path.name in _PRIVATE_EPOCH_FILENAMES:
-        payload["credential_epoch"] = _current_logout_epoch()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
             tmp.chmod(0o600)
         except OSError:
@@ -1471,373 +636,66 @@ def _write_private_json(path: Path, data: dict) -> None:
             pass
 
 
-def _try_publish_social_lock(
-    lock_path: Path | str,
-    token: str,
-    *,
-    dir_fd: int | None = None,
-) -> tuple[object, str] | None:
-    """Publish a complete lock record atomically, or return None if busy."""
-    encoded = json.dumps(
-        _current_social_lock_record(token),
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    display_name = Path(lock_path).name
-    tmp_name = f".{display_name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-    tmp_path = Path(lock_path).with_name(tmp_name) if dir_fd is None else tmp_name
-    fd = -1
-    published = False
-    try:
-        fd = os.open(
-            tmp_path,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=dir_fd,
-        )
-        offset = 0
-        while offset < len(encoded):
-            written = os.write(fd, encoded[offset:])
-            if written <= 0:
-                raise OSError("short social session lock write")
-            offset += written
-        os.fsync(fd)
-        fchmod = getattr(os, "fchmod", None)
-        if callable(fchmod):
-            with suppress(OSError):
-                fchmod(fd, 0o600)
-        os.close(fd)
-        fd = -1
-        try:
-            if dir_fd is None:
-                publish_without_replacing(tmp_path, Path(lock_path))
-            else:
-                os.link(
-                    tmp_name,
-                    lock_path,
-                    src_dir_fd=dir_fd,
-                    dst_dir_fd=dir_fd,
-                    follow_symlinks=False,
-                )
-            published = True
-        except FileExistsError:
-            return None
-        metadata, fingerprint, _owner = _read_social_lock_snapshot(
-            lock_path,
-            dir_fd=dir_fd,
-        )
-        if fingerprint != f"token:{token}":
-            raise OSError("published social session lock changed unexpectedly")
-        return metadata, fingerprint
-    except BaseException:
-        if published:
-            retired_or_replaced = False
-            try:
-                metadata, fingerprint, _owner = _read_social_lock_snapshot(
-                    lock_path,
-                    dir_fd=dir_fd,
-                )
-                if fingerprint == f"token:{token}":
-                    retired_or_replaced = _unlink_social_lock_if_unchanged(
-                        lock_path,
-                        metadata,
-                        fingerprint,
-                        dir_fd=dir_fd,
-                    )
-                else:
-                    retired_or_replaced = True
-            except OSError:
-                pass
-            if not retired_or_replaced:
-                # Publication succeeded, but the exact object could not be
-                # reopened to capture metadata or retire it. The random token
-                # remains enough to recognize only this candidate on a later
-                # stable snapshot at the same physical lock location.
-                _remember_abandoned_social_lock(
-                    lock_path,
-                    None,
-                    f"token:{token}",
-                    dir_fd=dir_fd,
-                )
-        raise
-    finally:
-        if fd >= 0:
-            with suppress(OSError):
-                os.close(fd)
-        with suppress(OSError):
-            os.unlink(tmp_path, dir_fd=dir_fd)
-        if published:
-            if dir_fd is None:
-                fsync_directory_best_effort(Path(lock_path).parent)
-            else:
-                with suppress(OSError):
-                    os.fsync(dir_fd)
-
-
-def _reclaim_orphaned_social_lock(
-    lock_path: Path | str,
-    expected_metadata,
-    expected_fingerprint: str,
-    expected_owner: dict | None,
-    replacement_token: str,
-    *,
-    dir_fd: int | None = None,
-) -> tuple[object, str] | None:
-    """Reclaim only under the launcher's unique authority proof."""
-    if (
-        not backend_can_recover_social_lock_owner(expected_owner)
-        or classify_social_lock_owner(expected_owner) != SOCIAL_LOCK_OWNER_ORPHANED
-    ):
-        return None
-    with _SOCIAL_LOCK_RECOVERY_MUTEX:
-        try:
-            authority = single_instance.try_acquire_auxiliary_lock(
-                _SOCIAL_LOCK_RECOVERY_GUARD_FILE
-            )
-        except (OSError, ValueError):
-            return None
-        if authority is None:
-            return None
-        with authority:
-            try:
-                current_metadata, current_fingerprint, current_owner = _read_social_lock_snapshot(
-                    lock_path,
-                    dir_fd=dir_fd,
-                )
-            except FileNotFoundError:
-                return _try_publish_social_lock(
-                    lock_path,
-                    replacement_token,
-                    dir_fd=dir_fd,
-                )
-            if (
-                not _social_lock_metadata_equal(expected_metadata, current_metadata)
-                or expected_fingerprint != current_fingerprint
-                or not backend_can_recover_social_lock_owner(current_owner)
-                or classify_social_lock_owner(current_owner) != SOCIAL_LOCK_OWNER_ORPHANED
-            ):
-                return None
-            if not _unlink_social_lock_if_unchanged(
-                lock_path,
-                current_metadata,
-                current_fingerprint,
-                dir_fd=dir_fd,
-            ):
-                return None
-            # Hold the kernel recovery guard until this authority either
-            # publishes its complete replacement or observes another writer.
-            return _try_publish_social_lock(
-                lock_path,
-                replacement_token,
-                dir_fd=dir_fd,
-            )
-
-
 @contextmanager
 def _social_session_lock(path: Path):
     """Serialize social-session CAS writes with the Electron main process."""
     lock_path = Path(f"{path}{_SOCIAL_SESSION_LOCK_SUFFIX}")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if path_chain_has_symlink(lock_path.parent):
-        raise OSError("unsafe social session lock directory")
     token = f"{os.getpid()}:{secrets.token_hex(16)}"
-    token_fingerprint = f"token:{token}"
-    owned_metadata = None
     deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
     while True:
         try:
-            published = _try_publish_social_lock(lock_path, token)
-        except _SocialLockBusyError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("social session lock is busy")
-            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-            continue
-        if published is None:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
             try:
-                lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(lock_path)
-                if lock_fingerprint == token_fingerprint:
-                    owned_metadata = lock_metadata
-                    _forget_abandoned_social_lock(lock_path)
-                    break
-                if _retry_abandoned_social_lock_release(
-                    lock_path,
-                    lock_metadata,
-                    lock_fingerprint,
-                ):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("social session lock is busy")
-                    time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+                stale = (
+                    time.time() - lock_path.stat().st_mtime
+                ) > _SOCIAL_SESSION_LOCK_STALE_SEC
+                if stale:
+                    lock_path.unlink(missing_ok=True)
                     continue
-                recovered = None
-                if _backend_social_lock_recovery_authority():
-                    recovered = _reclaim_orphaned_social_lock(
-                        lock_path,
-                        lock_metadata,
-                        lock_fingerprint,
-                        lock_owner,
-                        token,
-                    )
             except FileNotFoundError:
-                _forget_abandoned_social_lock(lock_path)
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("social session lock is busy")
                 continue
-            except (_SocialLockReplacedError, _SocialLockBusyError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("social session lock is busy")
-                time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-                continue
-            if recovered is not None:
-                owned_metadata, token_fingerprint = recovered
-                break
             if time.monotonic() >= deadline:
                 raise TimeoutError("social session lock is busy")
             time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
             continue
-        owned_metadata, token_fingerprint = published
-        _forget_abandoned_social_lock(lock_path)
-        break
-
-    try:
-        yield
-    finally:
-        if owned_metadata is not None:
-            _release_owned_social_lock(
-                lock_path,
-                owned_metadata,
-                token_fingerprint,
-            )
-
-
-@contextmanager
-def _social_session_lock_at(dir_fd: int):
-    """Acquire the legacy social lock relative to a pinned retained-root handle."""
-    lock_name = f"{_SOCIAL_SESSION_FILENAME}{_SOCIAL_SESSION_LOCK_SUFFIX}"
-    token = f"{os.getpid()}:{secrets.token_hex(16)}"
-    token_fingerprint = f"token:{token}"
-    owned_metadata = None
-    deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
-    while True:
         try:
-            published = _try_publish_social_lock(lock_name, token, dir_fd=dir_fd)
-        except _SocialLockBusyError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("social session lock is busy")
-            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-            continue
-        if published is None:
-            try:
-                lock_metadata, lock_fingerprint, lock_owner = _read_social_lock_snapshot(
-                    lock_name,
-                    dir_fd=dir_fd,
-                )
-                if lock_fingerprint == token_fingerprint:
-                    owned_metadata = lock_metadata
-                    _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
-                    break
-                if _retry_abandoned_social_lock_release(
-                    lock_name,
-                    lock_metadata,
-                    lock_fingerprint,
-                    dir_fd=dir_fd,
-                ):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("social session lock is busy")
-                    time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-                    continue
-                recovered = None
-                if _backend_social_lock_recovery_authority():
-                    recovered = _reclaim_orphaned_social_lock(
-                        lock_name,
-                        lock_metadata,
-                        lock_fingerprint,
-                        lock_owner,
-                        token,
-                        dir_fd=dir_fd,
-                    )
-            except FileNotFoundError:
-                _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("social session lock is busy")
-                continue
-            except (_SocialLockReplacedError, _SocialLockBusyError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("social session lock is busy")
-                time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-                continue
-            if recovered is not None:
-                owned_metadata, token_fingerprint = recovered
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError("social session lock is busy")
-            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
-            continue
-        owned_metadata, token_fingerprint = published
-        _forget_abandoned_social_lock(lock_name, dir_fd=dir_fd)
-        break
-
-    try:
-        yield
-    finally:
-        if owned_metadata is not None:
-            _release_owned_social_lock(
-                lock_name,
-                owned_metadata,
-                token_fingerprint,
-                dir_fd=dir_fd,
-            )
-
-
-@contextmanager
-def _social_session_locks(paths: list[Path], *, retained_dir_fd: int | None = None):
-    """Acquire path and pinned-fd social locks in one physical stable order."""
-    requests: dict[tuple[object, ...], tuple[str, object]] = {}
-    for path in paths:
-        expanded = path.expanduser()
-        try:
-            parent_metadata = expanded.parent.stat()
-            # One physical parent plus the exact app-owned leaf is one lock,
-            # even through APFS case aliases that have different spellings.
-            key = (
-                "inode",
-                int(parent_metadata.st_dev),
-                int(parent_metadata.st_ino),
-                expanded.name,
+            os.write(
+                fd,
+                json.dumps({"token": token, "created_at": time.time()}).encode("utf-8"),
             )
         except OSError:
-            key = (
-                "path",
-                os.path.normcase(str(expanded.resolve(strict=False))),
-            )
-        requests.setdefault(key, ("path", path))
-    if retained_dir_fd is not None:
-        retained_metadata = os.fstat(retained_dir_fd)
-        retained_key = (
-            "inode",
-            int(retained_metadata.st_dev),
-            int(retained_metadata.st_ino),
-            _SOCIAL_SESSION_FILENAME,
-        )
-        # The pinned handle wins when a public alias names this same root.
-        requests[retained_key] = ("fd", retained_dir_fd)
-    with ExitStack() as stack:
-        for key in sorted(requests, key=repr):
-            request_kind, value = requests[key]
-            if request_kind == "fd":
-                stack.enter_context(_social_session_lock_at(int(value)))
-            else:
-                stack.enter_context(_social_session_lock(value))
-        previous_depth = int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0)
-        _SOCIAL_SESSION_LOCK_CONTEXT.depth = previous_depth + 1
+            os.close(fd)
+            lock_path.unlink(missing_ok=True)
+            raise
+        else:
+            os.close(fd)
+            break
+
+    try:
+        yield
+    finally:
         try:
-            yield
-        finally:
-            _SOCIAL_SESSION_LOCK_CONTEXT.depth = previous_depth
+            current = json.loads(lock_path.read_text(encoding="utf-8"))
+            if isinstance(current, dict) and current.get("token") == token:
+                lock_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
 
 def _write_social_session_record(path: Path, data: dict) -> None:
     with _social_session_lock(path):
         _write_private_json(path, data)
+
+
+@contextmanager
+def _social_session_locks(paths: list[Path]):
+    """Fence primary and legacy credentials in the same order for every writer."""
+    with ExitStack() as locks:
+        for path in sorted(set(paths), key=str):
+            locks.enter_context(_social_session_lock(path))
+        yield
 
 
 def _save_auth_unlocked(data: dict) -> bool:
@@ -1854,13 +712,11 @@ def _save_auth_unlocked(data: dict) -> bool:
 
 
 def _save_auth(data: dict) -> bool:
-    if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
-        return _save_auth_unlocked(data)
     social_path = _social_session_path()
     if social_path is None:
         return _save_auth_unlocked(data)
     try:
-        with _social_session_locks(_social_session_paths()):
+        with _social_session_lock(social_path):
             return _save_auth_unlocked(data)
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: save auth failed: %s", exc)
@@ -1879,7 +735,7 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
     if path is None or social_path is None:
         return
     try:
-        with _social_session_locks(_social_session_paths()):
+        with _social_session_lock(social_path):
             current = _read_json_dict(path)
             if not current:
                 return
@@ -1964,17 +820,6 @@ def _save_social_session(
     p = _social_session_path()
     if not p:
         return False
-    if int(getattr(_SOCIAL_SESSION_LOCK_CONTEXT, "depth", 0) or 0) > 0:
-        return _save_social_session_unlocked(
-            p,
-            base,
-            access,
-            refresh,
-            local_user_id=local_user_id,
-            auth_source=auth_source,
-            auth_public_url=auth_public_url,
-            client_id=client_id,
-        )
     try:
         with _social_session_lock(p):
             return _save_social_session_unlocked(
@@ -2001,43 +846,26 @@ def _persist_session_credentials(
     *,
     local_user_id: str,
     auth_source: str,
-    sync_ticket: object | None = None,
-) -> bool:
+) -> None:
     """Persist both desktop credential files from a worker thread."""
-    auth_saved = False
-    social_saved = False
-    ticket_accepted = sync_ticket is None
-    try:
-        with _social_session_locks(_social_session_paths()):
-            if sync_ticket is not None:
-                if not _consume_sync_ticket(sync_ticket):
-                    return False
-                ticket_accepted = True
-            auth_saved = _save_auth(auth_payload)
-            social_saved = _save_social_session(
-                base,
-                access,
-                refresh,
-                local_user_id=local_user_id,
-                auth_source=auth_source,
-            )
-            if not (auth_saved and social_saved):
-                bind["local_save_failed"] = True
-                # If auth was written before the Electron session failed,
-                # persist the partial-success marker in the same transaction.
-                if auth_saved:
-                    _save_auth(auth_payload)
-            if auth_saved or social_saved:
-                # Serialize revocation with final delegate issuance for the
-                # newly published session; never clear a proof minted after
-                # this transaction releases the credential lock.
-                _clear_native_delegates()
-    except (OSError, TimeoutError) as exc:
-        if sync_ticket is not None and not ticket_accepted:
-            raise
+    auth_saved = _save_auth(auth_payload)
+    social_saved = _save_social_session(
+        base,
+        access,
+        refresh,
+        local_user_id=local_user_id,
+        auth_source=auth_source,
+    )
+    if not (auth_saved and social_saved):
         bind["local_save_failed"] = True
-        logger.warning("card_drop: save session credentials failed: %s", exc)
-    return ticket_accepted
+        # If auth was written before the Electron session failed, persist the
+        # partial-success marker there as well so auth-status can surface it.
+        if auth_saved:
+            _save_auth(auth_payload)
+    if auth_saved or social_saved:
+        # Any credential publication can represent an account switch or token
+        # rotation. Existing browser delegates must be reissued for that session.
+        _clear_native_delegates()
 
 
 def _persist_session_identity_metadata(
@@ -2117,140 +945,50 @@ def _persist_session_identity_metadata(
 
 
 def _unlink_credentials(paths: list[Path]) -> bool:
+    success = True
     for path in paths:
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
+            success = False
             logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
-            return False
-    return True
-
-
-def _auth_clear_plan() -> tuple[list[Path], list[Path]] | None:
-    """Resolve every credential target and the locks that fence its writers."""
-    if not _logout_storage_ready():
-        logger.warning(
-            "card_drop: committed storage root is unavailable; credential clear deferred"
-        )
-        return None
-    auth_path = _auth_path()
-    authoritative_paths = (
-        [auth_path, _social_session_path(), _community_state_path(_SOCIAL_SESSION_FILENAME)]
-        + [_community_state_path(_OAUTH_PENDING_FILENAME)]
-        + [_community_state_path(_STEAM_PENDING_FILENAME)]
-    )
-    authoritative_paths = [path for path in authoritative_paths if path is not None]
-    authoritative_paths = list(dict.fromkeys(authoritative_paths))
-    legacy_paths = [
-        *(_logout_private_file_paths(_AUTH_FILENAME)),
-        *(_logout_private_file_paths(_SOCIAL_SESSION_FILENAME)),
-        *(_logout_private_file_paths(_OAUTH_PENDING_FILENAME)),
-        *(_logout_private_file_paths(_STEAM_PENDING_FILENAME)),
-    ]
-    paths = list(dict.fromkeys([*legacy_paths, *authoritative_paths]))
-    if auth_path is None:
-        logger.warning("card_drop: cannot resolve auth path while clearing credentials")
-        return None
-    lock_paths = _social_session_paths()
-    return paths, lock_paths
-
-
-def _clear_auth_locked(paths: list[Path]) -> bool:
-    """Commit and verify logout while the caller holds all planned locks."""
-    # Preflight every exact app-owned file before deleting the first one.
-    # Failure to reach or mutate the selected target must leave
-    # canonical/host credentials intact so logout remains retryable.
-    for path in paths:
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.warning(
-                "card_drop: cannot inspect credential before clear for %s: %s",
-                path,
-                exc,
-            )
-            return False
-        if stat.S_ISLNK(metadata.st_mode) or path_chain_has_symlink(path.parent):
-            logger.warning("card_drop: unsafe credential path while clearing: %s", path)
-            return False
-        if not os.access(path.parent, os.W_OK | os.X_OK):
-            logger.warning(
-                "card_drop: credential directory is not writable: %s",
-                path.parent,
-            )
-            return False
-    # Commit logical logout before deleting reachable copies. A phase-0
-    # legacy source may be temporarily offline and therefore impossible to
-    # erase; its older generation must remain invalid if it later reappears.
-    try:
-        _advance_logout_epoch()
-    except OSError as exc:
-        logger.warning("card_drop: cannot persist logout generation: %s", exc)
-        return False
-    # Logical logout is now committed. Revoke every in-memory proof before
-    # any fallible physical deletion can return early.
-    _clear_native_delegates()
-    with _native_sync_tickets_lock:
-        _native_sync_tickets.clear()
-    if not _unlink_credentials(paths):
-        return False
-    for path in paths:
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
-            return False
-        else:
-            logger.warning("card_drop: credential still exists after clear: %s", path)
-            return False
-    return True
+    return success
 
 
 def _clear_auth() -> bool:
-    plan = _auth_clear_plan()
-    if plan is None:
-        return False
-    paths, lock_paths = plan
+    auth_path = _auth_path()
+    paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    paths = list(dict.fromkeys(paths))
+    if auth_path is None:
+        logger.warning("card_drop: cannot resolve auth path while clearing credentials")
+    success = auth_path is not None
     # community_auth.json 的删除也必须在 social-session 锁内：否则
     # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
     # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
     try:
-        with _social_session_locks(lock_paths):
-            return _clear_auth_locked(paths)
+        with _social_session_locks(_social_session_paths()):
+            success = _unlink_credentials(paths) and success
+            for path in paths:
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    success = False
+                    logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+                else:
+                    success = False
+                    logger.warning("card_drop: credential still exists after clear: %s", path)
+            if success:
+                _clear_native_delegates()
+                # A post-logout guest can mint a ticket as soon as these file
+                # locks are released, so invalidate older proofs before then.
+                with _native_sync_tickets_lock:
+                    _native_sync_tickets.clear()
     except (OSError, TimeoutError) as exc:
+        success = False
         logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
-        return False
-
-
-def _clear_auth_with_ticket(
-    sync_ticket: object,
-    *,
-    expected_access: str | None = None,
-) -> str:
-    """Consume authorization and clear credentials in one locked transaction."""
-    plan = _auth_clear_plan()
-    if plan is None:
-        return "failed"
-    paths, lock_paths = plan
-    try:
-        with _social_session_locks(lock_paths):
-            if expected_access is not None:
-                current_access = _access_token() or ""
-                if current_access and (
-                    not expected_access
-                    or not secrets.compare_digest(current_access, expected_access)
-                ):
-                    return "mismatch"
-            if not _consume_sync_ticket(sync_ticket):
-                return "invalid"
-            return "ok" if _clear_auth_locked(paths) else "failed"
-    except (OSError, TimeoutError) as exc:
-        logger.warning("card_drop: ticketed credential clear was fenced off: %s", exc)
-        return "busy"
+    return success
 
 
 def _access_token() -> str | None:
@@ -2375,7 +1113,6 @@ async def _store_session(
     *,
     auth_source: str = "legacy",
     bind_client: bool = True,
-    sync_ticket: object | None = None,
 ) -> dict:
     """Store JWTs and optionally bind the legacy guest client to the user.
 
@@ -2436,7 +1173,7 @@ async def _store_session(
         },
         "bind": bind,
     }
-    accepted = await asyncio.to_thread(
+    await asyncio.to_thread(
         _persist_session_credentials,
         auth_payload,
         bind,
@@ -2445,10 +1182,7 @@ async def _store_session(
         refresh,
         local_user_id=local_user_id,
         auth_source=normalized_source,
-        sync_ticket=sync_ticket,
     )
-    if sync_ticket is not None and not accepted:
-        raise _InvalidSyncTicket()
     return bind
 
 
@@ -2475,21 +1209,13 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
 # CSRF/会话固定防护：/steam-callback 用 access_token query 参数落地，是个本机端点，恶意网页
 # 可能跨源 GET 它塞入攻击者 token（把用户游客卡 bind 到攻击者账号）。用一次性 pending 标记
 # 把回调限定在「用户刚点过 Steam 登录」的短窗口内，挡掉无端调用。
+_STEAM_PENDING_FILENAME = "community_steam_pending.json"
 _STEAM_PENDING_TTL_SEC = 600  # 点登录后 10 分钟内必须完成回调
-_STEAM_PENDING_CONSUME_LOCK = threading.Lock()
 
 
 def _steam_pending_path() -> Path | None:
-    return _community_state_path(_STEAM_PENDING_FILENAME)
-
-
-def _steam_pending_paths() -> list[Path]:
-    canonical = _steam_pending_path()
-    paths = [canonical] if canonical is not None else []
-    for candidate in _legacy_private_file_paths(_STEAM_PENDING_FILENAME):
-        if candidate not in paths:
-            paths.append(candidate)
-    return paths
+    p = _auth_path()
+    return (p.parent / _STEAM_PENDING_FILENAME) if p else None
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -2533,48 +1259,7 @@ def _mark_steam_pending() -> tuple[str, str] | None:
     return state, challenge
 
 
-def _steam_pending_consume_paths() -> list[Path]:
-    paths: list[Path] = []
-    for candidate in [
-        *_steam_pending_paths(),
-    ]:
-        if candidate not in paths:
-            paths.append(candidate)
-    return paths
-
-
-def _drop_matching_steam_pending_copies(expected: dict, candidates: list[Path]) -> bool:
-    """Claim every accepted copy and prove this consumer removed at least one."""
-
-    claimed = False
-    for candidate in candidates:
-        candidate_state, candidate_data = _read_private_json_state(candidate)
-        if candidate_state != "valid" or candidate_data != expected:
-            continue
-        try:
-            candidate.unlink()
-            claimed = True
-            fsync_directory_best_effort(candidate.parent)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.debug("card_drop: consume steam pending failed for %s: %s", candidate, exc)
-
-    if not claimed:
-        return False
-    for candidate in candidates:
-        candidate_state, candidate_data = _read_private_json_state(candidate)
-        if candidate_state == "valid" and candidate_data == expected:
-            return False
-    return True
-
-
 def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
-    with _STEAM_PENDING_CONSUME_LOCK:
-        return _consume_steam_pending_locked(state)
-
-
-def _consume_steam_pending_locked(state: str) -> tuple[bool, str | None]:
     """Consume the one-shot pending marker (exists, fresh, state matches).
 
     Returns ``(ok, code_verifier)``. On success, ``code_verifier`` is the stored
@@ -2585,14 +1270,13 @@ def _consume_steam_pending_locked(state: str) -> tuple[bool, str | None]:
     delete fails, return ``(False, None)`` to preserve one-shot semantics.
     """
     p = _steam_pending_path()
-    if not p:
+    if not p or not p.exists():
         return False, None
-    consume_paths = _steam_pending_consume_paths()
-    data: object = _load_or_migrate_private_json(
-        p,
-        [candidate for candidate in _steam_pending_paths() if candidate != p],
-        validator=_steam_pending_record_is_fresh,
-    ) or {}
+    data: object = {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        data = {}
 
     def _drop() -> None:
         try:
@@ -2619,7 +1303,10 @@ def _consume_steam_pending_locked(state: str) -> tuple[bool, str | None]:
         return False, None
     if not secrets.compare_digest(str(stored_state), state):
         return False, None  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
-    if not _drop_matching_steam_pending_copies(data, consume_paths):
+    try:
+        p.unlink()
+    except OSError as exc:
+        logger.debug("card_drop: consume steam pending failed: %s", exc)
         return False, None
     return True, stored_verifier
 
@@ -2795,28 +1482,6 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     return snapshot, ""
 
 
-def _issue_native_delegate_for_session(snapshot: dict, audience: str) -> str:
-    """Mint only while the validated session still owns the credential files."""
-    expected_fingerprint = _desktop_session_fingerprint(snapshot)
-    expected_user_id = _normalize_local_user_id(snapshot.get("local_user_id"))
-    if not expected_fingerprint or not expected_user_id:
-        return ""
-    with _social_session_locks(_social_session_paths()):
-        current = _desktop_session_snapshot()
-        if _desktop_session_fingerprint(current) != expected_fingerprint:
-            return ""
-        current_user_id = _normalize_local_user_id(
-            (current or {}).get("local_user_id")
-        )
-        if current_user_id != expected_user_id:
-            return ""
-        return _issue_native_delegate(
-            local_user_id=current_user_id,
-            audience=audience,
-            session_fingerprint=expected_fingerprint,
-        )
-
-
 @router.get("/native-delegate", summary="签发短时 scoped native delegate（facts）")
 async def native_delegate_endpoint(request: Request):
     """Mint a reusable short-lived proof for the community Web tab.
@@ -2849,25 +1514,11 @@ async def native_delegate_endpoint(request: Request):
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     audience = _social_base_url()
-    try:
-        delegate = await asyncio.to_thread(
-            _issue_native_delegate_for_session,
-            snapshot,
-            audience,
-        )
-    except (OSError, TimeoutError) as exc:
-        logger.warning("card_drop: native delegate issuance fenced off: %s", exc)
-        return JSONResponse(
-            {"detail": "desktop_session_busy"},
-            status_code=503,
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-        )
-    if not delegate:
-        return JSONResponse(
-            {"detail": "desktop_login_required"},
-            status_code=409,
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-        )
+    delegate = _issue_native_delegate(
+        local_user_id=str(local_user_id),
+        audience=audience,
+        session_fingerprint=session_fingerprint,
+    )
     return JSONResponse(
         {
             "native_delegate": delegate,
@@ -2921,33 +1572,11 @@ async def native_delegate_handoff_endpoint(
             status_code=503 if unavailable else 409,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    try:
-        delegate = await asyncio.to_thread(
-            _issue_native_delegate_for_session,
-            snapshot,
-            audience,
-        )
-    except (OSError, TimeoutError) as exc:
-        logger.warning("card_drop: native delegate handoff fenced off: %s", exc)
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><title>Desktop 暂时不可用</title>"
-            "<body style='font-family:sans-serif;padding:40px'>"
-            "<h1>暂时无法读取 Desktop 登录状态</h1>"
-            "<p>请稍后重试打开猫娘社区。</p>"
-            "</body>",
-            status_code=503,
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-        )
-    if not delegate:
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><title>需要 Desktop 登录</title>"
-            "<body style='font-family:sans-serif;padding:40px'>"
-            "<h1>请先在 N.E.K.O. 桌宠完成社区登录</h1>"
-            "<p>登录后再打开猫娘社区，铸造券即可连接本机账本。</p>"
-            "</body>",
-            status_code=409,
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-        )
+    delegate = _issue_native_delegate(
+        local_user_id=str(local_user_id),
+        audience=audience,
+        session_fingerprint=session_fingerprint,
+    )
     return RedirectResponse(
         f"{dest}#native_delegate={quote(delegate, safe='')}",
         status_code=302,
@@ -3281,27 +1910,22 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     if clear_requested:
         # Logout is account-scoped.  If Web login B could not replace the desktop's bound
         # account A, B's later logout must not erase A's still-valid local session.
+        current_access = await asyncio.to_thread(_access_token) or ""
         requested_access = (
             payload.get("access_token") or payload.get("accessToken") or ""
         ).strip()
-        clear_outcome = await asyncio.to_thread(
-            _clear_auth_with_ticket,
-            sync_ticket,
-            expected_access=requested_access,
-        )
-        if clear_outcome == "mismatch":
+        if current_access and (
+            not requested_access
+            or not secrets.compare_digest(current_access, requested_access)
+        ):
             return JSONResponse(
                 {"detail": "local_session_mismatch"}, status_code=409, headers=cors
             )
-        if clear_outcome == "invalid":
+        if not _consume_sync_ticket(sync_ticket):
             return JSONResponse(
                 {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
             )
-        if clear_outcome == "busy":
-            return JSONResponse(
-                {"detail": "desktop_session_busy"}, status_code=503, headers=cors
-            )
-        if clear_outcome != "ok":
+        if not await asyncio.to_thread(_clear_auth):
             return JSONResponse(
                 {"detail": "local_clear_failed", "cleared": False},
                 status_code=500,
@@ -3334,11 +1958,14 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             headers=cors,
         )
     user = lookup.identity.user
+    # Consume only after the cloud token is validated.  A 401 keeps the ticket usable so the
+    # current browser tab can finish login and retry; concurrent reuse still has exactly one
+    # winner at this atomic pop.
+    if not _consume_sync_ticket(sync_ticket):
+        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     # Web native sync only authorizes this browser account to read the installation-local
     # ledger and memories. Legacy guest-card ownership is unrelated and must not block
-    # account switching with ``client_already_bound_to_other_user``. Consume the
-    # ticket under the same file lock as both credential writes, so logout must
-    # happen wholly before or wholly after this publication.
+    # account switching with ``client_already_bound_to_other_user``.
     try:
         bind = await _store_session(
             base,
@@ -3347,13 +1974,6 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             user,
             auth_source=lookup.identity.auth_source,
             bind_client=False,
-            sync_ticket=sync_ticket,
-        )
-    except _InvalidSyncTicket as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=403, headers=cors)
-    except (OSError, TimeoutError):
-        return JSONResponse(
-            {"detail": "desktop_session_busy"}, status_code=503, headers=cors
         )
     except _ClientBindingConflict as exc:
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
@@ -3631,13 +2251,8 @@ async def register_endpoint(request: Request, payload: dict = Body(default=None)
 
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
-    sync_ticket = _require_local_mutation_ticket(request, payload)
-    clear_outcome = await asyncio.to_thread(_clear_auth_with_ticket, sync_ticket)
-    if clear_outcome == "invalid":
-        raise HTTPException(status_code=403, detail="invalid_sync_ticket")
-    if clear_outcome == "busy":
-        raise HTTPException(status_code=503, detail="desktop_session_busy")
-    if clear_outcome != "ok":
+    _require_local_mutation_ticket(request, payload)
+    if not await asyncio.to_thread(_clear_auth):
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
 

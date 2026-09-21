@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 from utils.file_utils import atomic_write_json
 from utils.config_manager import ConfigManager
-from utils.storage.policy import StoragePolicyError
 
 
 _ORIGINAL_GET_DOCUMENTS_DIRECTORY = ConfigManager._get_documents_directory
@@ -196,16 +195,21 @@ def test_ensure_cloudsave_state_files_reports_local_state_directory_diagnostic(t
 
 
 @pytest.mark.unit
-def test_config_manager_fails_closed_when_anchor_is_a_file(tmp_path):
+def test_save_root_state_reports_anchor_file_blocker(tmp_path):
     standard_parent = tmp_path / "standard_data"
     standard_parent.mkdir(parents=True, exist_ok=True)
     blocked_anchor = standard_parent / "N.E.K.O"
     blocked_anchor.write_text("not a directory", encoding="utf-8")
-    with pytest.raises(StoragePolicyError) as exc_info:
-        _make_config_manager(tmp_path)
+    cm = _make_config_manager(tmp_path)
 
-    assert exc_info.value.error_code == "storage_policy_unavailable"
-    assert blocked_anchor.read_text(encoding="utf-8") == "not a directory"
+    with pytest.raises(OSError) as exc_info:
+        cm.save_root_state(cm.build_default_root_state())
+
+    message = str(exc_info.value)
+    assert "Failed to ensure local state directory before saving root_state" in message
+    assert f"anchor_root={blocked_anchor.resolve()}" in message
+    assert f"local_state_dir={(blocked_anchor / 'state').resolve()}" in message
+    assert "not a directory" in message
 
 
 @pytest.mark.unit

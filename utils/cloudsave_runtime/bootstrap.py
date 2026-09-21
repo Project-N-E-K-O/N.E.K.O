@@ -33,12 +33,7 @@ from ._shared import (
     is_cloudsave_disabled,
 )
 from .fence import _recover_stale_write_blocking_mode
-from .legacy_migration import (
-    finalize_legacy_runtime_import_completion,
-    import_legacy_runtime_root_if_needed,
-    recover_abandoned_legacy_import_preparation,
-    recover_interrupted_legacy_runtime_import,
-)
+from .legacy_migration import import_legacy_runtime_root_if_needed
 
 
 def build_default_cloudsave_manifest(*, client_id: str = "") -> dict[str, Any]:
@@ -119,56 +114,6 @@ def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bo
 
 def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     """Initialize phase-0 local cloudsave skeleton and state files."""
-    _ensure_local_state_directory_or_raise(
-        config_manager,
-        "preparing local cloudsave state",
-    )
-    # A legacy publication uses the fixed-anchor storage checkpoint.  If that
-    # checkpoint cannot be read, fail closed after local-state diagnostics are
-    # available; never overwrite it with a fresh legacy import.
-    from utils.storage.migration import StorageMigrationError
-
-    checkpoint_unavailable = False
-    try:
-        recover_abandoned_legacy_import_preparation(config_manager)
-        recovered_legacy_import = recover_interrupted_legacy_runtime_import(
-            config_manager
-        )
-    except StorageMigrationError:
-        recovered_legacy_import = None
-        checkpoint_unavailable = True
-    if recovered_legacy_import is not None:
-        _ensure_local_state_directory_or_raise(
-            config_manager,
-            "recording recovered legacy storage publication",
-        )
-        with root_state_transaction():
-            recovered_root_state = config_manager.load_root_state()
-            recovered_root_state["current_root"] = str(config_manager.app_docs_dir)
-            if not recovered_root_state.get("last_known_good_root"):
-                recovered_root_state["last_known_good_root"] = str(
-                    config_manager.app_docs_dir
-                )
-            recovered_root_state["last_migration_source"] = str(
-                recovered_legacy_import["source"]
-            )
-            recovered_root_state["last_migration_result"] = str(
-                recovered_legacy_import["result"]
-            )
-            recovered_root_state["last_migration_backup"] = str(
-                recovered_legacy_import["backup_path"]
-            )
-            config_manager.save_root_state(recovered_root_state)
-        finalize_legacy_runtime_import_completion(
-            config_manager,
-            recovered_legacy_import,
-        )
-        recovered_legacy_import.pop("_legacy_checkpoint", None)
-        recovered_legacy_import.pop("_staged_snapshot", None)
-        recovered_legacy_import.pop("_staged_identity", None)
-        recovered_legacy_import.pop("_backup_identity", None)
-        recovered_legacy_import.pop("_legacy_private_state_source_identity", None)
-
     if is_cloudsave_disabled():
         return {
             "disabled": True,
@@ -176,7 +121,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             "root_state": config_manager.build_default_root_state(),
             "cloudsave_local_state": config_manager.build_default_cloudsave_local_state(client_id=""),
             "manifest": build_default_cloudsave_manifest(client_id=""),
-            "legacy_import": recovered_legacy_import or {
+            "legacy_import": {
                 "migrated": False,
                 "source": "",
                 "copied_paths": [],
@@ -194,9 +139,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     config_manager.ensure_cloudsave_state_files()
 
     root_state = config_manager.load_root_state()
-    if checkpoint_unavailable or str(
-        root_state.get("mode") or ROOT_MODE_NORMAL
-    ) == ROOT_MODE_DEFERRED_INIT:
+    if str(root_state.get("mode") or ROOT_MODE_NORMAL) == ROOT_MODE_DEFERRED_INIT:
         cloud_state = config_manager.load_cloudsave_local_state()
         cloud_changed = False
         if not cloud_state.get("client_id"):
@@ -224,9 +167,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             },
         }
 
-    legacy_import = recovered_legacy_import or import_legacy_runtime_root_if_needed(
-        config_manager
-    )
+    legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     root_state, recovered_stale_mode = _recover_stale_write_blocking_mode(config_manager, root_state)
 
     # 下面这串编辑 + 末尾的 save_root_state 是一次读—改—写，必须整段进锁。
@@ -268,13 +209,6 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             root_changed = True
         if root_changed:
             config_manager.save_root_state(root_state)
-
-    finalize_legacy_runtime_import_completion(config_manager, legacy_import)
-    legacy_import.pop("_legacy_checkpoint", None)
-    legacy_import.pop("_staged_snapshot", None)
-    legacy_import.pop("_staged_identity", None)
-    legacy_import.pop("_backup_identity", None)
-    legacy_import.pop("_legacy_private_state_source_identity", None)
 
     cloud_state = config_manager.load_cloudsave_local_state()
     cloud_changed = False

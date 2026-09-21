@@ -58,6 +58,13 @@ RUNTIME_STORAGE_ENTRIES = (
     RuntimeStorageEntry("card_faces", "card_faces", config_attribute="card_faces_dir"),
     RuntimeStorageEntry("jukebox", "jukebox"),
     RuntimeStorageEntry("avatar_tools", "avatar_tools", config_attribute="avatar_tools_dir"),
+    # Community credentials historically lived at the runtime-root level.
+    # They are ordinary local state: copy them with the selected root instead
+    # of maintaining a second fixed-anchor migration protocol.
+    RuntimeStorageEntry("community_auth", "community_auth.json"),
+    RuntimeStorageEntry("social_session", "social_session.json"),
+    RuntimeStorageEntry("community_oauth_pending", "community_oauth_pending.json"),
+    RuntimeStorageEntry("community_steam_pending", "community_steam_pending.json"),
     # Scores historically live below ``state`` even though ``state`` itself is
     # anchored control data.  Tracking only this child preserves scores without
     # ever moving storage_policy.json or storage_migration.json.
@@ -77,11 +84,13 @@ RUNTIME_STORAGE_ENTRIES = (
 
 RUNTIME_STORAGE_ENTRY_BY_KEY = {entry.key: entry for entry in RUNTIME_STORAGE_ENTRIES}
 RUNTIME_STORAGE_RELATIVE_PATHS = tuple(entry.relative_path for entry in RUNTIME_STORAGE_ENTRIES)
-RUNTIME_STORAGE_TOP_LEVEL_DIR_NAMES = tuple(
+RUNTIME_STORAGE_TOP_LEVEL_ENTRY_NAMES = tuple(
     entry.relative_path
     for entry in RUNTIME_STORAGE_ENTRIES
     if "/" not in entry.relative_path and "\\" not in entry.relative_path
 )
+# Historical name kept for callers that only need the top-level inventory.
+RUNTIME_STORAGE_TOP_LEVEL_DIR_NAMES = RUNTIME_STORAGE_TOP_LEVEL_ENTRY_NAMES
 RUNTIME_USER_DATA_ENTRIES = tuple(
     entry for entry in RUNTIME_STORAGE_ENTRIES if entry.kind == RUNTIME_ENTRY_KIND_USER_DATA
 )
