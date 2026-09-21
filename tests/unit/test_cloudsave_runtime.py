@@ -811,6 +811,29 @@ def test_bootstrap_preserves_restart_pending_maintenance_mode(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_preserves_restart_rebind_without_migration_checkpoint(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_rebind:{cm.app_docs_dir}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+    assert result["root_state"]["last_migration_result"] == f"restart_rebind:{cm.app_docs_dir}"
+
+
+@pytest.mark.unit
 def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_load(tmp_path):
     cm = _make_config_manager(tmp_path)
 
