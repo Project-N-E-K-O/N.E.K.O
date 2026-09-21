@@ -210,20 +210,6 @@ def _durable_replace(source: Path, target: Path) -> None:
         fsync_directory_best_effort(target.parent)
 
 
-def _copy_staged_file(source: Path | str, target: Path | str) -> str:
-    """Copy and flush file contents before restoring source metadata."""
-
-    source_path = Path(source)
-    target_path = Path(target)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    with source_path.open("rb") as source_handle, target_path.open("wb") as target_handle:
-        shutil.copyfileobj(source_handle, target_handle)
-        target_handle.flush()
-        os.fsync(target_handle.fileno())
-    shutil.copystat(source_path, target_path, follow_symlinks=False)
-    return str(target_path)
-
-
 def _merge_runtime_entry(source_path: Path, target_path: Path) -> None:
     """Overlay one legacy/current entry into the staged target."""
 
@@ -234,7 +220,7 @@ def _merge_runtime_entry(source_path: Path, target_path: Path) -> None:
         shutil.copytree(
             source_path,
             target_path,
-            copy_function=_copy_staged_file,
+            copy_function=shutil.copy2,
             dirs_exist_ok=True,
             symlinks=True,
         )
@@ -242,7 +228,8 @@ def _merge_runtime_entry(source_path: Path, target_path: Path) -> None:
     if source_path.is_file():
         if target_path.exists() and target_path.is_dir():
             _remove_existing_path(target_path)
-        _copy_staged_file(source_path, target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
         return
     raise StorageMigrationError("source_entry_missing", f"迁移源条目不存在: {source_path}")
 
@@ -504,7 +491,6 @@ def _fsync_staged_tree(path: Path) -> None:
     directories: list[Path] = []
     if path.is_file():
         paths.append(path)
-        directories.append(path.parent)
     elif path.is_dir():
         for current_root, dirnames, filenames in os.walk(path):
             directories.append(Path(current_root))
@@ -524,19 +510,15 @@ def _fsync_staged_tree(path: Path) -> None:
                     )
                 paths.append(staged_file)
 
-    # Windows cannot FlushFileBuffers through the read-only handles used by
-    # ``open('rb')``. _copy_staged_file already flushed every destination while
-    # it was writable; only POSIX needs the second flush after copystat.
-    if os.name != "nt":
-        for staged_file in paths:
-            try:
-                with staged_file.open("rb") as handle:
-                    os.fsync(handle.fileno())
-            except OSError as exc:
-                raise StorageMigrationError(
-                    "target_flush_failed",
-                    f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
-                ) from exc
+    for staged_file in paths:
+        try:
+            with staged_file.open("rb") as handle:
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StorageMigrationError(
+                "target_flush_failed",
+                f"迁移数据无法可靠写入目标磁盘: {staged_file}: {exc}",
+            ) from exc
     for staged_directory in reversed(directories):
         fsync_directory_best_effort(staged_directory)
 
