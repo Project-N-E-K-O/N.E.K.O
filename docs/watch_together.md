@@ -45,14 +45,19 @@ request the memory capability.
 
 ## Playback and preparation
 
-New video preparation requires FFmpeg and FFprobe. Install both executables
-and add their directory to PATH, or configure `NEKO_FFMPEG_PATH` and
-`NEKO_FFPROBE_PATH` with their absolute executable paths before starting N.E.K.O.
-For Windows, an FFmpeg distribution must contain both `bin/ffmpeg.exe` and
-`bin/ffprobe.exe`; point the two variables at those files. Packaged launchers
-must supply these prerequisites or set the variables to their bundled tools.
-This repository does not bundle media binaries. Preparation checks both tools
-before downloading or making paid model calls; existing history can still play.
+Video preparation uses the pinned PyAV package and its bundled FFmpeg libraries.
+No `ffmpeg`/`ffprobe` executables, PATH entries, or `NEKO_FFMPEG_PATH` /
+`NEKO_FFPROBE_PATH` overrides are needed. The same backend probes history media,
+merges Bilibili tracks, converts unsupported browser codecs to H.264/AAC,
+extracts frames, and decodes Ogg speech to mono PCM16 WAV at 48 kHz.
+Media jobs run in bounded spawn workers. Cancellation and timeout terminate and
+reap the worker before the caller returns; decoding never blocks the event loop.
+
+Desktop build workflows include PyAV and run `scripts/check_frozen_media.py`
+against the frozen backend before packaging. Its offline smoke clears PATH and
+exercises actual decoding, encoding, remuxing, seeking, and worker startup.
+Run the source smoke with `uv run python -m main_logic.watch_together.media_smoke`.
+
 The downloaded duration is checked again before frame extraction and analysis.
 If it no longer satisfies automatic selection, preparation stops safely. Manual
 videos found to exceed five minutes after download pause before analysis and
