@@ -749,6 +749,8 @@ class _LifecycleMixin:
                         logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
+                # Work companion 模式裁剪（Issue #3157）
+                self._maybe_trim_history_for_work_companion()
             # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
             # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
             # 条，那一轮的打分必须已经看得到刚提交的这句；而落盘那个 await 一旦被取消

@@ -1597,6 +1597,10 @@ class LifecycleMixin:
             on_tool_call=None,
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
+            # Work companion 模式 history 裁剪（Issue #3157）
+            # OmniOfflineClient 会在每次 Human/AI message append 后调这个回调，
+            # 如果返回 True 就裁剪 history 保留最近 N 轮。
+            work_companion_check=lambda: self.is_work_companion(),
         )
         session.on_proactive_done = self.handle_proactive_complete
         session.on_thinking_active = self._make_thinking_active_callback(session)
