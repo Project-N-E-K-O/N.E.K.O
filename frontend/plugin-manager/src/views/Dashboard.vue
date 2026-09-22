@@ -471,15 +471,15 @@ function handleGoodbyeResourceStorage(event: StorageEvent) {
 
 onMounted(async () => {
   document.documentElement.classList.add(dashboardStartupClass)
-  // Only the plugin list is needed for the first stats row. Defer the two
-  // secondary panels until after the browser has had two paint opportunities.
-  await pluginStore.fetchPlugins()
+  dashboardDisposed = false
+  await Promise.all([
+    pluginStore.fetchPlugins(),
+    pluginStore.fetchPluginStatus(),
+    fetchServerInfo(),
+    fetchGlobalMetrics(),
+  ])
   if (dashboardDisposed) return
   finishDashboardStartup()
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (dashboardDisposed) return
-    void Promise.all([fetchServerInfo(), fetchGlobalMetrics()])
-  }))
   window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.addEventListener('storage', handleGoodbyeResourceStorage)
   startAutoRefresh()
@@ -502,10 +502,10 @@ onUnmounted(() => {
 }
 
 .dashboard {
-  contain: layout style;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  contain: layout style;
 }
 
 .dashboard-hero {
