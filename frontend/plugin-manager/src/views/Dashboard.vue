@@ -473,8 +473,8 @@ onMounted(async () => {
   document.documentElement.classList.add(dashboardStartupClass)
   dashboardDisposed = false
   await Promise.all([
-    pluginStore.fetchPlugins(),
-    pluginStore.fetchPluginStatus(),
+    pluginStore.fetchPlugins().catch(error => console.warn('Dashboard plugin list refresh failed:', error)),
+    pluginStore.fetchPluginStatus().catch(error => console.warn('Dashboard plugin status refresh failed:', error)),
     fetchServerInfo(),
     fetchGlobalMetrics(),
   ])

@@ -77,7 +77,9 @@ function isRouteActive(path: string): boolean {
 
 onMounted(() => {
   if (pluginStore.pluginsWithStatus.length === 0) {
-    pluginStore.fetchPlugins()
+    void pluginStore.fetchPlugins().catch(error => {
+      console.warn('Sidebar plugin refresh failed:', error)
+    })
   }
 })
 </script>
