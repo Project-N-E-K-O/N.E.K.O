@@ -628,9 +628,13 @@ class RealtimeResponseArbiter:
         """
 
         current = self._current
-        if current is not None and (
-            current.item_committed or current.response_send_started
-        ):
+        # ``item_committed`` only proves that the user item reached the
+        # transport.  For the strict OpenAI-compatible/Qwen profile the
+        # arbiter still has to send ``response.create`` afterwards, so that
+        # state is parked work, not a live model response.  Treating it as
+        # live lets external-ASR preparation cancel the ticket in the narrow
+        # item-ack window and strands the user's turn without a reply.
+        if current is not None and current.response_send_started:
             return True
         return bool(
             self._response_owner is not None
@@ -847,10 +851,44 @@ class RealtimeResponseArbiter:
             self._dispatch_allowed.is_set() or queued.dispatch_while_paused
         )
 
-    async def cancel_current(self, timeout: float = 3.0) -> None:
+    async def cancel_current(
+        self,
+        timeout: float = 3.0,
+        *,
+        reason: str = "unspecified",
+    ) -> None:
         """Cancel only the active/pre-created request, never drain the queue."""
 
         current = self._current
+        if self._trace:
+            self._trace_decision(
+                "cancel",
+                {
+                    "phase": "requested",
+                    "reason": str(reason),
+                    "current_source": current.source if current is not None else None,
+                    "current_item_committed": (
+                        bool(current.item_committed) if current is not None else False
+                    ),
+                    "current_response_send_started": (
+                        bool(current.response_send_started)
+                        if current is not None
+                        else False
+                    ),
+                    "current_ticket_sent_done": (
+                        bool(current.ticket.sent.done()) if current is not None else None
+                    ),
+                    "response_owner_source": (
+                        self._response_owner.source
+                        if self._response_owner is not None
+                        else None
+                    ),
+                    "server_response_active": self._server_response_active,
+                    "server_vad_response_pending": self._server_vad_response_pending,
+                    "server_response_ids": len(self._server_response_ids),
+                    "idless_server_response_live": self._idless_server_response_live(),
+                },
+            )
         if current is None:
             live_server_response = bool(
                 self._server_vad_response_pending

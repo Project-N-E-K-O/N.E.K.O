@@ -88,6 +88,87 @@ async def test_qwen_external_voice_dispatch_with_real_client_and_owned_callbacks
 
 
 @pytest.mark.asyncio
+async def test_external_asr_prepare_does_not_cancel_before_response_create():
+    """A committed item is still parked until the explicit response.create."""
+
+    item_sent = asyncio.Event()
+    release_item_ack = asyncio.Event()
+
+    class DelayedAckSocket(_ProtocolSocket):
+        async def send(self, payload):
+            event = json.loads(payload)
+            self.sent.append(event)
+            if event["type"] == "conversation.item.create":
+                item_sent.set()
+                await release_item_ack.wait()
+                self.frames.put_nowait(
+                    {"type": "conversation.item.created", "item": event["item"]}
+                )
+            elif event["type"] == "response.create":
+                self.frames.put_nowait(
+                    {"type": "response.created", "response": {"id": "reply"}}
+                )
+                self.frames.put_nowait(
+                    {
+                        "type": "response.done",
+                        "response": {"id": "reply", "status": "completed"},
+                    }
+                )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen3.5-omni-flash-realtime",
+        api_type="qwen",
+    )
+    socket = DelayedAckSocket()
+    client.ws = socket
+    receiver = asyncio.create_task(client.handle_messages())
+    submit = None
+    prepare_next = None
+    try:
+        await asyncio.wait_for(client.prepare_external_voice_turn(turn_id="voice-old"), 1)
+        submit = asyncio.create_task(
+            client.submit_external_voice_turn("test input", turn_id="voice-old")
+        )
+        await asyncio.wait_for(item_sent.wait(), 1)
+
+        current = client._response_arbiter._current
+        assert current is not None
+        assert current.item_committed is True
+        assert current.response_send_started is False
+        assert client._response_arbiter.has_live_response is False
+
+        # This is the real interleaving: a newer ASR prepare arrives while the
+        # older item is acknowledged, before its response.create is sent.
+        prepare_next = asyncio.create_task(
+            client.prepare_external_voice_turn(turn_id="voice-new")
+        )
+        await asyncio.wait_for(prepare_next, 1)
+        release_item_ack.set()
+        await asyncio.wait_for(submit, 1)
+
+        assert [event["type"] for event in socket.sent] == [
+            "conversation.item.create",
+            "response.create",
+        ]
+    finally:
+        release_item_ack.set()
+        if submit is not None:
+            submit.cancel()
+        if prepare_next is not None:
+            client.abandon_external_voice_turn("voice-new")
+            prepare_next.cancel()
+        await asyncio.gather(
+            *([submit] if submit is not None else []),
+            *([prepare_next] if prepare_next is not None else []),
+            return_exceptions=True,
+        )
+        await asyncio.wait_for(client.close(), 2)
+        await asyncio.wait_for(receiver, 2)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cancel_prepare", [False, True])
 async def test_completed_ticket_waits_for_interruption_cleanup_even_with_a_permit(cancel_prepare):
     client = OmniRealtimeClient(

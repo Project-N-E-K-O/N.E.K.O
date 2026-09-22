@@ -222,21 +222,20 @@ async def test_newer_prepare_interrupt_keeps_dispatch_paused_for_new_turn():
         await asyncio.sleep(0)
     assert arbiter.current_source == "external_asr"
 
-    # A newer turn's prepare interrupts the still-unsent older item.
+    # A newer turn's prepare must leave the older item alone.  It has not
+    # started a provider response yet, so this is parked work rather than a
+    # live reply to interrupt.
     prepare = asyncio.create_task(
         client.prepare_external_voice_turn(turn_id="turn-new")
     )
     for _ in range(10):
         await asyncio.sleep(0)
     release_item_send.set()
-    with pytest.raises(RuntimeError):
-        await asyncio.wait_for(submit, 2)
     await asyncio.wait_for(prepare, 2)
+    await asyncio.wait_for(submit, 2)
 
     # Dispatch stays paused for the newer turn's user text.
     assert client._external_voice_turn_pause_id == "turn-new"
     assert not arbiter._dispatch_allowed.is_set()
-    assert all(
-        event["type"] != "response.create" for event in sent_events
-    )
+    assert any(event["type"] == "response.create" for event in sent_events)
     await arbiter.shutdown()
