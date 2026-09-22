@@ -50,19 +50,18 @@ describe('usePluginWorkbench scoped selection state', () => {
     expect(packageWorkbench.selectedPluginIds.value).toEqual([])
   })
 
-  it('does not load the pinyin index for an ASCII query', async () => {
+  it('matches a Chinese name on the first Latin pinyin query', async () => {
     const workbench = usePluginWorkbench([
       { ...plugins[0]!, name: '插件' },
     ], { scope: 'plugin-workbench-ascii-search-test' })
 
-    workbench.filterText.value = 'plugin'
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(safePinyin).not.toHaveBeenCalled()
+    workbench.filterText.value = 'chajian'
+    await vi.waitFor(() => {
+      expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['demo_plugin'])
+    })
   })
 
-  it('loads pinyin only when a CJK query is entered', async () => {
+  it('also builds the index for a CJK query', async () => {
     const workbench = useGridWorkbench([{ id: 'plugin' }], {
       scope: 'grid-workbench-cjk-search-test',
       groups: [{ id: 'all', predicate: () => true }],

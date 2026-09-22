@@ -198,6 +198,8 @@ const draftReady = ref(false)
 let draftVersion = 0
 let selectionVersion = 0
 let disposed = false
+let saveVersion = 0
+let cancelledNavigationTarget: string | null = null
 
 // Plugins without persisted profiles expose an editable default draft. It is
 // persisted only when the user saves, keeping configuration page loading read-only.
@@ -664,12 +666,14 @@ async function save() {
   const profileName = selectedProfileName.value
   const saveLoadVersion = loadVersion
   const saveDraftVersion = draftVersion
+  const currentSaveVersion = ++saveVersion
   const draftToSave = deepClone(profileDraftConfig.value || {}) as Record<string, any>
   const shouldActivate = isVirtualDefaultProfile(profileName)
   const isCurrentSave = () =>
     !disposed &&
     saveLoadVersion === loadVersion &&
     saveDraftVersion === draftVersion &&
+    currentSaveVersion === saveVersion &&
     pluginId === props.pluginId &&
     profileName === selectedProfileName.value
 
@@ -732,9 +736,9 @@ async function save() {
       }
     }
   } catch (e: any) {
-    error.value = e?.message || t('plugins.configSaveFailed')
+    if (isCurrentSave()) error.value = e?.message || t('plugins.configSaveFailed')
   } finally {
-    saving.value = false
+    if (currentSaveVersion === saveVersion) saving.value = false
   }
 }
 
@@ -771,6 +775,7 @@ onBeforeUnmount(() => {
   loadVersion += 1
   draftVersion += 1
   selectionVersion += 1
+  saveVersion += 1
 })
 
 watch(
@@ -779,6 +784,14 @@ watch(
     const version = ++loadVersion
     draftVersion += 1
     selectionVersion += 1
+    saveVersion += 1
+    saving.value = false
+    if (newId === cancelledNavigationTarget) {
+      cancelledNavigationTarget = null
+      return
+    }
+    cancelledNavigationTarget = null
+    const wasDraftReady = draftReady.value
     draftReady.value = false
     draftLoading.value = false
     if (!newId || disposed) return
@@ -790,7 +803,11 @@ watch(
           { type: 'warning' }
         )
       } catch {
-        if (!disposed && version === loadVersion && props.pluginId === newId) router.replace(`/plugins/${encodeURIComponent(oldId)}`)
+        if (!disposed && version === loadVersion && props.pluginId === newId) {
+          cancelledNavigationTarget = oldId
+          draftReady.value = wasDraftReady
+          await router.replace(`/plugins/${encodeURIComponent(oldId)}`)
+        }
         return
       }
     }

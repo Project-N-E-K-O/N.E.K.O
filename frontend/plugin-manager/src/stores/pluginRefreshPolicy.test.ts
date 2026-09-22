@@ -8,8 +8,9 @@ const translate = vi.hoisted(() => vi.fn(
   (key: string, params?: Record<string, unknown>) => `${key}${params ? JSON.stringify(params) : ''}`,
 ))
 
+const locale = vi.hoisted(() => ({ value: 'zh-CN' }))
 vi.mock('@/i18n', () => ({
-  getLocale: () => 'zh-CN',
+  getLocale: () => locale.value,
   i18n: {
     global: {
       t: translate,
@@ -41,6 +42,7 @@ function registryRefreshResult() {
 
 describe('plugin store registry refresh policy', () => {
   beforeEach(() => {
+    locale.value = 'zh-CN'
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
@@ -60,6 +62,33 @@ describe('plugin store registry refresh policy', () => {
     expect(store.pluginListRegistrySynced).toBe(true)
     expect(refreshPluginsRegistry).toHaveBeenCalledTimes(1)
     expect(getPlugins).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reuse an in-flight list request from a different locale', async () => {
+    let complete!: (value: any) => void
+    vi.mocked(getPlugins).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    const store = usePluginStore()
+    const old = store.fetchPlugins()
+    locale.value = 'en-US'
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledTimes(2)
+    complete({ plugins: [plugin('stale')] })
+    await old
+    expect(store.plugins).toEqual([])
+  })
+
+  it('does not overwrite a fresh single status with an older full snapshot', async () => {
+    let complete!: (value: any) => void
+    vi.mocked(getPluginStatus)
+      .mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      .mockResolvedValueOnce({ status: 'running' } as any)
+    const store = usePluginStore()
+    const old = store.fetchPluginStatus()
+    await store.fetchPluginStatus('demo')
+    complete({ plugins: { demo: { status: 'stopped' } } })
+    await old
+    expect(store.pluginStatuses.demo?.status).toBe('running')
+    expect(store.pluginStatusSnapshotLoaded).toBe(false)
   })
 
   it('marks explicit registry syncs as satisfying the first plugin list open', async () => {

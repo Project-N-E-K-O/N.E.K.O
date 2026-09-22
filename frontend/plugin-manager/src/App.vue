@@ -4,7 +4,7 @@
     :z-index="ELEMENT_Z_INDEX"
     :message="ELEMENT_MESSAGE_CONFIG"
   >
-    <div v-if="localeLoadState.pending" class="locale-bootstrap-shell" role="status">
+    <div v-if="localeBootstrapping" class="locale-bootstrap-shell" role="status">
       {{ $t('common.languageLoading') }}
     </div>
     <router-view v-else />
@@ -13,11 +13,20 @@
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { elementLocale, localeLoadState } from './i18n'
 import LocaleLoadNotice from './components/common/LocaleLoadNotice.vue'
 
 const ELEMENT_Z_INDEX = 12000
 const ELEMENT_MESSAGE_CONFIG = { offset: 54 }
+const localeBootstrapping = ref(localeLoadState.pending !== null)
+watch(
+  () => localeLoadState.pending,
+  (pending) => {
+    if (pending === null) localeBootstrapping.value = false
+  },
+  { immediate: true },
+)
 </script>
 
 <style scoped>

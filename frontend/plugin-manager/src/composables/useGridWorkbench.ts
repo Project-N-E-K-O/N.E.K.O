@@ -80,7 +80,6 @@ interface ScopedState {
 }
 
 const _scopes = new Map<string, ScopedState>()
-const CJK_TEXT_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 
 function getOrCreateScope(
   scope: string,
@@ -159,26 +158,26 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const groupSelection: GroupSelectionMode = config.groupSelection ?? 'multiple'
   const pinyinSearch = ref<PinyinSearch | null>(null)
   let pinyinLoad: Promise<void> | null = null
-  let pinyinLoadFailed = false
+  let pinyinRetryAfter = 0
   const searchIndexCache = new WeakMap<object, { key: string; value: string }>()
 
   function ensurePinyinSearch() {
-    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || pinyinLoadFailed) return pinyinLoad
+    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
     pinyinLoad = import('@/utils/pinyinSearch')
       .then(({ safePinyin }) => { pinyinSearch.value = safePinyin })
-      .catch(() => { pinyinLoadFailed = true })
+      .catch(() => { pinyinRetryAfter = Date.now() + 5000 })
       .finally(() => { pinyinLoad = null })
     return pinyinLoad
   }
 
   function retryPinyinSearch() {
-    pinyinLoadFailed = false
+    pinyinRetryAfter = 0
     return ensurePinyinSearch()
   }
 
   if (config.buildPinyinSearchIndex) {
     watch(() => state.filterText.value.trim(), (text) => {
-      if (text && CJK_TEXT_PATTERN.test(text)) void ensurePinyinSearch()
+      if (text) void ensurePinyinSearch()
     }, { immediate: true })
   }
 

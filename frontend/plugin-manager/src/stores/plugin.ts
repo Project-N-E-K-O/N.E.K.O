@@ -45,6 +45,7 @@ export const usePluginStore = defineStore('plugin', () => {
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
+  let pendingFetchPluginsLocale: string | null = null
   let pendingFetchStatus: Promise<void> | null = null
   let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
   const pluginListRegistrySynced = ref(false)
@@ -88,8 +89,9 @@ export const usePluginStore = defineStore('plugin', () => {
 
   // 操作
   async function fetchPlugins(force = false, options: RegistrySyncOptions = {}) {
+    const requestLocale = getLocale()
     // 防止请求堆积
-    if (!force && pendingFetchPlugins) {
+    if (!force && pendingFetchPlugins && pendingFetchPluginsLocale === requestLocale) {
       return pendingFetchPlugins
     }
     
@@ -103,10 +105,11 @@ export const usePluginStore = defineStore('plugin', () => {
         console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
         fetchPluginsSeq += 1
         pendingFetchPlugins = null
+        pendingFetchPluginsLocale = null
         loading.value = false
       }
     }, REQUEST_TIMEOUT)
-    const requestLocale = getLocale()
+    pendingFetchPluginsLocale = requestLocale
     pendingFetchPlugins = (async () => {
       try {
         const response = await getPlugins(
@@ -128,6 +131,7 @@ export const usePluginStore = defineStore('plugin', () => {
         if (seq === fetchPluginsSeq) {
           loading.value = false
           pendingFetchPlugins = null
+          pendingFetchPluginsLocale = null
         }
       }
     })()
@@ -209,6 +213,12 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function fetchPluginStatus(pluginId?: string, force = false) {
+    if (pluginId) {
+      // A single-plugin mutation makes any in-flight full snapshot stale.
+      fetchStatusSeq += 1
+      pendingFetchStatus = null
+      pluginStatusSnapshotLoaded.value = false
+    }
     // 只对全量状态请求做防抖（单个插件状态请求不做限制）
     if (!pluginId && pendingFetchStatus && !force) {
       return pendingFetchStatus
