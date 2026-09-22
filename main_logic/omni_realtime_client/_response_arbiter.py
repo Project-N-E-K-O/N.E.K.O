@@ -735,6 +735,12 @@ class RealtimeResponseArbiter:
         )
         self._queued_by_ticket[id(ticket)] = queued
         await self._queue.put(queued)
+        logger.info(
+            "[voice-chain] stage=response_enqueue source=%s ack_expected=%s queue_depth=%d",
+            source,
+            ack_expected,
+            self._queue.qsize(),
+        )
         if self._trace:
             self._trace_decision(
                 "enqueue",
@@ -860,6 +866,13 @@ class RealtimeResponseArbiter:
         """Cancel only the active/pre-created request, never drain the queue."""
 
         current = self._current
+        logger.info(
+            "[voice-chain] stage=response_cancel_requested reason=%s current_source=%s item_committed=%s response_started=%s",
+            reason,
+            current.source if current is not None else "",
+            bool(current.item_committed) if current is not None else False,
+            bool(current.response_send_started) if current is not None else False,
+        )
         if self._trace:
             self._trace_decision(
                 "cancel",
@@ -2961,6 +2974,12 @@ class RealtimeResponseArbiter:
             try:
                 if not item_driven:
                     await self._worker_send(queued, queued.response_event)
+                logger.info(
+                    "[voice-chain] stage=response_create_sent source=%s item_driven=%s item_acked=%s",
+                    queued.source,
+                    item_driven,
+                    item_acked,
+                )
             except Exception:
                 self._detach_response_owner(queued)
                 if not queued.terminal.done():

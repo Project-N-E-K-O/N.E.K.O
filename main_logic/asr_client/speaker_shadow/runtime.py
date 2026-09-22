@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 import multiprocessing
 import time
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from .contracts import (
     MAX_SPEAKER_BACKEND_PCM_BYTES,
@@ -1011,6 +1014,15 @@ class SpeakerShadowRuntime:
             for threshold, blocked in would_block:
                 if blocked:
                     self._would_block_counts[threshold] += 1
+            logger.info(
+                "[voice-chain] stage=voiceprint_score generation=%s candidate=%s similarity=%.4f blocked=%s terminal=%s audio_ms=%s",
+                generation,
+                candidate,
+                similarity,
+                any(blocked for _, blocked in would_block),
+                terminal,
+                audio_ms,
+            )
             callback = self._on_observation
             if callback is None:
                 return
