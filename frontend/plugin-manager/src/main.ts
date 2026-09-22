@@ -13,7 +13,7 @@ import { useConnectionStore } from './stores/connection'
 import { initTutorialBootstrap } from './tutorialBootstrap'
 
 initDarkMode()
-void initializeLocale()
+const localeStartup = initializeLocale()
 const tutorialStartup = initTutorialBootstrap()
 
 function initNativeDragGuard() {
@@ -53,7 +53,10 @@ function mountApp() {
   app.mount('#app')
   // Former language switching reloaded the whole page. Refresh localized
   // plugin metadata on a committed locale only, without resetting user work.
+  let initialLocalePending = Boolean(localeStartup)
+  if (localeStartup) void localeStartup.finally(() => { initialLocalePending = false })
   watch(i18n.global.locale, () => {
+    if (initialLocalePending) return
     void import('./stores/plugin')
       .then(({ usePluginStore }) => usePluginStore().fetchPlugins(true))
       .catch(error => console.warn('Could not refresh localized plugin metadata', error))
@@ -65,5 +68,5 @@ function mountApp() {
 
 // Preserve preactivation before mount for opener handoffs; ordinary tabs do not
 // load the tutorial graph. A missing optional chunk must not strand the shell.
-if (tutorialStartup) void tutorialStartup.catch(console.warn).then(mountApp)
-else mountApp()
+mountApp()
+if (tutorialStartup) void tutorialStartup.catch(console.warn)

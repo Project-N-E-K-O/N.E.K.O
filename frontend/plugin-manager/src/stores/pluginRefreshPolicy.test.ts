@@ -209,4 +209,27 @@ describe('plugin store registry refresh policy', () => {
 
     expect(store.pluginStatuses).toEqual({ fresh: { status: 'running' } })
   })
+
+  it('invalidates a plugin list response that arrives after timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = usePluginStore()
+      let resolveLate!: (value: any) => void
+      vi.mocked(getPlugins).mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve }) as any)
+
+      const request = store.fetchPlugins()
+      vi.advanceTimersByTime(15_000)
+      resolveLate({ plugins: [plugin('late')] })
+      await request
+
+      expect(store.plugins).toEqual([])
+      expect(store.pluginsSnapshotLoaded).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
+function plugin(id: string) {
+  return { id, name: id, description: '', version: '1.0.0', type: 'plugin' }
+}

@@ -101,6 +101,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const timeoutId = setTimeout(() => {
       if (seq === fetchPluginsSeq && pendingFetchPlugins) {
         console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
+        fetchPluginsSeq += 1
         pendingFetchPlugins = null
         loading.value = false
       }
@@ -220,6 +221,7 @@ export const usePluginStore = defineStore('plugin', () => {
       timeoutId = setTimeout(() => {
         if (seq === fetchStatusSeq && pendingFetchStatus) {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
+          fetchStatusSeq += 1
           pendingFetchStatus = null
         }
       }, REQUEST_TIMEOUT)

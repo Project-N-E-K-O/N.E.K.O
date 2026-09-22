@@ -676,9 +676,15 @@ watch(
   (current, previous) => {
     if (current.slice(1, 5).some((value, index) => !Object.is(value, previous[index + 1]))) return
     if (current.every((value, index) => Object.is(value, previous[index]))) return
-    // Before a document exists a newer locale may replace pending source loads.
-    // After publication, retain its input state until an explicit confirmed reload.
-    if (props.surface.mode === 'static') return
+    // Static plugin documents cannot receive the hosted locale handshake.
+    // Reload them when the app locale changes, matching the old full-page
+    // reload behavior while keeping the rest of the app mounted.
+    if (props.surface.mode === 'static') {
+      staticSurfaceReady.value = false
+      pendingStaticSurfaceMessages.length = 0
+      iframeKey.value += 1
+      return
+    }
     if (!hostedDocument.value || (props.surface.mode === 'markdown' && current[0] === previous[0] && documentLocale.value === String(locale.value))) void loadHostedTsx()
   },
   { flush: 'sync' },
