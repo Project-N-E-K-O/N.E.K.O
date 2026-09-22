@@ -15,7 +15,7 @@ function renderInlineMarkdown(value: string) {
   return escaped
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, url) => {
-      const safeUrl = escapeAttribute(String(url))
+      const safeUrl = escapeAttribute(String(url).replace(/&amp;/g, '&'))
       return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`
     })
 }

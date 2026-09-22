@@ -520,7 +520,10 @@ async function fetchSurfaces(): Promise<boolean> {
   } catch (caught: any) {
     if (!isCurrent()) return false
     surfaces.value = []
-    surfaceLoadError.value = caught?.response?.data?.detail || caught?.message || String(caught)
+    const detail = caught?.response?.data?.detail
+    surfaceLoadError.value = typeof detail === 'string' && detail
+      ? detail
+      : (caught?.message || String(caught))
     surfaceWarnings.value = [{ path: 'plugin.ui', code: 'surface_query_failed', message: surfaceLoadError.value }]
   } finally {
     if (surfaceController === controller) surfaceController = null

@@ -62,16 +62,15 @@ function goBack() {
 }
 
 onMounted(async () => {
-  if (pluginStore.pluginsWithStatus.length === 0) {
-    loading.value = true
-    loadError.value = null
-    try {
-      await pluginStore.ensurePlugins()
-    } catch (e: any) {
-      loadError.value = e?.message || t('plugins.loadFailed')
-    } finally {
-      loading.value = false
-    }
+  const hadSnapshot = pluginStore.pluginsWithStatus.length > 0
+  loading.value = !hadSnapshot
+  loadError.value = null
+  try {
+    await pluginStore.ensurePlugins()
+  } catch (e: any) {
+    loadError.value = e?.message || t('plugins.loadFailed')
+  } finally {
+    loading.value = false
   }
 })
 </script>

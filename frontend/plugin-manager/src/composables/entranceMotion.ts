@@ -12,7 +12,7 @@ export function sampleEntrance(spec: EntranceSpec) {
   const scale = spring({ ...options, from: spec.scale ?? 1, to: 1 })
   // Popmotion animates complex strings on the 0..100 domain, not 0..1.
   const blur = spring({ ...options, from: 0, to: 100 })
-  const blurString = interpolate([0, 100], [`blur(${spec.blur ?? 0}px)`, 'blur(0px)'], { clamp: false })
+  const blurString = interpolate([0, 100], [`blur(${spec.blur ?? 0}px)`, 'blur(0px)'], { clamp: true })
   const frames: Keyframe[] = []
   let duration = 0
   // 60 Hz keyframes are enough for a browser compositor to interpolate a
