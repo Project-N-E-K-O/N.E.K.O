@@ -323,10 +323,9 @@ class TtsRuntimeMixin:
             return
         self.tts_request_queue.put((speech_id, text))
         logger.info(
-            "[voice-chain] stage=tts_enqueue speech_id=%s text_len=%d queue_size=%d",
+            "[voice-chain] stage=tts_enqueue speech_id=%s text_len=%d",
             speech_id,
             len(text),
-            self.tts_request_queue.qsize(),
         )
         self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)

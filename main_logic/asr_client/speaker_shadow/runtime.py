@@ -1015,10 +1015,9 @@ class SpeakerShadowRuntime:
                 if blocked:
                     self._would_block_counts[threshold] += 1
             logger.info(
-                "[voice-chain] stage=voiceprint_score generation=%s candidate=%s similarity=%.4f blocked=%s terminal=%s audio_ms=%s",
+                "[voice-chain] stage=voiceprint_observation generation=%s scope=%s blocked=%s terminal=%s audio_ms=%s",
                 generation,
-                candidate,
-                similarity,
+                candidate.scope,
                 any(blocked for _, blocked in would_block),
                 terminal,
                 audio_ms,
