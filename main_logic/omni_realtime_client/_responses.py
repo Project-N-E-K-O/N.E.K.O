@@ -1015,7 +1015,7 @@ class _ResponseMixin:
                     # Leave it queued -- the lane is serial, and this turn's
                     # own ticket is priority 0.
                     if arbiter.has_live_response:
-                        await arbiter.cancel_current()
+                        await arbiter.cancel_current(reason="external_asr_prepare")
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
