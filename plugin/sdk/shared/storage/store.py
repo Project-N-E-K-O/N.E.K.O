@@ -124,6 +124,14 @@ class PluginStore(StorageResultTemplate):
         )
         conn.commit()
 
+    # ------------------------------------------------------------------
+    # Internal primitives — do NOT call these directly from plugin code.
+    # Use ``await store.get(key)`` / ``await store.set(key, value)`` instead,
+    # or the convenience wrappers ``self.store_get()`` / ``self.store_set()``
+    # on NekoPluginBase. These are sync helpers used internally by the
+    # async public API.
+    # ------------------------------------------------------------------
+
     def _read_value(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
         if not self.enabled:
             return default

@@ -171,6 +171,89 @@ class NekoPluginBase:
             self.sdk_logger = logger
         return logger
 
+    # ── Store 便捷方法 ──────────────────────────────────────────────────
+    #
+    # PluginStore 的 ``async def get/set/delete`` 返回 Result[T, E]，
+    # 而社区插件习惯用 ``await self.store.get(key)`` 直接拿值。
+    # 这三个便捷方法帮插件开发者解包 Result、处理 store=None、
+    # 兼容两种返回模式（官方 PluginStore vs 裸值 store）。
+
+    def _unwrap_store_result(self, result: Any, default: Any = None) -> Any:
+        """解包 store.get/set/delete 的返回值。
+
+        官方 PluginStore 返回 Result[T, E]（Ok/Err）；
+        裸值 store 直接返回值。两种都处理。
+        """
+        if result is None:
+            return default
+        # Result[T, E] 包装：用 is_ok() 判断，不依赖 .value 是否存在
+        try:
+            if hasattr(result, "is_ok") and callable(result.is_ok):
+                if result.is_ok():
+                    return getattr(result, "value", default)
+                return default
+        except Exception:
+            pass
+        return result
+
+    async def store_get(self, key: str, default: Any = None) -> Any:
+        """读插件 store，返回值或 default。
+
+        比 ``await self.store.get(key)`` 更易用：
+        - 自动解包 Result[T, E] 包装
+        - store=None 时 graceful 返回 default（不抛异常）
+        - 两种返回模式都支持
+
+        Usage ::
+
+            count = await self.store_get("post_count", default=0)
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return default
+        try:
+            result = await store.get(key, default)
+        except Exception as exc:
+            self.logger.debug("store_get(%s) failed: %s", key, exc)
+            return default
+        return self._unwrap_store_result(result, default)
+
+    async def store_set(self, key: str, value: Any) -> bool:
+        """写插件 store，返回是否成功。
+
+        Usage ::
+
+            ok = await self.store_set("post_count", str(count))
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return False
+        try:
+            await store.set(key, value)
+            return True
+        except Exception as exc:
+            self.logger.debug("store_set(%s) failed: %s", key, exc)
+            return False
+
+    async def store_delete(self, key: str) -> bool:
+        """删插件 store key，返回是否删除成功（key 不存在也算 False）。
+
+        Usage ::
+
+            deleted = await self.store_delete("temp_key")
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return False
+        try:
+            result = await store.delete(key)
+        except Exception as exc:
+            self.logger.debug("store_delete(%s) failed: %s", key, exc)
+            return False
+        # delete 返回 Result[bool, StoreError]
+        unwrapped = self._unwrap_store_result(result, False)
+        return bool(unwrapped)
+
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         del wrap_with_hooks
         entries: dict[str, EventHandler] = {}
