@@ -284,7 +284,8 @@ page. It explicitly reports `window: "recent_retained"`; it is not an unlimited
 per-plugin billing history.
 
 `config/plugin_model_usage.json` retains at most 1000 logical requests. Each has
-one server-generated request ID and up to two attempt IDs, with plugin/usage/
+one server-generated request ID and up to four attempt IDs (primary and one
+fallback, each with at most one stream-options compatibility retry), with plugin/usage/
 slot identity, configured protocol/model, timestamps, duration, execution status
 and safe error codes. Attempt counts distinguish actual send attempts from
 validation and queue failures. Bodies, URLs, headers, keys, instance tokens and
@@ -304,6 +305,11 @@ Only `reported` usage from started upstream attempts is sent to the existing
 plugin and slot identifiers remain local. Failed attempts with complete usage
 are counted too. Bounded request-ID deduplication prevents repeated finalizers
 from incrementing totals again.
+
+A rejected request and its compatibility retry have separate attempt records.
+Reported counters from the rejected request are retained on that failed attempt;
+the retry starts with unknown usage and only records its own provider counters.
+The retry shares the original deadline and does not add another fallback.
 
 The OpenAI SDK statistics hook bypasses only the configured local gateway
 origin (scheme, hostname and effective port) and `/api/models/v1` path. Other

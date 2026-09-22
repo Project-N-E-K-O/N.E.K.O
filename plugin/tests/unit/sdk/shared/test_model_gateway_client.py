@@ -92,7 +92,16 @@ async def test_sdk_request_keeps_binding_alias_and_only_gateway_token(
 
 @pytest.mark.asyncio
 async def test_older_host_reports_capability_unavailable_only_on_use() -> None:
-    context = SdkContext(SimpleNamespace(plugin_id="old"))
+    from plugin.sdk.shared.core import context as context_module
+
+    # Match the complete pre-model SDK surface: production adaptation must
+    # still wrap it, rather than returning a facade without the new capability.
+    old = SimpleNamespace(
+        plugin_id="old", metadata={}, logger=None, config_path=None, bus=None, images=None,
+    )
+    for name in context_module._SDK_CONTEXT_METHOD_NAMES:
+        setattr(old, name, lambda: None)
+    context = ensure_sdk_context(old)
     assert context.plugin_id == "old"
     assert context.models is context.models
     with pytest.raises(CapabilityUnavailableError) as caught:

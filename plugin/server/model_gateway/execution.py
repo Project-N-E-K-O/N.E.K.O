@@ -338,16 +338,36 @@ class ModelExecutor:
     async def _attempt(self, slot_id, slot, body, attempts, deadline, stream, cutoff=None):
         loop = asyncio.get_running_loop()
         started = loop.time()
-        observation = AttemptObservation()
-        attempt = {
-            "attempt_id": uuid4().hex,
-            "slot_id": slot_id,
-            "protocol": slot.protocol,
-            "model": slot.model,
-            "status": "success",
-            "error_code": None,
-        }
-        attempts.append(attempt)
+
+        def new_attempt():
+            item = {
+                "attempt_id": uuid4().hex,
+                "slot_id": slot_id,
+                "protocol": slot.protocol,
+                "model": slot.model,
+                "status": "success",
+                "error_code": None,
+            }
+            attempts.append(item)
+            return item
+
+        def finish_attempt():
+            attempt.update({
+                "duration_ms": round((loop.time() - started) * 1000, 3),
+                "upstream_started": observation.upstream_started,
+                "usage_status": observation.usage_status,
+                "usage": observation.usage,
+            })
+
+        def on_retry(error_code: str) -> None:
+            nonlocal attempt, started
+            attempt.update(status="error", error_code=error_code)
+            finish_attempt()
+            started = loop.time()
+            attempt = new_attempt()
+
+        observation = AttemptObservation(on_retry=on_retry)
+        attempt = new_attempt()
         budget = asyncio.timeout_at(cutoff)
         try:
             try:
@@ -375,9 +395,4 @@ class ModelExecutor:
             attempt["status"], attempt["error_code"] = _failure(exc, expired=deadline.expired())
             raise
         finally:
-            attempt.update({
-                "duration_ms": round((loop.time() - started) * 1000, 3),
-                "upstream_started": observation.upstream_started,
-                "usage_status": observation.usage_status,
-                "usage": observation.usage,
-            })
+            finish_attempt()

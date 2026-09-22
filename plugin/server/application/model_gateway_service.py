@@ -215,10 +215,10 @@ class ModelGatewayService:
                 except ModelGatewayError as exc:
                     if connected or retrying or not can_retry_without_options or exc.code != "upstream_request_rejected":
                         raise
-                if observation is not None:
-                    # Usage from the rejected request's error body must not be
-                    # attributed to the retried stream.
-                    observation.usage, observation.usage_status = None, "unknown"
+                    if observation is not None:
+                        # Preserve this send in the executor's ledger, then
+                        # start an independent observation for the retry.
+                        observation.restart(exc.code)
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )

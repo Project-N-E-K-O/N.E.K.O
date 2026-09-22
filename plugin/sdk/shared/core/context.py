@@ -26,7 +26,7 @@ from .types import (
 )
 
 _UNSET = object()
-_SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus", "images")
+_SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus", "images", "models")
 _SDK_CONTEXT_METHOD_NAMES = (
     "get_own_config",
     "get_own_base_config",

@@ -17,6 +17,8 @@ from utils.file_utils import read_json_tolerating_replace
 
 USAGE_FILENAME = "plugin_model_usage.json"
 MAX_RECORDS = 1000
+# Primary plus one fallback, each with at most one stream-options retry.
+MAX_ATTEMPTS = 4
 _write_lock = threading.RLock()
 _periodic_lock = threading.Lock()
 # A second bounded window catches late repeated finalizers even after eviction
@@ -77,7 +79,7 @@ def _clean_record(raw: object) -> dict:
     if not isinstance(raw, dict) or not _is_enum(raw.get("status"), _STATUSES):
         raise _invalid()
     attempts = raw.get("attempts")
-    if not isinstance(attempts, list) or len(attempts) > 2:
+    if not isinstance(attempts, list) or len(attempts) > MAX_ATTEMPTS:
         raise _invalid()
     record = {
         key: _text(raw.get(key)) for key in ("request_id", "plugin_id", "usage_id", "slot_id")

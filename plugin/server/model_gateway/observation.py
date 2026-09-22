@@ -1,7 +1,8 @@
 """One upstream attempt's usage snapshot, independent of response presentation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 
 _TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
@@ -66,6 +67,15 @@ class AttemptObservation:
     upstream_started: bool = False
     usage: dict | None = None
     usage_status: str = "unknown"
+    on_retry: Callable[[str], None] | None = field(default=None, repr=False)
+
+    def restart(self, error_code: str) -> None:
+        """Finalize the rejected send before resetting counters for its retry."""
+        if self.on_retry is not None:
+            self.on_retry(error_code)
+        self.upstream_started = False
+        self.usage = None
+        self.usage_status = "unknown"
 
     def observe(self, value: object, *, protocol: str = "openai_chat", reported: bool = False) -> None:
         usage = normalize_usage(value, protocol=protocol)

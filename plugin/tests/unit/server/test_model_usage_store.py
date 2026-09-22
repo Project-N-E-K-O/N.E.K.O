@@ -7,14 +7,19 @@ import threading
 from contextlib import nullcontext
 from contextvars import ContextVar
 
+import httpx
 import pytest
 
+from plugin.server.application.model_gateway_service import ModelGatewayService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.model_config import ModelSlot
 from plugin.server.infrastructure import model_usage_store as usage_store
 from plugin.server.infrastructure.model_usage_store import (
     USAGE_FILENAME,
     ModelUsageRecorder,
 )
+from plugin.server.model_gateway.errors import ModelGatewayError
+from plugin.server.model_gateway.execution import ModelExecutor, ResolvedModelCall
 from utils.file_utils import atomic_write_json
 
 pytestmark = pytest.mark.plugin_unit
@@ -219,6 +224,110 @@ async def test_fallback_counts_logical_requests_and_actual_upstreams_separately(
     assert by_slot["summary"]["tokens"]["total_tokens"] == 25
     assert len(by_slot["requests"][0]["attempts"]) == 2
     assert (await recorder.get_usage(plugin_id="beta", slot_id="fallback"))["requests"] == []
+
+
+@pytest.mark.parametrize("error_usage", [None, {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                                         {"prompt_tokens": "invalid"}])
+@pytest.mark.parametrize("retry_result", ["unknown", "reported", "error", "timeout", "cancelled", "fallback"])
+async def test_compatibility_retry_accounts_for_each_http_send(usage_env, error_usage, retry_result):
+    recorder, cm, tracker, _ = usage_env
+    sent = []
+    retry_started = asyncio.Event()
+    retry_usage = {"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13}
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        sent.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported stream_options"}, "usage": error_usage})
+        retry_started.set()
+        if retry_result == "cancelled":
+            await asyncio.Event().wait()
+        if retry_result == "timeout":
+            raise httpx.ReadTimeout("retry timed out", request=request)
+        if retry_result == "error" or (retry_result == "fallback" and body["model"] == "primary"):
+            return httpx.Response(503, json={"error": {"message": "unavailable"}})
+        envelope = {"id": "chatcmpl-retry", "object": "chat.completion.chunk", "created": 1, "model": body["model"]}
+        events = [{**envelope, "choices": [{"index": 0, "delta": {"content": "OK"}, "finish_reason": "stop"}]}]
+        if retry_result == "reported":
+            events.append({**envelope, "choices": [], "usage": retry_usage})
+        content = "".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)
+
+    gateway = ModelGatewayService(lambda slot: httpx.AsyncClient(transport=httpx.MockTransport(upstream)))
+    primary = ModelSlot(name="Primary", protocol="openai_chat", base_url="https://primary.test/v1",
+                        model="primary", capabilities=["text", "streaming"])
+    fallback = primary.model_copy(update={"model": "fallback", "base_url": "https://fallback.test/v1"})
+    call = ResolvedModelCall("test_plugin", "analysis", "primary", primary,
+                             "fallback" if retry_result == "fallback" else None,
+                             fallback if retry_result == "fallback" else None)
+    executor = ModelExecutor(gateway, recorder)
+
+    async def consume():
+        return [part async for part in executor.stream(call, {
+            "model": "analysis", "messages": [{"role": "user", "content": "hello"}], "stream": True,
+        })]
+
+    task = asyncio.create_task(consume())
+    try:
+        if retry_result == "cancelled":
+            await asyncio.wait_for(retry_started.wait(), 2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif retry_result in {"error", "timeout"}:
+            with pytest.raises(ModelGatewayError) as caught:
+                await task
+            assert caught.value.code == ("upstream_timeout" if retry_result == "timeout" else "upstream_error")
+        else:
+            assert (await task)[-1] == b"data: [DONE]\n\n"
+    finally:
+        await executor.aclose()
+        await asyncio.gather(task, return_exceptions=True)
+
+    result = await recorder.get_usage()
+    assert len(result["requests"]) == 1
+    record = result["requests"][0]
+    attempts = record["attempts"]
+    expected_count = 4 if retry_result == "fallback" else 2
+    assert len(attempts) == len(sent) == expected_count
+    assert len({attempt["attempt_id"] for attempt in attempts}) == expected_count
+    assert all(attempt["duration_ms"] >= 0 and attempt["upstream_started"] for attempt in attempts)
+    assert sum(attempt["duration_ms"] for attempt in attempts) <= record["duration_ms"] + 0.01
+    valid_error_usage = error_usage is not None and "total_tokens" in error_usage
+    for index in range(0, expected_count, 2):
+        assert attempts[index]["status"] == "error"
+        assert attempts[index]["error_code"] == "upstream_request_rejected"
+        assert attempts[index]["usage_status"] == ("reported" if valid_error_usage else "unknown")
+        assert attempts[index]["usage"] == (error_usage if valid_error_usage else None)
+    assert attempts[-1]["usage"] == (retry_usage if retry_result == "reported" else None)
+    assert attempts[-1]["usage_status"] == ("reported" if retry_result == "reported" else "unknown")
+    expected_status = retry_result if retry_result in {"error", "timeout", "cancelled"} else "success"
+    assert record["status"] == attempts[-1]["status"] == expected_status
+    if retry_result == "fallback":
+        assert [attempt["slot_id"] for attempt in attempts] == ["primary", "primary", "fallback", "fallback"]
+        assert attempts[1]["status"] == "error" and attempts[1]["usage"] is None
+    reported_count = (expected_count // 2 if valid_error_usage else 0) + int(retry_result == "reported")
+    summary = result["summary"]
+    assert summary["upstream_attempt_count"] == expected_count
+    assert summary["usage_counts"] == {"reported": reported_count, "partial": 0, "unknown": expected_count - reported_count}
+    assert summary["tokens"]["total_tokens"] == (10 * expected_count // 2 if valid_error_usage else 0) + (13 if retry_result == "reported" else 0)
+    assert len(tracker.calls) == reported_count
+    assert sum(item["total_tokens"] for item in tracker.calls) == summary["tokens"]["total_tokens"]
+    assert [item["success"] for item in tracker.calls] == [False] * (expected_count // 2 if valid_error_usage else 0) + ([True] if retry_result == "reported" else [])
+    assert cm.writes == 1
+
+
+async def test_retry_attempt_bound_rejects_oversized_records_without_writing(usage_env):
+    recorder, cm, tracker, _ = usage_env
+    record = request_record()
+    record["attempts"] = [
+        {**record["attempts"][0], "attempt_id": f"attempt-{index}"} for index in range(5)
+    ]
+    with pytest.raises(ServerDomainError) as caught:
+        await recorder.record_request(record)
+    assert caught.value.code == "MODEL_USAGE_INVALID"
+    assert cm.writes == 0 and not tracker.calls
 
 
 @pytest.mark.parametrize("status", ["error", "timeout", "cancelled"])
