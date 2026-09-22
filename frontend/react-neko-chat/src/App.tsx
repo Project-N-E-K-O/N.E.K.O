@@ -1237,7 +1237,7 @@ function CompactChatApp({
     compactChoiceInteractionsAllowed && galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
-  const isCompactSurface = chatSurfaceMode !== 'minimized';
+  const isCompactSurface = chatSurfaceMode !== 'minimized' && chatSurfaceMode !== 'quiet_companion';
   // compactChatState 受控时跟随外部 prop；未受控（独立挂载 / 开发预览 main.tsx）时用
   // 内部 state 兜底，让字幕胶囊点击能真正切到输入态，而不是停在胶囊里出不来喵。
   const isCompactChatStateControlled = compactChatState !== undefined;

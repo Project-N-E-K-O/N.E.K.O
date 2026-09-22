@@ -262,6 +262,27 @@ def topic_hook_delivery_available(
                 lanlan_name,
                 exc,
             )
+    # Quiet companion 模式（Issue #3156）：用户主动选择"猫咪安静陪伴"，
+    # 不主动搭话。语义不同于 goodbye_silent，但走同样的短路。
+    is_quiet_companion = getattr(mgr, "is_quiet_companion", None)
+    has_quiet_gate = (
+        "is_quiet_companion" in getattr(mgr, "__dict__", {})
+        or hasattr(type(mgr), "is_quiet_companion")
+    )
+    if has_quiet_gate and callable(is_quiet_companion):
+        try:
+            if bool(is_quiet_companion()):
+                logger.info(
+                    "[%s] topic hook delivery skipped: quiet companion mode is active",
+                    lanlan_name,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] topic hook quiet-companion preflight failed open: %s",
+                lanlan_name,
+                exc,
+            )
     if not _topic_activity_gate_open(mgr, lanlan_name):
         return False
     if include_manager_release and not _topic_manager_release_gate_open(mgr, lanlan_name):
