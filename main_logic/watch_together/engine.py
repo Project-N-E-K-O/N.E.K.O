@@ -151,7 +151,31 @@ def parse_video_url(value):
     return match.group(1), page - 1
 
 
-def json_roots(text):
+def _json_container_end(text, start):
+    """Find a balanced container boundary without interpreting its values."""
+    stack, quoted, escaped = [], False, False
+    for at in range(start, len(text)):
+        token = text[at]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif token == '\\':
+                escaped = True
+            elif token == '"':
+                quoted = False
+        elif token == '"':
+            quoted = True
+        elif token in '{[':
+            stack.append('}' if token == '{' else ']')
+        elif token in '}]':
+            if not stack or token != stack.pop():
+                return None
+            if not stack:
+                return at + 1
+    return None
+
+
+def json_roots(text, validate=None):
     """Yield every decodable JSON root in a reply, in the order they appear."""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     # Neither end of the reply is trustworthy. Slicing the first brace to the
@@ -162,6 +186,7 @@ def json_roots(text):
     # JSON, so no syntactic rule here can tell a label from the payload. Offer
     # every root instead and let the caller's schema pick.
     decoder, first_error, found, cursor = json.JSONDecoder(), None, False, 0
+    pending_error = None
     while cursor < len(text):
         opened = [at for at in (text.find('{', cursor), text.find('[', cursor)) if at >= 0]
         if not opened:
@@ -170,13 +195,16 @@ def json_roots(text):
         try:
             value, cursor = decoder.raw_decode(text, start)
         except json.JSONDecodeError as exc:
-            # A quoted member starts an object-shaped answer, including inside
-            # arrays. Do not discard its parse error and select an earlier
-            # schema example, even if the provider reports a normal stop.
-            # Bare brackets and prose labels ("[1 of 1]", "{unclosed") remain
-            # skippable; this deliberately errs toward retrying broken objects.
+            # A malformed format example may precede the real answer. Skip its
+            # whole container, never its nested values, and retain the failure
+            # until a later independent root passes the caller's schema. An
+            # unclosed container cannot establish that boundary at all.
             if re.match(r'(?:\[\s*)*\{\s*"', text[start:]):
-                raise
+                end = _json_container_end(text, start)
+                if end is None:
+                    raise
+                pending_error, cursor = exc, end
+                continue
             first_error = first_error or exc
             # Resume past everything the decoder swallowed before it broke.
             # Brackets behind that point are pieces of this broken root, not
@@ -188,7 +216,11 @@ def json_roots(text):
             cursor = max(exc.pos, start + 1)
             continue
         found = True
+        if pending_error is not None and (validate is None or not validate(value)[1]):
+            pending_error = None
         yield value
+    if pending_error is not None:
+        raise pending_error
     if not found:
         raise first_error or ValueError('Missing JSON object or array')
 
@@ -196,7 +228,7 @@ def json_roots(text):
 def json_object(text, validate=None):
     """Return the one root the caller's schema accepts, refusing a tie."""
     # json_roots raises rather than finishing empty, so there is always a root.
-    roots = list(json_roots(text))
+    roots = list(json_roots(text, validate))
     if validate is None:
         return roots[0]
     accepted = [value for value in roots if not validate(value)[1]]

@@ -176,6 +176,38 @@ def test_prose_around_the_root_is_ignored(text, expected):
     assert json_object(text, _events_validator) == expected
 
 
+@pytest.mark.parametrize('prefix', [
+    'Format: {"events": [...]}',
+    'Step [1] Format: {"events": [...]}',
+    'Format: [{"text": ...}]',
+    'Format: {"events": [...], "nested": {"events": []}}',
+    'Format: {"events": [...], "note": ' + json.dumps('brace } and escaped quote "') + '}',
+])
+def test_a_malformed_format_example_does_not_hide_the_later_answer(prefix):
+    from main_logic.watch_together.engine import json_object
+
+    expected = {'events': [{'text': 'actual'}]}
+    assert json_object(prefix + '\nAnswer: ' + json.dumps(expected), _events_validator) == expected
+
+
+@pytest.mark.parametrize('text', [
+    # A nested complete value is not a later independent answer.
+    '{"events": [...], "nested": {"events": []}}',
+    # A complete but malformed final answer must not hand back the example.
+    'Format: {"events": []}\nAnswer: {"events": [...]}',
+    'Format: {"events": []}\nAnswer: {"events": [...]}\nStep [1]',
+    'Format: {"events": []}\nAnswer: {"events": [...]}\n{"other": true}',
+    # An unclosed or mismatched container does not establish a sibling boundary.
+    '{"events": [...], "nested": {"events": []}',
+    '{"events": [...] ]\n{"events": []}',
+])
+def test_a_malformed_object_requires_a_later_independent_valid_answer(text):
+    from main_logic.watch_together.engine import json_object
+
+    with pytest.raises(json.JSONDecodeError):
+        json_object(text, _events_validator)
+
+
 @pytest.mark.parametrize('text,expected', [
     # A label such as "Step [1]:" is itself valid JSON, so only the schema can
     # say it is not the payload.
