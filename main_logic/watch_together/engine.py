@@ -480,7 +480,11 @@ class Engine:
     async def llm(self, content, job):
         cfg = await self.vision_config()
         def validate(value):
-            if isinstance(value, list) and all(isinstance(event, dict) for event in value):
+            # A timeline response wrapped in an array is not an event. Retry
+            # that shape instead of silently dropping its nested timeline.
+            if isinstance(value, list) and all(
+                isinstance(event, dict) and 'events' not in event for event in value
+            ):
                 value = {'events': value}
             valid = isinstance(value, dict) and isinstance(value.get("events"), list)
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]

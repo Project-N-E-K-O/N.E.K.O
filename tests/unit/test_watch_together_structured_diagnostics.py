@@ -79,6 +79,40 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mixed', [False, True])
+@pytest.mark.parametrize('recovers', [False, True])
+async def test_timeline_wrappers_in_event_arrays_retry_instead_of_losing_events(
+    tmp_path, monkeypatch, mixed, recovers,
+):
+    from main_logic.watch_together.engine import Engine
+
+    events = [{'at': 5, 'evidence_at': 5, 'kind': 'comment',
+               'text': 'A ball moved.', 'reason': 'Visible motion.', 'confidence': .9}]
+    wrapped = [{'events': events}]
+    if mixed:
+        wrapped = events + wrapped
+    responses = (wrapped, events if recovers else wrapped)
+    clients = [SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(
+            content=json.dumps(value), response_metadata={'finish_reason': 'stop'},
+        )),
+        aclose=AsyncMock(),
+    ) for value in responses]
+    factory = AsyncMock(side_effect=clients)
+    monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
+    instance = Engine(tmp_path, AsyncMock(), 'cat')
+    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    if recovers:
+        assert await instance.llm([], {}) == {'events': events}
+    else:
+        with pytest.raises(ValueError, match='Invalid timeline response'):
+            await instance.llm([], {})
+    assert factory.await_count == 2
+    for client in clients:
+        client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('finish_reason', ['length', 'stop', None])
 @pytest.mark.parametrize('content', [
     # The example passes the schema, but the actual answer is incomplete.
