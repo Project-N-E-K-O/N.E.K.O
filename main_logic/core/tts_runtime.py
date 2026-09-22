@@ -363,6 +363,12 @@ class TtsRuntimeMixin:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
+        logger.info(
+            "[voice-chain] stage=tts_enqueue speech_id=%s text_len=%d queue_size=%d",
+            speech_id,
+            len(text),
+            self.tts_request_queue.qsize(),
+        )
         self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
         # 每个入队的 chunk 都把空闲定时器重新拨到 idle 秒之后：文本停了、done
@@ -2284,6 +2290,12 @@ class TtsRuntimeMixin:
                         if not done_sent:
                             self._mark_game_speech_delivery_failed(speech_id)
                         delivered = self._game_speech_delivery_succeeded(speech_id)
+                        logger.info(
+                            "[voice-chain] stage=tts_done speech_id=%s sent=%s delivered=%s",
+                            speech_id,
+                            done_sent,
+                            delivered,
+                        )
                         if delivered:
                             GAME_SPEECH_AUDIO_CACHE.complete_capture(
                                 self,
@@ -2309,6 +2321,10 @@ class TtsRuntimeMixin:
                                 return
                             self.tts_ready = ready_flag
                         if ready_flag:
+                            logger.info(
+                                "[voice-chain] stage=tts_ready ready=true speech_id=%s",
+                                getattr(self, "current_speech_id", ""),
+                            )
                             self._last_tts_error_code = ''
                             self._tts_retry_notify_count = 0
                             self._tts_rate_limit_backoff_level = 0
@@ -2337,6 +2353,10 @@ class TtsRuntimeMixin:
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
+                            logger.warning(
+                                "[voice-chain] stage=tts_ready ready=false speech_id=%s",
+                                getattr(self, "current_speech_id", ""),
+                            )
                             # Configured endpoints fall back once; the handler
                             # then follows the replacement worker's new queue.
                             # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
@@ -2438,6 +2458,11 @@ class TtsRuntimeMixin:
                         GAME_SPEECH_AUDIO_CACHE.fail_capture(self, error_speech_id)
                         self._mark_game_speech_delivery_failed(error_speech_id)
                         logger.error(f"TTS Worker Error: {error_msg}")
+                        logger.info(
+                            "[voice-chain] stage=tts_error speech_id=%s error_len=%d",
+                            error_speech_id,
+                            len(error_msg_text),
+                        )
 
                         # A configured endpoint failure is observable in the
                         # backend log above, then redispatched through the exact
@@ -2572,6 +2597,12 @@ class TtsRuntimeMixin:
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
                     sent = await self.send_speech(audio_payload, speech_id=speech_id)
+                    logger.info(
+                        "[voice-chain] stage=tts_audio_delivery speech_id=%s bytes=%d sent=%s",
+                        speech_id,
+                        len(audio_payload) if isinstance(audio_payload, (bytes, bytearray)) else 0,
+                        sent,
+                    )
                     if not self._tts_runtime_is_current(runtime):
                         return
                     if sent:
