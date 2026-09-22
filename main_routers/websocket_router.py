@@ -861,6 +861,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     _fire_task(goodbye_mgr.trigger_agent_callbacks())
                 continue
 
+            # Work companion 模式（Issue #3157）：用户选择"工作陪伴"。
+            # 前端切到 work_companion surface mode 时通知后端。
+            # 不同于 goodbye_state：不 park callbacks，只降频。
+            if action == "work_companion_state":
+                wc_active = bool(message.get("active"))
+                wc_reason = str(
+                    message.get("reason")
+                    or ("work_companion" if wc_active else "return")
+                ).strip().lower()[:64]
+                wc_mgr = session_manager[lanlan_name]
+                wc_mgr.set_work_companion(wc_active, wc_reason)
+                continue
+
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")

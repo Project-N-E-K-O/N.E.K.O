@@ -76,8 +76,11 @@ const composerAttachmentSchema = z.object({
 // `full` is the frozen legacy surface (full chat window) revived alongside the
 // active `compact` floating bar and `minimized` ball. The host dispatcher routes
 // `full` to the isolated FullChatSurface; `compact`/`minimized` stay on the
-// active App. Keep all three valid at the parse boundary.
-const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+// active App. `quiet_companion` is the "cat-only silent companion" surface
+// (Issue #3156): no chat box, only the mascot ball. `work_companion` is the
+// focused work-companion surface (Issue #3157): single-turn chat only, history
+// hidden, lower proactive frequency. Keep all five valid at the parse boundary.
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized', 'quiet_companion', 'work_companion']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
 const galgameOptionSchema = z.object({
