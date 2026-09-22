@@ -100,13 +100,16 @@ export const usePluginStore = defineStore('plugin', () => {
     
     // 设置超时自动清理，防止请求堆积
     const seq = ++fetchPluginsSeq
-    const timeoutId = setTimeout(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let timeoutReject: ((reason?: unknown) => void) | null = null
+    timeoutId = setTimeout(() => {
       if (seq === fetchPluginsSeq && pendingFetchPlugins) {
         console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
         fetchPluginsSeq += 1
         pendingFetchPlugins = null
         pendingFetchPluginsLocale = null
         loading.value = false
+        timeoutReject?.(new Error('获取插件列表超时'))
       }
     }, REQUEST_TIMEOUT)
     pendingFetchPluginsLocale = requestLocale
@@ -127,7 +130,7 @@ export const usePluginStore = defineStore('plugin', () => {
         error.value = err.message || '获取插件列表失败'
         console.error('Failed to fetch plugins:', err)
       } finally {
-        clearTimeout(timeoutId)
+        if (timeoutId) clearTimeout(timeoutId)
         if (seq === fetchPluginsSeq) {
           loading.value = false
           pendingFetchPlugins = null
@@ -135,6 +138,10 @@ export const usePluginStore = defineStore('plugin', () => {
         }
       }
     })()
+    const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+    pendingFetchPlugins = Promise.race([pendingFetchPlugins, timeout]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
     
     return pendingFetchPlugins
   }
@@ -226,6 +233,7 @@ export const usePluginStore = defineStore('plugin', () => {
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let timeoutReject: ((reason?: unknown) => void) | null = null
     const seq = !pluginId ? ++fetchStatusSeq : 0
     if (!pluginId) {
       timeoutId = setTimeout(() => {
@@ -233,6 +241,7 @@ export const usePluginStore = defineStore('plugin', () => {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
           fetchStatusSeq += 1
           pendingFetchStatus = null
+          timeoutReject?.(new Error('获取插件状态超时'))
         }
       }, REQUEST_TIMEOUT)
     }
@@ -263,7 +272,8 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     
     if (!pluginId) {
-      pendingFetchStatus = doFetch()
+      const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+      pendingFetchStatus = Promise.race([doFetch(), timeout])
       return pendingFetchStatus
     } else {
       return doFetch()

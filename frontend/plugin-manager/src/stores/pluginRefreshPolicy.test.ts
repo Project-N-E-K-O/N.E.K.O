@@ -249,7 +249,7 @@ describe('plugin store registry refresh policy', () => {
       const request = store.fetchPlugins()
       vi.advanceTimersByTime(15_000)
       resolveLate({ plugins: [plugin('late')] })
-      await request
+      await expect(request).rejects.toThrow('获取插件列表超时')
 
       expect(store.plugins).toEqual([])
       expect(store.pluginsSnapshotLoaded).toBe(false)
