@@ -170,6 +170,13 @@ def json_roots(text):
         try:
             value, cursor = decoder.raw_decode(text, start)
         except json.JSONDecodeError as exc:
+            # A quoted member starts an object-shaped answer, including inside
+            # arrays. Do not discard its parse error and select an earlier
+            # schema example, even if the provider reports a normal stop.
+            # Bare brackets and prose labels ("[1 of 1]", "{unclosed") remain
+            # skippable; this deliberately errs toward retrying broken objects.
+            if re.match(r'(?:\[\s*)*\{\s*"', text[start:]):
+                raise
             first_error = first_error or exc
             # Resume past everything the decoder swallowed before it broke.
             # Brackets behind that point are pieces of this broken root, not
@@ -388,7 +395,7 @@ async def structured_json_completion(cfg, system_prompt, content, job, validate,
                     # already told us, so refuse and let the retry happen.
                     raise ValueError('truncated_response')
                 return json_object(response.content or "", validate)
-            except (ValueError, TypeError, IndexError) as exc:
+            except (ValueError, TypeError, IndexError, RecursionError) as exc:
                 # Keep only structural diagnostics: model replies can contain
                 # private video/persona text. An exception class alone hides
                 # empty replies, truncation and malformed JSON behind the same

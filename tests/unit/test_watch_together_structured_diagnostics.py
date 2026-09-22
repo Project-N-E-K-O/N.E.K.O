@@ -16,6 +16,8 @@ from main_logic.watch_together.engine import structured_json_completion
     # A provider that reports the cut-off never reaches the parser.
     ('{"events": [', 'length', 'ValueError'),
     ('{"events": []}', 'length', 'ValueError'),
+    pytest.param('[' * 2000 + '"PRIVATE_VIDEO_TEXT"' + ']' * 2000,
+                 'stop', 'RecursionError', id='excessive-nesting'),
 ])
 async def test_failed_attempts_preserve_structure_without_response_text(
     monkeypatch, content, finish_reason, error,
@@ -77,19 +79,21 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('finish_reason', ['length', 'stop', None])
 @pytest.mark.parametrize('content', [
-    # A worked example ahead of an answer the provider cut off. The example
-    # parses and passes the schema, so only finish_reason says it is a prefix.
+    # The example passes the schema, but the actual answer is incomplete.
     'Format: {"line": "example"}\nAnswer: {"line":',
     'Format: {"line": "example"}\nAnswer: {"line": "actu',
 ])
-async def test_a_cut_off_reply_does_not_speak_the_example_ahead_of_it(monkeypatch, content):
+async def test_a_cut_off_reply_does_not_speak_the_example_ahead_of_it(
+    monkeypatch, content, finish_reason,
+):
     from main_logic.watch_together.live import _validator
 
     async def factory(**kwargs):
         return SimpleNamespace(
             ainvoke=AsyncMock(return_value=SimpleNamespace(
-                content=content, response_metadata={'finish_reason': 'length'},
+                content=content, response_metadata={'finish_reason': finish_reason},
             )),
             aclose=AsyncMock(),
         )
@@ -101,8 +105,44 @@ async def test_a_cut_off_reply_does_not_speak_the_example_ahead_of_it(monkeypatc
             {'model': 'test-model'}, 'Return JSON.', [], job,
             _validator('interject'), stage='live', label='live_interject',
         )
-    assert all(item['finish_reason'] == 'length' for item in job['structured_output_failures'])
+    assert [item['attempt'] for item in job['structured_output_failures']] == [1, 2]
+    assert all(item['finish_reason'] == finish_reason for item in job['structured_output_failures'])
     assert 'example' not in json.dumps(job)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken', [
+    'Format: {"events": []}\nAnswer: {"events": [',
+    'Format: []\nAnswer: [{"text": "PRIVATE_VIDEO_TEXT',
+    'Format: []\nAnswer: [[{"text": "PRIVATE_VIDEO_TEXT',
+    pytest.param('[' * 2000 + '"PRIVATE_VIDEO_TEXT"' + ']' * 2000, id='excessive-nesting'),
+])
+async def test_invalid_timeline_retries_with_a_fresh_client_and_keeps_the_answer(
+    tmp_path, monkeypatch, broken,
+):
+    from main_logic.watch_together.engine import Engine
+
+    events = [{'at': 5, 'text': 'Actual answer'}]
+    clients = [SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(
+            content=content, response_metadata={'finish_reason': 'stop'},
+            usage={'prompt_tokens': 10, 'completion_tokens': 20, 'total_tokens': 30},
+        )),
+        aclose=AsyncMock(),
+    ) for content in (broken, json.dumps(events))]
+    factory = AsyncMock(side_effect=clients)
+    monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
+    instance = Engine(tmp_path, AsyncMock(), 'cat')
+    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    job = {}
+
+    assert await instance.llm([], job) == {'events': events}
+    assert factory.await_count == 2
+    assert len(job['structured_output_failures']) == 1
+    assert job['usage']['total_tokens'] == 60
+    assert 'PRIVATE_VIDEO_TEXT' not in json.dumps(job)
+    for client in clients:
+        client.aclose.assert_awaited_once()
 
 
 def test_malformed_array_is_not_salvaged_as_its_nested_object():
@@ -170,9 +210,8 @@ def test_a_cut_off_reply_never_hands_back_its_last_whole_fragment(text):
 def test_an_unclosed_bracket_in_trailing_prose_does_not_lose_the_payload(text):
     from main_logic.watch_together.engine import json_object
 
-    # A decode failure only ends the scan; it is raised when no root was found
-    # at all, so a bracket opened in the prose behind a good payload cannot
-    # bury it.
+    # Bare brackets and prose labels do not start a quoted JSON member, so
+    # they cannot bury a complete payload ahead of them.
     assert json_object(text, _events_validator) == {'events': []}
 
 
