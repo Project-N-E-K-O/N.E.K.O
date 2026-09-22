@@ -79,10 +79,11 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('root_shape', ['array', 'object'])
 @pytest.mark.parametrize('mixed', [False, True])
 @pytest.mark.parametrize('recovers', [False, True])
 async def test_timeline_wrappers_in_event_arrays_retry_instead_of_losing_events(
-    tmp_path, monkeypatch, mixed, recovers,
+    tmp_path, monkeypatch, mixed, recovers, root_shape,
 ):
     from main_logic.watch_together.engine import Engine
 
@@ -91,6 +92,8 @@ async def test_timeline_wrappers_in_event_arrays_retry_instead_of_losing_events(
     wrapped = [{'events': events}]
     if mixed:
         wrapped = events + wrapped
+    if root_shape == 'object':
+        wrapped = {'events': wrapped}
     responses = (wrapped, events if recovers else wrapped)
     clients = [SimpleNamespace(
         ainvoke=AsyncMock(return_value=SimpleNamespace(

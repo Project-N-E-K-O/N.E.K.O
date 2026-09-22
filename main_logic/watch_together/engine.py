@@ -480,13 +480,14 @@ class Engine:
     async def llm(self, content, job):
         cfg = await self.vision_config()
         def validate(value):
-            # A timeline response wrapped in an array is not an event. Retry
-            # that shape instead of silently dropping its nested timeline.
-            if isinstance(value, list) and all(
-                isinstance(event, dict) and 'events' not in event for event in value
-            ):
+            if isinstance(value, list) and all(isinstance(event, dict) for event in value):
                 value = {'events': value}
-            valid = isinstance(value, dict) and isinstance(value.get("events"), list)
+            # A nested timeline is not an event, whether the root was an array
+            # or an object. Retry instead of silently dropping its inner events.
+            valid = (
+                isinstance(value, dict) and isinstance(value.get("events"), list)
+                and not any(isinstance(event, dict) and 'events' in event for event in value['events'])
+            )
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]
         return await structured_json_completion(
             cfg, self.director_prompt, content, job, validate,
