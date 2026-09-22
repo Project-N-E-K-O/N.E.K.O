@@ -170,4 +170,43 @@ describe('plugin store registry refresh policy', () => {
     expect(getPluginStatus).not.toHaveBeenCalled()
     expect(getPlugins).not.toHaveBeenCalled()
   })
+
+  it('reuses a fresh plugin snapshot and refetches it after the TTL', async () => {
+    const store = usePluginStore()
+    const initialNow = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(initialNow)
+
+    await store.ensurePlugins()
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledOnce()
+
+    now.mockReturnValue(initialNow + 10_001)
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledTimes(2)
+    now.mockRestore()
+  })
+
+  it('reuses a fresh full status snapshot', async () => {
+    const store = usePluginStore()
+    await store.ensurePluginStatus()
+    await store.ensurePluginStatus()
+
+    expect(getPluginStatus).toHaveBeenCalledOnce()
+    expect(store.pluginStatusSnapshotLoaded).toBe(true)
+  })
+
+  it('lets a forced status refresh supersede an older response', async () => {
+    const store = usePluginStore()
+    let resolveOld!: (value: any) => void
+    vi.mocked(getPluginStatus)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ plugins: { fresh: { status: 'running' } } } as any)
+
+    const oldRequest = store.fetchPluginStatus()
+    const freshRequest = store.fetchPluginStatus(undefined, true)
+    resolveOld({ plugins: { stale: { status: 'stopped' } } })
+    await Promise.all([oldRequest, freshRequest])
+
+    expect(store.pluginStatuses).toEqual({ fresh: { status: 'running' } })
+  })
 })
