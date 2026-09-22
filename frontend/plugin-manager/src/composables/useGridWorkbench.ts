@@ -159,14 +159,21 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const groupSelection: GroupSelectionMode = config.groupSelection ?? 'multiple'
   const pinyinSearch = ref<PinyinSearch | null>(null)
   let pinyinLoad: Promise<void> | null = null
+  let pinyinLoadFailed = false
+  const searchIndexCache = new WeakMap<object, { key: string; value: string }>()
 
   function ensurePinyinSearch() {
-    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad) return pinyinLoad
+    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || pinyinLoadFailed) return pinyinLoad
     pinyinLoad = import('@/utils/pinyinSearch')
       .then(({ safePinyin }) => { pinyinSearch.value = safePinyin })
-      .catch(() => {})
+      .catch(() => { pinyinLoadFailed = true })
       .finally(() => { pinyinLoad = null })
     return pinyinLoad
+  }
+
+  function retryPinyinSearch() {
+    pinyinLoadFailed = false
+    return ensurePinyinSearch()
   }
 
   if (config.buildPinyinSearchIndex) {
@@ -189,21 +196,17 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     const includePinyin = state.filterText.value.trim().length > 0
     const search = pinyinSearch.value
     return raw.map((item) => {
-      // Computed remains lazy, but tracks nested author/tag/localization reads.
-      // A plain closure cache loses these dependencies after its first hit.
-      const index = computed(() => {
-        const base = item.searchIndex || builder?.(item) || ''
-        const pinyinIndex = includePinyin && search && pinyinBuilder
-          ? pinyinBuilder(item, search)
-          : ''
-        return pinyinIndex ? `${base}\n${pinyinIndex}` : base
-      })
-      return {
-        ...item,
-        get searchIndex() {
-          return index.value
-        },
-      }
+      const base = item.searchIndex || builder?.(item) || ''
+      const pinyinIndex = includePinyin && search && pinyinBuilder
+        ? pinyinBuilder(item, search)
+        : ''
+      const key = `${base}\u0000${pinyinIndex}`
+      const cached = searchIndexCache.get(item as object)
+      const searchIndex = cached?.key === key
+        ? cached.value
+        : pinyinIndex ? `${base}\n${pinyinIndex}` : base
+      if (!cached || cached.key !== key) searchIndexCache.set(item as object, { key, value: searchIndex })
+      return { ...item, searchIndex }
     }) as T[]
   })
 
@@ -380,5 +383,6 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     pruneSelection,
     toggleMultiSelect,
     setMultiSelectEnabled,
+    retryPinyinSearch,
   }
 }

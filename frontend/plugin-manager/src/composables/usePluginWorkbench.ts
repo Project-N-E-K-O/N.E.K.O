@@ -269,5 +269,6 @@ export function usePluginWorkbench<
     pruneSelection: workbench.pruneSelection,
     setMultiSelectEnabled: workbench.setMultiSelectEnabled,
     toggleMultiSelect: workbench.toggleMultiSelect,
+    retryPinyinSearch: workbench.retryPinyinSearch,
   }
 }
