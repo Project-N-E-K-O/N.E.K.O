@@ -661,10 +661,13 @@ async def test_active_end_session_still_clears_pending_input_by_default():
     """A genuine session end still clears: stale cache must not survive."""
     mgr = _make_active_manager()
     mgr.pending_input_data = [{"input_type": "text", "data": "typed mid-handoff"}]
+    # Request->attachment ledger entries point into the retired session's queue.
+    mgr._request_staged_images = [("req-image", "staged-image")]
 
     await LLMSessionManager.end_session(mgr, by_server=True)
 
     assert mgr.pending_input_data == []
+    assert mgr._request_staged_images == []
 
 
 def _make_handoff_manager():

@@ -9,6 +9,7 @@ description = "N.E.K.O. Desktop"
 readme = "README.MD"
 requires-python = "==3.11.*"
 dependencies = [
+  "av==16.0.1",
   "fastapi~=0.115.9",
   "websockets~=15.0.1",
   "soxr~=0.5.0",

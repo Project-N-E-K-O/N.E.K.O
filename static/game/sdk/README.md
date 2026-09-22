@@ -3,9 +3,18 @@
 ## Built-in media timelines
 
 The reviewed `media-timeline` capability exposes `game.media.request()` for
-`history`, `load`, `character`, `discover`, `prepare`, `preparation`, and `watch`, and
+`history`, `load`, `character`, `discover`, `prepare`, `preparation`, `watch`, and `live`, and
 `game.media.mount({video, job, version, onEvent, onCue})` for an active runtime.
-The returned controller supports `play`, `pause`, `interrupt`, and `dispose`.
+The returned controller supports `play`, `pause`, `interrupt`, `say`, and `dispose`.
+`media.request('live', {action: 'interject', job, version, position, gap})` turns
+plugin responses held by the scene route into spoken lines that fit a reaction
+gap (an empty `lines` array when nothing is held); `{action: 'intermission', job,
+version}` returns a one-line summary plus replies after a video. `say(line)` plays
+one returned line through the reaction output. It resolves `'completed'` once
+the line finished, `'interrupted'` when it started and a due reaction, pause,
+seek or disposal cut it off, and `'skipped'` when it never started (another line
+or a reaction was playing, or playback paused, buffered or seeked while the
+audio was fetched). Only a skipped line is safe to retry.
 The trusted host resolves the immutable job/version, owns reaction audio and
 mouth analysis, and uses the video media clock. Pause/buffering stop reaction
 audio; seeks invalidate the current generation; playback rate follows video.
@@ -871,20 +880,13 @@ identity and constructor validation. It returns a fresh synchronous provider wit
 Avatar initialization failure leaves runtime/logging usable; a game requiring
 `avatar-renderer` fails its capability handshake instead.
 
-**New game integrations must use this trusted factory registration and the public
-`game.avatar` discovery methods below.** Legacy injection and internal host
-character reads are transitional compatibility for existing integrations, not
-alternative recommended APIs. The existing soccer integration can continue
-unchanged during this transition and will migrate separately; no removal date
-is set.
-
-Existing trusted same-origin `createNekoMiniGameSameOriginHost({ avatarHost })`
-injection remains supported and takes precedence over a registered factory. No
-factory is called in that case. Successful host construction transfers disposal
-ownership of the injected provider, as before. The legacy host `getCharacter()`
-still returns the original Response and updates its character identity; existing
-adapters do not need to migrate immediately. These mechanisms are not isolation
-from hostile code sharing the same origin.
+**Game integrations use this trusted factory registration and the public
+`game.avatar` discovery methods below.** Soccer and watch-together now follow this path. The
+transitional `avatarHost` constructor injection and raw host `getCharacter()`
+entry point have been removed. Bind the character with `game.runtime.bindCharacter()`
+before character-dependent gameplay; a discovery read does not implicitly bind
+the runtime. These mechanisms are not isolation from hostile code sharing the
+same origin.
 
 The factory receives `windowImpl`, `documentImpl`, `fetchImpl`, a lifetime
 `signal`, `onCleanup(fn)` and `characterSource`. Register partial allocations with

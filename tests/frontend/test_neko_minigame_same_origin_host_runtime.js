@@ -387,7 +387,7 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
-    // New integrations use the registered factory; legacy injection is tested separately.
+    // Avatar providers are created through the trusted registration factory.
     trustedAvatarHost: { mount() { forgedAvatarMounts += 1; } },
   });
   const aliasedAvatarHandshake = aliasedAvatarHost.connectGame({
@@ -1667,6 +1667,27 @@ async function main() {
       'history must preserve explicit cancellation and timeout options');
   } finally {
     host._request = realMediaRequest;
+  }
+  // Retiring soccer's raw host query must preserve the media character path.
+  const previousMediaCharacter = host._session.lanlanName;
+  host._request = async (url, _init, options) => {
+    const target = new URL(url);
+    assert(target.pathname === '/api/game/example-game/character'
+      && target.searchParams.get('lanlan_name') === 'Media Neko'
+      && options.operation === 'character',
+    'media character lookup lost its routed request or requested identity');
+    return jsonResponse({ lanlan_name: 'Canonical Media Neko' });
+  };
+  try {
+    assert(typeof host.getCharacter === 'undefined',
+      'the retired soccer raw-character compatibility entry remains public');
+    const character = await host.requestMedia('character', { name: 'Media Neko' });
+    assert(character.lanlan_name === 'Canonical Media Neko'
+      && host._session.lanlanName === 'Canonical Media Neko',
+    'media character lookup did not retain the response and canonical binding');
+  } finally {
+    host._request = realMediaRequest;
+    host._session.lanlanName = previousMediaCharacter;
   }
   const realPost = host._post.bind(host);
   host._post = (url, body, options) => {

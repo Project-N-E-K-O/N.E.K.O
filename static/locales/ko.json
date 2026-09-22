@@ -1068,6 +1068,7 @@
     "imageModelApiKeyPlaceholder": "사용자 지정 엔드포인트 키. 기본 제공자는 API 키 관리부 사용",
     "imageDisabled": "설정되지 않음",
         "settings": "API 키 설정",
+        "pluginApiSettings": "Plugin API 설정 ↗",
         "settingsTitle": "API 키 설정 - 프로젝트 Lanlan",
         "quickStart": "빠른 시작",
         "freeVersion": "무료 버전(초보자에게 권장)",

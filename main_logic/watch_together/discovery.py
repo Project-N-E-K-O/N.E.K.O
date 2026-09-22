@@ -53,7 +53,8 @@ async def inspect_video(url):
             count = None
     except (TypeError, ValueError, OverflowError):
         count = None
-    return {"url": f"https://www.bilibili.com/video/{bvid}?p={page + 1}",
+    # Automatic discovery excludes failed candidates by bvid.
+    return {"url": f"https://www.bilibili.com/video/{bvid}?p={page + 1}", "bvid": bvid,
             "title": info["title"], "duration": seconds, "danmaku": count,
             "parts": len(pages), "danmaku_per_minute": count / seconds * 60 if count is not None else None}
 

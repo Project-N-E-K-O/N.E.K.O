@@ -17,11 +17,11 @@ async def test_synthesis_skips_only_oversized_cues(tmp_path, monkeypatch, failur
     )
     monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(Credential=lambda: None, video=SimpleNamespace(Video=lambda **kw: video)))
     monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
-    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    monkeypatch.setattr(engine.media, 'check_available', lambda: None)
     async def download(client, stream, path, **kwargs):
         path.write_bytes(b'video')
     monkeypatch.setattr(engine, 'download_stream', download)
-    monkeypatch.setattr(engine, 'run_media_async', AsyncMock())
+    monkeypatch.setattr(engine.media, 'run_async', AsyncMock(return_value=[]))
     monkeypatch.setattr(engine, 'duration_async', AsyncMock(side_effect=lambda path: 60 if path.name == 'video.mp4' else 1))
     async def synthesize(text, path):
         if text != 'short':
@@ -63,11 +63,11 @@ def _budget_engine(tmp_path, monkeypatch, events):
     )
     monkeypatch.setitem(sys.modules, 'bilibili_api', SimpleNamespace(Credential=lambda: None, video=SimpleNamespace(Video=lambda **kw: video)))
     monkeypatch.setattr('utils.web_scraper.platform_helpers._get_bilibili_credential', lambda: None)
-    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    monkeypatch.setattr(engine.media, 'check_available', lambda: None)
     async def download(client, stream, path, **kwargs):
         path.write_bytes(b'video')
     monkeypatch.setattr(engine, 'download_stream', download)
-    monkeypatch.setattr(engine, 'run_media_async', AsyncMock())
+    monkeypatch.setattr(engine.media, 'run_async', AsyncMock(return_value=[]))
     monkeypatch.setattr(engine, 'duration_async', AsyncMock(side_effect=lambda path: 60 if path.name == 'video.mp4' else 1))
     synthesized = []
     async def synthesize(text, path):
@@ -78,6 +78,53 @@ def _budget_engine(tmp_path, monkeypatch, events):
     monkeypatch.setattr(instance, 'llm', AsyncMock(return_value={'events': []}))
     monkeypatch.setattr(engine, 'normalize_events', lambda *args: [dict(event) for event in events])
     return engine, instance, synthesized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pic,thumbnail_status,expected_urls', [
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 200, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg']),
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 404, ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg',
+                                                         'https://i0.hdslb.com/bfs/archive/cover.png']),
+    ('https://i0.hdslb.com/bfs/archive/cover.png', 'html', ['https://i0.hdslb.com/bfs/archive/cover.png@640w.jpg',
+                                                            'https://i0.hdslb.com/bfs/archive/cover.png']),
+    ('https://covers.test/cover.png', None, ['https://covers.test/cover.png']),
+])
+async def test_cover_is_stored_and_sent_only_as_low_resolution_jpeg(tmp_path, monkeypatch, pic, thumbnail_status, expected_urls):
+    import base64
+    import io
+    import sys
+    import httpx
+    from PIL import Image
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
+    buffer = io.BytesIO()
+    # PNG source proves the stored/sent cover is re-encoded, not merely relabelled.
+    Image.new('RGB', (4919, 3025), (200, 120, 80)).save(buffer, 'PNG')
+    original = buffer.getvalue()
+    sys.modules['bilibili_api'].video.Video().get_info.return_value = {
+        'title': 'Video', 'pages': [{'duration': 60, 'cid': 1}], 'stat': {'danmaku': 101}, 'pic': pic}
+    requested = []
+    def respond(request):
+        requested.append(str(request.url))
+        if str(request.url).endswith('@640w.jpg') and thumbnail_status == 'html':
+            return httpx.Response(200, content=b'<html>not an image</html>')
+        if str(request.url).endswith('@640w.jpg') and thumbnail_status != 200:
+            return httpx.Response(thumbnail_status)
+        return httpx.Response(200, content=original)
+    client_type = httpx.AsyncClient
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(engine.httpx, 'AsyncClient', lambda **kwargs: client_type(transport=transport, **kwargs))
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert job['status'] == 'ready'
+    assert 'noCover' not in job['warning_keys']
+    assert requested == expected_urls
+    stored = (tmp_path / 'job' / 'cover.jpg').read_bytes()
+    with Image.open(io.BytesIO(stored)) as image:
+        assert image.format == 'JPEG'
+        assert image.width <= 640 and image.height <= 360
+    blocks = instance.llm.await_args_list[0].args[0]
+    covers = [block['image_url']['url'] for block in blocks if block.get('type') == 'image_url']
+    assert covers == ['data:image/jpeg;base64,' + base64.b64encode(stored).decode()]
 
 
 @pytest.mark.asyncio
@@ -123,7 +170,7 @@ async def test_missing_vision_model_blocks_preflight_and_invitation(tmp_path, mo
     from types import SimpleNamespace
     from main_logic.watch_together import engine
     from main_logic.watch_together import preparation
-    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    monkeypatch.setattr(engine.media, 'check_available', lambda: None)
     config = SimpleNamespace(get_model_api_config=lambda _: {'api_key': 'key', 'model': model})
     instance = engine.Engine(tmp_path, None, 'cat')
     instance._cm = config
@@ -162,7 +209,7 @@ async def test_vision_uses_provider_factory_and_accepts_keyless_custom(tmp_path,
     assert job['usage']['total_tokens'] == 12
     client.aclose.assert_awaited_once()
 from main_logic.watch_together.engine import Engine
-from main_logic.watch_together.engine import subtitle_priority, dash_audio, media_binary
+from main_logic.watch_together.engine import subtitle_priority, dash_audio
 
 
 @pytest.mark.parametrize('language', ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'es', 'pt', 'ru'])
@@ -190,13 +237,7 @@ def test_dash_silent_and_alternate_audio():
     assert dash_audio({"dolby": {"audio": [sound]}}) == sound
 
 
-def test_configured_media_binary_and_missing_prerequisite(monkeypatch):
-    from main_logic.watch_together import engine
-    monkeypatch.setenv("NEKO_FFMPEG_PATH", "C:/media tools/ffmpeg.exe")
-    monkeypatch.setattr(engine.shutil, "which", lambda value: value if value == "C:/media tools/ffmpeg.exe" else None)
-    assert media_binary("ffmpeg") == "C:/media tools/ffmpeg.exe"
-    with pytest.raises(FileNotFoundError, match="NEKO_FFPROBE_PATH"):
-        media_binary("ffprobe")
+
 from main_logic.watch_together.engine import normalize_events, parse_video_url, danmaku_hotspots, hotspot_frame_times
 
 

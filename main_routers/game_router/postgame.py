@@ -55,6 +55,7 @@ from .route_lifecycle import (
     _cancel_game_context_organizer_before_disabled_archive,
     _push_game_speech_cancel,
     _push_game_window_state_change,
+    _close_takeover_callback_inbox,
     _settle_game_context_organizer_before_archive,
 )
 from .session_pool import (
@@ -1275,6 +1276,8 @@ async def _finalize_game_route_state_inner(
     if mgr is not None:
         mgr._takeover_active = False
         mgr._takeover_input_dispatcher = None
+        mgr._takeover_callback_sink = None
+    _close_takeover_callback_inbox(state, mgr)
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
     resume_voice = getattr(

@@ -27,7 +27,8 @@
       request: {
         type: 'object',
         properties: Object.assign({
-          client_round_token: { type: 'integer', minimum: 0 }
+          client_round_token: { type: 'integer', minimum: 0 },
+          render_language: { type: 'string', minLength: 1, maxLength: 32 }
         }, extraProperties || {}),
         required: ['client_round_token'].concat(requiredProperties || []),
         additionalProperties: false
@@ -123,12 +124,16 @@
     routeEnding: false,
     sdkClient: null,
     sdkConnectPromise: null,
+    sdkCharacterBindingPromise: null,
+    sdkCharacterBindingRequest: null,
+    sdkBoundCharacterClient: null,
+    sdkBoundCharacter: null,
+    sdkBoundCharacterSessionId: '',
     sdkStartPromise: null,
     sdkReconcilePromise: null,
     sdkStateUnsubscribe: null,
     sdkInactiveUnsubscribe: null,
     sdkPageExitUnsubscribe: null,
-    sdkSpeechStateUnsubscribe: null,
     sdkSpeechErrorUnsubscribe: null,
     sdkVoiceStateUnsubscribe: null,
     sdkVoiceTranscriptUnsubscribe: null,
@@ -156,14 +161,9 @@
     nekoVoiceQueue: [],
     nekoVoiceInFlight: false,
     nekoVoiceController: null,
-    lipSyncActive: false,
-    lipSyncRetryTimer: null,
-    lipSyncStopTimer: null,
-    lipSyncRetryDeadline: 0,
     voiceRouteActive: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
-    speechPlaybackActive: false,
     lastVoiceTranscriptRequestId: '',
     playerTextQueueGeneration: 0,
     playerTextChain: Promise.resolve(),
@@ -212,9 +212,9 @@
     modelKind: 'fallback',
     modelLoadState: 'idle',
     modelView: {
-      scale: 325.63,
-      x: -0.96,
-      y: 66.41
+      scale: 260,
+      x: 0,
+      y: 0
     },
     modelViewSettings: [],
     modelDrag: null,
@@ -365,9 +365,11 @@
   };
 
   var MODEL_VIEW_DEFAULTS = {
-    scale: 325.63,
-    x: -0.96,
-    y: 66.41
+    // Fill the panel with a waist-up portrait, leaving the lower body outside
+    // the viewport. The SDK keeps the head aligned to the padded top edge.
+    scale: 260,
+    x: 0,
+    y: 0
   };
 
   var SIDE_SPLIT_DEFAULT_RATIO = 0.64;
@@ -400,9 +402,6 @@
       var character = String(entry.character || '').trim().slice(0, 128);
       if (!character || seen[character]) continue;
       var view = normalizeModelView(entry.view);
-      // The old page used 100/0/0 as an implicit baseline. Do not revive that
-      // stale value after the SDK migration changed the fitted default.
-      if (view.scale === 100 && view.x === 0 && view.y === 0) continue;
       seen[character] = true;
       normalized.push({ character: character, view: view });
     }
@@ -1132,95 +1131,6 @@
     return node;
   }
 
-  function stopDrawingGuessLipSync() {
-    clearTimeout(state.lipSyncRetryTimer);
-    clearTimeout(state.lipSyncStopTimer);
-    state.lipSyncRetryTimer = null;
-    state.lipSyncStopTimer = null;
-    state.lipSyncRetryDeadline = 0;
-    if (state.avatarController && !state.avatarController.disposed) {
-      Promise.resolve(state.avatarController.setSpeaking(false)).catch(function () {});
-    }
-    state.lipSyncActive = false;
-  }
-
-  function startDrawingGuessLipSync() {
-    if (state.routeEnding || !state.routeActive) return false;
-    if (!state.avatarController || state.avatarController.disposed) return false;
-    if (state.lipSyncActive) return true;
-    state.lipSyncActive = true;
-    Promise.resolve(state.avatarController.setSpeaking(true)).then(function (started) {
-      if (started === false) {
-        state.lipSyncActive = false;
-        if (Date.now() < state.lipSyncRetryDeadline && !state.lipSyncRetryTimer) {
-          state.lipSyncRetryTimer = setTimeout(function () {
-            state.lipSyncRetryTimer = null;
-            startDrawingGuessLipSync();
-          }, 120);
-        }
-      }
-    }).catch(function () {
-      state.lipSyncActive = false;
-    });
-    return true;
-  }
-
-  function scheduleDrawingGuessLipSyncStart() {
-    clearTimeout(state.lipSyncRetryTimer);
-    state.lipSyncRetryTimer = null;
-    if (state.routeEnding || !state.routeActive) return;
-    state.lipSyncRetryDeadline = Date.now() + 5000;
-    if (startDrawingGuessLipSync()) return;
-    function retry() {
-      state.lipSyncRetryTimer = null;
-      if (startDrawingGuessLipSync()) return;
-      if (Date.now() < state.lipSyncRetryDeadline) {
-        state.lipSyncRetryTimer = setTimeout(retry, 120);
-      }
-    }
-    state.lipSyncRetryTimer = setTimeout(retry, 120);
-  }
-
-  function isSpeechPlaybackAudible(detail) {
-    if (!detail || !detail.active) return false;
-    var remaining = Number(detail.remainingSeconds || 0);
-    if (remaining > 0.05) return true;
-    var scheduledEnd = Number(detail.scheduledEndAudioTime || detail.playbackEndAudioTime || 0);
-    var audioTime = Number(detail.audioContextTime || 0);
-    return scheduledEnd > 0 && audioTime > 0 && scheduledEnd - audioTime > 0.05;
-  }
-
-  function speechPlaybackHasPendingAudioWork(detail) {
-    return !!(detail && (
-      detail.pendingAudioWork === true
-      || detail.pending_audio_work === true
-    ));
-  }
-
-  function armDrawingGuessLipSyncStop(detail) {
-    clearTimeout(state.lipSyncStopTimer);
-    state.lipSyncStopTimer = null;
-    var remaining = Number(detail && detail.remainingSeconds || 0);
-    if (!Number.isFinite(remaining) || remaining <= 0.05) return;
-    var delay = Math.max(140, Math.min(30000, remaining * 1000 + 260));
-    state.lipSyncStopTimer = setTimeout(function () {
-      state.lipSyncStopTimer = null;
-      stopDrawingGuessLipSync();
-    }, delay);
-  }
-
-  function handleSpeechPlaybackState(playbackState) {
-    var detail = (playbackState && playbackState.detail) || playbackState || {};
-    if (isSpeechPlaybackAudible(detail)) {
-      state.speechPlaybackActive = true;
-      scheduleDrawingGuessLipSyncStart();
-      armDrawingGuessLipSyncStop(detail);
-      return;
-    }
-    state.speechPlaybackActive = !!detail.active || speechPlaybackHasPendingAudioWork(detail);
-    stopDrawingGuessLipSync();
-  }
-
   function clearNekoVoiceQueue() {
     state.nekoVoiceQueue = [];
     if (state.nekoVoiceController) {
@@ -1228,7 +1138,6 @@
       state.nekoVoiceController = null;
     }
     state.nekoVoiceInFlight = false;
-    stopDrawingGuessLipSync();
   }
 
   function flushNekoVoiceQueue() {
@@ -1571,6 +1480,7 @@
 
   function routePayload(extra) {
     return Object.assign({
+      render_language: currentLanguage(),
       lanlan_name: state.lanlanName,
       window_lanlan_name: state.windowLanlanName || state.lanlanName,
       source: 'drawing_guess',
@@ -1642,6 +1552,8 @@
   }
 
   function cleanupRouteResources() {
+    disposeAvatarController();
+    setModelLoadState('idle');
     beginRoundFlow();
     state.activeRoundToken = state.roundFlowToken;
     state.roundSessionReady = false;
@@ -1801,6 +1713,14 @@
   }
 
   function handleSdkPageExit() {
+    var binding = state.sdkCharacterBindingRequest;
+    binding?.controller.abort();
+    binding?.previous?.controller.abort();
+    state.sdkCharacterBindingRequest = null;
+    state.sdkBoundCharacterClient = null;
+    state.sdkBoundCharacter = null;
+    state.sdkBoundCharacterSessionId = '';
+    state.sdkCharacterBindingPromise = null;
     var client = state.sdkClient;
     if (client && !client.disposed && client.capabilities.has('voice-input')) {
       try {
@@ -1864,7 +1784,6 @@
         state.sdkStateUnsubscribe = client.events.on('runtime-state', handleSdkRuntimeState);
         state.sdkInactiveUnsubscribe = client.events.on('runtime-inactive', handleSdkRuntimeInactive);
         state.sdkPageExitUnsubscribe = client.events.on('page-exit', handleSdkPageExit);
-        state.sdkSpeechStateUnsubscribe = client.speech.onState(handleSpeechPlaybackState);
         state.sdkSpeechErrorUnsubscribe = client.speech.onError(function (error) {
           logSdkBestEffort(client, 'warn', 'speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
             reason: String((error && (error.code || error.message)) || 'unknown')
@@ -1979,6 +1898,8 @@
 
   function roundCommandPayload(extra) {
     return Object.assign({
+      // UI language is a fallback, not an explicit conversation preference.
+      render_language: currentLanguage(),
       client_round_token: state.activeRoundToken != null ? state.activeRoundToken : state.roundFlowToken
     }, extra || {});
   }
@@ -2166,7 +2087,7 @@
       ellipse: ['cx', 'cy', 'rx', 'ry'],
       path: ['d']
     }[type];
-    var allowedKeys = ['type', 'stroke', 'fill', 'stroke_width', 'line_cap', 'line_join'].concat(geometryKeys);
+    var allowedKeys = ['type', 'stroke', 'fill', 'stroke_width', 'line_cap', 'line_join', 'opacity'].concat(geometryKeys);
     if (Object.keys(value).some(function (key) { return allowedKeys.indexOf(key) < 0; })) return null;
     if (value.stroke != null && !isAiDrawingPlanColor(value.stroke)) return null;
     if (value.fill != null && !isAiDrawingPlanColor(value.fill)) return null;
@@ -2179,6 +2100,8 @@
     if (!aiDrawingPlanHasPaint(stroke) && !aiDrawingPlanHasPaint(fill)) return null;
     var strokeWidth = aiDrawingPlanNumber(value.stroke_width == null ? 4 : value.stroke_width, 0.5, 32);
     if (strokeWidth == null) return null;
+    var opacity = aiDrawingPlanNumber(value.opacity === undefined ? 1 : value.opacity, 0.001, 1);
+    if (opacity == null) return null;
     var rawLineCap = String(value.line_cap == null ? 'round' : value.line_cap).trim().toLowerCase();
     var rawLineJoin = String(value.line_join == null ? 'round' : value.line_join).trim().toLowerCase();
     if (['butt', 'round', 'square'].indexOf(rawLineCap) < 0) return null;
@@ -2191,6 +2114,7 @@
       stroke_width: strokeWidth,
       line_cap: rawLineCap,
       line_join: rawLineJoin,
+      opacity: opacity,
       point_count: 0
     };
 
@@ -2260,7 +2184,9 @@
     var width = value.width;
     var height = value.height;
     if (version !== 1 || width !== AI_DRAW_PLAN_WIDTH || height !== AI_DRAW_PLAN_HEIGHT) return null;
-    if (String(value.background || '').trim().toLowerCase() !== '#fffdfa') return null;
+    if (typeof value.background !== 'string') return null;
+    var background = aiDrawingPlanColor(value.background, '', false);
+    if (!background) return null;
     if (!Array.isArray(value.elements) || !value.elements.length || value.elements.length > AI_DRAW_PLAN_MAX_ELEMENTS) return null;
     var totalPoints = 0;
     var elements = [];
@@ -2280,13 +2206,14 @@
       version: 1,
       width: width,
       height: height,
-      background: '#fffdfa',
+      background: background,
       elements: elements
     };
   }
 
   function paintAiDrawingPlanBackground(context, plan) {
     context.save();
+    context.globalAlpha = 1;
     if (typeof context.setTransform === 'function') context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, plan.width, plan.height);
     context.fillStyle = plan.background;
@@ -2315,6 +2242,7 @@
 
   function paintAiDrawingPlanElement(context, element) {
     context.save();
+    context.globalAlpha = element.opacity;
     context.beginPath();
     context.lineWidth = element.stroke_width;
     context.lineCap = element.line_cap;
@@ -2424,6 +2352,7 @@
         node.setAttribute('stroke-width', aiDrawingPlanNumberText(element.stroke_width));
         node.setAttribute('stroke-linecap', element.line_cap);
         node.setAttribute('stroke-linejoin', element.line_join);
+        node.setAttribute('opacity', String(element.opacity));
         svg.appendChild(node);
       });
       try {
@@ -2878,6 +2807,8 @@
     setStatus('starting', 'Starting');
     updateControls();
     var startPromise = connectMiniGameSdk().then(function (client) {
+      return bindDrawingCharacter(client, state.lanlanName).then(function () { return client; });
+    }).then(function (client) {
       return configureSdkMemoryConsent(client).then(function () { return client; });
     }).then(function (client) {
       if (client.runtime.state !== 'degraded') {
@@ -2908,27 +2839,61 @@
       state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
+      var startedSessionId = client.runtime.session.id;
+      var startedCharacterName = state.lanlanName;
+      var startedRouteGeneration = state.sdkPulseGeneration;
+      function isStartedRouteCurrent() {
+        return !client.disposed && isSdkRouteRunning(client)
+          && client.runtime.session.id === startedSessionId
+          && client.runtime.session.characterName === startedCharacterName
+          && state.lanlanName === startedCharacterName
+          && state.sdkPulseGeneration === startedRouteGeneration;
+      }
+      var characterReady = Promise.resolve();
+      if (state.sdkBoundCharacter && state.sdkBoundCharacter.name !== state.lanlanName) {
+        disposeAvatarController();
+        setModelLoadState('idle');
+        // runtime.start has already committed the canonical identity. Refresh
+        // its public descriptor; rebinding a running route is forbidden.
+        var refreshLoadToken = state.avatarLoadToken;
+        characterReady = bindDrawingCharacter(client, state.lanlanName, true).catch(function () {
+          if (!isStartedRouteCurrent() || refreshLoadToken !== state.avatarLoadToken) return false;
+          // The route is already owned and running. Optional avatar discovery
+          // failure must not report a failed start while leaving that route live.
+          showConfiguredFallback();
+          return true;
+        });
+      }
       // Do not expose the active round until the session-scoped logging gate
       // has settled. The host bounds and aborts this enable request, preventing
       // a late /logs/enable from reactivating an already-ended session.
-      return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
-        if (!isSdkRouteRunning(client)) return false;
-        if (logResult && logResult.ok) {
-          logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
-            sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
-            host_version: String(client.host && client.host.version || ''),
-            capabilities: client.capabilities.granted.slice()
-          });
-        }
-        return true;
-      }).catch(function () {
-        return isSdkRouteRunning(client);
-      }).then(function (started) {
-        if (!started) return false;
-        // The host owns the single microphone session. Reflect its current
-        // state without starting a second recognizer or taking over capture.
-        querySdkVoiceRouteState(client).catch(function () {});
-        return true;
+      return characterReady.then(function (ready) {
+        if (ready === false || !isStartedRouteCurrent()) return false;
+        return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
+          if (!isStartedRouteCurrent()) return false;
+          if (logResult && logResult.ok) {
+            logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
+              sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
+              host_version: String(client.host && client.host.version || ''),
+              capabilities: client.capabilities.granted.slice()
+            });
+          }
+          return true;
+        }).catch(function () {
+          return isStartedRouteCurrent();
+        }).then(function (started) {
+          if (!started) return false;
+          // Route cleanup retires the renderer, but the bound descriptor remains
+          // valid for this session. Restore the preview without rebinding.
+          if (!state.avatarController && state.modelLoadState !== 'loading'
+              && state.sdkBoundCharacter) {
+            initModelSlotForCurrentCharacter(state.lanlanName, state.sdkBoundCharacter);
+          }
+          // The host owns the single microphone session. Reflect its current
+          // state without starting a second recognizer or taking over capture.
+          querySdkVoiceRouteState(client).catch(function () {});
+          return true;
+        });
       });
     }).catch(function (error) {
       var failureReason = sdkErrorReason(error);
@@ -3370,7 +3335,7 @@
     return executeRoundCommand(
       ROUND_COMMANDS.TIMEOUT,
       roundCommandPayload({ timeout_kind: 'user_guessing' }),
-      10000
+      30000
     ).then(function (res) {
       if (!isGuessTimeoutFlowActive(flowToken)) return;
       if (!res || !res.ok) throw new Error((res && res.reason) || 'timeout_failed');
@@ -3956,7 +3921,6 @@
 
   function disposeAvatarController() {
     state.avatarLoadToken += 1;
-    stopDrawingGuessLipSync();
     if (!state.avatarController) return;
     try { state.avatarController.dispose(); } catch (_) {}
     state.avatarController = null;
@@ -3985,9 +3949,9 @@
         model: descriptor.model,
         viewport: { mode: 'container' },
         fit: {
-          mode: 'contain',
-          align: 'center',
-          padding: 0,
+          mode: 'height',
+          align: 'top-center',
+          padding: 12,
           scaleMultiplier: 1
         },
         resize: { mode: 'container' }
@@ -4003,9 +3967,6 @@
       setModelLoadState('ready');
       applyModelView();
       setModelMood(state.modelMood);
-      if (state.lipSyncActive) {
-        Promise.resolve(controller.setSpeaking(true)).catch(function () {});
-      }
       return true;
     });
     var trackedMount = mountPromise.finally(function () {
@@ -4015,10 +3976,81 @@
     return trackedMount;
   }
 
-  function avatarDescriptor(name) {
+  // One descriptor, one active request and at most one cancelling successor.
+  // All binding state is retired on page exit.
+  // Preview discovery stays read-only; gameplay explicitly binds before requests.
+  function bindDrawingCharacter(client, name, readBoundIdentity) {
+    var requestedName = String(name || '').trim();
+    var sessionId = client.runtime.session.id;
+    if (client.disposed) return Promise.reject(new Error('character_binding_cancelled'));
+    var previous = state.sdkCharacterBindingRequest;
+    if (previous) {
+      if (previous.client === client && previous.sessionId === sessionId
+          && previous.name === requestedName) return previous.promise;
+      // One active request and one successor at most. Do not build a queue of
+      // promises when several UI actions compete during cancellation.
+      if (previous.previous) return Promise.reject(new Error('character_binding_busy'));
+      previous.controller.abort();
+    }
+    var cached = state.sdkBoundCharacter;
+    if (!previous && cached && state.sdkBoundCharacterClient === client
+        && (!requestedName || cached.name === requestedName)
+        && client.runtime.session.characterName === cached.name
+        && client.runtime.session.id === state.sdkBoundCharacterSessionId) {
+      return Promise.resolve(cached);
+    }
+    state.sdkBoundCharacter = null;
+    state.sdkBoundCharacterSessionId = '';
+    state.sdkBoundCharacterClient = null;
+    var request = { client: client, sessionId: sessionId, name: requestedName,
+      controller: new AbortController(), previous: previous, promise: null };
+    state.sdkCharacterBindingRequest = request;
+    function assertCurrent() {
+      if (client.disposed || request.controller.signal.aborted
+          || client.runtime.session.id !== sessionId
+          || (readBoundIdentity && (client.runtime.session.characterName !== requestedName
+            || !isSdkRouteRunning(client)))
+          || state.sdkCharacterBindingRequest !== request) {
+        throw new Error('character_binding_cancelled');
+      }
+    }
+    async function startBinding() {
+      request.previous = null;
+      assertCurrent();
+      if (readBoundIdentity) {
+        return client.avatar.getCharacter(requestedName,
+          { timeoutMs: 8000, signal: request.controller.signal });
+      }
+      return client.runtime.bindCharacter(requestedName || undefined,
+        { timeoutMs: 8000, signal: request.controller.signal });
+    }
+    // Wait for the SDK's binding fence to release before starting the successor.
+    var pending = previous ? previous.promise.catch(function () {}).then(startBinding) : startBinding();
+    var binding = pending
+      .then(function (descriptor) {
+        assertCurrent();
+        if (!descriptor || !descriptor.name || (requestedName && descriptor.name !== requestedName)) {
+          throw new Error('character_unavailable');
+        }
+        state.sdkBoundCharacter = descriptor;
+        state.sdkBoundCharacterSessionId = sessionId;
+        state.sdkBoundCharacterClient = client;
+        return descriptor;
+      }).finally(function () {
+        if (state.sdkCharacterBindingRequest === request) {
+          state.sdkCharacterBindingRequest = null;
+          state.sdkCharacterBindingPromise = null;
+        }
+      });
+    request.promise = binding;
+    state.sdkCharacterBindingPromise = binding;
+    return binding;
+  }
+
+  function avatarDescriptor(name, bindForRuntime) {
     return connectMiniGameSdk().then(function (client) {
       var requestedName = String(name || '').trim();
-      var request = requestedName
+      var request = bindForRuntime ? bindDrawingCharacter(client, requestedName) : requestedName
         ? client.avatar.getCharacter(requestedName)
         : client.avatar.getCurrentCharacter();
       return Promise.resolve(request).then(function (descriptor) {
@@ -4054,7 +4086,7 @@
   function loadCurrentCharacter() {
     setStatus('loadingCharacter', 'Loading character');
     var requestedName = state.lanlanName;
-    return avatarDescriptor(requestedName).then(function (resolved) {
+    return avatarDescriptor(requestedName, true).then(function (resolved) {
       var descriptor = resolved.descriptor;
       var name = String((descriptor && descriptor.name) || '').trim();
       state.lanlanName = name;

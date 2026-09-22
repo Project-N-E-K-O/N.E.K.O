@@ -64,6 +64,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-09-12-watch-together-image-generation",
+        "2026-09-13-plugin-model-api-watch-together",
+        "2026-09-14-proactive-community-chat",
         "2026-09-12-watch-together-automatic",
         "2026-09-12-core-image-generation",
         "2026-09-12-watch-together-history-pages",
@@ -148,9 +150,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-soccer-sdk",
         "2026-09-11-watch-together",
         "2026-09-11-watch-together-discovery",
+        "2026-09-06-plugin-model-api",
         "2026-09-13-plugin-html-content-main-merge",
         "2026-09-13-plugin-html-content-proactive-community",
-        "2026-09-14-proactive-community-chat",
+        "2026-09-14-plugin-html-content-main-merge",
+        "2026-09-14-plugin-model-api-proactive-community",
     }
 )
 
@@ -163,7 +167,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "05ea9760f3e85b37df3d8479ae21d79725e92cf6b14ee00296deea92eb184492"
+LOCALE_KEY_SIGNATURE = "db426a830bd94ad3baff7c8153318c0fc2dd84a14692f35a4935e6e0c4a858a0"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

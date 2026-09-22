@@ -3,7 +3,8 @@ import asyncio
 import json
 import uuid
 
-from .engine import Engine, SpeechCueTooLarge, media_binary
+from .engine import Engine, SpeechCueTooLarge
+from . import media
 from .library import application_library
 
 jobs = {}
@@ -13,10 +14,8 @@ pending_confirmations = {}
 
 def is_available(manager) -> bool:
     """Check local preparation prerequisites without synthesis or network probes."""
-    from . import engine
     try:
-        engine.media_binary('ffmpeg')
-        engine.media_binary('ffprobe')
+        media.check_available()
         if manager is None:
             return False
         vision = manager._config_manager.get_model_api_config('vision')
@@ -47,6 +46,17 @@ def confirm_preparation(identifier, manager, accepted, duration):
     return {"ok": True}
 
 
+def session_language(manager, render_language=None):
+    """Resolve the speech language: explicit preference, request, then session."""
+    from utils.language_utils import get_global_language_full, normalize_language_code
+    explicit_language = (getattr(manager, "user_language", None)
+                         if getattr(manager, "_user_language_explicit", False) else None)
+    return normalize_language_code(
+        explicit_language or render_language or getattr(manager, "_conversation_render_language", None)
+        or getattr(manager, "_conversation_turn_language", None)
+        or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+
+
 async def prepare(url, manager, character, *, automatic=False, confirmed_duration=None, render_language=None):
     if tasks:
         raise ValueError("A video is already being prepared")
@@ -54,13 +64,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     # Another request may have claimed the single slot during initialization.
     if tasks:
         raise ValueError("A video is already being prepared")
-    from utils.language_utils import get_global_language_full, normalize_language_code
-    explicit_language = (getattr(manager, "user_language", None)
-                         if getattr(manager, "_user_language_explicit", False) else None)
-    language = normalize_language_code(
-        explicit_language or render_language or getattr(manager, "_conversation_render_language", None)
-        or getattr(manager, "_conversation_turn_language", None)
-        or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+    language = session_language(manager, render_language)
     voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
     persona = str(getattr(manager, "lanlan_prompt", "") or "")
     job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": [],
@@ -104,8 +108,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800) as deadline:
-                media_binary('ffmpeg')
-                media_binary('ffprobe')
+                media.check_available()
                 await engine.vision_config()
                 from config.prompts.prompts_watch_together import LAUGH_TEXT_BY_LANGUAGE
                 probe = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])

@@ -240,6 +240,11 @@ class StreamingMixin:
                     else time.monotonic()
                 ),
             }
+        # 斜杠小游戏快捷指令（/一起看、/足球 …）不需要 LLM 会话：放在会话就绪
+        # 检查、自动建会话和 realtime→offline handoff 之前处理。否则建会话失败
+        # 时指令直接失效，语音会话里打一句 /一起看 也会先把语音会话拆掉。
+        if input_type == "text" and await self._maybe_handle_mini_game_magic_command(message):
+            return
         # 检查session是否就绪
         async with self.input_cache_lock:
             if getattr(self, "_pending_input_flush_active", False):
@@ -826,6 +831,9 @@ class StreamingMixin:
                                 await self._push_focus_thinking(True)
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
+                            # stream_text claims the staged attachments (or puts them
+                            # back on failure); release ledger entries for claimed ones.
+                            self._prune_request_staged_images()
                             # Clear unconditionally: a non-Focus turn may have pulsed the
                             # bubble True via the reasoning callback, so gating the clear
                             # on _focus_thinking would leave it stuck on tool-only / empty
@@ -931,11 +939,20 @@ class StreamingMixin:
 
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
                         elif isinstance(target_session, OmniOfflineClient):
+                            # screen/camera 在后台任务里校验，期间同一请求的斜杠快捷
+                            # 指令可能已经执行完：暂存前再查一次，别把它的截图留给下一条。
+                            if self._should_drop_magic_command_image(message.get("request_id")):
+                                return
                             # 只添加到待发送队列，等待与文本一起发送
                             await target_session.stream_image(image_b64)
                             if not self.is_active or self.session is not target_session:
                                 return
                             image_accepted = True
+                            # 记下这张附件属于哪个 request：随后到达的斜杠快捷指令
+                            # 只删自己这条请求已暂存的附件，不碰更早消息的图。
+                            self._record_request_staged_image(
+                                message.get("request_id"), image_b64
+                            )
                             image_data = (
                                 ""
                                 if input_type in {"avatar_drop_image", "user_image"}

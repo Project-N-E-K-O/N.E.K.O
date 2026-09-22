@@ -1068,6 +1068,7 @@
     "imageModelApiKeyPlaceholder": "自訂端點金鑰；預設服務商使用 API 管理簿金鑰",
     "imageDisabled": "未設定",
         "settings": "API Key 設置",
+        "pluginApiSettings": "Plugin API 設定 ↗",
         "settingsTitle": "API Key 設置 - Project Lanlan",
         "quickStart": "快速開始",
         "freeVersion": "免費版（推薦新手）",

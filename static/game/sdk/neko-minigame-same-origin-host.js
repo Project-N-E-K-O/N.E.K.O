@@ -439,7 +439,6 @@
       this._navigator = options.navigatorImpl || this._window.navigator;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      this._avatarHost = options.avatarHost || null;
       this._avatarCleanup = [];
       this._avatarFactoryController = null;
       this._avatarQueries = new Set();
@@ -585,14 +584,9 @@
     _initializeAvatar(factory) {
       if (this._avatarInitialized || this._disposed) return;
       this._avatarInitialized = true;
-      // Transitional compatibility only; new integrations must register a factory.
-      // Explicit legacy injection wins: existing trusted same-origin adapters
-      // transfer disposal ownership to this host. Never create a second provider.
-      let provider = this._avatarHost;
-      const legacy = Boolean(provider);
-      this._avatarHost = null;
+      let provider = null;
       try {
-        if (!provider && typeof factory === 'function') {
+        if (typeof factory === 'function') {
           this._avatarFactoryController = new (this._window.AbortController || AbortController)();
           provider = factory(Object.freeze({
             windowImpl: this._window,
@@ -627,7 +621,7 @@
           provider = null;
           throw this._hostError('invalid_request', 'Avatar factory must return synchronously');
         }
-        if (provider && (typeof provider.mount !== 'function' || (!legacy && typeof provider.dispose !== 'function'))) {
+        if (provider && (typeof provider.mount !== 'function' || typeof provider.dispose !== 'function')) {
           this._disposeAvatarResource(provider);
           provider = null;
           throw this._hostError('invalid_request', 'Avatar provider must support mount and dispose');
@@ -1033,6 +1027,8 @@
       else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
       else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`, {}, {timeoutMs: mediaValidationTimeoutMs, ...options});
       else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
+      // Live lines wait for model generation plus TTS; the backend caps them at 90 seconds.
+      else if (action === 'live') response = await this._post('/api/watch-together/live', this._trustedRuntimePayload(payload), {timeoutMs: 100000});
       else throw this._hostError('invalid_request', 'Unknown media operation');
       if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
       return response.json();
@@ -1604,12 +1600,6 @@
         ))) throw this._hostError('invalid_response', 'Invalid character list');
         return Object.freeze([...new Set(names.map(name => name.trim()))]);
       });
-    }
-
-    /** @deprecated Existing adapters only. New games must use game.avatar discovery. */
-    async getCharacter(lanlanName = '') {
-      this._requireGrantedCapability('avatar-renderer', 'character');
-      return this._readCharacter(lanlanName);
     }
 
     async _readCharacter(lanlanName = '') {

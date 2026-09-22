@@ -44,6 +44,7 @@ export function unlock(video) {
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {}, keepPlayingWhenHidden = () => false }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
   const prefix = `/api/watch-together/media/${timeline.id}/${timeline.version}`;
+  const liveAudioPrefix = '/api/watch-together/live-audio';
   const resources = new Map();
   const cues=timeline.events || [];
   if(cues.length>1000)throw Error('Reaction preload budget exceeded');
@@ -81,6 +82,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   let context = null, analyser = null, soundtrack = null;
   const voiceNodes = [];
   let outputStopped = true, ducked = false;
+  // A live line (not on the timeline) borrowing the reaction output between cues.
+  let speech = null;
+  const liveDownloads = new Set();
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
@@ -91,16 +95,30 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     ducked=value;
     if (soundtrack) soundtrack.gain.setTargetAtTime(value ? 0.25 : 1, context.currentTime, value ? 0.03 : 0.15);
   };
+  function finishSpeech(completed) {
+    const current=speech;
+    speech=null;
+    // A line spoken while paused over a reaction borrowed its element and bubble; give both back.
+    const reactionSource = typeof active?.audio === 'string' ? resources.get(active.audio) : null;
+    if (reactionSource) audio.src = reactionSource;
+    else audio.removeAttribute('src');
+    onCue(active || null);
+    URL.revokeObjectURL(current.url);
+    current.resolve(completed ? 'completed' : current.started ? 'interrupted' : 'skipped');
+  }
   function stop(clear = false) {
-    if(outputStopped && (!clear || !active))return;
+    if(outputStopped && (!clear || !active) && !speech)return;
     outputStopped=true;
     playAttempt++;
     audio.pause();
     duckSoundtrack(false);
     onMouth(0);
+    // Timeline reactions, pause, seek and buffering all outrank a live line.
+    if (speech) finishSpeech(false);
     if (clear) { active = null; audio.removeAttribute('src'); onCue(null); }
   }
   function sync() {
+    if (speech) return;
     if (!active || !running()) { stop(); return; }
     const offset = video.currentTime - active.at;
     const duration=Number.isFinite(active.duration) && active.duration>0?active.duration:3;
@@ -126,15 +144,25 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   syncVolume();
   listen(video, 'volumechange', syncVolume);
   listen(audio, 'playing', () => {
+    if (speech) { speech.started = true; duckSoundtrack(true); onCue(speech.cue); return; }
     if (!running() || playingGeneration !== generation) { stop(); return; }
     duckSoundtrack(true);
     emit('audio-started', active?.id); onCue(active);
   });
   listen(audio, 'waiting', () => duckSoundtrack(false));
-  listen(audio, 'ended', () => { emit('audio-ended', active?.id); stop(true); });
+  listen(audio, 'ended', () => {
+    if (speech) { outputStopped = true; duckSoundtrack(false); onMouth(0); finishSpeech(true); return; }
+    emit('audio-ended', active?.id); stop(true);
+  });
   listen(video, 'waiting', () => { waiting = true; stop(); });
-  listen(video, 'playing', () => { waiting = false; sync(); });
-  listen(video, 'pause', () => { stop(); emit('pause'); });
+  listen(video, 'playing', () => {
+    waiting = false;
+    // A live line started while paused over a reaction hands the moment back when playback resumes.
+    if (speech && active) stop();
+    sync();
+  });
+  // A paused video is a valid moment for a live line, so pausing only stops reactions.
+  listen(video, 'pause', () => { if (!speech) stop(); emit('pause'); });
   listen(video, 'play', () => { if (!release) { video.pause(); return; } emit('play'); });
   listen(video, 'seeking', () => { generation++; stop(true); });
   listen(video, 'seeked', () => { clock.seek(video.currentTime); waiting = false; emit('seek'); });
@@ -198,11 +226,60 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       if (disposed) { release?.(); release = null; return; }
       await video.play();
     },
-    pause() { video.pause(); stop(); },
+    /**
+     * Speak one live line through the reaction output. Resolves 'completed', 'interrupted' (it
+     * started, then a reaction, pause, seek or disposal cut it) or 'skipped' (it never started).
+     */
+    async say(line) {
+      if (disposed) throw Error('Media controller disposed');
+      const url = line?.audio;
+      if (typeof url !== 'string' || !url.startsWith(liveAudioPrefix + '/')) throw Error('Unregistered live speech');
+      if (!release || !context) throw Object.assign(Error('Exclusive audio ownership unavailable'),{name:'AudioOwnershipError'});
+      // Any active timeline cue, including a silent text reaction on screen, owns the moment
+      // while the video plays; a paused reaction is silent until playback resumes.
+      const busy = () => disposed || speech || (active && !video.paused);
+      if (busy()) return 'skipped';
+      // Admitted for a paused video: if playback resumes during the download, the caller must
+      // recheck the reaction gap, so the line is handed back unstarted.
+      const attemptGeneration = generation, admittedPaused = video.paused && !video.ended;
+      // A stalled download must not hold the intermission (and automatic mode) forever.
+      const download = new AbortController();
+      const deadline = setTimeout(() => download.abort(), 10000);
+      liveDownloads.add(download);
+      let blob;
+      try {
+        const response = await fetch(url, { signal: download.signal });
+        if (!response.ok) throw Error('Live speech unavailable');
+        blob = await response.blob();
+      } catch (error) {
+        if (download.signal.aborted) return 'skipped';
+        throw error;
+      } finally {
+        clearTimeout(deadline);
+        liveDownloads.delete(download);
+      }
+      if (blob.size > 8 * 1024 * 1024) throw Error('Live speech budget exceeded');
+      // Playback may have started buffering or seeking during the fetch. Paused and ended
+      // videos are valid moments (plugin replies while paused, the automatic-mode intermission).
+      if (busy() || generation !== attemptGeneration || (waiting && !video.paused) || video.seeking
+          || (admittedPaused && !video.paused)) return 'skipped';
+      return new Promise(resolve => {
+        speech = { url: URL.createObjectURL(blob), resolve, started: false, cue: { text: String(line.text || ''), live: true } };
+        const current = speech;
+        outputStopped = false;
+        const attempt = ++playAttempt;
+        audio.playbackRate = 1;
+        audio.src = current.url;
+        audio.play().catch(() => { if (speech === current && attempt === playAttempt) stop(); });
+      });
+    },
+    // Same as the native control: pausing stops reactions but keeps a live line.
+    pause() { video.pause(); if (!speech) stop(); },
     interrupt() { video.pause(); generation++; stop(true); clock.seek(video.currentTime); },
     dispose() {
       if (disposed) return;
       video.pause(); stop(true); disposed = true; generation++;
+      for (const download of liveDownloads) download.abort();
       cancelAnimationFrame(frame); listeners.forEach(remove => remove());
       video.removeAttribute('src'); video.load(); audio.load(); release?.(); release = null;
       voiceNodes.forEach(node=>node.disconnect());
