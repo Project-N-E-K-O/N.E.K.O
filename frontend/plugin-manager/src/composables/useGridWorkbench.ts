@@ -11,9 +11,8 @@
  * 状态按 `scope` 在模块级缓存，同 scope 共享，不同 scope 隔离。业务相关语义全部
  * 通过 predicate / qualifier / spec 注入，composable 本身不知业务。
  */
-import { computed, ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue'
-import { pinyin } from 'pinyin-pro'
-import { boundedMemo } from '@/utils/boundedMemo'
+import { computed, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
+import type { PinyinSearch } from '@/utils/pinyinSearch'
 
 import { tryCompileSafeRegex, warnReDoSOnce } from '@/utils/safeRegex'
 
@@ -55,8 +54,10 @@ export interface GridWorkbenchConfig<T extends GridWorkbenchItemBase> {
   groupSelection?: GroupSelectionMode
   /** 默认选中分组 id 列表（默认全选）。 */
   defaultSelectedGroupIds?: readonly string[]
-  /** 构建搜索索引（用于正则搜索和默认 term 匹配）。 */
+  /** 构建基础搜索索引（不包含可选的拼音索引）。 */
   buildSearchIndex?: (item: T) => string
+  /** 构建按需加载的拼音索引；首次搜索时才加载 pinyin-pro。 */
+  buildPinyinSearchIndex?: (item: T, search: PinyinSearch) => string
   /** `key:value` 限定词匹配器。未注册的 key 默认不匹配。 */
   qualifierMatchers?: Record<string, QualifierMatcher<T>>
   /** 初始默认值。 */
@@ -79,6 +80,7 @@ interface ScopedState {
 }
 
 const _scopes = new Map<string, ScopedState>()
+const CJK_TEXT_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 
 function getOrCreateScope(
   scope: string,
@@ -106,24 +108,6 @@ function getOrCreateScope(
 }
 
 // ─── 纯工具函数（导出供业务层复用）─────────────────────────────────
-
-function isCjkText(value: string): boolean {
-  return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value)
-}
-
-export function safePinyin(value: string, pattern: 'pinyin' | 'first'): string {
-  if (!value.trim() || !isCjkText(value)) {
-    return ''
-  }
-  return memoizedPinyin(JSON.stringify([value, pattern]))
-}
-
-const memoizedPinyin = boundedMemo(1024, (key) => {
-  const [value, pattern] = JSON.parse(key) as [string, 'pinyin' | 'first']
-  try {
-    return pinyin(value, { toneType: 'none', type: 'string', pattern, nonZh: 'consecutive', v: true, traditional: true }).trim()
-  } catch { return '' }
-})
 
 export function normalizeSearchPart(value?: string | null): string {
   return (value || '').trim().toLowerCase()
@@ -173,6 +157,23 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const state = getOrCreateScope(config.scope, defaults)
   const qualifierMatchers = config.qualifierMatchers ?? {}
   const groupSelection: GroupSelectionMode = config.groupSelection ?? 'multiple'
+  const pinyinSearch = ref<PinyinSearch | null>(null)
+  let pinyinLoad: Promise<void> | null = null
+
+  function ensurePinyinSearch() {
+    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad) return pinyinLoad
+    pinyinLoad = import('@/utils/pinyinSearch')
+      .then(({ safePinyin }) => { pinyinSearch.value = safePinyin })
+      .catch(() => {})
+      .finally(() => { pinyinLoad = null })
+    return pinyinLoad
+  }
+
+  if (config.buildPinyinSearchIndex) {
+    watch(() => state.filterText.value.trim(), (text) => {
+      if (text && CJK_TEXT_PATTERN.test(text)) void ensurePinyinSearch()
+    }, { immediate: true })
+  }
 
   const groupMap = computed(() => {
     const map = new Map<string, GridWorkbenchGroupSpec<T>>()
@@ -183,11 +184,20 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const items = computed<T[]>(() => {
     const raw = toValue(source)
     const builder = config.buildSearchIndex
-    if (!builder) return raw
+    const pinyinBuilder = config.buildPinyinSearchIndex
+    if (!builder && !pinyinBuilder) return raw
+    const includePinyin = state.filterText.value.trim().length > 0
+    const search = pinyinSearch.value
     return raw.map((item) => {
       // Computed remains lazy, but tracks nested author/tag/localization reads.
       // A plain closure cache loses these dependencies after its first hit.
-      const index = computed(() => item.searchIndex || builder(item))
+      const index = computed(() => {
+        const base = item.searchIndex || builder?.(item) || ''
+        const pinyinIndex = includePinyin && search && pinyinBuilder
+          ? pinyinBuilder(item, search)
+          : ''
+        return pinyinIndex ? `${base}\n${pinyinIndex}` : base
+      })
       return {
         ...item,
         get searchIndex() {

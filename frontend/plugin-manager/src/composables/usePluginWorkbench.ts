@@ -13,7 +13,6 @@ import type { PluginMeta } from '@/types/api'
 import {
   useGridWorkbench,
   normalizeSearchPart,
-  safePinyin,
   type FilterMode,
   type LayoutMode,
   type QualifierMatcher,
@@ -47,37 +46,31 @@ function hasUi(plugin: PluginWorkbenchItem): boolean {
 }
 
 function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
-  const name = plugin.displayName || plugin.name
-  const description = plugin.displayDescription || plugin.description
-  const shortDescription = plugin.displayShortDescription || plugin.short_description
   const textParts = [
     plugin.id,
-    name,
-    description,
-    shortDescription,
+    plugin.displayName || plugin.name,
+    plugin.displayDescription || plugin.description,
+    plugin.displayShortDescription || plugin.short_description,
     plugin.type,
     plugin.version,
   ]
-
-  return memoizedSearchIndex(JSON.stringify(textParts))
+  return memoizedPluginSearchIndex(JSON.stringify(textParts))
 }
 
-// The key includes the resolved locale text, ID, type and version; status-only
-// responses reuse it, while edits/localization changes cannot return stale text.
-const memoizedSearchIndex = boundedMemo(512, (key) => {
+const memoizedPluginSearchIndex = boundedMemo(512, (key) => {
   const textParts = JSON.parse(key) as (string | null)[]
-  const pinyinParts = textParts.slice(1, 4).flatMap((value) => {
-    const source = value || ''
-    const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
-    const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
-    return [full, full.replace(/\s+/g, ''), initials]
-  })
-
-  return [...textParts, ...pinyinParts]
-    .map(normalizeSearchPart)
-    .filter(Boolean)
-    .join('\n')
+  return textParts.map(normalizeSearchPart).filter(Boolean).join('\n')
 })
+
+function buildPluginPinyinIndex(plugin: PluginWorkbenchItem, search: (value: string, pattern: 'pinyin' | 'first') => string): string {
+  const textParts = [plugin.displayName || plugin.name, plugin.displayDescription || plugin.description, plugin.displayShortDescription || plugin.short_description]
+  return textParts.flatMap((value) => {
+    const source = value || ''
+    const full = search(source, 'pinyin').replace(/\s+/g, ' ').trim()
+    const initials = search(source, 'first').replace(/\s+/g, '').trim()
+    return [full, full.replace(/\s+/g, ''), initials]
+  }).map(normalizeSearchPart).filter(Boolean).join('\n')
+}
 
 // ─── qualifier matchers ─────────────────────────────────────────────
 
@@ -229,6 +222,7 @@ export function usePluginWorkbench<
       predicate: (item) => item.type === groupId,
     })),
     buildSearchIndex: buildPluginSearchIndex,
+    buildPinyinSearchIndex: buildPluginPinyinIndex,
     qualifierMatchers: pluginQualifiers,
   })
 

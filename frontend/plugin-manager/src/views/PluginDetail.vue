@@ -544,7 +544,7 @@ async function loadDetail() {
     && currentPluginId === pluginId.value && requestLocale === locale.value
   loading.value = !plugin.value
   try {
-    await pluginStore.fetchPlugins()
+    await pluginStore.ensurePlugins()
     if (!isCurrent()) return
     // Basic information and navigation do not wait for /surfaces or an optional
     // renderer. Requests below retain their existing API semantics.

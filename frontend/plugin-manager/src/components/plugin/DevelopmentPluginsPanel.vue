@@ -119,7 +119,7 @@ async function refresh() {
   const wasBusy = busy.value
   busy.value = true
   try {
-    const [state] = await Promise.all([getDevelopment(), store.fetchPlugins(true), store.fetchPluginStatus()])
+    const [state] = await Promise.all([getDevelopment(), store.fetchPlugins(true), store.fetchPluginStatus(undefined, true)])
     enabled.value = state.enabled
     records.value = state.registrations
     emit('registrations-change', records.value.length)

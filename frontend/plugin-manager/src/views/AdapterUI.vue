@@ -66,7 +66,7 @@ onMounted(async () => {
     loading.value = true
     loadError.value = null
     try {
-      await pluginStore.fetchPlugins()
+      await pluginStore.ensurePlugins()
     } catch (e: any) {
       loadError.value = e?.message || t('plugins.loadFailed')
     } finally {

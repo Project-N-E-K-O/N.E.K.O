@@ -162,7 +162,8 @@ import {
   getPluginProfilesState,
   getPluginProfileConfig,
   upsertPluginProfileConfig,
-  deletePluginProfileConfig
+  deletePluginProfileConfig,
+  hotUpdatePluginConfig
 } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
@@ -743,7 +744,6 @@ async function hotUpdateConfig(
   config: Record<string, any>
 ) {
   try {
-    const { hotUpdatePluginConfig } = await import('@/api/config')
     const result = await hotUpdatePluginConfig(
       pluginId,
       config,

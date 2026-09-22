@@ -766,7 +766,8 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
     } else {
       await pluginStore.fetchPlugins()
     }
-    await pluginStore.fetchPluginStatus()
+    if (mode === 'full') await pluginStore.fetchPluginStatus(undefined, true)
+    else await pluginStore.ensurePluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
   }
