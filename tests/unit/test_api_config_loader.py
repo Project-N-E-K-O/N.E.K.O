@@ -24,19 +24,19 @@ def _patch_core_config(monkeypatch, core_config):
 
 
 def test_user_preferred_model_adopts_cosyvoice_model_id(monkeypatch):
-    """TTS 端点填了 cosyvoice-v* 模型时注册应跟随用户选择（Issue #3147）。"""
+    """A cosyvoice-v* model on the TTS endpoint must drive enrollment (Issue #3147)."""
     _patch_core_config(monkeypatch, {'TTS_MODEL': 'cosyvoice-v3.5-flash'})
     assert get_cosyvoice_user_preferred_model('cosyvoice') == 'cosyvoice-v3.5-flash'
 
 
 def test_user_preferred_model_ignores_other_vendor_ids(monkeypatch):
-    """别家模型 ID / 空值不采纳，调用方回退到配置默认。"""
+    """Other vendors' model IDs / blanks are rejected; callers fall back to the default."""
     for value in ('', 'tts-1', 'speech-01-turbo', 'qwen3-tts-flash-realtime'):
         _patch_core_config(monkeypatch, {'TTS_MODEL': value})
         assert get_cosyvoice_user_preferred_model('cosyvoice') is None
 
 
 def test_user_preferred_model_skipped_for_intl(monkeypatch):
-    """新加坡地域复刻仅支持 v3-plus（即 intl 默认），不需要用户偏好。"""
+    """Intl only supports cosyvoice-v3-plus for enrolled voices (the existing default)."""
     _patch_core_config(monkeypatch, {'TTS_MODEL': 'cosyvoice-v3.5-flash'})
     assert get_cosyvoice_user_preferred_model('cosyvoice_intl') is None

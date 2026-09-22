@@ -473,7 +473,7 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_enrolls_with_user_preferred_model(monkeypatch):
-    """Issue #3147：TTS 端点填写 cosyvoice-v3.5-flash 时注册请求应跟随用户选择。"""
+    """Issue #3147: enrollment must use the model written on the TTS endpoint."""
     from main_routers.characters_router import voice_design as cr
 
     captured = {}
@@ -521,7 +521,7 @@ async def test_cosyvoice_design_enrolls_with_user_preferred_model(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_enrolls_with_default_model_when_preference_unusable(monkeypatch):
-    """TTS 端点填了别家 ID / 空值时，注册回退到配置默认（cosyvoice-v3.5-plus）。"""
+    """With an unusable TTS-model value, enrollment falls back to the default (plus)."""
     from main_routers.characters_router import voice_design as cr
 
     captured = {}
