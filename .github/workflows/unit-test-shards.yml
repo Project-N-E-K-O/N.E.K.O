@@ -1,0 +1,142 @@
+name: Unit Test Shards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-test-shards-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python-shard:
+    name: ${{ matrix.name }} (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: unit-fast
+            marker: unit_fast
+            pytest_args: "-n auto --dist loadfile"
+          - name: runtime
+            marker: runtime
+            pytest_args: "-n 2 --dist loadfile"
+          - name: integration-serial
+            marker: integration_serial
+            pytest_args: "-n 0"
+          - name: frontend-contract
+            marker: frontend_contract
+            pytest_args: "-n 0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install test-only native dependencies
+        run: |
+          uv pip install pyclipper==1.4.0
+          uv pip install kaldi-native-fbank==1.22.3
+
+      - name: Verify shard is non-empty
+        shell: pwsh
+        run: |
+          $output = uv run pytest tests/unit -m "${{ matrix.marker }}" --collect-only -q
+          $output | Write-Host
+          $match = [regex]::Match(($output -join "`n"), '(?m)(\d+) tests? collected')
+          if (-not $match.Success -or [int]$match.Groups[1].Value -le 0) {
+            throw "Marker '${{ matrix.marker }}' collected no tests."
+          }
+
+      - name: Prepare isolated pytest temp directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force ".codex-tmp\${{ matrix.marker }}" | Out-Null
+
+      - name: Run ${{ matrix.name }}
+        run: uv run pytest tests/unit -m "${{ matrix.marker }}" -q ${{ matrix.pytest_args }} --basetemp ".codex-tmp\${{ matrix.marker }}"
+
+  historical-review-audit:
+    name: historical review audit
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install test-only native dependencies
+        run: |
+          uv pip install pyclipper==1.4.0
+          uv pip install kaldi-native-fbank==1.22.3
+
+      - name: Verify historical revisions are present
+        shell: pwsh
+        run: |
+          $revisions = @(
+            '16a48f711f6842e3fbd181c41675459bb3c025bc',
+            '299c0b4b8c14eb386c645ad180241c6756e0b5c1'
+          )
+          foreach ($revision in $revisions) {
+            git fetch --no-tags origin $revision
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to fetch historical review revision '$revision'."
+            }
+            git cat-file -e "$revision^{commit}"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Historical review revision '$revision' is unavailable."
+            }
+          }
+
+      - name: Prepare historical audit temp directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force ".codex-tmp\historical-review-audit" | Out-Null
+
+      - name: Run historical review evidence
+        run: uv run pytest tests/unit/test_pr3078_review_evidence.py -q --basetemp ".codex-tmp\historical-review-audit"
+
+  frontend-node:
+    name: frontend-contract (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run frontend contract tests
+        run: |
+          node --test tests/frontend/asr_input_delivery_status.test.cjs
+          node --test tests/frontend/test_game_voice_control_runtime.js

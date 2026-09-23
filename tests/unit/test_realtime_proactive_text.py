@@ -1650,7 +1650,9 @@ async def test_cancelled_wait_does_not_block_on_orphaned_ticket(monkeypatch):
         raise AssertionError("proactive inject was not reached")
 
     task.cancel()
-    await asyncio.sleep(0.05)
+    # Observe completion without cancelling again on timeout. A fixed sleep
+    # races the event loop's timers on loaded Windows runners.
+    await asyncio.wait({task}, timeout=1)
 
     assert task.done()
     with pytest.raises(asyncio.CancelledError):
