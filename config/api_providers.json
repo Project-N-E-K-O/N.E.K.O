@@ -486,19 +486,18 @@
   "native_tts_voice_providers": {
     "step": {
       "catalog_prefix": "StepFun",
-      "default_voice": "voice-tone-RcH2svtsrw",
+      "default_voice": "qingchunshaonv",
       "default_male_voice": "wenrounansheng",
       "catalog_value_is_display_name": true,
       "voices": {
         "elegantgentle-female": "高雅女声",
         "livelybreezy-female": "活力女声",
         "qingchunshaonv": "青春少女",
-        "voice-tone-RcH2svtsrw": "青春少女（旧版映射）",
         "wenrounansheng": "温柔男声"
       },
       "aliases": {
-        "default": "voice-tone-RcH2svtsrw",
-        "默认": "voice-tone-RcH2svtsrw",
+        "default": "qingchunshaonv",
+        "默认": "qingchunshaonv",
         "female": "qingchunshaonv",
         "woman": "qingchunshaonv",
         "女": "qingchunshaonv",
@@ -513,12 +512,7 @@
     },
     "free": {
       "inherits": "step",
-      "default_voice": "qingchunshaonv",
-      "catalog_prefix": "免费 API",
-      "aliases": {
-        "default": "qingchunshaonv",
-        "默认": "qingchunshaonv"
-      }
+      "catalog_prefix": "免费 API"
     },
     "gemini": {
       "catalog_prefix": "Gemini",
