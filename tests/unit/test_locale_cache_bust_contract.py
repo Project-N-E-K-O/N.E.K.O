@@ -65,6 +65,10 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-09-23-plugin-html-content-main-merge",
+        "2026-09-23-voice-wake-word-main",
+        "2026-09-22-voice-session-activation",
+        "2026-09-12-voice-wake-word-kws2-main",
         "2026-09-11-voice-session-activation-main",
         "2026-09-14-plugin-model-api-proactive-community",
         "2026-09-12-watch-together-image-generation",
@@ -74,6 +78,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-12-core-image-generation",
         "2026-09-12-watch-together-history-pages",
         "2026-09-11-watch-together-next-video",
+        "2026-09-11-voice-wake-word-activation",
+        "2026-09-11-voice-wake-word-activation-main",
+        "2026-09-12-voice-session-activation-main",
+        "2026-09-10-drawing-guess-pngtuber-import-status",
+        "2026-09-09-voice-session-activation-pngtuber",
         "2026-01-31-1",
         "2026-02-04-1",
         "2026-02-23-1",

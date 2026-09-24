@@ -49,6 +49,10 @@ from main_logic.voice_input.activation import (
     AudioFrame,
     OutputCommit,
 )
+from main_logic.voice_input.wake_word.transcript import (
+    _WakeNameCorrection,
+    correct_wake_name_prefix,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -380,6 +384,7 @@ class AsrRuntimeMixin:
         self._voice_activation_session_anchor: int | None = None
         self._voice_activation_handoff: _VoiceActivationHandoff | None = None
         self._voice_activation_delivery_revision = 0
+        self._wake_name_correction: _WakeNameCorrection | None = None
         self._voice_activation_native_output_identity: (
             tuple[ActivationGeneration, object, int | None] | None
         ) = None
@@ -2167,7 +2172,24 @@ class AsrRuntimeMixin:
         self._voice_session_activation_degraded = (
             decision.state is ActivationState.UNAVAILABLE
         )
-        if decision.reason == "owner_confirmed":
+        status = (generation, decision.state, decision.reason)
+        if (
+            decision.reason == "wake_word_detected"
+            and decision.state is ActivationState.REPLAYING
+            and self._asr_route_mode == "independent"
+            and status != self._voice_session_activation_status
+        ):
+            self._wake_name_correction = _WakeNameCorrection(
+                generation=generation,
+                runtime=self._voice_session_activation_runtime,
+                delivery_revision=self._voice_activation_delivery_revision,
+            )
+        elif (
+            decision.reason == "owner_confirmed"
+            or decision.state not in {ActivationState.REPLAYING, ActivationState.ACTIVE}
+        ):
+            self._wake_name_correction = None
+        if decision.reason in {"owner_confirmed", "wake_word_detected"}:
             self._voice_activation_delivery_batch = (
                 getattr(self, "_voice_activation_delivery_batch", 0) + 1
             )
@@ -4732,6 +4754,7 @@ class AsrRuntimeMixin:
                 )
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+        self._wake_name_correction = None
         self._voice_input_registry.invalidate_utterance(reason=reason)
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
@@ -5132,6 +5155,7 @@ class AsrRuntimeMixin:
         return True
 
     async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
+        self._clear_wake_name_correction(self._wake_name_correction_for_turn(token))
         self._voice_input_registry.invalidate_utterance(
             token,
             reason="asr_turn_abandoned",
@@ -5161,6 +5185,37 @@ class AsrRuntimeMixin:
             and pending_delivery()
         )
 
+    def _current_wake_name_correction(self) -> _WakeNameCorrection | None:
+        ticket = self._wake_name_correction
+        if ticket is None:
+            return None
+        status = self._voice_session_activation_status
+        if (
+            self._asr_route_mode != "independent"
+            or self._voice_session_activation_runtime is not ticket.runtime
+            or self._voice_activation_delivery_revision != ticket.delivery_revision
+            or self._capture_voice_session_activation_generation() != ticket.generation
+            or status is None
+            or status[0] != ticket.generation
+            or status[1] not in {ActivationState.REPLAYING, ActivationState.ACTIVE}
+        ):
+            self._clear_wake_name_correction(ticket)
+            return None
+        return ticket
+
+    def _wake_name_correction_for_turn(
+        self, token: VoiceTurnToken,
+    ) -> _WakeNameCorrection | None:
+        ticket = self._current_wake_name_correction()
+        return ticket if ticket is not None and ticket.turn_token == token else None
+
+    def _clear_wake_name_correction(
+        self, ticket: _WakeNameCorrection | None,
+    ) -> None:
+        # Cleanup after an await belongs only to the ticket captured before it.
+        if ticket is not None and self._wake_name_correction is ticket:
+            self._wake_name_correction = None
+
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
         # A lease transition activates its next consumer before waiting for
@@ -5173,9 +5228,20 @@ class AsrRuntimeMixin:
             or not self._voice_input_accepts_pcm()
         ):
             return False
-        if not self._voice_input_registry.begin_utterance(token):
-            return False
-        return await self._voice_input_registry.prepare_utterance(token)
+        ticket = self._current_wake_name_correction()
+        if ticket is not None and ticket.turn_token is None:
+            ticket.turn_token = token
+        else:
+            ticket = None
+        prepared = False
+        try:
+            if not self._voice_input_registry.begin_utterance(token):
+                return False
+            prepared = await self._voice_input_registry.prepare_utterance(token)
+            return prepared
+        finally:
+            if not prepared:
+                self._clear_wake_name_correction(ticket)
 
     async def _dispatch_voice_input_partial(
         self,
@@ -5187,7 +5253,12 @@ class AsrRuntimeMixin:
         self,
         event: VoiceTranscriptEvent,
     ) -> None:
-        result = await self._voice_input_registry.dispatch_final(event)
+        ticket = self._wake_name_correction_for_turn(event.turn_token)
+        try:
+            result = await self._voice_input_registry.dispatch_final(event)
+        finally:
+            # Empty finals and non-Core consumers never enter Core's callback.
+            self._clear_wake_name_correction(ticket)
         if result is VoiceInputDispatchResult.CALLBACK_FAILED:
             await self._send_core_asr_status(
                 AsrStatusEvent(
@@ -5210,6 +5281,9 @@ class AsrRuntimeMixin:
         reason: str,
     ) -> None:
         del reason
+        self._clear_wake_name_correction(
+            self._wake_name_correction_for_turn(context.token)
+        )
         try:
             await self._send_core_asr_preview_clear(context.external_turn_id)
         finally:
@@ -5380,6 +5454,10 @@ class AsrRuntimeMixin:
                 or session_ref is None
             ):
                 return
+            ticket = self._wake_name_correction_for_turn(event.turn_token)
+            if ticket is not None:
+                self._clear_wake_name_correction(ticket)
+                event = replace(event, text=correct_wake_name_prefix(event.text))
             if not event.text.strip():
                 # An empty final still completed the turn provider-side (e.g.
                 # the OpenAI/Step stalled-item timeouts): Core deliberately

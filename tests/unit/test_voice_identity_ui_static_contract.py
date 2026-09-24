@@ -545,7 +545,9 @@ def test_voice_identity_copy_describes_session_activation_and_fail_closed_waitin
     script = (ROOT / "static/js/voice_identity.js").read_text(encoding="utf-8")
 
     assert "声纹激活语音对话" in template
-    assert "确认是你后才开始上传语音" in template
+    assert "声纹验证通过后激活对话" in template
+    assert "若已配置本地唤醒词且检测器就绪" in template
+    assert "无需确认说话人身份" in template
     assert "连续 30 秒无人声后重新等待激活" in template
     assert "激活期间可直接接话，也会接收附近其他人的声音" in template
     assert "声纹激活暂时不可用，待机音频不会上传" in script
