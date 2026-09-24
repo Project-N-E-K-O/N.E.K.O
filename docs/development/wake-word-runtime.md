@@ -15,7 +15,7 @@ powershell -File scripts\wake_word\build_wake_word_runtime.ps1 `
 $wheel = (Get-ChildItem .wake-word-runtime\sherpa-onnx\dist\*.whl |
   Select-Object -First 1).FullName
 uv pip install --python $python --force-reinstall $wheel
-uv run --no-project --with $wheel python -c 'import sherpa_onnx as s; print(s.__version__, s.version)'
+& $python -c 'import sherpa_onnx as s; print(s.__version__, s.version)'
 ```
 
 最后一条命令必须输出两次 `1.13.8+neko.kws2`。如果只看到 `1.13.8`，说明普通上游 wheel 仍在环境中，应重新安装构建产物；不要用 `uv sync --extra wake-word` 来替代这一步。
