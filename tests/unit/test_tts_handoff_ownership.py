@@ -1,7 +1,7 @@
 import asyncio
 from queue import Queue
 from threading import Event, Thread
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -176,6 +176,167 @@ async def test_fallback_cannot_create_third_worker(monkeypatch):
         assert second.request_queue.empty()
         assert manager._tts_capacity_exhausted
     finally:
+        manager._retire_tts_runtime(second)
+        for release in releases:
+            release.set()
+        await asyncio.gather(first.cleanup_task, second.cleanup_task)
+
+
+@pytest.mark.asyncio
+async def test_handler_retries_fallback_after_retired_worker_releases_capacity():
+    manager = Manager()
+    releases = [Event(), Event(), Event()]
+    first = install(manager, releases[0])
+    manager._retire_tts_runtime(first)
+    second = install(manager, releases[1])
+    manager._tts_active_provider_key = "configured"
+    manager._last_tts_error_code = ""
+    manager._tts_retry_notify_count = 0
+    manager.send_status = AsyncMock()
+    fallback_attempted = asyncio.Event()
+    fallback_ready = asyncio.Event()
+    replacements = []
+
+    def activate(_stage):
+        if manager._live_tts_runtime_count() >= 2:
+            manager._tts_capacity_exhausted = True
+            fallback_attempted.set()
+            raise TtsCapacityError("retired worker still occupies capacity")
+        manager._retire_tts_runtime(second, stop_handler=False)
+        replacement = install(manager, releases[2])
+        replacements.append(replacement)
+        replacement.response_queue.put(("__ready__", True))
+        return True
+
+    async def flush_pending():
+        fallback_ready.set()
+
+    manager._activate_configured_tts_fallback = activate
+    manager._flush_tts_pending_chunks = flush_pending
+    second.response_queue.put(("__ready__", False))
+    handler = manager._start_tts_response_handler()
+    try:
+        await asyncio.wait_for(fallback_attempted.wait(), 1)
+        assert not handler.done()
+        assert not fallback_ready.is_set()
+        releases[0].set()
+        await asyncio.wait_for(fallback_ready.wait(), 1)
+        assert not manager._tts_capacity_exhausted
+        assert manager.tts_ready
+        manager.send_status.assert_not_awaited()
+    finally:
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        for runtime in [first, second, *replacements]:
+            manager._retire_tts_runtime(runtime)
+        for release in releases:
+            release.set()
+        await asyncio.gather(
+            *(runtime.cleanup_task for runtime in [first, second, *replacements]
+              if runtime.cleanup_task is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_handler_finishes_nonoverlapping_fallback_after_own_worker_exits():
+    manager = Manager()
+    releases = [Event(), Event()]
+    old = install(manager, releases[0])
+    manager._last_tts_error_code = ""
+    manager._tts_retry_notify_count = 0
+    manager.send_status = AsyncMock()
+    fallback_attempted = asyncio.Event()
+    fallback_ready = asyncio.Event()
+    replacements = []
+
+    def activate(_stage):
+        manager._retire_tts_runtime(old, stop_handler=False)
+        manager._tts_capacity_exhausted = True
+        fallback_attempted.set()
+        raise TtsCapacityError("replacement cannot overlap the old worker")
+
+    def start_replacement(*, preserve_provider_exclusions):
+        assert preserve_provider_exclusions
+        manager._tts_capacity_exhausted = False
+        replacement = install(manager, releases[1])
+        replacements.append(replacement)
+        replacement.response_queue.put(("__ready__", True))
+
+    async def flush_pending():
+        fallback_ready.set()
+
+    manager._activate_configured_tts_fallback = activate
+    manager._start_tts_thread = start_replacement
+    manager._flush_tts_pending_chunks = flush_pending
+    old.response_queue.put(("__ready__", False))
+    handler = manager._start_tts_response_handler()
+    try:
+        await asyncio.wait_for(fallback_attempted.wait(), 1)
+        assert not handler.done()
+        releases[0].set()
+        await asyncio.wait_for(fallback_ready.wait(), 1)
+        assert not manager._tts_capacity_exhausted
+        assert manager.tts_ready
+        manager.send_status.assert_not_awaited()
+    finally:
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        for runtime in [old, *replacements]:
+            manager._retire_tts_runtime(runtime)
+        for release in releases:
+            release.set()
+        await asyncio.gather(
+            *(runtime.cleanup_task for runtime in [old, *replacements]
+              if runtime.cleanup_task is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["timeout", "takeover"])
+async def test_fallback_capacity_wait_preserves_cleanup_and_session_owner(outcome):
+    manager = Manager()
+    releases = [Event(), Event()]
+    first = install(manager, releases[0])
+    manager._retire_tts_runtime(first)
+    second = install(manager, releases[1])
+    manager.session = object()
+    manager.use_tts = True
+    attempted = asyncio.Event()
+    attempts = 0
+
+    def activate(_stage):
+        nonlocal attempts
+        attempts += 1
+        attempted.set()
+        raise TtsCapacityError("older worker still alive")
+
+    manager._activate_configured_tts_fallback = activate
+    if outcome == "timeout":
+        manager._current_start_deadline = (
+            lambda: asyncio.get_running_loop().time() + 0.03
+        )
+    token = tts_output_runtime.set(second)
+    try:
+        task = asyncio.create_task(
+            manager._activate_configured_tts_fallback_after_capacity(
+                "test", second
+            )
+        )
+        await asyncio.wait_for(attempted.wait(), 1)
+        if outcome == "timeout":
+            with pytest.raises(TtsCapacityError):
+                await asyncio.wait_for(task, 1)
+            assert first.cleanup_task is not None
+            assert not first.cleanup_task.cancelled()
+        else:
+            manager.session = object()
+            releases[0].set()
+            assert await asyncio.wait_for(task, 1) is False
+        assert attempts == 1
+    finally:
+        tts_output_runtime.reset(token)
         manager._retire_tts_runtime(second)
         for release in releases:
             release.set()

@@ -1432,6 +1432,79 @@ class TtsRuntimeMixin:
         )
         return True
 
+    async def _activate_configured_tts_fallback_after_capacity(
+        self, failure_stage: str, runtime: TtsRuntimeRecord | None
+    ) -> bool:
+        """Wait for real worker exits before retrying the existing fallback."""
+        expected_session = getattr(self, "session", None)
+        expected_use_tts = getattr(self, "use_tts", None)
+        deadline_getter = getattr(self, "_current_start_deadline", None)
+        deadline = deadline_getter() if callable(deadline_getter) else None
+        loop = asyncio.get_running_loop()
+        deadline = min(deadline or float("inf"), loop.time() + 15.0)
+        fallback_prepared = False
+        for _ in range(3):
+            try:
+                if fallback_prepared:
+                    self._start_tts_thread(preserve_provider_exclusions=True)
+                    return True
+                return self._activate_configured_tts_fallback(failure_stage)
+            except TtsCapacityError:
+                if (
+                    getattr(self, "session", None) is not expected_session
+                    or getattr(self, "use_tts", None) != expected_use_tts
+                ):
+                    return False
+                if self._tts_runtime_is_current(runtime):
+                    # The first capacity check has not touched the provider or
+                    # replay ledger; retry the complete fallback after cleanup.
+                    waiting_for_retirement = False
+                elif (
+                    runtime is not None and runtime.retired
+                    and getattr(self, "_tts_runtime", None) is runtime
+                    and getattr(self, "tts_thread", None) is runtime.thread
+                    and tts_output_runtime.get() is runtime
+                ):
+                    # A non-overlapping replacement may reject the old worker
+                    # after fallback has already retired it and saved replay.
+                    waiting_for_retirement = True
+                else:
+                    return False
+                blocked = tuple(
+                    record for record in self._tts_runtimes
+                    if record.retired and record.thread is not None
+                    and record.thread.is_alive()
+                )
+                cleanup_tasks = tuple(
+                    task for record in blocked
+                    if (task := self._schedule_tts_cleanup(record)) is not None
+                )
+                if not cleanup_tasks:
+                    raise
+                self._tts_capacity_exhausted = False
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(asyncio.shield(task) for task in cleanup_tasks),
+                            return_exceptions=True,
+                        ),
+                        timeout=max(0, deadline - loop.time()),
+                    )
+                except asyncio.TimeoutError as error:
+                    raise TtsCapacityError("TTS fallback capacity did not clear") from error
+                if (
+                    getattr(self, "session", None) is not expected_session
+                    or getattr(self, "use_tts", None) != expected_use_tts
+                    or getattr(self, "_tts_runtime", None) is not runtime
+                    or (waiting_for_retirement and
+                        getattr(self, "tts_thread", None) is not runtime.thread)
+                    or (not waiting_for_retirement and
+                        not self._tts_runtime_is_current(runtime))
+                ):
+                    return False
+                fallback_prepared = waiting_for_retirement
+        raise TtsCapacityError("TTS fallback capacity remained occupied")
+
     def _reset_tts_retry_state(self):
         """Cancel pending TTS respawn task and clear error/cooldown state.
 
@@ -2201,7 +2274,7 @@ class TtsRuntimeMixin:
                             # Configured endpoints fall back once; the handler
                             # then follows the replacement worker's new queue.
                             # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
-                            if self._activate_configured_tts_fallback("初始化"):
+                            if await self._activate_configured_tts_fallback_after_capacity("初始化", runtime):
                                 q = self.tts_response_queue
                                 runtime = self._snapshot_tts_runtime()
                                 tts_output_runtime.set(runtime)
@@ -2209,6 +2282,8 @@ class TtsRuntimeMixin:
                                     runtime.handler = asyncio.current_task()
                                 self._tts_handler_response_queue = q
                                 continue
+                            if not self._tts_runtime_is_current(runtime):
+                                return
                             # 复用 __error__ 分支记录的 code 判断是否重试
                             _last_code = self._last_tts_error_code
                             if _last_code in NO_RETRY_TTS_CODES:
@@ -2279,7 +2354,7 @@ class TtsRuntimeMixin:
                         # backend log above, then redispatched through the exact
                         # pre-existing fallback chain for subsequent audio.
                         # 自定义 API 运行时出错后，仅切换 provider；现有保底顺序不变。
-                        if self._activate_configured_tts_fallback("运行时"):
+                        if await self._activate_configured_tts_fallback_after_capacity("运行时", runtime):
                             q = self.tts_response_queue
                             runtime = self._snapshot_tts_runtime()
                             tts_output_runtime.set(runtime)
@@ -2287,6 +2362,8 @@ class TtsRuntimeMixin:
                                 runtime.handler = asyncio.current_task()
                             self._tts_handler_response_queue = q
                             continue
+                        if not self._tts_runtime_is_current(runtime):
+                            return
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
                         _known_codes = {
