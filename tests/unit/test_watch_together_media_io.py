@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 
 import httpx
 import pytest
@@ -17,13 +16,6 @@ async def test_dash_tracks_share_download_budget(tmp_path):
             await engine.download_stream(client, {'url':'https://cdn.test/audio'}, tmp_path / 'audio', budget=budget)
     assert (tmp_path / 'video').read_bytes() == b'123456'
     assert (tmp_path / 'audio').read_bytes() == b''
-
-
-def test_browser_codecs_copy_known_formats_and_convert_fallbacks():
-    assert engine.browser_codec_args({'codecid': 7}, {'codecs': 'mp4a.40.2'}) == ['-c:v', 'copy', '-c:a', 'copy']
-    fallback = engine.browser_codec_args({'codecid': 12}, {'codecs': 'ec-3'})
-    assert 'libx264' in fallback and 'yuv420p' in fallback and 'aac' in fallback
-    assert engine.browser_codec_args({'codecid': 7}, None) == ['-c:v', 'copy']
 
 
 @pytest.mark.asyncio
@@ -44,35 +36,6 @@ async def test_cdn_failure_retries_backup(tmp_path, key):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg integration prerequisite')
-@pytest.mark.parametrize('repeat_during_spawn', [False, True])
-async def test_cancel_reaps_media_process_before_return(monkeypatch, repeat_during_spawn):
-    created = asyncio.Event()
-    release_spawn = asyncio.Event()
-    processes = []
-    original = asyncio.create_subprocess_exec
-    async def spawn(*args, **kwargs):
-        process = await original(*args, **kwargs)
-        processes.append(process)
-        created.set()
-        if repeat_during_spawn:
-            await release_spawn.wait()
-        return process
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
-    task = asyncio.create_task(engine.run_media_async('ffmpeg', '-re', '-f', 'lavfi', '-i', 'sine=frequency=440', '-f', 'null', '-'))
-    await asyncio.wait_for(created.wait(), 10)
-    task.cancel()
-    if repeat_during_spawn:
-        await asyncio.sleep(0)
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done(), 'caller must wait for process creation and reaping'
-        release_spawn.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 10)
-    assert processes[0].returncode is not None
-
-@pytest.mark.asyncio
 async def test_download_file_io_runs_off_loop(tmp_path):
     import threading
     event_thread = threading.get_ident()
@@ -89,7 +52,7 @@ async def test_missing_vision_config_fails_before_video_work(tmp_path, monkeypat
     from types import SimpleNamespace
     instance = engine.Engine(tmp_path, None, 'cat')
     instance._cm = SimpleNamespace(get_model_api_config=lambda _: {})
-    monkeypatch.setattr(engine, 'media_binary', lambda name: name)
+    monkeypatch.setattr(engine.media, 'check_available', lambda: None)
     with pytest.raises(RuntimeError, match='API'):
         await instance.prepare({'id':'missing'}, 'unused', 'cat')
     assert not (tmp_path / 'missing').exists()

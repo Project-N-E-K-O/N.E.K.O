@@ -56,13 +56,17 @@ import logging
 
 import pytest
 
+from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 from main_logic.omni_realtime_client._shared import (
     response_arbiter_fail_open_enabled,
 )
 
-ARBITER_LOGGER = "main_logic.omni_realtime_client._response_arbiter"
+ARBITER_LOGGER = _arbiter_module.logger.name
 FAIL_OPEN_ENV_VAR = "NEKO_REALTIME_ARBITER_FAIL_OPEN"
+
+
+pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")
 
 
 async def _settle(times: int = 50) -> None:

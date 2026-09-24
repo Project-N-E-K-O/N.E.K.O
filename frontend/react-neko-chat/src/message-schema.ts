@@ -55,6 +55,23 @@ const statusBlockSchema = z.object({
 // Frontend-only "she has a topic she'd like to bring up" teaser, shown just
 // before a proactive deep-topic opener. Backend sends only the character name
 // (no LLM-context text); the dedicated TopicHintBubble renders localized copy.
+export const htmlCardBlockSchema = z.object({
+  type: z.literal('html_card'),
+  cardId: z.string().min(1),
+  pluginId: z.string().min(1),
+  targetLanlan: z.string().min(1),
+  presentation: z.enum(['chat', 'agent']).optional(),
+  html: z.string(),
+  css: z.string().default(''),
+  summary: z.string(),
+  actions: z.record(z.object({
+    entry: z.string().min(1),
+    args: z.record(z.unknown()).optional(),
+  })).default({}),
+});
+export type HtmlCard = z.infer<typeof htmlCardBlockSchema>;
+export type HtmlCardInput = z.input<typeof htmlCardBlockSchema>;
+
 const topicHintBlockSchema = z.object({
   type: z.literal('topic-hint'),
   // Trim before length check so a whitespace-only author is rejected, matching
@@ -156,6 +173,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   statusBlockSchema,
   buttonGroupBlockSchema,
   topicHintBlockSchema,
+  htmlCardBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {

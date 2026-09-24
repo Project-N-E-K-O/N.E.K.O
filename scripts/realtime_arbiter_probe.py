@@ -840,9 +840,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     probe = _Probe(args.route, verbose=not args.quiet)
     probe.observations.scenario = args.scenario
     capture = _MarginCapture()
-    arbiter_log = logging.getLogger(
-        "main_logic.omni_realtime_client._response_arbiter"
-    )
+    # Attach to the module's own logger object: its name follows the package
+    # logger convention (N.E.K.O.Main...), so a hard-coded name silently
+    # captures nothing.
+    from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
+
+    arbiter_log = _arbiter_module.logger
     previous_level = arbiter_log.level
     arbiter_log.setLevel(logging.INFO)
     arbiter_log.addHandler(capture)
