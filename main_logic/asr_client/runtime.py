@@ -1745,16 +1745,23 @@ class IndependentAsrRuntime:
             VoiceLifecycleState.BACKOFF,
             VoiceLifecycleState.ACTIVE,
         }:
-            abandoned_turn = (
-                self._capture_turn_token(lifecycle)
-                if state is VoiceLifecycleState.ACTIVE and self._asr_turn_prepared
-                else None
+            # _abort_transport settles any prepared Core turn while it resets
+            # ASR state, including when later status or detector work fails.
+            # Notifying here as well sends the same abandon callback twice.
+            lifecycle.invalidate_audio()
+            post_detach = await self._abort_transport(
+                "detector_audio_backpressure"
             )
-            try:
-                lifecycle.invalidate_audio()
-                post_detach = await self._abort_transport(
-                    "detector_audio_backpressure"
-                )
+            if not self._runtime_identity_matches(
+                post_detach
+            ) or not self._asr_runtime_refs_match(
+                epoch,
+                lifecycle,
+                detector,
+            ):
+                return
+            if detector is not None:
+                await detector.reset()
                 if not self._runtime_identity_matches(
                     post_detach
                 ) or not self._asr_runtime_refs_match(
@@ -1763,34 +1770,21 @@ class IndependentAsrRuntime:
                     detector,
                 ):
                     return
-                if detector is not None:
-                    await detector.reset()
-                    if not self._runtime_identity_matches(
-                        post_detach
-                    ) or not self._asr_runtime_refs_match(
-                        epoch,
-                        lifecycle,
-                        detector,
-                    ):
-                        return
-                await self._send_asr_status(
-                    "ASR_INGRESS_BACKPRESSURE",
-                    provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
-                if not self._runtime_identity_matches(post_detach):
-                    return
-                await self._send_asr_lifecycle_state(
-                    VoiceLifecycleState.LOCAL_LISTEN,
-                    provider=provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            if not self._runtime_identity_matches(post_detach):
                 return
-            finally:
-                if abandoned_turn is not None:
-                    await self._notify_asr_turn_abandoned(abandoned_turn)
+            await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.LOCAL_LISTEN,
+                provider=provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            return
         identity = self._capture_runtime_identity()
         await self._send_asr_status(
             "ASR_INGRESS_BACKPRESSURE",

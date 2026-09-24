@@ -549,6 +549,64 @@ async def test_same_mode_dedupe_skips_both_when_inflight_never_settles(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["failed", "invalidated", "timeout"])
+async def test_same_mode_dedupe_reports_terminal_failure_to_its_request(outcome):
+    mgr = _make_deduping_manager(route_mode="blocked")
+    mgr.send_session_failed = AsyncMock()
+    mgr.send_session_started = AsyncMock()
+    mgr._start_independent_asr_if_enabled = AsyncMock()
+    operation = SimpleNamespace(valid=True)
+    mgr._start_operation = operation
+    deadline = asyncio.get_running_loop().time() + 0.6
+    task = asyncio.create_task(
+        LLMSessionManager.start_session(
+            mgr,
+            mgr.websocket,
+            False,
+            "audio",
+            user_initiated=True,
+            request_id="dedup-request",
+            _deadline=deadline,
+        )
+    )
+    await asyncio.sleep(0.05)
+    if outcome == "failed":
+        mgr.session = None
+        mgr.is_active = False
+        mgr._starting_session_count = 0
+    elif outcome == "invalidated":
+        operation.valid = False
+    await asyncio.wait_for(task, 1)
+    if outcome == "timeout":
+        assert asyncio.get_running_loop().time() < deadline
+
+    mgr.send_session_failed.assert_awaited_once_with(
+        "audio", request_id="dedup-request", also_notify=mgr.websocket
+    )
+    mgr.send_session_started.assert_not_awaited()
+    mgr._start_independent_asr_if_enabled.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_acks_successful_explicit_request():
+    mgr = _make_deduping_manager(route_mode="native")
+    mgr.send_session_failed = AsyncMock()
+    mgr.send_session_started = AsyncMock()
+
+    await _run_dedupe_start(mgr, request_id="dedup-request")
+
+    mgr.send_session_started.assert_awaited_once_with(
+        "audio",
+        request_id="dedup-request",
+        also_notify=mgr.websocket,
+        microphone_route_override=None,
+    )
+    mgr.send_session_failed.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():
     """When the user actively ends the start during the wait (the frontend 15s
     timeout sends end_session, which bumps _user_session_abandon_epoch and
