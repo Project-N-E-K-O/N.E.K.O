@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from main_logic.voice_identity_service.activation_runtime import (
     VoiceSessionActivationRuntime, VoiceSessionActivationRuntimeConfig,
@@ -264,3 +264,4 @@ def main():
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     main()
+

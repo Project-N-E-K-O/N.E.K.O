@@ -27,7 +27,7 @@ import time
 import wave
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS
 from main_logic.voice_input.activation.contracts import ActivationGeneration, AudioFrame
@@ -288,3 +288,4 @@ def main() -> None:
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     main()
+
