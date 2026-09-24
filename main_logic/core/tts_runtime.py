@@ -1499,7 +1499,8 @@ class TtsRuntimeMixin:
         if not self._tts_output_is_current() or getattr(self, "_tts_capacity_exhausted", False):
             return
         runtime = self._snapshot_tts_runtime()
-        if runtime is not None and runtime.retired:
+        if (runtime is not None and runtime.retired
+                and runtime.thread is not None and runtime.thread.is_alive()):
             return
         if self.tts_thread and self.tts_thread.is_alive():
             return
@@ -1516,7 +1517,10 @@ class TtsRuntimeMixin:
 
         # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
         if self._tts_respawn_task and not self._tts_respawn_task.done():
-            self._tts_respawn_task.cancel()
+            # A delayed retry may be the caller. Never cancel that task from
+            # inside its own respawn attempt.
+            if self._tts_respawn_task is not asyncio.current_task():
+                self._tts_respawn_task.cancel()
             self._tts_respawn_task = None
         self._last_tts_respawn_time = now
 
@@ -1535,6 +1539,55 @@ class TtsRuntimeMixin:
             # path must clear it or the delayed retry would return immediately.
             self._tts_capacity_exhausted = False
             logger.warning("TTS respawn deferred: %s", error)
+            blocked = tuple(
+                record for record in self._tts_runtimes
+                if record.retired and record.thread is not None
+                and record.thread.is_alive()
+            )
+            cleanup_tasks = tuple(
+                task for record in blocked
+                if (task := self._schedule_tts_cleanup(record)) is not None
+            )
+            if not cleanup_tasks:
+                return
+            expected_session = getattr(self, "session", None)
+            expected_use_tts = getattr(self, "use_tts", None)
+            expected_runtime = getattr(self, "_tts_runtime", None)
+            expected_thread = getattr(self, "tts_thread", None)
+
+            async def retry_after_retirement():
+                try:
+                    # Cancellation of this retry must not cancel manager-owned
+                    # cleanup or release capacity before the worker exits.
+                    await asyncio.gather(
+                        *(asyncio.shield(task) for task in cleanup_tasks),
+                        return_exceptions=True,
+                    )
+                    remaining = 12.0 - (time.monotonic() - self._last_tts_respawn_time)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                    if (
+                        asyncio.current_task() is not self._tts_respawn_task
+                        or getattr(self, "session", None) is not expected_session
+                        or getattr(self, "use_tts", None) != expected_use_tts
+                        or getattr(self, "_tts_runtime", None) is not expected_runtime
+                        or getattr(self, "tts_thread", None) is not expected_thread
+                        or not getattr(self, "is_active", True)
+                        or self.tts_ready
+                    ):
+                        return
+                    # The provider callback had the retired runtime in its
+                    # context; this new attempt belongs to the current owner.
+                    token = tts_output_runtime.set(None)
+                    try:
+                        self._respawn_tts_worker()
+                    finally:
+                        tts_output_runtime.reset(token)
+                finally:
+                    if asyncio.current_task() is self._tts_respawn_task:
+                        self._tts_respawn_task = None
+
+            self._tts_respawn_task = asyncio.create_task(retry_after_retirement())
             return
 
         # 重新启动 tts_response_handler 以监听新队列
