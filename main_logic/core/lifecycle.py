@@ -1059,6 +1059,11 @@ class LifecycleMixin:
                 inflight_operation.valid
                 and getattr(self, '_start_operation', None) is inflight_operation
             )
+        async def fail_deduped_request():
+            if request_id is not None:
+                await self.send_session_failed(
+                    input_mode, request_id=request_id, also_notify=websocket
+                )
         # 另一路 start_session（典型是 greeting 的 auto-start）已在飞。早期实现
         # 直接静默 return，但前端的 start_session 在 await 一个 session_started
         # ack——若它撞在这里被去重，ack 永远不来，前端 15s 后超时并卡死（用户
@@ -1075,8 +1080,8 @@ class LifecycleMixin:
             # 不拿 session_ready 当谓词：它可能还残留上一个 session 的 True
             # （in-flight start 要过几个 await 才把它重置），那样循环会被直接
             # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
-            # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
-            # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
+            # 给有 request_id 的前端请求预留失败通知的投递时间，避免它的
+            # 15s 超时先发 end_session，误关随后才完成的会话。
             #
             # 快照本请求进入时的 voice lease 身份：等待可能长达十几秒，期间第三个
             # audio start 抢走麦克风是可能的，那时替它重跑路由会用**本请求**（已经
@@ -1089,18 +1094,20 @@ class LifecycleMixin:
             # connect，补发的 ack 仍然赶在前端超时之后（Codex P2）。
             _wait_started = time.monotonic()
             _waited = 0.0
-            while self._starting_session_count > 0 and asyncio.get_running_loop().time() < deadline:
+            response_deadline = deadline - (0.25 if request_id is not None else 0)
+            while self._starting_session_count > 0 and asyncio.get_running_loop().time() < response_deadline:
                 await asyncio.sleep(0.05)
                 _waited += 0.05
                 if not inflight_is_current():
+                    await fail_deduped_request()
                     return True
             # 仅当 in-flight 真正落定（count 归 0、即循环是「落定退出」而非
             # 「超时退出」）且会话确实活跃时才补发 session_started（与
             # in-flight 自身发的那条幂等，前端 resolver 一次性）。若是超时退出
             # （count 仍 >0、in-flight 没结束），self.session/is_active 在 restart
             # 流程里可能是上一个 session 残留的 True，补发会是假阳性（Codex P1），
-            # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
-            # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
+            # 故一律不发 started。失败通知只定向给本请求的 request_id；它不
+            # 撤销 in-flight 启动，且不会把其它窗口的请求误判为失败。
             if self._starting_session_count == 0 and self.session and self.is_active:
                 # 补发的 ack 带的是 in-flight 那次 start 的路由裁决（见
                 # send_session_started），而这条路径本身从不重跑决策。裁决对本
@@ -1119,6 +1126,7 @@ class LifecycleMixin:
                     resource_optimization_override=resource_optimization_override,
                 )
                 if not inflight_is_current():
+                    await fail_deduped_request()
                     return True
                 # ``also_notify``：重跑若 fail-closed 会 revoke lease，把
                 # _voice_lease_connection_id 和 voice socket 一起清掉，本请求方
@@ -1146,6 +1154,8 @@ class LifecycleMixin:
                     also_notify=websocket,
                     microphone_route_override="blocked" if _lease_moved else None,
                 )
+            else:
+                await fail_deduped_request()
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
             # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
