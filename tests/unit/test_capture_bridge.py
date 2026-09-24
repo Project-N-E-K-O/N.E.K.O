@@ -47,6 +47,7 @@ def _payload(available: bool = True) -> dict[str, Any]:
             "captureSourceAsDataUrl": True,
             "captureSourceWithoutNeko": True,
             "captureDesktopRegionAsDataUrl": True,
+            "captureComputerUseScreen": True,
         },
     }
 
@@ -60,6 +61,39 @@ def test_region_capability_is_required_separately_from_window_capture():
 
     assert capture_bridge.has_capture_client() is True
     assert capture_bridge.has_region_capture_client() is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_computer_use_capture_requires_capability_and_returns_full_frame():
+    sock = _Sock()
+    payload = _payload(True)
+    payload["capabilities"]["captureComputerUseScreen"] = False
+    capture_bridge.mark_capture_client("neko", sock, payload)
+    assert capture_bridge.has_computer_use_capture_client() is False
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="no renderer available"):
+        await capture_bridge.request_computer_use_screenshot(timeout=0.1)
+
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+    assert capture_bridge.has_computer_use_capture_client() is True
+
+    async def _replier():
+        await sock.send_event.wait()
+        import json
+
+        request = json.loads(sock.sent[-1])
+        assert request["type"] == "capture_bridge_computer_use_request"
+        capture_bridge.resolve_capture_response("neko", {
+            "request_id": request["request_id"],
+            "success": True,
+            "image": "data:image/png;base64,YQ==",
+        })
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_computer_use_screenshot(timeout=1.0)
+    await reply_task
+    assert result["image"] == "data:image/png;base64,YQ=="
+    assert capture_bridge._snapshot_for_tests()["pending_counts"]["neko"] == 0
 
 
 @pytest.mark.unit

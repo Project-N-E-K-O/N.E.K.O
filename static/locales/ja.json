@@ -612,6 +612,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "キャラクター設定が更新されました。ページがまもなく更新されます",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "クラウドセーブのキャラクターが更新されました。ページがまもなく更新されます",
         "AGENT_AUTO_DISABLED_COMPUTER": "キーボード/マウス制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "ブラウザ制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "ネコクロー LLM 接続チェックエラー",
         "INVALID_INPUT_TYPE": "無効な入力タイプ: {{input_type}}",
@@ -3190,6 +3191,8 @@
             "freeModelWarning": "クォータの制限により、無料モデルではネコクローモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
             "freeModelWarningTitle": "無料モデルのお知らせ",
             "connectivityCheck": "ネコクロー LLM 接続チェック中...",
+            "screenShareRequired": "ネコクローのキーボード・マウス操作を有効にするには、画面全体の共有を許可してください。",
+            "screenSharePendingReload": "画面キャプチャの許可待ちが続いています。ページを再読み込みしてからもう一度お試しください。",
             "precheckFailed": "ネコクローのプリチェックに失敗しました：{{reason}}",
             "toggleFailed": "Agentの切り替えに失敗しました: {{error}}"
         },

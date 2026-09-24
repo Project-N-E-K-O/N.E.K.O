@@ -141,3 +141,16 @@ def test_remote_block_alias_reuses_system_signals_helper():
     )
 
     assert agent_router_module.is_remote_backend_deployment is canonical
+
+
+@pytest.mark.unit
+def test_native_capture_preflight_is_local_only_and_reports_helper(monkeypatch):
+    client = _build_client()
+    monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
+    assert client.get("/api/agent/computer-use/native-capture-available").status_code == 501
+
+    _clear_remote_env(monkeypatch)
+    monkeypatch.setattr(agent_router_module, "native_wayland_capture_available", lambda: True)
+    response = client.get("/api/agent/computer-use/native-capture-available")
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "available": True}

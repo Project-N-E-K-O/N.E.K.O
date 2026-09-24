@@ -568,12 +568,46 @@
                         return;
                     }
                     const value = !!e.target.checked;
+                    // Start getDisplayMedia in this user gesture. Its result is
+                    // checked before the Agent flag is enabled on Wayland.
+                    const capturePreparation = key === 'computer_use_enabled' && value
+                        && typeof window.prepareComputerUseCapture === 'function'
+                        ? window.prepareComputerUseCapture() : null;
+                    if (key === 'computer_use_enabled' && !value
+                        && typeof window.releaseComputerUseCapture === 'function') {
+                        window.releaseComputerUseCapture();
+                    }
                     const opToken = makeSnapshotToken();
                     state.pending.add(key);
                     state.optimistic[key] = value;
                     setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
                     render('command');
                     try {
+                        if (key === 'computer_use_enabled' && value
+                            && typeof window.computerUseNeedsCaptureStream === 'function'
+                            && window.computerUseNeedsCaptureStream()) {
+                            const ready = capturePreparation && await capturePreparation;
+                            const nativeReady = !ready
+                                && typeof window.computerUseNativeCaptureAvailable === 'function'
+                                && await window.computerUseNativeCaptureAvailable();
+                            if (!ready && !nativeReady) {
+                                const captureFailure = typeof window.getComputerUseCaptureFailure === 'function'
+                                    ? window.getComputerUseCaptureFailure() : '';
+                                const portalPending = captureFailure === 'display_media_pending'
+                                    || captureFailure === 'display_media_timeout';
+                                throw new Error(window.t
+                                    ? window.t(portalPending
+                                        ? 'agent.status.screenSharePendingReload'
+                                        : 'agent.status.screenShareRequired')
+                                    : portalPending
+                                        ? 'Screen capture is still pending. Reload the page and try again.'
+                                        : 'Share the entire screen before enabling keyboard control');
+                            }
+                        }
+                        // A character switch can complete while capture permission
+                        // is pending. The switch owns the new UI state and capture
+                        // lifecycle, so the stale operation must not send or release.
+                        if (!isSnapshotTokenCurrent(opToken)) return;
                         await sendCommand('set_flag', { key, value });
                         if (!isSnapshotTokenCurrent(opToken)) return;
                         const ts = performance.now();
@@ -581,6 +615,10 @@
                         console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
                     } catch (err) {
                         if (!isSnapshotTokenCurrent(opToken)) return;
+                        if (key === 'computer_use_enabled' && value
+                            && typeof window.releaseComputerUseCapture === 'function') {
+                            window.releaseComputerUseCapture();
+                        }
                         state.pending.delete(key);
                         state.optimistic = {};
                         setGlobalBusy(false);
@@ -677,6 +715,9 @@
         state.snapshotGeneration += 1;
         state.expectedCharacter = currentLanlanName();
         const resetToken = makeSnapshotToken();
+        if (typeof window.releaseComputerUseCapture === 'function') {
+            window.releaseComputerUseCapture();
+        }
         applyLocalAgentOff('character-switch-local');
         try {
             const snapshot = await fetchSnapshotRaw();

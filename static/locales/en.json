@@ -612,6 +612,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "Character settings updated, page will refresh shortly",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Cloud save character updated, page will refresh shortly",
         "AGENT_AUTO_DISABLED_COMPUTER": "Keyboard/mouse control auto-disabled: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "Browser control auto-disabled: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "NekoClaw LLM connectivity check error",
         "INVALID_INPUT_TYPE": "Invalid input type: {{input_type}}",
@@ -3190,6 +3191,8 @@
             "freeModelWarning": "Due to quota limitations, free models are prone to blocking in NekoClaw mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
             "freeModelWarningTitle": "Free Model Notice",
             "connectivityCheck": "NekoClaw LLM connectivity check in progress...",
+            "screenShareRequired": "Share your entire screen before turning on NekoClaw keyboard and mouse control.",
+            "screenSharePendingReload": "Screen capture is still waiting for authorization. Reload this page and try again.",
             "precheckFailed": "NekoClaw precheck failed: {{reason}}",
             "toggleFailed": "Agent toggle failed: {{error}}"
         },

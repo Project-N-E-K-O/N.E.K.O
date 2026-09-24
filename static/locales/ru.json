@@ -612,6 +612,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "Настройки персонажа обновлены, страница скоро обновится",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Персонаж из облачного сохранения обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "Управление браузером автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения LLM Лапки Неко",
         "INVALID_INPUT_TYPE": "Недопустимый тип ввода: {{input_type}}",
@@ -3190,6 +3191,8 @@
             "freeModelWarning": "Из-за ограничений квоты использование бесплатной модели в режиме Лапки Неко может вызвать блокировку. Рекомендуется перейти на платную модель.\n\nЕсли вы уже настроили платный API, попробуйте перезапустить NEKO.",
             "freeModelWarningTitle": "Уведомление о бесплатной модели",
             "connectivityCheck": "Проверка подключения LLM Лапки Неко...",
+            "screenShareRequired": "Перед включением управления клавиатурой и мышью «Лапки Неко» разрешите доступ ко всему экрану.",
+            "screenSharePendingReload": "Запрос разрешения на захват экрана всё ещё ожидает ответа. Перезагрузите страницу и повторите попытку.",
             "precheckFailed": "Предварительная проверка Лапки Неко не удалась: {{reason}}",
             "toggleFailed": "Ошибка переключения Agent: {{error}}"
         },

@@ -612,6 +612,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "Configurações do personagem atualizadas, a página será atualizada em breve",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Personagem do salvamento em nuvem atualizado, a página será atualizada em breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Controle de teclado/mouse desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "Controle do navegador desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Erro de verificação de conectividade do NekoClaw LLM",
         "INVALID_INPUT_TYPE": "Tipo de entrada inválido: {{input_type}}",
@@ -3190,6 +3191,8 @@
             "freeModelWarning": "Devido às limitações de cota, os modelos gratuitos são propensos a serem bloqueados no modo NekoClaw. Recomenda-se mudar para um modelo pago.\n\nSe você já configurou uma API paga, tente reiniciar o NEKO.",
             "freeModelWarningTitle": "Aviso de modelo gratuito",
             "connectivityCheck": "Verificação de conectividade do NekoClaw LLM em andamento...",
+            "screenShareRequired": "Antes de ativar o controle de teclado e mouse do NekoClaw, autorize o compartilhamento da tela inteira.",
+            "screenSharePendingReload": "A solicitação de permissão para capturar a tela ainda está pendente. Recarregue a página e tente novamente.",
             "precheckFailed": "A pré-verificação do NekoClaw falhou: {{reason}}",
             "toggleFailed": "Falha na alternância do agente: {{error}}"
         },

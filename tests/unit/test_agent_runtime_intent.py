@@ -536,6 +536,8 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     backup_capability = {
         k: dict(v) for k, v in srv.Modules.capability_cache.items()
     }
+    backup_notification = srv.Modules.notification
+    srv.Modules.notification = None
 
     async def _noop_async(*args, **kwargs):
         return None
@@ -574,6 +576,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     srv.Modules.agent_flags = backup_agent_flags
     srv.Modules.user_plugin_lifecycle_seq = backup_user_plugin_lifecycle_seq
     srv.Modules.capability_cache = backup_capability
+    srv.Modules.notification = backup_notification
 
 
 @pytest.mark.asyncio
@@ -1508,6 +1511,52 @@ async def test_restore_llm_dependent_success_keeps_intent(
 
     # Intent preserved
     assert ari.get_intent("computer_use_enabled") is True
+
+
+@pytest.mark.asyncio
+async def test_wayland_restore_requires_fresh_screen_authorization(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from app import agent_runtime_intent as ari
+    from app.agent_server import api_routes as srv_mod
+
+    monkeypatch.setattr(srv_mod.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    ari.set_intent("computer_use_enabled", True)
+    fake_adapter = MagicMock()
+    fake_adapter.check_connectivity = MagicMock(return_value=(True, ""))
+    fake_adapter.is_available = MagicMock(return_value={"ready": True, "reasons": []})
+    srv_mod.Modules.computer_use = fake_adapter
+    srv_mod.Modules.analyzer_enabled = True
+
+    await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
+
+    assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
+    assert json.loads(srv_mod.Modules.notification)["code"] == "AGENT_SCREEN_SHARE_REQUIRED"
+    assert ari.get_intent("computer_use_enabled") is True
+
+
+@pytest.mark.asyncio
+async def test_wayland_restore_keeps_unavailable_computer_use_disabled(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from app.agent_server import api_routes as srv_mod
+
+    monkeypatch.setattr(srv_mod.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    fake_adapter = MagicMock()
+    fake_adapter.check_connectivity = MagicMock(return_value=(True, ""))
+    fake_adapter.is_available = MagicMock(return_value={
+        "ready": False, "reasons": ["AGENT_PYAUTOGUI_UNAVAILABLE"]
+    })
+    srv_mod.Modules.computer_use = fake_adapter
+    srv_mod.Modules.analyzer_enabled = True
+
+    await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
+
+    assert srv_mod.Modules.capability_cache["computer_use"]["ready"] is False
+    assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
+    assert srv_mod.Modules.notification is None
 
 
 @pytest.mark.asyncio

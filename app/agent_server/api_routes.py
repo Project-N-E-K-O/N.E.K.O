@@ -937,7 +937,22 @@ async def _restore_llm_dependent_flags(intent: dict) -> None:
         # Hand off to the regular toggle path so capability cache + UI
         # snapshot stay consistent with manual toggling.
         payload: Dict[str, Any] = {"_persist_intent": False}
-        if intent.get("computer_use_enabled"):
+        # Wayland display capture requires a fresh user gesture. A persisted
+        # keyboard-control flag cannot restore the prior process's MediaStream.
+        needs_screen_reauthorization = (
+            sys.platform.startswith("linux")
+            and (os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY")))
+        )
+        if intent.get("computer_use_enabled") and needs_screen_reauthorization:
+            availability = await asyncio.to_thread(Modules.computer_use.is_available)
+            reasons = availability.get("reasons", []) if isinstance(availability, dict) else []
+            ready = bool(availability.get("ready")) if isinstance(availability, dict) else False
+            _set_capability("computer_use", ready, reasons[0] if reasons else "")
+            if ready:
+                Modules.notification = json.dumps({"code": "AGENT_SCREEN_SHARE_REQUIRED"})
+            _bump_state_revision()
+            await _emit_agent_status_update()
+        elif intent.get("computer_use_enabled"):
             payload["computer_use_enabled"] = True
         if intent.get("browser_use_enabled"):
             payload["browser_use_enabled"] = True

@@ -612,6 +612,7 @@
         "RELOAD_PAGE_CHARACTER_SETTINGS": "角色设定已更新，页面即将刷新",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "云存档角色已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
+        "AGENT_SCREEN_SHARE_REQUIRED": "$t(agent.status.screenShareRequired)",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
         "INVALID_INPUT_TYPE": "无效的输入类型: {{input_type}}",
@@ -3190,6 +3191,8 @@
             "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
             "connectivityCheck": "猫爪 LLM 连接检查中...",
+            "screenShareRequired": "开启猫爪键鼠控制前，请先授权共享整个屏幕。",
+            "screenSharePendingReload": "屏幕捕获授权请求仍在等待，请刷新页面后重试。",
             "precheckFailed": "猫爪预检失败：{{reason}}",
             "toggleFailed": "Agent切换失败: {{error}}"
         },
