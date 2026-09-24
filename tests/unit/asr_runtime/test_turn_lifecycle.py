@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from main_logic.asr_client.lifecycle import VoiceLifecycleState
+from main_logic.asr_client.runtime import _CandidateRejectionSuppression
 from main_logic.voice_turn.contracts import SpeechActivityEvent, VoiceTranscriptEvent
 
 from tests.unit.asr_runtime._scenarios import (
@@ -147,6 +148,58 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
     runtime.session.create_response.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_rejected_transcript_submission_settles_the_prepared_turn() -> None:
+    """A refused envelope must release the pause through route cancellation."""
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    runtime._asr_runtime._asr_transcript_dispatcher.submit = MagicMock(
+        side_effect=RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED"),
+    )
+
+    await runtime._handle_independent_asr_final(
+        "hello",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
+
+
+async def test_teardown_settles_a_turn_parked_on_the_rejection_suppression() -> None:
+    """Teardown adopts the rejection path's unsettled prepared turn."""
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    prepared = runtime._asr_prepared_turn_token
+    assert prepared is not None
+
+    runtime._asr_prepared_turn_token = None
+    runtime._asr_candidate_rejection = _CandidateRejectionSuppression(
+        request=MagicMock(),
+        turn_token=prepared,
+        final_key=MagicMock(),
+        lifecycle=runtime._asr_lifecycle,
+        detector=runtime._asr_detector,
+    )
+
+    runtime._settle_discarded_prepared_turn(runtime._reset_asr_turn_state())
+    settling = tuple(runtime._asr_close_tasks)
+    assert settling, "the reset found nobody to settle"
+    await asyncio.gather(*settling)
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
 
 
 async def test_blocked_consumer_callback_does_not_block_next_turn_lifecycle() -> (
