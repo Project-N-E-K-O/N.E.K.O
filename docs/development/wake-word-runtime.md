@@ -38,7 +38,7 @@ $env:NEKO_WAKE_WORD_MODEL_DIR = (Resolve-Path .wake-word-model).Path
 在启动 NEKO 的同一个 Python 环境中运行：
 
 ```powershell
-uv run python -c 'import sherpa_onnx as s; assert s.__version__ == "1.13.8+neko.kws2"; assert s.version == s.__version__; print("wake-word runtime ready")'
+& $python -c 'import sherpa_onnx as s; assert s.__version__ == "1.13.8+neko.kws2"; assert s.version == s.__version__; print("wake-word runtime ready")'
 ```
 
 仅在该检查通过、`NEKO_WAKE_WORD_MODEL_DIR` 指向已准备的模型目录时启用唤醒词。没有模型或没有定制 wheel 时，其他声纹激活路径仍可正常使用。
