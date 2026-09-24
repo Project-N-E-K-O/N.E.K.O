@@ -10,7 +10,7 @@ import {
   LocalAvatarToolCreateError,
   LocalAvatarToolDeleteError,
   updateLocalAvatarTool,
-  type LocalAvatarToolDto,
+  type LocalAvatarToolV2Dto,
 } from './localTools';
 
 const TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
@@ -19,6 +19,10 @@ const LIMITS = {
   maxNameChars: 20,
   maxMeaningChars: 100,
   maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600000,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,
@@ -26,10 +30,10 @@ const LIMITS = {
   maxTotalBytes: 268_435_456,
 };
 
-function dto(overrides: Partial<LocalAvatarToolDto> = {}): LocalAvatarToolDto {
+function dto(overrides: Partial<LocalAvatarToolV2Dto> = {}): LocalAvatarToolV2Dto {
   return {
     id: TOOL_ID,
-    revision: '2-123',
+    recordVersion: 2, revision: '2-123',
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: '/default.png?v=1',
@@ -66,6 +70,29 @@ describe('local avatar tool image change modes', () => {
   afterEach(() => {
     delete window.nekoLocalMutationSecurity;
     vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { recordVersion: undefined, revision: '2-123', valid: false },
+    { recordVersion: 2, revision: '3-123', valid: false },
+    { recordVersion: 2, revision: '100-200', valid: false },
+    { recordVersion: 2, revision: '2-123', valid: true },
+  ])('enforces explicit v2 list and detail revisions: %j', async ({ recordVersion, revision, valid }) => {
+    const item = { ...dto(), recordVersion, revision };
+    const detail = {
+      recordVersion, revision, id: TOOL_ID, name: 'Feather', changeMode: 'press-swap',
+      defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
+      changeItems: [{ resource: 'change-000.png', url: '/change-000.png?v=1', meaning: 'Change' }],
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [item], limits: LIMITS })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail, limits: LIMITS }))));
+    await expect.soft(fetchLocalAvatarTools()).resolves.toMatchObject({ items: valid ? [item] : [] });
+    if (valid) {
+      await expect(fetchLocalAvatarToolDetail(TOOL_ID)).resolves.toMatchObject(detail);
+    } else {
+      await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toThrow('avatar_tool_detail_invalid');
+    }
   });
 
   it('builds a strict press-swap v2 definition and reports the only change item', () => {
@@ -278,6 +305,20 @@ describe('local avatar tool image change modes', () => {
     await expect(fetchLocalAvatarTools()).resolves.toEqual({ items: [], limits: LIMITS });
   });
 
+  it('drops catalog items whose resource URL is unversioned, fragmented, or has extra parameters', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [
+        dto({ id: 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', defaultUrl: '/default.png' }),
+        dto({ id: 'local-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', defaultUrl: '/default.png?v=1#preview' }),
+        dto({ id: 'local-cccccccc-cccc-4ccc-8ccc-cccccccccccc', defaultUrl: '/default.png?v=1&extra=1' }),
+      ],
+      limits: LIMITS,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarTools()).resolves.toEqual({ items: [], limits: LIMITS });
+  });
+
   it('posts ordered image/meaning pairs and retries csrf failure exactly once', async () => {
     const getMutationHeaders = vi.fn()
       .mockResolvedValueOnce({ 'X-CSRF-Token': 'old' })
@@ -373,7 +414,7 @@ describe('local avatar tool image change modes', () => {
       ok: true,
       detail: {
         id: TOOL_ID,
-        revision: '100-200',
+        recordVersion: 2, revision: '2-200',
         name: 'Feather',
         changeMode: 'press-swap',
         defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
@@ -387,7 +428,7 @@ describe('local avatar tool image change modes', () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(fetchLocalAvatarToolDetail(TOOL_ID, 16)).resolves.toMatchObject({
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).resolves.toMatchObject({
       id: TOOL_ID,
       changeItems: [{ meaning: 'A gentle touch' }],
     });
@@ -413,7 +454,7 @@ describe('local avatar tool image change modes', () => {
     const replacement = new File(['new'], 'new.png', { type: 'image/png' });
 
     await expect(updateLocalAvatarTool(TOOL_ID, {
-      baseRevision: '100-200',
+      baseRevision: '2-200',
       name: 'Soft Feather',
       changeMode: 'click-advance',
       defaultImage: { resource: 'default.png' },
@@ -433,7 +474,7 @@ describe('local avatar tool image change modes', () => {
     expect(options).toMatchObject({ method: 'PUT', headers: { 'X-CSRF-Token': 'token' } });
     const form = options.body as FormData;
     expect(form.get('default_resource')).toBe('default.png');
-    expect(form.get('base_revision')).toBe('100-200');
+    expect(form.get('base_revision')).toBe('2-200');
     expect(form.getAll('change_resources')).toEqual(['change-000.png', '']);
     expect(form.getAll('change_meanings')).toEqual(['Retained', 'Replacement']);
     expect(form.getAll('change_images')).toEqual([replacement]);
@@ -461,7 +502,7 @@ describe('local avatar tool image change modes', () => {
     const replacement = new File(['new'], 'new.png', { type: 'image/png' });
 
     await updateLocalAvatarTool(TOOL_ID, {
-      baseRevision: '100-200',
+      baseRevision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultImage: { resource: 'default.png' },
@@ -523,5 +564,335 @@ describe('local avatar tool image change modes', () => {
     await expect(deleteLocalAvatarTool('lollipop' as `local-${string}`)).rejects.toBeInstanceOf(
       LocalAvatarToolDeleteError,
     );
+  });
+});
+
+describe('local avatar tool v3 persistence transport', () => {
+  const graph = {
+    initialImagePosition: { x: 20, y: 40 },
+    initialLinks: [{ to: 'ix-click' as const, sourceSide: 'right' as const, targetSide: 'left' as const }],
+    items: [{
+      id: 'ix-click' as const,
+      name: '',
+      trigger: { kind: 'mouse-click' as const },
+      actions: { press: { kind: 'keep' as const }, release: { kind: 'keep' as const } },
+      editorPosition: { x: 300, y: 40 },
+    }],
+    links: [{
+      from: 'ix-click' as const,
+      to: 'ix-click' as const,
+      sourceSide: 'right' as const,
+      targetSide: 'right' as const,
+    }],
+  };
+  const runtime = {
+    images: [{
+      id: 'img-1' as const,
+      url: '/user_avatar_tools/tool/image-000.png?v=1',
+      hasMeaning: false,
+    }],
+    initialImageId: 'img-1' as const,
+    initialInteractionIds: ['ix-click' as const],
+    interactions: [{
+      id: 'ix-click' as const,
+      trigger: { kind: 'mouse-click' as const },
+      actions: { press: { kind: 'keep' as const }, release: { kind: 'keep' as const } },
+    }],
+    links: [{ from: 'ix-click' as const, to: 'ix-click' as const }],
+  };
+
+  it('sends one strict manifest with indexed uploads when creating v3', async () => {
+    window.nekoLocalMutationSecurity = { getMutationHeaders: () => ({ 'X-CSRF-Token': 'token' }) };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      item: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-123',
+        name: 'Flow',
+        initialImageUrl: '/user_avatar_tools/tool/image-000.png?v=1',
+        runtime,
+      },
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const image = new File(['png'], 'state.png', { type: 'image/png' });
+
+    await expect(createLocalAvatarTool({
+      recordVersion: 3,
+      toolId: TOOL_ID,
+      name: 'Flow',
+      images: [{ id: 'img-1', name: '', image: { file: image }, meaning: '' }],
+      initialImageId: 'img-1',
+      imageInteractions: graph,
+    })).resolves.toMatchObject({ recordVersion: 3, id: TOOL_ID });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const form = request.body as FormData;
+    expect(form.get('record_version')).toBe('3');
+    expect(form.getAll('uploads')).toEqual([image]);
+    expect(JSON.parse(String(form.get('manifest')))).toEqual({
+      recordVersion: 3,
+      id: TOOL_ID,
+      name: 'Flow',
+      images: [{ id: 'img-1', name: '', source: { kind: 'upload', index: 0 }, meaning: '' }],
+      initialImageId: 'img-1',
+      imageInteractions: graph,
+      interaction: {},
+    });
+  });
+
+  it('reopens a v3 detail without losing names, positions, actions, or selected sides', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-456',
+        name: 'Flow',
+        images: [{
+          id: 'img-1',
+          name: 'Idle',
+          resource: 'image-000.png',
+          url: '/user_avatar_tools/tool/image-000.png?v=1',
+          meaning: 'waiting',
+        }],
+        initialImageId: 'img-1',
+        imageInteractions: graph,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).resolves.toMatchObject({
+      recordVersion: 3,
+      images: [{ id: 'img-1', name: 'Idle', meaning: 'waiting' }],
+      imageInteractions: graph,
+    });
+  });
+
+  it('uses Unicode code points for the shared name limit when reopening v3', async () => {
+    const legalName = '𠮷'.repeat(LIMITS.maxNameChars);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-456',
+        name: legalName,
+        images: [{
+          id: 'img-1',
+          name: legalName,
+          resource: 'image-000.png',
+          url: '/user_avatar_tools/tool/image-000.png?v=1',
+          meaning: '',
+        }],
+        initialImageId: 'img-1',
+        imageInteractions: {
+          ...graph,
+          items: [{ ...graph.items[0], name: legalName }],
+        },
+        normalSound: {
+          resource: 'normal.mp3',
+          url: '/user_avatar_tools/tool/normal.mp3?v=1',
+        },
+        special: {
+          probability: 0.2,
+          image: {
+            resource: 'special.png',
+            url: '/user_avatar_tools/tool/special.png?v=1',
+          },
+          meaning: 'sparkles appear',
+          sound: {
+            resource: 'special.mp3',
+            url: '/user_avatar_tools/tool/special.mp3?v=1',
+          },
+        },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).resolves.toMatchObject({
+      name: legalName,
+      images: [{ name: legalName }],
+      imageInteractions: { items: [{ name: legalName }] },
+      normalSound: { resource: 'normal.mp3' },
+      special: { image: { resource: 'special.png' }, sound: { resource: 'special.mp3' } },
+    });
+  });
+
+  it('rejects non-canonical resource URLs returned by the detail endpoint', async () => {
+    const detail = {
+      recordVersion: 3,
+      id: TOOL_ID,
+      revision: '3-456',
+      name: 'Flow',
+      images: [{
+        id: 'img-1',
+        name: 'Idle',
+        resource: 'image-000.png',
+        url: '/user_avatar_tools/tool/image-000.png?v=1&extra=1',
+        meaning: '',
+      }],
+      initialImageId: 'img-1',
+      imageInteractions: graph,
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toMatchObject({
+      message: 'avatar_tool_detail_invalid',
+    });
+  });
+
+  it('rejects invalid optional names returned by the detail endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-456',
+        name: 'Flow',
+        images: [{
+          id: 'img-1',
+          name: 'bad!',
+          resource: 'image-000.png',
+          url: '/user_avatar_tools/tool/image-000.png?v=1',
+          meaning: '',
+        }],
+        initialImageId: 'img-1',
+        imageInteractions: graph,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toMatchObject({
+      message: 'avatar_tool_detail_invalid',
+    });
+  });
+
+  it('rejects a v3 detail whose image resource is not canonical', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-456',
+        name: 'Flow',
+        images: [{
+          id: 'img-1',
+          name: '',
+          resource: 'special.png',
+          url: '/user_avatar_tools/tool/special.png?v=1',
+          meaning: '',
+        }],
+        initialImageId: 'img-1',
+        imageInteractions: graph,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toMatchObject({
+      message: 'avatar_tool_detail_invalid',
+    });
+  });
+
+  it('rejects v3 names that collide after the editor normalization', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      detail: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-456',
+        name: 'Flow',
+        images: [
+          {
+            id: 'img-1',
+            name: '  Caf\u00e9  au lait  ',
+            resource: 'image-000.png',
+            url: '/user_avatar_tools/tool/image-000.png?v=1',
+            meaning: '',
+          },
+          {
+            id: 'img-2',
+            name: 'cafe\u0301 au   LAIT',
+            resource: 'image-001.png',
+            url: '/user_avatar_tools/tool/image-001.png?v=2',
+            meaning: '',
+          },
+        ],
+        initialImageId: 'img-1',
+        imageInteractions: graph,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID)).rejects.toMatchObject({
+      message: 'avatar_tool_detail_invalid',
+    });
+  });
+
+  it('uses named retained resources in a v3 update manifest', async () => {
+    window.nekoLocalMutationSecurity = { getMutationHeaders: () => ({ 'X-CSRF-Token': 'token' }) };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      item: {
+        recordVersion: 3,
+        id: TOOL_ID,
+        revision: '3-789',
+        name: 'Flow',
+        initialImageUrl: '/user_avatar_tools/tool/image-000.png?v=1',
+        runtime,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateLocalAvatarTool(TOOL_ID, {
+      recordVersion: 3,
+      baseRevision: '3-456',
+      name: 'Flow',
+      images: [{ id: 'img-1', name: '', image: { resource: 'image-000.png' }, meaning: '' }],
+      initialImageId: 'img-1',
+      imageInteractions: graph,
+    });
+
+    const form = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+    expect(JSON.parse(String(form.get('manifest'))).images[0].source).toEqual({
+      kind: 'resource',
+      name: 'image-000.png',
+    });
+  });
+
+  it('treats malformed successful create and update responses as uncertain failures', async () => {
+    window.nekoLocalMutationSecurity = { getMutationHeaders: () => ({ 'X-CSRF-Token': 'token' }) };
+    const image = new File(['png'], 'state.png', { type: 'image/png' });
+    const input = {
+      recordVersion: 3 as const,
+      name: 'Flow',
+      images: [{ id: 'img-1' as const, name: '', image: { file: image }, meaning: '' }],
+      initialImageId: 'img-1' as const,
+      imageInteractions: graph,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, item: null }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('{', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createLocalAvatarTool({ ...input, toolId: TOOL_ID })).rejects.toMatchObject({
+      message: 'avatar_tool_create_response_invalid',
+    });
+    await expect(updateLocalAvatarTool(TOOL_ID, {
+      ...input,
+      baseRevision: '3-456',
+    })).rejects.toMatchObject({
+      message: 'avatar_tool_update_response_invalid',
+    });
   });
 });

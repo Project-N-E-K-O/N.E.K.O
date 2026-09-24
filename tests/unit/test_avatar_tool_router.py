@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +39,43 @@ def _mp3() -> bytes:
         / "lollipop"
         / "bite.mp3"
     ).read_bytes()
+
+
+def _v3_manifest(tool_id: str, *, source: dict | None = None, name="Flow tool") -> dict:
+    return {
+        "recordVersion": 3,
+        "id": tool_id,
+        "name": name,
+        "images": [{
+            "id": "img-1",
+            "name": "",
+            "source": source or {"kind": "upload", "index": 0},
+            "meaning": "",
+        }],
+        "initialImageId": "img-1",
+        "imageInteractions": {
+            "initialImagePosition": {"x": 10, "y": 20},
+            "initialLinks": [{
+                "to": "ix-click",
+                "sourceSide": "right",
+                "targetSide": "left",
+            }],
+            "items": [{
+                "id": "ix-click",
+                "name": "",
+                "trigger": {"kind": "mouse-click"},
+                "actions": {"press": {"kind": "keep"}, "release": {"kind": "keep"}},
+                "editorPosition": {"x": 300, "y": 20},
+            }],
+            "links": [{
+                "from": "ix-click",
+                "to": "ix-click",
+                "sourceSide": "right",
+                "targetSide": "right",
+            }],
+        },
+        "interaction": {},
+    }
 
 
 def _client(tmp_path, monkeypatch, *, allow_mutation: bool):
@@ -97,6 +135,140 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     assert listing.json()["limits"]["maxAudioDurationMs"] == 10_000
     assert (manager.avatar_tools_dir / item["id"] / "record.json").is_file()
     assert (manager.avatar_tools_dir / item["id"] / "normal.mp3").is_file()
+
+
+def test_v3_post_get_put_and_list_complete_the_editor_persistence_chain(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    create_manifest = _v3_manifest(tool_id)
+    create_manifest["interaction"] = {
+        "normalSound": {"kind": "upload", "index": 1},
+        "special": {
+            "probability": 0.2,
+            "image": {"kind": "upload", "index": 2},
+            "meaning": "sparkles appear",
+            "sound": {"kind": "upload", "index": 3},
+        },
+    }
+    created_response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(create_manifest))),
+            ("uploads", ("state.png", _png(), "image/png")),
+            ("uploads", ("normal.mp3", _mp3(), "audio/mpeg")),
+            ("uploads", ("special.png", _png(), "image/png")),
+            ("uploads", ("special.mp3", _mp3(), "audio/mpeg")),
+        ],
+    )
+
+    assert created_response.status_code == 201
+    created = created_response.json()["item"]
+    assert created["recordVersion"] == 3
+    assert created["revision"].startswith("3-")
+    assert "imageInteractions" not in created
+    assert created["runtime"]["initialImageId"] == "img-1"
+    assert created["runtime"]["initialInteractionIds"] == ["ix-click"]
+    assert created["runtime"]["interactions"][0]["trigger"] == {"kind": "mouse-click"}
+    assert created["runtime"]["normalSoundUrl"].startswith(
+        f"/user_avatar_tools/{tool_id}/normal.mp3?v="
+    )
+    assert created["runtime"]["special"]["hasMeaning"] is True
+    detail_response = client.get(f"/api/avatar-tools/{tool_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()["detail"]
+    assert detail["imageInteractions"] == _v3_manifest(tool_id)["imageInteractions"]
+    assert detail["normalSound"]["resource"] == "normal.mp3"
+    assert detail["special"]["image"]["resource"] == "special.png"
+    assert detail["special"]["sound"]["resource"] == "special.mp3"
+    assert detail_response.json()["limits"]["maxLinks"] == 32
+
+    updated_manifest = _v3_manifest(
+        tool_id,
+        source={"kind": "resource", "name": "image-000.png"},
+        name="Renamed flow",
+    )
+    updated_manifest["interaction"] = {
+        "normalSound": {"kind": "resource", "name": "normal.mp3"},
+        "special": {
+            "probability": 0.3,
+            "image": {"kind": "resource", "name": "special.png"},
+            "meaning": "sparkles return",
+            "sound": {"kind": "resource", "name": "special.mp3"},
+        },
+    }
+    updated_response = client.put(
+        f"/api/avatar-tools/{tool_id}",
+        files=[
+            ("base_revision", (None, created["revision"])),
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(updated_manifest))),
+        ],
+    )
+
+    assert updated_response.status_code == 200
+    updated = updated_response.json()["item"]
+    assert updated["name"] == "Renamed flow"
+    assert client.get("/api/avatar-tools").json()["items"] == [updated]
+    assert set(path.name for path in (manager.avatar_tools_dir / tool_id).iterdir()) == {
+        "record.json", "image-000.png", "normal.mp3", "special.png", "special.mp3",
+    }
+
+
+def test_v3_transport_rejects_unrepresentable_editor_coordinates_without_500(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    manifest = _v3_manifest(tool_id)
+    manifest["imageInteractions"]["items"][0]["editorPosition"]["x"] = 10 ** 400
+
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(manifest))),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "manifest_invalid"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
+def test_v3_transport_rejects_mixed_v2_fields_without_publishing(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(_v3_manifest(tool_id)))),
+            ("uploads", ("state.png", _png(), "image/png")),
+            ("name", (None, "must not be mixed")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "request_fields_invalid"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
+def test_v3_transport_rejects_duplicate_single_value_fields(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("record_version", (None, "3")),
+            ("manifest", (None, json.dumps(_v3_manifest(tool_id)))),
+            ("manifest", (None, json.dumps(_v3_manifest(tool_id, name="Second")))),
+            ("uploads", ("state.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "request_fields_invalid"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
 
 
 def test_read_endpoints_report_a_deferred_recovery_write_fence(tmp_path, monkeypatch):

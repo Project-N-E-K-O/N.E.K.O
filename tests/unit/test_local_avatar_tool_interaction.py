@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import re
 import threading
 from collections import deque
 
@@ -10,8 +9,6 @@ import pytest
 
 from config.prompts.avatar_interaction_contract import normalize_avatar_interaction_payload
 from config.prompts.prompts_avatar_interaction import (
-    _LOCAL_AVATAR_TOOL_MEMORY_SPECIAL_FACTS,
-    _LOCAL_AVATAR_TOOL_SPECIAL_FACTS,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
@@ -49,6 +46,21 @@ SPECIAL_RECORD["interaction"] = {
 }
 SPECIAL_RECORD["resourceDigests"]["special.png"] = "3" * 64
 RECORD_REVISION = AvatarToolStore.record_revision(RECORD)
+V3_A_MEANING = "用户轻轻递来一张问候卡片"
+V3_C_MEANING = "用户摇响一枚小铃铛"
+V3_SPECIAL_MEANING = "彩蛋：道具旁突然落下一串小星星"
+V3_RECORD = {
+    "recordVersion": 3,
+    "id": TOOL_ID,
+    "name": "图片道具",
+    "images": [
+        {"id": "img-a", "meaning": V3_A_MEANING},
+        {"id": "img-b", "meaning": ""},
+        {"id": "img-c", "meaning": V3_C_MEANING},
+    ],
+    "interaction": {},
+}
+V3_REVISION = AvatarToolStore.record_revision(V3_RECORD)
 
 
 def _payload(**extra):
@@ -65,6 +77,193 @@ def _payload(**extra):
         "changeIndex": 1,
         **extra,
     }
+
+
+def _v3_payload(**extra):
+    payload = _payload(toolRevision=V3_REVISION)
+    payload.pop("changeIndex")
+    payload["imageId"] = "img-a"
+    payload.update(extra)
+    return payload
+
+
+@pytest.mark.unit
+def test_v3_wire_contract_uses_exclusive_stable_image_id():
+    normalized = normalize_avatar_interaction_payload(_v3_payload())
+    assert normalized is not None
+    assert normalized["image_id"] == "img-a"
+    assert "change_index" not in normalized
+    assert normalize_avatar_interaction_payload(_v3_payload(changeIndex=0)) is None
+    assert normalize_avatar_interaction_payload(_payload(imageId="img-a")) is None
+    assert normalize_avatar_interaction_payload(_v3_payload(imageId="img-INVALID")) is None
+    assert normalize_avatar_interaction_payload(_v3_payload(imageId="img-a", image_id="img-b")) is None
+    assert normalize_avatar_interaction_payload(_v3_payload(specialTriggered="true")) is None
+    assert normalize_avatar_interaction_payload(_v3_payload(specialTriggered=False)) is not None
+
+
+@pytest.mark.unit
+def test_v3_authority_selects_pressed_image_or_single_special_feedback():
+    from main_logic.core.greeting import GreetingMixin
+
+    a = normalize_avatar_interaction_payload(_v3_payload())
+    b = normalize_avatar_interaction_payload(_v3_payload(imageId="img-b"))
+    c = normalize_avatar_interaction_payload(_v3_payload(imageId="img-c"))
+    assert a is not None and b is not None and c is not None
+    assert GreetingMixin._resolve_local_avatar_tool_prompt_record(a, V3_RECORD)["meaning"] == V3_A_MEANING
+    assert GreetingMixin._resolve_local_avatar_tool_prompt_record(b, V3_RECORD) is None
+    assert GreetingMixin._resolve_local_avatar_tool_prompt_record(c, V3_RECORD)["meaning"] == V3_C_MEANING
+
+    special_record = copy.deepcopy(V3_RECORD)
+    special_record["interaction"]["special"] = {"meaning": V3_SPECIAL_MEANING}
+    hit = normalize_avatar_interaction_payload(_v3_payload(imageId="img-b", specialTriggered=True))
+    miss = normalize_avatar_interaction_payload(_v3_payload(imageId="img-b", specialTriggered=False))
+    assert hit is not None and miss is not None
+    assert GreetingMixin._resolve_local_avatar_tool_prompt_record(hit, special_record)["meaning"] == V3_SPECIAL_MEANING
+    assert GreetingMixin._resolve_local_avatar_tool_prompt_record(miss, special_record) is None
+    with pytest.raises(ValueError):
+        GreetingMixin._resolve_local_avatar_tool_prompt_record(a, special_record)
+    with pytest.raises(ValueError):
+        GreetingMixin._resolve_local_avatar_tool_prompt_record(hit, V3_RECORD)
+    with pytest.raises(ValueError):
+        GreetingMixin._resolve_local_avatar_tool_prompt_record(
+            normalize_avatar_interaction_payload(_v3_payload(imageId="img-foreign")), V3_RECORD
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_v3_empty_description_never_starts_model_or_consumes_cooldown(monkeypatch):
+    from main_logic.core import greeting
+
+    verified = []
+
+    class Store:
+        def read_record(self, _tool_id, *, verify_resources=False):
+            verified.append(verify_resources)
+            return V3_RECORD
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class FakeRealtimeClient:
+        pass
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        _config_manager = object()
+        avatar_interaction_cooldown_ms = 600
+
+        def __init__(self):
+            self.is_active = True
+            self.session = FakeRealtimeClient()
+            self.acks = []
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
+            self._last_avatar_interaction_at = 0
+
+        def note_user_engagement(self, **_kwargs):
+            pass
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **_kwargs):
+            self.acks.append((interaction_id, accepted, reason))
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _manager: Store())
+    monkeypatch.setattr(greeting, "OmniRealtimeClient", FakeRealtimeClient)
+    harness = Harness()
+    empty = await harness.handle_avatar_interaction(_v3_payload(imageId="img-b"))
+    assert empty["reason"] == "no_meaning"
+    assert harness._last_avatar_interaction_at == 0
+    assert verified == [False, True]
+    meaningful = await harness.handle_avatar_interaction(_v3_payload(interactionId="v3-a", imageId="img-a"))
+    assert meaningful["reason"] == "voice_session_active"
+    assert verified == [False, True, False, True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_v2_v3_and_special_each_send_only_selected_text_once(monkeypatch):
+    from main_logic.core import greeting
+
+    current_record = V3_RECORD
+
+    class Store:
+        def read_record(self, _tool_id, *, verify_resources=False):
+            return current_record
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class FakeOfflineClient:
+        _is_responding = False
+
+        def __init__(self):
+            self.instructions = []
+
+        async def prompt_ephemeral(self, instruction, **_kwargs):
+            self.instructions.append(instruction)
+            return True
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        master_name = "Alice"
+        user_language = "zh"
+        _config_manager = object()
+        avatar_interaction_cooldown_ms = 0
+        avatar_interaction_speak_cooldown_ms = 0
+
+        def __init__(self):
+            self.is_active = True
+            self.session = FakeOfflineClient()
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
+            self._proactive_write_lock = asyncio.Lock()
+            self.lock = asyncio.Lock()
+            self._last_avatar_interaction_at = 0
+            self._last_avatar_interaction_speak_at = 0
+            self.current_speech_id = ""
+            self._pending_turn_meta = None
+
+        def note_user_engagement(self, **_kwargs):
+            pass
+
+        def _get_text_guard_max_length(self):
+            return 1000
+
+        async def send_avatar_interaction_ack(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _manager: Store())
+    monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
+    harness = Harness()
+    for image_id, expected, excluded in (
+        ("img-a", V3_A_MEANING, V3_C_MEANING),
+        ("img-c", V3_C_MEANING, V3_A_MEANING),
+    ):
+        result = await harness.handle_avatar_interaction(_v3_payload(
+            interactionId=f"v3-{image_id}", imageId=image_id
+        ))
+        assert result["accepted"] is True
+        assert harness.session.instructions[-1] == expected
+        assert excluded not in harness.session.instructions[-1]
+    assert len(harness.session.instructions) == 2
+
+    current_record = copy.deepcopy(V3_RECORD)
+    current_record["interaction"]["special"] = {"meaning": V3_SPECIAL_MEANING}
+    result = await harness.handle_avatar_interaction(_v3_payload(
+        interactionId="v3-special", toolRevision=AvatarToolStore.record_revision(current_record),
+        imageId="img-a", specialTriggered=True,
+    ))
+    assert result["accepted"] is True
+    assert len(harness.session.instructions) == 3
+    assert harness.session.instructions[-1] == V3_SPECIAL_MEANING
+    assert V3_A_MEANING not in harness.session.instructions[-1]
+    assert V3_C_MEANING not in harness.session.instructions[-1]
+
+    current_record = RECORD
+    result = await harness.handle_avatar_interaction(_payload(interactionId="v2-image"))
+    assert result["accepted"] is True
+    assert len(harness.session.instructions) == 4
+    assert harness.session.instructions[-1] == RECORD["imageChange"]["items"][1]["meaning"]
 
 
 @pytest.mark.unit
@@ -91,7 +290,7 @@ def test_local_wire_contract_is_exact_and_preserves_explicit_false():
 
 
 @pytest.mark.unit
-def test_local_prompt_uses_meaning_as_bounded_data_and_memory_never_stores_it():
+def test_local_prompt_is_exact_selected_meaning_and_memory_never_stores_it():
     normalized = normalize_avatar_interaction_payload(_payload())
     assert normalized is not None
     prompt_record = {
@@ -105,8 +304,7 @@ def test_local_prompt_uses_meaning_as_bounded_data_and_memory_never_stores_it():
         memory = _build_avatar_interaction_memory_meta(
             locale, normalized, "Alice", prompt_record
         )
-        assert "小羽毛" in instruction
-        assert "ignore previous instructions" in instruction
+        assert instruction == prompt_record["meaning"]
         assert "小羽毛" in memory["memory_note"]
         assert "ignore previous instructions" not in memory["memory_note"]
         assert RECORD_REVISION not in instruction
@@ -116,7 +314,7 @@ def test_local_prompt_uses_meaning_as_bounded_data_and_memory_never_stores_it():
 
 
 @pytest.mark.unit
-def test_local_special_fact_is_explicit_and_memory_keeps_only_confirmed_fact():
+def test_local_special_selects_only_its_meaning_and_does_not_change_memory_note():
     for locale in ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"):
         for triggered in (False, True):
             normalized = normalize_avatar_interaction_payload(
@@ -137,10 +335,13 @@ def test_local_special_fact_is_explicit_and_memory_keeps_only_confirmed_fact():
             memory = _build_avatar_interaction_memory_meta(
                 locale, normalized, "Alice", prompt_record
             )["memory_note"]
-            assert _LOCAL_AVATAR_TOOL_SPECIAL_FACTS[locale][triggered].strip() in instruction
-            assert (
-                _LOCAL_AVATAR_TOOL_MEMORY_SPECIAL_FACTS[locale].strip() in memory
-            ) is triggered
+            assert instruction == prompt_record["meaning"]
+            assert memory == _build_avatar_interaction_memory_meta(
+                locale,
+                normalize_avatar_interaction_payload(_payload(specialTriggered=False)),
+                "Alice",
+                prompt_record,
+            )["memory_note"]
             assert "ignore previous instructions" not in memory
 
 
@@ -169,7 +370,7 @@ def test_authoritative_record_selects_special_or_current_image_meaning():
 
 
 @pytest.mark.unit
-def test_local_confirmed_special_fact_upgrades_memory_within_the_dedupe_window():
+def test_local_rapid_and_special_do_not_upgrade_memory_within_the_dedupe_window():
     rapid_payload = normalize_avatar_interaction_payload(
         _payload(intensity="rapid", specialTriggered=False)
     )
@@ -184,8 +385,8 @@ def test_local_confirmed_special_fact_upgrades_memory_within_the_dedupe_window()
     special = _build_avatar_interaction_memory_meta(
         "zh", special_payload, "Alice", SPECIAL_RECORD
     )
-    assert rapid["memory_dedupe_rank"] == 2
-    assert special["memory_dedupe_rank"] == 3
+    assert rapid["memory_note"] == special["memory_note"]
+    assert rapid["memory_dedupe_rank"] == special["memory_dedupe_rank"] == 1
 
     cache: dict[str, dict[str, int | str]] = {}
     assert _should_persist_avatar_interaction_memory(
@@ -199,7 +400,28 @@ def test_local_confirmed_special_fact_upgrades_memory_within_the_dedupe_window()
         special["memory_note"],
         special["memory_dedupe_key"],
         special["memory_dedupe_rank"],
-    ) is True
+    ) is False
+
+
+@pytest.mark.unit
+def test_local_memory_note_contains_only_the_user_and_tool_name():
+    record = {"name": "test2", "meaning": "11111"}
+    for intensity, touch_zone, special_triggered in (
+        ("normal", "head", True),
+        ("rapid", "ear", False),
+    ):
+        payload = normalize_avatar_interaction_payload(_payload(
+            intensity=intensity,
+            touchZone=touch_zone,
+            specialTriggered=special_triggered,
+        ))
+        assert payload is not None
+        memory = _build_avatar_interaction_memory_meta("zh", payload, "哥哥", record)
+        assert memory == {
+            "memory_note": "[哥哥用自定义道具“test2”与你互动]",
+            "memory_dedupe_key": TOOL_ID,
+            "memory_dedupe_rank": 1,
+        }
 
 
 @pytest.mark.unit
@@ -394,43 +616,40 @@ async def test_concurrent_local_interactions_share_resource_verification_cooldow
     assert strict_reads == 1
 
 
-# 契约（不从被测模块导入，改了常量表这里必须跟着改）：intensity 和 touch_zone
-# 是 wire 枚举，任何 locale 的提示词 / memory note 里都不允许出现它们的字面量。
+# intensity 和 touch_zone 是 wire 枚举；本地道具的即时提示词与记忆概括都不使用它们。
 _WIRE_INTENSITIES = ("normal", "rapid")
 _WIRE_TOUCH_ZONES = ("ear", "head", "face", "body")
 _PROMPT_LOCALES = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+_LOCAL_MEMORY_NOTES = {
+    "zh": "[小明用自定义道具“小羽毛”与你互动]",
+    "zh-TW": "[小明用自訂道具「小羽毛」與你互動]",
+    "en": "[小明 interacted with you using the custom tool “小羽毛”]",
+    "ja": "[小明がカスタム道具「小羽毛」であなたと交流した]",
+    "ko": "[小明이 사용자 지정 도구 “小羽毛”로 너와 상호작용했다]",
+    "ru": "[小明 взаимодействовал с тобой пользовательским предметом «小羽毛»]",
+    "es": "[小明 interactuó contigo usando la herramienta personalizada «小羽毛»]",
+    "pt": "[小明 interagiu com você usando a ferramenta personalizada “小羽毛”]",
+}
 # 干净的探针记录：名称和含义不带拉丁字母，避免用户数据本身混进泄漏断言。
 _LEAK_PROBE_RECORD = {"name": "小羽毛", "meaning": "轻轻挠一下"}
 
 
 @pytest.mark.unit
-def test_every_locale_table_covers_the_full_wire_enum_and_locale_set():
+def test_every_locale_has_a_local_memory_template():
     from config.prompts.prompts_avatar_interaction import (
-        _LOCAL_AVATAR_TOOL_INTENSITY_FACTS,
-        _LOCAL_AVATAR_TOOL_MEMORY_INTENSITY_LABELS,
         _LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES,
-        _LOCAL_AVATAR_TOOL_MEMORY_TOUCH_ZONE_LABELS,
-        _LOCAL_AVATAR_TOOL_PROMPT_TEMPLATES,
     )
 
-    assert set(_LOCAL_AVATAR_TOOL_PROMPT_TEMPLATES) == set(_PROMPT_LOCALES)
     assert set(_LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES) == set(_PROMPT_LOCALES)
-    for table, keys in (
-        (_LOCAL_AVATAR_TOOL_INTENSITY_FACTS, _WIRE_INTENSITIES),
-        (_LOCAL_AVATAR_TOOL_MEMORY_INTENSITY_LABELS, _WIRE_INTENSITIES),
-        (_LOCAL_AVATAR_TOOL_MEMORY_TOUCH_ZONE_LABELS, _WIRE_TOUCH_ZONES),
-    ):
-        assert set(table) == set(_PROMPT_LOCALES)
-        for locale in _PROMPT_LOCALES:
-            assert set(table[locale]) == set(keys)
-            assert all(str(value).strip() for value in table[locale].values())
+    assert all("{master}" in template and "{name}" in template
+               for template in _LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES.values())
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("locale", _PROMPT_LOCALES)
 @pytest.mark.parametrize("intensity", _WIRE_INTENSITIES)
 @pytest.mark.parametrize("touch_zone", _WIRE_TOUCH_ZONES)
-def test_local_prompt_and_memory_never_leak_the_raw_wire_enum(locale, intensity, touch_zone):
+def test_local_prompt_and_memory_omit_wire_facts(locale, intensity, touch_zone):
     normalized = normalize_avatar_interaction_payload(_payload(
         intensity=intensity,
         touchZone=touch_zone,
@@ -439,18 +658,15 @@ def test_local_prompt_and_memory_never_leak_the_raw_wire_enum(locale, intensity,
 
     instruction = _build_avatar_interaction_instruction(locale, "兰兰", "小明", normalized, _LEAK_PROBE_RECORD)
     memory_note = _build_avatar_interaction_memory_meta(locale, normalized, "小明", _LEAK_PROBE_RECORD)["memory_note"]
-
-    # "head"/"face"/"body" are ordinary English words the en copy may legitimately
-    # use, so only the intensity enum is checked there; every other locale must be
-    # free of all six wire values.
-    forbidden = _WIRE_INTENSITIES if locale == "en" else _WIRE_INTENSITIES + _WIRE_TOUCH_ZONES
-    for label, text in (("instruction", instruction), ("memory_note", memory_note)):
-        assert text.strip(), f"{locale} {label} is empty"
-        assert "{" not in text and "}" not in text, f"{locale} {label} kept a placeholder: {text}"
-        for value in forbidden:
-            assert not re.search(rf"(?<![A-Za-z]){re.escape(value)}(?![A-Za-z])", text), (
-                f"{locale} {label} leaked the wire value {value!r}: {text}"
-            )
+    assert instruction == _LEAK_PROBE_RECORD["meaning"]
+    baseline = normalize_avatar_interaction_payload(_payload())
+    assert baseline is not None
+    assert memory_note == _build_avatar_interaction_memory_meta(
+        locale, baseline, "小明", _LEAK_PROBE_RECORD
+    )["memory_note"]
+    assert memory_note == _LOCAL_MEMORY_NOTES[locale]
+    assert _LEAK_PROBE_RECORD["meaning"] not in memory_note
+    assert "{" not in memory_note and "}" not in memory_note
 
 
 @pytest.mark.unit

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>自定义道具编辑器 - N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
+    <style>
+        :root, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+        body.avatar-tool-editor-page {
+            background: #dfeef6;
+        }
+        .avatar-tool-editor-window-titlebar {
+            position: fixed;
+            inset: 0 0 auto 0;
+            z-index: 100200;
+            display: flex;
+            height: 48px;
+            box-sizing: border-box;
+            align-items: center;
+            padding: 0 10px 0 18px;
+            border-bottom: 1px solid rgba(65, 127, 163, 0.18);
+            background: linear-gradient(180deg, rgba(56, 165, 222, 0.98), rgba(39, 139, 195, 0.98));
+            color: #fff;
+            user-select: none;
+            -webkit-app-region: drag;
+            app-region: drag;
+        }
+        .avatar-tool-editor-window-titlebar h1 {
+            min-width: 0;
+            margin: 0;
+            overflow: hidden;
+            font: 700 14px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #avatar-tool-editor-root {
+            position: fixed;
+            inset: 48px 0 0;
+            min-width: 0;
+            min-height: 0;
+        }
+        #avatar-tool-editor-root .avatar-tool-editor-workspace {
+            position: absolute;
+        }
+        [data-theme="dark"] body.avatar-tool-editor-page {
+            background: #0d1a27;
+        }
+    </style>
+</head>
+<body class="avatar-tool-editor-page">
+    <header class="avatar-tool-editor-window-titlebar">
+        <h1 data-i18n="chat.avatarToolEditorWindowTitle">自定义道具编辑器</h1>
+        <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn minimize-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn maximize-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"></button>
+        </div>
+    </header>
+    <main id="avatar-tool-editor-root"></main>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script>
+        window.NekoChatWindow.mountAvatarToolEditor(document.getElementById('avatar-tool-editor-root'));
+    </script>
+</body>
+</html>

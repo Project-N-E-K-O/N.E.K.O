@@ -1,10 +1,17 @@
-import { mount, mountChatWindow, unmount, unmountChatWindow } from './mount';
+import {
+  mount,
+  mountAvatarToolEditor,
+  mountChatWindow,
+  unmount,
+  unmountChatWindow,
+} from './mount';
 import { mountPluginContent, unmountPluginContent } from './mount-plugin-content';
 
 const api = {
   mount,
   unmount,
   mountChatWindow,
+  mountAvatarToolEditor,
   unmountChatWindow,
   mountPluginContent,
   unmountPluginContent,
@@ -21,5 +28,11 @@ if (typeof window !== 'undefined') {
   window.dispatchEvent(new Event('neko-plugin-content-ready'));
 }
 
-export { mountChatWindow, unmountChatWindow, mountPluginContent, unmountPluginContent };
+export {
+  mountAvatarToolEditor,
+  mountChatWindow,
+  unmountChatWindow,
+  mountPluginContent,
+  unmountPluginContent,
+};
 export type { PluginContentBlock } from './mount-plugin-content';

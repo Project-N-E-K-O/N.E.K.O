@@ -74,6 +74,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-12-core-image-generation",
         "2026-09-12-watch-together-history-pages",
         "2026-09-11-watch-together-next-video",
+
         "2026-01-31-1",
         "2026-02-04-1",
         "2026-02-23-1",
@@ -139,8 +140,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-08-29-turn-image-budget-notices",
         "2026-08-29-repetition-insights",
         "2026-08-31-openfang-removal",
-        "2026-09-01-day1-avatar-zoom-hint",
         "2026-09-01-day2-tool-wheel-rotation",
+        "2026-09-01-day1-avatar-zoom-hint",
         "2026-09-01-add-guide-main-merge",
         "2026-09-01-vllm-omni-clone-preflight",
         "2026-09-02-vllm-omni-clone-preflight",
@@ -154,6 +155,23 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-11-watch-together-soccer-sdk",
         "2026-09-11-watch-together",
         "2026-09-11-watch-together-discovery",
+        "2026-09-03-avatar-tool-image-details",
+        "2026-09-03-avatar-tool-initial-connections",
+        "2026-09-03-avatar-tool-stage2-structure",
+        "2026-09-03-avatar-tool-stage3-interactions",
+        "2026-09-03-avatar-tool-delay-switch",
+        "2026-09-04-avatar-tool-initial-flow-copy",
+        "2026-09-04-avatar-tool-edge-styles",
+        "2026-09-04-avatar-tool-custom-names",
+        "2026-09-10-avatar-tool-stage3-accessibility",
+        "2026-09-10-avatar-tool-stage4-contract-fixes",
+        "2026-09-10-avatar-tool-unique-names",
+        "2026-09-10-avatar-tool-v3-management",
+        "2026-09-16-avatar-tool-preset-guides",
+        "2026-09-16-avatar-tool-preset-guides-v2",
+        "2026-09-16-avatar-tool-preset-guides-v3",
+        "2026-09-16-avatar-tool-name-uniqueness",
+        "2026-09-16-avatar-tool-domain-names",
         "2026-09-06-plugin-model-api",
         "2026-09-03-voice-identity-five-second-verification",
         "2026-09-08-voice-session-activation",
@@ -164,6 +182,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-14-plugin-model-api-proactive-community",
         "2026-09-22-plugin-html-content-main-merge",
         "2026-09-22-voice-session-activation",
+
     }
 )
 
@@ -176,7 +195,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "9d41ffa07c2bcfc0e5a6bf37f22de5b8eb540649f60573c73c84943d4365a4ee"
+LOCALE_KEY_SIGNATURE = "3fab0388f54641fd3747c333800304cc07a9f4bdf87523ea306bfd1a70ff1d74"
+
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
