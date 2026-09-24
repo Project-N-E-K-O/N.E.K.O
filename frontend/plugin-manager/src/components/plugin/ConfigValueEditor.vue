@@ -1,23 +1,92 @@
 <template>
-  <div class="cve" :style="indentStyle">
+  <div class="cve" :class="{ compact, 'is-root': !path }" :style="indentStyle">
     <template v-if="kind === 'object'">
       <div class="obj">
-        <div v-for="k in objectKeys" :key="k" class="row" :class="rowClassForKey(k)">
+        <div
+          v-for="k in objectKeys"
+          v-show="visibleKey(k)"
+          :key="k"
+          class="row"
+          :class="[
+            rowClassForKey(k),
+            {
+              'section-row': compact && !path && containerKey(k),
+              'table-row': compact && !!path && containerKey(k),
+              'unsaved-row': compact && changedKey(k),
+              'boolean-row': compact && valueType(k) === 'boolean',
+              'wide-row': compact && wideKey(k),
+            },
+          ]"
+          :data-config-path="childPath(k)"
+        >
           <div class="k">
-            <el-tag size="small" type="info">{{ k }}</el-tag>
+            <template v-if="compact"
+              ><label :for="inputIdFor(k)" :title="childPath(k) + ' · ' + valueType(k)">{{
+                k
+              }}</label
+              ><span
+                v-if="changedKey(k)"
+                class="unsaved-dot"
+                :title="t('plugins.configUi.unsaved')"
+            /></template>
+            <el-tag v-else size="small" type="info">{{ k }}</el-tag>
           </div>
           <div class="v">
-            <ConfigValueEditor
-              :model-value="overlayChild(k)"
-              @update:model-value="(val) => updateObjectKey(k, val)"
-              :baseline-value="baselineChild(k)"
-              :path="childPath(k)"
-              :replace-semantics="replaceSemantics"
-            />
+            <div :class="{ 'field-value-line': compact && !containerKey(k) }">
+              <div
+                :class="{
+                  'field-input': compact && !containerKey(k),
+                  'number-input': compact && valueType(k) === 'number',
+                  'boolean-input': compact && valueType(k) === 'boolean',
+                }"
+              >
+                <ConfigValueEditor
+                  :model-value="overlayChild(k)"
+                  @update:model-value="(val) => updateObjectKey(k, val)"
+                  :baseline-value="baselineChild(k)"
+                  :path="childPath(k)"
+                  :replace-semantics="replaceSemantics"
+                  :compact="compact"
+                  :segments="[...(segments || []), k]"
+                  :search="search"
+                  :filter="filter"
+                  :changes="changes"
+                  :input-id="inputIdFor(k)"
+                  @undo="emit('undo', $event)"
+                />
+              </div>
+              <ConfigFieldActions
+                v-if="compact && !containerKey(k) && !isProtectedKey(k)"
+                inline
+                :path="childPath(k)"
+                :type="valueType(k)"
+                :can-undo="!replaceSemantics && changedKey(k)"
+                :can-restore="isOverriddenKey(k)"
+                :custom="isCustomKey(k)"
+                :baseline="baselineChild(k)"
+                @command="fieldCommand(k, $event)"
+              />
+            </div>
+            <div v-if="compact && hasOverlayKey(k) && !containerKey(k)" class="source-note">
+              <span>{{ t('plugins.configUi.configured') }}</span
+              ><span v-if="hasBaselineKey(k)" :title="configValueText(baselineChild(k))">{{
+                t('plugins.configUi.baseValue', { value: configValueText(baselineChild(k)) })
+              }}</span>
+            </div>
           </div>
-          <div class="ops">
+          <div v-if="!compact || containerKey(k)" class="ops">
+            <ConfigFieldActions
+              v-if="compact && !isProtectedKey(k)"
+              :path="childPath(k)"
+              :type="valueType(k)"
+              :can-undo="!replaceSemantics && changedKey(k)"
+              :can-restore="isOverriddenKey(k)"
+              :custom="isCustomKey(k)"
+              :baseline="baselineChild(k)"
+              @command="fieldCommand(k, $event)"
+            />
             <el-button
-              v-if="!isProtectedKey(k) && isOverriddenKey(k)"
+              v-else-if="!isProtectedKey(k) && isOverriddenKey(k)"
               size="small"
               type="primary"
               text
@@ -38,13 +107,18 @@
         </div>
 
         <div class="add">
-          <el-button size="small" @click="openAddKey">
+          <el-button size="small" :text="compact" @click="openAddKey">
             {{ t('plugins.addField') }}
           </el-button>
         </div>
       </div>
 
-      <el-dialog v-model="addKeyDialog" :title="t('plugins.addField')" width="420px">
+      <el-dialog
+        v-model="addKeyDialog"
+        :title="t('plugins.addField')"
+        width="min(420px, 94vw)"
+        append-to-body
+      >
         <el-form label-position="top">
           <el-form-item :label="t('plugins.fieldName')">
             <el-input v-model="newKey" />
@@ -68,7 +142,12 @@
 
     <template v-else-if="kind === 'array'">
       <div class="arr">
-        <div v-for="(item, idx) in arrayItems" :key="idx" class="row" :class="rowClassForArrayIndex(idx)">
+        <div
+          v-for="(item, idx) in arrayItems"
+          :key="idx"
+          class="row"
+          :class="rowClassForArrayIndex(idx)"
+        >
           <div class="k">
             <el-tag size="small" type="info">{{ idx }}</el-tag>
           </div>
@@ -79,6 +158,13 @@
               :baseline-value="baselineArrayItem(idx)"
               :path="childPath(String(idx))"
               :replace-semantics="true"
+              :compact="compact"
+              :segments="[...(segments || []), String(idx)]"
+              :search="search"
+              :filter="filter"
+              :changes="changes"
+              :input-id="inputIdFor(String(idx))"
+              @undo="emit('undo', $event)"
             />
           </div>
           <div class="ops">
@@ -96,19 +182,53 @@
 
     <template v-else-if="kind === 'boolean'">
       <div class="input-wrap">
-        <el-switch v-model="boolVal" :disabled="isReadOnly" @change="emitUpdate(boolVal)" />
+        <el-switch
+          :id="inputId"
+          :aria-label="path"
+          v-model="boolVal"
+          :disabled="isReadOnly"
+          @change="emitUpdate(boolVal)"
+        />
       </div>
     </template>
 
     <template v-else-if="kind === 'number'">
       <div class="input-wrap">
-        <el-input-number v-model="numVal" :step="1" :disabled="isReadOnly" @change="emitUpdate(numVal)" />
+        <el-input
+          v-if="compact"
+          :id="inputId"
+          :aria-label="path"
+          :model-value="numberText"
+          type="text"
+          inputmode="decimal"
+          :disabled="isReadOnly"
+          @input="updateNumberText"
+          @blur="settleNumberText"
+        />
+        <el-input-number
+          v-else
+          :id="inputId"
+          :aria-label="path"
+          v-model="numVal"
+          :step="1"
+          :value-on-clear="displayValue"
+          :disabled="isReadOnly"
+          @update:model-value="emitNumberUpdate"
+        />
       </div>
     </template>
 
     <template v-else>
       <div class="input-wrap">
-        <el-input v-model="strVal" :disabled="isReadOnly" @change="emitUpdate(strVal)" />
+        <el-input
+          :id="inputId"
+          :aria-label="path"
+          v-model="strVal"
+          :type="strVal.includes('\n') ? 'textarea' : 'text'"
+          :autosize="{ minRows: 2, maxRows: 8 }"
+          :disabled="isReadOnly"
+          @input="emitUpdate"
+        />
       </div>
     </template>
   </div>
@@ -116,8 +236,18 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { useConfigEditorI18n } from '@/composables/useConfigEditorI18n'
 import { ElMessage } from 'element-plus'
+import ConfigFieldActions from './ConfigFieldActions.vue'
+import {
+  configNodeMatches,
+  setConfigKey,
+  configValueText,
+  hasConfigChangesAt,
+  type ConfigChange,
+  type ConfigFilter,
+} from '@/utils/configEditor'
+import { parseNumberText, settleNumberText as settleNumberReading } from '@/utils/numberInput'
 
 interface Props {
   modelValue: any
@@ -127,14 +257,69 @@ interface Props {
   // 写回什么，生效的就是什么。这条上下文沿数组项往下传递，决定「重置」
   // 是把键摘掉退回继承，还是必须把基线值显式写回去。
   replaceSemantics?: boolean
+  compact?: boolean
+  segments?: string[]
+  search?: string
+  filter?: ConfigFilter
+  changes?: ConfigChange[]
+  inputId?: string
 }
 
 const props = defineProps<Props>()
-const emit = defineEmits<{ (e: 'update:modelValue', v: any): void }>()
-const { t } = useI18n()
+const emit = defineEmits<{
+  (e: 'update:modelValue', v: any): void
+  (e: 'undo', path: string[]): void
+}>()
+const { t } = useConfigEditorI18n()
+function inputIdFor(k: string) {
+  return 'config-field-' + encodeURIComponent(JSON.stringify([...(props.segments || []), k]))
+}
+function containerKey(k: string) {
+  const v = overlayChild(k) !== undefined ? overlayChild(k) : baselineChild(k)
+  return v !== null && typeof v === 'object'
+}
+function wideKey(k: string) {
+  const value = overlayChild(k) !== undefined ? overlayChild(k) : baselineChild(k)
+  return (
+    containerKey(k) || (typeof value === 'string' && (value.includes('\n') || value.length > 100))
+  )
+}
+function valueType(k: string) {
+  const value = overlayChild(k) !== undefined ? overlayChild(k) : baselineChild(k)
+  return Array.isArray(value) ? 'array' : typeof value
+}
+function changedKey(k: string) {
+  return hasConfigChangesAt(props.changes || [], [...(props.segments || []), k])
+}
+function visibleKey(k: string) {
+  return configNodeMatches(
+    overlayChild(k),
+    baselineChild(k),
+    [...(props.segments || []), k],
+    props.search || '',
+    props.filter || 'all',
+    props.changes || [],
+    props.replaceSemantics
+  )
+}
+async function fieldCommand(k: string, command: string) {
+  if (command === 'undo') emit('undo', [...(props.segments || []), k])
+  else if (command === 'reset') resetObjectKey(k)
+  else if (command === 'delete') removeObjectKey(k)
+  else if (command === 'copy') {
+    try {
+      await navigator.clipboard.writeText(childPath(k))
+      ElMessage.success(t('plugins.configUi.pathCopied'))
+    } catch {
+      ElMessage.error(t('common.error'))
+    }
+  }
+}
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
-function isValidKeySegment(key: string) {
+// Guards keys created through the Add-field dialog: dotted and reserved spellings
+// cannot be expressed as a path or a plain property.
+function isValidNewKey(key: string) {
   if (!key) return false
   if (key.includes('.')) return false
   if (FORBIDDEN_KEYS.has(key)) return false
@@ -142,11 +327,20 @@ function isValidKeySegment(key: string) {
   return true
 }
 
+// Keys that already exist in the configuration — including quoted TOML spellings
+// such as "http.timeout" or "__proto__" — stay editable. They are written as own
+// properties, so a reserved name cannot reach the prototype.
+function canWriteKey(key: string) {
+  return hasOverlayKey(key) || hasBaselineKey(key) || isValidNewKey(key)
+}
+
 // `modelValue` 只承载 profile overlay：某个键未被覆盖时它是 undefined。
 // 渲染继承值要回落到 baseline，但写回时绝不能把 baseline 拷进 overlay，
 // 否则用户只改一个字段就会把整段清单默认值固化进 profile。
 function asPlainObject(v: unknown): Record<string, any> | null {
-  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : null
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, any>)
+    : null
 }
 
 function isEmptyPlainObject(v: unknown): boolean {
@@ -160,9 +354,11 @@ const displayValue = computed<any>(() =>
   props.modelValue !== undefined ? props.modelValue : props.baselineValue
 )
 
+// Reads are own-property only: a literal "__proto__" key must not resolve to the
+// prototype, and an absent key must not inherit anything.
 function overlayChild(k: string) {
   const a = asPlainObject(props.modelValue)
-  return a ? a[k] : undefined
+  return a && Object.prototype.hasOwnProperty.call(a, k) ? a[k] : undefined
 }
 
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
@@ -187,15 +383,20 @@ const objectKeys = computed(() => {
     isReplacedObject.value || !props.baselineValue || typeof props.baselineValue !== 'object'
       ? {}
       : props.baselineValue
-  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)])
+  // In the compact page, keep the base configuration's order stable while
+  // editing; append profile-only fields instead of promoting every edited key.
+  const keys = new Set<string>(
+    props.compact ? [...Object.keys(b), ...Object.keys(a)] : [...Object.keys(a), ...Object.keys(b)]
+  )
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
   // plugin 段仍通过上方 JSON 预览完整展示，并且 profile 不能修改 plugin
   if (!props.path) {
     keys.delete('plugin')
+    if (props.compact && keys.delete('plugin_runtime')) keys.add('plugin_runtime')
   }
 
-  return Array.from(keys).sort()
+  return props.compact ? Array.from(keys) : Array.from(keys).sort()
 })
 
 // 数组是整体替换：overlay 一旦存在，它就是生效值的全部，基线不再逐位继承。
@@ -210,17 +411,45 @@ const arrayItems = computed(() => {
 
 const strVal = ref('')
 const numVal = ref<number | undefined>(undefined)
+const numberText = ref('')
 const boolVal = ref(false)
 
 watch(
   displayValue,
   (v) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
-    if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
+    if (kind.value === 'number') {
+      numVal.value = typeof v === 'number' ? v : undefined
+      numberText.value = typeof v === 'number' ? String(v) : ''
+    }
     if (kind.value === 'boolean') boolVal.value = typeof v === 'boolean' ? v : false
   },
   { immediate: true }
 )
+
+function updateNumberText(value: string) {
+  // The raw edit is authoritative:
+  // it may not parse yet ("-", "1.", "1e"), but keeping it lets the user finish
+  // typing. Only finite values reach the model.
+  numberText.value = value
+  const parsed = parseNumberText(value)
+  if (parsed !== undefined) emitNumberUpdate(parsed)
+}
+function settleNumberText(event: FocusEvent) {
+  const raw = (event.target as HTMLInputElement | null)?.value ?? ''
+  // An incomplete number cannot be represented in TOML. Restore the last finite
+  // value instead of turning an empty edit into null or zero.
+  numberText.value = settleNumberReading(raw, String(displayValue.value))
+  const parsed = parseNumberText(numberText.value)
+  if (parsed !== undefined) emitNumberUpdate(parsed)
+}
+
+function emitNumberUpdate(value: number | null | undefined) {
+  // TOML has no null number. An unfinished numeric input stays local; clearing
+  // and blurring restores the current value via value-on-clear.
+  if (typeof value === 'number' && Number.isFinite(value) && !Object.is(value, displayValue.value))
+    emitUpdate(value)
+}
 
 function emitUpdate(v: any) {
   emit('update:modelValue', v)
@@ -228,7 +457,8 @@ function emitUpdate(v: any) {
 
 function baselineChild(k: string) {
   const b = props.baselineValue
-  if (b && typeof b === 'object' && !Array.isArray(b)) return (b as any)[k]
+  if (b && typeof b === 'object' && !Array.isArray(b) && Object.prototype.hasOwnProperty.call(b, k))
+    return (b as any)[k]
   return undefined
 }
 
@@ -237,7 +467,8 @@ function hasOverlayKey(k: string) {
 }
 
 function hasBaselineKey(k: string) {
-  const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
+  const b =
+    props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
   return Object.prototype.hasOwnProperty.call(b, k)
 }
 
@@ -297,7 +528,8 @@ function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
 function rowClassForKey(k: string) {
   if (kind.value !== 'object') return ''
   const a = overlayObject.value
-  const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
+  const b =
+    props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
 
   const inA = Object.prototype.hasOwnProperty.call(a, k)
   const inB = Object.prototype.hasOwnProperty.call(b, k)
@@ -329,6 +561,7 @@ const isReadOnly = computed(() => {
 })
 
 const indentStyle = computed(() => {
+  if (props.compact) return {}
   const p = props.path || ''
   if (!p) return {}
   const depth = p.split('.').length - 1
@@ -336,7 +569,7 @@ const indentStyle = computed(() => {
 })
 
 function updateObjectKey(k: string, v: any) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   const next = { ...overlayObject.value }
   // 子层把最后一个覆盖项重置掉后会回传空对象。基线里该键是张表时，空表不是
   // 「什么都不覆盖」而是「清空这张表」—— 后端 deep_merge 把空 mapping 当替换
@@ -344,10 +577,14 @@ function updateObjectKey(k: string, v: any) {
   // 这条语义，界面上还显示着继承内容。所以把键本身摘掉让它退回继承；摘完自己
   // 也空了就继续向上冒泡。基线里没有的键是 profile 自己建的空表，属显式意图，
   // 保留。
-  if (!props.replaceSemantics && isEmptyPlainObject(v) && asPlainObject(baselineChild(k)) !== null) {
+  if (
+    !props.replaceSemantics &&
+    isEmptyPlainObject(v) &&
+    asPlainObject(baselineChild(k)) !== null
+  ) {
     delete next[k]
   } else {
-    next[k] = v
+    setConfigKey(next, k, v)
   }
   emitUpdate(next)
 }
@@ -356,19 +593,19 @@ function updateObjectKey(k: string, v: any) {
 // 摘掉等于把该字段从生效配置里删了（例如 servers[0].host），
 // 所以必须把基线值显式写回。
 function resetObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   if (!props.replaceSemantics) {
     removeObjectKey(k)
     return
   }
   const next = { ...overlayObject.value }
-  next[k] = baselineChild(k)
+  setConfigKey(next, k, baselineChild(k))
   emitUpdate(next)
 }
 
 // 「删除」始终是把键移出 overlay。
 function removeObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
+  if (!canWriteKey(k)) return
   const next = { ...overlayObject.value }
   delete next[k]
   emitUpdate(next)
@@ -441,7 +678,7 @@ function confirmAddKey() {
     return
   }
 
-  if (!isValidKeySegment(key)) {
+  if (!isValidNewKey(key)) {
     ElMessage.warning(t('plugins.invalidFieldKey'))
     return
   }
@@ -517,7 +754,7 @@ function confirmAddKey() {
 }
 
 .diff-deleted {
-  background: rgba(248, 81, 73, 0.10);
+  background: rgba(248, 81, 73, 0.1);
 }
 
 .input-wrap {
@@ -548,6 +785,284 @@ function confirmAddKey() {
     width: 100%;
     justify-content: flex-start;
     padding-top: 0;
+  }
+}
+
+/* Scalar fields use a reading-order grid; real TOML tables keep their hierarchy. */
+.cve.compact > .obj,
+.cve.compact > .arr {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.cve.compact > .obj {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  gap: 12px 28px;
+  align-items: start;
+}
+.compact > .obj > .row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  padding: 0;
+  min-width: 0;
+  border: 0;
+}
+.compact > .obj > .row > .k,
+.compact > .arr > .row > .k {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  font-size: 13px;
+}
+.compact .k label {
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  line-height: 1.5;
+  font-weight: 500;
+}
+.compact > .obj > .row > .v,
+.compact > .arr > .row > .v {
+  min-width: 0;
+}
+.compact > .obj > .row > .ops,
+.compact > .arr > .row > .ops {
+  min-width: 0;
+  padding: 0;
+}
+.field-value-line {
+  position: relative;
+  padding-right: 36px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.field-input {
+  width: 100%;
+  min-width: 0;
+}
+.field-value-line > :deep(.field-actions) {
+  font-size: 12px;
+}
+.field-value-line > :deep(.field-actions:not(.has-direct-actions)) {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.field-value-line > :deep(.has-direct-actions) {
+  padding-top: 2px;
+}
+.field-value-line > :deep(.has-direct-actions .more-actions) {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.compact .input-wrap :deep(.el-input),
+.compact .input-wrap :deep(.el-textarea),
+.compact .input-wrap :deep(.el-input-number) {
+  width: 100%;
+}
+.compact .input-wrap :deep(.el-input__wrapper) {
+  min-height: 32px;
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+.compact .input-wrap :deep(.el-input__inner),
+.compact .input-wrap :deep(.el-textarea__inner) {
+  font-size: 14px;
+  text-align: left;
+}
+.compact .input-wrap :deep(.el-input-number__increase) {
+  border-radius: 0 7px 0 0;
+}
+.compact .input-wrap :deep(.el-input-number__decrease) {
+  border-radius: 0 0 7px 0;
+}
+.compact.is-root > .obj {
+  gap: 20px;
+}
+.compact.is-root > .obj > .section-row {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 16px;
+  gap: 16px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  background: var(--el-bg-color);
+}
+.compact.is-root > .obj > .section-row > .k {
+  font-size: 16px;
+}
+.compact.is-root > .obj > .section-row > .k label {
+  font-weight: 600;
+}
+.compact.is-root > .obj > .section-row > .ops {
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+}
+.compact.is-root > .obj > .section-row > .v {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+.compact > .obj > .wide-row {
+  grid-column: 1 / -1;
+}
+.compact > .obj > .table-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+}
+.compact > .obj > .table-row > .v {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding-left: 18px;
+  border-left: 2px solid var(--el-border-color-lighter);
+}
+.compact > .obj > .table-row > .ops {
+  grid-column: 2;
+  grid-row: 1;
+}
+.compact > .obj > .boolean-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--el-fill-color-extra-light);
+  border-radius: 8px;
+  min-height: 56px;
+  align-self: end;
+}
+.compact > .obj > .boolean-row > .k {
+  padding-right: 0 !important;
+}
+.compact > .obj > .boolean-row > .v {
+  display: contents;
+}
+.boolean-row .field-value-line {
+  padding-right: 0;
+  justify-content: flex-end;
+}
+.boolean-row .field-input {
+  width: auto;
+}
+.boolean-row .field-value-line > :deep(.field-actions) {
+  position: static;
+}
+.boolean-row .field-value-line > :deep(.field-actions .more-actions) {
+  position: static;
+}
+.boolean-row .source-note {
+  grid-column: 1 / -1;
+}
+.compact .source-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 7px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+.compact .source-note > span + span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact .unsaved-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  flex-shrink: 0;
+}
+.compact > .obj > .unsaved-row:not(.section-row):not(.table-row) > .k {
+  color: var(--el-color-primary);
+}
+.compact .diff-added,
+.compact .diff-modified,
+.compact .diff-deleted {
+  background: transparent;
+}
+.compact > .obj > .add,
+.compact > .arr > .add {
+  grid-column: 1 / -1;
+  margin: -6px 0 0;
+  padding: 0;
+}
+.compact .add > .el-button {
+  color: var(--el-text-color-secondary);
+  margin-left: -10px;
+}
+.compact > .arr > .row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid var(--el-border-color-extra-light);
+}
+.compact > .obj > .row:hover > .v > .field-value-line :deep(.more-actions),
+.compact > .obj > .row:focus-within > .v > .field-value-line :deep(.more-actions),
+.compact > .obj > .section-row:hover > .ops :deep(.more-actions),
+.compact > .obj > .section-row:focus-within > .ops :deep(.more-actions) {
+  opacity: 1;
+}
+/* Each object chooses its column count from its own available width, including
+   nested objects and array items. Long text and containers span the grid. */
+.compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 12px;
+}
+.compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) > .k {
+  padding-top: 7px;
+}
+.compact > .obj > .boolean-row {
+  padding: 0;
+  min-height: 32px;
+  align-self: start;
+  background: transparent;
+}
+.compact > .obj > .boolean-row > .v {
+  display: block;
+}
+.compact > .obj > .table-row > .v {
+  min-width: 0;
+  padding-left: 12px;
+}
+.compact .field-value-line {
+  min-width: 0;
+}
+@container config-fields (max-width: 520px) {
+  .compact > .arr > .row {
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .compact > .arr > .row > .ops {
+    grid-column: 2;
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .compact > .arr > .row > .ops .el-button {
+    max-width: 100%;
+    margin-left: 0;
+    height: auto;
+    min-height: 28px;
+    white-space: normal;
+  }
+
+  .compact > .obj > .row:not(.section-row):not(.table-row):not(.wide-row):not(.boolean-row) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .compact.is-root > .obj > .section-row {
+    padding: 12px;
   }
 }
 </style>

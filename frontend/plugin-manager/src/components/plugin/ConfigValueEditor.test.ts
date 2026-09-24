@@ -6,7 +6,7 @@ import ElementPlus from 'element-plus'
 import ConfigValueEditor from './ConfigValueEditor.vue'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }),
+  useI18n: () => ({ mergeLocaleMessage: vi.fn(), locale: ref('en-US'), t: (key: string) => key }),
 }))
 
 const mounted: Array<{ unmount: () => void; host: HTMLElement }> = []
@@ -23,17 +23,19 @@ afterEach(() => {
  * 挂载编辑器根节点。`modelValue` 是 profile overlay，`baselineValue` 是
  * 「清单默认值 + 运行时配置」的合并基线。emitted 收集写回 overlay 的结果。
  */
-function mountEditor(modelValue: any, baselineValue: any) {
+function mountEditor(modelValue: any, baselineValue: any, compact = false) {
   const emitted: any[] = []
   const host = document.createElement('div')
   document.body.appendChild(host)
-  const Wrapper = defineComponent(() => () =>
-    h(ConfigValueEditor as any, {
-      modelValue,
-      baselineValue,
-      path: '',
-      'onUpdate:modelValue': (v: any) => emitted.push(v),
-    })
+  const Wrapper = defineComponent(
+    () => () =>
+      h(ConfigValueEditor as any, {
+        modelValue,
+        baselineValue,
+        compact,
+        path: '',
+        'onUpdate:modelValue': (v: any) => emitted.push(v),
+      })
   )
   const app = createApp(Wrapper)
   app.use(ElementPlus)
@@ -65,6 +67,88 @@ function opsButtons(row: HTMLElement): string[] {
     (b.textContent || '').trim()
   )
 }
+
+describe('literal configuration keys', () => {
+  it('edits existing dotted and reserved keys as own properties', async () => {
+    // A persisted profile may contain quoted TOML spellings that the Add-field
+    // dialog refuses to create; they still have to be editable.
+    const baseline = JSON.parse('{"http.timeout":1,"__proto__":2}')
+    const { host, emitted } = mountEditor({}, baseline, true)
+    await nextTick()
+
+    const dotted = host.querySelector<HTMLInputElement>('input[aria-label="http.timeout"]')!
+    dotted.value = '7'
+    dotted.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(lastEmit(emitted)['http.timeout']).toBe(7)
+
+    const reserved = host.querySelector<HTMLInputElement>('input[aria-label="__proto__"]')!
+    reserved.value = '9'
+    reserved.dispatchEvent(new Event('input'))
+    await nextTick()
+
+    const written = lastEmit(emitted)
+    expect(Object.prototype.hasOwnProperty.call(written, '__proto__')).toBe(true)
+    expect(written['__proto__']).toBe(9)
+    expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
+  })
+})
+
+describe('compact numeric field', () => {
+  it('accepts negative and decimal numbers typed one keystroke at a time', async () => {
+    const emitted: any[] = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const Wrapper = defineComponent(() => () => {
+      const model = ref<any>({ temp: 1 })
+      return h(ConfigValueEditor as any, {
+        modelValue: model.value,
+        baselineValue: model.value,
+        compact: true,
+        path: '',
+        'onUpdate:modelValue': (v: any) => {
+          model.value = v
+          emitted.push(v)
+        },
+      })
+    })
+    const app = createApp(Wrapper)
+    app.use(ElementPlus)
+    app.mount(host)
+    mounted.push({ unmount: () => app.unmount(), host })
+    await nextTick()
+
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="temp"]')!
+    const type = async (char: string, text: string) => {
+      input.value = text + char
+      input.dispatchEvent(new Event('input'))
+      await nextTick()
+      return input.value
+    }
+
+    // Clearing then typing "-" must keep the minus sign: a native number control
+    // reports it as an empty value and the field would drop it.
+    input.value = ''
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
+    expect(await type('-', '')).toBe('-')
+    expect(await type('5', '-')).toBe('-5')
+    expect(lastEmit(emitted)).toEqual({ temp: -5 })
+
+    // Decimals and exponents stay editable while incomplete.
+    expect(await type('0', '-5')).toBe('-50')
+    input.value = ''
+    input.dispatchEvent(new Event('input'))
+    for (const [char, text] of [
+      ['1', ''],
+      ['.', '1'],
+      ['5', '1.'],
+    ] as const) {
+      expect(await type(char, text)).toBe(text + char)
+    }
+    expect(lastEmit(emitted)).toEqual({ temp: 1.5 })
+  })
+})
 
 describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
   it('编辑「基线独有段」里的一个叶子时，只写回被改的键（不固化整段默认值）', async () => {
@@ -197,7 +281,9 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     const { host, emitted } = mountEditor({}, baseline)
     await nextTick()
 
-    const addBtn = Array.from(host.querySelectorAll('.arr > .add button')).pop() as HTMLButtonElement
+    const addBtn = Array.from(
+      host.querySelectorAll('.arr > .add button')
+    ).pop() as HTMLButtonElement
     addBtn.click()
     await nextTick()
 
@@ -311,9 +397,7 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     // 根节点自己的「添加字段」按钮（嵌套编辑器也各有一个，必须限定层级）
-    const addBtn = host.querySelector(
-      ':scope > .cve > .obj > .add button'
-    ) as HTMLButtonElement
+    const addBtn = host.querySelector(':scope > .cve > .obj > .add button') as HTMLButtonElement
     addBtn.click()
     await nextTick()
 
@@ -342,5 +426,77 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c2'] })
+  })
+})
+
+describe('compact configuration layout preserves editing semantics', () => {
+  it('edits a nested inherited field without copying sibling defaults', async () => {
+    const { host, emitted } = mountEditor(
+      {},
+      { network: { retry: { delay: 2, attempts: 3 } } },
+      true
+    )
+    await nextTick()
+    typeInto(rowFor(host, 'delay').querySelector('input')!, '4')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ network: { retry: { delay: 4 } } })
+  })
+
+  it('edits an inherited array as a complete replacement', async () => {
+    const { host, emitted } = mountEditor({}, { hosts: ['a', 'b', 'c'] }, true)
+    await nextTick()
+    typeInto(host.querySelectorAll('input')[1]!, 'updated')
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'updated', 'c'] })
+  })
+})
+
+describe('ConfigValueEditor search/filter propagation', () => {
+  it('array child editor receives search/filter props and hides non-matching fields within array items', async () => {
+    const baseline = {
+      servers: [
+        { host: 'localhost', port: 8080, timeout: 30 },
+        { host: 'example.com', port: 443, timeout: 60 },
+      ],
+    }
+    const Wrapper = defineComponent({
+      setup() {
+        const search = ref('host')
+        const filter = ref<'all' | 'configured' | 'dirty'>('all')
+        return () =>
+          h(ConfigValueEditor as any, {
+            modelValue: {},
+            baselineValue: baseline,
+            compact: false,
+            path: '',
+            search: search.value,
+            filter: filter.value,
+          })
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(Wrapper)
+    app.use(ElementPlus)
+    app.mount(host)
+    await nextTick()
+
+    // Array items should be visible (servers path matches query)
+    // Within each array item, only 'host' field should be visible, 'port' and 'timeout' hidden
+    const visibleKeys = Array.from(host.querySelectorAll('.row'))
+      .map((row) => {
+        const keyEl = row.querySelector('.k')
+        const style = window.getComputedStyle(row as HTMLElement)
+        if (style.display === 'none') return null
+        return keyEl?.textContent?.trim()
+      })
+      .filter(Boolean)
+
+    expect(visibleKeys).toContain('host')
+    expect(visibleKeys).not.toContain('port')
+    expect(visibleKeys).not.toContain('timeout')
+
+    app.unmount()
+    host.remove()
   })
 })

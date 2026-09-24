@@ -25,6 +25,9 @@ const REFERENCE = 'en-US'
 const PLACEHOLDER_REGEX = /\{(\w+)\}/g
 
 const jiti = createJiti(import.meta.url, { interopDefault: true })
+const { configEditorMessages } = await jiti.import(
+  resolve(__dirname, '../src/i18n/config-editor.ts')
+)
 
 /**
  * Compute the placeholder set for a string value.
@@ -70,7 +73,11 @@ async function loadLocale(name) {
   const path = resolve(LOCALES_DIR, `${name}.ts`)
   try {
     const mod = await jiti.import(path)
-    return mod?.default ?? mod
+    const messages = mod?.default ?? mod
+    return {
+      ...messages,
+      plugins: { ...messages.plugins, configUi: configEditorMessages[name] },
+    }
   } catch (err) {
     throw new Error(`failed to import locale '${name}': ${err.message}`)
   }
