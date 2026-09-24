@@ -169,6 +169,16 @@ async def test_stuck_native_work_is_killed_on_timeout_or_cancellation(monkeypatc
     with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError, backend.WakeWordBackendError)):
         await asyncio.wait_for(task, 3)
     assert detector._process is None
+    # The caller may be cancelled while the to_thread exchange is still
+    # unwinding.  Close must retain ownership until that exchange releases the
+    # pipe, then clear the tracking state rather than reporting a half-closed
+    # detector.
+    assert detector._connection is None
+    for _ in range(30):
+        if detector._active_exchange_done is None and not detector._reaper_threads:
+            break
+        await asyncio.sleep(0.01)
+    assert detector._active_exchange_done is None
     assert detector._closed.is_set()
 
 

@@ -255,6 +255,9 @@ class SherpaWakeWordDetector:
         self._ready = False
         self._runtime_info = None
         self._reaper_threads: set[threading.Thread] = set()
+        # asyncio.to_thread cannot interrupt a blocking poll/recv. Keep the
+        # pipe owned until the exchange thread has released it.
+        self._active_exchange_done: threading.Event | None = None
 
     @property
     def inference_timeout_seconds(self) -> float:
@@ -299,6 +302,27 @@ class SherpaWakeWordDetector:
             raise WakeWordBackendError("WAKE_WORD_CLOSED")
         return result
 
+    def _tracked_exchange(self, request: tuple | None, timeout: float,
+                          done: threading.Event):
+        try:
+            return self._exchange(request, timeout)
+        finally:
+            done.set()
+            self._finish_exchange(done)
+
+    def _begin_exchange(self) -> threading.Event:
+        done = threading.Event()
+        with self._lifecycle_lock:
+            if self._active_exchange_done is not None:
+                raise WakeWordBackendError("WAKE_WORD_CONCURRENT_CALL")
+            self._active_exchange_done = done
+        return done
+
+    def _finish_exchange(self, done: threading.Event) -> None:
+        with self._lifecycle_lock:
+            if self._active_exchange_done is done and done.is_set():
+                self._active_exchange_done = None
+
     def _reap_process(self, process) -> None:
         """Wait for a stubborn child and close its handle outside the stop budget."""
         try:
@@ -310,6 +334,14 @@ class SherpaWakeWordDetector:
                 with self._lifecycle_lock:
                     self._reaper_threads.discard(threading.current_thread())
 
+    def _reap_connection(self, connection, exchange_done: threading.Event) -> None:
+        try:
+            exchange_done.wait()
+        finally:
+            connection.close()
+            with self._lifecycle_lock:
+                self._reaper_threads.discard(threading.current_thread())
+
     def _handoff_process_reaper(self, process) -> None:
         reaper = threading.Thread(
             target=self._reap_process, args=(process,),
@@ -319,10 +351,21 @@ class SherpaWakeWordDetector:
             self._reaper_threads.add(reaper)
         reaper.start()
 
+    def _handoff_connection_reaper(self, connection,
+                                   exchange_done: threading.Event) -> None:
+        reaper = threading.Thread(
+            target=self._reap_connection, args=(connection, exchange_done),
+            name="neko-wake-word-connection-reaper", daemon=True,
+        )
+        with self._lifecycle_lock:
+            self._reaper_threads.add(reaper)
+        reaper.start()
+
     def _stop(self) -> None:
         with self._lifecycle_lock:
             process, self._process = self._process, None
             connection, self._connection = self._connection, None
+            exchange_done = self._active_exchange_done
         if process is not None:
             if process.is_alive():
                 process.terminate()
@@ -335,7 +378,10 @@ class SherpaWakeWordDetector:
             else:
                 process.close()
         if connection is not None:
-            connection.close()
+            if exchange_done is not None and not exchange_done.wait(1.0):
+                self._handoff_connection_reaper(connection, exchange_done)
+            else:
+                connection.close()
 
     async def prepare(self) -> None:
         if self._closed.is_set():
@@ -349,8 +395,12 @@ class SherpaWakeWordDetector:
             deadline = asyncio.get_running_loop().time() + self.config.prepare_timeout
             await asyncio.wait_for(asyncio.to_thread(self._launch), self.config.prepare_timeout)
             remaining = max(0.001, deadline - asyncio.get_running_loop().time())
-            runtime_info = await asyncio.wait_for(asyncio.to_thread(self._exchange, None,
-                                                  remaining), remaining)
+            exchange_done = self._begin_exchange()
+            try:
+                runtime_info = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(
+                    self._tracked_exchange, None, remaining, exchange_done)), remaining)
+            finally:
+                self._finish_exchange(exchange_done)
             if self._closed.is_set():
                 raise WakeWordBackendError("WAKE_WORD_CLOSED")
             if (not isinstance(runtime_info, dict)
@@ -375,11 +425,12 @@ class SherpaWakeWordDetector:
             raise WakeWordBackendError("WAKE_WORD_CONCURRENT_CALL")
         _validate_batch(frames, epoch, self.config)
         self._busy = True
+        exchange_done = self._begin_exchange()
         try:
             request = (tuple(replace(frame, context=None) for frame in frames), epoch)
-            result = await asyncio.wait_for(asyncio.to_thread(
-                self._exchange, request, self.inference_timeout_seconds),
-                self.inference_timeout_seconds)
+            result = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(
+                self._tracked_exchange, request, self.inference_timeout_seconds,
+                exchange_done)), self.inference_timeout_seconds)
             if self._closed.is_set():
                 raise WakeWordBackendError("WAKE_WORD_CLOSED")
             _validate_batch_result(result, frames, epoch)
@@ -388,6 +439,7 @@ class SherpaWakeWordDetector:
             await self.close()
             raise
         finally:
+            self._finish_exchange(exchange_done)
             self._busy = False
 
     async def close(self) -> None:
