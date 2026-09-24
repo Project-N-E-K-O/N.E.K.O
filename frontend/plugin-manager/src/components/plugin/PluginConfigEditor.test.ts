@@ -11,7 +11,7 @@ import * as configApi from '@/api/config'
 import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ mergeLocaleMessage: vi.fn(), t: (key: string) => key }) }))
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => ({ reload: vi.fn() }) }))

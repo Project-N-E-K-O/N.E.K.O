@@ -19,6 +19,7 @@ interface LayoutElements {
 export function useConfigEditorLayout(elements: LayoutElements) {
   const pageScroll = ref(false)
   const pageHost = shallowRef<HTMLElement | null>(null)
+  const editorHost = shallowRef<HTMLElement | null>(null)
   let frame = 0
   let disposed = false
   let changingMode = false
@@ -113,6 +114,9 @@ export function useConfigEditorLayout(elements: LayoutElements) {
   }
 
   onMounted(() => {
+    // Siblings such as model bindings load asynchronously. In page mode they
+    // change the editor's origin without changing the editor's own size.
+    editorHost.value = elements.editor.value?.parentElement || null
     // This is the scroll viewport owned by AppLayout, not a content-sized card.
     pageHost.value =
       elements.editor.value?.closest<HTMLElement>('[data-yui-guide-id="plugin-main"]') ||
@@ -127,6 +131,7 @@ export function useConfigEditorLayout(elements: LayoutElements) {
       elements.navigation,
       elements.footer,
       pageHost,
+      editorHost,
     ],
     scheduleMeasure
   )

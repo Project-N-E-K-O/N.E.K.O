@@ -64,7 +64,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { useConfigEditorI18n } from '@/composables/useConfigEditorI18n'
 import { MoreFilled } from '@element-plus/icons-vue'
 import { configValueText } from '@/utils/configEditor'
 
@@ -78,7 +78,7 @@ const props = defineProps<{
   baseline?: any
 }>()
 const emit = defineEmits<{ (e: 'command', command: string): void }>()
-const { t } = useI18n()
+const { t } = useConfigEditorI18n()
 const restoreLabel = computed(() =>
   t('plugins.configUi.restoreValue', { value: configValueText(props.baseline) })
 )

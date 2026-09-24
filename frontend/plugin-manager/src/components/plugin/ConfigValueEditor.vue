@@ -236,7 +236,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { useConfigEditorI18n } from '@/composables/useConfigEditorI18n'
 import { ElMessage } from 'element-plus'
 import ConfigFieldActions from './ConfigFieldActions.vue'
 import {
@@ -270,7 +270,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: any): void
   (e: 'undo', path: string[]): void
 }>()
-const { t } = useI18n()
+const { t } = useConfigEditorI18n()
 function inputIdFor(k: string) {
   return 'config-field-' + encodeURIComponent(JSON.stringify([...(props.segments || []), k]))
 }

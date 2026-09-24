@@ -14,11 +14,11 @@ name: Unit Tests
 # No paths filter on purpose. tests/unit reads Python packages, static/,
 # templates/ and frontend sources, so any useful filter would approximate
 # "everything"; an over-narrow one reintroduces exactly the failure mode above
-# — the one PR that needed the gate is the one that does not trigger it.
+# — the PR gate runs the unmarked remainder while dedicated shards cover classified tests.
 on:
-  push:
-    branches: [main]
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: unit-tests-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   unit-pytest:
@@ -41,8 +41,9 @@ jobs:
     # parallelised run takes 14m32s (4m33s of it before the first test, while
     # each worker imports the app and collects all 24621 tests), against 19m11s
     # serial. A 15-minute cap killed it one second before the summary printed.
-    # 25 stays until the shard-per-job change lands.
-    timeout-minutes: 25
+    # Keep enough headroom for slow Windows-hosted runners while the suite is
+    # still collected and executed as one job. Sharding can reduce this later.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -109,7 +110,12 @@ jobs:
         # tests/unit/conftest.py still sees the same within-file sequence.
         # Cross-file order dependencies are what random-order-tests.yml hunts;
         # they were never something this job's fixed order guaranteed.
-        run: uv run pytest tests/unit -q -n auto --dist loadfile
+        # PR #3078 tests run in the dedicated shards below. Keeping them out of
+        # this xdist gate prevents socket/process tests from being scheduled on
+        # workers while preserving coverage of the remaining unit suite.
+        # Keep fixtures outside the checkout: source scanners must not read
+        # generated test files, and storage tests need paths outside the project.
+        run: uv run pytest tests/unit -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-suite" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract"
 
   plugin-manager-vitest:
     name: Plugin manager vitest

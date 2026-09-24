@@ -326,7 +326,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, toRef, useId, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
-import { useI18n } from 'vue-i18n'
+import { useConfigEditorI18n } from '@/composables/useConfigEditorI18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useEventListener, useResizeObserver } from '@vueuse/core'
 import {
@@ -359,7 +359,7 @@ import PluginConfigForm from './PluginConfigForm.vue'
 
 const props = defineProps<{ pluginId: string }>()
 const emit = defineEmits<{ (event: 'layout-mode-change', pageScroll: boolean): void }>()
-const { t } = useI18n()
+const { t } = useConfigEditorI18n()
 const pluginStore = usePluginStore()
 const drafts = usePluginConfigDrafts(toRef(props, 'pluginId'))
 const {

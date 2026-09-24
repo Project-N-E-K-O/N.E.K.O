@@ -152,6 +152,8 @@ MIXIN_SUPPORT_CLASSES = {
         "_HotSwapAudioFrame",
         "_HotSwapAudioBuffer",
         "_VoiceInputPipelineFailure",
+        # One-use transport handoff metadata owned by the microphone bridge.
+        "_VoiceActivationHandoff",
     },
     "tts_runtime": {
         # Private control-flow signal for the game-speech preload batch. It has
@@ -3312,6 +3314,8 @@ def run(root: Path) -> list[Violation]:
                 "has_pending_transcript_delivery",
                 "set_speaker_verifier_factory",
                 "request_speaker_candidate_rejection",
+                "invalidate_protected_prefix",
+                "transport_connect_deadline",
                 "start",
                 "submit",
             }

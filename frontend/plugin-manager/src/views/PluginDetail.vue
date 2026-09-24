@@ -162,6 +162,7 @@
 
         <el-tab-pane :label="$t('plugins.config')" name="config">
           <div data-yui-guide-id="plugin-detail-config">
+            <PluginModelBindings :plugin-id="pluginId" />
             <PluginConfigEditor :plugin-id="pluginId" @layout-mode-change="configPageScroll = $event" />
           </div>
         </el-tab-pane>
@@ -189,6 +190,7 @@ import PluginActions from '@/components/plugin/PluginActions.vue'
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
+import PluginModelBindings from '@/components/plugin/PluginModelBindings.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
@@ -599,6 +601,19 @@ watch(locale, () => {
   height: 100%;
   min-height: 0;
 }
+.config-layout-active :deep([data-yui-guide-id="plugin-detail-config"]) {
+  display: flex;
+  flex-direction: column;
+}
+.config-layout-active :deep(.model-bindings) {
+  flex-shrink: 0;
+}
+/* Model bindings share this tab with the editor. Give the editor only the
+   remaining height so its footer stays inside the clipped tab viewport. */
+.config-layout-active :deep(.plugin-config-editor) {
+  flex: 1;
+  height: auto;
+}
 
 .config-page-scroll {
   height: auto;
@@ -618,6 +633,9 @@ watch(locale, () => {
 .config-page-scroll :deep(#pane-config),
 .config-page-scroll :deep([data-yui-guide-id="plugin-detail-config"]) {
   height: auto;
+}
+.config-page-scroll :deep(.plugin-config-editor) {
+  flex: none;
 }
 
 /* The host sidebar must leave usable space at high zoom. Scope the compact

@@ -3463,6 +3463,7 @@ async def test_genai_image_budget_omission_refreshes_tool_response(monkeypatch):
         handler,
         cap=2,
     )
+    client._user_language_provider = lambda: "en"
     messages = [{"role": "user", "content": "inspect the images"}]
 
     async for _chunk in client._astream_genai_with_tools(messages):

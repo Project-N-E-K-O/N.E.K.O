@@ -6,7 +6,7 @@ import ElementPlus from 'element-plus'
 import ConfigValueEditor from './ConfigValueEditor.vue'
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }),
+  useI18n: () => ({ mergeLocaleMessage: vi.fn(), locale: ref('en-US'), t: (key: string) => key }),
 }))
 
 const mounted: Array<{ unmount: () => void; host: HTMLElement }> = []

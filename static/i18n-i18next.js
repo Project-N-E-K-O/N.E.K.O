@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 主动搭话新增了喵宇宙社区来源的 key；递增版本让 Electron、Docker 等长期缓存
-    // 重新拉取完整语言包，避免设置页把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-09-14-proactive-community-chat';
+    // 插件 HTML 卡片与 AgentHUD 新增了提示 key，并合入 main 上声纹会话激活等新增 key；
+    // 递增版本让 Electron、Docker 等长期缓存重新拉取完整语言包，避免界面显示原始 key。
+    const LOCALE_VERSION = '2026-09-23-plugin-html-content-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

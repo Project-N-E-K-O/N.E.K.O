@@ -43,9 +43,13 @@ import logging
 
 import pytest
 
+from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 
-ARBITER_LOGGER = "main_logic.omni_realtime_client._response_arbiter"
+ARBITER_LOGGER = _arbiter_module.logger.name
+
+
+pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")
 
 
 async def _settle(times: int = 50) -> None:

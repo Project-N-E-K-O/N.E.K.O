@@ -421,19 +421,32 @@ async def test_merge_moves_ledgers_without_loss():
     )
 
 
-async def test_merge_survivor_is_a_function_of_the_final_entity_set():
+@pytest.mark.parametrize(
+    "created_at_offsets",
+    [
+        pytest.param((0, 0, 0, 0, 0, 0), id="equal-timestamps"),
+        pytest.param((0, 1, 2, 3, 4, 5), id="distinct-timestamps"),
+        pytest.param((2, 1, 0, 0, 1, 2), id="tied-oldest-timestamps"),
+    ],
+)
+async def test_merge_survivor_is_a_function_of_the_final_entity_set(
+    created_at_offsets,
+):
     """I-C-1: shuffling the merge order must not change the survivor."""
-    await _open_gate()
     accounts = [f"qq:{index}" for index in range(6)]
-    for account in accounts:
-        await trust_store.aensure_account(account)
-    baseline = None
     rng = random.Random(1234)
     for attempt in range(12):
         trust_store.reset_for_tests()
         await _open_gate()
-        for account in accounts:
-            await trust_store.aensure_account(account)
+        entity_keys = []
+        for account, offset in zip(accounts, created_at_offsets, strict=True):
+            # The entity set includes created_at. Real clock resolution can
+            # change timestamp ties between attempts, changing the valid winner.
+            created_at = f"2026-01-01T00:00:{offset:02d}+00:00"
+            with patch.object(trust_store, "_now_iso", return_value=created_at):
+                entity_id = await trust_store.aensure_account(account)
+            entity_keys.append((created_at, entity_id))
+        expected_survivor = min(entity_keys)[1]
         pairs = [
             (accounts[index], accounts[index + 1])
             for index in range(len(accounts) - 1)
@@ -444,10 +457,11 @@ async def test_merge_survivor_is_a_function_of_the_final_entity_set():
             await trust_store.amerge_entities(
                 snap.entity_of(left), snap.entity_of(right),
             )
-        survivor = trust_store.trust_snapshot().entity_of(accounts[0])
-        if baseline is None:
-            baseline = survivor
-        assert survivor == baseline, f"attempt {attempt} diverged"
+        snap = trust_store.trust_snapshot()
+        for account in accounts:
+            assert snap.entity_of(account) == expected_survivor, (
+                f"attempt {attempt} diverged for {account}"
+            )
 
 
 async def test_unbind_moves_the_ledger_out_byte_for_byte():
