@@ -104,10 +104,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional local wake-word inference; model weights are provisioned separately.
-# Base dependency; use the locally built 1.13.8+neko.kws2 wheel at runtime.
-# Upstream 1.13.8 loses keyword timestamp offsets after silence; use scripts/build_wake_word_runtime.ps1.
-wake-word = ["sherpa-onnx==1.13.8"]
+# Optional local wake-word inference; model weights and the patched runtime are
+# provisioned separately.  Keep this extra dependency-free: the upstream
+# 1.13.8 wheel is not compatible with the timestamp/decoder patches required by
+# the backend, and publishing a platform-specific custom wheel through the
+# lockfile would silently install the wrong runtime on unsupported platforms.
+# Install the locally built 1.13.8+neko.kws2 wheel as documented in
+# docs/development/wake-word-runtime.md.
+wake-word = []
 
 [tool.hatch.version]
 path = "config/application.py"

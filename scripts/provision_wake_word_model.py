@@ -55,7 +55,12 @@ def provision(destination: Path, archive: Path | None = None) -> None:
                 staged.replace(destination / name)
     print(f"Model ready: {destination}")
     print(f"Set NEKO_WAKE_WORD_MODEL_DIR to {destination}")
-    print("Install the optional runtime with: uv sync --extra wake-word")
+    print("The wake-word extra intentionally installs no wheel (the upstream wheel is incompatible).")
+    print("Build the patched runtime, then install its wheel before starting NEKO:")
+    print(r"  powershell -File scripts/build_wake_word_runtime.ps1 -Python .venv\Scripts\python.exe -OutputDirectory .wake-word-runtime")
+    print(r"  $wheel = (Get-ChildItem .wake-word-runtime\sherpa-onnx\dist\*.whl | Select-Object -First 1).FullName")
+    print(r"  uv pip install --python .venv\Scripts\python.exe --force-reinstall $wheel")
+    print(r"  uv run --no-project --with $wheel python -c 'import sherpa_onnx as s; print(s.__version__, s.version)'")
 
 
 def main() -> None:
