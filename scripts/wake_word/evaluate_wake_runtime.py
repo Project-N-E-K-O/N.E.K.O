@@ -28,7 +28,7 @@ from main_logic.voice_identity_service.activation_scoring import ActivationScore
 from main_logic.voice_input.activation import ActivationGeneration, AudioFrame, OutputCommit
 from main_logic.voice_input.wake_word.sherpa_backend import SherpaWakeWordConfig, SherpaWakeWordDetector
 from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS
-from scripts.evaluate_wake_word import read_fixture
+from scripts.wake_word.evaluate_wake_word import read_fixture
 
 
 class _ReadyScorer:

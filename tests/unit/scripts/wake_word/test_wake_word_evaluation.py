@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import evaluate_wake_word as evaluation
+from scripts.wake_word import evaluate_wake_word as evaluation
 
 
 def occurrence(start=1.0, end=1.5, window=(1.0, 2.0), keywords=None):

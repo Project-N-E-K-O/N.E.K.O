@@ -16,7 +16,7 @@ import pytest
 pytestmark = pytest.mark.integration_serial
 
 
-BUILD_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "build_wake_word_runtime.ps1"
+BUILD_SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "wake_word" / "build_wake_word_runtime.ps1"
 PACKAGING_FLAGS = ("SHERPA_ONNX_SPLIT_PYTHON_PACKAGE", "SHERPA_ONNX_IS_FOR_PYPI")
 POWERSHELLS = [path for name in ("powershell", "pwsh") if (path := shutil.which(name))]
 
@@ -201,7 +201,7 @@ from pathlib import Path
 
 
 def test_build_script_fences_python_path_and_native_artifacts():
-    script = (Path(__file__).resolve().parents[2] / "scripts" / "build_wake_word_runtime.ps1").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[4] / "scripts" / "wake_word" / "build_wake_word_runtime.ps1").read_text(encoding="utf-8")
     assert "$wakePython = [IO.Path]::GetFullPath($Python)" in script
     assert "--python $wakePython" in script
     assert "-Filter 'neko-kws-lifecycle-test.exe'" in script

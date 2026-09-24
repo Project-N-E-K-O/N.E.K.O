@@ -29,10 +29,10 @@ worker 在首次命中时停止，返回 `WakeWordBatchResult(consumed_frames, d
 
 ## 评估入口
 
-新增 `scripts/evaluate_wake_runtime.py`，与原离线模型评估脚本分开。它使用正式 activation runtime、controller 和真实检测子进程，通过本地 sink 接收回放，不连接云端 ASR。示例：
+新增 `scripts/wake_word/evaluate_wake_runtime.py`，与原离线模型评估脚本分开。它使用正式 activation runtime、controller 和真实检测子进程，通过本地 sink 接收回放，不连接云端 ASR。示例：
 
 ```powershell
-uv run python scripts/evaluate_wake_runtime.py --model-dir <模型目录> --wav <16kHz单声道录音.wav> --source recording --paced --frame-samples 160 --repeats 2 --output <报告.json>
+uv run python scripts/wake_word/evaluate_wake_runtime.py --model-dir <模型目录> --wav <16kHz单声道录音.wav> --source recording --paced --frame-samples 160 --repeats 2 --output <报告.json>
 ```
 
 用 `--frame-samples 512` 测试 32ms；可传多个采样数测试循环不规则分包。合成输入必须标为 `--source synthetic`。无 `--paced` 时只评估积压吞吐，不能当作实时响应延迟。

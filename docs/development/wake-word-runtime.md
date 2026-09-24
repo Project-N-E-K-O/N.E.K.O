@@ -8,7 +8,7 @@
 
 ```powershell
 $python = (Resolve-Path .venv\Scripts\python.exe).Path
-powershell -File scripts\build_wake_word_runtime.ps1 `
+powershell -File scripts\wake_word\build_wake_word_runtime.ps1 `
   -Python $python `
   -OutputDirectory .wake-word-runtime
 
@@ -46,3 +46,4 @@ uv run python -c 'import sherpa_onnx as s; assert s.__version__ == "1.13.8+neko.
 ## 分发边界
 
 当前构建 workflow 产生的是 Windows x64、Python 3.11 的 Actions artifact。artifact 适合验证和短期取用，不是稳定发布地址；不同 Python 版本或平台必须重新构建匹配的 wheel。后续如需面向用户分发，应将经过验证的 wheel 发布到稳定 Release 资源或受控包源，并同步更新本页的下载步骤。
+

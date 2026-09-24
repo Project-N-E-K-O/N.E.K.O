@@ -5,15 +5,15 @@ on:
     branches: [main, 'codex/voice-wake-word']
     paths:
       - '.github/workflows/wake-word-runtime.yml'
-      - 'scripts/build_wake_word_runtime.ps1'
-      - 'scripts/patches/sherpa-onnx-kws-*.patch'
+      - 'scripts/wake_word/build_wake_word_runtime.ps1'
+      - 'scripts/wake_word/patches/sherpa-onnx-kws-*.patch'
       - 'main_logic/voice_input/wake_word/**'
   pull_request:
     branches: [main]
     paths:
       - '.github/workflows/wake-word-runtime.yml'
-      - 'scripts/build_wake_word_runtime.ps1'
-      - 'scripts/patches/sherpa-onnx-kws-*.patch'
+      - 'scripts/wake_word/build_wake_word_runtime.ps1'
+      - 'scripts/wake_word/patches/sherpa-onnx-kws-*.patch'
       - 'main_logic/voice_input/wake_word/**'
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
       - name: Build and test the pinned runtime
         shell: pwsh
         run: |
-          ./scripts/build_wake_word_runtime.ps1 -Python (Get-Command python).Source -OutputDirectory C:\kw
+          ./scripts/wake_word/build_wake_word_runtime.ps1 -Python (Get-Command python).Source -OutputDirectory C:\kw
       - name: Preserve runtime and provenance
         uses: actions/upload-artifact@v4
         with:

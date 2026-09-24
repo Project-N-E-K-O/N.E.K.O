@@ -5,7 +5,7 @@ import json
 from types import MappingProxyType
 
 from main_logic.voice_input.activation import ActivationGeneration, AudioFrame, WakeWordBatchResult, WakeWordDetection
-from scripts.evaluate_wake_runtime import _MeasuredDetector, measure_case
+from scripts.wake_word.evaluate_wake_runtime import _MeasuredDetector, measure_case
 
 
 class Detector:

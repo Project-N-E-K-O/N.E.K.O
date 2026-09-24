@@ -105,7 +105,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Optional local wake-word inference; model weights and the patched runtime are
-# provisioned separately.  Keep this extra dependency-free: the upstream
+# provisioned separately. Keep this extra dependency-free: the upstream
 # 1.13.8 wheel is not compatible with the timestamp/decoder patches required by
 # the backend, and publishing a platform-specific custom wheel through the
 # lockfile would silently install the wrong runtime on unsupported platforms.
@@ -254,3 +254,4 @@ select = [
 fail_under = 80
 show_missing = true
 skip_covered = true
+
