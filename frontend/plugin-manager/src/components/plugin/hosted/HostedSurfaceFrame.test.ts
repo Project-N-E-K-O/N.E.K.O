@@ -120,6 +120,10 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
   app.mount(container)
   await nextTick()
   await flushPromises()
+  if (initialSurface.mode === 'hosted-tsx' || initialSurface.mode === 'markdown') {
+    await vi.dynamicImportSettled()
+    await nextTick()
+  }
 
   const iframe = container.querySelector('iframe') as HTMLIFrameElement | null
   if (!iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
@@ -729,6 +733,10 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
         id: 'onboarding',
         locale: 'zh-CN',
       },
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        suppressErrorMessage: true,
+      }),
     )
     frame.unmount()
   })
