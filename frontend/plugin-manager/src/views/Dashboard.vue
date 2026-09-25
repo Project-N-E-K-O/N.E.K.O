@@ -433,7 +433,7 @@ function handleStartTutorial() {
 }
 
 function startAutoRefresh() {
-  if (dashboardDisposed || isGoodbyeResourceSuspendingOrSuspended()) return
+  if (dashboardDisposed || document.hidden || isGoodbyeResourceSuspendingOrSuspended()) return
   stopAutoRefresh()
   metricsTimer = window.setInterval(() => {
     if (isGoodbyeResourceSuspendingOrSuspended()) {
@@ -469,6 +469,11 @@ function handleGoodbyeResourceStorage(event: StorageEvent) {
   }
 }
 
+function handleVisibilityChange() {
+  if (document.hidden) stopAutoRefresh()
+  else startAutoRefresh()
+}
+
 onMounted(async () => {
   document.documentElement.classList.add(dashboardStartupClass)
   dashboardDisposed = false
@@ -482,6 +487,7 @@ onMounted(async () => {
   finishDashboardStartup()
   window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.addEventListener('storage', handleGoodbyeResourceStorage)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   startAutoRefresh()
 })
 
@@ -490,6 +496,7 @@ onUnmounted(() => {
   document.documentElement.classList.remove(dashboardStartupClass)
   window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.removeEventListener('storage', handleGoodbyeResourceStorage)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   stopAutoRefresh()
 })
 </script>

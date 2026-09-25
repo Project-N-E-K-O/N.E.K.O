@@ -816,6 +816,7 @@ async function toggleMetrics() {
 }
 
 function startMetricsAutoRefresh() {
+  if (document.hidden) return
   stopMetricsAutoRefresh()
   metricsRefreshTimer = window.setInterval(() => {
     // Skip refresh if no running plugins
@@ -824,6 +825,11 @@ function startMetricsAutoRefresh() {
       console.warn('Auto-refresh metrics failed:', error)
     })
   }, METRICS_REFRESH_INTERVAL)
+}
+
+function handleMetricsVisibilityChange() {
+  if (document.hidden) stopMetricsAutoRefresh()
+  else if (showMetrics.value) startMetricsAutoRefresh()
 }
 
 function stopMetricsAutoRefresh() {
@@ -1428,11 +1434,13 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  document.addEventListener('visibilitychange', handleMetricsVisibilityChange)
   await Promise.all([loadMarketEntry(), refreshForInitialOpen()])
 })
 
 onUnmounted(() => {
   window.removeEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
+  document.removeEventListener('visibilitychange', handleMetricsVisibilityChange)
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()
