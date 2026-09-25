@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Generic, Literal, TypeAlias, TypeVar
 
 from main_logic.voice_turn.contracts import SpeechActivityEvent, TurnEvaluation
+from main_logic.voice_turn.admission import SpeechEvidence
 
 from ..lifecycle import VoiceIngressToken, VoiceTurnToken
 from .throttle_policy import ThrottleAction
@@ -26,6 +27,7 @@ class DetectorIngressIdentity:
     ingress_token: VoiceIngressToken
     detector_epoch: int
     sequence_no: int
+    audio_end_sample: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,7 @@ class SmartTurnCompletionFence:
     semantic_turn_id: int
     successor_candidate_generation: int
     successor_present: bool
+    admission_confirmed: bool = True
 
     @property
     def candidate(self) -> DetectorCandidateKey:
@@ -78,6 +81,8 @@ class DetectorActivityEvent:
     ingress: DetectorIngressIdentity
     candidate: DetectorCandidateKey
     activity: SpeechActivityEvent
+    evidence: SpeechEvidence | None = None
+    audio_start_sample: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

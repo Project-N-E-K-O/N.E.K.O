@@ -1613,23 +1613,27 @@ class VoiceIdentityService:
         if type(runtime_ready) is not bool:
             raise TypeError("runtime_ready must be bool")
         async with self._operation_lock:
+            transition_settled = False
             try:
-                return await self._update_runtime_noise_reduction_enabled_locked(
+                status = await self._update_runtime_noise_reduction_enabled_locked(
                     enabled,
                     runtime_ready=runtime_ready,
                 )
-            finally:
-                # A failed DSP transition or activation did not commit a new
-                # contract. Keep same-value reconciliation retryable until a
-                # subsequent activation succeeds.
-                self._runtime_audio_contract_transition_pending = (
-                    not runtime_ready
-                    or (
-                        self._runtime_mode != "off"
-                        and self._effective_reason
-                        is VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
-                    )
+                # `off` is an intentional settled state even though its
+                # effective reason is represented as runtime_degraded.  For
+                # every other mode, a degraded result means activation or DSP
+                # reconciliation did not commit and must remain retryable.
+                transition_settled = runtime_ready and (
+                    self._runtime_mode == "off"
+                    or status.state.effective_reason
+                    is not VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 )
+                return status
+            finally:
+                # Exceptions during activation are also unsettled: do not let
+                # the value assignment above make a failed transition look
+                # committed to the next reconciliation.
+                self._runtime_audio_contract_transition_pending = not transition_settled
 
     async def _update_runtime_noise_reduction_enabled_locked(
         self,

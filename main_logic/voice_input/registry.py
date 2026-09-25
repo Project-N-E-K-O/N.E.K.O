@@ -229,9 +229,11 @@ class VoiceInputRegistry:
             self._schedule_cancel(route, "empty_final")
             return VoiceInputDispatchResult.EMPTY_CONSUMED
         try:
-            await route.record.consumer.on_final(event)
+            accepted = await route.record.consumer.on_final(event)
         except Exception:
             return VoiceInputDispatchResult.CALLBACK_FAILED
+        if accepted is False:
+            return VoiceInputDispatchResult.REJECTED
         return VoiceInputDispatchResult.DELIVERED
 
     def invalidate_utterance(

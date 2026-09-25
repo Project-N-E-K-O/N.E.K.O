@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .admission import SpeechEvidence
+
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Awaitable, Callable
@@ -82,6 +84,7 @@ class VoiceTranscriptEvent:
     turn_token: VoiceTurnToken
     provider: str
     text: str
+    evidence: SpeechEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +102,7 @@ class VoicePartialEvent:
 
     turn_token: VoiceTurnToken
     text: str
+    evidence: SpeechEvidence | None = None
 
     @property
     def session_epoch(self) -> int:
@@ -116,6 +120,11 @@ class AsrStatusEvent:
     # Default keeps narrow legacy test doubles constructible; production
     # runtime call sites always provide the captured source epoch explicitly.
     session_epoch: int = -1
+    recovery_id: int | None = None
+    lease_generation: int | None = None
+    route_generation: int | None = None
+    recovery_session_epoch: int | None = None
+    buffering: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +134,11 @@ class AsrLifecycleNotification:
     state: str
     provider: str
     session_epoch: int
+    recovery_id: int | None = None
+    lease_generation: int | None = None
+    route_generation: int | None = None
+    recovery_session_epoch: int | None = None
+    buffering: bool = False
 
 
 @dataclass(frozen=True, slots=True)

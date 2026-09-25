@@ -352,6 +352,52 @@ def _safe_proactive_history_size() -> dict[str, int]:
     return out
 
 
+def _safe_session_lifecycle():
+    """Content-free ownership and suspended-task diagnostics, on demand only."""
+    from main_routers.shared_state import get_session_manager
+
+    def task_state(task):
+        if task is None:
+            return None
+        chain = []
+        coro = task.get_coro()
+        for _ in range(20):
+            frame = getattr(coro, 'cr_frame', None) or getattr(coro, 'gi_frame', None)
+            if frame is not None:
+                chain.append(f'{frame.f_code.co_name}:{frame.f_lineno}')
+            coro = getattr(coro, 'cr_await', None) or getattr(coro, 'gi_yieldfrom', None)
+            if coro is None:
+                break
+        return {'done': task.done(), 'cancelling': task.cancelling(), 'awaits': chain}
+
+    result = {}
+    for name, manager in get_session_manager().items():
+        session = getattr(manager, 'session', None)
+        arbiter = getattr(session, '_response_arbiter', None)
+        current = getattr(arbiter, '_current', None)
+        asr = getattr(manager, '_asr_runtime', None)
+        dispatcher = getattr(asr, '_asr_transcript_dispatcher', None)
+        result[name] = {
+            'active': manager.is_active,
+            'ready': manager.session_ready,
+            'client': type(session).__name__,
+            'listener': task_state(getattr(manager, 'message_handler_task', None)),
+            'arbiter_worker': task_state(getattr(arbiter, '_worker', None)),
+            'arbiter_source': getattr(current, 'source', None),
+            'arbiter_idle': arbiter._idle.is_set() if arbiter else None,
+            'arbiter_dispatch': arbiter._dispatch_allowed.is_set() if arbiter else None,
+            'arbiter_available': getattr(arbiter, '_connection_available', None),
+            'voice_pause_id': getattr(session, '_external_voice_turn_pause_id', None),
+            'asr_turn_prepared': getattr(asr, '_asr_turn_prepared', None),
+            'asr_dispatcher': task_state(getattr(dispatcher, '_worker', None)),
+            'asr_pending_delivery': getattr(dispatcher, 'has_pending_delivery', None),
+            'speech_output_total': getattr(manager, '_speech_output_total', None),
+            'connections_live': sum(not r.closed for r in getattr(manager, '_connection_records', ())),
+            'tts_live': sum(bool(r.thread and r.thread.is_alive()) for r in getattr(manager, '_tts_runtimes', ())),
+        }
+    return result
+
+
 def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> dict[str, Any]:
     """Take a single snapshot. Every field is individually try-wrapped — one blowing up does not affect the others.
 
@@ -394,6 +440,10 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
     except Exception as exc:
         snap["widget_mode"] = {"error": str(exc)[:160]}
     if include_deep:
+        try:
+            snap['session_lifecycle'] = _safe_session_lifecycle()
+        except Exception as exc:
+            snap['session_lifecycle'] = {'error_type': type(exc).__name__}
         # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
         snap["gc_object_top"] = _safe_gc_object_top()
         snap.update(_safe_psutil_heavy(channel))

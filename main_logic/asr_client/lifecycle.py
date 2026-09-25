@@ -11,7 +11,7 @@ from main_logic.voice_turn.contracts import (
     VoiceTurnToken,
 )
 
-from .audio import AudioRingBuffer
+from .audio_ranges import AudioSampleSpan, RangedAudioBuffer
 from .provider_policy import AsrProviderPolicy
 
 
@@ -259,6 +259,7 @@ class AudioDecision:
     pre_roll: bytes = b""
     shadow_disposition: AudioDisposition | None = None
     backpressure: bool = False
+    audio_spans: tuple[AudioSampleSpan, ...] = ()
 
 
 class VoiceInputLifecycleController:
@@ -287,8 +288,7 @@ class VoiceInputLifecycleController:
                 raise RuntimeError("ASR_PROTECTED_PREFIX_OVERFLOW")
         self._prefix_protected = True
         if payload:
-            self._pending_connect.append(payload)
-            self._pre_roll.clear()
+            self._pre_roll.move_to(self._pending_connect)
 
     def has_prefix_capacity(self, byte_count: int) -> bool:
         if not self._prefix_protected:
@@ -304,6 +304,9 @@ class VoiceInputLifecycleController:
 
     def peek_active_start_audio(self) -> bytes:
         return self._active_start_audio if self._state is VoiceLifecycleState.ACTIVE else b""
+
+    def peek_active_start_spans(self) -> tuple[AudioSampleSpan, ...]:
+        return self._active_start_spans if self._state is VoiceLifecycleState.ACTIVE else ()
 
     def __init__(
         self,
@@ -326,22 +329,26 @@ class VoiceInputLifecycleController:
         self._turn_sequence = 0
         self._turn_id = 0
         self._completed_turn_id = -1
-        self._pre_roll = AudioRingBuffer(
+        self._pre_roll = RangedAudioBuffer(
             capacity_ms=self.config.pre_roll_ms,
             sample_rate_hz=16_000,
         )
         self._pre_roll_sent_for_turn = False
-        self._pending_turn = AudioRingBuffer(
+        self._pending_turn = RangedAudioBuffer(
             capacity_ms=self.config.pending_audio_ms,
             sample_rate_hz=16_000,
         )
         self._pending_turn_speech = False
         self._pending_turn_id: int | None = None
-        self._pending_connect = AudioRingBuffer(
+        self._pending_connect = RangedAudioBuffer(
             capacity_ms=self.config.pending_audio_ms,
             sample_rate_hz=16_000,
         )
         self._active_start_audio = b""
+        self._active_start_spans: tuple[AudioSampleSpan, ...] = ()
+        self.last_drained_spans: tuple[AudioSampleSpan, ...] = ()
+        self.admission_failure_reason: str | None = None
+        self.admission_range_diagnostics: dict[str, int | None] = {}
         self._independent_asr_fail_open = not bool(resource_optimization_enabled)
         self._prefix_protected = False
         self._prefix_capacity_event = asyncio.Event()
@@ -397,15 +404,14 @@ class VoiceInputLifecycleController:
         if event is VoiceLifecycleEvent.SOFT_WAKE:
             self._turn_id = self._allocate_turn_id()
             self.metrics.wake_candidate_count += 1
-            existing_pre_roll = self._pre_roll.drain()
-            if existing_pre_roll:
-                self._pending_connect.append(existing_pre_roll)
+            self._pre_roll.move_to(self._pending_connect)
         elif event is VoiceLifecycleEvent.SPEECH_CONFIRMED:
             if self._turn_id <= self._completed_turn_id:
                 self._turn_id = self._allocate_turn_id()
             self.metrics.wake_confirmed_count += 1
             if self._pre_roll.peek():
-                self._pending_connect.append(self._pre_roll.drain())
+                self._pre_roll.move_to(self._pending_connect)
+            self._active_start_spans = self._pending_connect.spans
             self._active_start_audio = self._pending_connect.drain()
         elif event is VoiceLifecycleEvent.CONNECT_FAILED:
             self._transport_generation += 1
@@ -419,6 +425,7 @@ class VoiceInputLifecycleController:
             self._pre_roll.clear()
             self._pending_connect.clear()
             self._active_start_audio = b""
+            self._active_start_spans = ()
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
             self._prefix_protected = False
             self._turn_id = self._allocate_turn_id()
@@ -430,10 +437,11 @@ class VoiceInputLifecycleController:
             self._pending_turn_id = None
             self._pending_connect.clear()
             self._active_start_audio = b""
+            self._active_start_spans = ()
         self.notify_prefix_capacity()
         return self._state
 
-    def accept_audio(self, pcm16: bytes, *, sample_rate_hz: int) -> AudioDecision:
+    def accept_audio(self, pcm16: bytes, *, sample_rate_hz: int, start_sample: int | None = None) -> AudioDecision:
         if not isinstance(pcm16, bytes):
             raise TypeError("PCM16 audio must be bytes")
         if len(pcm16) % 2:
@@ -460,6 +468,7 @@ class VoiceInputLifecycleController:
             dropped = self._pending_turn.append(
                 pcm16,
                 sample_rate_hz=sample_rate_hz,
+                start_sample=start_sample,
             )
             if dropped:
                 self.metrics.buffer_overflow_count += 1
@@ -487,7 +496,7 @@ class VoiceInputLifecycleController:
                 }
                 else self._pre_roll
             )
-            dropped = target_buffer.append(pcm16, sample_rate_hz=sample_rate_hz)
+            dropped = target_buffer.append(pcm16, sample_rate_hz=sample_rate_hz, start_sample=start_sample)
             if dropped:
                 self.metrics.buffer_overflow_count += 1
             if self.shadow_mode:
@@ -500,13 +509,16 @@ class VoiceInputLifecycleController:
             return AudioDecision(AudioDisposition.BUFFER)
 
         if target is AudioDisposition.FORWARD and not self._pre_roll_sent_for_turn:
-            self._pre_roll.append(pcm16, sample_rate_hz=sample_rate_hz)
+            self._pre_roll.append(pcm16, sample_rate_hz=sample_rate_hz, start_sample=start_sample)
+            spans = self._active_start_spans + self._pre_roll.spans
             pre_roll = self._active_start_audio + self._pre_roll.drain()
             self._active_start_audio = b""
+            self._active_start_spans = ()
             self._pre_roll_sent_for_turn = True
             return AudioDecision(
                 AudioDisposition.FORWARD_WITH_PRE_ROLL,
                 pre_roll=pre_roll,
+                audio_spans=spans,
             )
 
         return AudioDecision(AudioDisposition.FORWARD)
@@ -515,7 +527,9 @@ class VoiceInputLifecycleController:
         """Drain pre-roll and pending-connect audio as transport becomes active."""
 
         if self._state is not VoiceLifecycleState.ACTIVE:
+            self.last_drained_spans = ()
             return b""
+        self.last_drained_spans, self._active_start_spans = self._active_start_spans, ()
         payload, self._active_start_audio = self._active_start_audio, b""
         self._prefix_protected = False
         self.notify_prefix_capacity()
@@ -528,6 +542,101 @@ class VoiceInputLifecycleController:
         """Record audio only after transport crosses the provider boundary."""
 
         self.metrics.add_provider_wire_audio(duration_ms)
+
+    def buffer_admission_audio(self, pcm16: bytes, *, through_sample: int, confirmed: bool, pending_only: bool = False, start_sample: int | None = None) -> AudioDecision:
+        """Save PCM before async detection; cap only unpromised candidates."""
+        if start_sample is None:
+            start_sample = through_sample - len(pcm16) // 2
+        if start_sample < 0 or through_sample - start_sample != len(pcm16) // 2:
+            raise ValueError("PCM sample range does not match audio")
+        self._admission_audio_end = through_sample
+        self.admission_failure_reason = None
+        promised_buffer = (
+            self._pending_turn if pending_only or self._state is VoiceLifecycleState.DRAINING
+            else self._pending_connect
+        )
+        if (confirmed or self._pending_turn_speech or pending_only) and (
+            promised_buffer.byte_count + len(pcm16) > self.config.pending_audio_ms * 32
+        ):
+            self.admission_failure_reason = "candidate_audio_capacity_exceeded"
+            return AudioDecision(AudioDisposition.BLOCK, backpressure=True)
+        if pending_only:
+            self._pending_turn.append(pcm16, start_sample=start_sample)
+            self.metrics.add_local_audio(len(pcm16) // 32)
+            self.metrics.add_suppressed_audio(len(pcm16) // 32)
+            return AudioDecision(AudioDisposition.BUFFER)
+        decision = self.accept_audio(pcm16, sample_rate_hz=16_000, start_sample=start_sample)
+        if decision.backpressure:
+            self.admission_failure_reason = "candidate_audio_capacity_exceeded"
+        if confirmed or self._prefix_protected or self._pending_turn_speech:
+            return decision
+        capacity = 700 * 32
+        if self._state is VoiceLifecycleState.DRAINING:
+            self._pending_turn.trim_to_bytes(capacity)
+        elif self._state in {VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleState.WARM_IDLE,
+                             VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
+                             VoiceLifecycleState.DEEP_SLEEP}:
+            target = self._pending_connect if self._state in {
+                VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
+            } else self._pre_roll
+            combined = RangedAudioBuffer(capacity_ms=self.config.pending_audio_ms)
+            self._pending_connect.move_to(combined)
+            self._pre_roll.move_to(combined)
+            combined.trim_to_bytes(capacity)
+            combined.move_to(target)
+        return decision
+
+    def retain_admitted_candidate(self, *, start_sample: int) -> bool:
+        """Trim rejected predecessors without touching a sealed/active turn.
+
+        Refuse a lagging candidate whose prefix was evicted, rather than
+        silently uploading a sentence with its first word missing.
+        """
+        if self._state is VoiceLifecycleState.ACTIVE or self._pending_turn_speech:
+            return True
+        end_sample = getattr(self, "_admission_audio_end", 0)
+        count = (end_sample - start_sample) * 2
+        if self._state is VoiceLifecycleState.DRAINING:
+            target = self._pending_turn
+            if not self._validate_candidate_range(target, start_sample, end_sample):
+                return False
+            target.trim_to_bytes(count)
+            return True
+        combined = RangedAudioBuffer(capacity_ms=self.config.pending_audio_ms * 2)
+        # Copy first: a failed validation must not silently destroy PCM.
+        for source in (self._pending_connect, self._pre_roll):
+            offset = 0
+            payload = source.peek()
+            for span in source.spans:
+                size = span.samples * 2
+                combined.append(payload[offset:offset + size], start_sample=span.start)
+                offset += size
+        if not self._validate_candidate_range(combined, start_sample, end_sample):
+            return False
+        combined.trim_to_bytes(count)
+        target = self._pending_connect if self._state in {
+            VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
+        } else self._pre_roll
+        capacity = (self.config.pending_audio_ms if target is self._pending_connect
+                    else self.config.pre_roll_ms) * 32
+        if combined.byte_count > capacity:
+            self.admission_failure_reason = "candidate_audio_capacity_exceeded"
+            return False
+        self._pending_connect.clear()
+        self._pre_roll.clear()
+        combined.move_to(target)
+        return True
+
+    def _validate_candidate_range(self, buffer: RangedAudioBuffer, start: int, end: int) -> bool:
+        self.admission_failure_reason = buffer.range_failure(start, end)
+        spans = buffer.spans
+        self.admission_range_diagnostics = {
+            "requested_start": start, "requested_end": end,
+            "retained_start": spans[0].start if spans else None,
+            "retained_end": spans[-1].end if spans else None,
+            "retained_bytes": buffer.byte_count,
+        }
+        return self.admission_failure_reason is None
 
     def matches(self, identity: VoiceAsyncIdentity) -> bool:
         matches = (
@@ -548,12 +657,18 @@ class VoiceInputLifecycleController:
         self._pending_turn_speech = True
 
     def begin_pending_turn(self) -> bytes:
-        """Activate and drain the pending turn after the prior final."""
+        """Activate a successor while retaining its prefix until queue handoff.
+
+        The returned bytes are a compatibility snapshot, not a transfer of
+        ownership. Preparation may yield; incoming PCM must be appended to the
+        retained active prefix until the dispatcher accepts the whole prefix.
+        """
 
         if self._state is not VoiceLifecycleState.WARM_IDLE:
             raise RuntimeError("VOICE_PENDING_TURN_REQUIRES_WARM_IDLE")
         if not self.has_pending_turn:
             return b""
+        spans = self._pending_turn.spans
         payload = self._pending_turn.drain()
         self._pending_turn_speech = False
         pending_turn_id, self._pending_turn_id = self._pending_turn_id, None
@@ -561,8 +676,45 @@ class VoiceInputLifecycleController:
             raise RuntimeError("VOICE_PENDING_TURN_ID_MISSING")
         self._turn_id = pending_turn_id
         self.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+        self._active_start_audio = payload + self._active_start_audio
+        self._active_start_spans = spans + self._active_start_spans
         self._pre_roll_sent_for_turn = True
+        self.last_drained_spans = spans
         return payload
+
+    def buffer_active_start_audio(self, pcm16: bytes, *, start_sample: int) -> AudioDecision:
+        """Append to an admitted prefix awaiting preparation, without eviction."""
+        if not isinstance(pcm16, bytes) or len(pcm16) % 2 or start_sample < 0:
+            raise ValueError("active prefix requires PCM16 and a valid sample range")
+        if self._state is not VoiceLifecycleState.ACTIVE or self._route_mode is VoiceRouteMode.BLOCKED:
+            return AudioDecision(AudioDisposition.BLOCK)
+        spans = self._active_start_spans
+        self.admission_range_diagnostics = {
+            "requested_start": start_sample,
+            "requested_end": start_sample + len(pcm16) // 2,
+            "retained_start": spans[0].start if spans else None,
+            "retained_end": spans[-1].end if spans else None,
+            "retained_bytes": len(self._active_start_audio),
+        }
+        self.admission_failure_reason = None
+        if (self._active_start_audio and not spans) or (spans and spans[-1].end != start_sample):
+            self.admission_failure_reason = "candidate_audio_range_discontinuous"
+            return AudioDecision(AudioDisposition.BLOCK)
+        if len(self._active_start_audio) + len(pcm16) > self.prefix_capacity_bytes:
+            self.admission_failure_reason = "candidate_audio_capacity_exceeded"
+            return AudioDecision(AudioDisposition.BLOCK, backpressure=True)
+        if pcm16:
+            self._active_start_audio += pcm16
+            if spans and spans[-1].start is not None:
+                tail = spans[-1]
+                self._active_start_spans = spans[:-1] + (
+                    AudioSampleSpan(tail.start, tail.samples + len(pcm16) // 2),
+                )
+            else:
+                self._active_start_spans = spans + (AudioSampleSpan(start_sample, len(pcm16) // 2),)
+            self.metrics.add_local_audio(len(pcm16) // 32)
+            self.metrics.add_suppressed_audio(len(pcm16) // 32)
+        return AudioDecision(AudioDisposition.BUFFER)
 
     def discard_pending_turn(self) -> None:
         """Discard the whole next-turn candidate while preserving a sealed turn."""
@@ -583,10 +735,9 @@ class VoiceInputLifecycleController:
 
         if self._pending_turn_speech:
             return False
-        payload = self._pending_turn.drain()
-        if not payload:
+        if not self._pending_turn.byte_count:
             return False
-        dropped = self._pre_roll.append(payload, sample_rate_hz=16_000)
+        dropped = self._pending_turn.move_to(self._pre_roll)
         if dropped:
             self.metrics.buffer_overflow_count += 1
         return True
@@ -609,6 +760,8 @@ class VoiceInputLifecycleController:
         self._pending_turn_id = None
         self._pending_connect.clear()
         self._active_start_audio = b""
+        self._active_start_spans = ()
+        self.last_drained_spans = ()
         self.notify_prefix_capacity()
 
     def enable_independent_asr_fail_open(self) -> None:
@@ -635,6 +788,8 @@ class VoiceInputLifecycleController:
         self._pending_turn_speech = False
         self._pending_turn_id = None
         self._active_start_audio = b""
+        self._active_start_spans = ()
+        self.last_drained_spans = ()
         if self._state not in {
             VoiceLifecycleState.OFF,
             VoiceLifecycleState.BLOCKED,

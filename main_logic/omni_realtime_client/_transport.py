@@ -216,7 +216,12 @@ class _TransportMixin:
         if type(end_ms) is not int or end_ms < 0:
             if self._has_server_vad:
                 self._voice_handoff_server_boundary_unknown = True
-                return False
+                # The event belongs to the current server item, but the
+                # server did not provide a usable boundary.  Let the caller
+                # retire the local buffer conservatively; a later event can
+                # still establish a precise boundary.  Stale item ids were
+                # rejected above and never reach this path.
+                return True
             return True
         self._voice_handoff_server_boundary_unknown = False
         end_sample = getattr(self, "_voice_handoff_loud_end_sample", None)

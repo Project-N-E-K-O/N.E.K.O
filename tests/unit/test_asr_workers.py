@@ -441,10 +441,10 @@ async def test_qwen_server_vad_speech_stopped_without_completed_expires_empty_fi
     )
 
     # Server VAD sealed the turn but the transcription completed event never
-    # arrives: the stalled-item deadline must close the turn with an empty
-    # final instead of leaving the upstream session waiting unboundedly.
-    expired = await _next_event(responses, "final")
-    assert expired.text == ""
+    # arrives: the watchdog reports an explicit failure for runtime recovery,
+    # without inventing an empty transcription result.
+    expired = await _next_event(responses, "error")
+    assert expired.error_code == "ASR_PROVIDER_FINAL_TIMEOUT"
     assert expired.utterance_id == started.utterance_id
 
     # A late completed event for the expired item must not resurrect it.
@@ -456,8 +456,8 @@ async def test_qwen_server_vad_speech_stopped_without_completed_expires_empty_fi
         }
     )
 
-    # The session keeps transcribing: a following turn whose completed event
-    # arrives before the deadline is delivered unchanged.
+    # This worker-only harness does not retire on error as the adapter does.
+    # Even before retirement, an unrelated provider item retains its own key.
     await websocket.server_send(
         {"type": "input_audio_buffer.speech_started", "item_id": "qwen-next"}
     )

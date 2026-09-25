@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
+import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from .activity_evidence import RnnoiseEvidence
 from utils.audio_processor import AudioProcessor
+
+
+logger = logging.getLogger(__name__)
 
 
 class _AudioProcessorProtocol(Protocol):
@@ -55,6 +62,12 @@ class VoiceInputAudioPipeline:
         self._lock = asyncio.Lock()
         self._closed = False
         self._stream_finalized = False
+        self._diagnostic_id = uuid.uuid4().hex[:12]
+        self._diagnostic_next_at = 0.0
+        self._diagnostic_totals: Counter[str] = Counter()
+        self._diagnostic_probability_peak: float | None = None
+        self._diagnostic_last_input_at: float | None = None
+        self._native_chunk_seconds = self._native_queue_seconds = 0.0
 
     @property
     def nr_enabled(self) -> bool:
@@ -68,9 +81,18 @@ class VoiceInputAudioPipeline:
         processor: _AudioProcessorProtocol,
         pcm16: bytes,
     ) -> bytes:
-        return await self._run_native_cancellation_safe(
-            lambda: processor.process_chunk(pcm16)
-        )
+        queued_at = time.perf_counter()
+
+        def process_timed() -> bytes:
+            started_at = time.perf_counter()
+            self._native_queue_seconds = started_at - queued_at
+            try:
+                return processor.process_chunk(pcm16)
+            finally:
+                # DSP includes RNNoise, resampling and AGC, not just inference.
+                self._native_chunk_seconds = time.perf_counter() - started_at
+
+        return await self._run_native_cancellation_safe(process_timed)
 
     async def _run_native_cancellation_safe(
         self,
@@ -109,7 +131,9 @@ class VoiceInputAudioPipeline:
             raise ValueError("microphone PCM16 contains an incomplete sample")
         if sample_rate_hz not in (16_000, 48_000):
             raise ValueError("microphone sample rate must be 16000 or 48000")
+        requested_at = time.perf_counter()
         async with self._lock:
+            acquired_at = time.perf_counter()
             if self._closed:
                 raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
             if self._stream_finalized:
@@ -119,6 +143,10 @@ class VoiceInputAudioPipeline:
                     b"", 16_000, None, False, RnnoiseEvidence.unavailable()
                 )
             if sample_rate_hz == 16_000:
+                self._record_audio_diagnostics(
+                    RnnoiseEvidence.unavailable(), pcm16, pcm16,
+                    sample_rate_hz, requested_at, acquired_at, 0.0, 0.0,
+                )
                 return ProcessedVoiceFrame(
                     pcm16, 16_000, None, False, RnnoiseEvidence.unavailable()
                 )
@@ -167,6 +195,11 @@ class VoiceInputAudioPipeline:
                     evidence = RnnoiseEvidence(
                         True, 0, None, None, None, None
                     )
+            self._record_audio_diagnostics(
+                evidence, pcm16, processed, sample_rate_hz,
+                requested_at, acquired_at,
+                self._native_chunk_seconds, self._native_queue_seconds,
+            )
         return ProcessedVoiceFrame(
             processed,
             16_000,
@@ -174,6 +207,59 @@ class VoiceInputAudioPipeline:
             rnnoise_available,
             evidence,
         )
+
+    def _record_audio_diagnostics(
+        self, evidence: RnnoiseEvidence, source: bytes, output: bytes,
+        sample_rate: int, requested_at: float, acquired_at: float,
+        native_seconds: float, queue_seconds: float,
+    ) -> None:
+        """Bounded numeric summaries; unavailable evidence is never a zero score."""
+        now = time.perf_counter()
+        totals = self._diagnostic_totals
+        totals["chunks"] += 1
+        totals["input_ms"] += len(source) * 500 / sample_rate
+        totals["output_ms"] += len(output) / 32
+        totals["rnnoise_frames"] += evidence.frame_count
+        totals["unavailable_chunks"] += int(not evidence.available)
+        if evidence.mean is not None:
+            totals["probability_sum"] += evidence.mean * evidence.frame_count
+            totals["scored_frames"] += evidence.frame_count
+        if evidence.peak is not None:
+            peak = self._diagnostic_probability_peak
+            self._diagnostic_probability_peak = max(peak or 0.0, evidence.peak)
+            totals["peak_ge_0_5_chunks"] += int(evidence.peak >= 0.5)
+        for key, seconds in (
+            ("dsp", native_seconds),
+            ("thread_queue", queue_seconds),
+            ("lock_wait", acquired_at - requested_at),
+            ("pipeline", now - requested_at),
+        ):
+            totals[key + "_ms"] += seconds * 1000
+            totals[key + "_max_ms"] = max(totals[key + "_max_ms"], seconds * 1000)
+        if self._diagnostic_last_input_at is not None:
+            totals["input_interval_max_ms"] = max(
+                totals["input_interval_max_ms"],
+                (requested_at - self._diagnostic_last_input_at) * 1000,
+            )
+        self._diagnostic_last_input_at = requested_at
+        if now < self._diagnostic_next_at:
+            return
+        mean = (totals["probability_sum"] / totals["scored_frames"]
+                if totals["scored_frames"] else None)
+        summary = {key: round(value, 3) for key, value in totals.items()
+                   if key != "probability_sum"}
+        summary.update(probability_mean=mean,
+                       probability_peak=self._diagnostic_probability_peak,
+                       latest_probability_last=evidence.last,
+                       latest_probability_ema=evidence.ema)
+        try:
+            logger.info("[voice-rnnoise] pipeline=%s stats=%s", self._diagnostic_id, summary)
+        except Exception:
+            # Diagnostics cannot reject PCM or break cancellation/close ownership.
+            pass
+        self._diagnostic_next_at = now + 2.0
+        totals.clear()
+        self._diagnostic_probability_peak = None
 
     async def finalize_stream(self) -> bytes:
         """Flush the processor EOF tail once without closing native state."""

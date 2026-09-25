@@ -1833,7 +1833,12 @@ async def test_worker_exception_during_close_is_not_reported():
         on_connection_error=errors,
     )
     await session.connect()
-    await asyncio.wait_for(session.close(), 1)
+    # Closing must surface retirement failure to its owner without recursively
+    # invoking the connection-error callback for another recovery operation.
+    with pytest.raises(RuntimeError, match="ASR_CONNECTION_RETIRE_FAILED"):
+        await asyncio.wait_for(session.close(), 1)
+    with pytest.raises(RuntimeError, match="ASR_CONNECTION_RETIRE_FAILED"):
+        await session.close()
 
     assert session.is_ready is False
     errors.assert_not_awaited()
@@ -1952,6 +1957,24 @@ async def test_runtime_start_closed_during_lifecycle_returns_stale_without_ready
     assert runtime._asr_session is None
     assert [event.code for event in statuses] == []
     candidate.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stale_connect_cleanup_does_not_block_new_session_epoch() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    old_epoch = runtime._asr_session_epoch
+    stale_cleanup = asyncio.create_task(asyncio.sleep(60))
+    runtime._connect_cleanup_tasks_for_epoch(old_epoch).add(stale_cleanup)
+
+    new_epoch = runtime._advance_asr_session_epoch()
+
+    assert new_epoch == old_epoch + 1
+    assert stale_cleanup in runtime._connect_cleanup_tasks_for_epoch(old_epoch)
+    assert not runtime._connect_cleanup_tasks_for_epoch(new_epoch)
+
+    stale_cleanup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stale_cleanup
 
 
 @pytest.mark.asyncio

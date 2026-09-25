@@ -253,10 +253,18 @@ async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1] == {
+    assert {
         "code": "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
         "details": {
             "provider": "soniox",
+            "session_epoch": runtime._asr_session_epoch,
+        },
+    } in statuses
+    assert statuses[-1] == {
+        "code": "VOICE_INPUT_RECOVERY_FAILED",
+        "details": {
+            "lease_generation": runtime._voice_lease_generation,
+            "reason": "ASR_INDEPENDENT_FAILED",
             "session_epoch": runtime._asr_session_epoch,
         },
     }
@@ -320,7 +328,9 @@ async def test_restart_default_attempts_follow_single_attempt_policy(
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+    assert any(status["code"] == "ASR_INDEPENDENT_FAILED" for status in statuses)
+    assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
+    assert statuses[-1]["details"]["lease_generation"] == runtime._voice_lease_generation
     assert "private restart connect detail" not in str(
         runtime.send_status.await_args_list
     )
@@ -354,7 +364,8 @@ async def test_restart_default_attempts_follow_soniox_policy_ladder(
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
     ]
-    assert statuses[-1]["code"] == "ASR_INDEPENDENT_FAILED"
+    assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
+    assert statuses[-1]["details"]["lease_generation"] == runtime._voice_lease_generation
 
 
 async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> None:

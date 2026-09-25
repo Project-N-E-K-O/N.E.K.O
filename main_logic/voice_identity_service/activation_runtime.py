@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
 import math
 import os
+import time
+import uuid
 from itertools import islice
 
 from main_logic.voice_input.activation import (
@@ -150,6 +152,9 @@ class VoiceSessionActivationRuntime:
         self._candidate_voice_samples = 0
         self._last_voice_end_at: float | None = None
         self._attempted_checkpoints: set[float] = set()
+        self._candidate_diagnostic_id = uuid.uuid4().hex[:12]
+        self._candidate_diagnostic_next_at = 0.0
+        self._candidate_diagnostic_totals: Counter[str] = Counter()
         self._controller.start(generation, enabled=enabled)
 
     @property
@@ -418,6 +423,8 @@ class VoiceSessionActivationRuntime:
                 request = self._advance_candidate(frame, voice_activity=voice_activity)
             elif decision.state in {ActivationState.ACTIVE, ActivationState.REPLAYING}:
                 self._clear_candidate()
+            if decision.reason == "frame_buffered":
+                self._log_candidate_progress(frame, voice_activity, request is not None)
             decision = self._publish(decision)
             self._ensure_output_task_locked()
             self._ensure_idle_task_locked()
@@ -535,7 +542,7 @@ class VoiceSessionActivationRuntime:
                 and frame.captured_at - self._last_voice_end_at
                 >= self._config.candidate_silence_seconds
             ):
-                self._clear_candidate()
+                self._clear_candidate("capture_gap")
             if self._candidate_start_sequence is None:
                 self._candidate_start_sequence = frame.sequence
                 self._candidate_start_sample = frame.sample_start
@@ -547,7 +554,7 @@ class VoiceSessionActivationRuntime:
             and frame.captured_end_at - self._last_voice_end_at
             >= self._config.candidate_silence_seconds
         ):
-            self._clear_candidate()
+            self._clear_candidate("speech_gap")
             return None
 
         start_sequence = self._candidate_start_sequence
@@ -578,7 +585,7 @@ class VoiceSessionActivationRuntime:
             # Cold preparation can outlast the bounded PCM cache. Start a new
             # candidate on subsequent speech; evicted evidence cannot consume
             # either scoring checkpoint or contribute to the new duration.
-            self._clear_candidate()
+            self._clear_candidate("candidate_unavailable")
         else:
             self._attempted_checkpoints.add(checkpoint)
         self._publish(decision)
@@ -1075,12 +1082,56 @@ class VoiceSessionActivationRuntime:
             if self._idle_task is current:
                 self._idle_task = None
 
-    def _clear_candidate(self) -> None:
+    def _clear_candidate(self, reason: str = "state_change") -> None:
+        if self._candidate_start_sequence is not None:
+            totals = self._candidate_diagnostic_totals
+            totals["reset_" + reason] += 1
+            totals["cleared_voice_samples"] += self._candidate_voice_samples
+            totals["cleared_voice_max_samples"] = max(
+                totals["cleared_voice_max_samples"], self._candidate_voice_samples,
+            )
         self._candidate_start_sequence = None
         self._candidate_start_sample = None
         self._candidate_voice_samples = 0
         self._last_voice_end_at = None
         self._attempted_checkpoints.clear()
+
+    def _log_candidate_progress(
+        self, frame: AudioFrame, voice_activity: bool, verification_requested: bool,
+    ) -> None:
+        totals = self._candidate_diagnostic_totals
+        totals["chunks"] += 1
+        totals["input_ms"] += frame.duration_seconds * 1000
+        totals["matched_ms"] += frame.duration_seconds * 1000 if voice_activity else 0
+        totals["verification_requests"] += int(verification_requested)
+        now = time.monotonic()
+        totals["capture_age_max_ms"] = max(
+            totals["capture_age_max_ms"], max(0.0, now - frame.captured_at) * 1000,
+        )
+        if now < self._candidate_diagnostic_next_at and not verification_requested:
+            return
+        summary = {key: round(value, 3) for key, value in totals.items()}
+        summary.update(
+            sequence=frame.sequence,
+            audio_end_sample=frame.sample_end,
+            candidate_start_sequence=self._candidate_start_sequence,
+            candidate_voice_ms=self._candidate_voice_samples * 1000 / frame.sample_rate,
+            first_checkpoint_ms=self._config.first_checkpoint_seconds * 1000,
+            reset_gap_ms=self._config.candidate_silence_seconds * 1000,
+            checkpoints_attempted=len(self._attempted_checkpoints),
+        )
+        try:
+            logger.info(
+                "[voice-activation-evidence] scope=%s microphone=%s route=%s "
+                "epoch=%s state=%s stats=%s",
+                self._candidate_diagnostic_id, self._generation.microphone,
+                self._generation.route, self._controller.standby_epoch,
+                self.state.value, summary,
+            )
+        except Exception:
+            pass
+        self._candidate_diagnostic_next_at = now + 2.0
+        totals.clear()
 
     def _publish(self, decision: ActivationDecision) -> ActivationDecision:
         # Every controller transition wakes the sole collector. It rechecks

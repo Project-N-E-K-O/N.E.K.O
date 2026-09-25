@@ -76,6 +76,7 @@ class AsrProviderMeta:
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
     connect_retry_cap_seconds: float = 1.0
+    supports_result_preserving_finish: bool = False
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -179,6 +180,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
+        supports_result_preserving_finish=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",

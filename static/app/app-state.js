@@ -374,7 +374,16 @@
         var requestId = startRequestIdWindowTag + '-' + startRequestIdSeq;
         startRequestIdByOwner.set(resolve, requestId);
         S._pendingSessionStartRequestId = requestId;
-        if (mode === 'audio') lastAudioClaimSeq = startClaimSeq;
+        if (mode === 'audio') {
+            lastAudioClaimSeq = startClaimSeq;
+            // A newly owned voice session is a recovery boundary; microphone
+            // device switches and game-STT repairs do not claim a session.
+            // Do this after publishing the owner and before rejecting the old
+            // start, whose cleanup must stand down against the new owner.
+            if (window.appAudioCapture && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                window.appAudioCapture.resetVoiceInputRecoveryState();
+            }
+        }
         // After the slot is ours, so anything the displaced flow does on its way
         // out already sees the new owner and stands down against it.
         if (displaced) {
@@ -408,6 +417,20 @@
      */
     window.sessionStartRequestId = function (owner) {
         return (owner && startRequestIdByOwner.get(owner)) || null;
+    };
+
+    // A local retired request is different from another window's live session:
+    // observers must still synchronize the latter, including text-mode mic stop.
+    window.sessionStartNotificationIsRetired = function (response) {
+        var requestId = response && response.request_id;
+        if (typeof requestId !== 'string'
+                || !requestId.startsWith(startRequestIdWindowTag + '-')) return false;
+        return !S.sessionStartedResolver || requestId !== S._pendingSessionStartRequestId;
+    };
+
+    window.sessionStartNotificationAnswersPending = function (response) {
+        return !S.sessionStartedResolver || !S._pendingSessionStartRequestId
+            || response.request_id === S._pendingSessionStartRequestId;
     };
 
     /**

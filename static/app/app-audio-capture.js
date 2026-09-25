@@ -10,6 +10,154 @@
 
     const mod = {};
     const S = window.appState;
+    S.voiceInputRecoveryState = S.voiceInputRecoveryState || 'idle';
+    S.voiceInputRecoveryGeneration = S.voiceInputRecoveryGeneration || 0;
+    S.voiceInputRecoverySessionEpoch = null;
+    S.voiceInputRecoveryLeaseGeneration = null;
+    S.voiceInputRecoveryTimer = null;
+    S.asrAutomaticRecovery = null;
+    function matchesAutomaticRecoveryIdentity(detail) {
+        return !!detail && S.independentAsrActive === true && S.isRecording === true
+            && !S.isMicMuted && !S.gameVoiceSttGateActive
+            && Number.isSafeInteger(detail.recovery_id)
+            && detail.session_epoch != null
+            && detail.session_epoch === (S.voiceSessionEpoch ?? S.sessionEpoch)
+            && detail.lease_generation != null
+            && detail.lease_generation === S.voiceInputCurrentLeaseGeneration;
+    }
+    function matchesAutomaticRecoveryOperation(detail) {
+        const current = S.asrAutomaticRecovery;
+        return matchesAutomaticRecoveryIdentity(detail) && current != null
+            && current.state !== 'retired'
+            && current.recovery_id === detail.recovery_id
+            && current.session_epoch === detail.session_epoch
+            && current.lease_generation === detail.lease_generation
+            && current.route_generation === detail.route_generation;
+    }
+    function retireAutomaticRecovery() {
+        if (S.asrAutomaticRecovery) S.asrAutomaticRecovery.state = 'retired';
+    }
+    function handleAutomaticRecoveryStatus(code, detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (code === 'ASR_RECOVERY_STARTED') {
+            if (current && current.session_epoch === detail.session_epoch
+                && detail.recovery_id <= current.recovery_id) return false;
+            S.asrAutomaticRecovery = { ...detail, state: 'recovering', incomplete: false };
+            // Automatic recovery has its own backend deadline. Retire the
+            // unmute timer instead of letting its four seconds block buffering.
+            clearVoiceInputRecoveryTimer();
+            S.voiceInputRecoveryGeneration += 1;
+            S.voiceInputRecoveryState = 'idle';
+            updateRecoveryStatus('recovering');
+        } else {
+            if (!matchesAutomaticRecoveryOperation(detail)) return false;
+            if (code === 'ASR_TURN_INCOMPLETE') {
+                if (current.incomplete) return false;
+                current.incomplete = true;
+                if (typeof window.showStatusToast === 'function') {
+                    const key = 'microphone.voiceInputTurnIncomplete';
+                    const translated = typeof window.t === 'function' ? window.t(key) : null;
+                    window.showStatusToast(translated && translated !== key ? translated
+                        : 'The previous sentence was not completed. Please say it again after voice input recovers.', 6000);
+                }
+            } else {
+                if (current.state !== 'recovering') return false;
+                current.state = code === 'ASR_RECOVERY_READY' ? 'ready' : 'failed';
+                updateRecoveryStatus(current.state);
+            }
+        }
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryStatus = handleAutomaticRecoveryStatus;
+    mod.matchesAutomaticRecoveryOperation = matchesAutomaticRecoveryOperation;
+    window.addEventListener('mic-mute-state-changed', event => {
+        if (event.detail?.muted) retireAutomaticRecovery();
+    });
+    window.addEventListener('mic-lease-changed', event => {
+        if (event.detail?.owner !== 'core') retireAutomaticRecovery();
+    });
+    window.addEventListener('voice-input-socket-open', retireAutomaticRecovery);
+    function recoveryStatusElement() {
+        return document.getElementById('status-toast');
+    }
+    function updateRecoveryStatus(state) {
+        const el = recoveryStatusElement();
+        if (!el) return;
+        const messages = { recovering: '正在恢复语音识别…', ready: '语音识别已恢复', failed: '语音识别恢复失败，请重试' };
+        const keys = { recovering: 'microphone.voiceInputRecoveryRecovering', ready: 'microphone.voiceInputRecoveryReady', failed: 'microphone.voiceInputRecoveryFailed' };
+        const localized = keys[state] && typeof window.t === 'function' ? window.t(keys[state]) : null;
+        if (messages[state] && typeof window.showStatusToast === 'function') {
+            window.showStatusToast(localized && localized !== keys[state] ? localized : messages[state], state === 'ready' ? 1600 : 4000);
+        }
+    }
+    function clearVoiceInputRecoveryTimer() { if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer); S.voiceInputRecoveryTimer = null; }
+    function resetVoiceInputRecoveryState() {
+        clearVoiceInputRecoveryTimer();
+        S.asrAutomaticRecovery = null;
+        // Retire callbacks already queued by the previous session as well as
+        // its transport identity. A hardware restart within a session must not
+        // call this: it still has to wait for the current recovery verdict.
+        S.voiceInputRecoveryGeneration += 1;
+        S.voiceInputRecoverySessionEpoch = null;
+        S.voiceInputRecoveryLeaseGeneration = null;
+        S.voiceInputRecoveryState = 'idle';
+    }
+    mod.resetVoiceInputRecoveryState = resetVoiceInputRecoveryState;
+    function isVoiceInputRecoveryPending() {
+        return S.voiceInputRecoveryState === 'recovering' || S.voiceInputRecoveryState === 'timed_out';
+    }
+    function matchesCurrentVoiceInputRecovery(detail) {
+        const payload = detail || {};
+        const generation = payload.generation;
+        if (generation != null && generation !== S.voiceInputRecoveryGeneration) return false;
+        if (payload.session_epoch != null && S.voiceInputRecoverySessionEpoch != null
+                && payload.session_epoch !== S.voiceInputRecoverySessionEpoch) return false;
+        // Bind happens on the actual lease_sync send. An unbound cycle or an
+        // unsigned event cannot prove it belongs to this recovery period.
+        if (S.voiceInputRecoveryLeaseGeneration == null
+                || payload.lease_generation == null
+                || payload.lease_generation !== S.voiceInputRecoveryLeaseGeneration) return false;
+        return true;
+    }
+    function beginVoiceInputRecovery() {
+        clearVoiceInputRecoveryTimer();
+        const generation = ++S.voiceInputRecoveryGeneration;
+        // The backend-confirmed route is authoritative; the settings toggle
+        // can already describe the next session. Native voice has no
+        // independent transport-ready notification to wait for.
+        if (S.independentAsrActive !== true || !S.isRecording || S.gameVoiceSttGateActive) {
+            S.voiceInputRecoveryState = 'idle';
+            return;
+        }
+        S.voiceInputRecoveryState = 'recovering'; updateRecoveryStatus('recovering');
+        S.voiceInputRecoverySessionEpoch = S.voiceSessionEpoch ?? S.sessionEpoch ?? null;
+        // Bind to the actual lease snapshot sent below, including reconnect
+        // replay, whose generation starts again at one.
+        S.voiceInputRecoveryLeaseGeneration = null;
+        window.dispatchEvent(new CustomEvent('voice-input-recovery-changed', { detail: { state: 'recovering', generation } }));
+        S.voiceInputRecoveryTimer = setTimeout(() => {
+            if (generation !== S.voiceInputRecoveryGeneration || S.voiceInputRecoveryState !== 'recovering') return;
+            S.voiceInputRecoveryTimer = null;
+            // This UI deadline does not cancel the backend transport attempt.
+            // Keep dropping PCM, but accept a current READY arriving later.
+            S.voiceInputRecoveryState = 'timed_out'; updateRecoveryStatus('failed');
+            window.dispatchEvent(new CustomEvent('voice-input-recovery-changed', { detail: { state: 'timed_out', generation } }));
+        }, 4000);
+    }
+    window.addEventListener('voice-input-recovery-ready', (event) => {
+        if (S.independentAsrActive !== true || S.isMicMuted || !isVoiceInputRecoveryPending()) return;
+        if (!matchesCurrentVoiceInputRecovery(event?.detail)) return;
+        clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'ready'; updateRecoveryStatus('ready');
+    });
+    window.addEventListener('voice-input-recovery-failed', (event) => {
+        if (S.independentAsrActive !== true || S.isMicMuted || !isVoiceInputRecoveryPending()) return;
+        if (!matchesCurrentVoiceInputRecovery(event?.detail)) return;
+        clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'failed'; updateRecoveryStatus('failed');
+    });
     const C = window.appConst;
     const MIC_LEASE = Object.freeze({
         NONE: 'none',
@@ -82,18 +230,23 @@
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
         const state = currentVoiceInputControlState();
         const fingerprint = JSON.stringify(state);
-        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
-        voiceLeaseGeneration += 1;
-        S.socket.send(JSON.stringify({
-            action: 'voice_input_control',
-            event: 'lease_sync',
-            owner: state.owner,
-            hard_muted: state.hard_muted,
-            focus_suppressed: state.focus_suppressed,
-            engaged: state.engaged,
-            lease_generation: voiceLeaseGeneration
-        }));
-        lastVoiceLeaseFingerprint = fingerprint;
+        if (force === true || fingerprint !== lastVoiceLeaseFingerprint) {
+            voiceLeaseGeneration += 1;
+            S.socket.send(JSON.stringify({
+                action: 'voice_input_control',
+                event: 'lease_sync',
+                owner: state.owner,
+                hard_muted: state.hard_muted,
+                focus_suppressed: state.focus_suppressed,
+                engaged: state.engaged,
+                lease_generation: voiceLeaseGeneration
+            }));
+            lastVoiceLeaseFingerprint = fingerprint;
+        }
+        S.voiceInputCurrentLeaseGeneration = voiceLeaseGeneration;
+        if (isVoiceInputRecoveryPending()) {
+            S.voiceInputRecoveryLeaseGeneration = voiceLeaseGeneration;
+        }
         return true;
     }
 
@@ -163,7 +316,12 @@
     function canUploadOrdinaryMicFrame() {
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
-        return !state.hard_muted && !state.focus_suppressed;
+        const recovery = S.asrAutomaticRecovery;
+        if (recovery && matchesAutomaticRecoveryOperation(recovery)
+            && (recovery.state === 'failed'
+                || (recovery.state === 'recovering' && recovery.buffering !== true))) return false;
+        return !state.hard_muted && !state.focus_suppressed
+            && !isVoiceInputRecoveryPending() && S.voiceInputRecoveryState !== 'failed';
     }
 
     // ======================== DOM 辅助 ========================
@@ -2023,7 +2181,7 @@
             const baseAudioConstraints = {
                 noiseSuppression: false,
                 echoCancellation: true,
-                autoGainControl: true,
+                autoGainControl: false,
                 channelCount: 1
             };
 
@@ -2059,12 +2217,18 @@
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
-            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
-                label: track.label,
-                enabled: track.enabled,
-                muted: track.muted,
-                readyState: track.readyState
-            })));
+            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => {
+                const settings = typeof track.getSettings === 'function'
+                    ? track.getSettings()
+                    : {};
+                return {
+                    label: track.label,
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                    autoGainControl: settings.autoGainControl
+                };
+            }));
 
             if (audioTracks.length === 0) {
                 console.error(window.t('console.noAudioTrackAvailable'));
@@ -2281,6 +2445,9 @@
     function stopRecording(options) {
         options = options || {};
         const notifyServer = options.notifyServer !== false;
+        // Also retire recovery when startup failed before isRecording became
+        // true. The owning session's failure path uses this same teardown.
+        resetVoiceInputRecoveryState();
         // 停止语音期间主动视觉定时
         if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
             window.stopProactiveVisionDuringSpeech();
@@ -2630,6 +2797,7 @@
             return S.isMicMuted;
         }
         S.isMicMuted = !S.isMicMuted;
+        if (!S.isMicMuted) beginVoiceInputRecovery(); else { ++S.voiceInputRecoveryGeneration; clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'idle'; updateRecoveryStatus('idle'); }
         refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
@@ -2662,6 +2830,7 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
+        if (!muted) beginVoiceInputRecovery(); else { ++S.voiceInputRecoveryGeneration; clearVoiceInputRecoveryTimer(); S.voiceInputRecoveryState = 'idle'; updateRecoveryStatus('idle'); }
         refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
