@@ -11,7 +11,13 @@
     <section
       v-if="items.length > 0"
       class="grid-section"
-      :class="[sectionClass, { 'grid-section--quiet': motionMode === 'quiet' }]"
+      :class="[
+        sectionClass,
+        {
+          'grid-section--quiet': motionMode === 'quiet',
+          'grid-section--large': items.length > 80,
+        },
+      ]"
       :data-yui-guide-id="sectionGuideId"
     >
       <div
@@ -238,6 +244,15 @@ function itemClass(item: T) {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* Keep the full DOM for selection, tutorial anchors, and keyboard navigation,
+ * while letting Chromium skip layout/paint work for far-off cards in large
+ * registries. The intrinsic size keeps the scroll track stable before an item
+ * is first measured. */
+.grid-section--large .grid-section__item {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 180px;
 }
 
 .grid-section__select {
