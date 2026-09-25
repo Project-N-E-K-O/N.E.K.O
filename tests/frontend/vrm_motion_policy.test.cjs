@@ -106,7 +106,22 @@ assert.deepEqual(relativeFiles.filter(function (name) { return !name.endsWith('.
 assert.equal(relativeFiles.filter(function (name) { return name.endsWith('.vrma.gz'); }).length, 62);
 
 const allVrmFiles = walk(path.join(root, 'static/vrm'));
-assert.equal(allVrmFiles.filter(function (name) { return name.endsWith('.vrma.gz'); }).length, 75);
+const movementAssets = [
+    'world-jog-back', 'world-jog', 'world-run-back', 'world-run',
+    'world-turn-left', 'world-turn-right', 'world-walk-slow',
+    'world-walk-start', 'world-walk-stop-small', 'world-walk-stop', 'world-walk'
+];
+movementAssets.forEach(function (name) {
+    const relativePath = 'static/vrm/animation/' + name + '.vrma.gz';
+    const decoded = zlib.gunzipSync(fs.readFileSync(path.join(root, relativePath)));
+    assert.equal(decoded.toString('ascii', 0, 4), 'glTF', name);
+    assert.equal(decoded.readUInt32LE(4), 2, name);
+    assert.equal(decoded.readUInt32LE(8), decoded.length, name);
+    assert.equal(manifest.assets.some(function (asset) {
+        return asset.src.includes(relativePath);
+    }), false, name + ': movement clips must stay outside the chat action catalog');
+});
+assert.equal(allVrmFiles.filter(function (name) { return name.endsWith('.vrma.gz'); }).length, 75 + movementAssets.length);
 assert.equal(allVrmFiles.some(function (name) { return name.endsWith('.vrma'); }), false);
 
 const websocketSource = fs.readFileSync(path.join(root, 'static/app/app-websocket.js'), 'utf8');
@@ -593,7 +608,7 @@ async function verifyColdExternalPlaybackOwnership() {
 }
 
 verifyColdExternalPlaybackOwnership().then(function () {
-    console.log('VRM motion policy and source integrity: OK (75 gzip assets)');
+    console.log('VRM motion policy and source integrity: OK (75 catalog + 11 movement gzip assets)');
 }).catch(function (error) {
     console.error(error);
     process.exitCode = 1;

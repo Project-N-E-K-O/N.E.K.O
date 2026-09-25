@@ -129,6 +129,12 @@ class VRMAnimation {
 
     _detectVRMVersion(vrm) {
         try {
+            // vrm-core 已经基于 GLTF extensionsUsed 完成可靠判定；部分 VRM 1.0
+            // 文件的 meta.version 可能是损坏字符串，不能在动画路径中再次误判。
+            const coreVersion = String(this.manager?.core?.vrmVersion || '');
+            if (coreVersion === '1.0' || coreVersion === '0.0') {
+                return coreVersion;
+            }
             if (vrm.meta) {
                 if (vrm.meta.metaVersion !== undefined && vrm.meta.metaVersion !== null) {
                     const version = String(vrm.meta.metaVersion);
@@ -185,15 +191,13 @@ class VRMAnimation {
 
         if (vrm.humanoid) {
             const vrmVersion = this._detectVRMVersion(vrm);
-            if (vrmVersion === '1.0' && vrm.humanoid.autoUpdateHumanBones) {
+            if (vrmVersion === '1.0' && (vrm.humanoid.autoUpdateHumanBones || this.vrmaIsPlaying)) {
                 vrm.humanoid.update();
             } else if (vrmVersion === '0.0') {
                 const mixerRoot = this.vrmaMixer?.getRoot?.();
                 const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
-                if (normalizedRoot && mixerRoot === normalizedRoot) {
-                    if (vrm.humanoid.autoUpdateHumanBones !== undefined) {
-                        vrm.humanoid.update();
-                    }
+                if (normalizedRoot && mixerRoot === normalizedRoot && vrm.humanoid.autoUpdateHumanBones) {
+                    vrm.humanoid.update();
                 }
             }
         }
@@ -383,15 +387,41 @@ class VRMAnimation {
     }
 
     _processTracksForVersion(clip, vrmVersion) {
-        if (vrmVersion === '1.0') {
-            return;
-        } else {
-            clip.tracks.forEach(track => {
-                if (track.name.startsWith('Normalized_')) {
-                    const originalName = track.name.substring('Normalized_'.length);
-                    track.name = originalName;
-                }
-            });
+        // three-vrm-animation 3.x 的 createVRMAnimationClip() 对 VRM 0.x 和 1.0
+        // 都使用 getNormalizedBoneNode() 生成轨道名。不要再修改 Normalized_ 前缀，
+        // 否则 VRM 0.x 的轨道会失去目标并把模型留在 T-pose。
+    }
+
+    _stripRootTranslationTracks(clip) {
+        if (!clip?.tracks) return;
+        const rootNames = /^(?:normalized[_ .])?(?:hips|reference|root)$/i;
+        const before = clip.tracks.length;
+        clip.tracks = clip.tracks.filter((track) => {
+            const parts = String(track.name || '').split('.');
+            const property = parts.pop();
+            const nodeName = parts.pop() || '';
+            return !(property === 'position' && rootNames.test(nodeName));
+        });
+        if (clip.tracks.length !== before) {
+            console.debug('[VRM Animation] 已移除根平移轨道，避免与桌宠场景位移叠加:', before - clip.tracks.length);
+        }
+    }
+
+    _assertAnimationTrackCoverage(clip, vrm) {
+        const root = vrm?.humanoid?._normalizedHumanBones?.root || vrm?.scene;
+        if (!root || !clip?.tracks) return;
+        const names = new Set();
+        for (const track of clip.tracks) {
+            const nodeName = String(track.name || '').split('.').slice(0, -1).join('.');
+            if (!nodeName) continue;
+            const plainName = nodeName.replace(/^Normalized_/, '');
+            const candidates = [nodeName, plainName, `Normalized_${plainName}`];
+            if (candidates.some(name => root.getObjectByName?.(name))) names.add(nodeName);
+        }
+        const rotationTrackCount = clip.tracks.filter(track => /\.(quaternion|rotation)$/.test(String(track.name))).length;
+        const minimum = Math.min(8, Math.max(3, rotationTrackCount));
+        if (names.size < minimum) {
+            throw new Error(`VRMA 骨骼轨道匹配不足（${names.size}/${minimum}），跳过动作以避免 T-pose`);
         }
     }
 
@@ -409,9 +439,8 @@ class VRMAnimation {
     _alignClipToCurrentPose(clip) {
         const THREE = window.THREE;
         if (!clip?.tracks || !THREE?.QuaternionKeyframeTrack) return;
-        // 优先用正在运行的 vrmaMixer 的 root（_findBestMixerRoot 通常返回
-        // normalizedRoot——VRM 标准化骨架树），确保查到的 bone.quaternion
-        // 反映当前动画姿态。
+        // 优先使用当前 mixer 的根节点查找骨骼，确保对齐四元数读取的是当前动画姿态。
+        // mixer 通常以 vrm.scene 为根，因此这里不能假设一定是 normalizedRoot。
         // 但 `lookAtQuaternionProxy` 是挂在 vrm.scene 直下的 sibling，不在
         // normalizedRoot 树里——此时回退到 vrm.scene.getObjectByName 才能
         // 拿到 proxy.quaternion 做同半球对齐，否则 authored LookAt 轨道
@@ -501,6 +530,8 @@ class VRMAnimation {
                 const boneName = track.name.split('.')[0];
                 return !!normalizedRoot.getObjectByName(boneName);
             }).length;
+            // 只有 normalizedRoot 明确匹配更多骨骼轨道时才选它。平局保留
+            // vrm.scene，确保同一 clip 中的表情和 LookAt sibling 也能绑定。
             if (normalizedMatchCount > bestMatchCount) {
                 bestRoot = normalizedRoot;
                 bestMatchCount = normalizedMatchCount;
@@ -704,14 +735,6 @@ class VRMAnimation {
                 this._fadeTimer = null;
             }
 
-            // 设置 autoUpdateHumanBones = false，让 vrm.update() 只更新 SpringBone 物理
-            // 不覆盖动画设置的 humanoid 骨骼位置
-            // 这样头发等物理效果可以在动画播放期间正常工作
-            const vrm = this.manager.currentModel?.vrm;
-            if (vrm?.humanoid) {
-                vrm.humanoid.autoUpdateHumanBones = false;
-            }
-
             this._cleanupOldMixer(vrm);
             const loader = await this._initLoader();
             if (abortStaleRequest()) return false;
@@ -732,6 +755,11 @@ class VRMAnimation {
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             if (abortStaleRequest()) return false;
             this._processTracksForVersion(clip, vrmVersion);
+            // 桌宠移动由 vrm-interaction 控制 scene.position；Hanami 的 Hips/Reference
+            // translation 会再次推动根节点，造成起步/停止时被额外拖动，因此只保留旋转轨道。
+            this._stripRootTranslationTracks(clip);
+            // 不用名称数量阈值否决动作：three-vrm 的 Normalized_* / VRM0 映射
+            // 可能让静态节点名检查产生误判；由 createVRMAnimationClip 的实际绑定结果决定。
             this._normalizeQuaternionTrackSigns(clip);
             // 跨 clip 同半球对齐：必须在 _normalizeQuaternionTrackSigns 之后、
             // _createAndConfigureAction 之前。此刻 vrmaMixer 上仍是上一条 action 在跑，
@@ -742,6 +770,18 @@ class VRMAnimation {
             this.isIdleAnimation = !!options.isIdle;
 
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
+            // 移动动作必须至少绑定到一组人形旋转轨道；否则 AnimationMixer 仍可能
+            // 创建 action，但实际没有骨骼目标，后续 humanoid 同步会把模型留在 T-pose。
+            // 绑定不足时直接拒绝本次 VRMA，由交互层保留纯位置移动。
+            if (options.movement === true) {
+                this._assertAnimationTrackCoverage(clip, vrm);
+            }
+            // three-vrm 的 VRMHumanoid.update() 在内部要求
+            // autoUpdateHumanBones=true；VRM 1.0 的 normalized 骨骼必须保持自动同步，
+            // 否则 mixer 虽然有轨道，实际渲染骨骼仍会停在 T-pose。
+            if (vrm?.humanoid) {
+                vrm.humanoid.autoUpdateHumanBones = true;
+            }
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
             if (abortStaleRequest()) {
                 this._releaseMixerAction(newAction, this.vrmaMixer);

@@ -109,6 +109,29 @@ class VRMInteraction {
         this._dragHintPanStartPointer = null;
         this._dragHintPanLastPointer = null;
         this._dragHintApproachShown = false;
+
+        // F 目标模式：F 只负责进入/退出选点模式，已选目标在释放 F 后继续执行。
+        this.targetMode = false;
+        this.moveTarget = null;
+        this.isMoving = false;
+        this.movementToken = 0;
+        this.movementMaxSpeed = 0.9;
+        this.movementVelocity = 0;
+        this.movementAcceleration = 2.8;
+        this.movementDeceleration = 4.2;
+        this._movementRestRotationY = null;
+        this.movementArrivalThreshold = 0.012;
+        this._movementAction = null;
+        this._movementRestOwner = 'guided-movement';
+        this._movementOwnerToken = null;
+        this._movementPhaseTimer = null;
+        this._smoothFacingFrame = null;
+        this._movementKeyDownHandler = null;
+        this._movementKeyUpHandler = null;
+        this._movementBlurHandler = null;
+        this._movementClickHandler = null;
+        // 只有先在普通模式下点击命中人物，才允许 F 进入目标选点模式。
+        this._movementArmed = false;
     }
 
 
@@ -298,6 +321,297 @@ class VRMInteraction {
         return intersects.length > 0;
     }
 
+    _isEditableTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        return !!target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
+    }
+
+    _screenPointToMovementTarget(clientX, clientY) {
+        const camera = this.manager.camera;
+        const scene = this.manager.currentModel?.scene;
+        const canvas = this.manager.renderer?.domElement;
+        if (!camera || !scene || !canvas || !THREE) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return null;
+
+        this._mouseNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        this._mouseNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        this._raycaster.setFromCamera(this._mouseNDC, camera);
+        const normal = new THREE.Vector3();
+        camera.getWorldDirection(normal);
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, scene.position);
+        const target = new THREE.Vector3();
+        if (!this._raycaster.ray.intersectPlane(plane, target)) return null;
+        return this.clampModelPosition(target);
+    }
+
+    _setMovementAction(action) {
+        this._movementAction = action;
+        return action;
+    }
+
+    _getMovementFacingProfile() {
+        const vrm = this.manager?.currentModel?.vrm;
+        const detector = window.VRMOrientationDetector;
+        if (detector && typeof detector.getMovementFacingProfile === 'function') {
+            return detector.getMovementFacingProfile(vrm, this.manager?.core?.vrmVersion);
+        }
+        return { yawOffset: Math.PI, horizontalSign: 1, vrmVersion: '0.0' };
+    }
+
+    _getCameraFacingRotationY(scene) {
+        const camera = this.manager.camera;
+        if (!camera || !scene) return null;
+        const dx = camera.position.x - scene.position.x;
+        const dz = camera.position.z - scene.position.z;
+        if ((dx * dx + dz * dz) <= 1e-8) return null;
+        // rotation.y 是模型局部坐标的 yaw；视觉正面需要使用移动朝向校准值，
+        // 不能把保存的裸 rotation.y 当成“面向镜头”的角度直接写回。
+        return Math.atan2(dx, dz) + this._getMovementFacingProfile().yawOffset;
+    }
+
+    async _turnToRestFacing(scene, targetYaw) {
+        if (!scene || !Number.isFinite(targetYaw) || typeof this.manager.playVRMAAnimation !== 'function') return;
+        let diff = targetYaw - scene.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        if (Math.abs(diff) < 0.02) return;
+        const path = diff < 0
+            ? '/static/vrm/animation/world-turn-left.vrma.gz'
+            : '/static/vrm/animation/world-turn-right.vrma.gz';
+        try {
+            const played = await this.manager.playVRMAAnimation(path, {
+                loop: false,
+                fadeDuration: 0.15,
+                immediate: false,
+                isIdle: false,
+                movement: true
+            });
+            if (played !== true) return;
+            const duration = Math.max(0.25, Math.min(1.2, this._currentVRMADuration(0.65)));
+            const startYaw = scene.rotation.y;
+            await new Promise(resolve => {
+                const startedAt = performance.now();
+                const tick = (now) => {
+                    const progress = Math.min(1, Math.max(0, (now - startedAt) / (duration * 1000)));
+                    const eased = progress * progress * (3 - 2 * progress);
+                    scene.rotation.y = startYaw + diff * eased;
+                    if (progress < 1) requestAnimationFrame(tick);
+                    else resolve();
+                };
+                requestAnimationFrame(tick);
+            });
+        } catch (error) {
+            console.warn('[VRM Interaction] 到达后的转向动作不可用，保持当前朝向:', error);
+        }
+    }
+
+    _smoothTurnToCamera(scene, targetYaw = null) {
+        if (!Number.isFinite(targetYaw)) targetYaw = this._getCameraFacingRotationY(scene);
+        if (!scene || !Number.isFinite(targetYaw)) return;
+        if (this._smoothFacingFrame !== null) {
+            cancelAnimationFrame(this._smoothFacingFrame);
+            this._smoothFacingFrame = null;
+        }
+        let diff = targetYaw - scene.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        if (Math.abs(diff) < 0.02) return;
+        const startYaw = scene.rotation.y;
+        const startedAt = performance.now();
+        const duration = 360;
+        const tick = (now) => {
+            const progress = Math.min(1, Math.max(0, (now - startedAt) / duration));
+            const eased = progress * progress * (3 - 2 * progress);
+            scene.rotation.y = startYaw + diff * eased;
+            if (progress < 1) {
+                this._smoothFacingFrame = requestAnimationFrame(tick);
+            } else {
+                // 最后一帧写入目标值，避免浮点误差在多次移动后累计成朝向偏移。
+                scene.rotation.y = targetYaw;
+                this._smoothFacingFrame = null;
+            }
+        };
+        this._smoothFacingFrame = requestAnimationFrame(tick);
+    }
+
+    setMovementSpeed(speed) {
+        const value = Number(speed);
+        if (!Number.isFinite(value)) return this.movementMaxSpeed;
+        this.movementMaxSpeed = Math.max(0, Math.min(0.9, value));
+        if (this.movementMaxSpeed === 0) this.movementVelocity = 0;
+        return this.movementMaxSpeed;
+    }
+
+    _clearMovementPhaseTimer() {
+        if (this._movementPhaseTimer !== null) {
+            clearTimeout(this._movementPhaseTimer);
+            this._movementPhaseTimer = null;
+        }
+    }
+
+    _currentVRMADuration(fallbackSeconds) {
+        const duration = Number(this.manager?.animation?.currentAction?._clip?.duration);
+        return Number.isFinite(duration) && duration > 0 ? duration : fallbackSeconds;
+    }
+
+    async _playMovementClip(token, path, action, options = {}) {
+        if (token !== this.movementToken || !this.isMoving) return 0;
+        const played = await this.manager.playVRMAAnimation(path, {
+            loop: !!options.loop,
+            fadeDuration: options.fadeDuration ?? 0.2,
+            immediate: options.immediate === true,
+            isIdle: false,
+            movement: true
+        });
+        if (token !== this.movementToken || !this.isMoving || played !== true) return 0;
+        this._setMovementAction(action);
+        return this._currentVRMADuration(options.fallbackSeconds || 0.4);
+    }
+
+    async _beginMovementPlayback(token) {
+        const manager = this.manager;
+        if (!manager || typeof manager.playVRMAAnimation !== 'function') return;
+        const motion = window.NekoMotion;
+        try {
+            this._movementOwnerToken = String(token);
+            if (motion && typeof motion.holdExternalPlayback === 'function') {
+                await motion.holdExternalPlayback(this._movementRestOwner, { token: this._movementOwnerToken });
+            }
+            if (token !== this.movementToken || !this.isMoving) return;
+            // 桌宠场景不使用 world-walk-start：该过渡 clip 的首尾姿态与待机
+            // crossfade 会造成起步瞬间的根节点拉动。直接从无根位移的循环走路开始。
+            await this._playMovementClip(token, '/static/vrm/animation/world-walk.vrma.gz', 'walk', {
+                loop: true,
+                immediate: true,
+                fallbackSeconds: 1
+            });
+        } catch (error) {
+            // 动作不兼容时保留位置移动；不能让资源问题阻断目标移动。
+            console.warn('[VRM Interaction] 引导移动动作不可用，回退到纯位移:', error);
+        }
+    }
+
+    async _finishMovement({ cancel = false } = {}) {
+        if (!this.isMoving && !this._movementAction) return;
+        const endedOwnerToken = this._movementOwnerToken;
+        this.isMoving = false;
+        this.moveTarget = null;
+        this.movementToken += 1;
+        this._movementAction = null;
+        this._movementOwnerToken = null;
+        this._clearMovementPhaseTimer();
+        const restFacing = this._movementRestRotationY;
+        this._movementRestRotationY = null;
+        const motion = window.NekoMotion;
+        try {
+            // 当前两套目标模型对 stop/turn clip 的骨骼兼容性还不稳定；到达时先安全
+            // 停止循环走路并恢复 humanoid/rest，避免连续切换多个 clip 触发 T-pose。
+            if (this.manager && typeof this.manager.stopVRMAAnimation === 'function') this.manager.stopVRMAAnimation();
+            if (!cancel && this.manager.currentModel?.scene) {
+                this._smoothTurnToCamera(this.manager.currentModel.scene, restFacing);
+            }
+            if (endedOwnerToken && motion && typeof motion.releaseExternalPlayback === 'function') {
+                await motion.releaseExternalPlayback(this._movementRestOwner, {
+                    token: endedOwnerToken,
+                    resume: !cancel
+                });
+            }
+            if (!cancel && motion && typeof motion.rest === 'function') {
+                await motion.rest({ force: true, seed: 'guided-movement-arrival' });
+            }
+        } catch (error) {
+            console.warn('[VRM Interaction] 引导移动结束时恢复待机失败:', error);
+        }
+    }
+
+    _selectMovementTarget(clientX, clientY) {
+        if (this._smoothFacingFrame !== null) {
+            cancelAnimationFrame(this._smoothFacingFrame);
+            this._smoothFacingFrame = null;
+        }
+        const target = this._screenPointToMovementTarget(clientX, clientY);
+        if (!target || !this.manager.currentModel?.scene) return false;
+        const scene = this.manager.currentModel.scene;
+        // 目标替换/开始移动前只保存一次当前状态，避免在每帧推进时写配置。
+        void this._savePositionAfterInteraction();
+        const willMove = target.distanceTo(scene.position) > this.movementArrivalThreshold;
+        if (willMove && !this.isMoving && this._movementRestRotationY === null) {
+            this._movementRestRotationY = scene.rotation.y;
+        }
+        this.moveTarget = target;
+        this.isMoving = willMove;
+        this.movementVelocity = 0;
+        this.movementToken += 1;
+        if (!this.isMoving) {
+            this._movementRestRotationY = null;
+            void this._finishMovement();
+            return true;
+        }
+        const token = this.movementToken;
+        void this._beginMovementPlayback(token);
+        return true;
+    }
+
+    _updateGuidedMovement(delta) {
+        if (!this.isMoving || !this.moveTarget || !this.manager.currentModel?.scene) return;
+        const scene = this.manager.currentModel.scene;
+        const target = this.moveTarget;
+        const offset = target.clone().sub(scene.position);
+        const distance = offset.length();
+        if (!Number.isFinite(distance) || distance <= this.movementArrivalThreshold) {
+            scene.position.copy(target);
+            this.movementVelocity = 0;
+            void this._finishMovement();
+            void this._savePositionAfterInteraction();
+            return;
+        }
+        const dt = Math.max(0, Number(delta) || 0);
+        const maxSpeed = Math.max(0, Math.min(0.9, Number(this.movementMaxSpeed) || 0));
+        if (maxSpeed <= 0 || dt <= 0) return;
+        const brakingDistance = (this.movementVelocity * this.movementVelocity)
+            / Math.max(0.001, 2 * this.movementDeceleration);
+        if (distance <= brakingDistance + this.movementArrivalThreshold) {
+            this.movementVelocity = Math.max(0, this.movementVelocity - this.movementDeceleration * dt);
+        } else {
+            this.movementVelocity = Math.min(maxSpeed, this.movementVelocity + this.movementAcceleration * dt);
+        }
+        const step = Math.min(distance, this.movementVelocity * dt);
+        if (step <= 0) return;
+        scene.position.addScaledVector(offset.normalize(), step);
+        const camera = this.manager.camera;
+        if (camera) {
+            // 位移发生在与屏幕平行的平面上，其中“上下”主要落在世界 Y 轴；直接只看 X/Z
+            // 会让角色只能左右转身。把屏幕水平/垂直分量重新投影到地面方向：屏幕向上
+            // 视为远离镜头，向下视为靠近镜头，从而得到完整的前后左右与斜向朝向。
+            const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            const cameraUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+            const cameraForward = new THREE.Vector3();
+            camera.getWorldDirection(cameraForward);
+            const screenX = offset.dot(cameraRight);
+            const screenY = offset.dot(cameraUp);
+            cameraRight.y = 0;
+            cameraForward.y = 0;
+            if (cameraRight.lengthSq() > 1e-8) cameraRight.normalize();
+            if (cameraForward.lengthSq() > 1e-8) cameraForward.normalize();
+            // 屏幕垂直方向与相机水平前向的符号相反：向上屏幕移动应对应远离镜头，
+            // 因此这里取反，避免上下移动时角色朝向反过来。
+            // 先按相机坐标得到完整移动方向，再由 yaw 偏移统一校正角色 authored 正面。
+            // 屏幕水平基向量与模型 yaw 的左右正方向相反；只翻水平分量，
+            // 垂直分量和完整的 π 朝向校正保持不变。
+            const profile = this._getMovementFacingProfile();
+            const facing = cameraRight.multiplyScalar(screenX * profile.horizontalSign)
+                .addScaledVector(cameraForward, -screenY);
+            if (facing.lengthSq() > 1e-8) {
+                const angle = Math.atan2(facing.x, facing.z) + profile.yawOffset;
+                let diff = angle - scene.rotation.y;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                scene.rotation.y += diff * Math.min(1, (Number(delta) || 0) * 10);
+            }
+        }
+    }
+
     /**
      * 【修改】初始化拖拽和缩放功能
      * 已移除所有导致报错的 LookAt/mouseNDC 代码
@@ -358,6 +672,29 @@ class VRMInteraction {
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
 
+        this._movementKeyDownHandler = (e) => {
+            if (this._isEditableTarget(e.target)) return;
+            if (String(e.key || '').toLowerCase() !== 'f') return;
+            if (!this._movementArmed) return;
+            if (this.checkLocked() || isYuiGuideDragLocked()) return;
+            this.targetMode = true;
+            canvas.style.cursor = 'crosshair';
+            e.preventDefault();
+        };
+        this._movementKeyUpHandler = (e) => {
+            if (String(e.key || '').toLowerCase() !== 'f') return;
+            this.targetMode = false;
+            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
+        };
+        this._movementBlurHandler = () => {
+            // 失焦只退出选点模式；已确认的目标仍继续执行。
+            this.targetMode = false;
+            this._movementArmed = false;
+        };
+        window.addEventListener('keydown', this._movementKeyDownHandler);
+        window.addEventListener('keyup', this._movementKeyUpHandler);
+        window.addEventListener('blur', this._movementBlurHandler);
+
         // 1. 鼠标按下
         this.mouseDownHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
@@ -376,10 +713,22 @@ class VRMInteraction {
             }
 
             if (e.button === 0 || e.button === 1) { // 左键或中键
+                if (e.button === 0 && this.targetMode) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (this._selectMovementTarget(e.clientX, e.clientY)) {
+                        canvas.style.cursor = 'crosshair';
+                    }
+                    return;
+                }
                 // 只有点击到模型才开始拖拽（射线检测）
                 if (!this._hitTestModel(e.clientX, e.clientY)) {
                     return; // 未命中模型，不拦截事件
                 }
+                // 普通模式下命中人物后才解锁 F + 左键选点，避免其他页面区域误触发。
+                this._movementArmed = true;
+                // 普通拖拽接管模型时，取消尚未完成的自动移动；目标模式下的左键选点已在上方返回。
+                if (this.isMoving) void this._finishMovement({ cancel: true });
                 this.isDragging = true;
                 this.dragMode = 'pan';
                 // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
@@ -732,6 +1081,7 @@ class VRMInteraction {
      * 每帧更新（由 VRMManager 驱动）
      */
     update(delta) {
+        this._updateGuidedMovement(delta);
         // 更新身体朝向（按钮位置由 _startUIUpdateLoop 处理）
         this._updateModelFacing(delta);
     }
@@ -761,6 +1111,7 @@ class VRMInteraction {
             // 恢复按钮的 pointer-events
             this._restoreButtonPointerEvents();
         }
+        if (locked && this.isMoving) void this._finishMovement({ cancel: true });
     }
 
     /**
@@ -791,6 +1142,26 @@ class VRMInteraction {
      * 移除时必须使用相同的选项，否则 removeEventListener 不会生效
      */
     cleanupDragAndZoom() {
+        if (this._smoothFacingFrame !== null) {
+            cancelAnimationFrame(this._smoothFacingFrame);
+            this._smoothFacingFrame = null;
+        }
+        if (this._movementKeyDownHandler) {
+            window.removeEventListener('keydown', this._movementKeyDownHandler);
+            this._movementKeyDownHandler = null;
+        }
+        if (this._movementKeyUpHandler) {
+            window.removeEventListener('keyup', this._movementKeyUpHandler);
+            this._movementKeyUpHandler = null;
+        }
+        if (this._movementBlurHandler) {
+            window.removeEventListener('blur', this._movementBlurHandler);
+            this._movementBlurHandler = null;
+        }
+        this.targetMode = false;
+        this._movementArmed = false;
+        if (this.isMoving || this._movementAction) void this._finishMovement({ cancel: true });
+
         if (!this.manager.renderer) return;
 
         // 清理初始化定时器（如果存在）

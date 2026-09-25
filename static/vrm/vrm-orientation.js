@@ -11,6 +11,23 @@ const HEAD_Z_THRESHOLD = 0.1;    // 头部位置Z分量的阈值，当脊椎向�
 
 class VRMOrientationDetector {
     /**
+     * 返回桌宠移动使用的模型局部朝向配置。
+     * 版本必须优先来自加载核心的 GLTF 扩展判定；部分 VRM 1.0 文件的
+     * metaVersion 字段可能损坏，不能在交互层重复解析。
+     */
+    static getMovementFacingProfile(vrm, detectedVersion = null) {
+        const coreVersion = String(detectedVersion || '');
+        const metaVersion = String(vrm?.meta?.metaVersion || '');
+        const isVrm10 = coreVersion === '1.0' ||
+            metaVersion === '1' || metaVersion === '1.0' || metaVersion.startsWith('1.');
+        return {
+            vrmVersion: isVrm10 ? '1.0' : '0.0',
+            yawOffset: Math.PI,
+            horizontalSign: isVrm10 ? -1 : 1
+        };
+    }
+
+    /**
      * 检测VRM模型是否需要旋转（是否背对屏幕）
      * @param {Object} vrm - VRM模型实例
      * @returns {boolean} 如果需要旋转180度返回true，否则返回false
