@@ -486,7 +486,7 @@ def build_plugin(
 ) -> BuildResult:
     """Public convenience wrapper for one-shot single-plugin builds."""
 
-    return PluginBuilder().build_plugin(
+    return PluginBuilder(source_only=True).build_plugin(
         plugin_dir=plugin_dir,
         out_file=out_file,
         keep_staging=keep_staging,
@@ -505,7 +505,7 @@ def build_bundle(
 ) -> BuildResult:
     """Public convenience wrapper for one-shot multi-plugin bundle builds."""
 
-    return PluginBuilder().build_bundle(
+    return PluginBuilder(source_only=True).build_bundle(
         plugin_dirs=plugin_dirs,
         out_file=out_file,
         bundle_id=bundle_id,
