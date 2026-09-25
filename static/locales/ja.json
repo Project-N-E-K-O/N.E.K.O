@@ -4454,6 +4454,7 @@
     },
     "Jukebox": {
         "title": "ジュークボックス",
+        "settingsShort": "管理 / インポート",
         "minimize": "最小化",
         "close": "閉じる",
         "loading": "読み込み中...",
@@ -4481,6 +4482,8 @@
         "switchPlaybackMode": "再生モードを切り替え",
         "lockSongSort": "曲順の並べ替えをロック",
         "unlockSongSort": "曲順の並べ替えを解除",
+        "songSortLockTooltipLocked": "曲順の並べ替えはロックされています。誤操作を防止します。クリックしてロックを解除すると、曲をドラッグして順序を変更できます",
+        "songSortLockTooltipUnlocked": "曲順の並べ替えはロック解除されています。曲をドラッグして順序を変更できます。クリックするとロックして誤操作を防ぎます",
         "previousSong": "前の曲",
         "nextSong": "次の曲",
         "playError": "音楽プレイヤーが初期化されていません",

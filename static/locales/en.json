@@ -4454,6 +4454,7 @@
     },
     "Jukebox": {
         "title": "Jukebox",
+        "settingsShort": "Manage / Import",
         "minimize": "Minimize",
         "close": "Close",
         "loading": "Loading...",
@@ -4481,6 +4482,8 @@
         "switchPlaybackMode": "Switch playback mode",
         "lockSongSort": "Lock song sorting",
         "unlockSongSort": "Unlock song sorting",
+        "songSortLockTooltipLocked": "Song sorting is locked to prevent accidental dragging. Click to unlock and reorder songs",
+        "songSortLockTooltipUnlocked": "Song sorting is unlocked. Drag songs to reorder them, or click to lock and prevent accidental dragging",
         "previousSong": "Previous track",
         "nextSong": "Next track",
         "playError": "Music player not initialized",

@@ -4454,6 +4454,7 @@
     },
     "Jukebox": {
         "title": "点歌台",
+        "settingsShort": "管理/导入",
         "minimize": "最小化",
         "close": "关闭",
         "loading": "加载中...",
@@ -4481,6 +4482,8 @@
         "switchPlaybackMode": "切换播放模式",
         "lockSongSort": "锁定歌曲排序",
         "unlockSongSort": "解锁歌曲排序",
+        "songSortLockTooltipLocked": "歌曲排序已锁定：防止误拖，点击解锁后可拖动歌曲调整顺序",
+        "songSortLockTooltipUnlocked": "歌曲排序已解锁：可以拖动歌曲调整顺序，点击后锁定防误拖",
         "previousSong": "上一首",
         "nextSong": "下一首",
         "playError": "音乐播放器未初始化",

@@ -4454,6 +4454,7 @@
     },
     "Jukebox": {
         "title": "주크박스",
+        "settingsShort": "관리 / 가져오기",
         "minimize": "최소화",
         "close": "닫기",
         "loading": "로드 중...",
@@ -4481,6 +4482,8 @@
         "switchPlaybackMode": "재생 모드 전환",
         "lockSongSort": "곡 정렬 잠금",
         "unlockSongSort": "곡 정렬 잠금 해제",
+        "songSortLockTooltipLocked": "곡 정렬이 잠겨 있어 실수로 드래그하는 것을 방지합니다. 잠금을 해제한 뒤 곡을 드래그해 순서를 변경하려면 클릭하세요",
+        "songSortLockTooltipUnlocked": "곡 정렬 잠금이 해제되었습니다. 곡을 드래그하여 순서를 변경할 수 있습니다. 실수로 드래그하지 않도록 다시 잠그려면 클릭하세요",
         "previousSong": "이전 곡",
         "nextSong": "다음 곡",
         "playError": "음악 플레이어가 초기화되지 않았습니다",

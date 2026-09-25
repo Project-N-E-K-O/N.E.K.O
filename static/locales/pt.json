@@ -4454,6 +4454,7 @@
     },
     "Jukebox": {
         "title": "Juke-box",
+        "settingsShort": "Gerenciar / Importar",
         "minimize": "Minimizar",
         "close": "Fechar",
         "loading": "Carregando...",
@@ -4481,6 +4482,8 @@
         "switchPlaybackMode": "Alternar modo de reprodução",
         "lockSongSort": "Bloquear ordenação das músicas",
         "unlockSongSort": "Desbloquear ordenação das músicas",
+        "songSortLockTooltipLocked": "A ordenação das músicas está bloqueada para evitar arrastos acidentais. Clique para desbloquear e reordenar as músicas",
+        "songSortLockTooltipUnlocked": "A ordenação das músicas está desbloqueada. Arraste as músicas para reordenar ou clique para bloquear e evitar arrastos acidentais",
         "previousSong": "Faixa anterior",
         "nextSong": "Próxima faixa",
         "playError": "Leitor de música não inicializado",
