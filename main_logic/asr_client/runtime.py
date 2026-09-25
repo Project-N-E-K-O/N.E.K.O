@@ -598,6 +598,11 @@ class IndependentAsrRuntime:
         self._asr_start_generation = 0
         self._asr_provider = None
         self._asr_turn_prepared = False
+        # The turn Core is holding a dispatch pause for. Preparation is a
+        # promise that a final or an abandon will follow, and this names who
+        # the promise is owed to, so teardown can still settle it after the
+        # rest of the turn's bookkeeping is gone.
+        self._asr_prepared_turn_token: VoiceTurnToken | None = None
         self._asr_final_lock = asyncio.Lock()
         self._asr_audio_bytes = 0
         self._asr_received_audio = False
@@ -733,6 +738,8 @@ class IndependentAsrRuntime:
             self._asr_overlap_completed_onsets = deque()
         if not hasattr(self, "_asr_partial_turn_token"):
             self._asr_partial_turn_token = None
+        if not hasattr(self, "_asr_prepared_turn_token"):
+            self._asr_prepared_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
             self._asr_overlap_completed_token = None
             self._asr_overlap_completed_turns = 0
@@ -1370,6 +1377,11 @@ class IndependentAsrRuntime:
             or not getattr(session_ref, "is_ready", True)
             or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
         ):
+            logger.info(
+                "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=false reason=not_ready",
+                getattr(turn_token.ingress, "session_epoch", ""),
+                getattr(turn_token, "turn_id", ""),
+            )
             return False
         if self._asr_audio_dispatcher.active_turn == turn_token:
             return True
@@ -1406,6 +1418,13 @@ class IndependentAsrRuntime:
                 payload,
                 sample_rate_hz=16_000,
             )
+        logger.info(
+            "[voice-chain] stage=asr_audio_activate session_epoch=%s turn_id=%s activated=%s bytes=%d",
+            getattr(turn_token.ingress, "session_epoch", ""),
+            getattr(turn_token, "turn_id", ""),
+            activated,
+            len(payload),
+        )
         return activated
 
     @staticmethod
@@ -1672,16 +1691,23 @@ class IndependentAsrRuntime:
             VoiceLifecycleState.BACKOFF,
             VoiceLifecycleState.ACTIVE,
         }:
-            abandoned_turn = (
-                self._capture_turn_token(lifecycle)
-                if state is VoiceLifecycleState.ACTIVE and self._asr_turn_prepared
-                else None
+            # _abort_transport settles any prepared Core turn while it resets
+            # ASR state, including when later status or detector work fails.
+            # Notifying here as well sends the same abandon callback twice.
+            lifecycle.invalidate_audio()
+            post_detach = await self._abort_transport(
+                "detector_audio_backpressure"
             )
-            try:
-                lifecycle.invalidate_audio()
-                post_detach = await self._abort_transport(
-                    "detector_audio_backpressure"
-                )
+            if not self._runtime_identity_matches(
+                post_detach
+            ) or not self._asr_runtime_refs_match(
+                epoch,
+                lifecycle,
+                detector,
+            ):
+                return
+            if detector is not None:
+                await detector.reset()
                 if not self._runtime_identity_matches(
                     post_detach
                 ) or not self._asr_runtime_refs_match(
@@ -1690,34 +1716,21 @@ class IndependentAsrRuntime:
                     detector,
                 ):
                     return
-                if detector is not None:
-                    await detector.reset()
-                    if not self._runtime_identity_matches(
-                        post_detach
-                    ) or not self._asr_runtime_refs_match(
-                        epoch,
-                        lifecycle,
-                        detector,
-                    ):
-                        return
-                await self._send_asr_status(
-                    "ASR_INGRESS_BACKPRESSURE",
-                    provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
-                if not self._runtime_identity_matches(post_detach):
-                    return
-                await self._send_asr_lifecycle_state(
-                    VoiceLifecycleState.LOCAL_LISTEN,
-                    provider=provider,
-                    session_epoch=epoch,
-                    expected_identity=post_detach,
-                )
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            if not self._runtime_identity_matches(post_detach):
                 return
-            finally:
-                if abandoned_turn is not None:
-                    await self._notify_asr_turn_abandoned(abandoned_turn)
+            await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.LOCAL_LISTEN,
+                provider=provider,
+                session_epoch=epoch,
+                expected_identity=post_detach,
+            )
+            return
         identity = self._capture_runtime_identity()
         await self._send_asr_status(
             "ASR_INGRESS_BACKPRESSURE",
@@ -2278,6 +2291,10 @@ class IndependentAsrRuntime:
             self._asr_received_audio = False
             self._asr_audio_sequence = 0
             self._asr_partial_turn_token = None
+            # The promise passes to the suppression below, settled either by
+            # _complete_candidate_rejection or, if a teardown clears the
+            # suppression first, by _reset_asr_turn_state adopting it back.
+            self._asr_prepared_turn_token = None
             self._asr_sealed_turn_token = None
             self._asr_provider_candidate_fence = None
             self._asr_turn_endpointed_at = None
@@ -2486,9 +2503,22 @@ class IndependentAsrRuntime:
             self._ensure_transport_restart_task()
         return True
 
-    def _reset_asr_turn_state(self) -> None:
-        """Reset per-turn bookkeeping shared by close/abort/error teardown."""
+    def _reset_asr_turn_state(self) -> VoiceTurnToken | None:
+        """Reset per-turn bookkeeping shared by close/abort/error teardown.
 
+        Returns the prepared turn whose Core-side dispatch pause this reset
+        discards, if there is one. Preparation promises Core that a final or
+        an abandon will follow, and this is where the local state naming that
+        promise disappears -- so it is the last place able to identify who is
+        owed a settlement. Callers are async and must hand the token to
+        ``_notify_asr_turn_abandoned``: dropping it leaves Core paused for a
+        turn that no longer exists anywhere, and the dispatch barrier it
+        blocks is reached before anything is sent, so nothing downstream
+        would ever report the stall.
+        """
+
+        abandoned = self._asr_prepared_turn_token
+        self._asr_prepared_turn_token = None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
@@ -2504,7 +2534,15 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        rejection = self._asr_candidate_rejection
         self._asr_candidate_rejection = None
+        if abandoned is None and rejection is not None:
+            # The rejection path clears the prepared token before awaiting its
+            # own cleanup and leaves the debt with the suppression. Taking it
+            # back here is what makes the promise above true: clearing the
+            # suppression makes _complete_candidate_rejection return without
+            # notifying, so this reset is now the only settler left.
+            abandoned = rejection.turn_token
         self._asr_sealed_turn_token = None
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
@@ -2516,6 +2554,30 @@ class IndependentAsrRuntime:
         self._asr_rejection_watchdog_task = None
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
+        return abandoned
+
+    def _settle_discarded_prepared_turn(
+        self,
+        turn_token: VoiceTurnToken | None,
+    ) -> None:
+        """Settle a promise ``_reset_asr_turn_state`` discarded, off the path.
+
+        Detached on purpose. Every caller is mid-teardown, holding a runtime
+        that is briefly inconsistent while sessions, lifecycles and detectors
+        are being swapped out; awaiting the Core callback there would publish
+        that window to whatever runs next. The settlement is keyed to the
+        turn id on the Core side, so arriving late costs nothing and arriving
+        never is the failure this exists to prevent.
+        """
+
+        if turn_token is None:
+            return
+        task = asyncio.create_task(
+            self._notify_asr_turn_abandoned(turn_token),
+            name="independent-asr-prepared-turn-settle",
+        )
+        self._asr_close_tasks.add(task)
+        task.add_done_callback(self._asr_close_tasks.discard)
 
     async def _notify_asr_turn_abandoned(
         self,
@@ -2604,7 +2666,7 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         if lifecycle is not None:
             lifecycle.stop()
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         self._asr_session_factory = None
         self._asr_transport_selection = None
 
@@ -3583,7 +3645,7 @@ class IndependentAsrRuntime:
         self._asr_transcript_dispatcher.invalidate_all()
         self._asr_detector_dispatcher.invalidate_all()
         self._asr_audio_dispatcher.abort()
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
         for task_name in (
             "_asr_transport_task",
@@ -4074,6 +4136,10 @@ class IndependentAsrRuntime:
             return
         self._asr_reserved_final_key = final_key
         self._asr_turn_prepared = True
+        # Recorded before the callback, not after it succeeds: Core arms its
+        # pause inside on_prepare_turn, so a teardown landing on that await
+        # must still be able to name this turn.
+        self._asr_prepared_turn_token = turn_token
         identity = self._capture_runtime_identity(
             ingress_token=turn_token.ingress,
             turn_token=turn_token,
@@ -4104,6 +4170,8 @@ class IndependentAsrRuntime:
         ):
             self._asr_reserved_final_key = None
             self._asr_turn_prepared = False
+            if self._asr_prepared_turn_token == turn_token:
+                self._asr_prepared_turn_token = None
             if self._asr_partial_turn_token == turn_token:
                 self._asr_partial_turn_token = None
         self._notify_prefix_capacity()
@@ -4524,6 +4592,12 @@ class IndependentAsrRuntime:
         provider: str,
     ) -> None:
         clean = str(text or "").strip()
+        logger.info(
+            "[voice-chain] stage=asr_final session_epoch=%s provider=%s text_len=%d",
+            epoch,
+            provider,
+            len(clean),
+        )
         if epoch != self._asr_session_epoch:
             return
 
@@ -4622,6 +4696,13 @@ class IndependentAsrRuntime:
                     accepted_turn_token = sealed_token.turn
                     if self._asr_partial_turn_token == accepted_turn_token:
                         self._asr_partial_turn_token = None
+                    if self._asr_prepared_turn_token == accepted_turn_token:
+                        # The promise passes to the transcript dispatch below.
+                        # Its own exits settle it explicitly; a rejected
+                        # envelope is settled instead by the voice-input
+                        # registry cancelling this route, which abandons the
+                        # turn through the Core-chat consumer.
+                        self._asr_prepared_turn_token = None
                     lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
                     self._asr_turn_prepared = False
                     self._asr_received_audio = False
@@ -4956,7 +5037,7 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         self._asr_session_factory = None
         self._asr_transport_selection = None
-        self._reset_asr_turn_state()
+        self._settle_discarded_prepared_turn(self._reset_asr_turn_state())
         for task_name in (
             "_asr_transport_task",
             "_asr_warm_expiry_task",

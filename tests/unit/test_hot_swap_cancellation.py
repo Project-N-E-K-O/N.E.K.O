@@ -193,29 +193,18 @@ async def test_final_swap_cancelled_at_step1_does_not_promote_zombie():
 
 @pytest.mark.asyncio
 async def test_final_swap_swallowed_cancel_still_aborts_before_promote():
-    """The pre-promote checkpoint: even when the external cancel is *swallowed*
-    by an await (Python 3.11 wait_for/close returns normally, clearing
-    _must_cancel while cancelling() stays > 0), the swap must still abort before
-    overwriting self.session. Without the checkpoint the CAS would wave the
-    zombie through, since self.session is still old_main_session at promote."""
+    """A cancellation during close must abort before overwriting self.session.
+
+    Close is now manager-owned, so target the actual swap task explicitly;
+    cancelling current_task inside close would cancel only the cleanup worker.
+    """
     mgr = _make_swap_manager()
     new_session = _FakeSession("pending")
 
     class _SwallowExternalCancelOnClose(_FakeSession):
         async def close(self):
             await super().close()
-            # Reproduce the 3.11 quirk deterministically: an external cancel
-            # arrives and is consumed by an inner await that eats it, leaving
-            # _must_cancel cleared but cancelling() == 1.
-            t = asyncio.current_task()
-            t.cancel()
-            try:
-                await asyncio.sleep(0)
-            except asyncio.CancelledError:
-                # Swallow it on purpose — this IS the swallow being reproduced:
-                # the cancel is consumed here so _must_cancel clears while
-                # cancelling() stays 1, mimicking wait_for/close eating the cancel.
-                pass
+            mgr.final_swap_task.cancel()
 
     old_session = _SwallowExternalCancelOnClose("old")
     mgr.session = old_session
@@ -223,10 +212,10 @@ async def test_final_swap_swallowed_cancel_still_aborts_before_promote():
     mgr.is_hot_swap_imminent = True
     mgr.message_handler_task = None  # old listener already gone; step 1 is skipped
 
-    # The checkpoint raises CancelledError, which the swap's own
+    # The shield await raises CancelledError, which the swap's own
     # ``except CancelledError`` handler catches and cleans up after — so the
     # coroutine returns normally rather than propagating.
-    await mgr._perform_final_swap_sequence()
+    await _run_swap_as_final_swap_task(mgr)
 
     assert mgr.session is old_session, "swallowed external cancel must still abort before promote"
     assert new_session.closed, "aborted swap must close new_session"
@@ -1034,24 +1023,14 @@ async def test_final_swap_promote_cas_loss_restores_injected_extras():
 
 @pytest.mark.asyncio
 async def test_final_swap_swallowed_cancel_restores_injected_extras():
-    """The pre-promote checkpoint exit (external cancel swallowed by an inner
-    await) also discards the primed session — injected extras must be restored."""
+    """Cancellation while closing also discards the primed session and extras."""
     mgr = _make_swap_manager()
     new_session = _FakeSession("pending")
 
     class _SwallowExternalCancelOnClose(_FakeSession):
         async def close(self):
             await super().close()
-            t = asyncio.current_task()
-            t.cancel()
-            try:
-                await asyncio.sleep(0)
-            except asyncio.CancelledError:
-                # Swallow on purpose — this reproduces the 3.11 quirk where an
-                # inner await consumes the cancel (_must_cancel clears while
-                # cancelling() stays 1), so only the pre-promote checkpoint
-                # can catch it.
-                pass
+            mgr.final_swap_task.cancel()
 
     old_session = _SwallowExternalCancelOnClose("old")
     mgr.session = old_session
@@ -1384,16 +1363,9 @@ async def test_final_swap_cancel_after_old_close_fail_closes_instead_of_restarti
     _orig_close = old_session.close
 
     async def _close_then_swallowed_cancel():
-        # Step 2 closes the old session (ws cleared), then the external cancel
-        # arrives and is swallowed — the pre-promote checkpoint re-raises it.
+        # Step 2 closes the old session (ws cleared), then the swap is cancelled.
         await _orig_close()
-        t = asyncio.current_task()
-        t.cancel()
-        try:
-            await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            # Swallow on purpose: reproduces the checkpoint-only cancel path.
-            pass
+        mgr.final_swap_task.cancel()
 
     old_session.close = _close_then_swallowed_cancel
     mgr.session = old_session
@@ -1427,13 +1399,7 @@ async def test_final_swap_cancel_after_old_close_fail_closes_text_session_too():
 
     async def _close_then_swallowed_cancel():
         old_session.llm = None  # mirror OmniOfflineClient.close()
-        t = asyncio.current_task()
-        t.cancel()
-        try:
-            await asyncio.sleep(0)
-        except asyncio.CancelledError:
-            # Swallow on purpose: reproduces the checkpoint-only cancel path.
-            pass
+        mgr.final_swap_task.cancel()
 
     old_session.close = _close_then_swallowed_cancel
     mgr.session = old_session

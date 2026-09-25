@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import AsyncMock, call
+from dataclasses import replace
+from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from main_logic.asr_client.lifecycle import VoiceLifecycleState, VoiceRouteMode
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
@@ -177,6 +178,37 @@ async def test_idle_backpressure_new_speech_still_wakes_adopted_session(
     assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
     assert component._asr_turn_prepared is True
     runtime.handle_new_message.assert_awaited_once()
+
+
+async def test_active_backpressure_abandons_prepared_turn_once() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    token = runtime._capture_ingress_token()
+    component._asr_current_ingress_token = token
+    epoch = component._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED, epoch
+    )
+    assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert component._asr_turn_prepared
+    turn_id = lifecycle.snapshot.turn_id
+    assert component._asr_prepared_turn_token is not None
+    abandoned_callback = AsyncMock(wraps=component._callbacks.on_turn_abandoned)
+    component._callbacks = replace(
+        component._callbacks, on_turn_abandoned=abandoned_callback
+    )
+
+    await component._handle_audio_ingress_backpressure(token)
+    await asyncio.gather(*tuple(component._asr_close_tasks))
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-{turn_id}"
+    )
+    abandoned_callback.assert_awaited_once()
 
 
 async def test_provider_overflow_lock_then_final_preserves_accepted_final() -> None:

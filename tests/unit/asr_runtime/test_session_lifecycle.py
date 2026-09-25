@@ -243,6 +243,7 @@ async def test_connect_budget_does_not_block_a_free_native_route(
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     order: list[str] = []
     manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager._bg_tasks = set()
     manager.lock = asyncio.Lock()
     manager.input_cache_lock = asyncio.Lock()
     manager.is_active = False
@@ -272,6 +273,9 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
         async def handle_messages(self) -> None:
             await stop.wait()
 
+        async def close(self) -> None:
+            stop.set()
+
     manager.session = _Session()
 
     await LLMSessionManager._start_session_activate(
@@ -284,6 +288,8 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
     assert order == ["asr", "started"]
     stop.set()
     await manager.message_handler_task
+    await asyncio.gather(*tuple(manager._bg_tasks))
+    manager._flush_pending_input_data.assert_awaited_once()
 
 
 async def test_blocked_route_consumes_audio_without_an_asr_or_omni_send() -> None:

@@ -5238,6 +5238,11 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_turn_prepare turn_id=%s session_epoch=%s provider=independent_asr",
+            external_turn_id,
+            token.ingress.session_epoch,
+        )
         self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
@@ -5288,6 +5293,11 @@ class AsrRuntimeMixin:
             await self.handle_new_message()
             if operation_is_current():
                 preparation_succeeded = True
+                logger.info(
+                    "[voice-chain] stage=asr_turn_ready turn_id=%s session_epoch=%s",
+                    external_turn_id,
+                    token.ingress.session_epoch,
+                )
                 return True
             if abandon_on_failure:
                 self._abandon_core_voice_turn(
@@ -5313,6 +5323,11 @@ class AsrRuntimeMixin:
             logger.warning(
                 "[%s] independent ASR turn preparation failed",
                 self.lanlan_name,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_turn_prepare_failed turn_id=%s session_epoch=%s",
+                external_turn_id,
+                token.ingress.session_epoch,
             )
             return False
         finally:
@@ -5369,6 +5384,13 @@ class AsrRuntimeMixin:
     ) -> None:
         token = event.turn_token.ingress
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_transcript_dispatch turn_id=%s session_epoch=%s provider=%s text_len=%d",
+            external_turn_id,
+            token.session_epoch,
+            event.provider,
+            len(event.text.strip()),
+        )
         if session_ref is None:
             session_ref = getattr(self, "session", None)
         prepared_session_ref = session_ref
@@ -5433,6 +5455,11 @@ class AsrRuntimeMixin:
             accepted = await self.handle_input_transcript(
                 event.text,
                 **transcript_kwargs,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_transcript_accepted turn_id=%s accepted=%s",
+                external_turn_id,
+                accepted,
             )
             def route_still_core() -> bool:
                 """The route-identity half, re-checkable across an await.

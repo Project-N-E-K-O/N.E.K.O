@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from main_logic.core.tts_runtime import TtsRuntimeMixin
+from main_logic.core.tts_lifecycle import TtsLifecycleMixin
 
 
 class _AliveThread:
@@ -10,7 +11,7 @@ class _AliveThread:
         return True
 
 
-class _Manager(TtsRuntimeMixin):
+class _Manager(TtsRuntimeMixin, TtsLifecycleMixin):
     pass
 
 
