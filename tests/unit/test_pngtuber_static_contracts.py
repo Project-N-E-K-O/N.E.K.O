@@ -607,6 +607,109 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js
     run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
+def test_pngtuber_drag_and_pinch_share_the_animation_clock():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber animation tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = "const source = " + json.dumps(source) + ";\n" + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+let nextId = 0;
+const frames = new Map(), timers = new Map();
+const window = { location: { pathname: '/' }, innerWidth: 1000,
+  lanlan_config: { model_type: 'pngtuber' } };
+const document = { body: { classList: { contains: () => false } }, getElementById: () => null };
+vm.runInNewContext(source, { window, document, console, performance: { now: () => 100 },
+  requestAnimationFrame: fn => { frames.set(++nextId, fn); return nextId; },
+  cancelAnimationFrame: id => frames.delete(id),
+  setTimeout: fn => { timers.set(++nextId, fn); return nextId; },
+  clearTimeout: id => timers.delete(id),
+});
+const tick = () => {
+  const [id, fn] = frames.entries().next().value;
+  frames.delete(id);
+  fn(100);
+};
+const pointer = (x, y, pointerType) => ({ pointerId: 1, button: 0, pointerType,
+  clientX: x, clientY: y, preventDefault() {}, stopPropagation() {} });
+const pinch = (x, distance) => ({ touches: [
+  { clientX: x - distance / 2, clientY: 200 },
+  { clientX: x + distance / 2, clientY: 200 },
+], preventDefault() {}, stopPropagation() {} });
+
+(async () => {
+  for (const gesture of ['mouse', 'touch', 'pinch']) {
+    const manager = new window.PNGTuberManager();
+    manager.config = { scale: 1, offset_x: 20, offset_y: 30 };
+    for (const name of ['applyTransform', 'rememberDragScreenPoint', 'rememberModelCenterPointerOffset',
+      'setModelDraggingState', 'resetLayeredDragVelocity', 'startLayeredBreathingLoop',
+      'showDragImage', 'restoreStateImage', 'updateLockIconPosition']) manager[name] = () => {};
+    for (const name of ['layeredPointerNeedsFrame', 'layeredPhysicsNeedsFrame',
+      '_layeredStateHasFastSheetAnimation', 'checkAndSwitchDisplayAfterDrag']) manager[name] = () => false;
+    for (const name of ['recordDragHintPointerEdgeApproach', 'recordDragHintPointerEdgeRelease',
+      'snapModelIntoScreen']) manager[name] = async () => {};
+    let saved;
+    manager.saveOrStageCurrentConfig = async () => { saved = { ...manager.config }; };
+    let layered = true, motion = true;
+    manager.isLayeredActive = () => layered;
+    manager.hasMotionLayersForCurrentState = () => motion;
+    const drawn = [];
+    manager.drawLayeredState = () => drawn.push({ ...manager.config });
+
+    // Begin with an existing idle timer, then wake it once for an input burst.
+    manager.startLayeredAnimationLoop();
+    tick();
+    assert.equal(timers.size, 1);
+    const timeline = manager.layeredAnimationStart;
+    drawn.length = 0;
+    if (gesture === 'pinch') manager.startTouchZoom(pinch(100, 100));
+    else manager.startDrag(pointer(100, 200, gesture));
+    for (let i = 1; i <= 100; i++) {
+      if (gesture === 'pinch') manager.moveTouchZoom(pinch(100 + i, 100 + i));
+      else manager.moveDrag(pointer(100 + i, 200 + i, gesture));
+    }
+    assert.equal(manager.config.offset_x, 120, 'placement updates before the next frame');
+    assert.equal(manager.config.offset_y, gesture === 'pinch' ? 30 : 130);
+    assert.equal(manager.config.scale, gesture === 'pinch' ? 2 : 1);
+    assert.equal(drawn.length, 0, 'input bursts must not draw synchronously');
+    assert.equal(timers.size, 0, 'dragging upgrades the idle timer to rAF');
+    assert.equal(frames.size, 1, 'all moves share the existing animation loop');
+    assert.equal(manager.layeredAnimationStart, timeline);
+    tick();
+    assert.equal(drawn.length, 1);
+    assert.equal(drawn[0].offset_x, 120);
+    assert.equal(frames.size, 1);
+
+    // Releasing before the next frame must still save the final position/scale.
+    if (gesture === 'pinch') {
+      manager.moveTouchZoom(pinch(210, 210));
+      await manager.endTouchZoom();
+    } else {
+      manager.moveDrag(pointer(210, 310, gesture));
+      await manager.endDrag(pointer(210, 310, gesture));
+    }
+    assert.equal(saved.offset_x, 130);
+    assert.equal(saved.scale, gesture === 'pinch' ? 2.1 : 1);
+    assert.equal(frames.size, 1, 'release leaves only one animation loop');
+    manager.stopLayeredAnimationLoop();
+
+    // Static layered canvases and ordinary PNGs move via their CSS transform.
+    motion = false;
+    for (layered of [true, false]) {
+      manager.startDrag(pointer(100, 200, 'mouse'));
+      manager.moveDrag(pointer(120, 220, 'mouse'));
+      assert.equal(frames.size, 0);
+      await manager.endDrag(pointer(120, 220, 'mouse'));
+    }
+    assert.equal(timers.size, 0);
+  }
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
+
+
 def test_pngtuber_drag_switches_to_the_pointer_display_without_losing_the_grab_point():
     node = shutil.which("node")
     if not node:

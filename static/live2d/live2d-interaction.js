@@ -2019,7 +2019,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
    
 
-    model.on('pointerdown', (event) => {
+    const onDragStart = (event) => {
         if (!this._isModelReadyForInteraction) return;
         if (this.isLocked) return;
         if (isYuiGuideDragLocked()) return;
@@ -2075,9 +2075,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
         // 开始拖动时，临时禁用按钮的 pointer-events
         disableButtonPointerEvents();
+    };
+    model.on('pointerdown', (event) => {
+        if (this._touchGestures?.active) return;
+        onDragStart(event);
     });
 
     const onDragEnd = async (event) => {
+        if (this._touchGestures?.active) return;
         // A physical-crop host owns its drag from the primed pointerdown through
         // final snap/save settlement. The legacy client-coordinate writer must
         // not settle coordinates, but local pointer/UI state still needs its
@@ -2144,7 +2149,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         cancelLocalDragSession();
     };
 
-    const onDragMove = (event) => {
+    const onDragMove = (event, fromTouchGesture = false) => {
+        if (this._touchGestures?.active && !fromTouchGesture) return;
         if (!this._isModelReadyForInteraction) return;
         if (this._isDraggingModel) {
             if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
@@ -2153,17 +2159,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (isYuiGuideDragLocked()) {
                 this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
-                restoreButtonPointerEvents();
-                return;
-            }
-
-            // 再次检查是否变成多点触摸
-            if (event.touches && event.touches.length > 1) {
-                // 如果变成多点触摸，停止拖拽
-                this._isDraggingModel = false;
-                document.getElementById('live2d-canvas').style.cursor = '';
-                // 【维护注意】所有退出拖拽的路径都必须调用 restoreButtonPointerEvents，
-                //  否则 body 上的 neko-model-dragging class 不会被移除，按钮将永久失效。
                 restoreButtonPointerEvents();
                 return;
             }
@@ -2203,6 +2198,26 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             }
             placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
         }
+    };
+
+    this._touchDragHandlers = {
+        model,
+        start: event => {
+            onDragStart({ data: { originalEvent: event, global: getLive2DRendererPointer(event, this) } });
+            const point = getLive2DRendererPointer(event, this);
+            if (point && typeof model.hitTest === 'function') {
+                this._lastTouchHitAreas = model.hitTest(point.x, point.y) || [];
+                this._lastTouchHitSeq = this._touchSetPointerSeq;
+            }
+        },
+        move: event => onDragMove(event, true),
+        end: (event, pinched) => {
+            // A pinch followed by a stationary remaining finger is never a tap.
+            // Use the normal terminal path for snapping, cross-display moves and saving.
+            if (pinched) hasMoved = true;
+            return onDragEnd(event);
+        },
+        cancel: cancelLocalDragSession
     };
 
     // 清理旧的监听器
@@ -2329,97 +2344,65 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
     view.lastWheelListener = onWheelScroll;
 };
 
-// 设置触摸缩放（双指捏合）
+// Touch pointers share one drag/pinch owner; a PointerEvent has no touches list.
 Live2DManager.prototype.setupTouchZoom = function (model) {
+    if (this._touchGestures) this._touchGestures.dispose();
     const view = this.pixi_app.view;
-    let initialDistance = 0;
-    let initialScale = 1;
-    let isTouchZooming = false;
-
-    const getTouchDistance = (touch1, touch2) => {
-        const dx = touch2.clientX - touch1.clientX;
-        const dy = touch2.clientY - touch1.clientY;
-        return Math.sqrt(dx * dx + dy * dy);
-    };
-
-    const onTouchStart = (event) => {
-        if (this.isLocked || !this.currentModel) return;
-        if (this.isLive2DPeekActive()) {
-            if (event.touches && event.touches.length === 2) {
-                event.preventDefault();
+    const drag = this._touchDragHandlers?.model === model ? this._touchDragHandlers : null;
+    let pinch = null;
+    this._touchGestures = window.NekoModelTouchGestures.install(view, {
+        enabled: () => !this.isLocked && this._isModelReadyForInteraction
+            && this.currentModel === model
+            && !document.body?.classList.contains('yui-guide-home-ui-suppressed')
+            && !document.body?.classList.contains('yui-taking-over'),
+        hitTest: event => {
+            const point = getLive2DRendererPointer(event, this);
+            return !!point && model.containsPoint(point);
+        },
+        begin: points => {
+            if (drag) drag.cancel();
+            pinch = null;
+            if (points.length === 1) {
+                if (drag) drag.start(points[0]);
+            } else {
+                if (this.isLive2DPeekActive()) return;
+                // A pinch supersedes pending drag settlement just like a pan.
+                // Invalidate the old snap before capturing the new anchor.
+                this._live2DDragGeneration = (Number(this._live2DDragGeneration) || 0) + 1;
+                if (this._live2DActiveSnapAnimation) {
+                    this._live2DActiveSnapAnimation = null;
+                    this._isSnapping = false;
+                }
+                const center = window.NekoModelTouchGestures.midpoint(points);
+                const point = getLive2DRendererPointer(center, this);
+                pinch = { scale: model.scale.x, local: getLive2DModelLocalGrabPoint(model, point) };
+                window.DragHelpers?.disableButtonPointerEvents();
             }
-            isTouchZooming = false;
-            return; // edge peek ignores touch zoom start
-        }
-
-        // 检测双指触摸
-        if (event.touches.length === 2) {
-            event.preventDefault();
-            isTouchZooming = true;
-            initialDistance = getTouchDistance(event.touches[0], event.touches[1]);
-            initialScale = this.currentModel.scale.x;
-        }
-    };
-
-    const onTouchMove = (event) => {
-        if (this.isLocked || !this.currentModel || !isTouchZooming) return;
-        if (this.isLive2DPeekActive()) {
-            if (event.touches && event.touches.length === 2) {
-                event.preventDefault();
+        },
+        move: (points, gesture) => {
+            if (points.length === 1) {
+                if (drag) drag.move(points[0]);
+            } else if (pinch?.local) {
+                if (this.isLive2DPeekActive()) { pinch = null; return; }
+                model.scale.set(Math.max(SCALE_LIMITS.MIN, Math.min(SCALE_LIMITS.MAX, pinch.scale * gesture.ratio)));
+                // Host ownership excludes local position writes, not scaling.
+                if (!isLive2DHostModelDragActive()) {
+                    placeLive2DGrabPointAtPointer(model, pinch.local, getLive2DRendererPointer(gesture.center, this));
+                }
+                this.boostLinuxX11InteractiveFPS?.(1400);
             }
-            isTouchZooming = false;
-            return; // edge peek ignores touch zoom move
-        }
-
-        // 双指缩放
-        if (event.touches.length === 2) {
-            event.preventDefault();
-            const currentDistance = getTouchDistance(event.touches[0], event.touches[1]);
-            const scaleChange = currentDistance / initialDistance;
-            let newScale = initialScale * scaleChange;
-
-            // 限制缩放范围，与滚轮缩放保持一致
-            newScale = Math.max(SCALE_LIMITS.MIN, Math.min(SCALE_LIMITS.MAX, newScale));
-
-            this.currentModel.scale.set(newScale);
-        }
-    };
-
-    const onTouchEnd = async (event) => {
-        // 当手指数量小于2时，停止缩放
-        if (event.touches.length < 2) {
-            if (this.isLive2DPeekActive()) {
-                isTouchZooming = false;
-                return; // edge peek ignores touch zoom end without saving peek state
+        },
+        end: (event, state) => {
+            pinch = null;
+            if (!state.cancelled && drag && event && (!state.pinched || !this.isLive2DPeekActive())) {
+                void drag.end(event, state.pinched);
+            } else {
+                if (drag) drag.cancel();
+                window.DragHelpers?.restoreButtonPointerEvents();
+                if (!state.cancelled && state.moved && !this.isLive2DPeekActive()) void this._savePositionAfterInteraction();
             }
-            if (isTouchZooming) {
-                // 触摸缩放结束后自动保存位置和缩放
-                await this._savePositionAfterInteraction();
-            }
-            isTouchZooming = false;
         }
-    };
-
-    // 移除旧的监听器（如果存在）
-    if (view.lastTouchStartListener) {
-        view.removeEventListener('touchstart', view.lastTouchStartListener);
-    }
-    if (view.lastTouchMoveListener) {
-        view.removeEventListener('touchmove', view.lastTouchMoveListener);
-    }
-    if (view.lastTouchEndListener) {
-        view.removeEventListener('touchend', view.lastTouchEndListener);
-    }
-
-    // 添加新的监听器
-    view.addEventListener('touchstart', onTouchStart, { passive: false });
-    view.addEventListener('touchmove', onTouchMove, { passive: false });
-    view.addEventListener('touchend', onTouchEnd, { passive: false });
-
-    // 保存监听器引用，便于清理
-    view.lastTouchStartListener = onTouchStart;
-    view.lastTouchMoveListener = onTouchMove;
-    view.lastTouchEndListener = onTouchEnd;
+    });
 };
 
 // 启用鼠标跟踪以检测与模型的接近度
@@ -3788,24 +3771,16 @@ Live2DManager.prototype.cleanupEventListeners = function () {
 
     // resize 吸附监听器已移除（setupResizeSnapDetection 不再存在）
 
-    // 清理 canvas 上的滚轮和触摸监听器
+    if (this._touchGestures) {
+        this._touchGestures.dispose();
+        this._touchGestures = null;
+    }
+    this._touchDragHandlers = null;
     if (this.pixi_app && this.pixi_app.view) {
         const view = this.pixi_app.view;
         if (view.lastWheelListener) {
             view.removeEventListener('wheel', view.lastWheelListener);
             view.lastWheelListener = null;
-        }
-        if (view.lastTouchStartListener) {
-            view.removeEventListener('touchstart', view.lastTouchStartListener);
-            view.lastTouchStartListener = null;
-        }
-        if (view.lastTouchMoveListener) {
-            view.removeEventListener('touchmove', view.lastTouchMoveListener);
-            view.lastTouchMoveListener = null;
-        }
-        if (view.lastTouchEndListener) {
-            view.removeEventListener('touchend', view.lastTouchEndListener);
-            view.lastTouchEndListener = null;
         }
     }
 

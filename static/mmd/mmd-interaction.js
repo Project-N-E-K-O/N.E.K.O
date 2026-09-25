@@ -344,6 +344,7 @@ class MMDInteraction {
 
         // 鼠标按下
         this.mouseDownHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
             if (isYuiGuideDragLocked()) return;
@@ -403,6 +404,7 @@ class MMDInteraction {
 
         // 鼠标移动（拖拽）
         this.dragHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (isYuiGuideDragLocked()) {
                 if (this.isDragging) {
                     this.isDragging = false;
@@ -485,6 +487,7 @@ class MMDInteraction {
 
         // 鼠标抬起
         this.mouseUpHandler = async (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (this.isDragging) {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
@@ -581,6 +584,12 @@ class MMDInteraction {
         // 绑定事件
         // mousedown/hover/wheel 绑定到 canvas，mousemove/mouseup 绑定到 document
         // 防止拖拽经过悬浮按钮时被中断
+        this._touchGestures = window.NekoModelTouchGestures.installThree(this, {
+            getModel: () => this.manager.currentModel?.mesh,
+            setScale: scale => this.manager.currentModel.mesh.scale.setScalar(scale),
+            enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.mesh
+                && !this.checkLocked() && !isYuiGuideDragLocked()
+        });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler);
         canvas.addEventListener('mousemove', this.mouseHoverHandler);
@@ -595,6 +604,10 @@ class MMDInteraction {
     // ═══════════════════ 清理 ═══════════════════
 
     cleanupDragAndZoom() {
+        if (this._touchGestures) {
+            this._touchGestures.dispose();
+            this._touchGestures = null;
+        }
         // document 级监听器必须无条件移除，防止 renderer 已销毁时泄漏
         if (this.dragHandler) document.removeEventListener('mousemove', this.dragHandler);
         if (this.mouseUpHandler) document.removeEventListener('mouseup', this.mouseUpHandler);
