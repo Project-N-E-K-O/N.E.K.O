@@ -576,7 +576,7 @@ async def get_workshop_item_details(item_id: str):
                 time_created = cached.get('timeCreated', 0)
                 time_updated = cached.get('timeUpdated', 0)
                 file_size = 0
-                preview_url = ''
+                preview_url = cached.get('previewImageUrl', '')
                 associated_url = ''
                 file_url = ''
                 file_id = 0
@@ -594,12 +594,7 @@ async def get_workshop_item_details(item_id: str):
                 time_created = getattr(result, 'timeCreated', 0)
                 time_updated = getattr(result, 'timeUpdated', 0)
                 file_size = getattr(result, 'fileSize', 0)
-                # SteamUGCDetails_t.URL (m_rgchURL) 是物品的关联网页 URL，并非预览图。
-                # 真正的预览图需通过 ISteamUGC::GetQueryUGCPreviewURL() 获取，
-                # 但当前 Steamworks wrapper 未暴露该接口，因此 previewImageUrl 置空，
-                # 前端已有 fallback（默认 Steam 图标）。
-                # TODO: 在 wrapper 中实现 GetQueryUGCPreviewURL 后填充 preview_url。
-                preview_url = ''
+                preview_url = getattr(result, 'previewImageUrl', '') or ''
                 # 解码关联网页 URL 供客户端可选使用
                 raw_url = getattr(result, 'URL', b'')
                 if isinstance(raw_url, bytes):

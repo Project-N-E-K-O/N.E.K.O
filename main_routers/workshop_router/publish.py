@@ -181,25 +181,6 @@ async def prepare_workshop_upload(request: Request):
             if safe_chara_name.endswith('.chara.json'):
                 character_card_name = safe_chara_name[:-11]  # 去掉 .chara.json 后缀
         
-        # TODO: 临时阻止重复上传，直到实现创意工坊作者验证机制
-        # 未来需要支持：
-        # 1. 验证当前用户是否是原上传者
-        # 2. 允许原作者更新已上传的内容
-
-        # 检查是否已存在workshop_meta.json文件（防止重复上传）
-        if character_card_name:
-            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
-            if meta_data and meta_data.get('workshop_item_id'):
-                workshop_item_id = meta_data.get('workshop_item_id')
-
-                # 返回错误，提示用户该角色卡已上传过
-                return JSONResponse({
-                    "success": False,
-                    "error": "该角色卡已上传到创意工坊",
-                    "workshop_item_id": workshop_item_id,
-                    "message": f"角色卡 '{character_card_name}' 已经上传过（物品ID: {workshop_item_id}）。如需更新，请使用更新功能。"
-                }, status_code=400)
-        
         # 获取workshop基础路径
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
@@ -1086,7 +1067,6 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
             logger.info(f"创意工坊物品上传成功完成！物品ID: {item_id}")
             
-            # 在原文件夹创建带物品ID的txt文件，标记为已上传
             # 在原文件夹创建带物品ID的txt文件，标记为已上传
             try:
                 marker_file_path = os.path.join(content_folder, f"steam_workshop_id_{item_id}.txt")

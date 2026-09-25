@@ -341,6 +341,9 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                 try:
                     res = steamworks.Workshop.GetQueryUGCResult(query_handle, i)
                     if res and res.publishedFileId:
+                        preview_url = _get_ugc_preview_url(query_handle, i)
+                        if preview_url:
+                            res.previewImageUrl = preview_url
                         results[int(res.publishedFileId)] = res
                 except Exception as e:
                     logger.warning(f"获取第 {i} 个 UGC 查询结果失败: {e}")
@@ -603,6 +606,22 @@ def _safe_text(value) -> str:
     return str(value)
 
 
+def _get_ugc_preview_url(query_handle: int, index: int) -> str:
+    """Fetch the preview-image URL for one UGC query result row.
+
+    Bridges directly into ``libsteam_api`` via ``steamworks._native_ugc``
+    (same pattern as the existing ``DownloadItem`` bridge). Returns an
+    empty string when the wrapper lacks the function or Steam reports no
+    preview for this row — the caller then falls back to the default icon.
+    """
+    try:
+        from steamworks._native_ugc import get_query_ugc_preview_url
+        return get_query_ugc_preview_url(query_handle, index) or ''
+    except Exception as e:
+        logger.debug(f"获取 UGC 预览 URL 失败 (handle={query_handle}, index={index}): {e}")
+        return ''
+
+
 def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: dict) -> None:
     """
     Extract item details from a UGC query result (SteamUGCDetails_t) into the item_info dict.
@@ -638,11 +657,13 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
                     item_info['tags'] = [t.strip() for t in tags_str.split(',') if t.strip()]
             except Exception as e:
                 logger.debug(f"解析 UGC 物品 {item_id_int} 标签失败: {e}")
-        
+        if hasattr(result, 'previewImageUrl') and result.previewImageUrl:
+            item_info['previewImageUrl'] = _safe_text(result.previewImageUrl)
+
         # 更新缓存
         cache_entry = {}
         for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
-                     'steamIDOwner', 'authorName', 'tags'):
+                     'steamIDOwner', 'authorName', 'tags', 'previewImageUrl'):
             if key in item_info:
                 cache_entry[key] = item_info[key]
         if cache_entry:
