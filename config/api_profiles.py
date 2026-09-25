@@ -37,6 +37,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyOrcarouter": "",
+    "assistApiKeyRequesty": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
@@ -218,6 +219,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "anthropic/claude-sonnet-5",
         'AGENT_MODEL': "anthropic/claude-sonnet-5",
     },
+    'requesty': {
+        'OPENROUTER_URL': "https://router.requesty.ai/v1",
+        'CONVERSATION_MODEL': "google/gemini-2.5-flash",
+        'SUMMARY_MODEL': "google/gemini-2.5-flash",
+        'CORRECTION_MODEL': "google/gemini-2.5-flash",
+        'EMOTION_MODEL': "google/gemini-2.5-flash-lite",
+        'VISION_MODEL': "google/gemini-2.5-flash",
+        'AGENT_MODEL': "google/gemini-3-flash-preview",
+    },
     'grok': {
         'OPENROUTER_URL': "https://api.x.ai/v1",
         'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
@@ -269,6 +279,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
     'orcarouter': 'ASSIST_API_KEY_ORCAROUTER',
+    'requesty': 'ASSIST_API_KEY_REQUESTY',
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
 }

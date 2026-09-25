@@ -104,6 +104,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_DOUBAO_TTS', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
+                       'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -800,6 +801,7 @@ class TestProviderExclusion:
             'claude',
             'openrouter',
             'orcarouter',
+            'requesty',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',
