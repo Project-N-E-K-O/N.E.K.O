@@ -72,6 +72,16 @@ describe('usePluginWorkbench scoped selection state', () => {
     expect(packageWorkbench.selectedPluginIds.value).toEqual([])
   })
 
+  it('returns no items when all type groups are deselected', () => {
+    const workbench = usePluginWorkbench(plugins, { scope: 'plugin-workbench-empty-groups-test' })
+
+    workbench.selectedTypes.value = []
+
+    expect(workbench.filteredItems.value).toEqual([])
+    expect(workbench.filteredPurePlugins.value).toEqual([])
+    expect(workbench.filteredAdapters.value).toEqual([])
+  })
+
   it('matches a Chinese name on the first Latin pinyin query', async () => {
     const workbench = usePluginWorkbench([
       { ...plugins[0]!, name: '插件' },

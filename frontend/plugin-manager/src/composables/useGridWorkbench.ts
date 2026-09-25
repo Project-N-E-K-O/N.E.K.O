@@ -251,6 +251,10 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
 
   const filteredItems = computed(() => {
     const text = state.filterText.value.trim()
+    // Avoid walking the complete source when the type/group filter has no
+    // selections. This state is reachable from the type filter UI and is a
+    // useful fast path for large plugin registries.
+    if (state.selectedGroupIds.value.length === 0) return []
     const visibleByGroup = items.value.filter((item) => belongsToAnySelectedGroup(item))
     if (!text) return visibleByGroup
 

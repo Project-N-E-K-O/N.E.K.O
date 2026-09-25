@@ -231,32 +231,39 @@ class MetricsCollector:
         now = time.time()
         
         if plugin_id:
-            # 单个插件查询，直接获取锁
+            # Existing records are append-only. Copy the latest reference
+            # while holding the lock, then serialize outside it so rounding
+            # and dict allocation cannot delay a collector tick.
             with self._lock:
                 history = self._metrics_history.get(plugin_id, [])
-                if history:
-                    return [self._metrics_to_dict(history[-1])]
+                latest = history[-1] if history else None
                 available_ids = list(self._metrics_history.keys())
+            if latest is not None:
+                return [self._metrics_to_dict(latest)]
+            if plugin_id not in available_ids:
                 logger.debug(
                     f"Metrics not found for plugin_id '{plugin_id}'. "
                     f"Available plugin_ids in metrics_history: {available_ids}"
                 )
-                return []
+            return []
         else:
             # 全量查询，使用缓存减少锁竞争
             if self._cache and (now - self._cache_timestamp) < self._cache_ttl:
                 return self._cache
             
             with self._lock:
-                result = []
-                for _plugin_id, history in self._metrics_history.items():
-                    if history:
-                        result.append(self._metrics_to_dict(history[-1]))
-                # 更新缓存
-                self._cache = result
-                self._cache_timestamp = now
-                logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
-                return result
+                latest_records = [
+                    history[-1]
+                    for history in self._metrics_history.values()
+                    if history
+                ]
+            # Existing records are not mutated after append, so conversion can
+            # safely happen after releasing the collector lock.
+            result = [self._metrics_to_dict(record) for record in latest_records]
+            self._cache = result
+            self._cache_timestamp = now
+            logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
+            return result
     
     def get_metrics_history(
         self,
@@ -266,45 +273,49 @@ class MetricsCollector:
         end_time: str | None = None
     ) -> list[dict[str, object]]:
         """获取性能指标历史"""
+        if limit <= 0:
+            return []
+
+        # Parse user input before taking the lock. This keeps the existing
+        # ValueError contract while avoiding a lock hold on invalid requests.
+        start_dt = _parse_iso_to_utc(start_time, field="start_time") if isinstance(start_time, str) else None
+        end_dt = _parse_iso_to_utc(end_time, field="end_time") if isinstance(end_time, str) else None
+
         with self._lock:
-            if limit <= 0:
-                return []
+            # PluginMetrics records are append-only. A shallow list snapshot is
+            # enough to isolate filtering from later collector appends.
+            history = list(self._metrics_history.get(plugin_id, []))
 
-            history = self._metrics_history.get(plugin_id, [])
+        # 时间过滤（基于 UTC datetime 比较）
+        filtered = history
+        if start_dt is not None:
+            next_filtered: list[PluginMetrics] = []
+            for metrics in filtered:
+                if not isinstance(metrics.timestamp, str):
+                    continue
+                metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
+                if metric_dt is None:
+                    continue
+                if metric_dt >= start_dt:
+                    next_filtered.append(metrics)
+            filtered = next_filtered
+        if end_dt is not None:
+            next_filtered = []
+            for metrics in filtered:
+                if not isinstance(metrics.timestamp, str):
+                    continue
+                metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
+                if metric_dt is None:
+                    continue
+                if metric_dt <= end_dt:
+                    next_filtered.append(metrics)
+            filtered = next_filtered
 
-            start_dt = _parse_iso_to_utc(start_time, field="start_time") if isinstance(start_time, str) else None
-            end_dt = _parse_iso_to_utc(end_time, field="end_time") if isinstance(end_time, str) else None
+        # 限制数量
+        if len(filtered) > limit:
+            filtered = filtered[-limit:]
 
-            # 时间过滤（基于 UTC datetime 比较）
-            filtered = history
-            if start_dt is not None:
-                next_filtered: list[PluginMetrics] = []
-                for metrics in filtered:
-                    if not isinstance(metrics.timestamp, str):
-                        continue
-                    metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
-                    if metric_dt is None:
-                        continue
-                    if metric_dt >= start_dt:
-                        next_filtered.append(metrics)
-                filtered = next_filtered
-            if end_dt is not None:
-                next_filtered: list[PluginMetrics] = []
-                for metrics in filtered:
-                    if not isinstance(metrics.timestamp, str):
-                        continue
-                    metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
-                    if metric_dt is None:
-                        continue
-                    if metric_dt <= end_dt:
-                        next_filtered.append(metrics)
-                filtered = next_filtered
-
-            # 限制数量
-            if len(filtered) > limit:
-                filtered = filtered[-limit:]
-
-            return [self._metrics_to_dict(m) for m in filtered]
+        return [self._metrics_to_dict(m) for m in filtered]
     
     def _metrics_to_dict(self, metrics: PluginMetrics) -> dict[str, object]:
         """将指标对象转换为字典"""

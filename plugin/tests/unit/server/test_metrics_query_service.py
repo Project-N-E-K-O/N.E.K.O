@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from plugin.server.application.monitoring import query_service as module
+from plugin.server.monitoring.metrics import MetricsCollector, PluginMetrics
 
 
 @pytest.mark.plugin_unit
@@ -57,3 +58,44 @@ async def test_get_plugin_metrics_history_accepts_blank_time_and_queries(monkeyp
         "start_time": None,
         "end_time": None,
     }
+
+
+def test_current_metrics_serializes_after_releasing_collector_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collector = MetricsCollector()
+    record = PluginMetrics(plugin_id="demo", timestamp="2026-01-01T00:00:00+00:00")
+    collector._metrics_history["demo"] = [record]
+    lock_states: list[bool] = []
+
+    def _serialize(value: PluginMetrics) -> dict[str, object]:
+        lock_states.append(collector._lock.locked())
+        return {"plugin_id": value.plugin_id}
+
+    monkeypatch.setattr(collector, "_metrics_to_dict", _serialize)
+
+    assert collector.get_current_metrics() == [{"plugin_id": "demo"}]
+    assert collector.get_current_metrics("demo") == [{"plugin_id": "demo"}]
+    assert lock_states == [False, False]
+
+
+def test_metrics_history_filters_and_serializes_after_releasing_collector_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collector = MetricsCollector()
+    record = PluginMetrics(plugin_id="demo", timestamp="2026-01-01T00:00:00+00:00")
+    collector._metrics_history["demo"] = [record]
+    lock_states: list[bool] = []
+
+    def _serialize(value: PluginMetrics) -> dict[str, object]:
+        lock_states.append(collector._lock.locked())
+        return {"timestamp": value.timestamp}
+
+    monkeypatch.setattr(collector, "_metrics_to_dict", _serialize)
+
+    result = collector.get_metrics_history(
+        "demo", limit=10, start_time="2025-12-31T00:00:00Z"
+    )
+
+    assert result == [{"timestamp": "2026-01-01T00:00:00+00:00"}]
+    assert lock_states == [False]
