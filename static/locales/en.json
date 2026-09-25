@@ -1185,6 +1185,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (Model Aggregator)",
             "orcarouter": "OrcaRouter (Claude Gateway)",
+            "requesty": "Requesty (Model Router)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (self-hosted)"
         },
@@ -1236,6 +1237,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",

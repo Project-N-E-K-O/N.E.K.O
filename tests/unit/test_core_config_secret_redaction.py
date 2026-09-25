@@ -15,6 +15,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 _MODEL_TYPES = (
