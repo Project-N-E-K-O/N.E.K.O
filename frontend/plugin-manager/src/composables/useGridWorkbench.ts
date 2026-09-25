@@ -159,7 +159,7 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const pinyinSearch = ref<PinyinSearch | null>(null)
   let pinyinLoad: Promise<void> | null = null
   let pinyinRetryAfter = 0
-  const searchIndexCache = new WeakMap<object, { key: string; value: string }>()
+  const searchIndexCache = new WeakMap<object, { key: string; value: T }>()
 
   function ensurePinyinSearch() {
     if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
@@ -201,11 +201,13 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
         : ''
       const key = `${base}\u0000${pinyinIndex}`
       const cached = searchIndexCache.get(item as object)
-      const searchIndex = cached?.key === key
-        ? cached.value
-        : pinyinIndex ? `${base}\n${pinyinIndex}` : base
-      if (!cached || cached.key !== key) searchIndexCache.set(item as object, { key, value: searchIndex })
-      return { ...item, searchIndex }
+      if (cached?.key === key) return cached.value
+      const searchIndex = pinyinIndex ? `${base}\n${pinyinIndex}` : base
+      const value = item.searchIndex === searchIndex
+        ? item
+        : { ...item, searchIndex } as T
+      searchIndexCache.set(item as object, { key, value })
+      return value
     }) as T[]
   })
 

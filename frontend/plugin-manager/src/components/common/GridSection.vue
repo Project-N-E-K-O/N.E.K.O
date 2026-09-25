@@ -11,7 +11,7 @@
     <section
       v-if="items.length > 0"
       class="grid-section"
-      :class="sectionClass"
+      :class="[sectionClass, { 'grid-section--quiet': motionMode === 'quiet' }]"
       :data-yui-guide-id="sectionGuideId"
     >
       <div
@@ -114,12 +114,15 @@ const props = withDefaults(defineProps<{
   guidePrefix?: string
   /** False only when a parent already owns this grid's initial entrance. */
   animateInitial?: boolean
+  /** Lightweight updates used while the user is actively filtering. */
+  motionMode?: 'normal' | 'quiet'
 }>(), {
   title: undefined,
   icon: undefined,
   variant: 'default',
   guidePrefix: undefined,
   animateInitial: true,
+  motionMode: 'normal',
 })
 
 defineEmits<{
@@ -235,7 +238,6 @@ function itemClass(item: T) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  will-change: transform, opacity;
 }
 
 .grid-section__select {
@@ -405,6 +407,18 @@ function itemClass(item: T) {
     filter 0.24s ease;
 }
 
+.grid-section--quiet .grid-item-enter-active,
+.grid-section--quiet .grid-item-leave-active {
+  transition:
+    transform 0.14s ease-out,
+    opacity 0.12s ease-out;
+  transition-delay: 0ms;
+}
+
+.grid-section--quiet .grid-item-move {
+  transition: none;
+}
+
 .grid-item-enter-active {
   transition-delay: var(--item-stagger-delay, 0ms);
 }
@@ -412,13 +426,19 @@ function itemClass(item: T) {
 .grid-item-enter-from {
   opacity: 0;
   transform: scale(0.95) translateY(12px);
-  filter: blur(6px);
+  filter: blur(var(--item-motion-blur, 4px));
+}
+
+.grid-section--quiet .grid-item-enter-from,
+.grid-section--quiet .grid-item-leave-to {
+  transform: translate3d(0, 4px, 0);
+  filter: none;
 }
 
 .grid-item-leave-to {
   opacity: 0;
   transform: scale(0.94) translateY(-12px);
-  filter: blur(6px);
+  filter: blur(var(--item-motion-blur, 4px));
 }
 
 .grid-item-enter-to,

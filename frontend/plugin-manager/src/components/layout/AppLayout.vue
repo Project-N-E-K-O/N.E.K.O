@@ -69,7 +69,7 @@
 
         <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
-            <Transition name="page" mode="out-in">
+            <Transition name="page">
               <component :is="Component" :key="currentRoute.path" />
             </Transition>
           </router-view>
@@ -378,7 +378,6 @@ onBeforeUnmount(() => {
   transition:
     transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
     filter 0.2s ease;
-  will-change: transform;
 }
 
 @keyframes neko-plugin-pin-lock {
@@ -486,6 +485,7 @@ onBeforeUnmount(() => {
 }
 
 .app-main {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 20px;
@@ -516,6 +516,10 @@ onBeforeUnmount(() => {
 }
 
 .page-leave-active {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  pointer-events: none;
   transition:
     opacity 0.18s ease,
     transform 0.18s ease,
@@ -525,13 +529,13 @@ onBeforeUnmount(() => {
 .page-enter-from {
   opacity: 0;
   transform: scale(0.98) translateY(8px);
-  filter: blur(4px);
+  filter: blur(2px);
 }
 
 .page-leave-to {
   opacity: 0;
   transform: scale(0.99) translateY(-4px);
-  filter: blur(2px);
+  filter: blur(1px);
 }
 
 /* 深色模式覆盖 */
@@ -565,6 +569,10 @@ html.dark .app-header {
 @media (prefers-reduced-motion: reduce) {
   .page-enter-active,
   .page-leave-active {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    pointer-events: none;
     transition: opacity 0.15s ease;
   }
 

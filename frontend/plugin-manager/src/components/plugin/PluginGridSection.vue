@@ -5,6 +5,7 @@
     :items="items"
     :layout-mode="layoutMode"
     :animate-initial="animateInitial"
+    :motion-mode="motionMode"
     :multi-select-enabled="multiSelectEnabled"
     :selected-ids="selectedPluginIds"
     :variant="variant"
@@ -48,7 +49,8 @@ withDefaults(defineProps<{
   identityPluginIds: string[]
   variant?: 'default' | 'adapter'
   animateInitial?: boolean
-}>(), { animateInitial: true })
+  motionMode?: 'normal' | 'quiet'
+}>(), { animateInitial: true, motionMode: 'normal' })
 
 defineEmits<{
   'item-click': [pluginId: string]

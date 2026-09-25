@@ -202,16 +202,21 @@ export function usePluginWorkbench<
   T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string },
 >(pluginsSource: MaybeRefOrGetter<T[]>, options?: { scope?: string }) {
   const { locale } = useI18n()
+  const normalizedCache = new WeakMap<object, { locale: string; value: PluginWorkbenchItem }>()
   const normalized = computed<PluginWorkbenchItem[]>(() =>
     toValue(pluginsSource).map((plugin) => {
+      const cached = normalizedCache.get(plugin as object)
+      if (cached?.locale === locale.value) return cached.value
       const displayText = resolvePluginDisplayText(plugin, locale.value)
-      return {
+      const value = {
         ...plugin,
         type: normalizePluginType(plugin.type),
         displayName: displayText.name,
         displayDescription: displayText.description,
         displayShortDescription: displayText.shortDescription,
       }
+      normalizedCache.set(plugin as object, { locale: locale.value, value })
+      return value
     }),
   )
 

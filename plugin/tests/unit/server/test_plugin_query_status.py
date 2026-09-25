@@ -134,6 +134,76 @@ def test_build_plugin_list_omits_internal_entries_preview(monkeypatch: pytest.Mo
     assert [entry["id"] for entry in results[0]["entries"]] == ["ping"]
 
 
+def test_plugin_entry_handler_index_preserves_supported_key_order_and_filters_types() -> None:
+    """The list query's one-pass index must preserve serializer semantics."""
+    handlers = {
+        "alpha.first": SimpleNamespace(
+            meta=SimpleNamespace(event_type="plugin_entry", id="first")
+        ),
+        "alpha:plugin_entry:second": SimpleNamespace(
+            meta=SimpleNamespace(event_type="plugin_entry", id="second")
+        ),
+        "alpha.lifecycle:reload": SimpleNamespace(
+            meta=SimpleNamespace(event_type="lifecycle", id="reload")
+        ),
+        "beta:plugin_entry:only": SimpleNamespace(
+            meta=SimpleNamespace(event_type="plugin_entry", id="only")
+        ),
+    }
+
+    indexed = query_module._index_plugin_entry_handlers(handlers)
+
+    assert list(indexed["alpha"]) == ["alpha.first", "alpha:plugin_entry:second"]
+    assert list(indexed["beta"]) == ["beta:plugin_entry:only"]
+    assert "alpha.lifecycle:reload" not in indexed["alpha"]
+
+    full_entries, _ = query_module._build_entries_from_handlers(
+        plugin_id="alpha", handlers_snapshot=handlers
+    )
+    indexed_entries, _ = query_module._build_entries_from_handlers(
+        plugin_id="alpha", handlers_snapshot=indexed["alpha"]
+    )
+    assert indexed_entries == full_entries
+
+
+def test_plugin_entry_handler_index_falls_back_for_dotted_legacy_plugin_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dotted plugin id keeps the old full-snapshot prefix behavior."""
+    handlers = {
+        "foo.bar.first": SimpleNamespace(
+            meta=SimpleNamespace(event_type="plugin_entry", id="first")
+        ),
+        "foo.bar:plugin_entry:second": SimpleNamespace(
+            meta=SimpleNamespace(event_type="plugin_entry", id="second")
+        ),
+    }
+
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {"foo.bar": {"id": "foo.bar", "name": "Dotted"}},
+    )
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugin_hosts_snapshot_cached",
+        lambda timeout=2.0: {},
+    )
+    monkeypatch.setattr(
+        query_module.state,
+        "get_event_handlers_snapshot_cached",
+        lambda timeout=2.0: handlers,
+    )
+    monkeypatch.setattr(query_module, "_install_source_index", lambda: ({}, {}))
+
+    results = query_module._build_plugin_list_sync()
+
+    assert [entry["id"] for entry in results[0]["entries"]] == [
+        "first",
+        "second",
+    ]
+
+
 def test_resolve_plugin_display_fields_preserves_empty_description_without_translation() -> None:
     plugin_info: dict[str, object] = {
         "id": "empty_description_plugin",

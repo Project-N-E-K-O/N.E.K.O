@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 
 import { usePluginWorkbench } from './usePluginWorkbench'
 import { useGridWorkbench } from './useGridWorkbench'
@@ -27,6 +28,27 @@ const plugins: PluginMeta[] = [
 ]
 
 describe('usePluginWorkbench scoped selection state', () => {
+  it('reuses normalized and indexed item objects while query state changes', () => {
+    const workbench = usePluginWorkbench(plugins, { scope: 'plugin-workbench-index-reuse-test' })
+    const first = workbench.items.value[0]
+
+    workbench.filterText.value = 'demo'
+
+    expect(workbench.items.value[0]).toBe(first)
+    expect(workbench.filteredItems.value[0]).toBe(first)
+  })
+
+  it('rebuilds the normalized item when the source object changes', () => {
+    const source = ref([...plugins])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-index-update-test' })
+    const first = workbench.items.value[0]
+
+    source.value[0] = { ...source.value[0]!, description: 'updated' }
+
+    expect(workbench.items.value[0]).not.toBe(first)
+    expect(workbench.items.value[0]?.description).toBe('updated')
+  })
+
   it('keeps package manager selection isolated from the main plugin list', () => {
     const mainWorkbench = usePluginWorkbench(plugins)
     const packagePlugin: PluginMeta = {

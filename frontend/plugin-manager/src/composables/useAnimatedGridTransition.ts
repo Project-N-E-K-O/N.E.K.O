@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { getStaggerDelay, MOTION_POLICY } from './motionPolicy'
 
 const SECTION_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
@@ -16,7 +17,7 @@ function onceTransitionEnd(node: HTMLElement, done: () => void) {
     }
   }
   node.addEventListener('transitionend', onTransitionEnd)
-  window.setTimeout(finish, 420)
+  window.setTimeout(finish, MOTION_POLICY.sectionEnterDurationMs + 120)
 }
 
 export function useAnimatedGridTransition(options: { animateInitial?: () => boolean } = {}) {
@@ -56,9 +57,10 @@ export function useAnimatedGridTransition(options: { animateInitial?: () => bool
   })
 
   function itemMotionStyle(index: number) {
-    const delay = itemStaggerEnabled.value ? Math.min(index, 7) * 18 : 0
+    const delay = getStaggerDelay(index, !itemStaggerEnabled.value)
     return {
       '--item-stagger-delay': `${delay}ms`,
+      '--item-motion-blur': `${MOTION_POLICY.itemBlurPx}px`,
     }
   }
 
@@ -114,9 +116,9 @@ export function useAnimatedGridTransition(options: { animateInitial?: () => bool
 
     requestAnimationFrame(() => {
       node.style.transition = [
-        `height 300ms ${SECTION_EASING}`,
-        'opacity 220ms ease',
-        `transform 300ms ${SECTION_EASING}`,
+        `height ${MOTION_POLICY.sectionEnterDurationMs}ms ${SECTION_EASING}`,
+        `opacity ${MOTION_POLICY.sectionEnterOpacityDurationMs}ms ease`,
+        `transform ${MOTION_POLICY.sectionEnterDurationMs}ms ${SECTION_EASING}`,
       ].join(', ')
       node.style.height = targetHeight
       node.style.opacity = '1'
@@ -155,9 +157,9 @@ export function useAnimatedGridTransition(options: { animateInitial?: () => bool
 
     requestAnimationFrame(() => {
       node.style.transition = [
-        `height 260ms ${SECTION_EASING}`,
-        'opacity 180ms ease',
-        `transform 260ms ${SECTION_EASING}`,
+        `height ${MOTION_POLICY.sectionLeaveDurationMs}ms ${SECTION_EASING}`,
+        `opacity ${MOTION_POLICY.sectionLeaveOpacityDurationMs}ms ease`,
+        `transform ${MOTION_POLICY.sectionLeaveDurationMs}ms ${SECTION_EASING}`,
       ].join(', ')
       node.style.height = '0px'
       node.style.opacity = '0'

@@ -326,6 +326,42 @@ def _build_entries_from_handlers(
     return entries, seen
 
 
+def _index_plugin_entry_handlers(
+    handlers_snapshot: Mapping[object, object],
+) -> dict[str, dict[str, object]]:
+    """Group plugin-entry handlers by plugin id for one list request.
+
+    ``_build_entries_from_handlers`` historically received the complete
+    handler snapshot for every plugin.  With P plugins and H handlers that
+    made the read-only listing path do P*H prefix checks.  The event-key
+    contract already carries the owning plugin id, so index the snapshot once
+    and pass only each plugin's bucket to the existing serializer.  This keeps
+    all metadata normalization and ordering in the old code path.
+
+    A dotted plugin id is ambiguous in the legacy ``plugin.entry`` spelling.
+    The caller therefore keeps the original snapshot for dotted ids and uses
+    the index only for the unambiguous identifier shape.
+    """
+    indexed: dict[str, dict[str, object]] = {}
+    for event_key_obj, handler_obj in handlers_snapshot.items():
+        if not isinstance(event_key_obj, str):
+            continue
+
+        plugin_id: str | None = None
+        if ":" in event_key_obj:
+            plugin_id = event_key_obj.split(":", 1)[0] or None
+        elif "." in event_key_obj:
+            plugin_id = event_key_obj.split(".", 1)[0] or None
+
+        if plugin_id is None:
+            continue
+        meta = getattr(handler_obj, "meta", None)
+        if getattr(meta, "event_type", None) != "plugin_entry":
+            continue
+        indexed.setdefault(plugin_id, {})[event_key_obj] = handler_obj
+    return indexed
+
+
 def _append_entries_from_preview(
     *,
     plugin_id: str,
@@ -488,6 +524,7 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
             pass
 
     install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
+    handlers_by_plugin = _index_plugin_entry_handlers(handlers_snapshot)
 
     for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
         if not isinstance(plugin_id_obj, str):
@@ -506,9 +543,18 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 running_plugin_ids=running_plugin_ids,
             )
 
+            # The normal event-key spelling is unambiguous and uses the
+            # indexed bucket.  Keep the full snapshot for plugin ids that can
+            # contain dots so the legacy prefix matching remains lossless.
+            plugin_handlers = handlers_by_plugin.get(plugin_id)
+            if "." in plugin_id:
+                # ``foo.bar.entry`` does not tell us whether ``foo`` or
+                # ``foo.bar`` owns the entry.  Preserve the old prefix scan
+                # for dotted ids; ordinary ids still use the O(H) index.
+                plugin_handlers = handlers_snapshot
             entries, seen = _build_entries_from_handlers(
                 plugin_id=plugin_id,
-                handlers_snapshot=handlers_snapshot,
+                handlers_snapshot=plugin_handlers or {},
                 plugin_meta=plugin_meta,
                 locale=effective_locale,
             )
