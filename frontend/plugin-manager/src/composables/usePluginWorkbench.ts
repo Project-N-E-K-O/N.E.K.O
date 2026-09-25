@@ -32,6 +32,10 @@ export type PluginWorkbenchItem = PluginMeta & {
   displayName?: string
   displayDescription?: string
   displayShortDescription?: string
+  entry_count?: number
+  dependency_count?: number
+  has_input_schema?: boolean
+  has_ui?: boolean
 }
 
 const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter']
@@ -160,12 +164,12 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
         return !!(plugin.displayDescription || plugin.description)?.trim()
       case 'entries':
       case 'entry':
-        return (plugin.entries?.length || 0) > 0
+        return (plugin.entry_count ?? plugin.entries?.length ?? 0) > 0
       case 'dependencies':
       case 'dependency':
         return (plugin.dependencies?.length || 0) > 0
       case 'schema':
-        return !!plugin.input_schema
+        return plugin.has_input_schema === true || !!plugin.input_schema
       case 'actions':
         return (plugin.list_actions?.length || 0) > 0
       case 'ui':
@@ -202,21 +206,16 @@ export function usePluginWorkbench<
   T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string },
 >(pluginsSource: MaybeRefOrGetter<T[]>, options?: { scope?: string }) {
   const { locale } = useI18n()
-  const normalizedCache = new WeakMap<object, { locale: string; value: PluginWorkbenchItem }>()
   const normalized = computed<PluginWorkbenchItem[]>(() =>
     toValue(pluginsSource).map((plugin) => {
-      const cached = normalizedCache.get(plugin as object)
-      if (cached?.locale === locale.value) return cached.value
       const displayText = resolvePluginDisplayText(plugin, locale.value)
-      const value = {
+      return {
         ...plugin,
         type: normalizePluginType(plugin.type),
         displayName: displayText.name,
         displayDescription: displayText.description,
         displayShortDescription: displayText.shortDescription,
       }
-      normalizedCache.set(plugin as object, { locale: locale.value, value })
-      return value
     }),
   )
 

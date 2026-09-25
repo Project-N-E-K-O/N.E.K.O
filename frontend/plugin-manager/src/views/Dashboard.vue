@@ -186,10 +186,10 @@ function isGoodbyeResourceSuspendingOrSuspended() {
 
 // ── Computed stats ────────────────────────────────────────────────────
 
-const totalPlugins = computed(() => pluginStore.plugins.length)
+const totalPlugins = computed(() => pluginStore.pluginSummaries.length)
 const statusCounts = computed(() => {
   const counts = { running: 0, stopped: 0, crashed: 0 }
-  for (const plugin of pluginStore.pluginsWithStatus) {
+  for (const plugin of pluginStore.pluginSummariesWithStatus) {
     if (plugin.status === PluginStatus.RUNNING) counts.running += 1
     else if (plugin.status === PluginStatus.STOPPED) counts.stopped += 1
     else if (plugin.status === PluginStatus.CRASHED) counts.crashed += 1
@@ -478,7 +478,7 @@ onMounted(async () => {
   document.documentElement.classList.add(dashboardStartupClass)
   dashboardDisposed = false
   await Promise.all([
-    pluginStore.fetchPlugins().catch(error => console.warn('Dashboard plugin list refresh failed:', error)),
+    pluginStore.fetchPluginSummaries().catch(error => console.warn('Dashboard plugin list refresh failed:', error)),
     pluginStore.fetchPluginStatus().catch(error => console.warn('Dashboard plugin status refresh failed:', error)),
     fetchServerInfo(),
     fetchGlobalMetrics(),

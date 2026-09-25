@@ -49,6 +49,33 @@ describe('usePluginWorkbench scoped selection state', () => {
     expect(workbench.items.value[0]?.description).toBe('updated')
   })
 
+  it('publishes in-place source mutations even when the search index text is unchanged', () => {
+    const source = ref([{ ...plugins[0]!, status: 'stopped' }])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-in-place-status-test' })
+    const first = workbench.items.value[0]
+
+    source.value[0]!.status = 'running'
+    workbench.filterText.value = 'is:running'
+
+    expect(workbench.items.value[0]).not.toBe(first)
+    expect(workbench.items.value[0]?.status).toBe('running')
+    expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['demo_plugin'])
+  })
+
+  it('rebuilds localized display text after an in-place name and i18n mutation', () => {
+    const source = ref([{ ...plugins[0]! }])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-in-place-display-test' })
+
+    expect(workbench.items.value[0]?.displayName).toBe('Demo Plugin')
+    source.value[0]!.name = 'Renamed Plugin'
+    source.value[0]!.i18n = {
+      messages: { 'zh-CN': { 'plugin.name': '本地化名称' } },
+    }
+
+    expect(workbench.items.value[0]?.name).toBe('Renamed Plugin')
+    expect(workbench.items.value[0]?.displayName).toBe('本地化名称')
+  })
+
   it('keeps package manager selection isolated from the main plugin list', () => {
     const mainWorkbench = usePluginWorkbench(plugins)
     const packagePlugin: PluginMeta = {

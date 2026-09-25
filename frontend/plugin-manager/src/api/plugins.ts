@@ -16,13 +16,26 @@ import type {
   PluginUiWarning,
 } from '@/types/api'
 
+/** The bounded projection used by the plugin list. The API deliberately keeps
+ * the small entry/dependency records needed by qualifiers and cards while
+ * omitting the full input schemas and other detail-only metadata. */
+export type PluginListSummary = Omit<PluginMeta, 'input_schema'> & {
+  entry_count?: number
+  dependency_count?: number
+  has_input_schema?: boolean
+  has_ui?: boolean
+  ui_path?: string | null
+}
+
+export type PluginListResponse<T = PluginMeta> = { plugins: T[]; message: string }
+
 /**
  * 获取插件列表
  */
 export function getPlugins(
   locale?: string,
   config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
-): Promise<{ plugins: PluginMeta[]; message: string }> {
+): Promise<PluginListResponse<PluginMeta>> {
   if (typeof URLSearchParams !== 'undefined' && config?.params instanceof URLSearchParams) {
     const params = new URLSearchParams(config.params)
     if (locale) params.set('locale', locale)
@@ -40,6 +53,37 @@ export function getPlugins(
     ...(config || {}),
     params,
   })
+}
+
+export function getPluginSummaries(
+  locale?: string,
+  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
+): Promise<PluginListResponse<PluginListSummary>> {
+  const params = config?.params instanceof URLSearchParams
+    ? new URLSearchParams(config.params)
+    : { ...(config?.params || {}) }
+  if (locale) {
+    if (params instanceof URLSearchParams) params.set('locale', locale)
+    else (params as Record<string, unknown>).locale = locale
+  }
+  if (params instanceof URLSearchParams) params.set('summary', 'true')
+  else (params as Record<string, unknown>).summary = true
+  return get('/plugins', { ...(config || {}), params })
+}
+
+export async function getPlugin(
+  pluginId: string,
+  locale?: string,
+  config?: ErrorDisplayRequestConfig,
+): Promise<PluginMeta> {
+  const safeId = encodeURIComponent(pluginId)
+  const response = await get<{ plugin?: PluginMeta } | PluginMeta>(
+    `/plugins/${safeId}`,
+    locale ? { ...config, params: { ...config?.params, locale } } : config,
+  )
+  return (response && typeof response === 'object' && 'plugin' in response
+    ? response.plugin
+    : response) as PluginMeta
 }
 
 /**

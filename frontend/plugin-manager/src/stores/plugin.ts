@@ -5,12 +5,15 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
   getPlugins,
+  getPlugin,
+  getPluginSummaries,
   getPluginStatus,
   startPlugin,
   stopPlugin,
   reloadPlugin,
   refreshPluginsRegistry,
 } from '@/api/plugins'
+import type { PluginListSummary } from '@/api/plugins'
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
@@ -32,6 +35,8 @@ type PluginMutationOptions = {
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
   const plugins = ref<PluginMeta[]>([])
+  const pluginSummaries = ref<PluginListSummary[]>([])
+  const pluginDetails = ref<Record<string, PluginMeta>>({})
   const pluginStatuses = ref<Record<string, PluginStatusData>>({})
   const selectedPluginId = ref<string | null>(null)
   const loading = ref(false)
@@ -42,11 +47,17 @@ export const usePluginStore = defineStore('plugin', () => {
   const pluginStatusSnapshotLoaded = ref(false)
   const pluginStatusFetchedAt = ref(0)
   const PLUGIN_SNAPSHOT_MAX_AGE = 10_000
+  const pluginSummarySnapshotLoaded = ref(false)
+  const pluginSummaryFetchedAt = ref(0)
+  const pluginSummaryFetchedLocale = ref<string | null>(null)
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
   let pendingFetchPluginsLocale: string | null = null
   let pendingFetchStatus: Promise<void> | null = null
+  let pendingFetchSummaries: Promise<void> | null = null
+  let pendingFetchSummariesLocale: string | null = null
+  const pendingFetchDetails = new Map<string, Promise<void>>()
   let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
   const pluginListRegistrySynced = ref(false)
   // 请求超时自动清理（防止请求堆积）
@@ -54,6 +65,8 @@ export const usePluginStore = defineStore('plugin', () => {
   // 请求序列号，用于忽略过期响应
   let fetchPluginsSeq = 0
   let fetchStatusSeq = 0
+  let fetchSummariesSeq = 0
+  const fetchDetailSeq = new Map<string, number>()
 
   // 计算属性
   const selectedPlugin = computed(() => {
@@ -82,6 +95,17 @@ export const usePluginStore = defineStore('plugin', () => {
       }
     })
   })
+
+  const pluginSummariesWithStatus = computed(() => pluginSummaries.value.map(plugin => {
+    const status = pluginStatuses.value[plugin.id]
+    const statusValue = status?.status
+    return {
+      ...plugin,
+      status: typeof statusValue === 'string' ? statusValue : (plugin.status || StatusEnum.STOPPED),
+      enabled: plugin.runtime_enabled !== false,
+      autoStart: plugin.runtime_auto_start !== false,
+    }
+  }))
 
   const normalPlugins = computed(() => {
     return pluginsWithStatus.value
@@ -146,6 +170,96 @@ export const usePluginStore = defineStore('plugin', () => {
     return pendingFetchPlugins
   }
 
+  async function fetchPluginSummaries(force = false, options: RegistrySyncOptions = {}) {
+    const requestLocale = getLocale()
+    if (!force && pendingFetchSummaries && pendingFetchSummariesLocale === requestLocale) {
+      return pendingFetchSummaries
+    }
+    const seq = ++fetchSummariesSeq
+    pendingFetchSummariesLocale = requestLocale
+    pendingFetchSummaries = (async () => {
+      try {
+        const response = await getPluginSummaries(requestLocale, options.preserveMessagesOn404
+          ? { preserveMessagesOn404: true }
+          : undefined)
+        if (seq !== fetchSummariesSeq) return
+        pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, response.plugins || [])
+        pluginSummarySnapshotLoaded.value = true
+        pluginSummaryFetchedAt.value = Date.now()
+        pluginSummaryFetchedLocale.value = requestLocale
+      } finally {
+        if (seq === fetchSummariesSeq) {
+          pendingFetchSummaries = null
+          pendingFetchSummariesLocale = null
+        }
+      }
+    })()
+    return pendingFetchSummaries
+  }
+
+  async function ensurePluginSummaries(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
+    const locale = getLocale()
+    const fresh = pluginSummarySnapshotLoaded.value
+      && pluginSummaryFetchedLocale.value === locale
+      && Date.now() - pluginSummaryFetchedAt.value < maxAgeMs
+    if (fresh) return
+    await fetchPluginSummaries()
+  }
+
+  async function fetchPluginDetail(pluginId: string, force = false) {
+    const existing = pendingFetchDetails.get(pluginId)
+    if (existing && !force) return existing
+    const seq = (fetchDetailSeq.get(pluginId) || 0) + 1
+    fetchDetailSeq.set(pluginId, seq)
+    let request!: Promise<void>
+    request = (async () => {
+      try {
+        const detail = await getPlugin(pluginId, getLocale())
+        if (fetchDetailSeq.get(pluginId) !== seq) return
+        pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+      } catch (error: any) {
+        const status = error?.response?.status
+        if (status !== 404 && status !== 405) throw error
+        // Compatibility with older plugin servers: the old full list endpoint
+        // remains a safe fallback when the single-plugin route is unavailable.
+        const response = await getPlugins(getLocale())
+        const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
+        if (detail && fetchDetailSeq.get(pluginId) === seq) {
+          pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+        }
+      } finally {
+        if (pendingFetchDetails.get(pluginId) === request) pendingFetchDetails.delete(pluginId)
+      }
+    })()
+    pendingFetchDetails.set(pluginId, request)
+    return request
+  }
+
+  async function ensurePlugin(pluginId: string) {
+    if (pluginDetails.value[pluginId]) return pluginDetails.value[pluginId]
+    const full = plugins.value.find(plugin => plugin.id === pluginId)
+    if (full) {
+      pluginDetails.value = { ...pluginDetails.value, [pluginId]: full }
+      return full
+    }
+    await fetchPluginDetail(pluginId)
+    return pluginDetails.value[pluginId] || null
+  }
+
+  function getPluginById(pluginId: string) {
+    const plugin = pluginDetails.value[pluginId]
+      || plugins.value.find(plugin => plugin.id === pluginId)
+      || pluginSummaries.value.find(plugin => plugin.id === pluginId)
+    if (!plugin) return null
+    const status = pluginStatuses.value[pluginId]?.status
+    return {
+      ...plugin,
+      status: typeof status === 'string' ? status : (plugin.status || StatusEnum.STOPPED),
+      enabled: plugin.runtime_enabled !== false,
+      autoStart: plugin.runtime_auto_start !== false,
+    }
+  }
+
   async function ensurePlugins(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
     const locale = getLocale()
     const fresh = pluginsSnapshotLoaded.value
@@ -206,6 +320,35 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+    let result: RegistrySyncResult
+    try {
+      const response = await refreshPluginsRegistry(
+        options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
+      )
+      result = { registryRefreshed: true, warningMessage: null }
+      if (response.success === false && response.failed[0]) {
+        const firstFailure = response.failed[0]
+        const target = firstFailure.plugin_id || firstFailure.config_path
+        result.warningMessage = response.failed.length > 1
+          ? i18n.global.t('messages.pluginListRefreshPartialMultiple', { count: response.failed.length, target, error: firstFailure.error })
+          : i18n.global.t('messages.pluginListRefreshPartial', { target, error: firstFailure.error })
+      }
+    } catch (err: any) {
+      const status = err?.response?.status
+      if (status !== 401 && status !== 403 && status !== 404) throw err
+      result = {
+        registryRefreshed: false,
+        warningMessage: status === 403
+          ? i18n.global.t('messages.pluginListRefreshForbidden')
+          : status === 404 ? i18n.global.t('messages.resourceNotFound') : i18n.global.t('messages.pluginListRefreshUnauthenticated'),
+      }
+    }
+    await fetchPluginSummaries(true, options)
+    pluginListRegistrySynced.value = true
+    return result
+  }
+
   async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
     if (pluginListRegistrySynced.value) {
       return null
@@ -213,7 +356,7 @@ export const usePluginStore = defineStore('plugin', () => {
     if (pendingPluginListRegistrySync) {
       return pendingPluginListRegistrySync
     }
-    pendingPluginListRegistrySync = syncRegistryAndFetch().finally(() => {
+    pendingPluginListRegistrySync = syncRegistryAndFetchSummaries().finally(() => {
       pendingPluginListRegistrySync = null
     })
     return pendingPluginListRegistrySync
@@ -290,7 +433,7 @@ export const usePluginStore = defineStore('plugin', () => {
       await startPlugin(pluginId)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
+        await fetchPluginsAfterMutation()
       }
     } catch (err: any) {
       throw err
@@ -302,7 +445,7 @@ export const usePluginStore = defineStore('plugin', () => {
       await stopPlugin(pluginId)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
+        await fetchPluginsAfterMutation()
       }
     } catch (err: any) {
       throw err
@@ -314,10 +457,18 @@ export const usePluginStore = defineStore('plugin', () => {
       await reloadPlugin(pluginId)
       if (options.refresh !== false) {
         await fetchPluginStatus(pluginId)
-        await fetchPlugins(true)
+        await fetchPluginsAfterMutation()
       }
     } catch (err: any) {
       throw err
+    }
+  }
+
+  async function fetchPluginsAfterMutation() {
+    if (pluginSummarySnapshotLoaded.value) await fetchPluginSummaries(true)
+    if (pluginsSnapshotLoaded.value) await fetchPlugins(true)
+    for (const id of Object.keys(pluginDetails.value)) {
+      await fetchPluginDetail(id, true)
     }
   }
 
@@ -328,10 +479,14 @@ export const usePluginStore = defineStore('plugin', () => {
   return {
     // 状态
     plugins,
+    pluginSummaries,
+    pluginDetails,
     pluginStatuses,
     selectedPluginId,
     selectedPlugin,
     pluginsWithStatus,
+    pluginSummariesWithStatus,
+    getPluginById,
     normalPlugins,
     pluginListRegistrySynced,
     loading,
@@ -340,8 +495,13 @@ export const usePluginStore = defineStore('plugin', () => {
     pluginStatusSnapshotLoaded,
     // 操作
     fetchPlugins,
+    fetchPluginSummaries,
+    ensurePluginSummaries,
+    fetchPluginDetail,
+    ensurePlugin,
     ensurePlugins,
     syncRegistryAndFetch,
+    syncRegistryAndFetchSummaries,
     ensurePluginListRegistrySynced,
     fetchPluginStatus,
     ensurePluginStatus,

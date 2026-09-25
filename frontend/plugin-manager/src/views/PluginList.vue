@@ -602,8 +602,8 @@ const dangerDialogMessage = computed(() => {
   )
 })
 
-const rawPlugins = computed(() => pluginStore.pluginsWithStatus.filter(isOrdinaryPlugin))
-const rawNormalPlugins = computed(() => pluginStore.normalPlugins.filter(isOrdinaryPlugin))
+const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
+const rawNormalPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -640,7 +640,7 @@ const marketVersionsStore = useMarketVersionsStore()
 
 function installedMarketVersionTargets(): MarketVersionTarget[] {
   const targets: MarketVersionTarget[] = []
-  for (const plugin of pluginStore.pluginsWithStatus) {
+  for (const plugin of pluginStore.pluginSummariesWithStatus) {
     const installSource = plugin.install_source
     if (installSource?.source !== 'market') continue
     const detail = installSource.source_detail as PluginInstallSourceDetailMarket | null
@@ -758,21 +758,21 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
   let warningMessage = ''
   try {
     if (mode === 'full') {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
+      const syncResult = await pluginStore.syncRegistryAndFetchSummaries()
       warningMessage = syncResult.warningMessage || ''
     } else if (mode === 'initial-open') {
       try {
         const syncResult = await pluginStore.ensurePluginListRegistrySynced()
         warningMessage = syncResult?.warningMessage || ''
         if (!syncResult) {
-          await pluginStore.fetchPlugins()
+          await pluginStore.fetchPluginSummaries()
         }
       } catch (syncError) {
         console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
-        await pluginStore.fetchPlugins()
+        await pluginStore.fetchPluginSummaries()
       }
     } else {
-      await pluginStore.fetchPlugins()
+      await pluginStore.fetchPluginSummaries()
     }
     if (mode === 'full') await pluginStore.fetchPluginStatus(undefined, true)
     else await pluginStore.ensurePluginStatus()

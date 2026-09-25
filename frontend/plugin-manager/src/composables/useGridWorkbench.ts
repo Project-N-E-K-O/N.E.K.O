@@ -159,7 +159,12 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const pinyinSearch = ref<PinyinSearch | null>(null)
   let pinyinLoad: Promise<void> | null = null
   let pinyinRetryAfter = 0
-  const searchIndexCache = new WeakMap<object, { key: string; value: T }>()
+  // `baseItems` creates an immutable snapshot only when this workbench owns
+  // the search index. Keeping that snapshot independent from query state is
+  // important: typing in the filter must not clone every item, while an
+  // in-place mutation of a reactive source item must still publish fresh
+  // status/action/display fields even when its search text is unchanged.
+  const pinyinIndexCache = new WeakMap<object, { key: string; value: T }>()
 
   function ensurePinyinSearch() {
     if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
@@ -187,28 +192,35 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     return map
   })
 
-  const items = computed<T[]>(() => {
+  const baseItems = computed<T[]>(() => {
     const raw = toValue(source)
     const builder = config.buildSearchIndex
     const pinyinBuilder = config.buildPinyinSearchIndex
     if (!builder && !pinyinBuilder) return raw
-    const includePinyin = state.filterText.value.trim().length > 0
-    const search = pinyinSearch.value
     return raw.map((item) => {
       const base = item.searchIndex || builder?.(item) || ''
-      const pinyinIndex = includePinyin && search && pinyinBuilder
-        ? pinyinBuilder(item, search)
-        : ''
-      const key = `${base}\u0000${pinyinIndex}`
-      const cached = searchIndexCache.get(item as object)
-      if (cached?.key === key) return cached.value
-      const searchIndex = pinyinIndex ? `${base}\n${pinyinIndex}` : base
-      const value = item.searchIndex === searchIndex
-        ? item
-        : { ...item, searchIndex } as T
-      searchIndexCache.set(item as object, { key, value })
-      return value
+      return { ...item, searchIndex: base } as T
     }) as T[]
+  })
+
+  const items = computed<T[]>(() => {
+    const base = baseItems.value
+    const pinyinBuilder = config.buildPinyinSearchIndex
+    const includePinyin = state.filterText.value.trim().length > 0
+    const search = pinyinSearch.value
+    if (!includePinyin || !search || !pinyinBuilder) return base
+
+    return base.map((item) => {
+      const pinyinIndex = pinyinBuilder(item, search)
+      if (!pinyinIndex) return item
+      const baseSearchIndex = item.searchIndex || ''
+      const key = `${baseSearchIndex}\u0000${pinyinIndex}`
+      const cached = pinyinIndexCache.get(item as object)
+      if (cached?.key === key) return cached.value
+      const value = { ...item, searchIndex: `${baseSearchIndex}\n${pinyinIndex}` } as T
+      pinyinIndexCache.set(item as object, { key, value })
+      return value
+    })
   })
 
   const availableIdSet = computed(() => new Set(items.value.map((item) => item.id)))

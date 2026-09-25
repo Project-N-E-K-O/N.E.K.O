@@ -121,8 +121,11 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
 
   const selectablePlugins = computed<SelectablePlugin[]>(() => {
+    const listPlugins = pluginStore.pluginsWithStatus.length > 0
+      ? pluginStore.pluginsWithStatus
+      : pluginStore.pluginSummariesWithStatus
     const metaById = new Map(
-      pluginStore.pluginsWithStatus.map((plugin) => {
+      listPlugins.map((plugin) => {
         const displayText = resolvePluginDisplayText(plugin, locale.value)
         return [
           plugin.id,

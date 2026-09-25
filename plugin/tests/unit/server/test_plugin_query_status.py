@@ -134,6 +134,104 @@ def test_build_plugin_list_omits_internal_entries_preview(monkeypatch: pytest.Mo
     assert [entry["id"] for entry in results[0]["entries"]] == ["ping"]
 
 
+@pytest.mark.asyncio
+async def test_summary_projection_keeps_card_contract_and_matches_full_entry_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = {
+        "id": "summary_demo",
+        "name": "Summary demo",
+        "description": "card",
+        "version": "1.2.3",
+        "type": "service",
+        "author": {"name": "Neko"},
+        "dependencies": [{"id": "shared", "version": ">=1"}],
+        "runtime_enabled": True,
+        "entries_preview": [
+            {
+                "id": "declared",
+                "name": "Declared",
+                "description": "declared description",
+                "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+                "metadata": {"private": "large"},
+            }
+        ],
+        "list_actions": [{"id": "open", "kind": "route", "target": "/plugins/summary_demo"}],
+    }
+    handlers = {
+        "summary_demo.runtime": SimpleNamespace(
+            meta=SimpleNamespace(
+                event_type="plugin_entry",
+                id="runtime",
+                name="Runtime",
+                description="runtime description",
+                input_schema={"type": "object"},
+                timeout=9,
+            )
+        )
+    }
+    monkeypatch.setattr(query_module.state, "get_plugins_snapshot_cached", lambda timeout=2.0: {"summary_demo": metadata})
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: handlers)
+    monkeypatch.setattr(query_module, "_install_source_index", lambda: ({}, {}))
+
+    full = (await query_module.PluginQueryService().list_plugins("en"))["plugins"][0]
+    summary = (await query_module.PluginQueryService().list_plugins("en", summary=True))["plugins"][0]
+
+    assert [entry["id"] for entry in summary["entries"]] == [entry["id"] for entry in full["entries"]]
+    assert summary["entry_count"] == len(full["entries"]) == 2
+    assert summary["has_input_schema"] is True
+    assert summary["dependency_count"] == 1
+    assert summary["dependencies"] == metadata["dependencies"]
+    assert summary["list_actions"] == full["list_actions"]
+    assert summary["entries"][0]["has_input_schema"] is True
+    assert summary["entries"][0]["timeout"] == 9
+    assert "input_schema" not in summary["entries"][0]
+    assert "metadata" not in summary["entries"][0]
+    assert "input_schema" not in summary
+
+
+@pytest.mark.asyncio
+async def test_get_plugin_builds_only_requested_full_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str | None] = []
+    original = query_module._build_plugin_list_sync
+
+    def _build(locale=None, plugin_id_filter=None):
+        calls.append(plugin_id_filter)
+        return original(locale, plugin_id_filter)
+
+    monkeypatch.setattr(query_module, "_build_plugin_list_sync", _build)
+    monkeypatch.setattr(query_module.state, "get_plugins_snapshot_cached", lambda timeout=2.0: {
+        "one": {"id": "one", "name": "One"},
+        "two": {"id": "two", "name": "Two"},
+    })
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module, "_install_source_index", lambda: ({}, {}))
+
+    result = await query_module.PluginQueryService().get_plugin("two", "en")
+    assert result["plugin"]["id"] == "two"
+    assert calls == ["two"]
+
+
+@pytest.mark.asyncio
+async def test_get_plugin_returns_not_found_for_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {"other": {"id": "other", "name": "Other"}},
+    )
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module, "_install_source_index", lambda: ({}, {}))
+    with pytest.raises(ServerDomainError) as exc_info:
+        await query_module.PluginQueryService().get_plugin("missing", "en")
+    assert exc_info.value.code == "PLUGIN_NOT_FOUND"
+    assert exc_info.value.status_code == 404
+
+
 def test_plugin_entry_handler_index_preserves_supported_key_order_and_filters_types() -> None:
     """The list query's one-pass index must preserve serializer semantics."""
     handlers = {

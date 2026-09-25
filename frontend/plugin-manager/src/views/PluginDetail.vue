@@ -255,7 +255,7 @@ const surfacesLoading = ref(false)
 const surfaceLoadError = ref('')
 
 const plugin = computed(() => {
-  return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
+  return pluginStore.getPluginById(pluginId.value)
 })
 
 const emptyPluginDisplayText: PluginDisplayText = {
@@ -551,9 +551,9 @@ async function loadDetail() {
   const requestLocale = locale.value
   const isCurrent = () => detailMounted && generation === detailGeneration
     && currentPluginId === pluginId.value && requestLocale === locale.value
-  loading.value = !plugin.value
+  loading.value = true
   try {
-    await pluginStore.ensurePlugins()
+    await pluginStore.ensurePlugin(currentPluginId)
     if (!isCurrent()) return
     // Basic information and navigation do not wait for /surfaces or an optional
     // renderer. Requests below retain their existing API semantics.

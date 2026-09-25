@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { usePluginStore } from './plugin'
-import { getPlugins, getPluginStatus, refreshPluginsRegistry, startPlugin } from '@/api/plugins'
+import { getPlugins, getPluginSummaries, getPluginStatus, refreshPluginsRegistry, startPlugin } from '@/api/plugins'
 
 const translate = vi.hoisted(() => vi.fn(
   (key: string, params?: Record<string, unknown>) => `${key}${params ? JSON.stringify(params) : ''}`,
@@ -20,6 +20,7 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/api/plugins', () => ({
   getPlugins: vi.fn(),
+  getPluginSummaries: vi.fn(),
   getPluginStatus: vi.fn(),
   startPlugin: vi.fn(),
   stopPlugin: vi.fn(),
@@ -46,6 +47,7 @@ describe('plugin store registry refresh policy', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
+    vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(getPluginStatus).mockResolvedValue({} as any)
     vi.mocked(startPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
     vi.mocked(refreshPluginsRegistry).mockResolvedValue(registryRefreshResult())
@@ -61,7 +63,7 @@ describe('plugin store registry refresh policy', () => {
     expect(second).toBeNull()
     expect(store.pluginListRegistrySynced).toBe(true)
     expect(refreshPluginsRegistry).toHaveBeenCalledTimes(1)
-    expect(getPlugins).toHaveBeenCalledTimes(1)
+    expect(getPluginSummaries).toHaveBeenCalledTimes(1)
   })
 
   it('does not reuse an in-flight list request from a different locale', async () => {
