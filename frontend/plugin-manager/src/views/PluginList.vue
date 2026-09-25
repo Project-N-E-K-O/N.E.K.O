@@ -673,12 +673,18 @@ async function toggleSourceDetail() {
 // The initial plugin fetch and a Market install can both finish after source
 // details become visible. Recompute the target set on either change so update
 // badges are not held to the empty/stale snapshot from the original toggle.
+function marketVersionTargetSignature() {
+  return installedMarketVersionTargets()
+    .map((target) => `${target.pluginId}:${target.channel}`)
+    .sort()
+    .join('|')
+}
+
 watch(
-  () => pluginStore.plugins,
+  marketVersionTargetSignature,
   () => {
     if (showSourceDetail.value) refreshInstalledMarketVersions()
   },
-  { deep: true },
 )
 
 const pluginSections = computed(() => [
