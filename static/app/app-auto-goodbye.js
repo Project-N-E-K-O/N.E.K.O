@@ -65,6 +65,7 @@
         cat3DragReleaseCount: 0,
         dragDemotionTier: TIER_NONE,
         dragDemotionStartedAt: 0,
+        gravityMotionStartedAt: null,
         // goodbye 进入时刻 + 入口；只有本次确有猫形态周期时才用于猫咪专属问候
         goodbyeEnteredAt: 0,
         goodbyeWasAuto: false,
@@ -384,6 +385,41 @@
         return hasVisibleElements(['[data-dragging="true"]']);
     }
 
+    function hasGravityMotion() {
+        const gravity = window.NekoDesktopWindowGravity;
+        return isGoodbyeActive() && !!(gravity && typeof gravity.isMoving === 'function' && gravity.isMoving());
+    }
+
+    function syncGravityMotion() {
+        if (!state.started) return;
+        const timestamp = nowMs();
+        if (hasGravityMotion()) {
+            if (state.gravityMotionStartedAt === null) state.gravityMotionStartedAt = timestamp;
+            if (state.visualTier === TIER_CAT2 || state.visualTier === TIER_CAT3) {
+                clearDragTierMemory();
+                restartVisualTierCountdown(TIER_CAT1, 'window-gravity-wake', 'window-gravity-moving');
+            }
+        } else if (state.gravityMotionStartedAt !== null) {
+            const startedAt = state.gravityMotionStartedAt;
+            state.gravityMotionStartedAt = null;
+            const gravity = window.NekoDesktopWindowGravity;
+            if (isGoodbyeActive() && gravity?.getState().phase === 'resting' && gravity.canWalk()) {
+                // Landing starts a full awake interval, even if the cat was
+                // already awake before the bounce. Stationary facts do not reset it.
+                clearDragTierMemory();
+                markIdleBaseline('window-gravity-settled');
+                restartVisualTierCountdown(TIER_CAT1, 'window-gravity-settled', 'window-gravity-settled');
+            } else {
+                // Pointer handoff or teardown only ends suppression; neither is
+                // a landing nor a reason to change the visual tier.
+                state.lastInteractionAt += Math.max(0, timestamp - Math.max(startedAt, state.lastInteractionAt));
+                if (state.dragDemotionTier !== TIER_NONE) {
+                    state.dragDemotionStartedAt += Math.max(0, timestamp - Math.max(startedAt, state.dragDemotionStartedAt));
+                }
+            }
+        }
+    }
+
     var AUTO_CAT_ENABLED_STORAGE_KEY = 'neko.autoCat.enabled';
 
     function readAutoCatEnabledPreference() {
@@ -432,6 +468,9 @@
         }
         if (hasActiveDragInteraction()) {
             reasons.push('dragging');
+        }
+        if (hasGravityMotion()) {
+            reasons.push('window-gravity-motion');
         }
         return reasons;
     }
@@ -523,7 +562,7 @@
     }
 
     function getElapsedSinceLastInteraction() {
-        return Math.max(0, nowMs() - state.lastInteractionAt);
+        return Math.max(0, (state.gravityMotionStartedAt ?? nowMs()) - state.lastInteractionAt);
     }
 
     function getTargetTierForElapsed(elapsedMs) {
@@ -552,7 +591,7 @@
     function getVisualTierElapsedForCurrentState() {
         if (state.dragDemotionTier !== TIER_NONE && state.dragDemotionStartedAt > 0) {
             return getDragDemotionElapsedStartMs(state.dragDemotionTier)
-                + Math.max(0, nowMs() - state.dragDemotionStartedAt);
+                + Math.max(0, (state.gravityMotionStartedAt ?? nowMs()) - state.dragDemotionStartedAt);
         }
         return getElapsedSinceLastInteraction();
     }
@@ -608,12 +647,12 @@
         }
     }
 
-    function demoteVisualTierAfterReturnBallDrag(targetTier) {
+    function restartVisualTierCountdown(targetTier, source, reason) {
         state.dragDemotionTier = targetTier;
         state.dragDemotionStartedAt = nowMs();
         setVisualTier(targetTier, {
-            source: 'return-ball-drag-demotion',
-            reason: 'return-ball-drag-end',
+            source,
+            reason,
         });
     }
 
@@ -628,14 +667,14 @@
             state.cat3DragReleaseCount += 1;
             if (state.cat3DragReleaseCount >= CAT3_DRAG_RELEASES_BEFORE_CAT2) {
                 state.cat3DragReleaseCount = 0;
-                demoteVisualTierAfterReturnBallDrag(TIER_CAT2);
+                restartVisualTierCountdown(TIER_CAT2, 'return-ball-drag-demotion', 'return-ball-drag-end');
             }
             return;
         }
 
         state.cat3DragReleaseCount = 0;
         if (currentTier === TIER_CAT2) {
-            demoteVisualTierAfterReturnBallDrag(TIER_CAT1);
+            restartVisualTierCountdown(TIER_CAT1, 'return-ball-drag-demotion', 'return-ball-drag-end');
         }
     }
 
@@ -844,6 +883,7 @@
         }
 
         ensureInfrastructurePrimed();
+        syncGravityMotion();
 
         const goodbyeActive = isGoodbyeActive();
         const idleSuppressed = syncIdleSuppressionState('tick');
@@ -873,6 +913,10 @@
         document.addEventListener('keydown', onKeyDown, true);
         document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
         document.addEventListener('wheel', onWheel, { capture: true, passive: true });
+        window.addEventListener('neko:desktop-window-gravity-motion', () => {
+            syncGravityMotion();
+            syncIdleSuppressionState('window-gravity');
+        });
         window.addEventListener('neko:voice-session-started', () => {
             extendConversationGrace('voice-session-started');
             noteUserInteraction('voice-session-started');
@@ -1019,6 +1063,7 @@
         state.started = true;
         state.lastInteractionAt = nowMs();
         state.lastReason = 'started';
+        syncGravityMotion();
         syncVisualTierFromCurrentState('start');
         state.timerId = window.setInterval(tick, TICK_INTERVAL_MS);
         emitStateChange('started', {

@@ -634,6 +634,7 @@ function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {}) {
     body.x = Number(left) || 0;
     body.y = Number(top) || 0;
     if (body.id === 'cat') {
+        window.NekoDesktopWindowGravity?.syncBody(body);
         _setNekoIdleCat1ContainerPosition(body.element, body.x, body.y);
     } else if (body.desktop) {
         if (body.element) {
@@ -677,6 +678,13 @@ function _updateNekoIdleCat1PlaygroundBodyBounds(body) {
     body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);
     body.wallLeft = -insets.left;
     body.wallRight = Math.max(body.wallLeft, window.innerWidth - body.width + insets.right);
+    const windowBounds = body.id === 'cat' && !body.dragging
+        && window.NekoDesktopWindowGravity?.getBounds(body.element);
+    if (windowBounds) {
+        body.floorY = windowBounds.bottom;
+        body.wallLeft = windowBounds.left;
+        body.wallRight = windowBounds.right;
+    }
 }
 
 function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
@@ -959,7 +967,8 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
             _stepNekoIdleCat1PlaygroundBodyRotation(body, dt);
         }
         const linearActive = !body.grounded || Math.abs(body.vx) > 0.05 || Math.abs(body.vy) > 0.05;
-        if (linearActive) {
+        const windowPhysics = body.id === 'cat' && window.NekoDesktopWindowGravity?.stepBody(button, body, now);
+        if (linearActive && !windowPhysics) {
             if (body.grounded &&
                 Math.abs(body.vx) <= _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC) {
                 body.vx = 0;

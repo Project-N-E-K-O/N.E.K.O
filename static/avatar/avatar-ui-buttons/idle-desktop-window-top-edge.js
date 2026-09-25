@@ -243,6 +243,7 @@
     }
 
     function setContainerPosition(container, left, top) {
+        if (window.NekoDesktopWindowGravity?.applyPosition(container, left, top)) return;
         container.style.left = `${Math.round(left)}px`;
         container.style.top = `${Math.round(top)}px`;
         container.style.right = '';
@@ -343,8 +344,9 @@
             finishState(state, { reason: 'invalid-cat-rect' });
             return;
         }
-        const dx = state.target.left - rect.left;
-        const dy = state.target.top - rect.top;
+        const target = window.NekoDesktopWindowGravity?.constrainTarget(state.container, state.target) || state.target;
+        const dx = target.left - rect.left;
+        const dy = target.top - rect.top;
         const distance = Math.hypot(dx, dy);
         if (distance <= WALK_FINISH_DISTANCE_PX) {
             finishPerch(state);

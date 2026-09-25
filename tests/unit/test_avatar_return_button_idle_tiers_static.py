@@ -2006,7 +2006,10 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _isNekoNativeReturnBallDragDisabled()" in avatar_source
-    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in avatar_source
+    assert (
+        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
+        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
+    ) in avatar_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
     assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
     assert "this.setupReturnButtonContainerDrag(returnButtonContainer)" not in live2d_source
@@ -3755,7 +3758,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "'return-ball-drag-end'" in app_ui_source
     assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
-    assert "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled())" in source
+    assert (
+        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
+        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
+    ) in source
 
 
 def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():

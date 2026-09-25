@@ -509,7 +509,11 @@ def test_cat1_settled_minimized_side_uses_center_distance_for_regular_walk_delay
     )[0]
     assert "const followingMovedMinimizedSideTarget =" not in journey_sync_block
     assert "const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);" in journey_sync_block
-    assert "const walkStartDistancePx = Number.isFinite(centerDistancePx)" in journey_sync_block
+    assert (
+        "const walkStartDistancePx = !window.NekoDesktopWindowGravity?.isActive(button) && Number.isFinite(centerDistancePx)"
+        "\n        ? centerDistancePx"
+        "\n        : target.distance;"
+    ) in journey_sync_block
     assert ": target.distance;" in journey_sync_block
     assert "walkStartDistancePx < profile.target.enterDistancePx" in journey_sync_block
     assert "walkStartDistancePx >= profile.target.enterDistancePx" in journey_sync_block

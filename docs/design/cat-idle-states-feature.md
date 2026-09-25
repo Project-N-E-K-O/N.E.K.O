@@ -104,10 +104,10 @@ Web 主页面与 NEKO-PC 的 Pet renderer 页面运行同一套页面内 Cat Min
 正式窗口事实是 Primary Pet renderer 的通用能力。页面内唯一 owner 通过只读的 `window.nekoDesktopWindowSensingContext.getCurrent()/subscribe()` 同时服务多个职责不同的 consumer：
 
 - Cat Mind consumer 将事实投影为 CAT1 的 `desktop_occlusion_or_layer_change` observation，只进入 recent events 和 debug 上下文，不排入普通动作 decision；
-- 桌面窗口互动协调层只在收到正式窗口事实时比较“窗口上沿蹲守”和“窗口边缘探头”两个候选；
+- 桌面窗口互动协调层在收到正式窗口事实时比较窗口内重力、窗口上沿蹲守和窗口边缘探头；猫身体已经在窗口内部时优先进入重力；
 - 门式行走不由 sensing 事件主动启动，只在既有 CAT1 毛线球 journey 的走路帧读取当前窗口事实并判断原路线是否受阻。
 
-因此窗口移动、缩放、切换或失效不能直接修改五维、唤醒 Cat Mind 动作、启动毛线球 journey 或移动对话框。三个桌面窗口互动接入与其他 CAT1 独立动作相同的统一表现框架：共用动作占用、互斥、拖拽、return、tier/形态切换、playground 接管和 cleanup 规范；差异只在触发输入、私有表现状态和自身周期。它们不是 Cat Mind action，因此不写 Cat Mind 的动作 cooldown 或 return episode。
+因此窗口移动、缩放、切换或失效不能直接修改五维、唤醒 Cat Mind 动作、启动毛线球 journey 或移动对话框。四个桌面窗口互动接入与其他 CAT1 独立动作相同的统一表现框架：共用动作占用、互斥、拖拽、return、tier/形态切换、playground 接管和 cleanup 规范；差异只在触发输入、私有表现状态和自身周期。它们不是 Cat Mind action，因此不写 Cat Mind 的动作 cooldown 或 return episode。
 
 ### 4.5 后端
 
@@ -171,7 +171,7 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 
 聊天窗最小化可见、移动较远、compact 表面、idle-dock、重新展开和桌面层级变化都只是环境 observation。它们为 provider、near/far 和安全判断提供事实，不直接给五维加分。Native IPC、BroadcastChannel 和本地 UI 可能重复送达同一状态；Cat Mind 按最小化状态和矩形去重，同一状态、同一 rect 的心跳不重复记录或制造判断机会。
 
-外部桌面窗口事实与聊天窗事实不是同一个对象。前者来自 N.E.K.O-PC 对其他原生窗口的识别，只在正式 CAT1 sensing session 中存在；后者是 N.E.K.O 自己的聊天窗、compact surface 或毛线球状态。移动未最小化的对话框不能被解释为外部窗口动作的触发，桌面窗口动作也不能反向唤醒或恢复对话框 journey。外部桌面窗口 observation 仍保留在 Cat Mind recent events 中供诊断，但 `source=desktop-window-sensing` 时明确不触发普通 decision。
+外部桌面窗口事实与聊天窗事实不是同一个对象。前者来自 N.E.K.O-PC 对原生窗口的识别，在猫形态 sensing session 中为 CAT1/CAT2/CAT3 共享重力提供几何；后者是 N.E.K.O 自己的聊天窗、compact surface 或毛线球状态。自身可见 UI 可提供碰撞区域，但不能因此启动对话框动作，也不能反向唤醒或恢复对话框 journey。外部桌面窗口 observation 仅在 CAT1 保留于 Cat Mind recent events 中供诊断，且 `source=desktop-window-sensing` 时明确不触发普通 decision。
 
 ### 6.5 既有表现结果
 
@@ -204,7 +204,7 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 | CAT2 | `cat2_nap_feedback` | 小憩声音/气泡反馈 | 睡眠反馈 runner 可用 |
 | CAT3 | `cat3_sleep_feedback` | 熟睡声音/气泡反馈 | 睡眠反馈 runner 可用 |
 
-以下不是主动候选：drag、hover、return、tier demotion、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、三个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。
+以下不是主动候选：drag、hover、return、tier demotion、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。
 
 Cat Mind 不主动 walk-to-chat。玩毛线要求已经 settled near-chat；小移动不借此接近聊天球，但会沿用既有两种 runner 形态：最小化聊天球 near-chat 时移动猫与球，聊天窗已展开或 compact surface 可用时只移动猫。没有对应 surface 或表现条件不满足时，provider 拒绝动作。
 
@@ -248,34 +248,40 @@ CAT2/CAT3 的 idle-dock 与桌面侧窗口落位保持原职责。Web 端若聊�
 
 compact、mirror 与 idle-dock 都不是 Cat Mind 主动动作，也不允许 Cat Mind 直接移动桌面窗口。
 
-### 8.6 桌面窗口感知与 CAT1 独立动作接入
+### 8.6 桌面窗口感知、共享重力与 CAT1 独立动作
 
 #### 感知链与平台边界
 
-桌面窗口感知只存在于 N.E.K.O-PC Primary Pet。当前正式 reader 支持 macOS 与 Windows，Linux 不在支持列表；普通 Web 没有 bridge 时，页面 owner 和三个动作都直接退化为不存在，不增加轮询或模拟窗口。
+桌面窗口感知只存在于 N.E.K.O-PC Primary Pet。当前正式 reader 支持 macOS 与 Windows，Linux 不在支持列表；普通 Web 没有 bridge 时，页面 owner、重力和三个窗口动作都直接退化为不存在，不增加轮询或模拟窗口。
 
 唯一数据链如下：
 
 ```text
-N.E.K.O-PC main（约 200ms 串行读取下一轮）
+N.E.K.O-PC main（约 16ms 串行更新；静止时原生窗口列表约 200ms 读取一次）
   -> IPC / preload bridge
-  -> app-desktop-window-sensing.js（唯一 CAT1 session owner）
-  -> nekoDesktopWindowSensingContext（只读 current + subscribe）
-       -> Cat Mind observation consumer（recent events only）
+  -> app-desktop-window-sensing.js（唯一猫形态 session owner，CAT1/CAT2/CAT3 共用）
+  -> nekoDesktopWindowSensingContext（只读 current + subscribe，包含窗口列表）
+       -> Cat Mind observation consumer（仅 CAT1，recent events only）
+       -> window gravity（所有动作共用的物理位置约束）
        -> desktop-window selector（上沿蹲守 / 边缘探头）
        -> door walk（只由既有毛线球 walk 查询 current）
 ```
 
-`200ms` 是上一轮读取完成后安排下一轮的间隔，不是 `setInterval`，也不保证每次 native 读取一定在 200ms 内完成。结果统一带 `sessionId + revision`，状态为 `current / changed / unavailable`；窗口切换通过 `identity`，移动与缩放分别通过 `position / size` 表达。离开 CAT1、退出猫形态、goodbye 清理或页面卸载时 owner 先清共享结果再停止 session，旧 session 和迟到回调不能重新写入。
+配套 PC PR #495 中，`16ms` 是上一轮更新完成后安排下一轮的间隔，不是 `setInterval`，也不保证每次 native 读取一定在 16ms 内完成。自身界面每轮按最新窗口位置投影；原生窗口列表在静止时缓存约 `200ms`，检测到鼠标移动或原生窗口变化时恢复逐轮读取，最后一次变化后保留 `400ms` 快速采样再降频。缓存投影不变时不重复发送 IPC；实际原生读取保留 `current` 样本，供重力计算采样间隔。结果统一带 `sessionId + revision`，状态为 `current / changed / unavailable`；窗口切换通过 `identity`，移动与缩放分别通过 `position / size` 表达。CAT1/CAT2/CAT3 切换保留会话与重力；退出猫形态、goodbye 清理或页面卸载时 owner 先清共享结果再停止 session，旧 session 和迟到回调不能重新写入，新 session 也不复用旧原生缓存。睡眠期间共享窗口事实继续更新，但不发布 CAT1 observation。
 
-三个动作不是另起的一套动作系统。它们都纳入现有 CAT1 独立动作占用与清理链，让其他动作能统一判断“猫当前是否被表现接管”，也让拖拽、return、tier/形态变化和 playground 通过既有入口中断。上沿和探头注册到桌面窗口候选协调层；门式仍由毛线球 journey 调用，但活动态同样进入统一占用判断。各动作只独立持有自己必需的目标、阶段、临时 class、RAF/timer 与恢复信息；不共享私有 action state、不互相调用，也不能用一个动作的方向、周期或恢复规则去补另一个动作。
+Electron 正式入口按上述节奏枚举全部可见窗口，保留从前到后的顺序，并筛选与模型所在屏幕相交的矩形，排除屏幕外的最小化窗口和桌面壁纸。`rect` 继续供原窗口演出使用；`windows` 为重力提供完整场景，每项包含会话内稳定的 `key`、`kind: external/app` 和 DIP `rect`，并可带有 `collisionOnly: true`。该标志仅用于始终置顶的 app surface，表示此区域只能参与边界碰撞，不能被选为窗口内重力的容纳窗口；未置顶的 app surface 与普通外部窗口一样可作为容纳窗口。外部窗口不保留该标志。焦点切换不改变同一窗口的 key；窗口退出列表后重新出现会获得新 key。后台窗口单独移动时，即使主 `rect` 不变，也会发布完整列表。PID、native handle、标题和进程路径不通过 IPC 或 preload 对外暴露。
+
+原生列表中的自身窗口按主进程、关联 Electron 进程和已知 native handle 排除，Pet 透明承载窗永不成为碰撞面。其他自身透明窗口只采用碰撞区域 bridge 上报的已绘制可见界面区域，以当前内容窗口坐标投影，包括聊天面板、字幕设置面板和 AgentHUD；没有可靠区域、隐藏、透明度为零、最小化载体、拖拽或捕获期间的整窗输入范围都不回退成整窗碰撞。已知不透明的 `settings` 窗口在尚无区域上报时采用内容边界；显式空上报仍保持为空。保留区域间透明空隙及已知原生层叠顺序；原生列表未列出的置顶浮层按置顶界面处理。
+
+上沿、探头、门式三个动作纳入现有 CAT1 独立动作占用与清理链。上沿和探头注册到桌面窗口候选协调层；门式由毛线球 journey 调用。各动作分别持有自己的目标、阶段、临时 class、RAF/timer 与恢复信息。重力直接订阅共享窗口事实，不注册候选、不占 independent-action 锁、不接管素材；动作的位置更新通过共享物理约束，playground 的猫 body 委托同一物理时钟积分。
 
 | 层级 | 与其他 CAT1 动作的关系 |
 |---|---|
 | 统一动作框架 | 共用活动态查询、互斥门禁、素材/位置单 owner、拖拽、return、tier/形态、playground 和卸载清理规范 |
 | 桌面窗口事实与触发适配 | 只负责把外部窗口事实转换成合法候选，或让既有毛线球 walk 判断穿越；不绕过统一门禁 |
 | 各 runner 私有状态 | 只保存本动作的目标、阶段、方向、RAF/timer、裁切和恢复点；不写其他 runner 的内部状态 |
-| Cat Mind | 把 sensing observation 留作可观测上下文，但不选择、计分或记录这三个表现 |
+| 共享重力 | 与动作并行，控制下落和四边碰撞；已被窗口约束时不再启动接近窗口的演出 |
+| Cat Mind | 把 sensing observation 留作可观测上下文，但不选择、计分或记录这些窗口表现 |
 
 #### 窗口上沿蹲守
 
@@ -293,9 +299,35 @@ N.E.K.O-PC main（约 200ms 串行读取下一轮）
 
 窗口稳定时不跟随。walking 时窗口变化直接取消；peeking 时窗口移动、缩放、切换或不可用使用统一 `52px / 360ms` 离场一次，再进入与上沿共用的 `30s` 冷却。半隐藏表现必须在拖拽按下时立即解除裁切并完整显示猫；只有之后真的形成拖拽位移才建立冷却。cleanup 不唤醒聊天窗或毛线球 journey。
 
+#### 窗口内重力与弹性碰撞
+
+软件自身窗口通过独立的可见区域 IPC 上报碰撞面，不依赖 Windows/macOS/Linux 各自的鼠标穿透或输入形状缓存。紧凑聊天栏及其独立面板、完整聊天窗、毛线球、字幕使用实际可见组件的矩形；普通不透明设置/点唱窗口使用内容区。排除 Pet 自身、透明承载窗口留白、输入拖拽热区、隐藏组件与折叠后的隐藏聊天载体。组件标识在移动和其他面板隐藏时保持稳定；CSS 布局/动画变化更新区域，原生窗口移动直接叠加最新窗口位置，关闭、导航或渲染进程退出清理区域。
+
+聊天记录按每个可见气泡和独立面板上报，不使用包含阴影留白的历史布局容器；选项按可见按钮分别上报，保留间隙。仅有阴影、没有背景/边框/玻璃效果的透明包裹元素不作为碰撞面。完整聊天窗仍识别伪元素绘制的玻璃背景；隐藏祖先和滚动裁切继续作用于所有子面板。
+
+自身窗口按原生置顶状态区分用途：置顶时仅四边参与碰撞，进入其内部、拖放或失去原承载窗口时都不能把它选作重力容器；不置顶时与普通应用窗口一样，可容纳猫并触发重力。置顶开关随场景实时更新，保留窗口标识。已有重力继续归属于普通窗口，仍会被前方置顶窗口的边缘阻挡、承托和弹起；桌面上的普通移动也会被置顶边缘挡住，但边缘约束本身不启动重力。正在运动的承载窗口改为置顶后，沿用承载窗口消失时的连续过渡。
+
+CAT1/CAT2/CAT3 的可见身体完整落入窗口列表中的某个窗口范围时进入窗口内重力，不要求该窗口位于前台，也不以 idle、hover、走路、吃东西、伸懒腰、玩球、睡眠或过渡动画作为开关。初次选择按层叠顺序比较能容纳猫体的区域，之后跟踪该窗口的稳定 key；焦点改变不释放重力。重力只移动现有猫容器，保留动作素材、朝向和气泡；不移动外部窗口、聊天框或毛线球。普通动作共用按 idle GIF 可见像素并集计算的稳定身体边界，playground 沿用其猫 body 的可见边界。
+
+下落、抛出、回弹和滑行未结束时不启动走路或带聊天栏的小移动；已经进行的移动按中断结算，取消待执行的移动计时，恢复静止素材。吃东西、伸懒腰、玩球等非移动动作仍保留，睡眠按下面的唤醒规则处理。落在窗口底部或可见支撑边框，且速度与碰撞形变归零后，才重新检查移动条件；稳定窗口心跳不重复检查。共享位置方法仅在落稳后接受动作的水平位移，垂直位置由物理积分决定；走路目标投影到窗口内的可达水平位置，避免原目标在窗外时永远走不到。过期的小移动计划不能覆盖空中的位置与速度。playground 内只有猫委托窗口重力，保留玩具碰撞、拖拽抛出速度；其他 body 继续使用原有物理。进入窗口约束后清理门式裁切，落稳后再恢复走路，避免把猫传送出物理边界。
+
+下落、抛出、回弹和滑行期间暂停挂机计时，每次落稳后清零并重新开始完整的 CAT1 清醒阶段，不沿用运动前的挂机时长。已经困倦或睡着的 CAT2/CAT3 被弹起时立即切回清醒 CAT1，沿用正常阶段切换清理睡眠音效和睡眠气泡；保留位置与惯性，不返回人物形态、不发起对话。无论弹跳前是否睡着，都从本次落稳后开始计时，满 5 分钟静止后才进入 CAT2；再次弹跳后重新计算。静止窗口心跳不重置计时；指针接管、取消物理、退出猫形态、return 或卸载立即结算暂停区间，但不当作落稳。物理只在运动开始/结束时发布事实，挂机控制器同时读取当前运动状态，兼容初始化顺序且不逐帧重置计时。
+
+重力为 `1440px/s²`，四边回弹系数为 `0.52`，速度上限 `1800px/s`。碰撞按猫与移动边界的相对速度计算，水平窗口移动还通过底部摩擦带动猫。碰撞时短暂压缩猫的外观，随后恢复；空气阻尼、地面摩擦和低速落稳让回弹逐渐停止。窗口事实与 RAF 共用单调的物理时钟，先结算旧边界下的经过时间，再应用新边界；高频窗口消息不会丢掉下落时间。物理使用最多 `1/120s` 的子步，一帧最多结算 `50ms`；超过 `800ms` 的感知间隔只修正边界，不把后台恢复或迟到数据算成猛烈晃动。
+
+其他窗口的四条边也参与碰撞。边框先减去前方可见窗口覆盖的线段，避免不可见边框形成隐形平台；猫可以落在露出的上沿，也会从侧边和下沿回弹。使用猫体跨越线段的连续检测，处理高速动作位移和窗口在两次读取间跨过猫体的情况。第二个窗口移动也能带来碰撞冲量；窗口遮挡、关闭或移走使支撑失效后继续下落。已关闭窗口的边框在积分待处理帧之前移除，不追加一次幽灵碰撞；关闭其他窗口也不凭空削减猫的水平速度。多个窗口挤压至无可用间隙时，以原容纳窗口边界作为最终位置约束。透明区域和显式空窗口列表不会为尚未进入重力的猫启动整屏重力。
+
+落稳后停止物理 RAF，仍允许其他动作启动；相同窗口场景的心跳不重新启动物理，也不持续注入速度。窗口列表、层叠、几何或猫容器尺寸变化时更新碰撞边界并唤醒。窗口部分移出屏幕时使用可见范围；窗口小到容不下猫、读取失败或 session 清空时退出。承载窗口关闭时保留位置、速度、碰撞形变和物理时钟，优先转入能容纳当前位置的剩余窗口，不把新旧窗口边界差当作晃窗冲量。没有窗口承接，或明确收到 `no-window` / `no-window-on-model-display` 时，仅让正在进行的物理运动继续到屏幕底部落稳，再释放重力控制；途中仍能碰到剩余可见边框或转入新窗口。按住时关闭窗口保持指针优先，return/退出形态/卸载仍立即终止衔接。减少动态效果偏好会关闭回弹和压缩外观，保留下落。
+
+按下准备拖拽时由指针控制位置，未移动松开则继续；真正拖走立即释放控制，放回窗口后松手即重新判断，无需等待下一轮窗口事实。普通拖拽使用松手前 `120ms` 的屏幕坐标估算水平、垂直抛出速度，沿甩动方向继续运动，再受重力与边框碰撞影响；停住超过 `100ms` 或取消拖拽不注入速度。DOM 与原生窗口拖拽都记录实际松手时间，恢复视口的异步等待不衰减抛出速度，playground 不重复叠加冲量。重力不受趴窗/探头的 `30s` 演出冷却影响，从重力中拖走也不新增该冷却。睡眠和 playground 切换保留物理；return、呼吸球、容器移除和卸载清理 RAF、观察器和压缩样式，保留实际落点。重力不写 Cat Mind 的五维、cooldown 或 return episode。
+
+Windows 启用窗口重力时，猫形态的四种模型统一沿用页面内拖拽，保持原生承载窗口大小与可见性，松手同一事件内提交位置并继承速度；不再经过原生缩窗、隐藏、恢复窗口和双 RAF 等待。Windows 多窗口模式在创建返回按钮时就注册页面拖拽，包括初始隐藏或呼吸球形态，确保之后切换为猫时已有处理器接手；普通呼吸球仍由原生捕获监听器处理。其他平台继续原有路径，Niri 的裁剪确认与最终帧等待仍保留。
+
+松手后的 `data-neko-return-click-suppressed` 只拦截拖拽产生的误点击，不阻止重力接管、速度继承或后续物理帧。重力单独判断 `data-neko-model-cat-transitioning="cat-to-model"` 与正式 return 清理事件；其他动作继续使用原有的防误点击/返回占用判断。
+
 #### 门式行走
 
-门式行走不是第三个 sensing selector 候选，也不使用前两个动作的 `200px` 邻近条件或 `30s` 演出冷却。它只装饰既有 CAT1 “走向最小化毛线球” journey：journey 已经决定原起点和原目标后，每个普通 walking frame 都可用当前感知窗口重新判断；第一次未形成合法穿越时保持原走路，后续帧或窗口事实改变后仍会重判。随机小移动、compact 上沿移动、Cat Mind pair move 和其他走路不接入。
+门式行走不属于 sensing selector 候选，也不使用上沿/探头的 `200px` 邻近条件或 `30s` 演出冷却。它只装饰既有 CAT1 “走向最小化毛线球” journey：journey 已经决定原起点和原目标后，每个普通 walking frame 都可用当前感知窗口重新判断；第一次未形成合法穿越时保持原走路，后续帧或窗口事实改变后仍会重判。随机小移动、compact 上沿移动、Cat Mind pair move 和其他走路不接入。
 
 只有原路线确实穿过窗口且入口外、出口外都有合法站位时才接管。路线可以斜向，入口与出口由原线段实际穿过的窗口边决定，支持左、右、上、下四边之间全部 12 种有向组合。完整表现为：沿原 walking 走到入口门外，垂直进入并逐渐裁切；完全隐藏后才把同一猫容器换到出口门内；再垂直走出、解除裁切，最后由原 journey 继续走向原毛线球目标。动作不新建目标、不绕路、不复制猫，也不改 walking 素材与原 journey 最终状态。
 
@@ -306,7 +338,7 @@ N.E.K.O-PC main（约 200ms 串行读取下一轮）
 - return、真实拖拽、tier/形态变化、playground、容器移除和页面卸载都必须幂等释放各自动作拥有的 RAF、timer、门节点、裁切、旋转和素材接管；新 owner 接管时不能用旧动作的恢复坐标覆盖它。
 - 上沿的左右 facing、探头的左/右/下固定构图、门式的入口边/出口边是三组不同方向语义。修一组时要分别跑完整方向矩阵，不能增加一个全局镜像规则修单边。
 - 猫 GIF 有透明边。容器矩形、素材画布和肉眼可见猫体不是同一边界；不能仅凭容器与窗口相交就断言画面重叠，也不能为通过几何测试静默改变已经验收的视觉落点。涉及安全站位或门式拒绝原因时，必须结合当前素材可见边界和 Electron 实画复核。
-- 三个动作与其他普通 CAT1 独立表现共用同一套 independent-action hard gate 和全局接管/清理入口，不是完全隔离的旁路；“独立”表示 runner 各自拥有自己的业务状态，不表示绕开现有动作规范。它们不是 Cat Mind 主动动作，不注册五维反馈、Cat Mind cooldown、短时意图或 return episode，也不得把外部窗口事件转换成对话框/毛线球启动信号。
+- 上沿、探头、门式与其他 CAT1 独立表现共用 independent-action hard gate 和清理入口。重力作为共享物理约束与动作并行，不进入该互斥判断。它们都不是 Cat Mind 主动动作，不注册五维反馈、Cat Mind cooldown、短时意图或 return episode，也不得把外部窗口事件转换成对话框/毛线球启动信号。
 
 ### 8.7 问号入口与 playground
 
@@ -407,9 +439,11 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 2. 真实 runner 的 accepted、started、done 顺序；音频 autoplay 拒绝时不能出现 started/cooldown。
 3. Web 和 Electron 各进入猫形态一次，确认页面内 Cat Mind 都产生五维状态，并在 provider 合法时走同一条 action request；Electron 桌面壳只提供安全桌面事实和窗口桥接，需要进入 Cat Mind 的部分由页面 consumer 产生 observation，不存在第二套 selector 或 request producer。两端各验证一次有完成 episode 的回归、无 episode 的正常回归，以及不受 started/done 影响的短时统一静默。
 4. 在桌面真实拖拽、聊天窗移动、compact/dock、毛线球隐藏恢复下确认窗口和命中安全；分别验证 far→near 强邀请、猫旁重复递球、拖离清除，以及 active/settling 期间不抢跑。
-5. N.E.K.O-PC Primary Pet 在 macOS/Windows 各验证一次正式窗口 fact；普通 Web 与 Linux 验证无 bridge/reader 时安全退化。确认移动未最小化对话框不会启动或恢复三个外部窗口动作，也不会唤醒普通 Cat Mind decision。
+5. N.E.K.O-PC Primary Pet 在 macOS/Windows 各验证一次正式窗口 fact；普通 Web 与 Linux 验证无 bridge/reader 时安全退化。确认移动未最小化对话框不会启动或恢复四个外部窗口动作，也不会唤醒普通 Cat Mind decision。
 6. 上沿蹲守分别从左、右接近并在窗口变化时只掉落一次；边缘探头分别验证左、右、下的落点、隐藏侧、猫头朝外、周期探出—缩回和拖拽按下立即完整显示。两者在 `200px` 内只选择最近候选、同距上沿优先，掉落/离场和从动作中真实拖走后共享 `30s` 冷却。
 7. 门式行走只用真实“走向最小化毛线球”入口验证，不用测试专用目标代替最终验收。覆盖四边之间 12 种有向组合，确认入口门方向、裁切方向、完全隐藏后换边、出口门方向、继续原目标、首次拒绝后续帧重判，以及窗口变化/return/拖拽各阶段都只留下完整猫。
+8. 窗口内重力验证四边回弹、晃窗、缩放、落稳、拖放、按住时晃窗、多屏坐标和窗口关闭。覆盖 hover、走路、小移动、吃东西、伸懒腰、玩球、小睡、熟睡与过渡期间持续下落；playground 不重复施加重力，仍保留玩具冲量。确认动作与气泡可继续，落稳后没有物理 RAF，相同窗口心跳不注入速度，return/退出形态不残留资源。
+9. 多窗口验证后台窗口容纳、焦点切换保持原窗口、第二个窗口边框碰撞和高速扫过、遮挡/关闭后支撑释放、自身透明承载层排除、可见 UI 区域与区域间空隙。通过真实 Electron 窗口检查层叠与反馈延迟，确认主进程、preload 和 renderer 均保留场景并剥离原生身份信息。
 
 浏览器页面测试可以确认 debug、事件和普通 Web 链，但不能代替 Electron 原生窗口、透明覆盖层和 Live2D canvas 拖拽验收。
 
@@ -423,10 +457,15 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 | debug 面板 | `static/app/app-cat-mind-debug.js` |
 | N.E.K.O-PC 原生窗口读取、候选过滤、串行刷新与 session IPC | N.E.K.O-PC `src/main/desktop-window-sensing.js`、`src/main.js` |
 | N.E.K.O-PC Primary Pet preload bridge | N.E.K.O-PC `src/preload/bridges/pet-desktop-window-sensing-bridge.js` |
-| Electron CAT1 桌面窗口 session owner 与当前 observation consumer | `static/app/app-desktop-window-sensing.js` |
+| Electron 猫形态桌面窗口 session owner 与 CAT1 observation consumer | `static/app/app-desktop-window-sensing.js` |
 | 桌面窗口互动 selector、共同表现冷却与门式行走 | `static/avatar/avatar-ui-buttons/idle-desktop-window-interactions.js` |
 | 桌面窗口上沿蹲守 runner | `static/avatar/avatar-ui-buttons/idle-desktop-window-top-edge.js` |
 | 桌面窗口边缘探头 runner | `static/avatar/avatar-ui-buttons/idle-desktop-window-edge-peek.js` |
+| 桌面窗口内共享重力、晃窗与弹性碰撞 | `static/avatar/avatar-ui-buttons/idle-desktop-window-gravity.js` |
+| 原生窗口场景、会话稳定标识与主进程 IPC | `N.E.K.O.-PC/src/main/desktop-window-sensing.js` |
+| 自身窗口排除与可见 UI 区域 | `N.E.K.O.-PC/src/main/desktop-window-surfaces.js` |
+| 主进程与 preload 的场景字段约束 | `N.E.K.O.-PC/src/desktop-window-scene-contract.js` |
+| 窗口内重力与既有窗口动作回归 | `tests/frontend/desktop_window_gravity.test.cjs` |
 | 毛线球 journey 对门式行走的目标/续走适配 | `static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js` |
 | 桌面窗口动作共同互斥、拖拽/return/形态清理入口 | `static/avatar/avatar-ui-buttons/idle-actions-and-audio.js`、`idle-drag-and-subactions.js`、`methods-return.js` |
 | 桌面窗口动作裁切、朝向、门和周期表现 | `static/css/index.css` |
@@ -440,4 +479,4 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 | 独立猫问候调用 | `main_logic/core/greeting.py` |
 | return prompt 与 scene | `config/prompts/prompts_proactive.py` |
 
-avatar 实现已经拆为 `core.js`、`idle-assets-and-question.js`、`idle-playground.js`、`idle-actions-and-audio.js`、`idle-drag-and-subactions.js`、`idle-journey-and-presentation.js`、`idle-cat-mind-observations.js`、`idle-desktop-window-interactions.js`、`idle-desktop-window-top-edge.js`、`idle-desktop-window-edge-peek.js`、`methods-setup.js`、`methods-buttons.js`、`methods-return.js`、`methods-state-and-cleanup.js`；后续修改继续落在对应职责文件，不恢复旧大文件，也不恢复旧数字前缀文件名。桌面窗口上沿与边缘探头继续使用各自 runner，协调和门式行走留在互动模块；不要再按表现相似度把三者合并成一个动作文件或把门式拆成额外生产脚本。
+avatar 实现已经拆为 `core.js`、`idle-assets-and-question.js`、`idle-playground.js`、`idle-actions-and-audio.js`、`idle-drag-and-subactions.js`、`idle-journey-and-presentation.js`、`idle-cat-mind-observations.js`、`idle-desktop-window-interactions.js`、`idle-desktop-window-top-edge.js`、`idle-desktop-window-edge-peek.js`、`idle-desktop-window-gravity.js`、`methods-setup.js`、`methods-buttons.js`、`methods-return.js`、`methods-state-and-cleanup.js`；后续修改继续落在对应职责文件，不恢复旧大文件，也不恢复旧数字前缀文件名。桌面窗口上沿与边缘探头继续使用各自 runner，协调和门式行走留在互动模块；不要再按表现相似度把三者合并成一个动作文件或把门式拆成额外生产脚本。
