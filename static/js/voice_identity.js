@@ -41,12 +41,14 @@
         incomplete_capture: ['voiceIdentity.errorIncompleteCapture', '录音没有完整采集，请重试。'],
         inconsistent_segments: ['voiceIdentity.errorInconsistentSegments', '几段声音差异较大，请按提示重新录入。'],
         voice_samples_inconsistent: ['voiceIdentity.errorVoiceSamplesInconsistent', '几段声音差异较大，请按提示重新录入。'],
-        owner_verification_failed: ['voiceIdentity.errorOwnerVerificationFailed', '声纹验证未通过，请重录当前段。']
+        owner_verification_failed: ['voiceIdentity.errorOwnerVerificationFailed', '声纹验证未通过，请重录当前段。'],
+        stale_enrollment: ['voiceIdentity.errorStaleEnrollment', '本次录入已过期，请重新开始。']
     });
 
     const state = {
         csrfToken: '',
         enrollmentId: null,
+        enrollmentRemainingSeconds: null,
         profileId: null,
         profileAvailable: false,
         profileRevision: null,
@@ -222,6 +224,12 @@
         );
         if (enrollmentActive && enrollmentId) {
             state.enrollmentId = enrollmentId;
+            const rawRemainingSeconds = firstScalar(
+                [enrollment], ['remaining_seconds'], null
+            );
+            const remainingSeconds = Number(rawRemainingSeconds);
+            state.enrollmentRemainingSeconds = rawRemainingSeconds !== null
+                && Number.isFinite(remainingSeconds) ? remainingSeconds : null;
             state.profileId = firstString(
                 [status, enrollment],
                 ['profile_id'],
@@ -232,6 +240,7 @@
             || Object.prototype.hasOwnProperty.call(status, 'enrollment')
         ) {
             state.enrollmentId = null;
+            state.enrollmentRemainingSeconds = null;
             state.profileId = null;
         }
 
@@ -368,10 +377,11 @@
             && elements.message.textContent
             && elements.message.classList.contains('error')
         );
-        const enrollmentVisible = !state.profileAvailable
-            || state.busy || state.cancelPending || Boolean(state.enrollmentId) || hasMessage;
+        const enrollmentActive = !state.profileAvailable
+            || state.busy || state.cancelPending || Boolean(state.enrollmentId);
+        const enrollmentVisible = enrollmentActive || hasMessage;
         elements.enrollment.hidden = !enrollmentVisible;
-        elements.profileControls.hidden = !state.profileAvailable || enrollmentVisible;
+        elements.profileControls.hidden = !state.profileAvailable || enrollmentActive;
         elements.statusDot.className = 'status-dot';
         if (state.effectiveEnabled) elements.statusDot.classList.add('ready');
         else if (state.profileAvailable) elements.statusDot.classList.add('warning');
@@ -381,9 +391,12 @@
             || state.cancelPending || state.filterPending;
         const enrollmentUnavailable = !state.profileAvailable
             && ['secure_storage_unavailable', 'model_unavailable'].includes(state.effectiveReason);
-        elements.start.hidden = state.profileAvailable || state.busy || state.cancelPending;
+        elements.start.hidden = state.busy || state.cancelPending
+            || (state.profileAvailable && !state.enrollmentId);
         elements.start.disabled = pending || enrollmentUnavailable;
-        elements.start.textContent = translate('voiceIdentity.startEnrollment', '开始录入');
+        elements.start.textContent = state.enrollmentId
+            ? translate('voiceIdentity.continueEnrollment', '继续录入')
+            : translate('voiceIdentity.startEnrollment', '开始录入');
         elements.cancel.hidden = !state.busy && !state.cancelPending && !state.enrollmentId;
         elements.cancel.disabled = state.cancelPending;
         elements.reenroll.disabled = pending;
@@ -544,14 +557,26 @@
                 targetSampleRate: TARGET_SAMPLE_RATE
             }
         });
+        let inputGain = null;
         const mute = context.createGain();
         const chunks = [];
         let capturedSamples = 0;
         let startedAt = performance.now();
         let finishCapture = null;
         let flushTimeoutId = null;
+        inputGain = context.createGain();
+        let gainDb = 0;
+        try {
+            const savedGainDb = Number(localStorage.getItem('neko_mic_gain_db'));
+            if (Number.isFinite(savedGainDb)) gainDb = savedGainDb;
+        } catch (_) {}
+        const dbToLinear = window.appUtils && typeof window.appUtils.dbToLinear === 'function'
+            ? window.appUtils.dbToLinear
+            : value => Math.pow(10, value / 20);
+        inputGain.gain.value = dbToLinear(gainDb);
         mute.gain.value = 0;
-        source.connect(processor);
+        source.connect(inputGain);
+        inputGain.connect(processor);
         processor.connect(mute);
         mute.connect(context.destination);
         await context.resume();
@@ -635,6 +660,7 @@
             if (flushTimeoutId !== null) window.clearTimeout(flushTimeoutId);
             processor.port.onmessage = null;
             processor.disconnect();
+            inputGain.disconnect();
             source.disconnect();
             mute.disconnect();
             elements.timer.textContent = '';
@@ -754,6 +780,17 @@
                 state.segmentIndex = segment;
                 let segmentAccepted = false;
                 while (!segmentAccepted) {
+                    const recordingDurationMs = segment === ENROLLMENT_SEGMENT_COUNT
+                        ? VERIFICATION_RECORDING_MS : REFERENCE_RECORDING_MS;
+                    if (segment > 1) {
+                        if (!await reconcileStatus()) throw new Error('status_unavailable');
+                    }
+                    if (!state.enrollmentId || (
+                        Number.isFinite(state.enrollmentRemainingSeconds)
+                        && state.enrollmentRemainingSeconds < recordingDurationMs / 1000 + 1
+                    )) {
+                        throw new Error('stale_enrollment');
+                    }
                     state.segmentPhase = 'preparing'; state.uiPhase = 'preparing';
                     state.recording = false;
                     state.saving = false;
@@ -764,10 +801,25 @@
                     state.recording = true;
                     render();
                     let pcm16;
-                    const recordingDurationMs = segment === ENROLLMENT_SEGMENT_COUNT
-                        ? VERIFICATION_RECORDING_MS : REFERENCE_RECORDING_MS;
-                    try { pcm16 = await capturePcm16(recordingDurationMs); }
-                    finally { state.recording = false; stopMicrophone(); }
+                    try {
+                        try { pcm16 = await capturePcm16(recordingDurationMs); }
+                        finally { state.recording = false; stopMicrophone(); }
+                    } catch (error) {
+                        if (state.cancelPending || state.closeStarted) return;
+                        const retryable = ['incomplete_capture'].includes(error && error.message);
+                        if (!retryable || !state.enrollmentId) throw error;
+                        if (window.__voiceIdentityTestAutoAdvance) throw error;
+                        state.saving = false;
+                        state.segmentPhase = 'retry'; state.uiPhase = 'retry';
+                        setMessage(enrollmentErrorMessage(error), true);
+                        render();
+                        const proceed = await new Promise(function (resolve) {
+                            state.segmentAdvance = resolve;
+                        });
+                        state.segmentAdvance = null;
+                        if (!proceed || state.cancelPending || state.closeStarted) return;
+                        continue;
+                    }
                     if (state.cancelPending || state.closeStarted) return;
                     state.segmentPhase = 'checking'; state.uiPhase = 'checking';
                     state.saving = true;
@@ -966,6 +1018,12 @@
         elements.filter.addEventListener('change', updateFilter);
         if (elements.retry) elements.retry.addEventListener('click', retryConnection);
         window.addEventListener('localechange', render);
+        const refreshVisibleStatus = function () {
+            if (state.busy || state.cancelPending || document.visibilityState === 'hidden') return;
+            reconcileStatus().catch(function () {});
+        };
+        window.addEventListener('focus', refreshVisibleStatus);
+        document.addEventListener('visibilitychange', refreshVisibleStatus);
         window.nekoBeforeWindowClose = async function () {
             state.closeStarted = true;
             state.cancelPending = true;

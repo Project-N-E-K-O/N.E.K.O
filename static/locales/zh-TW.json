@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "正在恢復語音辨識…",
         "recoveryReady": "語音辨識已恢復",
         "recoveryFailed": "語音辨識恢復失敗，請重試",
+        "startEnrollment": "開始錄入",
+        "stepCount": "第 {{current}} / {{total}} 段",
+        "backendUnavailable": "無法連線聲紋服務，請檢查網路後重試。",
+        "initializationFailed": "聲紋錄入初始化失敗，請檢查連線後重試。",
+        "saveFailed": "聲紋儲存未完成，請稍後重試。",
+        "qualityCheckFailed": "聲音品質未達標，請重錄目前段落。",
+        "errorInconsistentSegments": "幾段聲音差異較大，請從第 1 段重新錄入。",
         "deleteConfirm": "刪除後需要重新錄入才能使用聲紋啟用。"
     },
     "settings": {

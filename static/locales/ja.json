@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "音声認識を復旧中…",
         "recoveryReady": "音声認識が復旧しました",
         "recoveryFailed": "音声認識の復旧に失敗しました。もう一度お試しください",
+        "startEnrollment": "登録を開始",
+        "stepCount": "{{total}}区間中{{current}}区間目",
+        "backendUnavailable": "声紋サービスに接続できません。接続を確認してもう一度お試しください。",
+        "initializationFailed": "声紋登録を初期化できませんでした。接続を確認してもう一度お試しください。",
+        "saveFailed": "声紋プロフィールを保存できませんでした。もう一度お試しください。",
+        "qualityCheckFailed": "音声品質が条件を満たしていません。この区間を録り直してください。",
+        "errorInconsistentSegments": "録音の差が大きすぎます。最初の区間からやり直してください。",
         "deleteConfirm": "削除すると、声紋による有効化を使う前に再登録が必要です。"
     },
     "settings": {

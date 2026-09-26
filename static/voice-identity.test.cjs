@@ -505,8 +505,11 @@ test('one click records three reference segments and one five-second verificatio
         `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/start`,
         `${API_ROOT}/enrollment/segment`,
+        `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/segment`,
+        `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/segment`,
+        `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/segment`,
     ]);
     const upload = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).at(-1);

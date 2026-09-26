@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "正在恢复语音识别…",
         "recoveryReady": "语音识别已恢复",
         "recoveryFailed": "语音识别恢复失败，请重试",
+        "startEnrollment": "开始录入",
+        "stepCount": "第 {{current}} / {{total}} 段",
+        "backendUnavailable": "无法连接声纹服务，请检查网络后重试。",
+        "initializationFailed": "声纹录入初始化失败，请检查连接后重试。",
+        "saveFailed": "声纹保存未完成，请稍后重试。",
+        "qualityCheckFailed": "声音质量未达标，请重录当前段。",
+        "errorInconsistentSegments": "几段声音差异较大，请从第 1 段重新录入。",
         "deleteConfirm": "删除后需要重新录入才能使用声纹激活。"
     },
     "settings": {

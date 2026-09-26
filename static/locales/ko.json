@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "음성 인식 복구 중…",
         "recoveryReady": "음성 인식이 복구되었습니다",
         "recoveryFailed": "음성 인식 복구에 실패했습니다. 다시 시도해 주세요",
+        "startEnrollment": "등록 시작",
+        "stepCount": "전체 {{total}}개 중 {{current}}번째 구간",
+        "backendUnavailable": "음성 서비스를 사용할 수 없습니다. 연결을 확인하고 다시 시도해 주세요.",
+        "initializationFailed": "음성 등록을 초기화할 수 없습니다. 연결을 확인하고 다시 시도해 주세요.",
+        "saveFailed": "음성 프로필을 저장하지 못했습니다. 다시 시도해 주세요.",
+        "qualityCheckFailed": "음성 품질이 요구 사항을 충족하지 않습니다. 이 구간을 다시 녹음하세요.",
+        "errorInconsistentSegments": "녹음 간 차이가 너무 큽니다. 첫 번째 구간부터 다시 시작하세요.",
         "deleteConfirm": "삭제하면 음성 지문 활성화를 사용하기 전에 다시 등록해야 합니다."
     },
     "settings": {

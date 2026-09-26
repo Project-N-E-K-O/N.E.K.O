@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "Restaurando el reconocimiento de voz…",
         "recoveryReady": "Reconocimiento de voz restaurado",
         "recoveryFailed": "No se pudo restaurar el reconocimiento de voz; inténtalo de nuevo",
+        "startEnrollment": "Iniciar registro",
+        "stepCount": "Segmento {{current}} de {{total}}",
+        "backendUnavailable": "El servicio de voz no está disponible. Comprueba la conexión e inténtalo de nuevo.",
+        "initializationFailed": "No se pudo iniciar el registro de voz. Comprueba la conexión e inténtalo de nuevo.",
+        "saveFailed": "No se guardó el perfil de voz. Inténtalo de nuevo.",
+        "qualityCheckFailed": "La calidad de voz no cumple los requisitos. Graba este segmento de nuevo.",
+        "errorInconsistentSegments": "Las grabaciones son demasiado diferentes. Empieza de nuevo desde el primer segmento.",
         "deleteConfirm": "Tras eliminarlo tendrás que volver a registrarte para usar la activación por voz."
     },
     "settings": {

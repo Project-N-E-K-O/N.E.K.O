@@ -3038,6 +3038,13 @@
         "recoveryRecovering": "Restoring voice recognition…",
         "recoveryReady": "Voice recognition restored",
         "recoveryFailed": "Voice recognition recovery failed; please try again",
+        "startEnrollment": "Start enrollment",
+        "stepCount": "Segment {{current}} of {{total}}",
+        "backendUnavailable": "The voice service is unavailable. Check your connection and try again.",
+        "initializationFailed": "Voice enrollment could not be initialized. Check your connection and try again.",
+        "saveFailed": "The voice profile was not saved. Please try again.",
+        "qualityCheckFailed": "Voice quality did not meet the requirements. Record this segment again.",
+        "errorInconsistentSegments": "The recordings differ too much. Start again from segment one.",
         "deleteConfirm": "You will need to enroll again before using voice activation."
     },
     "settings": {
