@@ -436,7 +436,7 @@
 
     function renderEnrollment() {
         const active = state.segmentIndex > 0;
-        const captureVisible = state.recording || state.saving;
+        const captureVisible = active && state.uiPhase !== 'idle' && state.uiPhase !== 'success';
         elements.captureStatus.hidden = !captureVisible;
         elements.captureStatus.classList.toggle('saving', state.saving);
         elements.captureStatus.classList.toggle('voice-detected', state.voiceStatus === 'detected');
@@ -776,7 +776,7 @@
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
         state.busy = true;
-        state.segmentIndex = 0;
+        state.segmentIndex = 1;
         state.segmentPhase = 'preparing';
         state.uiPhase = 'preparing';
         setMessage('');

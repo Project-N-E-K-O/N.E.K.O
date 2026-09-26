@@ -569,6 +569,19 @@ test('accepted segment waits for explicit next-segment action', async () => {
     await enrolling;
 });
 
+test('the upcoming prompt is visible while the first microphone is preparing', async () => {
+    const mediaGate = deferred();
+    const harness = createHarness({ mediaGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-prompt').hidden, false);
+    assert.notEqual(harness.elements.get('voice-identity-prompt').textContent, '');
+    mediaGate.resolve();
+    await enrolling;
+});
+
 test('failed fourth verification stays in the session and retries the holdout', async () => {
     const harness = createHarness({ verificationFailures: 1, autoAdvance: true });
     await harness.initialize();
@@ -578,6 +591,7 @@ test('failed fourth verification stays in the session and retries the holdout', 
     const segments = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.equal(segments.length, 4);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-capture-status').hidden, false);
     assert.match(harness.elements.get('voice-identity-message').textContent, /31/);
     await harness.emit('voice-identity-next');
     await enrolling;
