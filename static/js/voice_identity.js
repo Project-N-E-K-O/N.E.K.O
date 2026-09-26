@@ -803,7 +803,7 @@
                         segmentAccepted = true;
                     } catch (error) {
                         if (state.cancelPending || state.closeStarted) return;
-                        const retryable = ['speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
+                        const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
                         if (!retryable || !state.enrollmentId) throw error;
                         segmentRequestPending = false;
                         if (window.__voiceIdentityTestAutoAdvance) throw error;
