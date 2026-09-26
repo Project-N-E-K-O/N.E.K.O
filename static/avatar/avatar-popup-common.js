@@ -437,6 +437,12 @@
      * anchor: 触发菜单项元素（用于垂直参考）
      */
     function positionSidePanel(container, anchor, options = {}) {
+        const positionRevision = (container._nekoPositionRevision || 0) + 1;
+        container._nekoPositionRevision = positionRevision;
+        if (container._nekoPositionCheckTimer != null) {
+            clearTimeout(container._nekoPositionCheckTimer);
+            container._nekoPositionCheckTimer = null;
+        }
         const gap = Number.isFinite(options.gap) ? options.gap : 12;
         const edgeMargin = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
         const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
@@ -624,7 +630,9 @@
         const _gap = gap;
         const _edgeMargin = edgeMargin;
         const _screenW = screenW;
-        setTimeout(() => {
+        container._nekoPositionCheckTimer = setTimeout(() => {
+            if (_containerRef._nekoPositionRevision !== positionRevision) return;
+            _containerRef._nekoPositionCheckTimer = null;
             if (!_containerRef.isConnected || _containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
             const z = getButtonZone(_ownerPrefix);
             if (!z.hasButtons) return;

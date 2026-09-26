@@ -969,6 +969,77 @@ def test_shared_stacked_panel_bounds_include_padding_and_scale(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("final_state", ["visible", "hidden", "detached"])
+def test_side_panel_reposition_invalidates_older_collision_callbacks(
+    page: Page, final_state: str,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        '<div id="panel" style="position:fixed;width:360px;height:320px;box-sizing:border-box"></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    result = page.evaluate("""(finalState) => {
+        const popup = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = popup;
+        const originalSet = window.setTimeout, originalClear = window.clearTimeout;
+        const pending = new Map(), scheduled = [];
+        let nextId = 0, maxPending = 0;
+        window.setTimeout = (fn, delay) => {
+            const id = ++nextId;
+            const timer = {id, fn, delay};
+            pending.set(id, timer);scheduled.push(timer);
+            maxPending = Math.max(maxPending, pending.size);
+            return id;
+        };
+        window.clearTimeout = id => { pending.delete(id); };
+        function position() {
+            window.AvatarPopupUI.positionSidePanel(panel, popup);
+            window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        }
+        function snapshot() { return [panel.style.left, panel.style.top, panel.style.maxHeight]; }
+        try {
+            position();
+            const old = scheduled[0];
+            Object.assign(popup.style, {top: '250px', height: '120px'});
+            for (let i = 0; i < 100; i++) position();
+            const latest = scheduled[scheduled.length - 1];
+            const button = document.createElement('button');
+            button.id = 'live2d-btn-test';
+            button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+            document.body.appendChild(button);
+            const beforeOld = snapshot();
+            // Exercise a superseded callback even if cancellation raced its dispatch.
+            old.fn();
+            const oldDidNotMove = JSON.stringify(snapshot()) === JSON.stringify(beforeOld);
+            if (finalState === 'hidden') panel.style.display = 'none';
+            if (finalState === 'detached') panel.remove();
+            const beforeLatest = snapshot();
+            pending.delete(latest.id);latest.fn();
+            const a = popup.getBoundingClientRect(), b = panel.getBoundingClientRect();
+            return {oldDidNotMove, maxPending, pending: pending.size,
+                handleReleased: panel._nekoPositionCheckTimer == null,
+                latestHandled: finalState === 'visible'
+                    ? b.top >= a.bottom && b.bottom <= innerHeight
+                    : JSON.stringify(snapshot()) === JSON.stringify(beforeLatest),
+                delays: [...new Set(scheduled.map(timer => timer.delay))]};
+        } finally {
+            pending.clear();window.setTimeout = originalSet;window.clearTimeout = originalClear;
+        }
+    }""", final_state)
+    assert result['oldDidNotMove']
+    assert result['maxPending'] == 1
+    assert result['pending'] == 0
+    assert result['handleReleased']
+    assert result['latestHandled']
+    assert result['delays'] == [300]
+
+
+@pytest.mark.frontend
 def test_screen_source_hover_panel_lifecycle(page: Page) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
