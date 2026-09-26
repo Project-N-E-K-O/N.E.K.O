@@ -383,7 +383,7 @@ class OSWorldACI(ACI):
         element_description: str,
         num_clicks: int = 1,
         button_type: str = "left",
-        hold_keys: List = [],
+        hold_keys: Optional[List] = None,
     ):
         """Click on the element
         Args:
@@ -394,8 +394,9 @@ class OSWorldACI(ACI):
         """
         x, y = self.resize_coordinates(self.coords1)
         command = "import pyautogui; "
+        if hold_keys is None:
+            hold_keys = []
 
-        # TODO: specified duration?
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
         command += f"""import pyautogui; pyautogui.click({x}, {y}, clicks={num_clicks}, button={repr(button_type)}); """
@@ -506,7 +507,7 @@ class OSWorldACI(ACI):
 
     @agent_action
     def drag_and_drop(
-        self, starting_description: str, ending_description: str, hold_keys: List = []
+        self, starting_description: str, ending_description: str, hold_keys: Optional[List] = None
     ):
         """Drag from the starting description to the ending description
         Args:
@@ -518,9 +519,10 @@ class OSWorldACI(ACI):
         x2, y2 = self.resize_coordinates(self.coords2)
 
         command = "import pyautogui; "
+        if hold_keys is None:
+            hold_keys = []
 
         command += f"pyautogui.moveTo({x1}, {y1}); "
-        # TODO: specified duration?
         for k in hold_keys:
             command += f"pyautogui.keyDown({repr(k)}); "
         command += f"pyautogui.dragTo({x2}, {y2}, duration=1., button='left'); pyautogui.mouseUp(); "
