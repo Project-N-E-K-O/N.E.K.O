@@ -2663,7 +2663,8 @@
             "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源",
             "clickToChoose": "點擊選擇螢幕來源",
             "browserPicker": "使用瀏覽器選擇器",
-            "browserPickerHint": "目前環境無法列舉螢幕來源，可使用瀏覽器選擇器"
+            "browserPickerHint": "目前環境無法列舉螢幕來源，可使用瀏覽器選擇器",
+            "browserPickerActiveShare": "請先停止目前的螢幕分享，再選擇新的來源。"
         },
         "deviceSwitchFailed": "裝置切換失敗",
         "deviceSwitching": "裝置切換中...",

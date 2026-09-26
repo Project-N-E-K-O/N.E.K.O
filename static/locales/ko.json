@@ -2663,7 +2663,8 @@
             "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요",
             "clickToChoose": "클릭하여 화면 소스 선택",
             "browserPicker": "브라우저 선택기 사용",
-            "browserPickerHint": "현재 환경에서는 화면 소스를 열거할 수 없습니다. 브라우저 선택기를 사용하세요."
+            "browserPickerHint": "현재 환경에서는 화면 소스를 열거할 수 없습니다. 브라우저 선택기를 사용하세요.",
+            "browserPickerActiveShare": "새 소스를 선택하기 전에 현재 화면 공유를 중지하세요."
         },
         "deviceSwitchFailed": "장치 전환 실패",
         "deviceSwitching": "장치 전환 중...",

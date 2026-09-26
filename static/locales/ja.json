@@ -2663,7 +2663,8 @@
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください",
             "clickToChoose": "クリックして画面ソースを選択",
             "browserPicker": "ブラウザの選択画面を使う",
-            "browserPickerHint": "この環境では画面ソースを列挙できません。ブラウザの選択画面を使ってください。"
+            "browserPickerHint": "この環境では画面ソースを列挙できません。ブラウザの選択画面を使ってください。",
+            "browserPickerActiveShare": "新しいソースを選ぶ前に、現在の画面共有を停止してください。"
         },
         "deviceSwitchFailed": "デバイスの切り替えに失敗しました",
         "deviceSwitching": "デバイスを切り替え中...",

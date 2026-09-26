@@ -2663,7 +2663,8 @@
             "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente",
             "clickToChoose": "Haz clic para elegir una fuente de pantalla",
             "browserPicker": "Usar el selector del navegador",
-            "browserPickerHint": "Este entorno no puede enumerar las fuentes de pantalla. Usa el selector del navegador."
+            "browserPickerHint": "Este entorno no puede enumerar las fuentes de pantalla. Usa el selector del navegador.",
+            "browserPickerActiveShare": "Detén el uso compartido actual antes de elegir una nueva fuente."
         },
         "deviceSwitchFailed": "Error en el cambio de dispositivo",
         "deviceSwitching": "Dispositivo de conmutación...",

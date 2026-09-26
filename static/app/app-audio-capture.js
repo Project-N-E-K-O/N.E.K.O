@@ -3731,6 +3731,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function closeMicSubwindow() {
+                clearScreenHoverOpenTimer();
                 clearMicActionHoverCollapseTimer();
                 micActionHoverOpenGeneration += 1;
                 activeMicActionKey = null;
@@ -4019,6 +4020,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                             clearScreenHoverOpenTimer();
                             screenHoverOpenTimer = setTimeout(function () {
                                 screenHoverOpenTimer = null;
+                                if (voiceControlsDisposed || !micPopup.isConnected || !leftColumn.isConnected) {
+                                    return;
+                                }
                                 openActionPanel({ type: 'mouseenter' });
                             }, 220);
                         } else {

@@ -2663,7 +2663,8 @@
             "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源",
             "clickToChoose": "点击选择屏幕来源",
             "browserPicker": "使用浏览器选择器",
-            "browserPickerHint": "当前环境无法枚举屏幕来源，可使用浏览器选择器"
+            "browserPickerHint": "当前环境无法枚举屏幕来源，可使用浏览器选择器",
+            "browserPickerActiveShare": "请先停止当前屏幕分享，再选择新的来源。"
         },
         "deviceSwitchFailed": "设备切换失败",
         "deviceSwitching": "设备切换中...",

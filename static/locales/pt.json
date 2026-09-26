@@ -2663,7 +2663,8 @@
             "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente",
             "clickToChoose": "Clique para escolher uma fonte de tela",
             "browserPicker": "Usar seletor do navegador",
-            "browserPickerHint": "Este ambiente não pode enumerar as fontes de tela. Use o seletor do navegador."
+            "browserPickerHint": "Este ambiente não pode enumerar as fontes de tela. Use o seletor do navegador.",
+            "browserPickerActiveShare": "Pare o compartilhamento atual antes de escolher uma nova fonte."
         },
         "deviceSwitchFailed": "Falha na troca de dispositivo",
         "deviceSwitching": "Dispositivo de comutação...",

@@ -2663,7 +2663,8 @@
             "captureFailed": "Screen capture stopped. Check system permissions or select the source again",
             "clickToChoose": "Click to choose a screen source",
             "browserPicker": "Use browser picker",
-            "browserPickerHint": "This environment cannot enumerate screen sources. Use the browser picker instead."
+            "browserPickerHint": "This environment cannot enumerate screen sources. Use the browser picker instead.",
+            "browserPickerActiveShare": "Stop the current screen share before choosing a new source."
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",

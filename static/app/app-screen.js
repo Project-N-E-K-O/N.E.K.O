@@ -266,6 +266,14 @@
     }
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
+    function notifySelectedScreenSourceChanged(sourceId, sourceName) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                detail: { sourceId: sourceId || null, sourceName: sourceName || '' }
+            }));
+        } catch (_) { }
+    }
+
     // ======================== clearSelectedScreenSource ========================
     /**
      * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
@@ -503,7 +511,10 @@
         if (e.key === SCREEN_SOURCE_NAME_KEY) {
             try {
                 window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
-                    detail: { sourceId: S.selectedScreenSourceId, sourceName: e.newValue || '' }
+                    detail: {
+                        sourceId: S.selectedScreenSourceId,
+                        sourceName: e.newValue || (window.t ? window.t('app.screenSource.screens') : 'Screens')
+                    }
                 }));
             } catch (_) { }
             return;
@@ -1862,7 +1873,17 @@
                             if (initialScreens && initialScreens.length > 0) {
                                 selectedSourceId = initialScreens[0].id;
                                 S.selectedScreenSourceId = selectedSourceId;
-                                try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                try {
+                                    localStorage.setItem('selectedScreenSourceId', selectedSourceId);
+                                    localStorage.setItem(
+                                        SCREEN_SOURCE_NAME_KEY,
+                                        getScreenSourceDisplayName(initialScreens[0], 0)
+                                    );
+                                } catch (e) { }
+                                notifySelectedScreenSourceChanged(
+                                    selectedSourceId,
+                                    getScreenSourceDisplayName(initialScreens[0], 0)
+                                );
                                 updateScreenSourceListSelection();
                             }
                         } catch (initialSourceError) {
@@ -1949,14 +1970,31 @@
                                 if (screenSources.length > 0) {
                                     selectedSourceId = screenSources[0].id;
                                     S.selectedScreenSourceId = selectedSourceId;
-                                    try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                    try {
+                                        localStorage.setItem('selectedScreenSourceId', selectedSourceId);
+                                        localStorage.setItem(
+                                            SCREEN_SOURCE_NAME_KEY,
+                                            getScreenSourceDisplayName(screenSources[0], 0)
+                                        );
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        selectedSourceId,
+                                        getScreenSourceDisplayName(screenSources[0], 0)
+                                    );
                                     pushSelectedSourceToMain(selectedSourceId);
                                     updateScreenSourceListSelection();
                                 } else {
                                     // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
                                     selectedSourceId = null;
                                     S.selectedScreenSourceId = null;
-                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    try {
+                                        localStorage.removeItem('selectedScreenSourceId');
+                                        localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        null,
+                                        window.t ? window.t('app.screenSource.screens') : 'Screens'
+                                    );
                                     pushSelectedSourceToMain(null);
                                 }
                             } else if (rememberedWindowNeedsPicker) {
@@ -2076,7 +2114,17 @@
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
-                                        try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                        try {
+                                            localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id);
+                                            localStorage.setItem(
+                                                SCREEN_SOURCE_NAME_KEY,
+                                                getScreenSourceDisplayName(fallbackSources[0], 0)
+                                            );
+                                        } catch (e) { }
+                                        notifySelectedScreenSourceChanged(
+                                            fallbackSources[0].id,
+                                            getScreenSourceDisplayName(fallbackSources[0], 0)
+                                        );
                                         pushSelectedSourceToMain(fallbackSources[0].id);
                                         window.showStatusToast(
                                             safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
@@ -2103,7 +2151,14 @@
                                     if (discardCancelledScreenSharingStart(attempt)) return;
                                     if (discardSupersededManualCapture()) return;
                                     S.selectedScreenSourceId = null;
-                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    try {
+                                        localStorage.removeItem('selectedScreenSourceId');
+                                        localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        null,
+                                        window.t ? window.t('app.screenSource.screens') : 'Screens'
+                                    );
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
@@ -2638,6 +2693,20 @@
                     event.stopPropagation();
                     browserPickerButton.disabled = true;
                     try {
+                        var currentShareIsActive = !!(
+                            (screenButton() && screenButton().classList.contains('active'))
+                            || (S.screenCaptureStream && S.screenCaptureStream.active)
+                        );
+                        if (currentShareIsActive) {
+                            window.showStatusToast(
+                                safeT(
+                                    'app.screenSource.browserPickerActiveShare',
+                                    '请先停止当前屏幕分享，再选择新的来源。'
+                                ),
+                                3000
+                            );
+                            return;
+                        }
                         if (typeof window.startScreenSharing === 'function') {
                             await window.startScreenSharing();
                         } else {
@@ -2690,6 +2759,60 @@
             return true;
         }
 
+        function appendBrowserPickerButton() {
+            if (!navigator.mediaDevices
+                || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+                return false;
+            }
+            var browserPickerButton = document.createElement('button');
+            browserPickerButton.type = 'button';
+            browserPickerButton.className = 'screen-source-browser-picker';
+            browserPickerButton.textContent = window.t
+                ? window.t('app.screenSource.browserPicker')
+                : '使用浏览器选择器';
+            Object.assign(browserPickerButton.style, {
+                width: '100%',
+                padding: '9px 12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-accent, #4f8cff)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: '600'
+            });
+            browserPickerButton.addEventListener('click', async function (event) {
+                event.stopPropagation();
+                browserPickerButton.disabled = true;
+                try {
+                    var currentShareIsActive = !!(
+                        (screenButton() && screenButton().classList.contains('active'))
+                        || (S.screenCaptureStream && S.screenCaptureStream.active)
+                    );
+                    if (currentShareIsActive) {
+                        window.showStatusToast(
+                            safeT(
+                                'app.screenSource.browserPickerActiveShare',
+                                '请先停止当前屏幕分享，再选择新的来源。'
+                            ),
+                            3000
+                        );
+                        return;
+                    }
+                    if (typeof window.startScreenSharing !== 'function') {
+                        throw new Error('Screen sharing is unavailable');
+                    }
+                    await window.startScreenSharing();
+                } catch (error) {
+                    console.warn('[屏幕源] 浏览器选择器启动失败:', error);
+                } finally {
+                    browserPickerButton.disabled = false;
+                }
+            });
+            screenPopup.appendChild(browserPickerButton);
+            return true;
+        }
+
         try {
             // 显示加载中
             screenPopup.innerHTML = '';
@@ -2720,6 +2843,7 @@
                 noSourcesItem.style.fontSize = '13px';
                 noSourcesItem.style.textAlign = 'center';
                 screenPopup.appendChild(noSourcesItem);
+                appendBrowserPickerButton();
                 return false;
             }
 
@@ -3080,6 +3204,7 @@
             errorItem.style.fontSize = '13px';
             errorItem.style.textAlign = 'center';
             screenPopup.appendChild(errorItem);
+            appendBrowserPickerButton();
             return false;
         }
     };
