@@ -3812,12 +3812,22 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 var gap = 8;
                 var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
                 var availableWidth = opensLeft ? rect.left - gap * 2 : window.innerWidth - rect.right - gap * 2;
-                panel.style.maxWidth = Math.max(0, availableWidth) + 'px';
+                var viewportWidth = Math.max(1, window.innerWidth - gap * 2);
+                var stackPanel = availableWidth < Math.min(240, viewportWidth);
+                panel.style.maxWidth = (stackPanel ? viewportWidth : availableWidth) + 'px';
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
                 var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
+                var desiredTop = rect.top;
+                if (stackPanel) {
+                    left = Math.min(rect.left, window.innerWidth - panelWidth - gap);
+                    desiredTop = rect.bottom + gap;
+                    if (desiredTop + panelHeight > window.innerHeight - gap) {
+                        desiredTop = rect.top - panelHeight - gap;
+                    }
+                }
                 left = Math.max(gap, left);
-                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                var top = Math.max(gap, Math.min(desiredTop, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
             }
@@ -4315,11 +4325,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 );
                 var provider = typeof window.getDesktopCaptureProvider === 'function'
                     ? window.getDesktopCaptureProvider() : null;
-                if (!provider && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+                var mobileCamera = window.appUtils && typeof window.appUtils.isMobile === 'function'
+                    && window.appUtils.isMobile();
+                var browserCaptureAvailable = navigator.mediaDevices && (mobileCamera
+                    ? typeof navigator.mediaDevices.getUserMedia === 'function'
+                    : typeof navigator.mediaDevices.getDisplayMedia === 'function');
+                if ((mobileCamera || !provider) && browserCaptureAvailable) {
                     var browserBody = panel._nekoMicSubwindowBody;
                     var hint = document.createElement('div');
-                    hint.textContent = window.t ? window.t('app.screenSource.browserPickerHint')
-                        : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.';
+                    var hintKey = mobileCamera ? 'app.screenSource.mobileCameraHint' : 'app.screenSource.browserPickerHint';
+                    hint.textContent = window.t ? window.t(hintKey)
+                        : (mobileCamera ? 'When sharing starts, your camera will be used.'
+                            : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.');
                     Object.assign(hint.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub)' });
                     var browserShareButton = document.createElement('button');
                     browserShareButton.type = 'button';
@@ -4332,6 +4349,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                     browserShareButton.addEventListener('click', function (event) {
                         event.stopPropagation();
+                        var currentProvider = typeof window.getDesktopCaptureProvider === 'function'
+                            ? window.getDesktopCaptureProvider() : null;
+                        var startPending = typeof window.isScreenSharingStartPending === 'function'
+                            && window.isScreenSharingStartPending();
+                        if (!mobileCamera && currentProvider && !isScreenShareActive() && !startPending) {
+                            // The bridge can arrive after this browser panel opens.
+                            // Show its sources before allowing a new capture start.
+                            closeMicSubwindow();
+                            openMicActionPanel('screen', openScreenSourceSubwindow);
+                            return;
+                        }
                         closeMicSubwindow();
                         // Preserve the click gesture and reuse voice gating,
                         // cancellation and stream cleanup from the main switch.

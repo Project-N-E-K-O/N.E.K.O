@@ -210,6 +210,7 @@ def _install_voice_popover_harness(
     function ensureMicPopupScrollbarStyle() {}
     function attachTransientMicPopupScrollbar() { return () => {}; }
     window.__screenToggleCalls = 0;
+    function isScreenShareActive() { return !!window.__screenActive; }
     function createScreenShareToggleButton() {
         const button = document.createElement('button');
         button.type = 'button';
@@ -744,6 +745,92 @@ def test_browser_screen_hover_waits_for_explicit_share_click(page: Page) -> None
     panel.locator('[data-neko-browser-screen-share]').click()
     assert page.evaluate("window.__screenToggleCalls") == 1
     assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("operation", ["start", "stop", "cancel"])
+def test_browser_panel_rechecks_late_desktop_bridge(page: Page, operation: str) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate("""async () => {
+        navigator.mediaDevices.getDisplayMedia = () => {};
+        await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+    }""")
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.locator('[data-neko-browser-screen-share]').wait_for(state="visible")
+    page.evaluate("""(operation) => {
+        window.getDesktopCaptureProvider = () => ({
+            getSources() {}, sourceEnumerationMayPrompt: false,
+        });
+        window.__screenActive = operation === 'stop';
+        window.isScreenSharingStartPending = () => operation === 'cancel';
+    }""", operation)
+    page.locator('[data-neko-browser-screen-share]').click()
+    if operation == "start":
+        page.locator('.screen-source-title-filter').wait_for(state="visible", timeout=1500)
+        assert page.evaluate("window.__screenToggleCalls") == 0
+        assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+        page.evaluate("window.__voicePopoverTest.popup().remove()")
+        page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+    else:
+        assert page.evaluate("window.__screenToggleCalls") == 1
+        assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("display_media", [False, True])
+def test_mobile_share_panel_describes_camera(page: Page, display_media: bool) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate("""async (displayMedia) => {
+        window.appUtils.isMobile = () => true;
+        if (displayMedia) navigator.mediaDevices.getDisplayMedia = () => {};
+        await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+    }""", display_media)
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator('.neko-mic-subwindow')
+    panel.wait_for(state="visible")
+    assert 'app.screenSource.mobileCameraHint' in panel.inner_text()
+    assert 'app.screenSource.browserPickerHint' not in panel.inner_text()
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    panel.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("shared_helper", [False, True])
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("width", [320, 800])
+def test_screen_panel_remains_usable_without_side_space(
+    page: Page, shared_helper: bool, opens_left: bool, width: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": width, "height": 800})
+    page.evaluate("""async (opensLeft) => {
+        navigator.mediaDevices.getDisplayMedia = () => {};
+        const popup = window.__voicePopoverTest.popup();
+        await window.renderFloatingMicList(popup);
+        popup.dataset.opensLeft = String(opensLeft);
+        popup.style.left = opensLeft ? '8px' : (innerWidth - popup.offsetWidth - 8) + 'px';
+        window.__voicePopoverTest.action('screen').click();
+    }""", opens_left)
+    # Include the shared helper's delayed collision check.
+    page.wait_for_timeout(350)
+    result = page.evaluate("""() => {
+        const panel = window.__voicePopoverTest.ownedPanels()[0];
+        const rect = panel.getBoundingClientRect();
+        const close = panel.querySelector('[aria-label="Close"]').getBoundingClientRect();
+        return { width: rect.width, left: rect.left, right: rect.right,
+            closeLeft: close.left, closeRight: close.right };
+    }""")
+    assert result['width'] >= 240
+    assert result['left'] >= 0
+    assert result['right'] <= width
+    assert 0 <= result['closeLeft'] < result['closeRight'] <= width
+    page.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
 
 
 @pytest.mark.frontend

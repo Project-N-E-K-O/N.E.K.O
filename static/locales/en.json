@@ -2647,6 +2647,7 @@
         },
         "screenSource": {
             "browserPickerHint": "When sharing starts, your browser will ask you to choose a tab, window, or screen.",
+            "mobileCameraHint": "When sharing starts, your camera will be used.",
             "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",

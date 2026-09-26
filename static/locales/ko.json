@@ -2647,6 +2647,7 @@
         },
         "screenSource": {
             "browserPickerHint": "공유를 시작하면 브라우저에서 탭, 창 또는 화면을 선택할 수 있습니다.",
+            "mobileCameraHint": "공유를 시작하면 카메라가 사용됩니다.",
             "notAvailable": "현재 환경에서는 화면 소스를 선택할 수 없습니다",
             "loading": "로드 중...",
             "noSources": "사용 가능한 화면 소스가 없습니다.",

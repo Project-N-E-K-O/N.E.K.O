@@ -2647,6 +2647,7 @@
         },
         "screenSource": {
             "browserPickerHint": "共有を開始すると、ブラウザーでタブ、ウィンドウ、画面を選択できます。",
+            "mobileCameraHint": "共有を開始すると、カメラが使用されます。",
             "notAvailable": "現在の環境では画面ソースを選択できません",
             "loading": "読み込み中...",
             "noSources": "利用可能な画面ソースがありません",
