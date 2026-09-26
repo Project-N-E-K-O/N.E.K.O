@@ -2,6 +2,8 @@
 
 :root {
     --voice-page: #eff8ff;
+    --voice-page-mid: #f9fdff;
+    --voice-page-end: #e8f5ff;
     --voice-panel-soft: #e9f5ff;
     --voice-blue: #55bdf2;
     --voice-blue-strong: #2ea9e8;
@@ -35,6 +37,8 @@
 
 [data-theme="dark"] {
     --voice-page: #101c25;
+    --voice-page-mid: #17232c;
+    --voice-page-end: #0f1c25;
     --voice-panel-soft: #193442;
     --voice-ink: #e8f5fb;
     --voice-muted: #afc5d1;
@@ -65,7 +69,7 @@ html[data-theme="dark"] body.voice-identity-page:not(.subtitle-web-host):not(.su
     color: var(--voice-ink);
     background:
         radial-gradient(circle at 10% 0%, rgba(21, 159, 245, 0.18), transparent 36%),
-        linear-gradient(145deg, #101820 0%, #17232c 52%, #0f1c25 100%);
+        linear-gradient(145deg, var(--voice-page) 0%, var(--voice-page-mid) 52%, var(--voice-page-end) 100%);
 }
 
 body {
@@ -73,7 +77,7 @@ body {
     font-family: "Segoe UI", "Noto Sans SC", sans-serif;
     background:
         radial-gradient(circle at 8% 0%, rgba(91, 215, 255, 0.3), transparent 34%),
-        linear-gradient(145deg, var(--voice-page) 0%, #f9fdff 52%, #e8f5ff 100%);
+        linear-gradient(145deg, var(--voice-page) 0%, var(--voice-page-mid) 52%, var(--voice-page-end) 100%);
 }
 
 body.voice-identity-page::before,

@@ -96,7 +96,7 @@
                     </span>
                     <div class="enrollment-copy">
                         <div class="segment-progress" id="voice-identity-progress" role="list"
-                            aria-label="四段录入进度">
+                            data-i18n-aria="voiceIdentity.progressLabel" aria-label="四段录入进度">
                             <span role="listitem" data-step="1" aria-label="第 1 段">1</span>
                             <span role="listitem" data-step="2" aria-label="第 2 段">2</span>
                             <span role="listitem" data-step="3" aria-label="第 3 段">3</span>
@@ -112,7 +112,8 @@
                         </p>
                         <blockquote id="voice-identity-prompt" class="voice-prompt" hidden></blockquote>
                     </div>
-                    <div class="capture-status" id="voice-identity-capture-status" hidden>
+                    <div class="capture-status" id="voice-identity-capture-status" hidden role="status"
+                        aria-live="polite" aria-atomic="true">
                         <span class="record-icon" aria-hidden="true"></span>
                         <span id="voice-identity-capture-label" data-i18n="voiceIdentity.recording">正在录音…</span>
                         <span id="voice-identity-voice-state" class="voice-activity-state"

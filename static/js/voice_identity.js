@@ -23,6 +23,7 @@
         no_profile: 'voiceIdentity.profileMissing',
         model_unavailable: 'voiceIdentity.reasonModelUnavailable',
         profile_incompatible: 'voiceIdentity.reasonProfileIncompatible',
+        audio_contract_mismatch: 'voiceIdentity.reasonAudioContractMismatch',
         secure_storage_unavailable: 'voiceIdentity.reasonSecureStorageUnavailable',
         enrollment_active: 'voiceIdentity.reasonEnrollmentActive',
         runtime_degraded: 'voiceIdentity.reasonRuntimeDegraded',
@@ -33,6 +34,8 @@
         invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],
         audio_too_long: ['voiceIdentity.errorAudioTooLong', '录音时间过长，请换一句较短的话重新录入。'],
         speech_too_short: ['voiceIdentity.errorSpeechTooShort', '没有检测到足够的语音，请重新说一句完整的话。'],
+        volume_too_low: ['voiceIdentity.errorVolumeTooLow', '录音音量过低，请重录当前段。'],
+        no_speech_detected: ['voiceIdentity.errorNoSpeechDetected', '没有检测到有效语音，请重录当前段。'],
         silence: ['voiceIdentity.errorSilence', '没有检测到声音，请检查麦克风后重试。'],
         severe_clipping: ['voiceIdentity.errorSevereClipping', '声音过大或失真，请稍微远离麦克风。'],
         incomplete_capture: ['voiceIdentity.errorIncompleteCapture', '录音没有完整采集，请重试。'],
@@ -287,7 +290,7 @@
         const code = error && (error.message || error.code);
         const configured = code && ENROLLMENT_ERROR_MESSAGES[code];
         if (configured) return translate(configured[0], configured[1]);
-        if (['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'incomplete_capture'].includes(code)) return translate('voiceIdentity.qualityCheckFailed', '声音质量未达标，请重录当前段。');
+        if (['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected', 'incomplete_capture'].includes(code)) return translate('voiceIdentity.qualityCheckFailed', '声音质量未达标，请重录当前段。');
         if (code === 'media_devices_unavailable' || code === 'audio_worklet_unavailable' || (error && ['NotAllowedError', 'NotFoundError', 'NotReadableError'].includes(error.name))) return translate('voiceIdentity.microphoneDenied', '无法使用麦克风，请检查权限和设备。');
         if (code === 'page_config_unavailable' || code === 'csrf_token_unavailable' || code === 'status_unavailable' || code === 'initialization_failed') return translate('voiceIdentity.initializationFailed', '声纹录入初始化失败，请检查连接后重试。');
         if (code === 'profile_status_unavailable' || code === 'profile_not_confirmed' || code === 'request_failed' || (error && error.status >= 500)) return translate('voiceIdentity.saveFailed', '声纹保存未完成，请稍后重试。');
@@ -360,8 +363,13 @@
     }
 
     function renderProfile() {
+        const hasMessage = Boolean(
+            elements.message
+            && elements.message.textContent
+            && elements.message.classList.contains('error')
+        );
         const enrollmentVisible = !state.profileAvailable
-            || state.busy || state.cancelPending || Boolean(state.enrollmentId);
+            || state.busy || state.cancelPending || Boolean(state.enrollmentId) || hasMessage;
         elements.enrollment.hidden = !enrollmentVisible;
         elements.profileControls.hidden = !state.profileAvailable || enrollmentVisible;
         elements.statusDot.className = 'status-dot';
@@ -372,7 +380,7 @@
         const pending = !state.initialized || state.busy
             || state.cancelPending || state.filterPending;
         const enrollmentUnavailable = !state.profileAvailable
-            && state.effectiveReason === 'secure_storage_unavailable';
+            && ['secure_storage_unavailable', 'model_unavailable'].includes(state.effectiveReason);
         elements.start.hidden = state.profileAvailable || state.busy || state.cancelPending;
         elements.start.disabled = pending || enrollmentUnavailable;
         elements.start.textContent = translate('voiceIdentity.startEnrollment', '开始录入');
@@ -436,7 +444,13 @@
             item.classList.toggle('current', current);
             if (typeof item.setAttribute === 'function') {
                 item.setAttribute('aria-current', current ? 'step' : 'false');
-                item.setAttribute('aria-label', `${index + 1}${completed ? '（已完成）' : current ? '（当前）' : ''}`);
+                const progressKey = completed
+                    ? 'voiceIdentity.segmentCompleted'
+                    : current ? 'voiceIdentity.segmentCurrent' : 'voiceIdentity.segmentPending';
+                const progressFallback = completed
+                    ? `Segment ${index + 1} completed`
+                    : current ? `Segment ${index + 1} current` : `Segment ${index + 1} pending`;
+                item.setAttribute('aria-label', translate(progressKey, progressFallback, { index: index + 1 }));
             }
             if (completed) item.textContent = '✓';
             else item.textContent = String(index + 1);
@@ -460,10 +474,16 @@
             throw new Error('media_devices_unavailable');
         }
         if (!state.mediaStream) {
-            state.mediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: { channelCount: 1 },
-                video: false
-            });
+            let selectedMicrophoneId = null;
+            try { selectedMicrophoneId = localStorage.getItem('neko_selected_microphone'); } catch (_) {}
+            const constraints = { channelCount: 1 };
+            if (selectedMicrophoneId) constraints.deviceId = { exact: selectedMicrophoneId };
+            try {
+                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
+            } catch (error) {
+                if (!selectedMicrophoneId || !['NotFoundError', 'OverconstrainedError'].includes(error && error.name)) throw error;
+                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 }, video: false });
+            }
         }
         if (!state.audioContext) {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -724,13 +744,24 @@
             state.profileId = firstString([started, started.enrollment], ['profile_id'], state.profileId || createProfileId());
             if (!state.enrollmentId) throw new Error('enrollment_id_missing');
             if (state.closeStarted || state.cancelPending) { await cancelSession({ keepalive: state.closeStarted, silent: true }); return; }
-            for (let segment = 1; segment <= ENROLLMENT_SEGMENT_COUNT; segment += 1) {
+            const serverNextSegment = Number(firstScalar(
+                [started, started.enrollment], ['next_segment_index'], 1
+            ));
+            let segment = Number.isInteger(serverNextSegment)
+                && serverNextSegment >= 1 && serverNextSegment <= ENROLLMENT_SEGMENT_COUNT
+                ? serverNextSegment : 1;
+            segmentLoop: while (segment <= ENROLLMENT_SEGMENT_COUNT) {
                 state.segmentIndex = segment;
                 let segmentAccepted = false;
                 while (!segmentAccepted) {
+                    state.segmentPhase = 'preparing'; state.uiPhase = 'preparing';
+                    state.recording = false;
+                    state.saving = false;
+                    render();
+                    await ensureMicrophone();
+                    if (state.cancelPending || state.closeStarted) return;
                     state.segmentPhase = 'recording'; state.uiPhase = 'recording';
                     state.recording = true;
-                    state.saving = false;
                     render();
                     let pcm16;
                     const recordingDurationMs = segment === ENROLLMENT_SEGMENT_COUNT
@@ -745,6 +776,7 @@
                     try {
                         const payload = await apiRequest('/enrollment/segment', { method: 'PUT', body: pcm16, headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', [AUDIO_CONTRACT_HEADER]: AUDIO_CONTRACT_ID, [SESSION_HEADER]: state.enrollmentId, [PROFILE_HEADER]: state.profileId, [SEGMENT_HEADER]: String(segment) } });
                         segmentRequestPending = false;
+                        if (state.cancelPending || state.closeStarted) return;
                         applyStatus(payload);
                         const verification = segment === ENROLLMENT_SEGMENT_COUNT
                             ? enrollmentVerification(payload) : null;
@@ -752,7 +784,6 @@
                             const nextSegment = Number(
                                 payload && payload.enrollment && payload.enrollment.next_segment_index,
                             );
-                            if (nextSegment === 1) segment = 0;
                             state.saving = false;
                             state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                             setMessage(verificationRetryMessage(verification), true);
@@ -762,11 +793,17 @@
                             });
                             state.segmentAdvance = null;
                             if (!proceed || state.cancelPending || state.closeStarted) return;
+                            if (nextSegment === 1) {
+                                segment = 1;
+                                state.segmentIndex = 1;
+                                continue segmentLoop;
+                            }
                             continue;
                         }
                         segmentAccepted = true;
                     } catch (error) {
-                        const retryable = ['speech_too_short', 'silence', 'severe_clipping', 'audio_too_long'].includes(error && error.message);
+                        if (state.cancelPending || state.closeStarted) return;
+                        const retryable = ['speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
                         if (!retryable || !state.enrollmentId) throw error;
                         segmentRequestPending = false;
                         if (window.__voiceIdentityTestAutoAdvance) throw error;
@@ -792,6 +829,7 @@
                     state.segmentAdvance = null;
                     if (!proceed || state.cancelPending || state.closeStarted) return;
                 }
+                segment += 1;
             }
             state.segmentPhase = 'finalizing'; state.uiPhase = 'finalizing';
             state.saving = true;
