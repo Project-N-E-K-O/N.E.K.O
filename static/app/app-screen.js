@@ -21,6 +21,7 @@
     const isMobile = window.appUtils.isMobile;
     const SCREEN_SOURCE_TITLE_MATCH_ENABLED_KEY = 'screenSourceTitleMatchEnabled';
     const SCREEN_SOURCE_WINDOW_TITLE_KEY = 'selectedScreenWindowTitle';
+    const SCREEN_SOURCE_NAME_KEY = 'selectedScreenSourceName';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
     var explicitScreenSourceSelectionGeneration = null;
@@ -265,6 +266,14 @@
     }
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
+    function notifySelectedScreenSourceChanged(sourceId, sourceName) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                detail: { sourceId: sourceId || null, sourceName: sourceName || '' }
+            }));
+        } catch (_) { }
+    }
+
     // ======================== clearSelectedScreenSource ========================
     /**
      * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
@@ -279,12 +288,23 @@
         } catch (_) { }
         S.selectedScreenSourceId = null;
         markScreenSourceSelectionChanged();
-        try { localStorage.removeItem('selectedScreenSourceId'); } catch (_) { }
+        try {
+            localStorage.removeItem('selectedScreenSourceId');
+            localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
+        } catch (_) { }
         pushSelectedSourceToMain(null);
         try {
             if (typeof updateScreenSourceListSelection === 'function') {
                 updateScreenSourceListSelection();
             }
+        } catch (_) { }
+        try {
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                detail: {
+                    sourceId: null,
+                    sourceName: window.t ? window.t('app.screenSource.screens') : 'Screens'
+                }
+            }));
         } catch (_) { }
     }
     mod.clearSelectedScreenSource = clearSelectedScreenSource;
@@ -487,7 +507,18 @@
             updateScreenSourceTitleMatchToggleState();
             return;
         }
-        if (e.key !== 'selectedScreenSourceId') return;
+        if (e.key !== 'selectedScreenSourceId' && e.key !== SCREEN_SOURCE_NAME_KEY) return;
+        if (e.key === SCREEN_SOURCE_NAME_KEY) {
+            try {
+                window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                    detail: {
+                        sourceId: S.selectedScreenSourceId,
+                        sourceName: e.newValue || (window.t ? window.t('app.screenSource.screens') : 'Screens')
+                    }
+                }));
+            } catch (_) { }
+            return;
+        }
         var newId = e.newValue || null;
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
@@ -1703,7 +1734,8 @@
         return true;
     }
 
-    async function startScreenSharing() {
+    async function startScreenSharing(options) {
+        options = options || {};
         if (isScreenSharingStartPending()) {
             return screenSharingStartAttempt.promise;
         }
@@ -1715,7 +1747,9 @@
 
         var attempt = {
             cancelled: false,
-            initialStream: S.screenCaptureStream,
+            forceNewCapture: options.forceNewCapture === true,
+            previousStream: options.forceNewCapture === true ? S.screenCaptureStream : null,
+            initialStream: options.forceNewCapture === true ? null : S.screenCaptureStream,
             acquiredStream: null,
             promise: null
         };
@@ -1842,7 +1876,17 @@
                             if (initialScreens && initialScreens.length > 0) {
                                 selectedSourceId = initialScreens[0].id;
                                 S.selectedScreenSourceId = selectedSourceId;
-                                try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                try {
+                                    localStorage.setItem('selectedScreenSourceId', selectedSourceId);
+                                    localStorage.setItem(
+                                        SCREEN_SOURCE_NAME_KEY,
+                                        getScreenSourceDisplayName(initialScreens[0], 0)
+                                    );
+                                } catch (e) { }
+                                notifySelectedScreenSourceChanged(
+                                    selectedSourceId,
+                                    getScreenSourceDisplayName(initialScreens[0], 0)
+                                );
                                 updateScreenSourceListSelection();
                             }
                         } catch (initialSourceError) {
@@ -1929,14 +1973,31 @@
                                 if (screenSources.length > 0) {
                                     selectedSourceId = screenSources[0].id;
                                     S.selectedScreenSourceId = selectedSourceId;
-                                    try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                    try {
+                                        localStorage.setItem('selectedScreenSourceId', selectedSourceId);
+                                        localStorage.setItem(
+                                            SCREEN_SOURCE_NAME_KEY,
+                                            getScreenSourceDisplayName(screenSources[0], 0)
+                                        );
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        selectedSourceId,
+                                        getScreenSourceDisplayName(screenSources[0], 0)
+                                    );
                                     pushSelectedSourceToMain(selectedSourceId);
                                     updateScreenSourceListSelection();
                                 } else {
                                     // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
                                     selectedSourceId = null;
                                     S.selectedScreenSourceId = null;
-                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    try {
+                                        localStorage.removeItem('selectedScreenSourceId');
+                                        localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        null,
+                                        window.t ? window.t('app.screenSource.screens') : 'Screens'
+                                    );
                                     pushSelectedSourceToMain(null);
                                 }
                             } else if (rememberedWindowNeedsPicker) {
@@ -2056,7 +2117,17 @@
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
-                                        try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                        try {
+                                            localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id);
+                                            localStorage.setItem(
+                                                SCREEN_SOURCE_NAME_KEY,
+                                                getScreenSourceDisplayName(fallbackSources[0], 0)
+                                            );
+                                        } catch (e) { }
+                                        notifySelectedScreenSourceChanged(
+                                            fallbackSources[0].id,
+                                            getScreenSourceDisplayName(fallbackSources[0], 0)
+                                        );
                                         pushSelectedSourceToMain(fallbackSources[0].id);
                                         window.showStatusToast(
                                             safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
@@ -2083,7 +2154,14 @@
                                     if (discardCancelledScreenSharingStart(attempt)) return;
                                     if (discardSupersededManualCapture()) return;
                                     S.selectedScreenSourceId = null;
-                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    try {
+                                        localStorage.removeItem('selectedScreenSourceId');
+                                        localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
+                                    } catch (e) { }
+                                    notifySelectedScreenSourceChanged(
+                                        null,
+                                        window.t ? window.t('app.screenSource.screens') : 'Screens'
+                                    );
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
@@ -2174,6 +2252,24 @@
             }
 
             if (discardCancelledScreenSharingStart(attempt)) return;
+            if (attempt.forceNewCapture && attempt.previousStream
+                && attempt.previousStream !== captureStream) {
+                try {
+                    if (typeof attempt.previousStream.getTracks === 'function') {
+                        attempt.previousStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    }
+                } catch (_) { }
+                if (S.screenCaptureStream === attempt.previousStream) {
+                    S.screenCaptureStream = null;
+                    S.screenCaptureStreamLastUsed = null;
+                }
+                if (S.screenCaptureStreamIdleTimer) {
+                    clearTimeout(S.screenCaptureStreamIdleTimer);
+                    S.screenCaptureStreamIdleTimer = null;
+                }
+            }
             if (captureStream !== attempt.initialStream) {
                 S.screenCaptureStream = captureStream;
             }
@@ -2441,8 +2537,10 @@
         try {
             if (sourceId) {
                 localStorage.setItem('selectedScreenSourceId', sourceId);
+                localStorage.setItem(SCREEN_SOURCE_NAME_KEY, String(resolvedSourceName || ''));
             } else {
                 localStorage.removeItem('selectedScreenSourceId');
+                localStorage.removeItem(SCREEN_SOURCE_NAME_KEY);
             }
         } catch (e) {
             console.warn('[屏幕源] 无法保存到 localStorage:', e);
@@ -2464,6 +2562,16 @@
 
         // 显示选择提示
         window.showStatusToast(window.t ? window.t('app.screenSource.selected', { source: resolvedSourceName }) : '已选择 ' + resolvedSourceName, 3000);
+
+        // 让语音设置行同步显示当前来源；不依赖重新渲染整个弹窗。
+        try {
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed', {
+                detail: {
+                    sourceId: sourceId || null,
+                    sourceName: resolvedSourceName || ''
+                }
+            }));
+        } catch (_) { }
 
         console.log('[屏幕源] 已选择:', sourceName || resolvedSourceName, '(ID:', sourceId, ')');
 
@@ -2566,14 +2674,166 @@
         var desktopProvider = resolveDesktopCaptureProvider();
         if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
             screenPopup.innerHTML = '';
+            var browserPickerAvailable = !!(
+                navigator.mediaDevices
+                && typeof navigator.mediaDevices.getDisplayMedia === 'function'
+            );
             var notAvailableItem = document.createElement('div');
-            notAvailableItem.textContent = window.t ? window.t('app.screenSource.notAvailable') : '仅在桌面版可用';
-            notAvailableItem.style.padding = '12px';
-            notAvailableItem.style.color = 'var(--neko-popup-text-sub)';
-            notAvailableItem.style.fontSize = '13px';
-            notAvailableItem.style.textAlign = 'center';
+            notAvailableItem.textContent = browserPickerAvailable
+                ? (window.t
+                    ? window.t('app.screenSource.browserPickerHint')
+                    : '当前环境无法枚举屏幕来源，可使用浏览器选择器')
+                : (window.t ? window.t('app.screenSource.notAvailable') : '仅在桌面版可用');
+            Object.assign(notAvailableItem.style, {
+                padding: '12px',
+                color: 'var(--neko-popup-text-sub)',
+                fontSize: '13px',
+                textAlign: 'center',
+                lineHeight: '1.4'
+            });
             screenPopup.appendChild(notAvailableItem);
+            if (browserPickerAvailable) {
+                var browserPickerButton = document.createElement('button');
+                browserPickerButton.type = 'button';
+                browserPickerButton.className = 'screen-source-browser-picker';
+                browserPickerButton.textContent = window.t
+                    ? window.t('app.screenSource.browserPicker')
+                    : '使用浏览器选择器';
+                Object.assign(browserPickerButton.style, {
+                    width: '100%',
+                    padding: '9px 12px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'var(--neko-popup-accent, #4f8cff)',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '600'
+                });
+                browserPickerButton.addEventListener('click', async function (event) {
+                    event.stopPropagation();
+                    browserPickerButton.disabled = true;
+                    try {
+                        var currentShareIsActive = !!(
+                            screenButton() && screenButton().classList.contains('active')
+                        );
+                        if (currentShareIsActive) {
+                            window.showStatusToast(
+                                safeT(
+                                    'app.screenSource.browserPickerActiveShare',
+                                    '请先停止当前屏幕分享，再选择新的来源。'
+                                ),
+                                3000
+                            );
+                            return;
+                        }
+                        if (typeof window.startScreenSharing === 'function') {
+                            await window.startScreenSharing({
+                                forceNewCapture: !!(S.screenCaptureStream && S.screenCaptureStream.active)
+                            });
+                        } else {
+                            throw new Error('Screen sharing is unavailable');
+                        }
+                    } catch (error) {
+                        console.warn('[屏幕源] 浏览器选择器启动失败:', error);
+                    } finally {
+                        browserPickerButton.disabled = false;
+                    }
+                });
+                screenPopup.appendChild(browserPickerButton);
+            }
             return false;
+        }
+
+        // Linux xdg-desktop-portal providers may open an OS permission dialog
+        // during source enumeration. A hover is not a user gesture, so expose
+        // the floating panel first and defer the enumeration until the user
+        // explicitly clicks its load action.
+        if (renderOptions.deferEnumeration === true
+            && desktopSourceEnumerationMayPrompt(desktopProvider)) {
+            screenPopup.innerHTML = '';
+            var deferredItem = document.createElement('button');
+            deferredItem.type = 'button';
+            deferredItem.className = 'screen-source-deferred-load';
+            deferredItem.textContent = window.t
+                ? window.t('app.screenSource.clickToChoose')
+                : '点击选择屏幕来源';
+            deferredItem.setAttribute('aria-label', deferredItem.textContent);
+            Object.assign(deferredItem.style, {
+                width: '100%',
+                padding: '12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-hover)',
+                color: 'var(--neko-popup-text)',
+                cursor: 'pointer',
+                fontSize: '13px',
+                textAlign: 'center'
+            });
+            deferredItem.addEventListener('click', function (event) {
+                event.stopPropagation();
+                window.renderFloatingScreenSourceList(screenPopup, {
+                    requireVisible: false,
+                    deferEnumeration: false
+                });
+            });
+            screenPopup.appendChild(deferredItem);
+            return true;
+        }
+
+        function appendBrowserPickerButton() {
+            if (!navigator.mediaDevices
+                || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+                return false;
+            }
+            var browserPickerButton = document.createElement('button');
+            browserPickerButton.type = 'button';
+            browserPickerButton.className = 'screen-source-browser-picker';
+            browserPickerButton.textContent = window.t
+                ? window.t('app.screenSource.browserPicker')
+                : '使用浏览器选择器';
+            Object.assign(browserPickerButton.style, {
+                width: '100%',
+                padding: '9px 12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: 'var(--neko-popup-accent, #4f8cff)',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: '600'
+            });
+            browserPickerButton.addEventListener('click', async function (event) {
+                event.stopPropagation();
+                browserPickerButton.disabled = true;
+                try {
+                    var currentShareIsActive = !!(
+                        screenButton() && screenButton().classList.contains('active')
+                    );
+                    if (currentShareIsActive) {
+                        window.showStatusToast(
+                            safeT(
+                                'app.screenSource.browserPickerActiveShare',
+                                '请先停止当前屏幕分享，再选择新的来源。'
+                            ),
+                            3000
+                        );
+                        return;
+                    }
+                    if (typeof window.startScreenSharing !== 'function') {
+                        throw new Error('Screen sharing is unavailable');
+                    }
+                    await window.startScreenSharing({
+                        forceNewCapture: !!(S.screenCaptureStream && S.screenCaptureStream.active)
+                    });
+                } catch (error) {
+                    console.warn('[屏幕源] 浏览器选择器启动失败:', error);
+                } finally {
+                    browserPickerButton.disabled = false;
+                }
+            });
+            screenPopup.appendChild(browserPickerButton);
+            return true;
         }
 
         try {
@@ -2606,6 +2866,7 @@
                 noSourcesItem.style.fontSize = '13px';
                 noSourcesItem.style.textAlign = 'center';
                 screenPopup.appendChild(noSourcesItem);
+                appendBrowserPickerButton();
                 return false;
             }
 
@@ -2966,6 +3227,7 @@
             errorItem.style.fontSize = '13px';
             errorItem.style.textAlign = 'center';
             screenPopup.appendChild(errorItem);
+            appendBrowserPickerButton();
             return false;
         }
     };
