@@ -2646,6 +2646,7 @@
             "never": "Não me lembre novamente"
         },
         "screenSource": {
+            "browserPickerHint": "Ao iniciar o compartilhamento, o navegador pedirá que você escolha uma aba, janela ou tela.",
             "notAvailable": "A seleção de fonte de tela não está disponível no ambiente atual",
             "loading": "Carregando...",
             "noSources": "Nenhuma fonte de tela disponível",

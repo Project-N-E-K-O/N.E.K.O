@@ -2646,6 +2646,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
+            "browserPickerHint": "开始分享时，浏览器会让你选择标签页、窗口或屏幕。",
             "notAvailable": "当前环境无法选择屏幕来源",
             "loading": "加载中...",
             "noSources": "没有可用的屏幕源",

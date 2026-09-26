@@ -2646,6 +2646,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
+            "browserPickerHint": "開始分享時，瀏覽器會讓你選擇分頁、視窗或螢幕。",
             "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",

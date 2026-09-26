@@ -2646,6 +2646,7 @@
             "never": "No recordar de nuevo"
         },
         "screenSource": {
+            "browserPickerHint": "Al empezar a compartir, el navegador te pedirá que elijas una pestaña, ventana o pantalla.",
             "notAvailable": "La selección de fuente de pantalla no está disponible en el entorno actual",
             "loading": "Cargando...",
             "noSources": "No hay fuentes de pantalla disponibles",

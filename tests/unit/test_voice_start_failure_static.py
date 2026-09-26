@@ -837,7 +837,10 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
         "var screenActionButton = createMainActionButton(", 1
     )[1].split(");", 1)[0]
     assert "openScreenSourceSubwindow" in screen_action
-    assert "{ openOnHover: false }" in screen_action
+    # Desktop providers that may prompt still require a click. Plain browsers
+    # can show the local panel without invoking their native sharing chooser.
+    assert "provider.sourceEnumerationMayPrompt === false" in screen_action
+    assert "return !provider ||" in screen_action
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

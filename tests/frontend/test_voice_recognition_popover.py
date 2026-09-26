@@ -682,6 +682,147 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("capability", [False, True, "unknown", "browser"])
+def test_screen_source_hover_respects_current_provider(
+    page: Page, capability: bool | str,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    # Desktop shells may inject their bridge after the menu was rendered.
+    page.evaluate(
+        """(capability) => {
+            window.getDesktopCaptureProvider = () => capability === 'browser'
+                ? null : {
+                    getSources() {},
+                    sourceEnumerationMayPrompt: capability === 'unknown'
+                        ? undefined : capability,
+                };
+            window.__sourceRenderCalls = 0;
+            const render = window.renderFloatingScreenSourceList;
+            window.renderFloatingScreenSourceList = (...args) => {
+                window.__sourceRenderCalls += 1;
+                return render(...args);
+            };
+        }""",
+        capability,
+    )
+    action = page.locator('[data-neko-mic-main-action="screen"]')
+    action.hover()
+    page.wait_for_timeout(50)
+    expected = 1 if capability is False or capability == "browser" else 0
+    assert page.evaluate("window.__sourceRenderCalls") == expected
+    assert page.evaluate("window.__voicePopoverTest.panels()") == expected
+    action.click()
+    page.wait_for_function("window.__sourceRenderCalls === 1")
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+def test_browser_screen_hover_waits_for_explicit_share_click(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.__browserPickerCalls = 0;
+            navigator.mediaDevices.getDisplayMedia = () => {
+                window.__browserPickerCalls += 1;
+                throw new Error('hover must not capture');
+            };
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    panel = page.locator('.neko-mic-subwindow[data-neko-mic-action-key="screen"]')
+    panel.wait_for(state="visible", timeout=1500)
+    assert page.evaluate("window.__browserPickerCalls") == 0
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    assert panel.locator('.neko-screen-source-title-match-toggle').count() == 0
+    panel.locator('[data-neko-browser-screen-share]').click()
+    assert page.evaluate("window.__screenToggleCalls") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("shared_helper", [False, True])
+def test_screen_and_device_panels_follow_owner_direction(
+    page: Page, opens_left: bool, shared_helper: bool,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": 1100, "height": 800})
+    result = page.evaluate(
+        """async (opensLeft) => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            const popup = test.popup();
+            Object.assign(popup.style, { left: '560px' });
+            popup.dataset.opensLeft = String(opensLeft);
+            async function snapshot(key) {
+                test.action(key).click();
+                await new Promise(requestAnimationFrame);
+                const panel = test.ownedPanels()[0];
+                const rect = panel.getBoundingClientRect();
+                const owner = popup.getBoundingClientRect();
+                return {
+                    side: rect.left >= owner.right ? 'right'
+                        : rect.right <= owner.left ? 'left' : 'overlap',
+                    withinViewport: rect.left >= 0 && rect.right <= innerWidth,
+                };
+            }
+            return { device: await snapshot('device'), screen: await snapshot('screen') };
+        }""",
+        opens_left,
+    )
+    expected = {"side": "left" if opens_left else "right", "withinViewport": True}
+    assert result == {"device": expected, "screen": expected}
+
+
+@pytest.mark.frontend
+def test_screen_source_hover_panel_lifecycle(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            window.getDesktopCaptureProvider = () => ({
+                getSources() {}, sourceEnumerationMayPrompt: false,
+            });
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    screen = page.locator('[data-neko-mic-main-action="screen"]')
+    panel = page.locator('.neko-mic-subwindow[data-neko-mic-action-key="screen"]')
+    screen.hover()
+    panel.wait_for(state="visible")
+    panel.locator('.screen-source-title-filter').fill('Editor')
+    page.locator('#outside-target').hover()
+    page.wait_for_timeout(360)
+    assert panel.count() == 1
+    screen.hover()
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    panel.hover()
+    page.locator('[data-neko-mic-main-action="device"]').hover()
+    assert panel.count() == 0
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    screen.hover()
+    panel.wait_for(state="visible")
+    page.evaluate("window.__voicePopoverTest.popup().remove()")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+    assert page.evaluate("window.__screenToggleCalls") == 0
+    assert not {
+        key: value for key, value in page.evaluate(
+            "window.__voicePopoverTest.listenerBalance"
+        ).items() if value
+    }
+
+
+@pytest.mark.frontend
 def test_screen_source_subwindow_header_has_remember_window_toggle(
     page: Page,
 ) -> None:
@@ -764,7 +905,8 @@ def test_screen_source_subwindow_ignores_leave_and_closes_on_parent_return(
     page.wait_for_timeout(360)
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
 
-    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    # Return to a non-action area: hovering the screen entry now reopens it.
+    page.locator('.mic-gain-container').hover()
     page.wait_for_function("window.__voicePopoverTest.panels() === 0")
 
 

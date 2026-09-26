@@ -2646,6 +2646,7 @@
             "never": "Do not remind me"
         },
         "screenSource": {
+            "browserPickerHint": "When sharing starts, your browser will ask you to choose a tab, window, or screen.",
             "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",

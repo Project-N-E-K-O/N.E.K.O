@@ -3796,17 +3796,27 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function positionMicSubwindow(panel) {
-                if (!panel || !micPopup || !micPopup.isConnected) return;
+                if (!panel || !panel.isConnected || !micPopup || !micPopup.isConnected) return;
+                var anchor = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]') || micPopup;
+                if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+                    panel._popupElement = micPopup;
+                    window.AvatarPopupUI.positionSidePanel(panel, anchor);
+                    // These panels appear immediately; keep the shared scale
+                    // without the entry-animation offset used by other menus.
+                    window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+                    return;
+                }
+                // Standalone pages without the shared helper still follow the
+                // owner's direction, shrinking instead of flipping by width.
                 var rect = micPopup.getBoundingClientRect();
+                var gap = 8;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                var availableWidth = opensLeft ? rect.left - gap * 2 : window.innerWidth - rect.right - gap * 2;
+                panel.style.maxWidth = Math.max(0, availableWidth) + 'px';
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
-                var gap = 8;
-                var left = rect.right + gap;
-                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
-                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
-                    left = rect.left - panelWidth - gap;
-                }
-                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
+                var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
+                left = Math.max(gap, left);
                 var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
@@ -3996,20 +4006,19 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 }
 
-                // Most settings side panels may expand on hover. Screen-source
-                // enumeration is different: on Linux it can invoke
-                // xdg-desktop-portal and show an OS sharing dialog, so that
-                // action must require an explicit click/user gesture.
-                if (interactionOptions.openOnHover !== false) {
-                    button.addEventListener('mouseenter', function (event) {
+                // Resolve hover permission at event time: desktop bridges may
+                // arrive after rendering, and xdg-desktop-portal enumeration needs a click.
+                button.addEventListener('mouseenter', function (event) {
+                    var openOnHover = typeof interactionOptions.openOnHover === 'function'
+                        ? interactionOptions.openOnHover()
+                        : interactionOptions.openOnHover !== false;
+                    if (openOnHover) {
                         openActionPanel(event);
-                    });
-                } else {
-                    button.addEventListener('mouseenter', function () {
+                    } else {
                         clearMicActionHoverCollapseTimer();
                         actionSurface().style.background = 'var(--neko-popup-hover)';
-                    });
-                }
+                    }
+                });
                 button.addEventListener('mouseleave', function () {
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
@@ -4304,6 +4313,35 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     null,
                     '360px'
                 );
+                var provider = typeof window.getDesktopCaptureProvider === 'function'
+                    ? window.getDesktopCaptureProvider() : null;
+                if (!provider && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+                    var browserBody = panel._nekoMicSubwindowBody;
+                    var hint = document.createElement('div');
+                    hint.textContent = window.t ? window.t('app.screenSource.browserPickerHint')
+                        : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.';
+                    Object.assign(hint.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub)' });
+                    var browserShareButton = document.createElement('button');
+                    browserShareButton.type = 'button';
+                    browserShareButton.dataset.nekoBrowserScreenShare = '';
+                    browserShareButton.textContent = shareToggleButton.getAttribute('aria-label')
+                        || (window.t ? window.t('buttons.screenShare') : 'Screen Share');
+                    Object.assign(browserShareButton.style, {
+                        padding: '10px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                        color: 'var(--neko-popup-text)', background: 'var(--neko-popup-selected-bg)'
+                    });
+                    browserShareButton.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        closeMicSubwindow();
+                        // Preserve the click gesture and reuse voice gating,
+                        // cancellation and stream cleanup from the main switch.
+                        shareToggleButton.click();
+                    });
+                    browserBody.appendChild(hint);
+                    browserBody.appendChild(browserShareButton);
+                    positionMicSubwindow(panel);
+                    return;
+                }
                 var headerActions = panel._nekoMicSubwindowHeaderActions;
                 if (headerActions
                     && typeof window.isScreenSourceTitleMatchEnabled === 'function'
@@ -4395,7 +4433,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
                 openScreenSourceSubwindow,
-                { openOnHover: false }
+                { openOnHover: function () {
+                    var provider = typeof window.getDesktopCaptureProvider === 'function'
+                        ? window.getDesktopCaptureProvider() : null;
+                    return !provider || (typeof provider.getSources === 'function'
+                        && provider.sourceEnumerationMayPrompt === false);
+                } }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(
