@@ -23,6 +23,7 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitStatus,
     PreserveUnsentPrefix,
     SpeechActivityEvent,
+    VoiceIngressToken,
     VoicePartialEvent,
     VoiceTranscriptEvent,
     VoiceTurnToken,
@@ -127,6 +128,7 @@ class AsrRuntimeCallbacks:
     on_failure: Callable[[AsrFailureEvent], Awaitable[None]]
     on_status: Callable[[AsrStatusEvent], Awaitable[None]]
     on_lifecycle: Callable[[AsrLifecycleNotification], Awaitable[None]]
+    capture_ingress_token: Callable[[], VoiceIngressToken] | None = None
 
 
 SpeakerShadowFactory = Callable[[], SpeakerShadowObserver | None]
@@ -4995,6 +4997,10 @@ class IndependentAsrRuntime:
             self._asr_close_tasks.add(task)
             task.add_done_callback(self._asr_close_tasks.discard)
         failure_identity = self._capture_runtime_identity()
+        failure_ingress_token = None
+        capture_ingress_token = self._callbacks.capture_ingress_token
+        if capture_ingress_token is not None:
+            failure_ingress_token = capture_ingress_token()
         try:
             delivered = await self._send_asr_lifecycle_state(
                 VoiceLifecycleState.BLOCKED,
@@ -5010,6 +5016,7 @@ class IndependentAsrRuntime:
                         code=status_code,
                         provider=provider,
                         session_epoch=failure_epoch,
+                        ingress_token=failure_ingress_token,
                     )
                 )
             except Exception:
@@ -5024,6 +5031,7 @@ class IndependentAsrRuntime:
                 provider,
                 session_epoch=failure_epoch,
                 expected_identity=failure_identity,
+                ingress_token=failure_ingress_token,
             )
         finally:
             # A dispatcher can report its own failure from inside its worker.
@@ -5050,6 +5058,7 @@ class IndependentAsrRuntime:
         *,
         session_epoch: int,
         expected_identity: _AsrRuntimeIdentity,
+        ingress_token: VoiceIngressToken | None = None,
     ) -> bool:
         if (
             session_epoch != expected_identity.session_epoch
@@ -5062,6 +5071,7 @@ class IndependentAsrRuntime:
                     code=code,
                     provider=provider,
                     session_epoch=session_epoch,
+                    ingress_token=ingress_token,
                 )
             )
         except Exception:

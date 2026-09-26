@@ -430,6 +430,8 @@ async def test_adopted_restart_cancellation_fails_closed_and_propagates(
     failure = on_failure.await_args.args[0]
     assert failure.code == "ASR_INDEPENDENT_FAILED"
     assert failure.session_epoch == started_epoch + 1
+    assert failure.ingress_token is not None
+    assert failure.ingress_token.session_epoch == failure.session_epoch
     sessions[1].close.assert_awaited_once_with()
     detector.close.assert_awaited_once_with()
     assert component._asr_session is None
@@ -445,6 +447,7 @@ async def test_adopted_restart_cancellation_fails_closed_and_propagates(
     assert {
         "code": "ASR_INDEPENDENT_FAILED",
         "details": {
+            "lease_generation": runtime._voice_lease_generation,
             "provider": "qwen",
             "session_epoch": started_epoch + 1,
         },
@@ -499,6 +502,7 @@ async def test_adopted_restart_exception_fails_closed_without_retry(
     assert {
         "code": "ASR_INDEPENDENT_FAILED",
         "details": {
+            "lease_generation": runtime._voice_lease_generation,
             "provider": "qwen",
             "session_epoch": started_epoch + 1,
         },

@@ -3475,15 +3475,6 @@
                         return;
                     }
 
-                    if (statusCode === 'VOICE_INPUT_READY') {
-                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
-                        return;
-                    }
-                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
-                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
-                        return;
-                    }
-
                     if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
                         var activationState = (statusDetails && statusDetails.state) || '';
                         var allowedActivationStates = [
@@ -3539,6 +3530,14 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_INPUT_READY') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
+                        return;
+                    }
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -3570,12 +3569,29 @@
                     }
 
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var statusSessionEpoch = statusDetails && statusDetails.session_epoch;
+                        if (statusSessionEpoch != null
+                                && S.voiceSessionEpoch != null
+                                && Number(statusSessionEpoch) < Number(S.voiceSessionEpoch)) {
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_FAILED'
+                                || statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                            var statusLeaseGeneration = statusDetails && statusDetails.lease_generation;
+                            if (statusLeaseGeneration == null
+                                    || S.voiceInputCurrentLeaseGeneration == null
+                                    || Number(statusLeaseGeneration)
+                                        !== Number(S.voiceInputCurrentLeaseGeneration)) {
+                                return;
+                            }
+                        }
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
-                        if (statusDetails && statusDetails.session_epoch != null) {
-                            S.voiceSessionEpoch = statusDetails.session_epoch;
+                        if (statusSessionEpoch != null) {
+                            S.voiceSessionEpoch = statusSessionEpoch;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
                             if (S.gameRouteActive === true) {
@@ -3586,7 +3602,9 @@
                                     reason: 'asr_ready'
                                 });
                             }
-                            if (typeof window.showStatusToast === 'function') {
+                            // Background reconnect/warm-idle wake only refreshes
+                            // routing. Recovery has its own VOICE_INPUT_READY toast.
+                            if (!wasIndependentAsrActive && typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
                                     3000
@@ -4889,17 +4907,15 @@
                     // The session acknowledgement is the authoritative route
                     // for this session. Clear stale independent-ASR state when
                     // a new native realtime session replaces an old ASR one.
-                    if (response.input_mode !== 'text'
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
                             && (response.microphone_route === 'native'
                                 || response.microphone_route === 'independent')) {
                         S.independentAsrActive = response.microphone_route === 'independent';
-                        if (response.microphone_route === 'native') {
-                            ++S.voiceInputRecoveryGeneration;
-                            if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer);
-                            S.voiceInputRecoveryTimer = null;
-                            S.voiceInputRecoveryState = 'idle';
-                            S.voiceInputRecoverySessionEpoch = null;
-                            S.voiceInputRecoveryLeaseGeneration = null;
+                        if (response.microphone_route === 'native'
+                                && window.appAudioCapture
+                                && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                            window.appAudioCapture.resetVoiceInputRecoveryState();
                         }
                     }
                     if (_ackAnswersThisWindow) S.voiceStartPending = false;

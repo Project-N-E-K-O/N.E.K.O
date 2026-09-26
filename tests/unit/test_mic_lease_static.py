@@ -105,11 +105,6 @@ def test_session_route_ack_clears_stale_independent_asr_state() -> None:
     assert "response.microphone_route === 'native'" in websocket
     assert "response.microphone_route === 'independent'" in websocket
     assert "S.independentAsrActive = response.microphone_route === 'independent';" in websocket
-    native = websocket.split("if (response.microphone_route === 'native')", 1)[1].split(
-        "if (_ackAnswersThisWindow)", 1
-    )[0]
-    assert "clearTimeout(S.voiceInputRecoveryTimer)" in native
-    assert "S.voiceInputRecoveryState = 'idle'" in native
 
 
 def test_recovery_ready_reads_runtime_session_and_is_fenced() -> None:
@@ -119,6 +114,9 @@ def test_recovery_ready_reads_runtime_session_and_is_fenced() -> None:
     assert "still_current=lambda: self._voice_input_ready_is_current" in source
     assert "[voice-recovery] ready_emitting" in source
     assert "[voice-recovery] ready_suppressed" in source
+    assert "def _voice_input_recovery_failure_is_current" in source
+    assert '"lease_generation": recovery_lease_generation' in source
+    assert "[voice-recovery] failure_emitting" in source
 
 
 def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:

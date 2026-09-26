@@ -428,6 +428,7 @@ class AsrRuntimeMixin:
             on_failure=self._handle_core_asr_failure,
             on_status=self._send_core_asr_status,
             on_lifecycle=self._send_core_asr_lifecycle,
+            capture_ingress_token=self._capture_ingress_token,
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
 
@@ -1409,6 +1410,33 @@ class AsrRuntimeMixin:
             and not self._voice_lease_hard_muted
             and self._asr_route_mode == "independent"
             and self._independent_asr_transport_is_ready()
+        )
+
+    def _voice_input_recovery_failure_is_current(
+        self,
+        source_identity: tuple[object, ...],
+        session_epoch: int,
+        failure_ingress_token: VoiceIngressToken | None = None,
+    ) -> bool:
+        # Failure cannot reuse the ready predicate: the transport is already
+        # dead, so requiring `_independent_asr_transport_is_ready()` would
+        # suppress the only event the frontend uses to enter `failed`.
+        current_token = self._core_asr_identity_ingress_token(source_identity)
+        if (
+            failure_ingress_token is not None
+            and (
+                failure_ingress_token.session_epoch != current_token.session_epoch
+                or failure_ingress_token.connection_id != current_token.connection_id
+                or failure_ingress_token.lease_generation
+                != current_token.lease_generation
+                or failure_ingress_token.route_generation
+                != current_token.route_generation
+            )
+        ):
+            return False
+        return bool(
+            self._core_asr_operation_identity_matches(source_identity)
+            and session_epoch == current_token.session_epoch
         )
 
     def _ingress_token_matches(self, token: VoiceIngressToken) -> bool:
@@ -4797,6 +4825,7 @@ class AsrRuntimeMixin:
     ) -> None:
         self._ensure_asr_runtime_state()
         self._voice_input_transition_generation += 1
+        transition_snapshot = self._voice_input_transition_generation
         previous = (
             self._voice_lease_owner,
             self._voice_lease_hard_muted,
@@ -4834,9 +4863,14 @@ class AsrRuntimeMixin:
         if (
             owner == "core"
             and not hard_muted
-            and previous[1]
-            and reason in {"hard_unmute", "lease_sync"}
+            and not focus_suppressed
+            and (previous[1] or previous[2])
+            and reason in {"hard_unmute", "focus_resume", "lease_sync"}
             and self._asr_route_mode == "independent"
+            and self._voice_input_transition_generation == transition_snapshot
+            and self._voice_lease_owner == "core"
+            and not self._voice_lease_hard_muted
+            and not self._voice_lease_focus_suppressed
         ):
             logger.info(
                 "[voice-recovery] unmute_requested owner=%s route=%s "
@@ -4881,9 +4915,14 @@ class AsrRuntimeMixin:
             if (
                 owner == "core"
                 and not hard_muted
-                and previous[1]
-                and reason in {"hard_unmute", "lease_sync"}
+                and not focus_suppressed
+                and (previous[1] or previous[2])
+                and reason in {"hard_unmute", "focus_resume", "lease_sync"}
                 and self._asr_route_mode == "independent"
+                and self._voice_input_transition_generation == transition_snapshot
+                and self._voice_lease_owner == "core"
+                and not self._voice_lease_hard_muted
+                and not self._voice_lease_focus_suppressed
             ):
                 logger.info("[voice-recovery] restart_requested reason=%s lease_generation=%s", reason, self._voice_lease_generation)
                 restart = getattr(self._asr_runtime, "_ensure_transport_restart_task", None)
@@ -5010,6 +5049,19 @@ class AsrRuntimeMixin:
                 notified = True
         if status is not None:
             await self._send_core_asr_status(status)
+            # The first send can deliver the display plane while the
+            # voice-owner plane is still unsettled. Give that recovery notice
+            # one bounded follow-up while the lease is current; after revoke,
+            # the identity fence must reject stale callbacks.
+            if (
+                status.code
+                in {
+                    "ASR_INDEPENDENT_FAILED",
+                    "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                }
+                and operation_is_current()
+            ):
+                await self._send_core_asr_status(status)
             notified = True
         if notified and not operation_is_current():
             return False
@@ -5885,12 +5937,10 @@ class AsrRuntimeMixin:
         route_operation_generation = self._asr_route_operation_generation
 
         def failure_is_current() -> bool:
-            return bool(
-                self._core_asr_operation_identity_matches(source_identity)
-                and event.session_epoch
-                == self._core_asr_identity_ingress_token(
-                    source_identity
-                ).session_epoch
+            return self._voice_input_recovery_failure_is_current(
+                source_identity,
+                event.session_epoch,
+                event.ingress_token,
             )
 
         async with self._asr_notification_lock:
@@ -5940,9 +5990,34 @@ class AsrRuntimeMixin:
                 post_transition_identity
             ),
             status=(
-                AsrStatusEvent(code=event.code, provider=event.provider,
-                               session_epoch=event.session_epoch)
-                if event.code in {"ASR_INPUT_DELIVERY_FAILED", "ASR_INPUT_DELIVERY_UNCERTAIN"}
+                AsrStatusEvent(
+                    code=event.code,
+                    provider=event.provider,
+                    session_epoch=event.session_epoch,
+                    # The failure token was validated before this handler's
+                    # own independent -> blocked transition. Rebase only its
+                    # route generation to that transition so the status still
+                    # carries the original lease/session identity while a
+                    # competing route change remains fenced.
+                    ingress_token=(
+                        replace(
+                            event.ingress_token,
+                            route_generation=(
+                                self._core_asr_identity_ingress_token(
+                                    post_transition_identity
+                                ).route_generation
+                            ),
+                        )
+                        if event.ingress_token is not None
+                        else None
+                    ),
+                )
+                if event.code in {
+                    "ASR_INPUT_DELIVERY_FAILED",
+                    "ASR_INPUT_DELIVERY_UNCERTAIN",
+                    "ASR_INDEPENDENT_FAILED",
+                    "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                }
                 else None
             ),
         )
@@ -5950,29 +6025,105 @@ class AsrRuntimeMixin:
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
         async with self._asr_notification_lock:
+            current_token = self._core_asr_identity_ingress_token(source_identity)
             if (
                 not self._core_asr_operation_identity_matches(source_identity)
                 or event.session_epoch
-                != self._core_asr_identity_ingress_token(source_identity).session_epoch
+                != current_token.session_epoch
+                or (
+                    event.ingress_token is not None
+                    and event.code
+                    in {
+                        "ASR_INDEPENDENT_FAILED",
+                        "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+                    }
+                    and not self._voice_input_recovery_failure_is_current(
+                        source_identity,
+                        event.session_epoch,
+                        event.ingress_token,
+                    )
+                )
             ):
                 return
             delivery_failure = event.code in {
                 "ASR_INPUT_DELIVERY_FAILED", "ASR_INPUT_DELIVERY_UNCERTAIN",
             }
-            notice = (event, source_identity)
+            # Independent-ASR failures can arrive through two notification
+            # paths for the same runtime event: the failure callback emits the
+            # status before revoking the lease, then the worker callback may
+            # publish its queued status after that callback returns.  Keep the
+            # pre-revoke ordering, but keep separate per-plane delivery
+            # ledgers for the primary and recovery notices.  A retry can then
+            # fill only the plane that failed, while the route-operation
+            # generation lets a later recovery episode reuse the same session
+            # epoch without being hidden by an old ledger.
+            independent_failure_notice = None
+            independent_failure_progress = None
+            if event.code in {
+                "ASR_INDEPENDENT_FAILED",
+                "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+            }:
+                independent_failure_notice = (
+                    event.code,
+                    event.provider,
+                    event.session_epoch,
+                    self._asr_route_operation_generation,
+                )
+                stored_progress = getattr(
+                    self, "_voice_independent_failure_delivery", None
+                )
+                if (
+                    stored_progress is None
+                    or stored_progress[0] != independent_failure_notice
+                ):
+                    stored_progress = (
+                        independent_failure_notice,
+                        {"primary": set(), "recovery": set()},
+                    )
+                    self._voice_independent_failure_delivery = stored_progress
+                independent_failure_progress = stored_progress[1]
+                if all(
+                    plane in independent_failure_progress["primary"]
+                    for plane in ("display_delivered", "voice_owner_settled")
+                ) and all(
+                    plane in independent_failure_progress["recovery"]
+                    for plane in ("display_delivered", "voice_owner_settled")
+                ):
+                    return
+            # The failure callback may rebase the token's route generation
+            # while moving the route to ``blocked``.  The subsequent worker
+            # status still carries the original token, so using the full
+            # event/operation identity here would treat one failure as two
+            # notices.  Session epoch plus code/provider is the stable
+            # identity of one runtime failure; a later recovery creates a
+            # new epoch before it can reuse this key.
+            notice = (event.code, event.provider, event.session_epoch)
             if (delivery_failure
                     and getattr(self, "_voice_delivery_failure_notice", None) == notice):
                 return
+            status_details = {
+                "provider": event.provider,
+                "session_epoch": event.session_epoch,
+            }
+            if event.code in {
+                "ASR_INDEPENDENT_FAILED",
+                "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE",
+            }:
+                status_details["lease_generation"] = (
+                    event.ingress_token.lease_generation
+                    if event.ingress_token is not None
+                    else self._voice_lease_generation
+                )
             delivered = await self._send_voice_control_status(
                 json.dumps(
                     {
                         "code": event.code,
-                        "details": {
-                            "provider": event.provider,
-                            "session_epoch": event.session_epoch,
-                        },
+                        "details": status_details,
                     }
                 ),
+                progress=(None, independent_failure_progress["primary"])
+                if independent_failure_progress is not None
+                else None,
                 still_current=lambda: self._core_asr_operation_identity_matches(source_identity),
             )
             if (delivery_failure and any(delivered)
@@ -6009,13 +6160,46 @@ class AsrRuntimeMixin:
                 )
             elif event.code in {"ASR_INDEPENDENT_FAILED", "ASR_INDEPENDENT_PROVIDER_UNAVAILABLE"}:
                 logger.info("[voice-recovery] failure session_epoch=%s code=%s", event.session_epoch, event.code)
-                # Same fence as the status above: a lease/route turnover
-                # during that send must not hand this failure to a new owner.
-                if not self._core_asr_operation_identity_matches(source_identity):
+                # The original status send above is an await; re-check before
+                # publishing the recovery-failure identity used by the frontend.
+                recovery_lease_generation = (
+                    event.ingress_token.lease_generation
+                    if event.ingress_token is not None
+                    else self._voice_lease_generation
+                )
+                if not self._voice_input_recovery_failure_is_current(
+                    source_identity,
+                    event.session_epoch,
+                    event.ingress_token,
+                ):
+                    logger.info(
+                        "[voice-recovery] failure_suppressed_stale session_epoch=%s lease_generation=%s",
+                        event.session_epoch,
+                        recovery_lease_generation,
+                    )
                     return
+                logger.info(
+                    "[voice-recovery] failure_emitting session_epoch=%s lease_generation=%s",
+                    event.session_epoch,
+                    recovery_lease_generation,
+                )
                 await self._send_voice_control_status(
-                    json.dumps({"code": "VOICE_INPUT_RECOVERY_FAILED", "details": {"session_epoch": event.session_epoch, "lease_generation": self._voice_lease_generation, "reason": "ASR_INDEPENDENT_FAILED"}}),
-                    still_current=lambda: self._core_asr_operation_identity_matches(source_identity),
+                    json.dumps(
+                        {
+                            "code": "VOICE_INPUT_RECOVERY_FAILED",
+                            "details": {
+                                "session_epoch": event.session_epoch,
+                                "lease_generation": recovery_lease_generation,
+                                "reason": "ASR_INDEPENDENT_FAILED",
+                            },
+                        }
+                    ),
+                    progress=(None, independent_failure_progress["recovery"]),
+                    still_current=lambda: self._voice_input_recovery_failure_is_current(
+                        source_identity,
+                        event.session_epoch,
+                        event.ingress_token,
+                    ),
                 )
 
     async def _send_core_asr_lifecycle(
