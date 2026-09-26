@@ -1040,6 +1040,63 @@ def test_side_panel_reposition_invalidates_older_collision_callbacks(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("final_width", [700, 1200])
+def test_delayed_stacked_collision_uses_current_viewport_without_rescheduling(
+    page: Page, final_width: int,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        '<div id="panel" style="position:fixed;width:360px;height:320px;box-sizing:border-box"></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    page.evaluate("""() => {
+        const popup = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = popup;
+        const originalSet = window.setTimeout;
+        const timers = [];
+        window.setTimeout = (fn, delay) => {timers.push({fn, delay}); return timers.length;};
+        window.__collisionTest = {originalSet, timers};
+        window.AvatarPopupUI.positionSidePanel(panel, popup);
+        window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+    }""")
+    try:
+        page.set_viewport_size({"width": final_width, "height": 900})
+        result = page.evaluate("""() => {
+            const popup = document.getElementById('live2d-popup-mic');
+            const panel = document.getElementById('panel');
+            Object.assign(popup.style, {left: innerWidth > 1000 ? '560px' : '8px',
+                top: '250px', height: '120px'});
+            const button = document.createElement('button');
+            button.id = 'live2d-btn-test';
+            button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+            document.body.appendChild(button);
+            const revision = panel._nekoPositionRevision;
+            const {timers} = window.__collisionTest;
+            timers[0].fn();
+            const a = popup.getBoundingClientRect(), b = panel.getBoundingClientRect();
+            return {currentPosition: innerWidth > 1000
+                ? b.right <= a.left && b.top === a.top : b.top >= a.bottom,
+                restoredHeight: b.height === 320,
+                inBounds: b.left >= 0 && b.right <= innerWidth && b.bottom <= innerHeight,
+                onlyInitialPlacementBeforeCallback: revision === 1,
+                scheduled: timers.length, handleReleased: panel._nekoPositionCheckTimer == null};
+        }""")
+    finally:
+        page.evaluate("""() => {
+            window.setTimeout = window.__collisionTest.originalSet;
+            delete window.__collisionTest;
+        }""")
+    assert result == {"currentPosition": True, "restoredHeight": True, "inBounds": True,
+                      "onlyInitialPlacementBeforeCallback": True,
+                      "scheduled": 1, "handleReleased": True}
+
+
+@pytest.mark.frontend
 def test_screen_source_hover_panel_lifecycle(page: Page) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(

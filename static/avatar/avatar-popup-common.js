@@ -436,7 +436,7 @@
      * container: 侧面板元素（position: fixed, 挂在 document.body）
      * anchor: 触发菜单项元素（用于垂直参考）
      */
-    function positionSidePanel(container, anchor, options = {}) {
+    function positionSidePanel(container, anchor, options = {}, checkAfterAnimation = true) {
         const positionRevision = (container._nekoPositionRevision || 0) + 1;
         container._nekoPositionRevision = positionRevision;
         if (container._nekoPositionCheckTimer != null) {
@@ -623,6 +623,8 @@
 
         // ── Step 5：动画结束后二次验证（自愈机制）── 非手机端执行
         // 在动画完成后再次检查是否覆盖按钮，修正任何因动画/时序导致的偏差
+        // A delayed correction may remeasure once, but must not start a timer loop.
+        if (!checkAfterAnimation) return;
         const _containerRef = container;
         const _ownerPrefix = ownerPrefix;
         const _goLeft = goLeft;
@@ -641,7 +643,7 @@
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
                 if (_goDown) {
-                    positionStackedPanel(z);
+                    positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;
