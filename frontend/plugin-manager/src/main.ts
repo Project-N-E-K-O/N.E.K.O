@@ -57,8 +57,8 @@ function mountApp() {
   if (localeStartup) void localeStartup.finally(() => { initialLocalePending = false })
   watch(i18n.global.locale, () => {
     if (initialLocalePending) return
-    void import('./stores/plugin')
-      .then(({ usePluginStore }) => usePluginStore().fetchPlugins(true))
+      void import('./stores/plugin')
+        .then(({ usePluginStore }) => usePluginStore().refreshLoadedPluginData())
       .catch(error => console.warn('Could not refresh localized plugin metadata', error))
   })
   const connectionStore = useConnectionStore()

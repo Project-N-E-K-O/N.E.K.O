@@ -121,9 +121,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
 
   const selectablePlugins = computed<SelectablePlugin[]>(() => {
-    const listPlugins = pluginStore.pluginsWithStatus.length > 0
-      ? pluginStore.pluginsWithStatus
-      : pluginStore.pluginSummariesWithStatus
+    const listPlugins = pluginStore.pluginSummariesWithStatus
     const metaById = new Map(
       listPlugins.map((plugin) => {
         const displayText = resolvePluginDisplayText(plugin, locale.value)
@@ -508,7 +506,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     pluginsLoading.value = true
     let warningShown = false
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      const syncResult = await pluginStore.syncRegistryAndFetchSummaries({ preserveMessagesOn404: true })
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
         // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；

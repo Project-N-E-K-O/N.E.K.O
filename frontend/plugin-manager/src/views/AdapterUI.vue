@@ -81,7 +81,7 @@ const surfacesLoaded = ref(false)
 const adapterId = computed(() => route.params.id as string)
 
 const adapter = computed(() => {
-  return pluginStore.pluginsWithStatus.find(p => p.id === adapterId.value)
+  return pluginStore.getPluginById(adapterId.value)
 })
 
 function goBack() {
@@ -144,10 +144,11 @@ async function loadSurfaces() {
 
 onMounted(async () => {
   const hadSnapshot = pluginStore.pluginsWithStatus.length > 0
+    || pluginStore.pluginSummariesWithStatus.length > 0
   loading.value = !hadSnapshot
   loadError.value = null
   try {
-    await pluginStore.ensurePlugins()
+    if (!hadSnapshot) await pluginStore.ensurePluginSummaries()
   } catch (e: any) {
     loadError.value = e?.message || t('plugins.loadFailed')
   } finally {

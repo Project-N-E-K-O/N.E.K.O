@@ -68,10 +68,26 @@ export const usePluginStore = defineStore('plugin', () => {
   let fetchSummariesSeq = 0
   const fetchDetailSeq = new Map<string, number>()
 
-  // 计算属性
+  function resolvePluginById(pluginId: string) {
+    const plugin = pluginDetails.value[pluginId]
+      || plugins.value.find(item => item.id === pluginId)
+      || pluginSummaries.value.find(item => item.id === pluginId)
+    if (!plugin) return null
+    const status = pluginStatuses.value[pluginId]?.status
+    return {
+      ...plugin,
+      status: typeof status === 'string' ? status : (plugin.status || StatusEnum.STOPPED),
+      enabled: plugin.runtime_enabled !== false,
+      autoStart: plugin.runtime_auto_start !== false,
+    }
+  }
+
+  // All callers use the same read precedence: detail > full snapshot > summary.
+  // This keeps legacy full-list consumers coherent while the list page uses the
+  // lighter summary snapshot.
   const selectedPlugin = computed(() => {
     if (!selectedPluginId.value) return null
-    return plugins.value.find(p => p.id === selectedPluginId.value) || null
+    return resolvePluginById(selectedPluginId.value)
   })
 
   const pluginsWithStatus = computed(() => {
@@ -247,17 +263,7 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   function getPluginById(pluginId: string) {
-    const plugin = pluginDetails.value[pluginId]
-      || plugins.value.find(plugin => plugin.id === pluginId)
-      || pluginSummaries.value.find(plugin => plugin.id === pluginId)
-    if (!plugin) return null
-    const status = pluginStatuses.value[pluginId]?.status
-    return {
-      ...plugin,
-      status: typeof status === 'string' ? status : (plugin.status || StatusEnum.STOPPED),
-      enabled: plugin.runtime_enabled !== false,
-      autoStart: plugin.runtime_auto_start !== false,
-    }
+    return resolvePluginById(pluginId)
   }
 
   async function ensurePlugins(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
@@ -269,70 +275,41 @@ export const usePluginStore = defineStore('plugin', () => {
     await fetchPlugins()
   }
 
-  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
-    let registryRefreshed = false
-    let warningMessage: string | null = null
-
-    try {
-      const response = await refreshPluginsRegistry(
-        options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
-      )
-      registryRefreshed = true
-      if (response.success === false) {
-        const firstFailure = response.failed[0]
-        if (firstFailure) {
-          const failureTarget = firstFailure.plugin_id || firstFailure.config_path
-          if (!failureTarget) {
-            warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
-          } else {
-            warningMessage = response.failed.length > 1
-              ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
-                  count: response.failed.length,
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
-              : i18n.global.t('messages.pluginListRefreshPartial', {
-                  target: failureTarget,
-                  error: firstFailure.error,
-                })
-          }
-        } else {
-          warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
-        }
-      }
-    } catch (err: any) {
-      const status = err?.response?.status
-      if (status !== 401 && status !== 403 && status !== 404) {
-        throw err
-      }
-      warningMessage = status === 403
-        ? i18n.global.t('messages.pluginListRefreshForbidden')
-        : status === 404
-          ? i18n.global.t('messages.resourceNotFound')
-          : i18n.global.t('messages.pluginListRefreshUnauthenticated')
+  async function refreshLoadedPluginData(options: RegistrySyncOptions = {}) {
+    const tasks: Promise<unknown>[] = []
+    if (pluginSummarySnapshotLoaded.value) {
+      tasks.push(fetchPluginSummaries(true, options))
     }
-
-    await fetchPlugins(true, options)
-    pluginListRegistrySynced.value = true
-    return {
-      registryRefreshed,
-      warningMessage,
+    if (pluginsSnapshotLoaded.value) {
+      tasks.push(fetchPlugins(true, options))
     }
+    for (const id of Object.keys(pluginDetails.value)) {
+      tasks.push(fetchPluginDetail(id, true))
+    }
+    if (tasks.length === 0) {
+      tasks.push(fetchPluginSummaries(true, options))
+    }
+    await Promise.all(tasks)
   }
 
-  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
+  async function syncRegistryAndFetchView(
+    view: 'summary' | 'full',
+    options: RegistrySyncOptions = {},
+  ): Promise<RegistrySyncResult> {
     let result: RegistrySyncResult
     try {
       const response = await refreshPluginsRegistry(
         options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
       )
       result = { registryRefreshed: true, warningMessage: null }
-      if (response.success === false && response.failed[0]) {
+      if (response.success === false) {
         const firstFailure = response.failed[0]
-        const target = firstFailure.plugin_id || firstFailure.config_path
-        result.warningMessage = response.failed.length > 1
-          ? i18n.global.t('messages.pluginListRefreshPartialMultiple', { count: response.failed.length, target, error: firstFailure.error })
-          : i18n.global.t('messages.pluginListRefreshPartial', { target, error: firstFailure.error })
+        const target = firstFailure?.plugin_id || firstFailure?.config_path
+        result.warningMessage = !target
+          ? i18n.global.t('messages.pluginListRefreshPartialUnknown')
+          : response.failed.length > 1
+            ? i18n.global.t('messages.pluginListRefreshPartialMultiple', { count: response.failed.length, target, error: firstFailure.error })
+            : i18n.global.t('messages.pluginListRefreshPartial', { target, error: firstFailure.error })
       }
     } catch (err: any) {
       const status = err?.response?.status
@@ -344,9 +321,18 @@ export const usePluginStore = defineStore('plugin', () => {
           : status === 404 ? i18n.global.t('messages.resourceNotFound') : i18n.global.t('messages.pluginListRefreshUnauthenticated'),
       }
     }
-    await fetchPluginSummaries(true, options)
+    if (view === 'summary') await fetchPluginSummaries(true, options)
+    else await fetchPlugins(true, options)
     pluginListRegistrySynced.value = true
     return result
+  }
+
+  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}) {
+    return syncRegistryAndFetchView('full', options)
+  }
+
+  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}) {
+    return syncRegistryAndFetchView('summary', options)
   }
 
   async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
@@ -465,11 +451,7 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function fetchPluginsAfterMutation() {
-    if (pluginSummarySnapshotLoaded.value) await fetchPluginSummaries(true)
-    if (pluginsSnapshotLoaded.value) await fetchPlugins(true)
-    for (const id of Object.keys(pluginDetails.value)) {
-      await fetchPluginDetail(id, true)
-    }
+    await refreshLoadedPluginData()
   }
 
   function setSelectedPlugin(pluginId: string | null) {
@@ -500,6 +482,7 @@ export const usePluginStore = defineStore('plugin', () => {
     fetchPluginDetail,
     ensurePlugin,
     ensurePlugins,
+    refreshLoadedPluginData,
     syncRegistryAndFetch,
     syncRegistryAndFetchSummaries,
     ensurePluginListRegistrySynced,

@@ -529,6 +529,48 @@ def _append_entry_summaries_from_preview(
         )
 
 
+def _prepare_plugin_projection(
+    *,
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+    running_plugin_ids: set[str],
+    locale: str,
+    install_source_by_plugin_id: Mapping[str, LockEntry],
+    install_source_by_directory_name: Mapping[str, LockEntry],
+    fields: tuple[str, ...] | None = None,
+    include_empty_i18n: bool = False,
+) -> tuple[dict[str, object], object]:
+    """Build shared card data before full or summary entry serialization."""
+    plugin_info = (
+        dict(plugin_meta)
+        if fields is None
+        else {field: plugin_meta[field] for field in fields if field in plugin_meta}
+    )
+    plugin_info["id"] = plugin_id
+    plugin_info["status"] = _resolve_plugin_status(
+        plugin_id=plugin_id,
+        plugin_meta=plugin_meta,
+        running_plugin_ids=running_plugin_ids,
+    )
+    plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+    _resolve_plugin_display_fields(plugin_info, plugin_i18n, locale=locale)
+    plugin_i18n_payload = _plugin_card_i18n_payload(plugin_meta, plugin_i18n)
+    if include_empty_i18n or plugin_i18n_payload:
+        plugin_info["i18n"] = plugin_i18n_payload
+    plugin_info["list_actions"] = resolve_i18n_refs(
+        _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
+        plugin_i18n,
+        locale=locale,
+    )
+    _attach_install_source(
+        plugin_info,
+        plugin_id=plugin_id,
+        by_plugin_id=install_source_by_plugin_id,
+        by_directory_name=install_source_by_directory_name,
+    )
+    return plugin_info, plugin_i18n
+
+
 _PLUGIN_SUMMARY_FIELDS = (
     "id", "name", "description", "short_description", "version", "type",
     "sdk_version", "sdk_recommended", "sdk_supported", "sdk_untested",
@@ -585,16 +627,15 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
             if not isinstance(plugin_meta_obj, Mapping):
                 raise TypeError("plugin metadata is not a mapping")
             plugin_meta = _normalize_mapping(plugin_meta_obj, context=f"plugins[{plugin_id}]")
-            plugin_info = {
-                field: plugin_meta[field]
-                for field in _PLUGIN_SUMMARY_FIELDS
-                if field in plugin_meta
-            }
-            plugin_info["id"] = plugin_id
-            plugin_info["status"] = _resolve_plugin_status(
+            plugin_info, plugin_i18n = _prepare_plugin_projection(
                 plugin_id=plugin_id,
                 plugin_meta=plugin_meta,
                 running_plugin_ids=running_plugin_ids,
+                locale=effective_locale,
+                install_source_by_plugin_id=install_source_by_plugin_id,
+                install_source_by_directory_name=install_source_by_directory_name,
+                fields=_PLUGIN_SUMMARY_FIELDS,
+                include_empty_i18n=True,
             )
             plugin_handlers = handlers_snapshot if "." in plugin_id else handlers_by_plugin.get(plugin_id, {})
             entries, seen = _build_entry_summaries_from_handlers(
@@ -607,9 +648,6 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
                 entries=entries,
                 seen=seen,
             )
-            plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
-            _resolve_plugin_display_fields(plugin_info, plugin_i18n, locale=effective_locale)
-            plugin_info["i18n"] = _plugin_card_i18n_payload(plugin_meta, plugin_i18n)
             plugin_info["entries"] = [
                 resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)
                 for entry in entries
@@ -622,17 +660,6 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
             dependencies_obj = plugin_info.get("dependencies")
             plugin_info["dependency_count"] = (
                 len(dependencies_obj) if isinstance(dependencies_obj, list) else 0
-            )
-            plugin_info["list_actions"] = resolve_i18n_refs(
-                _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
-                plugin_i18n,
-                locale=effective_locale,
-            )
-            _attach_install_source(
-                plugin_info,
-                plugin_id=plugin_id,
-                by_plugin_id=install_source_by_plugin_id,
-                by_directory_name=install_source_by_directory_name,
             )
             result.append(plugin_info)
         except (ServerDomainError, IO_RUNTIME_ERRORS) as exc:
@@ -744,13 +771,15 @@ def _build_plugin_list_sync(
                 raise TypeError("plugin metadata is not a mapping")
 
             plugin_meta = _normalize_mapping(plugin_meta_obj, context=f"plugins[{plugin_id}]")
-            plugin_info = dict(plugin_meta)
-            plugin_info.pop("entries_preview", None)
-            plugin_info["status"] = _resolve_plugin_status(
+            plugin_info, plugin_i18n = _prepare_plugin_projection(
                 plugin_id=plugin_id,
                 plugin_meta=plugin_meta,
                 running_plugin_ids=running_plugin_ids,
+                locale=effective_locale,
+                install_source_by_plugin_id=install_source_by_plugin_id,
+                install_source_by_directory_name=install_source_by_directory_name,
             )
+            plugin_info.pop("entries_preview", None)
 
             # The normal event-key spelling is unambiguous and uses the
             # indexed bucket.  Keep the full snapshot for plugin ids that can
@@ -773,11 +802,6 @@ def _build_plugin_list_sync(
                 entries=entries,
                 seen=seen,
             )
-            plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
-            _resolve_plugin_display_fields(plugin_info, plugin_i18n, locale=effective_locale)
-            plugin_i18n_payload = _plugin_card_i18n_payload(plugin_meta, plugin_i18n)
-            if plugin_i18n_payload:
-                plugin_info["i18n"] = plugin_i18n_payload
             entries = [
                 resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)  # type: ignore[misc]
                 for entry in entries
@@ -785,17 +809,6 @@ def _build_plugin_list_sync(
             ]
 
             plugin_info["entries"] = entries
-            plugin_info["list_actions"] = resolve_i18n_refs(
-                _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
-                plugin_i18n,
-                locale=effective_locale,
-            )
-            _attach_install_source(
-                plugin_info,
-                plugin_id=plugin_id,
-                by_plugin_id=install_source_by_plugin_id,
-                by_directory_name=install_source_by_directory_name,
-            )
             if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
                 # Public cards carry display/status data, not local directory
                 # provenance or detailed runtime errors containing source paths.

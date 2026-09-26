@@ -1097,7 +1097,7 @@ async function pollInstallTask(
               ? t('market.upgradeSuccess', { name: pluginName })
               : t('market.installSuccess', { name: pluginName }),
           )
-          await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+          await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
           await yankSweep().catch(() => undefined)
           return true
         }
@@ -1181,7 +1181,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         await pollInstallTask(data.task_id, plugin.name)
       } else {
         ElMessage.success(t('market.installSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+        await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 403) {
@@ -1330,7 +1330,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         await pollInstallTask(data.task_id, plugin.name, { mode: action.kind })
       } else {
         ElMessage.success(t('market.upgradeSuccess', { name: plugin.name }))
-        await pluginStore.syncRegistryAndFetch().catch(() => undefined)
+          await pluginStore.syncRegistryAndFetchSummaries().catch(() => undefined)
         await yankSweep().catch(() => undefined)
       }
     } else if (res.status === 400) {
