@@ -346,6 +346,24 @@ describe('market install task store — step checklist', () => {
     store.dismiss()
   })
 
+  it('drops the unused rollback row once an upgrade succeeds', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'replace', progress: 0.8, rollback: { prepared: true, restored: false } }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1, rollback: { prepared: true, restored: false, backup_dir: '/tmp/b' } }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await tick()
+    await p
+
+    // Regression guard: the backend keeps ``prepared`` after every successful
+    // upgrade, which used to show a ticked "rollback" row.
+    expect(store.steps.map((step) => step.id)).toEqual(['download', 'verify', 'replace', 'completed'])
+    expect(store.steps.every((step) => step.state === 'done')).toBe(true)
+    store.dismiss()
+  })
+
   it('marks a restored rollback done and blames the step it undid', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'rollback', progress: 0.9, rollback: { prepared: true, restored: false, running: true } }) as never)

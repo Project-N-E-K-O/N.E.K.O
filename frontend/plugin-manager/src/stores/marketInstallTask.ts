@@ -261,7 +261,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     if (furthestStep && furthestStep !== 'completed') ids.add(furthestStep)
     // The backend marks the replacement transaction as rollback-capable before
     // it flips ``stage``, so a prepared rollback belongs in the list already.
-    if (current.rollback?.prepared) ids.add('rollback')
+    // A successful upgrade keeps ``prepared`` (the backup exists) although the
+    // rollback never ran; listing it then would read as "rolled back".
+    if (current.rollback?.prepared && current.status !== 'completed') ids.add('rollback')
 
     const ordered = [...ids].sort((a, b) => orderOf(a) - orderOf(b))
     ordered.push('completed')

@@ -329,9 +329,12 @@ describe('plugin updates store — upgrade', () => {
     })
 
     const store = await seedOneCandidate()
+    expect(store.completedUpgrades).toBe(0)
     await expect(store.updateOne('alpha')).resolves.toBe(true)
 
     expect(store.candidates).toEqual([])
+    // The Market page watches this to refresh its own installed snapshot.
+    expect(store.completedUpgrades).toBe(1)
     expect(installBodies(fetchMock)).toEqual([
       expect.objectContaining({
         mode: 'upgrade',

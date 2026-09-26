@@ -271,7 +271,19 @@ function onDragEnd(event: PointerEvent): void {
   stopDragTracking()
 }
 
-onBeforeUnmount(stopDragTracking)
+/** Dragged offsets are only clamped while dragging; after the app window
+ *  shrinks they can sit entirely off-screen, with the close control out of
+ *  reach. Fall back to the anchored corner, like reopening does. */
+function onViewportResize(): void {
+  if (dragOffset.value && !dragging.value) dragOffset.value = null
+}
+
+window.addEventListener('resize', onViewportResize)
+
+onBeforeUnmount(() => {
+  stopDragTracking()
+  window.removeEventListener('resize', onViewportResize)
+})
 
 const title = computed(() => (
   updates.candidates.length > 0

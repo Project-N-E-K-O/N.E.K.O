@@ -135,6 +135,9 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   const batchRunning = ref(false)
   const batchDone = ref(0)
   const batchTotal = ref(0)
+  /** Bumped per successful popup upgrade, so the Market page can drop its own
+   *  installed-version snapshot instead of offering the same upgrade again. */
+  const completedUpgrades = ref(0)
 
   const updating = computed(
     () => candidates.value.some((candidate) => candidate.status === 'updating'),
@@ -278,6 +281,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {
       updateLog.warn('registry sync failed after upgrade', err)
     })
+    completedUpgrades.value += 1
   }
 
   async function updateOne(pluginId: string): Promise<boolean> {
@@ -514,6 +518,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     batchRunning,
     batchDone,
     batchTotal,
+    completedUpgrades,
     busy,
     check,
     updateOne,

@@ -290,6 +290,7 @@ import {
   type MarketInstallMode,
 } from '@/stores/marketInstallTask'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import { useUserPreferenceStore } from '@/stores/userPreference'
 import {
   isGithubReleaseDownloadUrl,
@@ -359,6 +360,14 @@ const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
 
 const installTask = useMarketInstallTaskStore()
 const installTaskDialogVisible = ref(false)
+const pluginUpdates = usePluginUpdatesStore()
+
+// The update popup and this page keep separate installed-version snapshots;
+// an upgrade from either side must refresh the other, or it keeps offering
+// the version that was just installed.
+watch(() => pluginUpdates.completedUpgrades, () => {
+  void yankSweep().catch(() => undefined)
+})
 
 // 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，关掉它不该让
 // 取消能力随之消失。文案必须是本地化的，后端 message 不进入可见文本。
@@ -434,6 +443,7 @@ async function runInstallTask(
     )
     await pluginStore.syncRegistryAndFetch().catch(() => undefined)
     await yankSweep().catch(() => undefined)
+    if (pluginUpdates.candidates.length > 0) void pluginUpdates.check({ force: true })
   } else if (outcome.canceled) {
     ElMessage.info(t('market.installCancelled'))
   } else if (outcome.aborted) {

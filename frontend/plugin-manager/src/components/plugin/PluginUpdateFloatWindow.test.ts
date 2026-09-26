@@ -411,6 +411,22 @@ describe('plugin update float window — drag', () => {
     expect(el.style.right).toBe('auto')
   })
 
+  it('returns to the anchored corner when the viewport is resized', async () => {
+    const { el, header } = mountedWithGeometry()
+
+    drag(header, [520, 120], [440, 220])
+    window.dispatchEvent(pointer('pointerup', { pointerId: 7 }))
+    await nextTick()
+    expect(el.style.left).toBe('200px')
+
+    // Regression guard: offsets were only clamped while dragging, so a shrunk
+    // app window could leave the popup (and its close button) off-screen.
+    window.dispatchEvent(new Event('resize'))
+    await nextTick()
+    expect(el.style.left).toBe('')
+    expect(el.style.top).toBe('')
+  })
+
   it('never lets the window be dragged over the app header', async () => {
     const { el, header } = mountedWithGeometry()
 
