@@ -453,6 +453,13 @@
         if (container._originalMaxWidth !== undefined) {
             container.style.maxWidth = container._originalMaxWidth;
         }
+        if (container._originalMaxHeight === undefined) {
+            container._originalMaxHeight = container.style.maxHeight;
+            container._originalOverflowY = container.style.overflowY;
+        } else {
+            container.style.maxHeight = container._originalMaxHeight;
+            container.style.overflowY = container._originalOverflowY;
+        }
         void container.offsetHeight; // 强制 reflow，基于干净状态测量尺寸
         // 记录原始 maxWidth 供后续恢复
         if (container._originalMaxWidth === undefined) {
@@ -491,7 +498,7 @@
             container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
         }
         const panelW = container.offsetWidth * panelScale;
-        const panelH = container.offsetHeight * panelScale;
+        let panelH = container.offsetHeight * panelScale;
         const sideSpace = goLeft ? popupRect.left - gap - edgeMargin
             : screenW - popupRect.right - gap - edgeMargin;
         if (!isNiriPetPhysicalCrop && sideSpace < Math.min(240 * panelScale, panelW)) {
@@ -506,27 +513,39 @@
                           : popupId.startsWith('live2d-') ? 'live2d'
                           : popupId.startsWith('mmd-') ? 'mmd' : '';
 
-        if (goDown) {
-            // 手机端：向下展开到 popup 下方
-            let panelTop = popupRect.bottom + gap;
+        function positionStackedPanel(buttonZone) {
             let panelLeft = Math.max(edgeMargin, popupRect.left);
-
-            // 超出屏幕右边缘时限制宽度
             if (panelLeft + panelW > screenW - edgeMargin) {
                 panelLeft = edgeMargin;
             }
-            // 超出屏幕底部时改为向上展开
-            if (panelTop + panelH > screenH - bottomSafe) {
-                panelTop = popupRect.top - gap - panelH;
+            let blockedTop = popupRect.top;
+            let blockedBottom = popupRect.bottom;
+            if (buttonZone && buttonZone.hasButtons
+                && panelLeft + panelW > buttonZone.left && panelLeft < buttonZone.right) {
+                blockedTop = Math.min(blockedTop, buttonZone.top);
+                blockedBottom = Math.max(blockedBottom, buttonZone.bottom);
             }
-            // 再次检查顶部边界
-            if (panelTop < edgeMargin) {
-                panelTop = edgeMargin;
-            }
-
+            const above = Math.max(0, blockedTop - gap - edgeMargin);
+            const below = Math.max(0, screenH - bottomSafe - blockedBottom - gap);
+            const placeBelow = below >= panelH || (above < panelH && below >= above);
+            const availableHeight = placeBelow ? below : above;
+            // Fit the content into a free region instead of clamping a tall
+            // panel across its owner. These limits are restored on reposition.
+            const style = window.getComputedStyle(container);
+            const verticalInsets = style.boxSizing === 'border-box' ? 0
+                : parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+                    + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+            container.style.maxHeight = `${Math.max(0, toLocalCssPx(Math.min(panelH, availableHeight), panelScale) - verticalInsets)}px`;
+            container.style.overflowY = 'auto';
+            panelH = container.offsetHeight * panelScale;
+            const panelTop = placeBelow ? blockedBottom + gap : blockedTop - gap - panelH;
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
-            container.style.top = `${panelTop}px`;
+            container.style.top = `${Math.max(edgeMargin, panelTop)}px`;
+        }
+
+        if (goDown) {
+            positionStackedPanel(getButtonZone(ownerPrefix));
             entryMotion = 'translateY(-6px)';
         } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
@@ -585,8 +604,7 @@
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
                 if (goDown) {
-                    // 手机端：向上展开
-                    container.style.top = `${Math.max(edgeMargin, zone.top - gap - panelH)}px`;
+                    positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
                     container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
@@ -615,7 +633,7 @@
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
                 if (_goDown) {
-                    _containerRef.style.top = `${Math.max(_edgeMargin, z.top - _gap - r.height)}px`;
+                    positionStackedPanel(z);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;

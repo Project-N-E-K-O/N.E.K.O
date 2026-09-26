@@ -10,10 +10,10 @@ APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
 VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
-    "window:resize",
     "window:scroll",
 )
 VOICE_POPOVER_GLOBAL_LISTENERS = (
+    "window:resize",
     "window:voice-input-lifecycle-changed",
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
@@ -836,6 +836,61 @@ def test_screen_panel_remains_usable_without_side_space(
 @pytest.mark.frontend
 @pytest.mark.parametrize("opens_left", [False, True])
 @pytest.mark.parametrize("shared_helper", [False, True])
+@pytest.mark.parametrize("owner_top", [120, 180])
+def test_stacked_screen_panel_avoids_owner_in_short_viewport(
+    page: Page, opens_left: bool, shared_helper: bool, owner_top: int,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    if shared_helper:
+        page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+            encoding="utf-8"
+        ))
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.evaluate("""async ({opensLeft, ownerTop}) => {
+        const test = window.__voicePopoverTest;
+        await window.renderFloatingMicList(test.popup());
+        const popup = test.popup();
+        popup.dataset.opensLeft = String(opensLeft);
+        Object.assign(popup.style, {top: ownerTop + 'px', height: '350px',
+            left: opensLeft ? '8px' : (innerWidth - popup.offsetWidth - 8) + 'px'});
+        const render = window.renderFloatingScreenSourceList;
+        window.renderFloatingScreenSourceList = async (container) => {
+            await render(container);
+            const spacer = document.createElement('div');
+            spacer.style.cssText = 'height:400px;flex-shrink:0';
+            container.appendChild(spacer);
+            const last = document.createElement('button');
+            last.id = 'last-screen-source';last.textContent = 'last source';
+            last.onclick = () => { window.__lastSourceClicked = true; };
+            container.appendChild(last);
+        };
+        test.action('screen').click();
+    }""", {"opensLeft": opens_left, "ownerTop": owner_top})
+    page.wait_for_timeout(350)
+    result = page.evaluate("""() => {
+        const test = window.__voicePopoverTest;
+        const a = test.popup().getBoundingClientRect();
+        const b = test.ownedPanels()[0].getBoundingClientRect();
+        return {clear: b.bottom <= a.top || b.top >= a.bottom,
+            withinViewport: b.top >= 0 && b.bottom <= innerHeight,
+            height: b.height};
+    }""")
+    assert result['clear']
+    assert result['withinViewport']
+    assert result['height'] >= 64
+    page.locator('#last-screen-source').click()
+    assert page.evaluate('window.__lastSourceClicked')
+    page.set_viewport_size({"width": 900, "height": 1100})
+    page.wait_for_timeout(350)
+    restored = page.locator('.neko-mic-subwindow').bounding_box()
+    assert restored and restored['height'] >= 300
+    page.locator('.neko-mic-subwindow [aria-label="Close"]').click()
+    assert page.evaluate('window.__voicePopoverTest.panels()') == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("opens_left", [False, True])
+@pytest.mark.parametrize("shared_helper", [False, True])
 def test_screen_and_device_panels_follow_owner_direction(
     page: Page, opens_left: bool, shared_helper: bool,
 ) -> None:
@@ -870,6 +925,47 @@ def test_screen_and_device_panels_follow_owner_direction(
     )
     expected = {"side": "left" if opens_left else "right", "withinViewport": True}
     assert result == {"device": expected, "screen": expected}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("box_sizing", ["border-box", "content-box"])
+@pytest.mark.parametrize("scale", [1, 1.25])
+def test_shared_stacked_panel_bounds_include_padding_and_scale(
+    page: Page, box_sizing: str, scale: float,
+) -> None:
+    page.set_viewport_size({"width": 900, "height": 600})
+    page.set_content(
+        f'<div id="live2d-floating-buttons" style="width:0;height:0;transform:scale({scale})"></div>'
+        '<div id="live2d-popup-mic" data-opens-left="true" '
+        'style="position:fixed;left:8px;top:120px;width:220px;height:350px"></div>'
+        f'<div id="panel" style="position:fixed;width:360px;height:320px;padding:8px;'
+        f'border:1px solid;box-sizing:{box_sizing}"><div style="height:500px">content</div></div>'
+    )
+    page.add_script_tag(content=(ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    ))
+    result = page.evaluate("""async () => {
+        const owner = document.getElementById('live2d-popup-mic');
+        const panel = document.getElementById('panel');
+        panel._popupElement = owner;
+        window.AvatarPopupUI.positionSidePanel(panel, owner);
+        window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+        const a = owner.getBoundingClientRect(), initial = panel.getBoundingClientRect();
+        const initiallyClear = initial.bottom <= a.top || initial.top >= a.bottom;
+        // A newly visible floating button exercises the delayed collision pass.
+        const button = document.createElement('button');
+        button.id = 'live2d-btn-test';
+        button.style.cssText = 'position:fixed;left:8px;top:8px;width:48px;height:48px';
+        document.body.appendChild(button);
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const b = panel.getBoundingClientRect(), c = button.getBoundingClientRect();
+        return {initiallyClear, clear: b.bottom <= a.top || b.top >= a.bottom,
+            buttonClear: b.bottom <= c.top || b.top >= c.bottom,
+            inBounds: b.top >= 0 && b.bottom <= innerHeight,
+            scrollable: panel.scrollHeight > panel.clientHeight};
+    }""")
+    assert result == {"initiallyClear": True, "clear": True, "buttonClear": True,
+                      "inBounds": True, "scrollable": True}
 
 
 @pytest.mark.frontend

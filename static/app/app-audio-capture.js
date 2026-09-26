@@ -3815,22 +3815,36 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 var viewportWidth = Math.max(1, window.innerWidth - gap * 2);
                 var stackPanel = availableWidth < Math.min(240, viewportWidth);
                 panel.style.maxWidth = (stackPanel ? viewportWidth : availableWidth) + 'px';
+                if (panel._originalMaxHeight === undefined) {
+                    panel._originalMaxHeight = panel.style.maxHeight;
+                    panel._originalOverflowY = panel.style.overflowY;
+                } else {
+                    panel.style.maxHeight = panel._originalMaxHeight;
+                    panel.style.overflowY = panel._originalOverflowY;
+                }
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
                 var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
                 var desiredTop = rect.top;
                 if (stackPanel) {
                     left = Math.min(rect.left, window.innerWidth - panelWidth - gap);
-                    desiredTop = rect.bottom + gap;
-                    if (desiredTop + panelHeight > window.innerHeight - gap) {
-                        desiredTop = rect.top - panelHeight - gap;
-                    }
+                    var above = Math.max(0, rect.top - gap * 2);
+                    var below = Math.max(0, window.innerHeight - rect.bottom - gap * 2);
+                    var placeBelow = below >= panelHeight || (above < panelHeight && below >= above);
+                    panel.style.maxHeight = Math.max(1, Math.min(panelHeight, placeBelow ? below : above)) + 'px';
+                    panel.style.overflowY = 'auto';
+                    panelHeight = panel.offsetHeight;
+                    desiredTop = placeBelow ? rect.bottom + gap : rect.top - panelHeight - gap;
                 }
                 left = Math.max(gap, left);
                 var top = Math.max(gap, Math.min(desiredTop, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
             }
+
+            addVoiceWindowListener('resize', function () {
+                positionMicSubwindow(getOwnedMicSubwindow());
+            });
 
             function createMicSubwindow(title, iconText, width) {
                 // Keep activeMicActionKey; only tear down the previous DOM panel.
