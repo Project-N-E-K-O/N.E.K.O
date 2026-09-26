@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 保留主分支插件 HTML 卡片、AgentHUD 与唤醒词提示，更新网页和 Electron 的语言包缓存。
-    const LOCALE_VERSION = '2026-09-23-voice-wake-word-plugin-html-main';
+    const LOCALE_VERSION = '2026-09-27-pr3172-review-comments-2';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

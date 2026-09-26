@@ -21,7 +21,16 @@
     function updateRecoveryStatus(state) {
         const el = recoveryStatusElement();
         if (!el) return;
-        const messages = { recovering: '正在恢复语音识别…', ready: '语音识别已恢复', failed: '语音识别恢复失败，请重试' };
+        const messageFor = (key, fallback) => {
+            const translated = typeof window.t === 'function' ? window.t(key) : '';
+            return typeof translated === 'string' && translated && translated !== key
+                ? translated : fallback;
+        };
+        const messages = {
+            recovering: messageFor('voiceIdentity.recoveryRecovering', '正在恢复语音识别…'),
+            ready: messageFor('voiceIdentity.recoveryReady', '语音识别已恢复'),
+            failed: messageFor('voiceIdentity.recoveryFailed', '语音识别恢复失败，请重试')
+        };
         if (messages[state] && typeof window.showStatusToast === 'function') {
             window.showStatusToast(messages[state], state === 'ready' ? 1600 : 4000);
         }

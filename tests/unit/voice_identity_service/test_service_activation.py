@@ -403,7 +403,10 @@ async def test_expiry_during_validation_retires_operation_before_late_result(
         )
     )
     await asyncio.wait_for(validator.started.wait(), 1.0)
-    await _wait_until(lambda: service.status().enrollment is None)
+    await _wait_until(
+        lambda: service.status().enrollment is None,
+        timeout_seconds=3.0,
+    )
     with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
         await submission
     assert model.inference_count == 0
