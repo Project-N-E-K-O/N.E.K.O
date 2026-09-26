@@ -1205,24 +1205,6 @@
     }
     mod.stopScreening = stopScreening;
 
-    function releaseCachedStreamForNewPicker() {
-        stopScreening();
-        if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
-            try {
-                S.screenCaptureStream.getTracks().forEach(function (track) {
-                    try { track.stop(); } catch (_) { }
-                });
-            } catch (_) { }
-        }
-        S.screenCaptureStream = null;
-        S.screenCaptureStreamLastUsed = null;
-        if (S.screenCaptureStreamIdleTimer) {
-            clearTimeout(S.screenCaptureStreamIdleTimer);
-            S.screenCaptureStreamIdleTimer = null;
-        }
-    }
-    mod.releaseCachedStreamForNewPicker = releaseCachedStreamForNewPicker;
-
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
         // 更新所有存在的 manager 的按钮状态
@@ -1752,7 +1734,8 @@
         return true;
     }
 
-    async function startScreenSharing() {
+    async function startScreenSharing(options) {
+        options = options || {};
         if (isScreenSharingStartPending()) {
             return screenSharingStartAttempt.promise;
         }
@@ -1764,7 +1747,9 @@
 
         var attempt = {
             cancelled: false,
-            initialStream: S.screenCaptureStream,
+            forceNewCapture: options.forceNewCapture === true,
+            previousStream: options.forceNewCapture === true ? S.screenCaptureStream : null,
+            initialStream: options.forceNewCapture === true ? null : S.screenCaptureStream,
             acquiredStream: null,
             promise: null
         };
@@ -2267,6 +2252,24 @@
             }
 
             if (discardCancelledScreenSharingStart(attempt)) return;
+            if (attempt.forceNewCapture && attempt.previousStream
+                && attempt.previousStream !== captureStream) {
+                try {
+                    if (typeof attempt.previousStream.getTracks === 'function') {
+                        attempt.previousStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    }
+                } catch (_) { }
+                if (S.screenCaptureStream === attempt.previousStream) {
+                    S.screenCaptureStream = null;
+                    S.screenCaptureStreamLastUsed = null;
+                }
+                if (S.screenCaptureStreamIdleTimer) {
+                    clearTimeout(S.screenCaptureStreamIdleTimer);
+                    S.screenCaptureStreamIdleTimer = null;
+                }
+            }
             if (captureStream !== attempt.initialStream) {
                 S.screenCaptureStream = captureStream;
             }
@@ -2724,11 +2727,10 @@
                             );
                             return;
                         }
-                        if (S.screenCaptureStream && S.screenCaptureStream.active) {
-                            releaseCachedStreamForNewPicker();
-                        }
                         if (typeof window.startScreenSharing === 'function') {
-                            await window.startScreenSharing();
+                            await window.startScreenSharing({
+                                forceNewCapture: !!(S.screenCaptureStream && S.screenCaptureStream.active)
+                            });
                         } else {
                             throw new Error('Screen sharing is unavailable');
                         }
@@ -2818,13 +2820,12 @@
                         );
                         return;
                     }
-                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
-                        releaseCachedStreamForNewPicker();
-                    }
                     if (typeof window.startScreenSharing !== 'function') {
                         throw new Error('Screen sharing is unavailable');
                     }
-                    await window.startScreenSharing();
+                    await window.startScreenSharing({
+                        forceNewCapture: !!(S.screenCaptureStream && S.screenCaptureStream.active)
+                    });
                 } catch (error) {
                     console.warn('[屏幕源] 浏览器选择器启动失败:', error);
                 } finally {
