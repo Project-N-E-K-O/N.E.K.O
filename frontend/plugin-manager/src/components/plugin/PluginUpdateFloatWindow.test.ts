@@ -20,7 +20,8 @@ vi.mock('@/stores/pluginUpdates', () => ({
 
 // The shared install-task store is exercised by its own spec; here it only has
 // to look idle so the progress panel stays hidden.
-const installTask = { task: null as unknown, owner: null as string | null, reservation: null as string | null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
+// Reactive so the popup's close watcher sees slot / task changes like production.
+const installTask = reactive({ task: null as unknown, owner: null as string | null, reservation: null as string | null, running: false, done: false, dismiss: vi.fn(), percent: 0 })
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => installTask,
 }))
@@ -310,11 +311,10 @@ describe('plugin update float window', () => {
       // mid-preflight, letting the Market page start a concurrent worker.
       expect(installTask.dismiss).not.toHaveBeenCalled()
 
-      cleanup()
+      // The queued upgrade then fails before creating its task and releases
+      // the slot: the finished panel must still be cleared, or it reappears
+      // next to the failed row when the popup is reopened.
       installTask.reservation = null
-      const idle = makeStore({ candidates: [candidate()] })
-      mount()
-      idle.popupOpen = false
       await nextTick()
       expect(installTask.dismiss).toHaveBeenCalledWith('float')
     } finally {

@@ -145,12 +145,15 @@ const showProgress = computed(() => !!installTask.task && installTask.owner === 
  *  release a task this surface started, never one the Market dialog owns.
  *  A held reservation means the next upgrade is already between its version
  *  lookup and its POST: `dismiss` would free that slot and let the Market page
- *  start a concurrent worker. `track` replaces the finished task anyway. */
-watch(() => updates.popupOpen, (open) => {
-  if (!open && installTask.done && installTask.reservation !== 'float') {
-    installTask.dismiss('float')
-  }
-})
+ *  start a concurrent worker. `track` replaces the finished task anyway.
+ *  Re-evaluated when the slot or the task settles, so a preflight that fails
+ *  before creating its task still clears the stale panel it left behind. */
+watch(
+  () => [updates.popupOpen, installTask.reservation, installTask.done] as const,
+  ([open, reservation, done]) => {
+    if (!open && done && reservation !== 'float') installTask.dismiss('float')
+  },
+)
 
 // ─── drag handle ────────────────────────────────────────────────────────────
 //
