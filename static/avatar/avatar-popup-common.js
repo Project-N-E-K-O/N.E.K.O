@@ -436,7 +436,13 @@
      * container: 侧面板元素（position: fixed, 挂在 document.body）
      * anchor: 触发菜单项元素（用于垂直参考）
      */
-    function positionSidePanel(container, anchor, options = {}) {
+    function positionSidePanel(container, anchor, options = {}, checkAfterAnimation = true) {
+        const positionRevision = (container._nekoPositionRevision || 0) + 1;
+        container._nekoPositionRevision = positionRevision;
+        if (container._nekoPositionCheckTimer != null) {
+            clearTimeout(container._nekoPositionCheckTimer);
+            container._nekoPositionCheckTimer = null;
+        }
         const gap = Number.isFinite(options.gap) ? options.gap : 12;
         const edgeMargin = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
         const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
@@ -453,6 +459,13 @@
         if (container._originalMaxWidth !== undefined) {
             container.style.maxWidth = container._originalMaxWidth;
         }
+        if (container._originalMaxHeight === undefined) {
+            container._originalMaxHeight = container.style.maxHeight;
+            container._originalOverflowY = container.style.overflowY;
+        } else {
+            container.style.maxHeight = container._originalMaxHeight;
+            container.style.overflowY = container._originalOverflowY;
+        }
         void container.offsetHeight; // 强制 reflow，基于干净状态测量尺寸
         // 记录原始 maxWidth 供后续恢复
         if (container._originalMaxWidth === undefined) {
@@ -467,8 +480,7 @@
         const placementApi = niriViewport ? niriCropApi : null;
         const isNiriPetPhysicalCrop = !!placementApi;
         const isMobile = !isNiriPetPhysicalCrop && (typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768));
-        const goDown = isMobile;
-        container.dataset.goDown = String(goDown);
+        let goDown = isMobile;
 
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──
         const popup = container._popupElement;
@@ -485,8 +497,20 @@
         const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
         const screenW = niriViewport ? niriViewport.width : window.innerWidth;
         const screenH = niriViewport ? niriViewport.height : window.innerHeight;
+        if (!isNiriPetPhysicalCrop) {
+            // Bound the rendered width, including the shared UI scale.
+            const viewportWidth = Math.max(1, toLocalCssPx(screenW - edgeMargin * 2, panelScale));
+            const originalMax = parseFloat(getComputedStyle(container).maxWidth);
+            container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
+        }
         const panelW = container.offsetWidth * panelScale;
-        const panelH = container.offsetHeight * panelScale;
+        let panelH = container.offsetHeight * panelScale;
+        const sideSpace = goLeft ? popupRect.left - gap - edgeMargin
+            : screenW - popupRect.right - gap - edgeMargin;
+        if (!isNiriPetPhysicalCrop && sideSpace < Math.min(240 * panelScale, panelW)) {
+            goDown = true;
+        }
+        container.dataset.goDown = String(goDown);
         let entryMotion = 'translateX(-6px)';
 
         // 从 popup ID 推断系统前缀，用于过滤 getButtonZone
@@ -495,27 +519,39 @@
                           : popupId.startsWith('live2d-') ? 'live2d'
                           : popupId.startsWith('mmd-') ? 'mmd' : '';
 
-        if (goDown) {
-            // 手机端：向下展开到 popup 下方
-            let panelTop = popupRect.bottom + gap;
-            let panelLeft = popupRect.left;
-
-            // 超出屏幕右边缘时限制宽度
+        function positionStackedPanel(buttonZone) {
+            let panelLeft = Math.max(edgeMargin, popupRect.left);
             if (panelLeft + panelW > screenW - edgeMargin) {
                 panelLeft = edgeMargin;
             }
-            // 超出屏幕底部时改为向上展开
-            if (panelTop + panelH > screenH - bottomSafe) {
-                panelTop = popupRect.top - gap - panelH;
+            let blockedTop = popupRect.top;
+            let blockedBottom = popupRect.bottom;
+            if (buttonZone && buttonZone.hasButtons
+                && panelLeft + panelW > buttonZone.left && panelLeft < buttonZone.right) {
+                blockedTop = Math.min(blockedTop, buttonZone.top);
+                blockedBottom = Math.max(blockedBottom, buttonZone.bottom);
             }
-            // 再次检查顶部边界
-            if (panelTop < edgeMargin) {
-                panelTop = edgeMargin;
-            }
-
+            const above = Math.max(0, blockedTop - gap - edgeMargin);
+            const below = Math.max(0, screenH - bottomSafe - blockedBottom - gap);
+            const placeBelow = below >= panelH || (above < panelH && below >= above);
+            const availableHeight = placeBelow ? below : above;
+            // Fit the content into a free region instead of clamping a tall
+            // panel across its owner. These limits are restored on reposition.
+            const style = window.getComputedStyle(container);
+            const verticalInsets = style.boxSizing === 'border-box' ? 0
+                : parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+                    + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+            container.style.maxHeight = `${Math.max(0, toLocalCssPx(Math.min(panelH, availableHeight), panelScale) - verticalInsets)}px`;
+            container.style.overflowY = 'auto';
+            panelH = container.offsetHeight * panelScale;
+            const panelTop = placeBelow ? blockedBottom + gap : blockedTop - gap - panelH;
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
-            container.style.top = `${panelTop}px`;
+            container.style.top = `${Math.max(edgeMargin, panelTop)}px`;
+        }
+
+        if (goDown) {
+            positionStackedPanel(getButtonZone(ownerPrefix));
             entryMotion = 'translateY(-6px)';
         } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
@@ -574,8 +610,7 @@
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
                 if (goDown) {
-                    // 手机端：向上展开
-                    container.style.top = `${zone.top - gap - panelH}px`;
+                    positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
                     container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
@@ -588,6 +623,8 @@
 
         // ── Step 5：动画结束后二次验证（自愈机制）── 非手机端执行
         // 在动画完成后再次检查是否覆盖按钮，修正任何因动画/时序导致的偏差
+        // A delayed correction may remeasure once, but must not start a timer loop.
+        if (!checkAfterAnimation) return;
         const _containerRef = container;
         const _ownerPrefix = ownerPrefix;
         const _goLeft = goLeft;
@@ -595,8 +632,10 @@
         const _gap = gap;
         const _edgeMargin = edgeMargin;
         const _screenW = screenW;
-        setTimeout(() => {
-            if (_containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
+        container._nekoPositionCheckTimer = setTimeout(() => {
+            if (_containerRef._nekoPositionRevision !== positionRevision) return;
+            _containerRef._nekoPositionCheckTimer = null;
+            if (!_containerRef.isConnected || _containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
             const z = getButtonZone(_ownerPrefix);
             if (!z.hasButtons) return;
             const r = _containerRef.getBoundingClientRect();
@@ -604,7 +643,7 @@
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
                 if (_goDown) {
-                    _containerRef.style.top = `${z.top - _gap - r.height}px`;
+                    positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;

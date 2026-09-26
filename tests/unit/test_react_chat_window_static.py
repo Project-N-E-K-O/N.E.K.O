@@ -2688,7 +2688,7 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
         "function getButtonZone",
         1,
     )[0]
-    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+    position_sidepanel_block = source.split("function positionSidePanel(", 1)[1].split(
         "window.AvatarPopupUI =",
         1,
     )[0]
