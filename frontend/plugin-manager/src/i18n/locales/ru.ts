@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * Русский языковой пакет
  */
 export default {
+  modelApi: modelApiMessages['ru'],
+  modelBindings: modelBindingsMessages['ru'],
   development: {
     guidePurpose: "Этот интерфейс не разрабатывает плагины за вас одним нажатием. Он помогает собрать существующие исходники в импортируемый плагин одним нажатием и продолжить разработку.",
     navTitle: "Плагины в разработке",

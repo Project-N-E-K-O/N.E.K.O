@@ -2624,7 +2624,8 @@ document.addEventListener('DOMContentLoaded', function () {
             var href = link.getAttribute('href');
             if (!href) return;
             if (window.electronShell && window.electronShell.openExternal) {
-                window.electronShell.openExternal(href);
+                // shell.openExternal 不能解析相对路径（如插件管理页入口），先转成绝对地址。
+                window.electronShell.openExternal(new URL(href, window.location.href).href);
             } else {
                 window.open(href, '_blank', 'noopener,noreferrer');
             }

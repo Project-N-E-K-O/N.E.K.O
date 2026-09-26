@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 繁體中文語言包
  */
 export default {
+  modelApi: modelApiMessages['zh-TW'],
+  modelBindings: modelBindingsMessages['zh-TW'],
   development: {
     guidePurpose: "此介面不提供一鍵式外掛開發，而是協助開發者將既有原始碼一鍵打包為可匯入的外掛，並支援持續開發。",
     navTitle: "開發外掛",

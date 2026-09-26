@@ -236,6 +236,10 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         ticker && ticker.stop && ticker.stop();
     } catch (_) {}
 
+    if (typeof this.clearLive2DPeek === 'function') {
+        this.clearLive2DPeek('model-removed', { restore: false });
+    }
+
     try {
         stage && stage.removeAllListeners && stage.removeAllListeners();
     } catch (_) {}
@@ -273,6 +277,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     } catch (_) {}
 
     this.currentModel = null;
+    if (typeof this.syncLive2DEffectiveInputLock === 'function') {
+        this.syncLive2DEffectiveInputLock();
+    }
     this._lastLoadedModelPath = null;
     if (typeof this._resetDerivedModelMetadata === 'function') {
         this._resetDerivedModelMetadata();

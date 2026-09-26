@@ -438,6 +438,9 @@
 
         function beginDrag(screenX, screenY, event) {
             if (I.isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;
+            const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
+                ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
+            if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) return;
             I.clearMultiWindowReturnBallDeferredWork(state);
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
@@ -541,7 +544,7 @@
             scheduleReturnBallDragRecoveryCheck();
 
             if (event) {
-                event.preventDefault();
+                if (event.pointerType !== 'touch') event.preventDefault();
                 event.stopImmediatePropagation();
             }
         }
@@ -801,6 +804,14 @@
             if (isThoughtBubbleEventTarget(event)) return;
             beginDrag(event.screenX, event.screenY, event);
         };
+        state.handlePointerDown = (event) => {
+            const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
+                ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
+            if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) {
+                if (!event || event.pointerType !== 'touch') event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        };
         state.handleMouseMove = (event) => {
             if (finishDragIfMouseButtonReleased(event, 'mousemove-buttons-released')) return;
             updateDrag(event.screenX, event.screenY, event);
@@ -822,6 +833,12 @@
         };
         state.handleTouchStart = (event) => {
             if (isThoughtBubbleEventTarget(event)) return;
+            const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
+                ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
+            if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) {
+                event.stopImmediatePropagation();
+                return;
+            }
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
             event.preventDefault();
@@ -868,6 +885,7 @@
             }
         };
 
+        container.addEventListener('pointerdown', state.handlePointerDown, true);
         container.addEventListener('mousedown', state.handleMouseDown, true);
         container.addEventListener('touchstart', state.handleTouchStart, true);
         container.addEventListener('click', state.handleClick, true);

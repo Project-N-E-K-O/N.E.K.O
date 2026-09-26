@@ -1,5 +1,5 @@
 <template>
-  <div class="log-viewer" data-yui-guide-id="log-viewer">
+  <div class="log-viewer" :style="viewerStyle" data-yui-guide-id="log-viewer">
     <div class="toolbar" data-yui-guide-id="log-viewer-toolbar">
       <el-select v-model="levelFilter" class="toolbar-item level-select" data-yui-guide-id="log-filter-level" :placeholder="$t('logs.allLevels')" clearable>
         <el-option :label="$t('logs.allLevels')" value="" />
@@ -77,11 +77,21 @@ import { useLogsStore } from '@/stores/logs'
 import { useLogStream } from '@/composables/useLogStream'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
-import { API_BASE_URL } from '@/utils/constants'
+import { API_BASE_URL, PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   pluginId: string
-}>()
+  height?: string
+}>(), {
+  // 默认填满宿主容器（宿主必须提供确定高度，见 PluginDetail 的 --fill 链）；
+  // min/max 只做兜底，理由见 utils/constants.ts。
+  height: PANEL_FILL_HEIGHT,
+})
+
+const viewerStyle = computed(() => ({
+  height: props.height,
+  maxHeight: PANEL_MAX_HEIGHT,
+}))
 
 const { t } = useI18n()
 const logsStore = useLogsStore()
@@ -324,7 +334,8 @@ onMounted(async () => {
 }
 
 .log-list {
-  height: 420px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   border: 1px solid var(--el-border-color-light);
   border-radius: 6px;

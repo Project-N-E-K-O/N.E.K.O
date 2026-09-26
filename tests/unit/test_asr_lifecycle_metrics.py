@@ -44,7 +44,7 @@ def test_async_detector_and_audio_ordering_metrics_are_low_cardinality() -> None
 
 
 def test_wall_clock_metrics_are_excluded_from_snapshot_comparisons():
-    """Guard the exclusion list in ``test_core_independent_asr`` against typos.
+    """Guard the exclusion list in ``test_speaker_shadow_authority`` against typos.
 
     That test compares whole metric snapshots for equality, so any metric read
     off ``time.monotonic()`` has to be excluded or the assertion turns into a
@@ -58,7 +58,8 @@ def test_wall_clock_metrics_are_excluded_from_snapshot_comparisons():
     from main_logic.asr_client.lifecycle import VoiceLifecycleMetrics
 
     source = (
-        Path(__file__).with_name("test_core_independent_asr.py").read_text(encoding="utf-8")
+        (Path(__file__).parent / "asr_runtime" / "test_speaker_shadow_authority.py")
+        .read_text(encoding="utf-8")
     )
     block = re.search(
         r"volatile_metric_names = frozenset\(\s*\{(.*?)\}\s*\)", source, re.DOTALL

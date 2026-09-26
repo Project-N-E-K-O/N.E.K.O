@@ -1184,7 +1184,14 @@ watch(
 }
 
 .market-panel--embedded {
-  height: 100%;
+  /*
+    min-height 而不是 height：这张白纸面自带背景、圆角与阴影，这些都是画在元素自己盒子上的。
+    写成 height:100% 会被 .plugin-workbench__rail-inner > * 的 100% 钉死，面板内容一旦高于
+    抽屉，溢出的部分（后续卡片、分页条）就落在页面底色上——实测小窗口下市场列表滚到底时，
+    分页条两侧是 rgb(242,243,245) 而不是白底。min-height 让纸面随内容长高，抽屉自己是
+    滚动容器（插件管理里打开态是 overflow-y:auto），滚动行为不变。
+  */
+  min-height: 100%;
   padding: 18px 18px 24px;
   background: var(--el-bg-color);
   border-radius: 16px;

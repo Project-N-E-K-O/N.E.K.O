@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 한국어 언어 팩
  */
 export default {
+  modelApi: modelApiMessages['ko'],
+  modelBindings: modelBindingsMessages['ko'],
   development: {
     guidePurpose: "이 화면은 클릭 한 번으로 플러그인을 개발해 주는 기능이 아닙니다. 기존 소스를 가져올 수 있는 플러그인으로 한 번에 패키징하고 개발을 계속할 수 있도록 돕습니다.",
     navTitle: "개발 플러그인",

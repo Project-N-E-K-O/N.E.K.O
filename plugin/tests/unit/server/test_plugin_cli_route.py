@@ -1670,14 +1670,14 @@ async def test_market_fresh_install_refreshes_after_source_row_commit(
         user_root=user_root,
         scanner=PluginDirectoryScanner(builtin_root, user_root),
     )
-    refresh_calls: list[tuple[str, bool]] = []
+    refresh_calls: list[str] = []
 
-    async def refresh_plugin(requested_id: str, *, force: bool = False) -> dict[str, object]:
+    async def refresh_plugin(requested_id: str) -> dict[str, object]:
         installed_dir = user_root / plugin_id
         source_view = manager.to_api_view(plugin_id, directory_path=installed_dir)
         assert source_view["source"] == "market"
         assert installed_dir.joinpath("plugin.toml").is_file()
-        refresh_calls.append((requested_id, force))
+        refresh_calls.append(requested_id)
         return {"success": True, "plugin": {"id": requested_id}}
 
     monkeypatch.setattr(
@@ -1696,7 +1696,7 @@ async def test_market_fresh_install_refreshes_after_source_row_commit(
     finally:
         set_global_manager(None)
 
-    assert refresh_calls == [(plugin_id, True)]
+    assert refresh_calls == [plugin_id]
     assert result.get("install_source_warning") is None
 
 
@@ -1817,8 +1817,7 @@ async def test_market_fresh_refresh_failure_keeps_committed_install_and_warns(
         scanner=PluginDirectoryScanner(builtin_root, user_root),
     )
 
-    async def fail_refresh(_plugin_id: str, *, force: bool = False) -> dict[str, object]:
-        assert force is True
+    async def fail_refresh(_plugin_id: str) -> dict[str, object]:
         raise RuntimeError("injected registry refresh failure")
 
     monkeypatch.setattr(
@@ -1872,8 +1871,7 @@ async def test_market_fresh_cancellation_waits_for_post_commit_refresh(
     refresh_started = asyncio.Event()
     release_refresh = asyncio.Event()
 
-    async def refresh_plugin(_plugin_id: str, *, force: bool = False) -> dict[str, object]:
-        assert force is True
+    async def refresh_plugin(_plugin_id: str) -> dict[str, object]:
         assert manager.to_api_view(
             plugin_id,
             directory_path=user_root / plugin_id,

@@ -59,6 +59,24 @@ def _settle_staged_metadata(
     ]
 
 
+def _discard_probe_bytecode(plugin_payload_dir: Path) -> None:
+    """Delete bytecode caches the metadata probe wrote into the staged tree.
+
+    The copy pass already dropped every ``__pycache__``/``.pyc``/``.pyo`` from
+    the source, so whatever is here now was produced by importing the staged
+    tree. ``export_package`` archives the staging tree as-is, without the
+    copy-pass rules, so anything left here would ship in the package.
+    """
+    # source_only 只管插件自己的包；vendor/ 下的依赖按设计仍走普通导入，照样会
+    # 写 __pycache__。直接用 PluginBuilder() 的调用方则整棵树都走普通导入。
+    for cache_dir in sorted(plugin_payload_dir.rglob("__pycache__"), reverse=True):
+        if cache_dir.is_dir() and not cache_dir.is_symlink():
+            shutil.rmtree(cache_dir)
+    for path in plugin_payload_dir.rglob("*"):
+        if path.suffix in (".pyc", ".pyo") and path.is_file():
+            path.unlink()
+
+
 def _validate_package_id(package_id: str, *, label: str = "package_id") -> str:
     value = package_id.strip()
     if not value:
@@ -265,6 +283,7 @@ class PluginBuilder:
             target_dir=plugin_payload_dir,
             **self._source_import_options(source),
         )
+        _discard_probe_bytecode(plugin_payload_dir)
         # 仓库里的插件目录已经带着 plugin.meta.json，copy_plugin_runtime_files 会
         # 把它复制过去并记进 staged_files；这里覆盖的是同一个路径，再 append 一次就
         # 会让 staged_file_count 多算、--keep-staging 重复列出同一个文件（coderabbit）。
@@ -309,6 +328,7 @@ class PluginBuilder:
                 target_dir=plugin_payload_dir,
                 **self._source_import_options(source),
             )
+            _discard_probe_bytecode(plugin_payload_dir)
             _settle_staged_metadata(staged_files, plugin_payload_dir, staged_metadata)
 
         profile_files = write_bundle_profile(sources, paths.profiles_dir)
@@ -486,7 +506,7 @@ def build_plugin(
 ) -> BuildResult:
     """Public convenience wrapper for one-shot single-plugin builds."""
 
-    return PluginBuilder().build_plugin(
+    return PluginBuilder(source_only=True).build_plugin(
         plugin_dir=plugin_dir,
         out_file=out_file,
         keep_staging=keep_staging,
@@ -505,7 +525,7 @@ def build_bundle(
 ) -> BuildResult:
     """Public convenience wrapper for one-shot multi-plugin bundle builds."""
 
-    return PluginBuilder().build_bundle(
+    return PluginBuilder(source_only=True).build_bundle(
         plugin_dirs=plugin_dirs,
         out_file=out_file,
         bundle_id=bundle_id,

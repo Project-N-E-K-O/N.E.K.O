@@ -5,6 +5,7 @@
       'plugin-workbench--market-open': marketPanelVisible,
       'plugin-workbench--package-open': packagePanelVisible,
       'plugin-workbench--mirror-open': mirrorPanelVisible,
+      'plugin-workbench--multi-select': multiSelectEnabled,
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
@@ -522,7 +523,7 @@ import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstall
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
-import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -1475,14 +1476,46 @@ onUnmounted(() => {
   --radius-chip: 8px;
   display: flex;
   align-items: stretch;
+  /*
+    页面根绑定到 .app-main 内容盒的确定高度，让这个工作台变成"视口内固定、两栅各自滚动"。
+    不绑的话，右侧抽屉（rail）的高度会被**左侧列表栅的内容高度**左右：列表长时抽屉被拉到
+    3459px（里面一大片空白，面板内容一长就多出一条滚动条）；列表短/为空时抽屉被压到 0px，
+    而 rail 是 overflow:hidden → 整个面板被裁掉、看不全。
+    矮窗口用与详情页同一个下限常量兜底，不够高时由 .app-main 滚动。
+    详见文件末尾 .plugin-workbench__main 与抽屉打开态的说明。
+  */
+  height: 100%;
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
   gap: 20px;
   min-width: 0;
-  padding-bottom: 80px; /* space for floating bar */
+}
+
+/* 多选浮动条预留。原先写在上面的 .plugin-workbench 里（padding-bottom: 80px），
+   但浮动条是 position:fixed，而预留挂在**整个工作台**上就意味着给页面底部永久留白：
+   工作台绑成视口高度后，底部会一直露出一条 80px 的空白带，面板背景到不了底。
+   改成：只在该模式下给**可滚内容**加底部内边距（它们本来就是滚动容器），
+   最后一行依旧能滚到浮动条上方；抽屉的高度则是 padding box，绝对定位的内容会自动让位。 */
+.plugin-workbench--multi-select .plugin-list-card :deep(.el-card__body),
+.plugin-workbench--multi-select .plugin-workbench__rail--market,
+.plugin-workbench--multi-select .plugin-workbench__rail--package,
+.plugin-workbench--multi-select .plugin-workbench__rail--mirror {
+  padding-bottom: 80px;
 }
 
 .plugin-workbench__main {
   flex: 1 1 0;
   min-width: 0;
+  /* 列表栅不再由内容撑高：撑高就会把抽屉一起拉长（见 .plugin-workbench 上的说明）。
+     改为自己滞：卡片体内阶滚动（el-card__body 本身已是 overflow:auto）。 */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 只命中最外层列表卡片；切记不要写成后代选择器，否则会连网格里的插件卡片一起 flex 化。 */
+.plugin-workbench__main > .el-card {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .plugin-workbench__rail {
@@ -1511,6 +1544,9 @@ onUnmounted(() => {
   flex-basis: var(--drawer-width);
   width: var(--drawer-width);
   margin: 0;
+  /* 抽屉自己滞：rail 是 overflow:hidden + contain:paint，不自滞的话超出部分直接
+     被裁掉（尤其把高度绑到视口之后）。三个抽屉共用同一套 rail 机制，一起改。 */
+  overflow-y: auto;
 }
 
 /* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入 */
@@ -1547,7 +1583,15 @@ onUnmounted(() => {
 
 .plugin-workbench__rail-inner > * {
   width: 100%;
-  height: 100%;
+  /*
+    用 min-height 而不是 height：抽屉里的面板（如 .market-panel--embedded）自带白底、
+    圆角和阴影，这些都是“画在元素自己盒子上”的。写成 height:100% 就把它钉成固定高度，
+    面板内容一旦高于抽屉，溢出的部分（后面的卡片、分页条）就落在页面底色上——
+    实测小窗口下市场列表滚到底时，分页条两侧是 rgb(242,243,245) 而不是白底。
+    min-height 让面板随内容长高，白纸面始终覆盖全部内容；抽屉自己是滚动容器
+    （打开态 overflow-y:auto），所以滚动行为不变。
+  */
+  min-height: 100%;
 }
 
 .plugin-list-card {

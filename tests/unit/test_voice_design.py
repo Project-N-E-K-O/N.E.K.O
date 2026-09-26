@@ -472,6 +472,99 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_cosyvoice_design_enrolls_with_user_preferred_model(monkeypatch):
+    """Issue #3147: enrollment must use the model written on the TTS endpoint."""
+    from main_routers.characters_router import voice_design as cr
+
+    captured = {}
+    saved = {}
+
+    class _CM:
+        def get_cosyvoice_clone_runtime(self, provider):
+            return {
+                "api_key": "cosy-key",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "storage_key": "cosy-key",
+                "provider_label": "Alibaba Bailian CosyVoice",
+            }
+
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved["voice_data"] = voice_data
+
+    class _CoreCM:
+        def get_core_config(self):
+            return {"TTS_MODEL": "cosyvoice-v3.5-flash"}
+
+    async def fake_design(**kwargs):
+        # 模拟百炼行为：voice_id = <target_model>-<prefix>-随机后缀
+        captured.update(kwargs)
+        return f"{kwargs['target_model']}-aria1", "UklGRg==", "audio/wav", "req-1"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: _CoreCM())
+    monkeypatch.setattr(cr, "_cosyvoice_design_voice", fake_design)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "ch",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    # ① 传给服务端的 target_model 必须是用户填写的模型
+    assert captured["target_model"] == "cosyvoice-v3.5-flash"
+    # ② 音色 ID 前缀跟随用户填写的模型变化（不再是 plus）
+    assert body["voice_id"].startswith("cosyvoice-v3.5-flash-")
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_enrolls_with_default_model_when_preference_unusable(monkeypatch):
+    """With an unusable TTS-model value, enrollment falls back to the default (plus)."""
+    from main_routers.characters_router import voice_design as cr
+
+    captured = {}
+
+    class _CM:
+        def get_cosyvoice_clone_runtime(self, provider):
+            return {
+                "api_key": "cosy-key",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "storage_key": "cosy-key",
+                "provider_label": "Alibaba Bailian CosyVoice",
+            }
+
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            pass
+
+    class _CoreCM:
+        def get_core_config(self):
+            return {"TTS_MODEL": "tts-1"}
+
+    async def fake_design(**kwargs):
+        captured.update(kwargs)
+        return f"{kwargs['target_model']}-aria1", "UklGRg==", "audio/wav", "req-1"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: _CoreCM())
+    monkeypatch.setattr(cr, "_cosyvoice_design_voice", fake_design)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "ch",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    # 填了别家 ID：传给服务端的是回退默认 plus，前缀也是 plus
+    assert captured["target_model"] == "cosyvoice-v3.5-plus"
+    assert body["voice_id"].startswith("cosyvoice-v3.5-plus-")
+
+
+@pytest.mark.unit
 async def test_cosyvoice_intl_design_endpoint_is_rejected():
     from main_routers.characters_router import voice_design as cr
 

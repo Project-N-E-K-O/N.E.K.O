@@ -29,6 +29,7 @@ from typing import Any, Protocol
 import httpx
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ..delivery import begin_transport_write, complete_transport_write
 from ._shared import (
     MAX_SEGMENT_PCM_BYTES,
     PCM16_SAMPLE_WIDTH_BYTES,
@@ -69,14 +70,22 @@ async def _transcribe(
     api_key: str,
     key: _UtteranceKey,
     pcm16: bytes,
+    *,
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
 ) -> _AsrWorkerEvent:
     generation, buffer_epoch, utterance_id = key
     try:
+        wav_audio = encode_pcm16_wav(pcm16)
+        evidence = begin_transport_write(request_queue)
         response = await client.post(
             GLM_ASR_URL,
             headers={"Authorization": f"Bearer {api_key}"},
             data={"model": GLM_ASR_MODEL},
-            files={"file": ("audio.wav", encode_pcm16_wav(pcm16), "audio/wav")},
+            files={"file": ("audio.wav", wav_audio, "audio/wav")},
+        )
+        complete_transport_write(
+            evidence, len(pcm16), generation=generation,
+            buffer_epoch=buffer_epoch, provider="glm",
         )
         response.raise_for_status()
     except asyncio.CancelledError:
@@ -301,7 +310,8 @@ async def glm_asr_worker(
                                     assert client is not None
                                     task = asyncio.create_task(
                                         _transcribe(
-                                            client, api_key, key, bytes(pcm16)
+                                            client, api_key, key, bytes(pcm16),
+                                            request_queue=request_queue,
                                         ),
                                         name="glm-asr-transcribe",
                                     )
