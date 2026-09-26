@@ -20,7 +20,7 @@ vi.mock('@/stores/pluginUpdates', () => ({
 
 // The shared install-task store is exercised by its own spec; here it only has
 // to look idle so the progress panel stays hidden.
-const installTask = { task: null as unknown, owner: null as string | null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
+const installTask = { task: null as unknown, owner: null as string | null, reservation: null as string | null, running: false, done: false, dismiss: vi.fn(), percent: 0 }
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => installTask,
 }))
@@ -296,6 +296,31 @@ describe('plugin update float window', () => {
     const busyRoot = mount()
     expect(text(busyRoot)).toContain('pluginUpdates.updateAllProgress')
     expect((busyRoot.querySelector('.update-item__button') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps the slot a queued upgrade reserved when the popup closes', async () => {
+    installTask.done = true
+    installTask.reservation = 'float'
+    try {
+      const store = makeStore({ candidates: [candidate()] })
+      mount()
+      store.popupOpen = false
+      await nextTick()
+      // Regression guard: dismissing here released the next upgrade's slot
+      // mid-preflight, letting the Market page start a concurrent worker.
+      expect(installTask.dismiss).not.toHaveBeenCalled()
+
+      cleanup()
+      installTask.reservation = null
+      const idle = makeStore({ candidates: [candidate()] })
+      mount()
+      idle.popupOpen = false
+      await nextTick()
+      expect(installTask.dismiss).toHaveBeenCalledWith('float')
+    } finally {
+      installTask.done = false
+      installTask.reservation = null
+    }
   })
 
   it('locks the per-item buttons while a refresh keeps the previous list', () => {

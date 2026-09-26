@@ -76,11 +76,15 @@ function bridgeUrl(path: string, token: string): string {
 /**
  * Returns ``null`` when the bridge is unreachable or unauthenticated, so
  * callers treat transport failure as a value instead of an exception.
+ *
+ * ``throwOnTransportError`` rethrows a rejected ``fetch`` instead: install
+ * callers read ``null`` as "pairing required", and must not report a transient
+ * local network failure as an authentication problem.
  */
 export async function fetchBridge(
   path: string,
   init?: RequestInit,
-  options: { retryOnForbidden?: boolean } = {},
+  options: { retryOnForbidden?: boolean; throwOnTransportError?: boolean } = {},
 ): Promise<Response | null> {
   const token = await ensureBridgeToken()
   if (!token) {
@@ -93,6 +97,7 @@ export async function fetchBridge(
     res = await fetch(bridgeUrl(path, token), init)
   } catch (err) {
     console.warn(LOG_PREFIX, 'request failed', path, err)
+    if (options.throwOnTransportError) throw err
     return null
   }
   if (res.status !== 403 || options.retryOnForbidden === false) return res
@@ -103,6 +108,7 @@ export async function fetchBridge(
     return await fetch(bridgeUrl(path, freshToken), init)
   } catch (err) {
     console.warn(LOG_PREFIX, 'retry failed', path, err)
+    if (options.throwOnTransportError) throw err
     return null
   }
 }

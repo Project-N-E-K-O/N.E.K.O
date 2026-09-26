@@ -270,7 +270,17 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     // comparing by order rather than index keeps this correct when the list
     // grows a step mid-flight.
     const furthest = furthestStep ? orderOf(furthestStep) : -1
-    const failed = failedStep ? orderOf(failedStep) : -1
+    let failed = failedStep ? orderOf(failedStep) : -1
+    // A restored rollback still ends as ``failed`` with ``stage: rollback``,
+    // but the rollback itself succeeded: the failure belongs to the step it
+    // undid, otherwise the checklist contradicts the "rolled back" alert.
+    const rolledBack = current.status === 'failed'
+      && failedStep === 'rollback'
+      && current.rollback?.restored === true
+    if (rolledBack) {
+      const undone = ordered[ordered.indexOf('rollback') - 1]
+      if (undone) failed = orderOf(undone)
+    }
     let active = -1
     for (const id of ordered) {
       const order = orderOf(id)
@@ -280,7 +290,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     return ordered.map((id) => {
       const order = orderOf(id)
       let state: InstallStepState
-      if (current.status === 'failed' && failed >= 0) {
+      if (rolledBack && id === 'rollback') {
+        state = 'done'
+      } else if (current.status === 'failed' && failed >= 0) {
         state = order === failed ? 'failed' : order < failed ? 'done' : 'pending'
       } else if (current.status === 'completed') {
         state = 'done'

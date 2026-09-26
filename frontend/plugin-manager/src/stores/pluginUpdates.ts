@@ -19,6 +19,7 @@ import { computed, ref } from 'vue'
 
 import { fetchMarketPluginVersions } from '@/api/market'
 import { fetchBridge, readErrorCode } from '@/api/marketBridge'
+import { isGithubReleaseDownloadUrl, useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { usePluginStore } from '@/stores/plugin'
@@ -125,6 +126,7 @@ export function collectMarketUpdateTargets(plugins: readonly PluginMeta[]): Mark
 }
 
 export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
+  const mirror = useGithubMirrorSource()
   const candidates = ref<MarketUpdateCandidate[]>([])
   const checking = ref(false)
   const checkFailed = ref(false)
@@ -332,11 +334,23 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         return failCandidate(candidate, 'market.installFailed', 'release has no package_url/sha256')
       }
 
+      // Same URL resolution as the Market page: the backend only falls back
+      // from a proxy to GitHub direct, never the other way, so submitting the
+      // canonical URL fails wherever GitHub itself is unreachable.
+      if (isGithubReleaseDownloadUrl(packageUrl)) {
+        try {
+          await mirror.ensureAutoSource()
+        } catch (err) {
+          updateLog.warn('mirror measurement failed; using the last known source', { pluginId, err })
+        }
+      }
+      const effectiveUrl = mirror.resolveGithubDownloadUrl(packageUrl)
+
       const res = await fetchBridge('/market/install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          package_url: packageUrl,
+          package_url: effectiveUrl,
           canonical_package_url: packageUrl,
           package_sha256: packageSha256,
           payload_hash: release.payload_hash ?? null,
@@ -350,9 +364,11 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
           mode: 'upgrade',
           on_conflict: 'fail',
         }),
-      })
+      // A rejected fetch lands in the catch below as `installFailed`; only a
+      // missing token is left to mean "pairing required".
+      }, { throwOnTransportError: true })
       if (!res) {
-        return failCandidate(candidate, 'market.pairRequired', 'bridge unavailable')
+        return failCandidate(candidate, 'market.pairRequired', 'bridge token unavailable')
       }
       if (res.status === 403) {
         return failCandidate(candidate, 'market.pairRequired', 'bridge token rejected')

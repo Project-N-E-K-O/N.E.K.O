@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { fetchMarketLatestVersions, fetchMarketPluginVersions } from '@/api/market'
+import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { useMarketInstallTaskStore } from './marketInstallTask'
 import { collectMarketUpdateTargets, usePluginUpdatesStore } from './pluginUpdates'
 import type { MarketPluginVersion } from '@/api/market'
@@ -382,6 +383,57 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates[0]!.needsManualUpgrade).toBe(true)
     expect(store.candidates[0]!.status).toBe('idle')
     expect(store.candidates[0]!.errorKey).toBeNull()
+  })
+
+  it('routes a GitHub release package through the configured mirror', async () => {
+    const githubUrl = 'https://github.com/neko/alpha/releases/download/v1.1.0/alpha.neko-plugin'
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([
+      { ...release('1.1.0'), package_url: githubUrl },
+    ])
+    const fetchMock = mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const mirror = useGithubMirrorSource()
+    const previousMode = mirror.mode.value
+    const previousSource = mirror.specifiedSourceId.value
+    mirror.setMode('specified')
+    mirror.setSpecifiedSourceId('gh-proxy-com')
+
+    try {
+      const store = await seedOneCandidate()
+      await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+      // Regression guard: the popup used to submit the canonical GitHub URL,
+      // which fails wherever GitHub itself is unreachable.
+      expect(installBodies(fetchMock)).toEqual([
+        expect.objectContaining({
+          package_url: `https://gh-proxy.com/${githubUrl}`,
+          canonical_package_url: githubUrl,
+        }),
+      ])
+    } finally {
+      mirror.setMode(previousMode)
+      mirror.setSpecifiedSourceId(previousSource)
+    }
+  })
+
+  it('reports a bridge transport failure as an install failure, not as pairing', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/market/bridge-token')) {
+        return new Response(JSON.stringify({ bridge_token: 'tok' }), { status: 200 })
+      }
+      throw new TypeError('Failed to fetch')
+    }))
+
+    const store = await seedOneCandidate()
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+
+    expect(store.candidates[0]!.status).toBe('failed')
+    expect(store.candidates[0]!.errorKey).toBe('market.installFailed')
   })
 
   it('keeps a failed upgrade flagged across a later re-check', async () => {

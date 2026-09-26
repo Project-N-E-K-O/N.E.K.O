@@ -346,6 +346,39 @@ describe('market install task store — step checklist', () => {
     store.dismiss()
   })
 
+  it('marks a restored rollback done and blames the step it undid', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'rollback', progress: 0.9, rollback: { prepared: true, restored: false, running: true } }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'failed', stage: 'rollback', progress: 0.9, error_code: 'upgrade_rollback_completed', rollback: { prepared: true, restored: true, running: false } }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await tick()
+    await p
+
+    expect(store.steps.map((step) => step.id)).toEqual(['download', 'verify', 'replace', 'rollback', 'completed'])
+    // Regression guard: the rollback row used to read "failed" right under the
+    // "rolled back to the previous version" alert.
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'done', 'failed', 'done', 'pending'])
+    store.dismiss()
+  })
+
+  it('still marks a rollback that did not restore as failed', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'rollback', progress: 0.9, rollback: { prepared: true, restored: false, running: true } }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'failed', stage: 'rollback', progress: 0.9, rollback: { prepared: true, restored: false, running: false } }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await tick()
+    await p
+
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'failed', 'pending'])
+    store.dismiss()
+  })
+
   it('does not walk the checklist backwards when a retry re-enters download', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7 }) as never)

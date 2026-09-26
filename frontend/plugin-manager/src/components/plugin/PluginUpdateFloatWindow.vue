@@ -142,9 +142,14 @@ const installTask = useMarketInstallTaskStore()
 const showProgress = computed(() => !!installTask.task && installTask.owner === 'float')
 
 /** Once the popup is gone the task panel has nowhere to be shown — but only
- *  release a task this surface started, never one the Market dialog owns. */
+ *  release a task this surface started, never one the Market dialog owns.
+ *  A held reservation means the next upgrade is already between its version
+ *  lookup and its POST: `dismiss` would free that slot and let the Market page
+ *  start a concurrent worker. `track` replaces the finished task anyway. */
 watch(() => updates.popupOpen, (open) => {
-  if (!open && installTask.done) installTask.dismiss('float')
+  if (!open && installTask.done && installTask.reservation !== 'float') {
+    installTask.dismiss('float')
+  }
 })
 
 // ─── drag handle ────────────────────────────────────────────────────────────

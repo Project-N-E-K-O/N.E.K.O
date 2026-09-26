@@ -350,6 +350,10 @@ const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
+// Install requests keep a rejected fetch as an exception: `handleInstall`
+// opens the package URL as the manual fallback from its catch, and a `null`
+// here would be misreported as "pairing required".
+const TRANSPORT_THROWS = { throwOnTransportError: true } as const
 const detailDialogVisible = ref(false)
 const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
 
@@ -935,7 +939,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         mode: 'install',
         on_conflict: 'fail',
       }),
-    })
+    }, TRANSPORT_THROWS)
     if (!res) {
       ElMessage.warning(t('market.pairRequired'))
       return
@@ -1034,7 +1038,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(installRequest),
-      })
+      }, TRANSPORT_THROWS)
       if (!confirmationResponse) {
         ElMessage.warning(t('market.pairRequired'))
         return
@@ -1062,7 +1066,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(installRequest),
-      })
+      }, TRANSPORT_THROWS)
       if (!confirmationResponse) {
         ElMessage.warning(t('market.pairRequired'))
         return
@@ -1090,7 +1094,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(installRequest),
-    })
+    }, TRANSPORT_THROWS)
     if (!res) {
       ElMessage.warning(t('market.pairRequired'))
       return
