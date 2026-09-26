@@ -127,6 +127,10 @@ function createHarness({
     profileError,
     verificationFailures = 0,
     profileTransportErrorAfterCommit = false,
+    statusFailures = 0,
+    focusStatusGate,
+    inconsistentReference = false,
+    remainingSeconds = 45,
     showConfirm,
     nativeConfirm = true,
     webCryptoAvailable = true,
@@ -167,19 +171,22 @@ function createHarness({
     let serverRequested = initialRequested;
     let remainingVerificationFailures = verificationFailures;
     let enrollmentId = null;
+    let serverNextSegment = 1;
+    let remainingInconsistentReferences = inconsistentReference ? 1 : 0;
     let statusRequestCount = 0;
+    const mediaConstraintCalls = [];
     let timerId = 0;
     let audioContext = null;
 
     const statusPayload = () => ({
         requested_enabled: serverRequested,
         effective_enabled: serverProfile && serverRequested,
-        effective_reason: serverProfile
+        effective_reason: initialEffectiveReason || (serverProfile
             ? (serverRequested ? 'ready' : 'disabled')
-            : (enrollmentId ? 'enrollment_active' : (initialEffectiveReason || 'no_profile')),
+            : (enrollmentId ? 'enrollment_active' : 'no_profile')),
         has_profile: serverProfile,
         enrollment: enrollmentId
-            ? { enrollment_id: enrollmentId, expires_at: 123.5 }
+            ? { enrollment_id: enrollmentId, expires_at: 123.5, remaining_seconds: remainingSeconds, next_segment_index: serverNextSegment }
             : null,
         profile_generation: serverProfileGeneration,
         runtime_mode: 'enforce',
@@ -192,6 +199,11 @@ function createHarness({
         if (call.url === `${API_ROOT}/status`) {
             statusRequestCount += 1;
             if (statusGate && statusRequestCount === 1) return statusGate.promise;
+            if (focusStatusGate && statusRequestCount === 2) return focusStatusGate.promise;
+            if (statusFailures > 0 && statusRequestCount > 1) {
+                statusFailures -= 1;
+                throw new Error('status_transient');
+            }
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/start`) {
@@ -202,6 +214,11 @@ function createHarness({
         if (call.url === `${API_ROOT}/enrollment/segment` || call.url === `${API_ROOT}/enrollment/profile`) {
             const segment = call.options.headers.get('x-voice-identity-segment');
             if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: 422 });
+            if (segment === '3' && remainingInconsistentReferences > 0) {
+                remainingInconsistentReferences -= 1;
+                serverNextSegment = 1;
+                return jsonResponse({ error_code: 'voice_samples_inconsistent' }, { ok: false, status: 422 });
+            }
             if (call.url.endsWith('/profile') || segment === '4') {
                 if (segment === '4' && remainingVerificationFailures > 0) {
                     remainingVerificationFailures -= 1;
@@ -215,6 +232,8 @@ function createHarness({
                 serverProfileGeneration = call.options.headers.get(PROFILE_HEADER);
                 serverRequested = initialProfile ? serverRequested : true;
                 if (profileTransportErrorAfterCommit) throw new Error('profile_response_lost');
+            } else {
+                serverNextSegment = Number(segment) + 1;
             }
             return jsonResponse(statusPayload());
         }
@@ -393,8 +412,9 @@ function createHarness({
         document,
         navigator: {
             mediaDevices: {
-                async getUserMedia() {
+                async getUserMedia(constraints) {
                     mediaRequests += 1;
+                    mediaConstraintCalls.push(constraints);
                     if (mediaGate) await mediaGate.promise;
                     if (mediaError) throw mediaError;
                     const track = { stopped: false, stop() { this.stopped = true; } };
@@ -442,6 +462,7 @@ function createHarness({
         get mediaRequests() {
             return mediaRequests;
         },
+        mediaConstraintCalls,
         emitAudio(samples) {
             const chunk = samples instanceof Int16Array
                 ? samples
@@ -521,6 +542,12 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(upload.options.headers.get('x-voice-identity-segment'), '4');
     assert.equal(upload.options.headers.get('x-voice-audio-contract'), AUDIO_CONTRACT_ID);
     assert.equal(harness.mediaRequests, 4);
+    for (const call of harness.mediaConstraintCalls) {
+        assert.equal(call.audio.noiseSuppression, false);
+        assert.equal(call.audio.echoCancellation, true);
+        assert.equal(call.audio.autoGainControl, true);
+        assert.equal(call.audio.channelCount, 1);
+    }
     assert.deepEqual(harness.workletModules, ['/static/audio-processor.js', '/static/audio-processor.js', '/static/audio-processor.js', '/static/audio-processor.js']);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
@@ -559,6 +586,64 @@ test('failed fourth verification stays in the session and retries the holdout', 
         5,
     );
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+});
+
+test('transient progress status failure keeps the active enrollment resumable', async () => {
+    const harness = createHarness({ statusFailures: 1 });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-start');
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+});
+
+test('a late focus status response cannot clear a newly started enrollment', async () => {
+    const focusStatusGate = deferred();
+    const harness = createHarness({ focusStatusGate });
+    await harness.initialize();
+
+    harness.dispatch('focus');
+    await flush(2);
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    focusStatusGate.resolve(jsonResponse({
+        requested_enabled: false,
+        effective_enabled: false,
+        effective_reason: 'no_profile',
+        has_profile: false,
+        enrollment: null,
+        runtime_mode: 'enforce',
+    }));
+    await enrolling;
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+});
+
+test('a short remaining lease is still allowed to submit the fourth segment', async () => {
+    const harness = createHarness({ remainingSeconds: 5 });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-start');
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+});
+
+test('inconsistent third reference adopts the server reset and restarts at segment one', async () => {
+    const harness = createHarness({ inconsistentReference: true, autoAdvance: true });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(12);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 3);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    await harness.emit('voice-identity-next');
+    await enrolling;
+
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 7);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
 });
 
 test('underfilled capture cancels the lease and never uploads partial PCM', async () => {
@@ -669,6 +754,16 @@ test('backend degradation reason is preserved when no profile exists', async () 
     assert.equal(harness.elements.get('voice-identity-start').disabled, true);
 });
 
+test('backend degradation disables re-enrollment for an existing profile', async () => {
+    const harness = createHarness({
+        initialProfile: true,
+        initialEffectiveReason: 'model_unavailable',
+    });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+});
+
 test('filter toggle sends the requested boolean and adopts canonical state', async () => {
     const harness = createHarness({ initialProfile: true });
     await harness.initialize();
@@ -743,7 +838,7 @@ test('delete confirms, removes the profile, and returns to one-click enrollment'
     assert.equal(harness.elements.get('voice-identity-start').hidden, false);
 });
 
-test('explicit cancel aborts an active capture and releases the server session', async () => {
+test('explicit cancel aborts an active capture and keeps controls locked until it settles', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
@@ -751,7 +846,9 @@ test('explicit cancel aborts an active capture and releases the server session',
     await flush();
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, false);
     await harness.emit('voice-identity-cancel');
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
     await enrolling;
+    await flush();
 
     const cancel = harness.fetchCalls.find(call => (
         call.url === `${API_ROOT}/enrollment/cancel`
@@ -761,7 +858,7 @@ test('explicit cancel aborts an active capture and releases the server session',
     assert.equal(harness.elements.get('voice-identity-start').hidden, false);
 });
 
-test('user can save a short non-aligned capture after worklet flush', async () => {
+test('manual finish rejects a capture shorter than the backend contract', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
@@ -776,12 +873,11 @@ test('user can save a short non-aligned capture after worklet flush', async () =
     const upload = harness.fetchCalls.find(call => (
         call.url === `${API_ROOT}/enrollment/segment`
     ));
-    assert.ok(upload);
-    assert.equal(upload.options.body.byteLength, 700 * 2);
-    assert.ok(upload.options.body.byteLength < REFERENCE_SAMPLES * 2);
+    assert.equal(upload, undefined);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough speech detected.');
     assert.equal(
         harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length,
-        1,
+        0,
     );
     await harness.emit('voice-identity-cancel');
     await enrolling;
