@@ -795,11 +795,11 @@ def test_screen_share_toggle_has_blue_wave_and_four_point_sparkles():
     # Full and inline variants keep matching knob positions and wave origins.
     assert ".neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}" in styles
     assert ".neko-share-toggle-btn.neko-share-toggle-mini" in styles
-    assert ".neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}" in styles
+    assert ".neko-share-toggle-mini .neko-share-toggle-label{display:block;}" in styles
+    assert "font-size:16px" in styles
+    assert "label.textContent = mini ? '\\u203A' : accessibleLabel;" in toggle_factory
     assert "--neko-share-wave-x:20px" in styles
-    assert "--neko-share-wave-x:12px" in styles
     assert "--neko-share-wave-radius:148%" in styles
-    assert "--neko-share-wave-radius:116%" in styles
     assert "prefers-reduced-motion:reduce" in styles
 
     prune = _js_function_block(source, "pruneShareToggleButtons")
@@ -818,16 +818,17 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "arrow.textContent = '\\u203A';" in action_button or 'arrow.textContent = "\u203A";' in action_button or "arrow.textContent = '\u203A';" in action_button
     assert "fontSize: '16px'" in action_button
     assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
-    assert "openMicActionPanel(actionKey, onClick)" in action_button
+    assert "openMicActionPanel(actionKey, onClick, event)" in action_button
     assert "button.addEventListener('mouseenter'" in action_button
     assert "interactionOptions.openOnHover !== false" in action_button
-    assert "xdg-desktop-portal" in action_button
     assert "button.addEventListener('click'" in action_button
     assert "scheduleMicActionHoverCollapse()" in action_button
     assert "createMainActionButton(" in source
     assert "'screen'" in source
     assert "openScreenSourceSubwindow" in source
     assert "MIC_ACTION_HOVER_COLLAPSE_MS = 260" in source
+    assert "screenHoverOpenTimer" in source
+    assert "setTimeout(function () {" in action_button
     assert "wireMicSubwindowHoverBridge" in source
     assert "textWrap.className = 'neko-mic-action-text';" in action_button
     assert "if (iconText) {" in action_button
@@ -837,7 +838,7 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
         "var screenActionButton = createMainActionButton(", 1
     )[1].split(");", 1)[0]
     assert "openScreenSourceSubwindow" in screen_action
-    assert "{ openOnHover: false }" in screen_action
+    assert "{ openOnHover: true }" in screen_action
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

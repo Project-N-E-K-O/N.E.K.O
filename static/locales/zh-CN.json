@@ -2660,7 +2660,10 @@
             "rememberedWindowUnavailable": "无法唯一找到记住的窗口，请重新选择屏幕来源",
             "selected": "已选择 {{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享",
-            "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源"
+            "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源",
+            "clickToChoose": "点击选择屏幕来源",
+            "browserPicker": "使用浏览器选择器",
+            "browserPickerHint": "当前环境无法枚举屏幕来源，可使用浏览器选择器"
         },
         "deviceSwitchFailed": "设备切换失败",
         "deviceSwitching": "设备切换中...",

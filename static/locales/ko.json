@@ -2660,7 +2660,10 @@
             "rememberedWindowUnavailable": "기억한 창을 고유하게 찾을 수 없습니다. 화면 소스를 다시 선택해 주세요",
             "selected": "{{source}} 선택됨",
             "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다",
-            "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요"
+            "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요",
+            "clickToChoose": "클릭하여 화면 소스 선택",
+            "browserPicker": "브라우저 선택기 사용",
+            "browserPickerHint": "현재 환경에서는 화면 소스를 열거할 수 없습니다. 브라우저 선택기를 사용하세요."
         },
         "deviceSwitchFailed": "장치 전환 실패",
         "deviceSwitching": "장치 전환 중...",

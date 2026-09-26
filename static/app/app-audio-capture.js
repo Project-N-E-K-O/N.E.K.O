@@ -218,11 +218,11 @@
             '.neko-share-toggle-btn .neko-share-toggle-spark svg{display:block;width:100%;height:100%;overflow:visible;}',
             '@keyframes nekoShareSparkRise{0%{opacity:0;transform:translate3d(0,4px,0) scale(.2) rotate(0deg);}18%{opacity:1;}68%{opacity:.92;}100%{opacity:0;transform:translate3d(var(--neko-spark-drift),var(--neko-spark-rise),0) scale(.92) rotate(18deg);}}',
             '.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:nekoShareSparkRise var(--neko-spark-duration) cubic-bezier(.16,.8,.25,1) var(--neko-spark-delay) both;}',
-            // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
-            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);--neko-share-wave-x:12px;--neko-share-wave-radius:116%;}',
-            '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
-            '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
-            '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
+            // 迷你版：嵌在「屏幕分享」设置行右侧的轻量开始/停止操作。
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-flex;width:24px;min-height:28px;height:28px;padding:0;margin:0 4px 0 0;flex-shrink:0;align-self:center;align-items:center;justify-content:center;cursor:pointer;background:transparent;border-color:transparent;color:var(--neko-popup-text-sub,#999);font-size:16px;font-weight:400;line-height:1;}',
+            '.neko-share-toggle-mini .neko-share-toggle-wave,.neko-share-toggle-mini .neko-share-toggle-knob,.neko-share-toggle-mini .neko-share-toggle-sparkles{display:none;}',
+            '.neko-share-toggle-mini .neko-share-toggle-label{display:block;}',
+            '.neko-share-toggle-mini.is-active{color:var(--neko-popup-accent,#4f8cff);}',
             '.neko-share-toggle-btn.is-instant .neko-share-toggle-wave,.neko-share-toggle-btn.is-instant .neko-share-toggle-label,.neko-share-toggle-btn.is-instant .neko-share-toggle-knob{transition:none!important;}',
             '@media (prefers-reduced-motion:reduce){.neko-share-toggle-btn .neko-share-toggle-wave,.neko-share-toggle-btn .neko-share-toggle-label,.neko-share-toggle-btn .neko-share-toggle-knob{transition:none!important;}.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:none!important;}}',
             '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
@@ -399,7 +399,7 @@
         button._nekoShareFxCleanup = waveFx.cleanup;
         button._nekoSetShareActive = function (active, instant) {
             var accessibleLabel = active ? stopLabel() : shareLabel();
-            label.textContent = accessibleLabel;
+            label.textContent = mini ? '\u203A' : accessibleLabel;
             button.title = accessibleLabel;
             button.setAttribute('aria-label', accessibleLabel);
             button.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -3695,6 +3695,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var activeMicActionKey = null;
             var micActionHoverCollapseTimer = null;
             var micActionHoverOpenGeneration = 0;
+            var screenHoverReopenBlocked = false;
+            var screenHoverOpenTimer = null;
 
             function getOwnedMicSubwindow() {
                 var ownerSelector = micPopup.id
@@ -3707,6 +3709,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (micActionHoverCollapseTimer) {
                     clearTimeout(micActionHoverCollapseTimer);
                     micActionHoverCollapseTimer = null;
+                }
+            }
+
+            function clearScreenHoverOpenTimer() {
+                if (screenHoverOpenTimer) {
+                    clearTimeout(screenHoverOpenTimer);
+                    screenHoverOpenTimer = null;
                 }
             }
 
@@ -3756,6 +3765,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (activeMicActionKey !== 'screen') return;
                 var panel = getOwnedMicSubwindow();
                 if (!panel || !panel.isConnected) return;
+                screenHoverReopenBlocked = true;
                 closeMicSubwindow();
                 leftColumn.querySelectorAll(
                     '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
@@ -3775,7 +3785,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
             }
 
-            function openMicActionPanel(actionKey, openFn) {
+            function openMicActionPanel(actionKey, openFn, triggerEvent) {
                 clearMicActionHoverCollapseTimer();
                 var existing = getOwnedMicSubwindow();
                 if (activeMicActionKey === actionKey && existing && existing.isConnected) {
@@ -3784,7 +3794,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
                 activeMicActionKey = actionKey;
                 var generation = ++micActionHoverOpenGeneration;
-                return Promise.resolve(openFn()).then(function () {
+                return Promise.resolve(openFn(triggerEvent)).then(function () {
                     if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
                     var panel = getOwnedMicSubwindow();
                     if (panel) {
@@ -3991,18 +4001,29 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 function openActionPanel(event) {
                     actionSurface().style.background = 'var(--neko-popup-hover)';
-                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                    return openMicActionPanel(actionKey, onClick, event).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
                 }
 
-                // Most settings side panels may expand on hover. Screen-source
-                // enumeration is different: on Linux it can invoke
-                // xdg-desktop-portal and show an OS sharing dialog, so that
-                // action must require an explicit click/user gesture.
+                // Most settings side panels expand on hover. Screen-source
+                // panels defer enumeration on Linux Portal until the user
+                // explicitly clicks the load action inside the panel.
                 if (interactionOptions.openOnHover !== false) {
                     button.addEventListener('mouseenter', function (event) {
-                        openActionPanel(event);
+                        if (actionKey === 'screen' && screenHoverReopenBlocked) {
+                            screenHoverReopenBlocked = false;
+                            return;
+                        }
+                        if (actionKey === 'screen') {
+                            clearScreenHoverOpenTimer();
+                            screenHoverOpenTimer = setTimeout(function () {
+                                screenHoverOpenTimer = null;
+                                openActionPanel({ type: 'mouseenter' });
+                            }, 220);
+                        } else {
+                            openActionPanel(event);
+                        }
                     });
                 } else {
                     button.addEventListener('mouseenter', function () {
@@ -4011,6 +4032,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 }
                 button.addEventListener('mouseleave', function () {
+                    if (actionKey === 'screen') clearScreenHoverOpenTimer();
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
                     if (button._nekoMicActionRow) return;
@@ -4019,6 +4041,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
                 button.addEventListener('click', function (e) {
                     e.stopPropagation();
+                    if (actionKey === 'screen') clearScreenHoverOpenTimer();
                     openActionPanel(e);
                 });
                 return button;
@@ -4298,7 +4321,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
             }
 
-            async function openScreenSourceSubwindow() {
+            async function openScreenSourceSubwindow(triggerEvent) {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
                     null,
@@ -4351,7 +4374,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
-                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    var desktopProvider = typeof window.getDesktopCaptureProvider === 'function'
+                        ? window.getDesktopCaptureProvider()
+                        : null;
+                    var isHoverOpen = !!(triggerEvent && triggerEvent.type === 'mouseenter');
+                    var deferPortalEnumeration = isHoverOpen
+                        && !!(desktopProvider && desktopProvider.sourceEnumerationMayPrompt === true);
+                    await window.renderFloatingScreenSourceList(screenSourceList, {
+                        requireVisible: false,
+                        deferEnumeration: deferPortalEnumeration
+                    });
                     positionMicSubwindow(panel);
                 }
             }
@@ -4389,13 +4421,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 
             var firstContent = leftColumn.firstChild;
+            var screenSourceSummary = window.t ? window.t('app.screenSource.screens') : 'Screens';
+            try {
+                var selectedScreenSourceName = localStorage.getItem('selectedScreenSourceName');
+                if (selectedScreenSourceName && S.selectedScreenSourceId) {
+                    screenSourceSummary = selectedScreenSourceName;
+                }
+            } catch (_) { }
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
-                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                screenSourceSummary,
                 'screen',
                 openScreenSourceSubwindow,
-                { openOnHover: false }
+                { openOnHover: true }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(
@@ -4403,6 +4442,19 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 shareToggleButton
             );
             leftColumn.insertBefore(screenActionRow, firstContent);
+            var screenSummary = screenActionButton.querySelector('.neko-mic-action-sub-label');
+            if (screenSummary) {
+                screenSummary.setAttribute('aria-live', 'polite');
+                screenSummary.title = screenSourceSummary;
+            }
+            addVoiceWindowListener('neko:screen-source-changed', function (event) {
+                if (!screenSummary) return;
+                var detail = event && event.detail ? event.detail : {};
+                var nextLabel = String(detail.sourceName || '').trim();
+                if (!nextLabel) return;
+                screenSummary.textContent = nextLabel;
+                screenSummary.title = nextLabel;
+            });
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
