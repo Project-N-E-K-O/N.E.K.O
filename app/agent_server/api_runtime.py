@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+import math
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -271,6 +273,20 @@ def _forward_provider_frame(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
+    """Prefer the producer's message time; fall back to the forward time."""
+    raw = (event or {}).get("ts")
+    if raw is None:
+        return time.time()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return time.time()
+    # NaN/Inf would poison the store index: since_ts/until_ts filtering and any
+    # consumer-side sort stop being reliable.
+    return value if math.isfinite(value) else time.time()
+
+
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
     """Copy one already-handled conversation message into the ``conversations`` store.
 
@@ -326,7 +342,7 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
             "kind": "conversation",
             "type": "conversation_turn",
             "source": str((event or {}).get("source") or "unknown"),
-            "timestamp": time.time(),
+            "timestamp": _resolve_conversation_ts(event),
             "content": content,
             "metadata": metadata,
         }
