@@ -118,6 +118,8 @@
     };
 
     let currentPlayingTrack = null;
+    // One bar per local playback; retained across mount replacement, released on destroy.
+    let localMusicBar = null;
     let currentMusicPlaybackId = null;
     let currentMusicOwnerStartedAt = 0;
     let localPlayer = null;
@@ -464,6 +466,38 @@
     let mirrorBarLeaderSource = null;
     const processedBarCtrlIds = new Set();
     const processedBarCtrlOrder = [];
+    // Bound terminal playback identities so delayed state cannot resurrect a closed bar.
+    // Entries expire after five minutes, are capped at 128, and release on unload.
+    const closedMusicPlaybacks = new Map();
+    const CLOSED_MUSIC_PLAYBACK_TTL_MS = 5 * 60 * 1000;
+    const CLOSED_MUSIC_PLAYBACK_LIMIT = 128;
+
+    function pruneClosedMusicPlaybacks() {
+        for (const [key, expiresAt] of closedMusicPlaybacks) {
+            if (expiresAt <= Date.now()) closedMusicPlaybacks.delete(key);
+        }
+    }
+
+    function rememberClosedMusicPlayback(sender, playbackId) {
+        if (!sender || !playbackId) return;
+        pruneClosedMusicPlaybacks();
+        const key = JSON.stringify([sender, playbackId]);
+        closedMusicPlaybacks.delete(key);
+        closedMusicPlaybacks.set(key, Date.now() + CLOSED_MUSIC_PLAYBACK_TTL_MS);
+        while (closedMusicPlaybacks.size > CLOSED_MUSIC_PLAYBACK_LIMIT) {
+            closedMusicPlaybacks.delete(closedMusicPlaybacks.keys().next().value);
+        }
+    }
+
+    function isClosedMusicPlayback(sender, playbackId) {
+        pruneClosedMusicPlaybacks();
+        return !!playbackId && closedMusicPlaybacks.has(JSON.stringify([sender, playbackId]));
+    }
+
+    window.addEventListener('beforeunload', () => {
+        closedMusicPlaybacks.clear();
+        teardownMirrorBar(false);
+    });
 
     function setMirrorBarLeader(sender, source) {
         const leaderChanged = sender !== mirrorBarLeaderSender;
@@ -496,6 +530,7 @@
     }
 
     function acceptRemoteMusicOwnerState(sender, state, eventTs) {
+        if (isClosedMusicPlayback(sender, state && state.playbackId)) return false;
         if (!isBarOwner()) return true;
         if (!sender || sender === MUSIC_COORD_SENDER_ID || !state || !state.track) return false;
 
@@ -546,6 +581,7 @@
     const broadcastBarCtrl = (action, value) => {
         // 没绑到 leader（镜像 bar 没建或已 teardown）就不发 ctrl
         if (!mirrorBarLeaderSender) return;
+        const playbackId = mirrorBarLastState && mirrorBarLastState.playbackId;
         const ctrlId = MUSIC_COORD_SENDER_ID + ':' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2, 8);
         const message = {
             type: 'ctrl',
@@ -556,6 +592,7 @@
             ts: Date.now(),
             ctrlId: ctrlId,
             action: action,
+            playbackId: playbackId,
             value: value
         };
         if (musicBarChannel) {
@@ -567,6 +604,7 @@
             target: mirrorBarLeaderSender,
             ctrlId: ctrlId,
             action: action,
+            playbackId: playbackId,
             value: value
         });
     };
@@ -924,8 +962,8 @@
 
     function mountMusicBar(musicBar) {
         if (!musicBar) return false;
+        if (musicBar.dataset && musicBar.dataset.skipMountRelocation === 'true') return false;
         ensureMusicMountObserver();
-        if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
         prepareMusicBarHitRegion(musicBar);
         const isMirrorBar = !!(musicBar.dataset && musicBar.dataset.mirror === 'true');
         const renderHere = shouldRenderMusicBarInThisSurface();
@@ -952,6 +990,7 @@
     function removeMusicBarWithoutRelocation(musicBar) {
         if (!musicBar) return;
         if (musicBar.dataset) musicBar.dataset.skipMountRelocation = 'true';
+        if (pendingDetachedMusicBar === musicBar) pendingDetachedMusicBar = null;
         musicBar.remove();
         requestCompactMusicGeometrySync();
     }
@@ -999,6 +1038,11 @@
             musicMountRelocationFrame = 0;
             const musicBar = pendingDetachedMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
             if (musicBar) {
+                if (musicBar.dataset && musicBar.dataset.skipMountRelocation === 'true') {
+                    pendingDetachedMusicBar = null;
+                    clearMusicMountRelocationRetry();
+                    return;
+                }
                 const mounted = mountMusicBar(musicBar);
                 if (mounted || musicBar.isConnected) {
                     pendingDetachedMusicBar = null;
@@ -1104,7 +1148,19 @@
         musicBar.__mirrorTeardownCleanups = teardownCleanups;
 
         if (apBtn) apBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('toggle'); };
-        if (closeBtn) closeBtn.onclick = (e) => { e.preventDefault(); broadcastBarCtrl('close'); };
+        if (closeBtn) closeBtn.onclick = (e) => {
+            e.preventDefault();
+            const sender = mirrorBarLeaderSender;
+            const playbackId = mirrorBarLastState && mirrorBarLastState.playbackId;
+            rememberClosedMusicPlayback(sender, playbackId);
+            broadcastBarCtrl('close');
+            // An absent owner must not leave an uncloseable mirror behind.
+            // A different playback arriving during relay must not be dismissed.
+            if (mirrorBarElement === musicBar && isCurrentMirrorPlayback({ playbackId })) {
+                setMirrorBarLeader(null);
+                teardownMirrorBar(true);
+            }
+        };
 
         if (volumeBtn) volumeBtn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
@@ -1241,6 +1297,9 @@
     };
 
     let mirrorBarLastState = null; // 供 seek UI 计算 currentTime 显示
+    // Single owned DOM reference survives React temporarily detaching the mount.
+    // Released on mirror teardown or promotion to the local audio owner.
+    let mirrorBarElement = null;
 
     function isCurrentMirrorPlayback(payload) {
         const currentPlaybackId = mirrorBarLastState && mirrorBarLastState.playbackId;
@@ -1255,7 +1314,11 @@
 
         const track = state.track || {};
 
-        let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        let musicBar = mirrorBarElement || document.getElementById(MUSIC_CONFIG.dom.barId);
+        if (musicBar && musicBar.dataset.skipMountRelocation === 'true') {
+            removeMusicBarWithoutRelocation(musicBar);
+            musicBar = null;
+        }
         const firstRender = !musicBar;
 
         // 已存在但属于本窗口的 owner bar（非 mirror）：说明 leader 是自己，不应覆盖
@@ -1270,6 +1333,7 @@
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
+            mirrorBarElement = musicBar;
             if (!mountMusicBar(musicBar)) return false;
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
@@ -1378,9 +1442,16 @@
     };
 
     const teardownMirrorBar = (fullTeardown) => {
-        const musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
-        if (!musicBar || musicBar.dataset.mirror !== 'true') return;
+        const musicBar = mirrorBarElement || document.getElementById(MUSIC_CONFIG.dom.barId);
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
+        mirrorBarElement = null;
+        mirrorBarTrackSig = null;
+        mirrorBarLastState = null;
+        clearMusicMountRelocationRetry();
+        if (!musicBar || musicBar.dataset.mirror !== 'true') return;
+        musicBar.dataset.skipMountRelocation = 'true';
+        if (pendingDetachedMusicBar === musicBar) pendingDetachedMusicBar = null;
+        disconnectTitleMarqueeObserver();
 
         // 解绑 document 级 outside-click 监听
         if (musicBar.__mirrorOutsideClickHandler) {
@@ -1399,8 +1470,6 @@
 
         const removeNow = () => {
             if (musicBar.parentNode) removeMusicBarWithoutRelocation(musicBar);
-            mirrorBarTrackSig = null;
-            mirrorBarLastState = null;
             mirrorBarDestroyTimer = null;
         };
         if (fullTeardown) {
@@ -1414,6 +1483,11 @@
     // leader 处理 follower 发来的控制命令。所有动作都只作用于 localPlayer，
     // 随后由 APlayer 事件回调自然触发一次 emitBarState() 把真实状态广播回来。
     const handleRemoteBarCtrl = (action, value) => {
+        if (action === 'close') {
+            if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
+            closeLocalMusicPlayer();
+            return;
+        }
         if (!localPlayer) return;
         try {
             if (typeof window.setMusicUserDriven === 'function' &&
@@ -1444,12 +1518,6 @@
                         localPlayer.seek(value * localPlayer.audio.duration);
                     }
                     break;
-                case 'close': {
-                    recordMusicCloseFeedback(playbackStartedAt);
-                    playbackStartedAt = 0;
-                    destroyMusicPlayer(true, true, true);
-                    break;
-                }
                 default:
                     /* unknown action, ignore */
                     break;
@@ -1497,6 +1565,7 @@
                 if (!rendered) scheduleMusicBarRelocation();
                 return rendered;
             } else if (event.type === 'bar_destroyed') {
+                rememberClosedMusicPlayback(sender, payload.playbackId);
                 if (isBarOwner()) return false;
                 if (sender !== mirrorBarLeaderSender) return false;
                 if (!isCurrentMirrorPlayback(payload)) return false;
@@ -1504,8 +1573,9 @@
                 teardownMirrorBar(!!payload.fullTeardown);
                 return true;
             } else if (event.type === 'bar_ctrl') {
-                if (!isBarOwner()) return false;
+                if (!isBarOwner() && !(payload.action === 'close' && currentMusicPlaybackId)) return false;
                 if (payload.target !== MUSIC_COORD_SENDER_ID) return false;
+                if (payload.playbackId && payload.playbackId !== getCurrentMusicPlaybackId()) return false;
                 if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return false;
                 handleRemoteBarCtrl(payload.action, payload.value);
                 return true;
@@ -1588,6 +1658,7 @@
                         setMirrorBarLeader(data.sender, 'broadcast');
                         if (!renderMirrorBar(data)) scheduleMusicBarRelocation();
                     } else if (data.type === 'destroyed') {
+                        rememberClosedMusicPlayback(data.sender, data.playbackId);
                         if (isBarOwner()) return;
                         // 只尊重来自当前绑定 leader 的 destroyed；别的 owner 退出
                         // 不应该把我当前镜像的那条 bar 也一起摘掉
@@ -1598,8 +1669,9 @@
                     } else if (data.type === 'ctrl') {
                         // owner 只响应明确 target 到自己的 ctrl，避免别的 leader
                         // 被 follower 的指令误触（leader 交接瞬间最容易发生）
-                        if (!isBarOwner()) return;
+                        if (!isBarOwner() && !(data.action === 'close' && currentMusicPlaybackId)) return;
                         if (data.target !== MUSIC_COORD_SENDER_ID) return;
+                        if (data.playbackId && data.playbackId !== getCurrentMusicPlaybackId()) return;
                         if (shouldSkipProcessedBarCtrl(data.ctrlId)) return;
                         handleRemoteBarCtrl(data.action, data.value);
                     }
@@ -2164,6 +2236,39 @@
     };
 
 
+    function closeLocalMusicPlayer() {
+        recordMusicCloseFeedback(playbackStartedAt);
+        playbackStartedAt = 0;
+        destroyMusicPlayer(true, true, true);
+    }
+
+    function releaseMusicPlayerInstance(player) {
+        if (!player) return;
+        player._destroying = true;
+        try {
+            // The async factory may install globals after a close. Use its
+            // cleanup for that exact instance, never for a newer player.
+            if (window.aplayer === player && typeof window.destroyAPlayer === 'function') {
+                if (window.destroyAPlayer() === false) player.destroy();
+            } else if (typeof player.destroy === 'function') {
+                player.destroy();
+            }
+        } catch (error) {
+            console.warn('[Music UI] Error destroying player:', error);
+            // Keep media/timer release independent from UI/library teardown.
+            if (player.audio) {
+                try { player.audio.pause(); } catch (_) { /* best effort */ }
+                try { player.audio.src = ''; player.audio.load(); } catch (_) { /* best effort */ }
+            }
+            try { if (player.timer) player.timer.destroy(); } catch (_) { /* best effort */ }
+        } finally {
+            if (window.aplayer === player) window.aplayer = null;
+            if (window.aplayerInjected && window.aplayerInjected.aplayer === player) {
+                window.aplayerInjected.aplayer = null;
+            }
+        }
+    }
+
     const destroyMusicPlayer = (
         removeDOM = true,
         fullTeardown = false,
@@ -2185,6 +2290,7 @@
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
         if (updateToken || fullTeardown) {
             latestMusicRequestToken++;
+            if (pendingMusicMediaReadyCancel) pendingMusicMediaReadyCancel();
         }
 
         // 清除可能的自动销毁定时器
@@ -2207,7 +2313,9 @@
 
         // 核心：优先执行本地暂停，避免声音残留
         if (localPlayer && typeof localPlayer.pause === 'function') {
-            localPlayer.pause();
+            try { localPlayer.pause(); } catch (error) {
+                console.warn('[Music UI] Error pausing player during cleanup:', error);
+            }
         }
         if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
             currentDragHandlers.cleanup();
@@ -2218,17 +2326,8 @@
             currentVolumeDragHandlers = null;
         }
         if (fullTeardown) {
-            // 【核心修复】调整顺序：先调用外部销毁逻辑，再清理本地引用
-            // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理
-            // 且此处理由 window.destroyAPlayer 统一完成实例销毁，不再本地重复销毁
-            if (typeof window.destroyAPlayer === 'function') {
-                window.destroyAPlayer();
-            } else if (localPlayer && typeof localPlayer.destroy === 'function') {
-                localPlayer.destroy();
-            }
+            releaseMusicPlayerInstance(localPlayer);
             localPlayer = null;
-            window.aplayer = null;
-            if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
         } else {
             // 切歌模式下，手动销毁旧实例以防泄露
             if (localPlayer && typeof localPlayer.destroy === 'function') {
@@ -2246,8 +2345,12 @@
 
         if (removeDOM) {
             disconnectTitleMarqueeObserver();
-            const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
+            const bar = localMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
+            localMusicBar = null;
             if (bar) {
+                bar.dataset.skipMountRelocation = 'true';
+                if (pendingDetachedMusicBar === bar) pendingDetachedMusicBar = null;
+                clearMusicMountRelocationRetry();
                 // 如果是手动关闭，执行动画
                 if (fullTeardown) {
                     bar.classList.add('fading-out');
@@ -2355,26 +2458,18 @@
         // 上挂的是"按钮发 ctrl"的监听，不能复用。硬清一次让下面 executePlay
         // 新建一个绑本地 APlayer 的 bar，避免旧的 outside-click / drag 监听泄露。
         const existingBar = document.getElementById(MUSIC_CONFIG.dom.barId);
-        if (existingBar && existingBar.dataset.mirror === 'true') {
-            if (existingBar.__mirrorOutsideClickHandler) {
-                document.removeEventListener('mousedown', existingBar.__mirrorOutsideClickHandler);
-                existingBar.__mirrorOutsideClickHandler = null;
-            }
-            if (Array.isArray(existingBar.__mirrorTeardownCleanups)) {
-                for (const fn of existingBar.__mirrorTeardownCleanups) {
-                    try { fn(); } catch (_) { /* ignore */ }
-                }
-                existingBar.__mirrorTeardownCleanups = null;
-            }
-            removeMusicBarWithoutRelocation(existingBar);
-            mirrorBarTrackSig = null;
-            mirrorBarLastState = null;
+        if (mirrorBarLastState || mirrorBarElement || (existingBar && existingBar.dataset.mirror === 'true')) {
+            teardownMirrorBar(false);
             // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
             setMirrorBarLeader(null);
         }
 
         const displayCoverUrl = getMusicCoverUrl(trackInfo.cover);
-        let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        let musicBar = localMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
+        if (musicBar && musicBar.dataset.skipMountRelocation === 'true') {
+            removeMusicBarWithoutRelocation(musicBar);
+            musicBar = null;
+        }
         let isFirstRender = !musicBar;
 
         // --- 1. DOM 基础架构 ---
@@ -2435,6 +2530,14 @@
             musicBar.classList.remove('fading-out');
             mountMusicBar(musicBar);
         }
+
+        // Bind before awaiting the player factory: a visible close control must
+        // also cancel a playback that has not acquired its audio instance yet.
+        localMusicBar = musicBar;
+        musicBar.querySelector('.music-bar-close').onclick = (e) => {
+            e.preventDefault();
+            closeLocalMusicPlayer();
+        };
 
         // 切歌前，先把上一首卡片标记为"已结束"。必须在 currentPlayingTrack
         // 被覆盖之前用旧值更新，否则旧卡片会被改写成新曲目信息。
@@ -2574,7 +2677,7 @@
 
                 if (!aplayerInstance) throw new Error("APlayer init failed");
                 if (currentToken !== latestMusicRequestToken) {
-                    if (aplayerInstance.destroy) aplayerInstance.destroy();
+                    releaseMusicPlayerInstance(aplayerInstance);
                     // 回滚：前面 emitBarInitialState 已经让 follower 建起占位
                     // bar，但现在请求被更新的 token 取代，我们不会再发权威
                     // state，得主动广播 destroyed 把占位 bar 摘掉，不然 follower
@@ -2723,12 +2826,6 @@
                 });
 
                 // 进度条与播放按钮点击 (使用直接赋值防止重复挂载)
-                musicBar.querySelector('.music-bar-close').onclick = (e) => {
-                    e.preventDefault();
-                    recordMusicCloseFeedback(playbackStartedAt);
-                    playbackStartedAt = 0;
-                    destroyMusicPlayer(true, true, true);
-                };
                 apBtn.onclick = (e) => {
                     e.preventDefault();
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
