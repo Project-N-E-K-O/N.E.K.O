@@ -12,7 +12,8 @@
     FEEDBACK: 'round:feedback',
     CHOOSE_WORD: 'round:choose-word',
     TIMEOUT: 'round:timeout',
-    VISION_GUESS: 'round:vision-guess'
+    VISION_GUESS: 'round:vision-guess',
+    LIVE: 'round:live'
   });
   var ROUND_COMMAND_RESPONSE_SCHEMA = Object.freeze({
     type: 'object',
@@ -68,7 +69,8 @@
       user_hint: { type: 'string', maxLength: 260 },
       settle_on_miss: { type: 'boolean' },
       time_expired: { type: 'boolean' }
-    }, ['image_data_url'])
+    }, ['image_data_url']),
+    'round:live': roundCommandRequestSchema()
   });
   var ROUND_FALLBACK_SECONDS = 5 * 60;
   // Two bounded model-plan attempts can consume 64 seconds before the persona
@@ -104,6 +106,15 @@
   var GUESS_TIMEOUT_RETRY_MAX_DELAY_MS = 5000;
   var AI_GUESS_MIN_DELAY_MS = 10000;
   var AI_GUESS_MAX_DELAY_MS = 60000;
+  var LIVE_IDLE_PHASES = Object.freeze([
+    'user_guessing',
+    'drawing_pick',
+    'user_drawing',
+    'summary',
+    'final_summary'
+  ]);
+  var LIVE_POLL_INTERVAL_MS = 5000;
+  var LIVE_REQUEST_TIMEOUT_MS = 30000;
   var DRAW_PICK_DURATION_MS = 1450;
   var AI_DRAWING_PLACEHOLDER_DELAY_MS = 1200;
   var COLOR_HISTORY_VISIBLE_COUNT = 7;
@@ -165,6 +176,9 @@
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
     lastVoiceTranscriptRequestId: '',
+    livePollTimer: null,
+    liveInFlight: false,
+    liveInFlightToken: null,
     playerTextQueueGeneration: 0,
     playerTextChain: Promise.resolve(),
     canvasContextLastHash: '',
@@ -919,6 +933,7 @@
   function setPhase(phase) {
     state.phase = phase;
     setModelMood(modelMoodForPhase(phase));
+    syncLivePoll();
     updateControls();
   }
 
@@ -1382,6 +1397,62 @@
     });
   }
 
+  function liveIdlePhaseAcceptsInterject() {
+    return LIVE_IDLE_PHASES.indexOf(state.phase) >= 0
+      && state.routeActive
+      && state.roundSessionReady
+      && !state.routeEnding
+      && !state.chatInFlight
+      && !state.aiGuessInFlight
+      && !state.liveInFlight
+      && !state.nekoVoiceInFlight;
+  }
+
+  function stopLivePoll() {
+    clearInterval(state.livePollTimer);
+    state.livePollTimer = null;
+  }
+
+  function syncLivePoll() {
+    if (!state.routeActive || state.routeEnding || !state.roundSessionReady
+      || LIVE_IDLE_PHASES.indexOf(state.phase) < 0) {
+      stopLivePoll();
+      return;
+    }
+    if (state.livePollTimer) return;
+    state.livePollTimer = setInterval(pollLiveInterject, LIVE_POLL_INTERVAL_MS);
+    pollLiveInterject();
+  }
+
+  function pollLiveInterject() {
+    if (!liveIdlePhaseAcceptsInterject()) return;
+    var flowToken = state.roundFlowToken;
+    state.liveInFlight = true;
+    state.liveInFlightToken = flowToken;
+    executeRoundCommand(ROUND_COMMANDS.LIVE, roundCommandPayload(), LIVE_REQUEST_TIMEOUT_MS)
+      .then(function (res) {
+        if (!isCurrentRoundFlow(flowToken)
+          || !res
+          || res.ok === false
+          || LIVE_IDLE_PHASES.indexOf(state.phase) < 0
+          || state.routeEnding
+          || state.chatInFlight
+          || state.aiGuessInFlight
+          || state.nekoVoiceInFlight) return;
+        var lines = Array.isArray(res.lines) ? res.lines : [];
+        for (var i = 0; i < lines.length; i += 1) {
+          var text = lines[i] && lines[i].text ? String(lines[i].text) : '';
+          if (text) addNekoMessage(text);
+        }
+      })
+      .catch(function () { /* live interject is best effort */ })
+      .finally(function () {
+        if (state.liveInFlightToken !== flowToken) return;
+        state.liveInFlight = false;
+        state.liveInFlightToken = null;
+      });
+  }
+
   function readableRequestError(err) {
     if (err && (err.code === 'request_timeout' || err.code === 'timeout' || err.message === 'request_timeout')) {
       return t('drawingGuess.messages.requestTimeout', 'Request timed out. Please try again.');
@@ -1588,6 +1659,9 @@
     stopCountdown();
     stopDrawPickAnimation();
     stopAiGuessSchedule();
+    stopLivePoll();
+    state.liveInFlight = false;
+    state.liveInFlightToken = null;
   }
 
   function handleSdkRuntimeState(event) {
@@ -3250,6 +3324,9 @@
     stopThinkingEventMessage();
     stopDrawPickAnimation();
     stopAiGuessSchedule();
+    stopLivePoll();
+    state.liveInFlight = false;
+    state.liveInFlightToken = null;
     setPhase('loading_round');
     showPlaceholder();
     setBadge(t('drawingGuess.phases.loading_round', 'Loading'));

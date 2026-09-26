@@ -46,6 +46,7 @@ from config.prompts.prompts_drawing_guess import (
     get_drawing_guess_scene_premise,
 )
 from .memory_policy import _GAME_MEMORY_ARCHIVE_OWNER_FEATURE
+from main_routers.game_router.route_lifecycle import _TAKEOVER_CALLBACK_INBOX_KEY
 from utils.game_route_state import (
     _get_active_game_route_state,
     _get_route_lock,
@@ -107,6 +108,14 @@ _SESSION_LOCK_KEY = "_request_lock"
 _AI_DRAWING_REVIEW_KEY = "_ai_drawing_review"
 _USER_GUESS_TRANSITION_LOCALE_KEY = "_user_guess_transition_locale"
 _USER_GUESS_TRANSITION_ROUND_KEY = "_user_guess_transition_round_id"
+_LIVE_IDLE_PHASES = frozenset({
+    "user_guessing",
+    "word_picking",
+    "user_drawing",
+    "summary",
+    "final_summary",
+})
+_LIVE_BUSY_KEY = "_drawing_guess_live_busy"
 _AI_GUESS_TRANSITION_LOCALE_KEY = "_ai_guess_transition_locale"
 _AI_GUESS_TRANSITION_ROUND_KEY = "_ai_guess_transition_round_id"
 
@@ -3338,7 +3347,73 @@ def _build_drawing_guess_game_line_prompts(
             "do_not_copy_recent_game_chat": event == "summary_evaluation",
         },
     }
+    public_details = dict(details or {})
+    if event == "live_interject":
+        live_audience_messages = str(public_details.pop("live_audience_messages", "") or "")
+        user_payload["public_details"] = public_details
+        user_payload["live_audience_messages"] = live_audience_messages
+        user_payload["output"]["reply_to_live_audience_only"] = True
+        user_payload["output"]["do_not_score_player_turn"] = True
     return system_prompt, json.dumps(user_payload, ensure_ascii=False)
+
+
+def _empty_live_lines(*, busy: bool = False) -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": True, "lines": []}
+    if busy:
+        result["busy"] = True
+    return result
+
+
+def _render_live_audience_messages(
+    callbacks: list[dict[str, Any]],
+    *,
+    locale: str,
+    lanlan_name: str,
+) -> str:
+    from main_logic.core.callback_render import _build_callback_instruction
+    from . import _get_character_info
+
+    char_info = _get_character_info(lanlan_name)
+    return _build_callback_instruction(
+        callbacks,
+        lang=locale,
+        lanlan_name=str(char_info.get("lanlan_name") or lanlan_name or ""),
+        master_name=str(char_info.get("master_name") or "player"),
+    )
+
+
+def _drawing_guess_live_inbox(
+    session: dict[str, Any],
+) -> tuple[dict[str, Any] | None, Any]:
+    lanlan_name = str(session.get("lanlan_name") or "")
+    state = _get_active_game_route_state(lanlan_name, "drawing_guess") if lanlan_name else None
+    if not isinstance(state, dict):
+        return None, None
+    if game_route_identity_mismatch_reason(
+        expected_session_id=state.get("session_id"),
+        expected_sdk_route_instance_id=state.get("_sdk_route_instance_id"),
+        actual_session_id=session.get("session_id"),
+        actual_sdk_route_instance_id=session.get("_sdk_route_instance_id"),
+    ):
+        return None, None
+    return state, state.get(_TAKEOVER_CALLBACK_INBOX_KEY)
+
+
+def _live_prompt_snapshot(session: dict[str, Any]) -> tuple[str, str, list[dict[str, str]]]:
+    return (
+        str(session.get("phase") or ""),
+        str(session.get("round_id") or ""),
+        _recent_game_chat_payload(session),
+    )
+
+
+def _return_live_callbacks(inbox, callbacks, live_lines) -> None:
+    remaining: list[dict[str, Any]] = []
+    for callback in callbacks:
+        if inbox is None or not inbox.accept(callback):
+            remaining.append(callback)
+    if remaining:
+        live_lines.settle(remaining, False)
 
 
 async def _generate_persona_game_line(
@@ -4974,6 +5049,92 @@ async def handle_external_drawing_guess_transcript(
     if image_data_url and phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         data["image_data_url"] = image_data_url
     return await _handle_drawing_guess_input_payload(data)
+
+
+@router.post("/live")
+async def drawing_guess_live(request: Request):
+    """Speak held plugin responses during an idle drawing-guess gap."""
+    data = await _payload(request)
+    session, error = _require_session(data)
+    if error:
+        return {"ok": False, "reason": error}
+    locale = _resolve_round_locale(data, session)
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    if identity_error:
+        return {"ok": False, "reason": identity_error}
+    if str(session.get("phase") or "") not in _LIVE_IDLE_PHASES:
+        return _empty_live_lines()
+    if _get_session_lock(session).locked():
+        return _empty_live_lines(busy=True)
+    state, inbox = _drawing_guess_live_inbox(session)
+    if inbox is None or not getattr(inbox, "pending", 0):
+        return _empty_live_lines()
+    if state.get(_LIVE_BUSY_KEY):
+        return _empty_live_lines(busy=True)
+
+    from main_logic.proactive_delivery import callback_is_expired
+    from main_logic.watch_together import live as live_lines
+
+    state[_LIVE_BUSY_KEY] = True
+    callbacks: list[dict[str, Any]] = []
+    try:
+        callbacks = inbox.take(live_lines.INTERJECT_TAKE)
+        if not callbacks:
+            return _empty_live_lines()
+        lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
+        details = _drawing_guess_chat_public_details(session, locale, "live_interject")
+        details["live_audience_messages"] = _render_live_audience_messages(
+            callbacks,
+            locale=locale,
+            lanlan_name=lanlan_name,
+        )
+        details["allow_answer_reveal"] = False
+        prompt_snapshot = _live_prompt_snapshot(session)
+        line, source = await _generate_persona_game_line(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            event="live_interject",
+            fallback="",
+            details=details,
+        )
+        lock, busy = await _acquire_session_lock(session, locale)
+        if busy is not None:
+            _return_live_callbacks(inbox, callbacks, live_lines)
+            return _empty_live_lines(busy=True)
+        try:
+            identity_error = _drawing_guess_session_identity_error(data, session)
+            stale = all(callback_is_expired(callback) for callback in callbacks)
+            if stale or not line:
+                live_lines.settle(callbacks, False)
+                return _empty_live_lines()
+            if (
+                identity_error
+                or _live_prompt_snapshot(session) != prompt_snapshot
+                or str(session.get("phase") or "") not in _LIVE_IDLE_PHASES
+            ):
+                _return_live_callbacks(inbox, callbacks, live_lines)
+                return _empty_live_lines()
+            _append_game_chat(session, "assistant", line, kind="live_reply")
+            live_lines.settle(callbacks, True)
+            return {"ok": True, "lines": [{"text": line}], "source": source}
+        finally:
+            if lock is not None:
+                lock.release()
+    except asyncio.CancelledError:
+        _return_live_callbacks(inbox, callbacks, live_lines)
+        raise
+    except Exception as exc:
+        live_lines.settle(callbacks, False)
+        logger.info(
+            "drawing_guess live interject failed: lanlan=%s session=%s err=%s",
+            session.get("lanlan_name") or "",
+            session.get("session_id") or "",
+            type(exc).__name__,
+        )
+        return _empty_live_lines()
+    finally:
+        state[_LIVE_BUSY_KEY] = False
 
 
 @router.post("/choose-word")
