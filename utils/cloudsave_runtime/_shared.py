@@ -151,6 +151,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "vrm",
     "mmd",
     "workshop",
+    "theater",
     "character_cards",
     "card_faces",
     "avatar_tools",

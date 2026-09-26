@@ -86,6 +86,14 @@ describe('message-schema', () => {
     expect(parseChatWindowProps({ catLocalTextOnly: true }).catLocalTextOnly).toBe(true);
   });
 
+  it('preserves the dedicated theater submit callback', () => {
+    const onTheaterSubmit = vi.fn();
+    const props = parseChatWindowProps({ onTheaterSubmit });
+
+    props.onTheaterSubmit?.('继续演绎');
+    expect(onTheaterSubmit).toHaveBeenCalledWith('继续演绎');
+  });
+
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',

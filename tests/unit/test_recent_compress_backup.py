@@ -394,6 +394,8 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/internal/memory/{lanlan_name}/repetition_insights", "POST"),
         ("/followup_topics/{lanlan_name}", "GET"),
         ("/get_recent_history/{lanlan_name}", "GET"),
+        # The deleted-story management list projects existing public summaries.
+        ("/internal/memory/{lanlan_name}/theater/stories", "GET"),
         ("/search_for_memory/{lanlan_name}/{query}", "GET"),
         ("/get_persona/{lanlan_name}", "GET"),
         ("/api/memory/funnel/{lanlan_name}", "GET"),
@@ -430,6 +432,7 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert ("/cache/{lanlan_name}", "POST") in fenced
     assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
+    assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
 
 
 @pytest.mark.unit

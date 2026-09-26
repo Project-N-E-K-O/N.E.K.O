@@ -336,6 +336,144 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
     assert calls == [(name, True)]
 
 
+def test_update_history_compresses_chat_without_swallowing_theater_episode(tmp_path):
+    """普通聊天压缩必须保留剧场胶囊及其来源元数据。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name = _make_manager(tmp_path)
+    theater_episode = SystemMessage(
+        content="共同守住了雨夜里的住处。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story_rain",
+            "session_id": "session_rain_1",
+            "story_title": "雨夜合租",
+            "episode_status": "completed",
+            "run_index": 1,
+            "story_run_count": 1,
+        },
+    )
+    original = [
+        HumanMessage(content="m0"),
+        theater_episode,
+        AIMessage(content="m1"),
+        HumanMessage(content="m2"),
+        AIMessage(content="m3"),
+        HumanMessage(content="m4"),
+        AIMessage(content="m5"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    compressed_inputs = []
+
+    async def _ok(messages, *_args, **_kwargs):
+        compressed_inputs.extend(messages)
+        return (SystemMessage(content="普通聊天摘要"), "普通聊天摘要")
+
+    setattr(mgr, "compress_history", _ok)
+    _run(mgr.update_history([HumanMessage(content="new")], name, compress=True))
+
+    final = _read_recent(mgr.log_file_path[name])
+    preserved = [
+        message
+        for message in final
+        if message.metadata.get("memory_tier") == "episode_summary"
+    ]
+    assert len(preserved) == 1
+    assert preserved[0].metadata["session_id"] == "session_rain_1"
+    assert all(
+        message.metadata.get("memory_tier") != "episode_summary"
+        for message in compressed_inputs
+    )
+
+
+def test_update_history_preserves_legacy_theater_message_before_migration(tmp_path):
+    """旧剧场记录在迁移为单集胶囊前也不能进入普通摘要模型。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name = _make_manager(tmp_path)
+    legacy_theater = SystemMessage(
+        content="旧版剧场记录。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "story_id": "legacy_story",
+            "session_id": "legacy_session",
+        },
+    )
+    original = [
+        HumanMessage(content="m0"),
+        legacy_theater,
+        AIMessage(content="m1"),
+        HumanMessage(content="m2"),
+        AIMessage(content="m3"),
+        HumanMessage(content="m4"),
+        AIMessage(content="m5"),
+    ]
+    _write_recent(mgr.log_file_path[name], original)
+    compressed_inputs = []
+
+    async def _ok(messages, *_args, **_kwargs):
+        compressed_inputs.extend(messages)
+        return (SystemMessage(content="普通聊天摘要"), "普通聊天摘要")
+
+    setattr(mgr, "compress_history", _ok)
+    _run(mgr.update_history([HumanMessage(content="new")], name, compress=True))
+
+    final = _read_recent(mgr.log_file_path[name])
+    assert all(message.metadata.get("source") != "theater_numeric_v2" for message in compressed_inputs)
+    assert any(
+        message.metadata.get("session_id") == "legacy_session"
+        for message in final
+    )
+
+
+def test_review_commit_preserves_capsule_position_between_ordinary_ranges(tmp_path):
+    """通用 review 跨过剧场胶囊提交时只能改普通消息槽位。"""  # noqa: DOCSTRING_CJK
+
+    mgr, name = _make_manager(tmp_path)
+    capsule = SystemMessage(
+        content="剧场单集摘要。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "story_id": "story_review",
+            "session_id": "session_review",
+        },
+    )
+    current = [
+        HumanMessage(content="旧问题"),
+        AIMessage(content="旧回答"),
+        capsule,
+        HumanMessage(content="后续问题一"),
+        AIMessage(content="后续回答一"),
+        HumanMessage(content="后续问题二"),
+        AIMessage(content="后续回答二"),
+    ]
+    snapshot = [message for message in current if message is not capsule]
+    corrected = [
+        HumanMessage(content="修正问题"),
+        AIMessage(content="修正回答"),
+        HumanMessage(content="修正后续一"),
+        AIMessage(content="修正后续答一"),
+        HumanMessage(content="修正后续二"),
+        AIMessage(content="修正后续答二"),
+    ]
+    _write_recent(mgr.log_file_path[name], current)
+
+    status, _fingerprint, _detail = mgr._commit_review_locked(
+        mgr.log_file_path[name],
+        name,
+        snapshot,
+        corrected,
+    )
+
+    final = _read_recent(mgr.log_file_path[name])
+    assert status == "patched"
+    assert final[2].metadata.get("session_id") == "session_review"
+    assert [message.content for message in final if message is not final[2]] == [
+        message.content for message in corrected
+    ]
+
+
 def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]

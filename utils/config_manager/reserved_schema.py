@@ -19,8 +19,47 @@ Read/write/delete of nested reserved fields, schema validation, the
 legacy-to-`_reserved` migration for a single character and the reverse
 flattening for legacy callers/frontends. Stateless module-level functions.
 """
+import uuid
+
 from config import RESERVED_FIELD_SCHEMA
 from utils.voice_config import read_legacy_voice_id
+
+
+CHARACTER_ID_PREFIX = "character_"
+
+
+def normalize_character_id(value) -> str:
+    raw = str(value or "").strip()
+    if not raw.startswith(CHARACTER_ID_PREFIX):
+        return ""
+    token = raw.removeprefix(CHARACTER_ID_PREFIX)
+    try:
+        parsed = uuid.UUID(hex=token)
+    except (ValueError, AttributeError):
+        return ""
+    return f"{CHARACTER_ID_PREFIX}{parsed.hex}"
+
+
+def ensure_catgirl_character_id(
+    catgirl_data: dict,
+    *,
+    used_ids: set[str] | None = None,
+) -> tuple[str, bool]:
+    """确保本地角色卡拥有唯一且不可变的系统 ID。"""  # noqa: DOCSTRING_CJK
+
+    raw_existing = get_reserved(catgirl_data, "character_id", default="")
+    existing = normalize_character_id(raw_existing)
+    if existing and (used_ids is None or existing not in used_ids):
+        # UUID 接受大写和连字符等多种写法；统一回写规范值，避免同一角色产生多种持久化表示。
+        normalized_changed = set_reserved(catgirl_data, "character_id", existing)
+        if used_ids is not None:
+            used_ids.add(existing)
+        return existing, normalized_changed
+    character_id = f"{CHARACTER_ID_PREFIX}{uuid.uuid4().hex}"
+    set_reserved(catgirl_data, "character_id", character_id)
+    if used_ids is not None:
+        used_ids.add(character_id)
+    return character_id, True
 
 
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):

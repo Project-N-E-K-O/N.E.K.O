@@ -9,6 +9,95 @@
     --neko-model-visibility-delay: 400ms;
 }
 
+/* 小剧场结束确认框只保留玻璃卡片，不给透明桌面窗口铺黑色遮罩。 */
+.modal-overlay.modal-overlay-theater {
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+.modal-dialog.modal-dialog-theater {
+    width: min(460px, calc(100vw - 32px));
+    min-width: min(320px, calc(100vw - 32px));
+    max-width: min(460px, calc(100vw - 32px));
+    padding: 24px;
+    border: 1px solid rgba(23, 167, 255, 0.22);
+    border-radius: 22px;
+    color: #24445a;
+    background: #ffffff;
+    box-shadow: 0 28px 70px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.modal-dialog-theater:focus {
+    outline: none;
+}
+
+.modal-dialog-theater:focus-visible {
+    outline: 3px solid rgba(23, 167, 255, 0.72);
+    outline-offset: 3px;
+}
+
+.modal-dialog-theater .modal-header {
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+.modal-dialog-theater .modal-title {
+    margin: 0 0 12px;
+    color: #24445a;
+    font-size: 1.5em;
+    font-weight: 700;
+}
+
+.modal-dialog-theater .modal-body {
+    padding: 0;
+    color: #24445a;
+    line-height: 1.7;
+}
+
+.modal-dialog-theater .modal-footer {
+    padding: 0;
+    margin-top: 22px;
+    border: none;
+}
+
+.modal-dialog-theater .modal-btn {
+    min-width: 112px;
+    min-height: 44px;
+    border-radius: 10px;
+}
+
+.modal-dialog-theater .modal-btn-secondary {
+    color: #24445a;
+    border: none;
+    background: #f4fbff;
+}
+
+.modal-dialog-theater .modal-btn-secondary:hover {
+    border-color: transparent;
+    background: rgba(23, 167, 255, 0.1);
+}
+
+.modal-dialog-theater .modal-btn-danger {
+    color: #fff;
+    border-color: #17a7ff;
+    background: linear-gradient(135deg, #17a7ff, #008ee6);
+    box-shadow: 0 6px 14px rgba(23, 167, 255, 0.18);
+}
+
+.modal-dialog-theater .modal-btn-danger:hover {
+    background: linear-gradient(135deg, #17a7ff, #008ee6);
+}
+
+.modal-dialog-theater .modal-btn:focus-visible {
+    outline: 2px solid rgba(23, 167, 255, 0.76);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(75, 212, 253, 0.18);
+}
+
 html,
 body {
     height: 100%;

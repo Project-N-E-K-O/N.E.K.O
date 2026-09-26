@@ -209,9 +209,11 @@ def _normalize_catgirl_payload(payload: Any) -> dict[str, Any] | None:
         return None
     normalized_payload = deepcopy(payload)
     try:
-        from utils.config_manager import migrate_catgirl_reserved
+        from utils.config_manager import delete_reserved, migrate_catgirl_reserved
 
         migrate_catgirl_reserved(normalized_payload)
+        # 本地不可变身份不是角色内容差异；判断“是否仍为种子默认卡”时必须忽略它。
+        delete_reserved(normalized_payload, "character_id")
     except Exception:
         pass
     return normalized_payload

@@ -669,6 +669,72 @@ async def aload_ui_language_override() -> Optional[str]:
     return await asyncio.to_thread(load_ui_language_override)
 
 
+def load_global_entry_flags() -> Dict[str, Any]:
+    """Read every raw field stored beside the global conversation entry in one file read.
+
+    Small UI switches live next to ``model_path`` rather than inside the validated
+    conversation payload, so loading them must not pay one file read per key.
+    """
+
+    try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = _get_active_preferences_path()
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for pref in data:
+                    if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                        return {k: v for k, v in pref.items() if k != "model_path"}
+    except Exception as e:
+        print(f"加载全局开关集合失败: {e}")
+    return {}
+
+
+def save_global_entry_flags(values: Dict[str, Any]) -> bool:
+    """Merge the given flags into the global conversation entry in a single locked write."""
+
+    try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+        _config_manager.ensure_config_directory()
+        with _locked_preferences_store():
+            data = _load_preferences_data_for_write_unlocked()
+            global_index = -1
+            for index, pref in enumerate(data):
+                if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                    global_index = index
+                    break
+            global_pref = data[global_index].copy() if global_index >= 0 else {"model_path": GLOBAL_CONVERSATION_KEY}
+            for key, value in values.items():
+                if value is None:
+                    global_pref.pop(key, None)
+                else:
+                    global_pref[key] = value
+            if global_index >= 0:
+                data[global_index] = global_pref
+            else:
+                data.append(global_pref)
+            _save_user_preferences_unlocked(data)
+        return True
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        print(f"保存全局开关集合失败: {e}")
+        return False
+
+
+async def aload_global_entry_flags() -> Dict[str, Any]:
+    """Async wrapper for ``load_global_entry_flags``."""
+
+    return await asyncio.to_thread(load_global_entry_flags)
+
+
+async def asave_global_entry_flags(values: Dict[str, Any]) -> bool:
+    """Async wrapper for ``save_global_entry_flags``."""
+
+    return await asyncio.to_thread(save_global_entry_flags, values)
+
+
 def is_privacy_mode_enabled() -> bool:
     """Whether the frontend "privacy mode" switch is on.
 

@@ -100,6 +100,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "scoped_history",
     "scoped_forget",
     "scoped_mentions",
+    # 剧场遗忘会同时改 recent 与时间索引，角色删除期间也必须进入同一围栏。
+    "theater/forget",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -135,7 +137,9 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
-        if len(segments) == 2 and segments[1] in _CHARACTER_SCOPED_WRITE_OPS:
+        # 操作名允许包含固定子路径，但仍通过完整字符串白名单精确匹配。
+        operation = "/".join(segments[1:])
+        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
             raw_name = segments[0]
     if not raw_name:
         return None

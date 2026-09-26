@@ -55,6 +55,7 @@ if (typeof Live2DManager !== 'undefined') {
         characterMenuItems: [
             { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
             { id: 'live2d-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+            { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
             { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
         ],
         onMouseTrackingToggle: function(enabled) {
@@ -82,6 +83,7 @@ const _vrmPopupConfig = {
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'vrm-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+        { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
     onQualityChange: function(quality) {
@@ -162,6 +164,7 @@ const _mmdPopupConfig = {
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'mmd-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+        { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
     sidePanelContainerLayout: {

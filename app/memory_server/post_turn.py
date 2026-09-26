@@ -33,6 +33,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_USER_REBUT,
 )
 from memory.outbox import OP_POST_TURN_SIGNALS
+from utils.llm_client import is_theater_memory_message
 
 from . import gates, locale_state, outbox_infra, runtime, signal_extraction
 from ._shared import logger
@@ -357,7 +358,10 @@ async def _run_post_turn_signals(
     semantics. The **string value** of ``OP_POST_TURN_SIGNALS`` remains
     ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
-    user_msgs = _extract_user_messages(messages)
+    # 剧场原文要进入近期与时间索引记忆，但不能冒充现实聊天参与事实、反馈
+    # 判断或猫娘自述统计；混合批次中只让普通消息进入这些后续链路。
+    ordinary_messages = [message for message in messages if not is_theater_memory_message(message)]
+    user_msgs = _extract_user_messages(ordinary_messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
     # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
@@ -391,9 +395,9 @@ async def _run_post_turn_signals(
     # `if not powerful_enabled: continue` 分支），如果这里也跳过，facts.json
     # 就完全无路径更新——这是 chatgpt-codex-connector PR #1346 抓到的 regression。
     # OFF-mode 保留 legacy per-turn Stage-1，let user 仍能拿到基础 fact 累积。
-    if not powerful_enabled:
+    if not powerful_enabled and user_msgs:
         try:
-            await runtime.fact_store.extract_facts(messages, lanlan_name)
+            await runtime.fact_store.extract_facts(ordinary_messages, lanlan_name)
         except Exception as e:
             logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
 
@@ -402,7 +406,7 @@ async def _run_post_turn_signals(
         #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）。
         #    本地 BM25，无 LLM 调用，per-turn 跑是必要的——5h 窗口逻辑
         #    依赖即时更新。
-        ai_response = _extract_ai_response(messages)
+        ai_response = _extract_ai_response(ordinary_messages)
         if ai_response:
             await runtime.persona_manager.arecord_mentions(lanlan_name, ai_response)
             await runtime.reflection_engine.arecord_mentions(lanlan_name, ai_response)

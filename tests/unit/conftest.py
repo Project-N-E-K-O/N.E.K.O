@@ -279,6 +279,28 @@ def _reset_pending_retirements():
         fenced.clear()
 
 
+@pytest.fixture(autouse=True)
+def _enable_theater_review_modules(monkeypatch):
+    """Keep every optional theater module on for regression tests.
+
+    The product ships the theater module switches off by default (only the actor
+    reply runs), but the review-chain regressions were written against the
+    modules-on behaviour: they assert the second opinion, the fast review, the
+    shared rewrite budget and the output-retry contract. Enabling them here keeps
+    those tests testing what they document; tests that exercise the switches
+    themselves rebind ``aload_theater_module_options`` and still win.
+    """
+
+    import services.theater.numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_options import default_options
+
+    async def _all_on() -> dict[str, bool]:
+        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        return {key: True for key in default_options() if key != 'review_delivery'}
+
+    monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
+
+
 @pytest.fixture
 def arbiter_logs_reach_caplog(monkeypatch):
     """Let ``caplog`` see the realtime response arbiter's records for one test.

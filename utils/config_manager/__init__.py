@@ -105,9 +105,11 @@ from .reserved_schema import (  # noqa: F401
     _legacy_live2d_name_from_model_path,
     _legacy_live2d_to_model_path,
     delete_reserved,
+    ensure_catgirl_character_id,
     flatten_reserved,
     get_reserved,
     migrate_catgirl_reserved,
+    normalize_character_id,
     set_reserved,
     validate_reserved_schema,
 )

@@ -29,6 +29,8 @@ No module state, no imports from sibling submodules. Precedent:
 import json
 from datetime import datetime
 
+from utils.llm_client import is_theater_memory_message
+
 
 def _coerce_db_ts(ts) -> datetime | None:
     """Normalize the timestamp field of a SQL row into a **naive** datetime.
@@ -81,7 +83,11 @@ def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, date
             continue
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
-            if isinstance(msg, dict) and msg.get('type') == 'human':
+            if (
+                isinstance(msg, dict)
+                and not is_theater_memory_message(msg)
+                and msg.get('type') == 'human'
+            ):
                 content = msg.get('data', {}).get('content', '')
                 if isinstance(content, str):
                     if content.strip():
@@ -106,7 +112,11 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     for _, _, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
-            if isinstance(msg, dict) and msg.get('type') == 'human':
+            if (
+                isinstance(msg, dict)
+                and not is_theater_memory_message(msg)
+                and msg.get('type') == 'human'
+            ):
                 content = msg.get('data', {}).get('content', '')
                 if isinstance(content, str):
                     if content.strip():
@@ -145,6 +155,10 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if not isinstance(msg, dict):
+                continue
+            # 小剧场角色台词属于虚构演绎，不能进入现实人格的 user_observation
+            # 或 ai_disclosure 提取；原文仍保留在 recent 与 time-indexed 中。
+            if is_theater_memory_message(msg):
                 continue
             msg_type = msg.get('type')
             if msg_type not in ('human', 'ai'):
@@ -199,7 +213,7 @@ def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
 def _has_human_messages(messages) -> bool:
     """Check whether the message list contains user (human) messages."""
     for m in messages:
-        if getattr(m, 'type', '') == 'human':
+        if not is_theater_memory_message(m) and getattr(m, 'type', '') == 'human':
             return True
     return False
 
@@ -207,7 +221,7 @@ def _has_human_messages(messages) -> bool:
 def _extract_ai_response(messages: list) -> str:
     """Extract the text of the last AI reply from the message list."""
     for m in reversed(messages):
-        if getattr(m, 'type', '') == 'ai':
+        if not is_theater_memory_message(m) and getattr(m, 'type', '') == 'ai':
             content = getattr(m, 'content', '')
             if isinstance(content, str):
                 return content
@@ -221,7 +235,7 @@ def _extract_user_messages(messages: list) -> list[str]:
     """Extract user message texts from the message list (skipping blanks)."""
     user_msgs = []
     for m in messages:
-        if getattr(m, 'type', '') == 'human':
+        if not is_theater_memory_message(m) and getattr(m, 'type', '') == 'human':
             content = getattr(m, 'content', '')
             if isinstance(content, str):
                 if content.strip():

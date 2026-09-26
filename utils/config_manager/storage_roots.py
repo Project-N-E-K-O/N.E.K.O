@@ -185,7 +185,7 @@ class StorageRootsMixin:
         self._characters_cache_path: str | None = None
         self._characters_dirty: bool = False
         self._characters_cache_lock = threading.Lock()
-        self._characters_reload_lock = threading.Lock()
+        self._characters_reload_lock = threading.RLock()
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()

@@ -272,3 +272,8 @@ OPENCLAW_MAGIC_INTENT_MAX_TOKENS = 80
 """OpenClaw magic intent 分类的 max_completion_tokens。
 - 用途：判断用户输入是 /clear /new /stop /daemon-approve 中的哪个。
 - 上游：LLM 输出固定 JSON ~15 token，80 留 5x 安全垫。"""
+
+THEATER_TURN_USER_MESSAGE_MAX_TOKENS = 140
+"""小剧场 Router 与 Actor 接收的本轮玩家原话 token 上限。
+- 用途：限制剧本入口路由和情景内 Actor 的单条输入。
+- 安全边界：超出上限时整体降级，不能让截断片段参与剧情入口判断。"""

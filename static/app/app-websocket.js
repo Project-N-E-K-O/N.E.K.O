@@ -3195,7 +3195,16 @@
                     if (window.DEBUG_AUDIO) {
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
-                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                    var speechId = response.speech_id;
+                    var shouldSkip = false;
+                    var speechCorrelationId = String(response.sdk_speech_correlation_id || '');
+                    if (speechCorrelationId.indexOf('theater_speech_') === 0) {
+                        var theaterRuntime = window.nekoTheaterRuntime;
+                        shouldSkip = !theaterRuntime ||
+                            typeof theaterRuntime.allowsSpeechCorrelation !== 'function' ||
+                            !theaterRuntime.allowsSpeechCorrelation(speechCorrelationId);
+                    }
+                    if (!shouldSkip && !S.assistantTurnId && S.assistantTurnAwaitingBubble) {
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
@@ -3203,8 +3212,6 @@
                             response.request_id
                         );
                     }
-                    var speechId = response.speech_id;
-                    var shouldSkip = false;
                     var playbackGain = Number(response.playback_gain);
                     if (!Number.isFinite(playbackGain)) playbackGain = 1;
                     playbackGain = Math.max(0, Math.min(2, playbackGain));
@@ -3214,7 +3221,7 @@
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
                         shouldSkip = true;
-                    } else if (speechId && speechId !== S.currentPlayingSpeechId) {
+                    } else if (!shouldSkip && speechId && speechId !== S.currentPlayingSpeechId) {
                         if (S.pendingDecoderReset) {
                             console.log(window.t('console.newConversationResetDecoder'), speechId);
                             S.decoderResetPromise = (async function () {
@@ -3231,7 +3238,7 @@
                             response.sdk_speech_correlation_id || ''
                         );
                         S.interruptedSpeechId = null;
-                    } else if (speechId && response.sdk_speech_correlation_id) {
+                    } else if (!shouldSkip && speechId && response.sdk_speech_correlation_id) {
                         S.currentPlayingSpeechCorrelationId = String(
                             response.sdk_speech_correlation_id
                         );

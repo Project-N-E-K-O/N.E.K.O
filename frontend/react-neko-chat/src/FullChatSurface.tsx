@@ -479,6 +479,7 @@ export default function FullChatSurface({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
@@ -521,6 +522,7 @@ export default function FullChatSurface({
   const compactInputToolFanHoverInsideRef = useRef(false);
   const compactInputToolFanSuppressHoverUntilLeaveRef = useRef(false);
   const compactInputToolFanInteractiveRef = useRef(false);
+  const lastOrdinaryDraftRestoreIdRef = useRef('');
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
@@ -627,6 +629,14 @@ export default function FullChatSurface({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
+
+  useEffect(() => {
+    const restore = theaterPresentation?.ordinaryDraftRestore;
+    if (!restore?.id || restore.id === lastOrdinaryDraftRestoreIdRef.current) return;
+    // full 与 compact 是独立组件并各自持有草稿；退出剧场切回 full 后必须再次消费同一恢复协议。
+    lastOrdinaryDraftRestoreIdRef.current = restore.id;
+    setDraft(restore.text);
+  }, [theaterPresentation?.ordinaryDraftRestore]);
 
   useEffect(() => {
     const markImage = (img: HTMLImageElement) => {
