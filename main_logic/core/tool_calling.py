@@ -124,12 +124,80 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        # Evidence belongs to the session the call arrived on; a late call
+        # from a replaced session must not count toward the current turn.
+        captured_session = (
+            invoking_session
+            if invoking_session is not None
+            else getattr(self, "session", None)
+        )
+        captured_epoch = getattr(self, "_tool_turn_epoch", 0)
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
             )
+        state = getattr(self, "_tool_turn_evidence", None)
+        if (
+            getattr(self, "session", None) is captured_session
+            and getattr(self, "_tool_turn_epoch", 0) == captured_epoch
+            and state is not None
+            and state.get("session") is captured_session
+            and state.get("epoch") == captured_epoch
+        ):
+            state["call_names"].append(str(call.name or ""))
+            if "knowledge_used" in result.internal_evidence:
+                state["knowledge_used"] = True
         return result
+
+    def _begin_tool_evidence_turn(
+        self,
+        user_text: str,
+        *,
+        request_id: object = None,
+    ) -> None:
+        """Start one session-bound evidence ledger before provider execution."""
+        from main_logic.knowledge_context import (
+            _is_pure_explicit_local_knowledge_request,
+        )
+
+        self._tool_turn_epoch = getattr(self, "_tool_turn_epoch", 0) + 1
+        self._tool_turn_evidence = {
+            "session": self.session,
+            "epoch": self._tool_turn_epoch,
+            "request_id": str(request_id or ""),
+            "pure_knowledge_candidate": bool(
+                _is_pure_explicit_local_knowledge_request(str(user_text or ""))
+            ),
+            "call_names": [],
+            "knowledge_used": False,
+        }
+
+    def _consume_tool_turn_route_owner(self, request_id: object) -> str | None:
+        """Promote only a conservatively proven pure one-tool knowledge turn."""
+        from main_logic.agent_routing import (
+            ANALYZE_ROUTE_OWNER_PUBLIC_KNOWLEDGE,
+        )
+
+        state = getattr(self, "_tool_turn_evidence", None)
+        self._tool_turn_evidence = None
+        if state is None:
+            return None
+        request_key = str(request_id or "")
+        if (
+            state.get("session") is not getattr(self, "session", None)
+            or state.get("epoch") != getattr(self, "_tool_turn_epoch", 0)
+            or str(state.get("request_id") or "") != request_key
+            or not state.get("pure_knowledge_candidate")
+            or not state.get("knowledge_used")
+            or state.get("call_names") != ["query_public_knowledge"]
+        ):
+            return None
+        return ANALYZE_ROUTE_OWNER_PUBLIC_KNOWLEDGE
+
+    def _clear_tool_turn_evidence(self) -> None:
+        self._tool_turn_epoch = getattr(self, "_tool_turn_epoch", 0) + 1
+        self._tool_turn_evidence = None
 
     async def _route_tool_images(
         self,
@@ -186,7 +254,23 @@ class ToolCallingMixin:
     # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
     # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
 
-    def _register_builtin_tools(self) -> None:
+    def _public_knowledge_lookup_enabled(self) -> bool:
+        """Both modes get explicit lookup.
+
+        This used to be realtime-only, on the reasoning that a text turn had
+        already resolved knowledge deterministically before the reply. That
+        holds only when automatic retrieval actually matched: it is threshold
+        gated, so anything below the bar was simply never looked up, and the
+        model had no way to ask. Text sessions now keep the tool as the
+        fallback for exactly that case.
+        """
+        return True
+
+    def _register_builtin_tools(
+        self,
+        *,
+        public_knowledge_lookup_enabled: bool | None = None,
+    ) -> None:
         """Re-register the built-in tools, with description / parameter docs in the current
         ``user_language``. Calls ``tool_registry.register(replace=True)`` directly
         rather than the public ``register_tool``, to avoid firing unnecessary
@@ -231,6 +315,27 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        try:
+            from main_logic.knowledge_context import register_public_knowledge_tool
+
+            if public_knowledge_lookup_enabled is None:
+                public_knowledge_lookup_enabled = (
+                    self._public_knowledge_lookup_enabled()
+                )
+            # Automatic (passive) context and this tool are complements, not
+            # alternatives: passive covers the confident matches, the tool covers
+            # everything the threshold rejected. The description tells the model
+            # not to re-query what it can already see.
+            register_public_knowledge_tool(
+                self.tool_registry,
+                language=_lang,
+                lookup_enabled=public_knowledge_lookup_enabled,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[public-knowledge] builtin tool registration failed: %s",
+                type(exc).__name__,
+            )
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
         """Handler for ``recall_memory`` — calls memory_server's

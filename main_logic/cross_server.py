@@ -45,6 +45,7 @@ from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import is_supported_language_code
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.agent_routing import normalize_analyze_route_owner
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -61,7 +62,16 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True, language: str | None = None) -> bool:
+async def _publish_analyze_request_with_fallback(
+    lanlan_name: str,
+    trigger: str,
+    messages: list[dict],
+    *,
+    conversation_id: str | None = None,
+    had_user_input: bool = True,
+    language: str | None = None,
+    route_owner: str | None = None,
+) -> bool:
     """Publish analyze request via EventBus with ack/retry.
 
     ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
@@ -111,6 +121,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             external_intent=external_intent,
             proactive=not had_user_input,
             language=language,
+            route_owner=normalize_analyze_route_owner(route_owner),
         )
         if sent:
             logger.debug(
@@ -424,6 +435,41 @@ def _select_pending_user_images_for_session_end(pending_user_images: list, reque
                 session_request_id = str(raw.get("request_id") or "")
                 break
     return _select_pending_user_images_for_turn(pending_user_images, session_request_id)
+
+
+def _pending_analyze_owner(
+    request_id: object,
+    route_owner: object,
+) -> dict[str, str] | None:
+    """Bind a retained analyzer owner to one concrete user turn."""
+    owner = normalize_analyze_route_owner(route_owner)
+    turn_id = str(request_id or "").strip()
+    if not owner or not turn_id:
+        return None
+    return {"turn_id": turn_id, "owner": owner}
+
+
+def _session_end_analyze_owner(
+    pending: dict[str, str] | None,
+    recent: list[dict],
+) -> str | None:
+    """Reuse an owner only while its failed user turn is still pending."""
+    if not pending or not any(item.get("role") == "user" for item in recent):
+        return None
+    if not pending.get("turn_id"):
+        return None
+    return normalize_analyze_route_owner(pending.get("owner"))
+
+
+def _pending_owner_after_user_input(
+    pending: dict[str, str] | None,
+    request_id: object,
+) -> dict[str, str] | None:
+    """Retain an owner only for another fragment of the same user turn."""
+    if not pending:
+        return None
+    turn_id = str(request_id or "").strip()
+    return pending if turn_id and turn_id == pending.get("turn_id") else None
 
 
 def _build_recent_analyze_messages(
@@ -887,6 +933,7 @@ async def run_sync_connector(
     current_turn_start_index = 0
     last_screen = None
     pending_user_images: list = []
+    pending_analyze_route_owner: dict[str, str] | None = None
     last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
     avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
     memory_cache_health_state = {
@@ -960,6 +1007,13 @@ async def run_sync_connector(
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
+                            if data:
+                                pending_analyze_route_owner = (
+                                    _pending_owner_after_user_input(
+                                        pending_analyze_route_owner,
+                                        message["data"].get("request_id"),
+                                    )
+                                )
                             for source_value in _iter_source_values(message["data"].get("source")):
                                 user_input_sources.add(source_value)
                             transcript_metadata = message["data"].get("metadata")
@@ -994,6 +1048,13 @@ async def run_sync_connector(
                                 input_type,
                                 source=message["data"].get("source"),
                             )
+                            if appended_image or message["data"].get("has_image"):
+                                pending_analyze_route_owner = (
+                                    _pending_owner_after_user_input(
+                                        pending_analyze_route_owner,
+                                        message["data"].get("request_id"),
+                                    )
+                                )
                             if not appended_image and message["data"].get("has_image"):
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})
 
@@ -1232,6 +1293,20 @@ async def run_sync_connector(
                                             consume_untagged=had_user_input_this_turn,
                                         )
                                     )
+                                    _turn_had_user_input = (
+                                        had_user_input_this_turn
+                                        or bool(selected_pending_user_images)
+                                    )
+                                    current_pending_owner = (
+                                        _pending_analyze_owner(
+                                            turn_request_id,
+                                            message.get("route_owner"),
+                                        )
+                                        if _turn_had_user_input
+                                        else None
+                                    )
+                                    # A new turn always invalidates an older owner.
+                                    pending_analyze_route_owner = None
                                     try:
                                         # 构造最近的消息摘要，并保留本轮最近的图片附件
                                         recent = _build_recent_analyze_messages(
@@ -1251,6 +1326,14 @@ async def run_sync_connector(
                                             f"agent_callback_turn={is_agent_callback_turn_end} "
                                             f"avatar_drop_turn={latest_user_is_avatar_drop}"
                                         )
+                                        # Every turn owns its routing decision.  A new user
+                                        # turn invalidates a failed predecessor; a genuinely
+                                        # proactive turn must never inherit a user's owner.
+                                        dispatch_route_owner = (
+                                            current_pending_owner["owner"]
+                                            if current_pending_owner
+                                            else None
+                                        )
                                         if recent and has_user and latest_user_is_avatar_drop:
                                             logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop turn_end), messages={len(recent)}")
                                         elif recent and not is_agent_callback_turn_end:
@@ -1260,7 +1343,6 @@ async def run_sync_connector(
                                             # NOT mis-marked proactive (which, with the feature off, would
                                             # drop the image task). Only a genuinely self-initiated turn
                                             # (no text, no image) is proactive.
-                                            _turn_had_user_input = had_user_input_this_turn or bool(selected_pending_user_images)
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
@@ -1268,19 +1350,24 @@ async def run_sync_connector(
                                                 conversation_id=uuid.uuid4().hex,
                                                 had_user_input=_turn_had_user_input,
                                                 language=_current_analyze_language(),
+                                                route_owner=dispatch_route_owner,
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
                                             else:
+                                                pending_analyze_route_owner = current_pending_owner
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
+                                        pending_analyze_route_owner = current_pending_owner
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
                                             logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
                                         else:
+                                            pending_analyze_route_owner = current_pending_owner
                                             logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     except Exception as e:
+                                        pending_analyze_route_owner = current_pending_owner
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     finally:
                                         pending_user_images = remaining_pending_user_images
@@ -1376,11 +1463,16 @@ async def run_sync_connector(
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 language=_current_analyze_language(),
+                                                route_owner=_session_end_analyze_owner(
+                                                    pending_analyze_route_owner,
+                                                    recent,
+                                                ),
                                                 # session_end is terminal — never treated as proactive
                                                 # (had_user_input defaults True), so it always takes the
                                                 # ordinary user-turn path.
                                             )
                                             if sent:
+                                                pending_analyze_route_owner = None
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch failed (session_end), messages={len(recent)}")

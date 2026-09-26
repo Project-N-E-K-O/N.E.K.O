@@ -191,6 +191,9 @@ class ToolResult:
     output: Any
     is_error: bool = False
     error_message: str = ""
+    # Host-only evidence. Provider serializers intentionally read only
+    # ``output`` and never expose this field on the wire.
+    internal_evidence: frozenset[str] = frozenset()
     # Pictures ride beside ``output``, never inside it: they must not be
     # serialized into the string the model reads. ``LLMSessionManager.
     # _route_tool_images`` decides whether the session can show them to the
@@ -522,6 +525,14 @@ def tool_result_from_envelope(call: "ToolCall", body: Any) -> ToolResult:
     return result
 
 
+@dataclass(frozen=True, slots=True)
+class ToolHandlerOutcome:
+    """Trusted in-process handler output plus host-only routing evidence."""
+
+    output: Any
+    internal_evidence: frozenset[str] = frozenset()
+
+
 # Callback shape exposed to the clients. Clients invoke this when the
 # model emits a tool call; the implementation (registry on
 # LLMSessionManager) returns the result, and the client sends it back to
@@ -624,6 +635,10 @@ class ToolRegistry:
                 result_value = tool.handler(call.arguments or {})
                 if asyncio.iscoroutine(result_value) or isinstance(result_value, asyncio.Future):
                     result_value = await result_value
+                internal_evidence = frozenset()
+                if isinstance(result_value, ToolHandlerOutcome):
+                    internal_evidence = result_value.internal_evidence
+                    result_value = result_value.output
                 # Match the remote callback route: ``is_error`` is explicit,
                 # while a successful image envelope needs both channel keys.
                 # Plain business data may legitimately contain ``images`` or
@@ -632,16 +647,19 @@ class ToolRegistry:
                     "is_error" in result_value
                     or ("output" in result_value and "images" in result_value)
                 ):
-                    return await asyncio.to_thread(
+                    enveloped = await asyncio.to_thread(
                         tool_result_from_envelope,
                         call,
                         result_value,
                     )
+                    enveloped.internal_evidence = internal_evidence
+                    return enveloped
                 return ToolResult(
                     call_id=call.call_id,
                     name=call.name,
                     output=result_value,
                     is_error=False,
+                    internal_evidence=internal_evidence,
                 )
 
             # Remote tool — delegate to the dispatcher (plugin/agent_server).
@@ -655,7 +673,11 @@ class ToolRegistry:
                     is_error=True,
                     error_message=msg,
                 )
-            return await self._remote_dispatcher(call, tool.metadata)
+            remote_result = await self._remote_dispatcher(call, tool.metadata)
+            # Remote/user-controlled metadata and payloads cannot claim host
+            # routing evidence, even if a dispatcher constructed ToolResult.
+            remote_result.internal_evidence = frozenset()
+            return remote_result
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
             logger.exception("ToolRegistry.execute: '%s' raised: %s", call.name, err_text)

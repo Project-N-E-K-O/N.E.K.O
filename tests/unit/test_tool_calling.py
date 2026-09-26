@@ -186,7 +186,12 @@ async def test_registry_remote_dispatcher_invoked_when_no_handler():
 
     async def dispatcher(call, metadata):
         seen_metadata.update(metadata)
-        return ToolResult(call_id=call.call_id, name=call.name, output={"remote": True})
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            output={"remote": True},
+            internal_evidence=frozenset({"knowledge_used"}),
+        )
 
     reg = ToolRegistry(remote_dispatcher=dispatcher)
     reg.register(ToolDefinition(
@@ -197,6 +202,7 @@ async def test_registry_remote_dispatcher_invoked_when_no_handler():
     ))
     result = await reg.execute(ToolCall(name="r", arguments={}, call_id="c"))
     assert result.output == {"remote": True}
+    assert result.internal_evidence == frozenset()
     assert seen_metadata["source"] == "plugin:foo"
     assert seen_metadata["callback_url"] == "http://x/y"
 

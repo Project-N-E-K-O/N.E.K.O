@@ -75,6 +75,18 @@ from main_logic import core as _core_facade
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
 
+    def _rotate_public_knowledge_session(self) -> None:
+        from main_logic.knowledge_context import (
+            invalidate_public_knowledge_session,
+        )
+
+        previous = str(
+            getattr(self, "_public_knowledge_session_key", "") or ""
+        )
+        invalidate_public_knowledge_session(previous)
+        self._clear_tool_turn_evidence()
+        self._public_knowledge_session_key = uuid4().hex
+
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
         return bool(getattr(self, "goodbye_silent", False))
@@ -4344,6 +4356,8 @@ class LifecycleMixin:
 
         if _inactive_early:
             if reset_starting_count:
+                self._rotate_public_knowledge_session()
+            if reset_starting_count:
                 # 前端启动超时会在 session 尚未 active 时发送 end_session。
                 # 旧输入缓存必须在释放 start_session guard 之前清掉；释放后
                 # 新一轮启动可能已经开始缓存用户消息，旧收尾不能再碰它们。
@@ -4387,6 +4401,8 @@ class LifecycleMixin:
                 _post_init_inactive = True
             else:
                 self.is_active = False
+                if reset_starting_count:
+                    self._rotate_public_knowledge_session()
                 # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
                 # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
                 # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。

@@ -90,7 +90,8 @@ export default {
     adapters: '適配器',
     adapterUI: '適配器介面',
     packageManager: '包管理',
-    market: '外掛市集'
+    market: '外掛市集',
+    knowledge: '知識庫'
   },
   market: {
     title: '取得新外掛',

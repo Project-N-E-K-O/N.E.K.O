@@ -35,7 +35,7 @@ import sys
 import inspect
 import subprocess
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -45,6 +45,7 @@ from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from config import APP_NAME
+from knowledge.mutation_runtime import knowledge_root_barrier
 from main_routers.shared_state import (
     get_config_manager,
     get_request_app_shutdown,
@@ -69,6 +70,7 @@ from utils.storage_migration import (
     create_pending_storage_migration,
     delete_storage_migration,
     is_retained_root_cleanup_available,
+    is_storage_migration_pending,
     load_storage_migration,
     save_storage_migration,
 )
@@ -1168,7 +1170,19 @@ def _build_completed_migration_notice(
             persist_reconcile=persist_reconcile,
         )
     )
-    migration_payload = bootstrap.get("migration") if isinstance(bootstrap.get("migration"), dict) else {}
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
+    persisted_migration = load_storage_migration(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+    migration_payload = (
+        persisted_migration
+        if isinstance(persisted_migration, dict)
+        else bootstrap.get("migration")
+        if isinstance(bootstrap.get("migration"), dict)
+        else {}
+    )
     if str(migration_payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
         return {
             "completed": False,
@@ -1178,8 +1192,6 @@ def _build_completed_migration_notice(
             "completed": False,
         }
 
-    current_root = normalize_runtime_root(config_manager.app_docs_dir)
-    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     target_root = str(migration_payload.get("target_root") or "").strip()
     source_root = str(migration_payload.get("source_root") or "").strip()
     retained_root = str(
@@ -1189,13 +1201,25 @@ def _build_completed_migration_notice(
         or ""
     ).strip()
     retained_exists = bool(retained_root and Path(retained_root).exists())
-    cleanup_available = is_retained_root_cleanup_available(
+    copied_entries = migration_payload.get("copied_entries")
+    has_cleanup_proof = bool(
+        isinstance(copied_entries, dict)
+        and any(
+            entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
+            for entry_name, proof in copied_entries.items()
+        )
+    )
+    cleanup_available = (
+        has_cleanup_proof
+        and not is_storage_migration_pending(migration_payload)
+        and is_retained_root_cleanup_available(
         retained_root,
         current_root=current_root,
         anchor_root=anchor_root,
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
+        )
     )
     if require_existing_retained_root and not cleanup_available:
         return {
@@ -1221,7 +1245,8 @@ def _cleanup_retained_runtime_root(
     current_root: Path,
     anchor_root: Path,
     target_root: Path | str | None = None,
-) -> None:
+    copied_entries: dict | None = None,
+) -> tuple[str, ...]:
     if not is_retained_root_cleanup_available(
         retained_path,
         current_root=current_root,
@@ -1232,19 +1257,55 @@ def _cleanup_retained_runtime_root(
     ):
         raise ValueError("保留目录当前不满足安全清理条件。")
 
-    if paths_equal(retained_path, anchor_root):
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+    from utils.storage.migration import _snapshot_path
+
+    proofs = copied_entries if isinstance(copied_entries, dict) else {}
+    normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
+    proved_entries = [
+        (entry_name, proof)
+        for entry_name, proof in proofs.items()
+        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
+    ]
+    if not proved_entries or normalized_target is None:
+        raise ValueError("迁移检查点没有可验证的复制证据，拒绝清理。")
+
+    with ExitStack() as barrier_stack:
+        if any(entry_name == "knowledge" for entry_name, _proof in proved_entries):
+            for knowledge_root in sorted(
+                {retained_path / "knowledge", normalized_target / "knowledge"},
+                key=lambda item: os.path.normcase(str(item.resolve(strict=False))),
+            ):
+                barrier_stack.enter_context(knowledge_root_barrier(knowledge_root))
+
+        for entry_name, proof in proved_entries:
+            source_entry = retained_path / entry_name
+            target_entry = normalized_target / entry_name
+            source_manifest = proof.get("source_manifest")
+            target_manifest = proof.get("target_manifest")
+            if (
+                not os.path.lexists(source_entry)
+                or not os.path.lexists(target_entry)
+                or _snapshot_path(source_entry) != source_manifest
+                or _snapshot_path(target_entry) != target_manifest
+            ):
+                raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")
+
+        for entry_name, _proof in proved_entries:
             entry_path = retained_path / entry_name
             if entry_path.is_dir() and not entry_path.is_symlink():
                 shutil.rmtree(entry_path)
             elif entry_path.exists():
                 entry_path.unlink()
-        return
-
-    if retained_path.is_dir() and not retained_path.is_symlink():
-        shutil.rmtree(retained_path)
-    elif retained_path.exists():
-        retained_path.unlink()
+    if not paths_equal(retained_path, anchor_root):
+        try:
+            retained_path.rmdir()
+        except OSError:
+            pass
+    return tuple(
+        entry_name
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        if os.path.lexists(retained_path / entry_name)
+    )
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
@@ -1481,12 +1542,15 @@ async def _post_storage_location_retained_source_cleanup_locked(
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     try:
         # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
-        await _run_locked_storage_job(
+        remaining_entries = await _run_locked_storage_job(
             lambda: _cleanup_retained_runtime_root(
                 retained_path,
                 current_root=current_root,
                 anchor_root=anchor_root,
                 target_root=notice.get("target_root") or "",
+                copied_entries=(
+                    load_storage_migration(config_manager, anchor_root=anchor_root) or {}
+                ).get("copied_entries"),
             )
         )
     except Exception as exc:
@@ -1495,6 +1559,16 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "ok": False,
             "error_code": "retained_source_cleanup_failed",
             "error": f"清理旧数据保留目录失败: {exc}",
+        }
+
+    if remaining_entries:
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_incomplete",
+            "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
+            "retained_root": expected_retained_root,
+            "remaining_entries": list(remaining_entries),
         }
 
     def _persist_cleanup_result() -> None:

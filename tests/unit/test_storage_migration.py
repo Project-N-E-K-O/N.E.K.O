@@ -1,3 +1,6 @@
+import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -6,12 +9,14 @@ import pytest
 from utils.storage_migration import (
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    STORAGE_MIGRATION_STATUS_KNOWLEDGE_REPAIR_REQUIRED,
     create_pending_storage_migration,
     get_storage_migration_path,
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
     run_pending_storage_migration,
+    save_storage_migration,
     StorageMigrationError,
 )
 from utils.storage_policy import load_storage_policy
@@ -54,6 +59,36 @@ def _make_anchor_root_config_manager(tmp_path: Path):
         config_manager = ConfigManager("N.E.K.O")
     config_manager._get_standard_data_directory_candidates = lambda: [standard_root]
     return config_manager
+
+
+def _write_knowledge_tree(
+    root: Path, *, marker: str = "source", wal: bool = False
+) -> None:
+    knowledge_root = root / "knowledge"
+    knowledge_root.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(knowledge_root / "knowledge.db")) as connection:
+        if wal:
+            # KnowledgeStore opens every writable connection in WAL mode, so a
+            # production database carries WAL in its header.
+            connection.execute("PRAGMA journal_mode=WAL")
+        with connection:
+            connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            connection.execute("INSERT INTO metadata VALUES ('schema_version', '7')")
+            connection.execute("PRAGMA user_version = 7")
+    (knowledge_root / "packs.json").write_text(
+        '{"schema_version":1,"packs":{}}', encoding="utf-8"
+    )
+    (knowledge_root / "catalog_overrides.json").write_text("{}", encoding="utf-8")
+    (knowledge_root / ".staging" / "job-1").mkdir(parents=True)
+    (knowledge_root / ".staging" / "job-1" / "state.json").write_text(
+        marker, encoding="utf-8"
+    )
+    (knowledge_root / ".staging" / "activation_commits.json").write_text(
+        marker, encoding="utf-8"
+    )
+    (knowledge_root / ".staging" / "remove-intent.json").write_text(
+        marker, encoding="utf-8"
+    )
 
 
 @pytest.mark.unit
@@ -118,6 +153,54 @@ def test_retained_root_cleanup_rejects_paths_that_contain_protected_roots(tmp_pa
 
 
 @pytest.mark.unit
+def test_staging_prefix_keeps_windows_paths_short():
+    """Staging must not push a file that fits at its final path past MAX_PATH.
+
+    Before staging, a migrated file only needed to fit at ``<target>/<entry>/...``.
+    The transaction layer stages it at ``<target>/<tx dir>/<txid>/stage/<entry>/...``
+    first; with the original 71-character prefix, an avatar-tool record under a
+    normal pytest temp root already crossed 260 characters on Windows.
+    """
+    import uuid
+
+    from utils.storage import migration as migration_module
+
+    target_root = Path("T")
+    staged = migration_module._transaction_path(target_root, uuid.uuid4().hex) / "stage"
+    overhead = len(str(staged)) - len(str(target_root))
+    assert overhead <= 32, staged
+
+
+def test_staging_failure_removes_partial_transaction(monkeypatch, tmp_path):
+    from utils.storage import migration as migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True, exist_ok=True)
+    (source_root / "config" / "characters.json").write_text("{}", encoding="utf-8")
+    pending = create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    transaction_root = migration_module._transaction_path(target_root, pending["txid"])
+
+    def fail_mid_copy(_source_entry, staged_entry):
+        staged_entry.mkdir(parents=True)
+        (staged_entry / "partial.tmp").write_text("partial", encoding="utf-8")
+        raise OSError("fixture staging failure")
+
+    monkeypatch.setattr(migration_module, "_copy_runtime_entry", fail_mid_copy)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "storage_migration_unexpected"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
 def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries(tmp_path):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -173,6 +256,207 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
     assert root_state["last_known_good_root"] == str(target_root.resolve())
     assert root_state["last_migration_result"].startswith("completed:")
     assert root_state["legacy_cleanup_pending"] is True
+
+
+@pytest.mark.unit
+def test_storage_migration_copies_complete_knowledge_tree_with_digest_proof(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root)
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    proof = result["payload"]["copied_entries"]["knowledge"]
+    assert proof["source_manifest"] == proof["target_manifest"]
+    assert proof["source_manifest"]["manifest_digest"]
+    assert (target_root / "knowledge" / "knowledge.db").is_file()
+    assert (target_root / "knowledge" / "packs.json").is_file()
+    assert (target_root / "knowledge" / "catalog_overrides.json").is_file()
+    assert (
+        target_root / "knowledge" / ".staging" / "job-1" / "state.json"
+    ).read_text(encoding="utf-8") == "source"
+    assert (
+        target_root / "knowledge" / ".staging" / "activation_commits.json"
+    ).is_file()
+    assert (
+        target_root / "knowledge" / ".staging" / "remove-intent.json"
+    ).is_file()
+
+
+def test_storage_migration_verifies_a_wal_knowledge_database_without_touching_it(
+    tmp_path,
+):
+    """Read-only verification of a WAL database leaves -wal/-shm behind.
+
+    Those sidecars land in the directory whose manifest was already taken, so
+    verifying in place made every production (WAL) knowledge migration fail
+    its digest proof.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root, wal=True)
+    source_files = sorted(p.name for p in (source_root / "knowledge").iterdir())
+
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result.get("error_code")
+    proof = result["payload"]["copied_entries"]["knowledge"]
+    assert proof["source_manifest"] == proof["target_manifest"]
+    assert sorted(p.name for p in (source_root / "knowledge").iterdir()) == source_files
+
+
+@pytest.mark.unit
+def test_v1_completed_migration_repairs_missing_knowledge_before_cleanup(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root)
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "existing.json").write_text("{}", encoding="utf-8")
+    save_storage_migration(
+        config_manager,
+        {
+            "version": 1,
+            "txid": "legacy-v1",
+            "status": STORAGE_MIGRATION_STATUS_COMPLETED,
+            "source_root": str(source_root),
+            "target_root": str(target_root),
+            "selection_source": "legacy",
+            "retained_source_root": str(source_root),
+        },
+    )
+
+    assert is_storage_migration_pending(load_storage_migration(config_manager)) is True
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert result["payload"]["version"] == 2
+    assert "knowledge" in result["payload"]["copied_entries"]
+    assert (target_root / "config" / "existing.json").is_file()
+    assert (target_root / "knowledge" / "knowledge.db").is_file()
+
+
+@pytest.mark.unit
+def test_v1_completed_migration_blocks_conflicting_knowledge_repair(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root, marker="source")
+    _write_knowledge_tree(target_root, marker="target")
+    save_storage_migration(
+        config_manager,
+        {
+            "version": 1,
+            "txid": "legacy-v1-conflict",
+            "status": STORAGE_MIGRATION_STATUS_COMPLETED,
+            "source_root": str(source_root),
+            "target_root": str(target_root),
+            "selection_source": "legacy",
+            "retained_source_root": str(source_root),
+        },
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "knowledge_migration_repair_required"
+    assert (
+        result["payload"]["status"]
+        == STORAGE_MIGRATION_STATUS_KNOWLEDGE_REPAIR_REQUIRED
+    )
+    assert (
+        target_root / "knowledge" / ".staging" / "job-1" / "state.json"
+    ).read_text(encoding="utf-8") == "target"
+
+    retry = run_pending_storage_migration(config_manager)
+    assert retry["completed"] is False
+    assert retry["error_code"] == "knowledge_migration_repair_required"
+    assert "knowledge" not in retry["payload"].get("copied_entries", {})
+
+
+@pytest.mark.unit
+def test_existing_target_content_does_not_skip_missing_source_knowledge(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root)
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "existing.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert (target_root / "config" / "existing.json").is_file()
+    assert (target_root / "knowledge" / "knowledge.db").is_file()
+    assert "knowledge" in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+def test_storage_migration_manifest_detects_equal_size_content_changes(tmp_path):
+    from utils.storage_migration import _snapshot_path
+
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "same.bin").write_bytes(b"AAAA")
+    (right / "same.bin").write_bytes(b"BBBB")
+
+    left_manifest = _snapshot_path(left)
+    right_manifest = _snapshot_path(right)
+
+    assert left_manifest["file_count"] == right_manifest["file_count"] == 1
+    assert left_manifest["total_bytes"] == right_manifest["total_bytes"] == 4
+    assert left_manifest["manifest_digest"] != right_manifest["manifest_digest"]
+
+
+@pytest.mark.unit
+def test_storage_migration_rejects_nested_links_without_following(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "sentinel.txt").write_text("keep", encoding="utf-8")
+    (source_root / "knowledge").mkdir(parents=True)
+    try:
+        os.symlink(external, source_root / "knowledge" / "linked", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "path_link_unsupported"
+    assert (external / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (target_root / "knowledge").exists()
 
 
 @pytest.mark.unit
@@ -320,6 +604,116 @@ def test_run_pending_storage_migration_marks_failure_and_recovers_to_source_root
     assert root_state["mode"] == "deferred_init"
     assert root_state["current_root"] == str(source_root.resolve())
     assert root_state["last_migration_result"] == "failed:copy_failed"
+
+
+@pytest.mark.unit
+def test_storage_migration_busy_knowledge_barrier_stays_retryable(tmp_path, monkeypatch):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    _write_knowledge_tree(source_root)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    def _busy_barrier(_root):
+        raise TimeoutError("busy")
+
+    monkeypatch.setattr("utils.storage_migration.knowledge_root_barrier", _busy_barrier)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "knowledge_mutation_busy"
+    assert result["payload"]["status"] == "pending"
+    assert load_storage_policy(config_manager) is None
+    assert not (target_root / "knowledge").exists()
+
+
+@pytest.mark.unit
+def test_interrupted_publish_restores_existing_target_before_retry(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("healthy", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_replace = storage_migration_module.os.replace
+
+    def _crash_after_publish(source, target):
+        original_replace(source, target)
+        if Path(source).name == "config" and Path(source).parent.name == "stage":
+            raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module.os, "replace", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt, match="simulated process loss"):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module.os, "replace", original_replace)
+
+    def _stop_after_recovery(*_args, **_kwargs):
+        raise StorageMigrationError("stop_after_recovery", "inspect restored target")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _stop_after_recovery)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["completed"] is False
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_committed_policy_recovers_missing_completion_checkpoint(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+    failed_once = False
+
+    def _fail_completed_checkpoint(*args, **kwargs):
+        nonlocal failed_once
+        if kwargs.get("status") == STORAGE_MIGRATION_STATUS_COMPLETED and not failed_once:
+            failed_once = True
+            raise OSError("simulated checkpoint loss")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_persist_migration_payload",
+        _fail_completed_checkpoint,
+    )
+    first = run_pending_storage_migration(config_manager)
+
+    assert first["completed"] is False
+    assert first["error_code"] == "migration_commit_pending"
+    assert load_storage_policy(config_manager)["selected_root"] == str(target_root.resolve())
+    assert load_storage_migration(config_manager)["status"] == "committing"
+
+    second = run_pending_storage_migration(config_manager)
+    assert second["completed"] is True
+    assert second["payload"]["status"] == STORAGE_MIGRATION_STATUS_COMPLETED
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
 
 
 @pytest.mark.unit

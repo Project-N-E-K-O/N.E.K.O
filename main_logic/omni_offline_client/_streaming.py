@@ -528,6 +528,7 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        ephemeral_response_instruction: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
         # 这一轮 turn_images 的采集通道（"screen" / "camera"）。独立 ASR 的帧
@@ -584,6 +585,9 @@ class _StreamingMixin:
         ``history_replacement_text`` keeps the full prompt available for the current
         LLM turn, then replaces the just-appended user history entry before the next
         turn reuses ``_conversation_history``.
+
+        ``ephemeral_response_instruction`` is appended after the raw user message
+        for this inference only, then removed before history and memory callbacks.
 
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
@@ -893,6 +897,8 @@ class _StreamingMixin:
         if callable(on_turn_committed):
             on_turn_committed()
         history_replacement_index = len(self._conversation_history) - 1
+        _ephemeral_instruction_clean = (ephemeral_response_instruction or "").strip()
+        _ephemeral_instruction_message = None
         history_replacement_text = (
             str(history_replacement_text).strip()
             if history_replacement_text is not None
@@ -960,6 +966,11 @@ class _StreamingMixin:
         # 重试成功的那轮"模型看到了、插件读不到"。
         _turn_tool_bus_frames: list = []
         try:
+            if _ephemeral_instruction_clean:
+                _ephemeral_instruction_message = HumanMessage(
+                    content=_ephemeral_instruction_clean
+                )
+                self._conversation_history.append(_ephemeral_instruction_message)
             reroll_count = 0
             set_call_type("conversation")
 
@@ -1973,6 +1984,12 @@ class _StreamingMixin:
             # 走（token 计数器把图像部分算成短占位符，截断器看不见它）。
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
+
+            if _ephemeral_instruction_message is not None:
+                for index in range(len(self._conversation_history) - 1, -1, -1):
+                    if self._conversation_history[index] is _ephemeral_instruction_message:
+                        del self._conversation_history[index]
+                        break
 
             if (
                 history_replacement_text

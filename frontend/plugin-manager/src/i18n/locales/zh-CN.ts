@@ -90,7 +90,8 @@ export default {
     adapters: '适配器',
     adapterUI: '适配器界面',
     packageManager: '包管理',
-    market: '插件市场'
+    market: '插件市场',
+    knowledge: '知识库'
   },
   market: {
     title: '获取新插件',

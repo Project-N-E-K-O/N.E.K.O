@@ -90,7 +90,8 @@ export default {
     adapters: 'Adapters',
     adapterUI: 'Adapter UI',
     packageManager: 'Package Manager',
-    market: 'Plugin Market'
+    market: 'Plugin Market',
+    knowledge: 'Knowledge'
   },
   market: {
     title: 'Get New Plugins',

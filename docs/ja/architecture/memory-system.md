@@ -105,6 +105,8 @@ HTTP endpoint は構造化された行を返しますが、メイン会話ハン
 
 `memory/embeddings.py` の共有 Embedding サービスは任意のローカルコンポーネントで、CPU ONNX execution provider を使用します。フォールバックは呼び出し元ごとに異なります。ユーザー向け Recall は BM25 のみ、Stage-2 保守 Recall は evidence score 順、リフレクションの履歴アンカー Recall は空の related-context になります。
 
+> **ランタイム境界の更新（2026-08-24）**：メモリ以外の機能は、このプロセスローカル機能を `utils/local_embedding_runtime.py` 経由でのみ利用します。アプリケーションの composition root が `memory/local_embedding_provider.py` を通じて実装を bind します。公共知識コードはメモリの業務 API を import せず、知識データを Memory Server へ送信しません。provider が未 bind の場合、ベクトル経路は安全に無効化され、BM25 は引き続き利用できます。
+
 `NEKO_DISABLE_BUILTIN_TOOLS=1` は診断用にメイン会話セッションから組み込み tool schema を外すだけです。`POST /query_memory`、QQ 自動返信 Recall、バックグラウンド保守 reranker は無効になりません。
 
 ## エビデンスとリフレクションのライフサイクル

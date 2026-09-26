@@ -90,7 +90,8 @@ export default {
     adapters: 'Adaptadores',
     adapterUI: 'UI del adaptador',
     packageManager: 'Gestor de paquetes',
-    market: 'Mercado de plugins'
+    market: 'Mercado de plugins',
+    knowledge: 'Conocimiento'
   },
   market: {
     title: 'Obtener nuevos plugins',

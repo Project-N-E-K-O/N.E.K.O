@@ -105,6 +105,8 @@ The distinction matters: persona is excluded only from user-facing hybrid recall
 
 The shared embedding service in `memory/embeddings.py` is optional and local, using the CPU ONNX execution provider. Its failure modes differ by caller: user-facing recall becomes BM25-only, Stage-2 maintenance recall falls back to evidence-score order, and reflection-anchor recall becomes an empty related-context block.
 
+> **Runtime boundary update (2026-08-24):** Non-memory features access this process-local capability only through `utils/local_embedding_runtime.py`. Application composition roots bind the implementation through `memory/local_embedding_provider.py`; public knowledge code does not import memory business APIs or send knowledge data to Memory Server. An unbound provider fails closed and leaves BM25 available.
+
 `NEKO_DISABLE_BUILTIN_TOOLS=1` removes the built-in schema from main conversation sessions for diagnostics. It does not disable `POST /query_memory`, QQ auto-reply recall, or the internal maintenance reranker.
 
 ## Evidence and reflection lifecycle

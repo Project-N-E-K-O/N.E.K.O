@@ -23,6 +23,257 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.asyncio
+async def test_structured_public_knowledge_owner_skips_external_agent(monkeypatch):
+    from app.agent_server import api_runtime as srv
+
+    plan = AsyncMock()
+    monkeypatch.setattr(srv, "_agent_master_enabled", lambda: True)
+    monkeypatch.setattr(srv, "_background_analyze_and_plan", plan)
+    monkeypatch.setattr(srv.Modules, "last_user_turn_fingerprint", {})
+
+    await srv._on_session_event(
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "YUI",
+            "messages": [{"role": "user", "content": "电车难题是什么？"}],
+            "route_owner": "public_knowledge",
+        }
+    )
+    await asyncio.sleep(0)
+
+    plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "联网搜索本地知识库技术的最新新闻",
+        "解释‘本地知识库’这个概念",
+        "请结合本地知识库并联网核实",
+    ],
+)
+async def test_knowledge_words_without_structured_owner_do_not_skip_agent(
+    monkeypatch, text
+):
+    from app.agent_server import api_runtime as srv
+
+    plan = AsyncMock()
+    monkeypatch.setattr(srv, "_agent_master_enabled", lambda: True)
+    monkeypatch.setattr(srv, "_background_analyze_and_plan", plan)
+    monkeypatch.setattr(srv.Modules, "last_user_turn_fingerprint", {})
+
+    await srv._on_session_event(
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "YUI",
+            "messages": [{"role": "user", "content": text}],
+        }
+    )
+    await asyncio.sleep(0)
+
+    plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_carries_and_consumes_request_scoped_route_owner():
+    from main_logic.core.turn import TurnMixin
+
+    queue = MagicMock()
+    manager = SimpleNamespace(
+        _text_route_owners={"req-local": "public_knowledge"},
+        _pending_turn_meta=None,
+        sync_message_queue=queue,
+        websocket=None,
+        _flush_ai_turn_text_to_tracker=MagicMock(),
+    )
+
+    await TurnMixin._emit_turn_end(manager, "req-local")
+
+    queue.put.assert_called_once_with(
+        {
+            "type": "system",
+            "data": "turn end",
+            "route_owner": "public_knowledge",
+            "request_id": "req-local",
+        }
+    )
+    assert manager._text_route_owners == {}
+
+
+@pytest.mark.asyncio
+async def test_turn_end_can_promote_proven_tool_evidence_owner():
+    from main_logic.core.turn import TurnMixin
+
+    queue = MagicMock()
+    manager = SimpleNamespace(
+        _text_route_owners={},
+        _consume_tool_turn_route_owner=lambda request_id: (
+            "public_knowledge" if request_id == "req-tool" else None
+        ),
+        _pending_turn_meta=None,
+        sync_message_queue=queue,
+        websocket=None,
+        _flush_ai_turn_text_to_tracker=MagicMock(),
+    )
+
+    await TurnMixin._emit_turn_end(manager, "req-tool")
+
+    queue.put.assert_called_once_with(
+        {
+            "type": "system",
+            "data": "turn end",
+            "route_owner": "public_knowledge",
+            "request_id": "req-tool",
+        }
+    )
+
+
+def test_tool_evidence_promotes_only_one_pure_knowledge_call():
+    from main_logic.core.tool_calling import ToolCallingMixin
+
+    session = object()
+    manager = SimpleNamespace(
+        session=session,
+        _tool_turn_epoch=0,
+        _tool_turn_evidence=None,
+    )
+    ToolCallingMixin._begin_tool_evidence_turn(
+        manager,
+        "查询本地知识库：初音未来是谁？",
+        request_id="req-pure",
+    )
+    manager._tool_turn_evidence["call_names"] = ["query_public_knowledge"]
+    manager._tool_turn_evidence["knowledge_used"] = True
+
+    assert (
+        ToolCallingMixin._consume_tool_turn_route_owner(manager, "req-pure")
+        == "public_knowledge"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "calls"),
+    [
+        ("查询本地知识库：初音未来，并创建任务", ["query_public_knowledge"]),
+        (
+            "查询本地知识库：初音未来是谁？",
+            ["query_public_knowledge", "create_task"],
+        ),
+    ],
+)
+def test_compound_or_multi_tool_knowledge_evidence_stays_nonexclusive(text, calls):
+    from main_logic.core.tool_calling import ToolCallingMixin
+
+    manager = SimpleNamespace(
+        session=object(),
+        _tool_turn_epoch=0,
+        _tool_turn_evidence=None,
+    )
+    ToolCallingMixin._begin_tool_evidence_turn(
+        manager,
+        text,
+        request_id="req-compound",
+    )
+    manager._tool_turn_evidence["call_names"] = calls
+    manager._tool_turn_evidence["knowledge_used"] = True
+
+    assert (
+        ToolCallingMixin._consume_tool_turn_route_owner(manager, "req-compound")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_tool_result_cannot_write_into_the_next_turn():
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _Registry:
+        async def execute(self, call):
+            started.set()
+            await release.wait()
+            return ToolResult(
+                call_id=call.call_id,
+                name=call.name,
+                output="result",
+                internal_evidence=frozenset({"knowledge_used"}),
+            )
+
+    manager = SimpleNamespace(
+        session=object(),
+        tool_registry=_Registry(),
+        _tool_turn_epoch=0,
+        _tool_turn_evidence=None,
+    )
+    ToolCallingMixin._begin_tool_evidence_turn(
+        manager,
+        "查询本地知识库：旧问题",
+        request_id="req-old",
+    )
+    pending = asyncio.create_task(
+        ToolCallingMixin._on_tool_call(
+            manager,
+            ToolCall(
+                name="query_public_knowledge",
+                arguments={"query": "旧问题"},
+                call_id="call-old",
+            ),
+        )
+    )
+    await started.wait()
+    ToolCallingMixin._begin_tool_evidence_turn(
+        manager,
+        "普通新问题",
+        request_id="req-new",
+    )
+    release.set()
+    await pending
+
+    assert manager._tool_turn_evidence["call_names"] == []
+    assert manager._tool_turn_evidence["knowledge_used"] is False
+
+
+def test_analyzer_route_owner_is_bound_to_one_user_turn():
+    from main_logic.cross_server import (
+        _pending_analyze_owner,
+        _pending_owner_after_user_input,
+        _session_end_analyze_owner,
+    )
+
+    pending = _pending_analyze_owner("req-user", "public_knowledge")
+
+    assert pending == {"turn_id": "req-user", "owner": "public_knowledge"}
+    assert _session_end_analyze_owner(
+        pending,
+        [{"role": "user", "content": "query"}],
+    ) == "public_knowledge"
+    assert _pending_analyze_owner("", "public_knowledge") is None
+    assert _pending_analyze_owner("req-next", None) is None
+    assert _pending_owner_after_user_input(pending, "req-user") == pending
+    assert _pending_owner_after_user_input(pending, "req-next") is None
+    assert _pending_owner_after_user_input(pending, "") is None
+
+
+def test_proactive_or_userless_session_end_cannot_inherit_route_owner():
+    from main_logic.cross_server import _session_end_analyze_owner
+
+    stale = {"turn_id": "req-old", "owner": "public_knowledge"}
+
+    assert _session_end_analyze_owner(
+        stale,
+        [{"role": "assistant", "content": "proactive"}],
+    ) is None
+    assert _session_end_analyze_owner(
+        None,
+        [{"role": "user", "content": "new"}],
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # 1. plugin_execute_direct: parse failure must not strand status="running"
 # ---------------------------------------------------------------------------

@@ -105,6 +105,8 @@ HTTP 端点返回结构化行，但主对话处理器会先把它们渲染成本
 
 `memory/embeddings.py` 的共享嵌入服务是可选本地组件，使用 CPU ONNX execution provider。不同调用方的降级语义不同：用户混合召回退到纯 BM25，Stage-2 后台召回退到证据分排序，反思历史锚点召回则返回空 related-context。
 
+> **运行时边界更新（2026-08-24）**：非记忆功能只能通过 `utils/local_embedding_runtime.py` 使用这项进程内能力，应用组合入口通过 `memory/local_embedding_provider.py` 绑定具体实现。公共知识代码不导入记忆业务 API，也不把知识数据发送给 Memory Server；提供方未绑定时向量路径安全关闭，BM25 仍可用。
+
 `NEKO_DISABLE_BUILTIN_TOOLS=1` 只为诊断从主对话会话移除内置工具 schema；它不会关闭 `POST /query_memory`、QQ 自动回复召回或后台维护 reranker。
 
 ## 证据与反思生命周期

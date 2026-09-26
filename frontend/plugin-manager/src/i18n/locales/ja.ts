@@ -90,7 +90,8 @@ export default {
     adapters: 'アダプター',
     adapterUI: 'アダプターUI',
     packageManager: 'パッケージ管理',
-    market: 'プラグインマーケット'
+    market: 'プラグインマーケット',
+    knowledge: 'ナレッジ'
   },
   market: {
     title: '新しいプラグインを取得',

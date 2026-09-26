@@ -90,7 +90,8 @@ export default {
     adapters: 'Адаптеры',
     adapterUI: 'Интерфейс адаптера',
     packageManager: 'Менеджер пакетов',
-    market: 'Маркет плагинов'
+    market: 'Маркет плагинов',
+    knowledge: 'База знаний'
   },
   market: {
     title: 'Получить новые плагины',

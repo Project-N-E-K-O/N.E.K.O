@@ -98,7 +98,7 @@ class StreamingMixin:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
         return True
-    
+
     async def _flush_pending_input_data(self):
         """Send the cached input data to the session"""
         # A realtime -> offline attachment handoff must stage the attachment
@@ -575,7 +575,9 @@ class StreamingMixin:
                             )
 
                     self.audio_resampler.clear()
-                    await self._clear_tts_pipeline()
+                    await self._clear_tts_pipeline(
+                        expected_speech_id=interrupted_speech_id,
+                    )
                     await self.send_user_activity(interrupted_speech_id)
 
                     # 再为本次新回复生成新的speech_id（用于TTS和lipsync）
@@ -729,6 +731,29 @@ class StreamingMixin:
                     try:
                         text_request_id = message.get("request_id")
                         self._active_text_request_id = text_request_id
+                        self._begin_tool_evidence_turn(
+                            record_data,
+                            request_id=text_request_id,
+                        )
+                        from main_logic.knowledge_context import (
+                            build_public_knowledge_turn_context,
+                        )
+
+                        _knowledge_turn_result = await build_public_knowledge_turn_context(
+                            record_data,
+                            session_key=str(
+                                getattr(self, "_public_knowledge_session_key", "") or ""
+                            ),
+                        )
+                        _knowledge_turn_context = _knowledge_turn_result.context
+                        _route_request_id = str(text_request_id or "")
+                        if _route_request_id:
+                            if _knowledge_turn_result.route_owner:
+                                self._text_route_owners[_route_request_id] = (
+                                    _knowledge_turn_result.route_owner
+                                )
+                            else:
+                                self._text_route_owners.pop(_route_request_id, None)
                         # Path A (inline) Focus 凝神：score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -777,6 +802,7 @@ class StreamingMixin:
 
                         stream_text_kwargs = {
                             "system_prefix": _agent_cb_ctx or None,
+                            "ephemeral_response_instruction": _knowledge_turn_context or None,
                             "thinking_on": _focus_thinking,
                             "response_discarded_callback": response_discarded_callback,
                         }

@@ -66,8 +66,11 @@ class TurnMixin:
             return
 
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
+        interrupted_speech_id = self.current_speech_id
         self.audio_resampler.clear()
-        await self._clear_tts_pipeline()
+        await self._clear_tts_pipeline(
+            expected_speech_id=interrupted_speech_id,
+        )
         # _tts_done_queued_for_turn 的权威清零已经在 _clear_tts_pipeline 入口、
         # 与 __interrupt__ 入队同步完成（取消落在它内部的 sleep 上也不会留下
         # "worker 已中断、记账还说已排队"的残留）。这里保留一次重复清零，兜底那
@@ -370,6 +373,18 @@ class TurnMixin:
         Unified semantics: sync queue and WS carry the same meta, avoiding one
         having meta while the other doesn't."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
+        route_request_id = str(active_request_id or "")
+        route_owner = self._text_route_owners.pop(route_request_id, None)
+        consume_tool_owner = getattr(self, "_consume_tool_turn_route_owner", None)
+        tool_route_owner = (
+            consume_tool_owner(active_request_id)
+            if callable(consume_tool_owner)
+            else None
+        )
+        if route_owner is None:
+            route_owner = tool_route_owner
+        if route_owner:
+            turn_end_msg['route_owner'] = route_owner
         pending_meta = self._pending_turn_meta
         if pending_meta:
             turn_end_msg['meta'] = pending_meta
@@ -474,10 +489,19 @@ class TurnMixin:
         """Qwen completion callback: handles the Core API's response-complete event, including TTS and hot-swap logic"""
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
-            await self._clear_tts_pipeline()
+            active_request_id = self._active_text_request_id
+            interrupted_speech_id = self.current_speech_id
+            self._text_route_owners.pop(str(active_request_id or ""), None)
             self._pending_turn_meta = None
+            clear_tool_evidence = getattr(self, "_clear_tool_turn_evidence", None)
+            if callable(clear_tool_evidence):
+                clear_tool_evidence()
             self._current_ai_turn_text = ""
-            self._active_text_request_id = None
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
+            await self._clear_tts_pipeline(
+                expected_speech_id=interrupted_speech_id,
+            )
             return
 
         active_request_id = self._active_text_request_id
@@ -674,7 +698,9 @@ class TurnMixin:
         # 已经开始 publish 之后，无门控地清会连 B 的前缀一起抹掉。
         if may_clear_shared_output():
             self._current_ai_turn_text = ''
-            await self._clear_tts_pipeline()
+            await self._clear_tts_pipeline(
+                expected_speech_id=self.current_speech_id,
+            )
 
         # A request-bound discard is only relevant while that request still owns
         # the shared response. Emitting a stale A notification after B becomes
@@ -818,6 +844,10 @@ class TurnMixin:
             })
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
+            self._text_route_owners.pop(str(active_request_id or ""), None)
+            clear_tool_evidence = getattr(self, "_clear_tool_turn_evidence", None)
+            if may_clear_shared_output() and callable(clear_tool_evidence):
+                clear_tool_evidence()
             # Compare-and-clear：仅当共享字段仍是本轮快照时才清空。
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
@@ -1468,6 +1498,9 @@ class TurnMixin:
             self._activity_tracker.on_voice_rms()
 
         if is_voice_source and record_transcript_text:
+            begin_tool_evidence = getattr(self, "_begin_tool_evidence_turn", None)
+            if callable(begin_tool_evidence):
+                begin_tool_evidence(record_transcript_text)
             self._fire_task(self._broadcast_voice_transcript_observed(record_transcript_text))
 
         if is_voice_source:
@@ -2136,7 +2169,9 @@ class TurnMixin:
             # ``self.use_tts``, so always clear it on interrupt — the inner
             # liveness gate inside ``_clear_tts_pipeline`` makes this safe
             # when no worker is actually running.
-            await self._clear_tts_pipeline()
+            await self._clear_tts_pipeline(
+                expected_speech_id=interrupted_speech_id,
+            )
             self.release_speech_playback_gain(interrupted_speech_id)
             # Realtime native voice: also tell the provider to stop generating
             # so further audio.delta / output_audio.delta won't keep streaming

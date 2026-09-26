@@ -28,6 +28,7 @@ def _make_inactive_manager(*, starting_count=1):
     mgr.tts_response_queue = Queue()
     mgr._audio_stream_epoch = 0
     mgr._user_session_abandon_epoch = 0
+    mgr._public_knowledge_session_key = "logical-session-before-end"
     mgr._reset_tts_retry_state = lambda: None
     mgr._clear_audio_stream_queue = lambda reason: None
     mgr._cancel_audio_stream_worker = lambda reason: None
@@ -72,6 +73,7 @@ async def test_inactive_end_session_clears_starting_guard_for_frontend_timeout()
     assert mgr.session_ready is False
     assert mgr.pending_input_data == []
     assert mgr._asr_route_mode == "blocked"
+    assert mgr._public_knowledge_session_key != "logical-session-before-end"
 
 
 @pytest.mark.unit
@@ -84,6 +86,7 @@ async def test_inactive_end_session_preserves_starting_guard_for_internal_cleanu
     assert mgr._starting_session_count == 1
     assert mgr.session_ready is True
     assert mgr.pending_input_data == [{"input_type": "text", "data": "stale"}]
+    assert mgr._public_knowledge_session_key == "logical-session-before-end"
 
 
 @pytest.mark.unit

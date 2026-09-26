@@ -90,7 +90,8 @@ export default {
     adapters: '어댑터',
     adapterUI: '어댑터 UI',
     packageManager: '패키지 관리',
-    market: '플러그인 마켓'
+    market: '플러그인 마켓',
+    knowledge: '지식 저장소'
   },
   market: {
     title: '새 플러그인 받기',
