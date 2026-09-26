@@ -23,7 +23,12 @@
         </div>
       </template>
 
-      <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
+      <div v-if="surfacesLoading" role="status" data-testid="surfaces-loading">{{ $t('plugins.ui.loading') }}</div>
+      <div v-else-if="surfaceLoadError" role="alert" data-testid="surfaces-error">
+        {{ surfaceLoadError }}
+        <el-button data-testid="surfaces-retry" @click="retrySurfaces">{{ $t('market.retry') }}</el-button>
+      </div>
+      <el-tabs :model-value="activeTab" @update:model-value="selectTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="displayedPanelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
             <el-alert
@@ -41,7 +46,7 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="displayedPanelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+            <el-tabs v-if="displayedPanelSurfaces.length > 1" :model-value="activePanelSurfaceId" @update:model-value="selectPanel" type="border-card">
               <el-tab-pane
                 v-for="surface in displayedPanelSurfaces"
                 :key="surface.id"
@@ -91,7 +96,7 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="guideSurfaces.length > 1" v-model="activeGuideSurfaceId" type="border-card">
+            <el-tabs v-if="guideSurfaces.length > 1" :model-value="activeGuideSurfaceId" @update:model-value="selectGuide" type="border-card">
               <el-tab-pane
                 v-for="surface in guideSurfaces"
                 :key="surface.id"
@@ -185,7 +190,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, provide, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -225,6 +230,10 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
+let userTabIntent = false
+function selectTab(value: string | number) { userTabIntent = true; activeTab.value = String(value) }
+function selectPanel(value: string | number) { userTabIntent = true; activePanelSurfaceId.value = String(value) }
+function selectGuide(value: string | number) { userTabIntent = true; activeGuideSurfaceId.value = String(value) }
 type SurfaceMessageReceiver = {
   sendSurfaceMessage: (data: unknown) => void
   refreshContext: () => Promise<void>
@@ -239,6 +248,11 @@ const fillTabs = new Set(['panel', 'guide', 'logs'])
 const isFillTab = computed(() => fillTabs.has(activeTab.value))
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
+let surfaceController: AbortController | null = null
+let detailGeneration = 0
+let detailMounted = false
+const surfacesLoading = ref(false)
+const surfaceLoadError = ref('')
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -329,8 +343,8 @@ function syncActiveTab(requestedTab: unknown) {
   }
 }
 
-function syncSurfaceTabs() {
-  const requestedSurfaceId = typeof route.query.surface === 'string' ? route.query.surface : ''
+function syncSurfaceTabs(useRouteIntent = true) {
+  const requestedSurfaceId = useRouteIntent && typeof route.query.surface === 'string' ? route.query.surface : ''
   const requestedTab = resolveActiveTab(route.query.tab)
   if (requestedSurfaceId) {
     const panel = requestedTab !== 'guide'
@@ -346,6 +360,8 @@ function syncSurfaceTabs() {
       activeGuideSurfaceId.value = guide.id
     }
   }
+  if (!displayedPanelSurfaces.value.some(s => s.id === activePanelSurfaceId.value)) activePanelSurfaceId.value = ''
+  if (!guideSurfaces.value.some(s => s.id === activeGuideSurfaceId.value)) activeGuideSurfaceId.value = ''
   if (!activePanelSurfaceId.value && defaultPanelSurface.value) {
     activePanelSurfaceId.value = defaultPanelSurface.value.id
   }
@@ -490,68 +506,109 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
 }
 
 async function fetchSurfaces(): Promise<boolean> {
+  surfaceController?.abort('metadata-replaced')
+  const controller = new AbortController()
+  surfaceController = controller
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
+  const requestLocale = locale.value
+  const isCurrent = () => detailMounted && loadId === currentSurfaceLoadId
+    && currentPluginId === pluginId.value && requestLocale === locale.value
+  surfacesLoading.value = true
+  surfaceLoadError.value = ''
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId, locale.value)
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
+    const info = await getPluginUiSurfaceInfo(currentPluginId, requestLocale, {
+      signal: controller.signal, suppressErrorMessage: true, preserveMessagesOn404: true,
+    })
+    if (!isCurrent()) return false
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
   } catch (caught: any) {
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
+    if (!isCurrent()) return false
     surfaces.value = []
-    surfaceWarnings.value = [{
-      path: 'plugin.ui',
-      code: 'surface_query_failed',
-      message: caught?.response?.data?.detail || caught?.message || String(caught),
-    }]
+    const detail = caught?.response?.data?.detail
+    surfaceLoadError.value = typeof detail === 'string' && detail
+      ? detail
+      : (caught?.message || String(caught))
+    surfaceWarnings.value = [{ path: 'plugin.ui', code: 'surface_query_failed', message: surfaceLoadError.value }]
+  } finally {
+    if (surfaceController === controller) surfaceController = null
+    if (isCurrent()) surfacesLoading.value = false
   }
-  activePanelSurfaceId.value = ''
-  activeGuideSurfaceId.value = ''
-  syncSurfaceTabs()
+  syncSurfaceTabs(!userTabIntent)
+  if (!userTabIntent) syncActiveTab(route.query.tab)
+  else activeTab.value = resolveDefaultTab(activeTab.value)
   return true
 }
 
-async function refreshPluginUi(): Promise<boolean> {
-  return fetchSurfaces()
+async function retrySurfaces() {
+  await fetchSurfaces()
 }
 
-onMounted(async () => {
+async function loadDetail() {
+  const generation = ++detailGeneration
+  const currentPluginId = pluginId.value
+  const requestLocale = locale.value
+  const isCurrent = () => detailMounted && generation === detailGeneration
+    && currentPluginId === pluginId.value && requestLocale === locale.value
+  loading.value = !plugin.value
   try {
-    await pluginStore.fetchPlugins()
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
+    await pluginStore.ensurePlugins()
+    if (!isCurrent()) return
+    // Basic information and navigation do not wait for /surfaces or an optional
+    // renderer. Requests below retain their existing API semantics.
     loading.value = false
+    pluginStore.setSelectedPlugin(currentPluginId)
+    void pluginStore.fetchPluginStatus(currentPluginId)
+    await fetchSurfaces()
+  } finally {
+    if (isCurrent()) loading.value = false
   }
+}
+
+onMounted(() => { detailMounted = true; void loadDetail() })
+onBeforeUnmount(() => {
+  detailMounted = false
+  surfaceController?.abort('detail-disposed')
+  surfaceController = null
+  detailGeneration += 1
+  currentSurfaceLoadId += 1
+  panelSurfaceFrameRefs.clear()
+  guideSurfaceFrameRefs.clear()
 })
 
 watch(
   () => [route.query.tab, route.query.surface],
   ([tab]) => {
+    userTabIntent = false
+    if (surfacesLoading.value) return
     syncSurfaceTabs()
     syncActiveTab(tab)
   },
 )
 
-watch(pluginId, async () => {
-  loading.value = true
-  try {
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
-    loading.value = false
-  }
-})
-
-watch(locale, () => {
-  if (!plugin.value) return
-  void refreshPluginUi().then((refreshed) => {
-    if (refreshed) syncActiveTab(route.query.tab)
-  })
-})
+watch(
+  () => [pluginId.value, locale.value],
+  ([id], previous) => {
+    surfaceController?.abort('detail-changed')
+    surfaceController = null
+    detailGeneration += 1
+    currentSurfaceLoadId += 1
+    if (id !== previous?.[0]) {
+      userTabIntent = false
+      surfaces.value = []
+      surfaceWarnings.value = []
+      activePanelSurfaceId.value = ''
+      activeGuideSurfaceId.value = ''
+      activeTab.value = 'info'
+      panelSurfaceFrameRefs.clear()
+      guideSurfaceFrameRefs.clear()
+      surfaceActivationRevisions.value = {}
+    }
+    if (detailMounted) void loadDetail()
+  },
+  { flush: 'sync' },
+)
 </script>
 
 <style scoped>

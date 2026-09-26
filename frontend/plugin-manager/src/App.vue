@@ -4,32 +4,36 @@
     :z-index="ELEMENT_Z_INDEX"
     :message="ELEMENT_MESSAGE_CONFIG"
   >
-    <router-view />
+    <div v-if="localeBootstrapping" class="locale-bootstrap-shell" role="status">
+      {{ $t('common.languageLoading') }}
+    </div>
+    <router-view v-else />
+    <LocaleLoadNotice />
   </el-config-provider>
 </template>
 
 <script setup lang="ts">
-import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import zhTw from 'element-plus/dist/locale/zh-tw.mjs'
-import en from 'element-plus/dist/locale/en.mjs'
-import jaLocale from 'element-plus/dist/locale/ja.mjs'
-import koLocale from 'element-plus/dist/locale/ko.mjs'
-import ruLocale from 'element-plus/dist/locale/ru.mjs'
-import esLocale from 'element-plus/dist/locale/es.mjs'
-import ptLocale from 'element-plus/dist/locale/pt.mjs'
-import { getLocale } from './i18n'
+import { ref, watch } from 'vue'
+import { elementLocale, localeLoadState } from './i18n'
+import LocaleLoadNotice from './components/common/LocaleLoadNotice.vue'
 
 const ELEMENT_Z_INDEX = 12000
 const ELEMENT_MESSAGE_CONFIG = { offset: 54 }
-const elementLocaleMap: Record<string, typeof zhCn> = {
-  'zh-CN': zhCn,
-  'zh-TW': zhTw,
-  'en-US': en,
-  ja: jaLocale,
-  ko: koLocale,
-  ru: ruLocale,
-  es: esLocale,
-  pt: ptLocale,
-}
-const elementLocale = elementLocaleMap[getLocale()] ?? zhCn
+const localeBootstrapping = ref(localeLoadState.pending !== null)
+watch(
+  () => localeLoadState.pending,
+  (pending) => {
+    if (pending === null) localeBootstrapping.value = false
+  },
+  { immediate: true },
+)
 </script>
+
+<style scoped>
+.locale-bootstrap-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--el-text-color-secondary);
+}
+</style>

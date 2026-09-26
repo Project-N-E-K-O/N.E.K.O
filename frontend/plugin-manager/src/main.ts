@@ -1,20 +1,20 @@
 import './assets/main.css'
 
-import { createApp } from 'vue'
+import { createApp, watch } from 'vue'
 import { createPinia } from 'pinia'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import { MotionPlugin } from '@vueuse/motion'
 import App from './App.vue'
 import { initDarkMode } from './composables/useDarkMode'
-import { i18n } from './i18n'
+import { i18n, initializeLocale } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
-import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
+import { initTutorialBootstrap } from './tutorialBootstrap'
 
 initDarkMode()
-initPluginDashboardYuiGuideRuntime()
+const localeStartup = initializeLocale()
+const tutorialStartup = initTutorialBootstrap()
 
 function initNativeDragGuard() {
   const handleDragStart = (event: DragEvent) => {
@@ -49,10 +49,24 @@ app.use(router)
 
 app.use(i18n)
 
-app.use(MotionPlugin)
+function mountApp() {
+  app.mount('#app')
+  // Former language switching reloaded the whole page. Refresh localized
+  // plugin metadata on a committed locale only, without resetting user work.
+  let initialLocalePending = Boolean(localeStartup)
+  if (localeStartup) void localeStartup.finally(() => { initialLocalePending = false })
+  watch(i18n.global.locale, () => {
+    if (initialLocalePending) return
+    void import('./stores/plugin')
+      .then(({ usePluginStore }) => usePluginStore().fetchPlugins(true))
+      .catch(error => console.warn('Could not refresh localized plugin metadata', error))
+  })
+  const connectionStore = useConnectionStore()
+  connectionStore.startHealthCheck()
+  window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
+}
 
-app.mount('#app')
-
-const connectionStore = useConnectionStore()
-connectionStore.startHealthCheck()
-window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
+// Preserve preactivation before mount for opener handoffs; ordinary tabs do not
+// load the tutorial graph. A missing optional chunk must not strand the shell.
+mountApp()
+if (tutorialStartup) void tutorialStartup.catch(console.warn)

@@ -47,6 +47,14 @@ export default {
     removeHint: "停止插件并移除关联？源码和运行数据会保留。",
   },
   common: {
+    surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
+    surfaceApplyLanguage: "应用新语言并重新载入面板",
+
+    languageLoading: "正在加载语言，当前界面仍可使用",
+    languageLoadFailed: "语言加载失败，已保留当前语言。",
+    languageRetry: "重试语言加载",
+    languageReload: "重新加载页面",
+
     loading: '加载中...',
     refresh: '刷新',
     search: '搜索',

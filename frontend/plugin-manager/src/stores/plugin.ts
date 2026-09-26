@@ -14,6 +14,7 @@ import {
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
+import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
 
 type RegistrySyncResult = {
   registryRefreshed: boolean
@@ -35,9 +36,16 @@ export const usePluginStore = defineStore('plugin', () => {
   const selectedPluginId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const pluginsSnapshotLoaded = ref(false)
+  const pluginsFetchedAt = ref(0)
+  const pluginsFetchedLocale = ref<string | null>(null)
+  const pluginStatusSnapshotLoaded = ref(false)
+  const pluginStatusFetchedAt = ref(0)
+  const PLUGIN_SNAPSHOT_MAX_AGE = 10_000
   
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
+  let pendingFetchPluginsLocale: string | null = null
   let pendingFetchStatus: Promise<void> | null = null
   let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
   const pluginListRegistrySynced = ref(false)
@@ -81,8 +89,9 @@ export const usePluginStore = defineStore('plugin', () => {
 
   // 操作
   async function fetchPlugins(force = false, options: RegistrySyncOptions = {}) {
+    const requestLocale = getLocale()
     // 防止请求堆积
-    if (!force && pendingFetchPlugins) {
+    if (!force && pendingFetchPlugins && pendingFetchPluginsLocale === requestLocale) {
       return pendingFetchPlugins
     }
     
@@ -90,38 +99,60 @@ export const usePluginStore = defineStore('plugin', () => {
     error.value = null
     
     // 设置超时自动清理，防止请求堆积
-    const timeoutId = setTimeout(() => {
-      if (pendingFetchPlugins) {
+    const seq = ++fetchPluginsSeq
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let timeoutReject: ((reason?: unknown) => void) | null = null
+    timeoutId = setTimeout(() => {
+      if (seq === fetchPluginsSeq && pendingFetchPlugins) {
         console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
+        fetchPluginsSeq += 1
         pendingFetchPlugins = null
+        pendingFetchPluginsLocale = null
         loading.value = false
+        timeoutReject?.(new Error('获取插件列表超时'))
       }
     }, REQUEST_TIMEOUT)
-    
-    const seq = ++fetchPluginsSeq
+    pendingFetchPluginsLocale = requestLocale
     pendingFetchPlugins = (async () => {
       try {
         const response = await getPlugins(
-          getLocale(),
+          requestLocale,
           options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
         )
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
-        plugins.value = response.plugins || []
+        plugins.value = reconcilePluginSnapshot(plugins.value, response.plugins || [])
+        pluginsSnapshotLoaded.value = true
+        pluginsFetchedAt.value = Date.now()
+        pluginsFetchedLocale.value = requestLocale
       } catch (err: any) {
         if (seq !== fetchPluginsSeq) return
         error.value = err.message || '获取插件列表失败'
         console.error('Failed to fetch plugins:', err)
       } finally {
-        clearTimeout(timeoutId)
+        if (timeoutId) clearTimeout(timeoutId)
         if (seq === fetchPluginsSeq) {
           loading.value = false
           pendingFetchPlugins = null
+          pendingFetchPluginsLocale = null
         }
       }
     })()
+    const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+    pendingFetchPlugins = Promise.race([pendingFetchPlugins, timeout]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
     
     return pendingFetchPlugins
+  }
+
+  async function ensurePlugins(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
+    const locale = getLocale()
+    const fresh = pluginsSnapshotLoaded.value
+      && pluginsFetchedLocale.value === locale
+      && Date.now() - pluginsFetchedAt.value < maxAgeMs
+    if (fresh) return
+    await fetchPlugins()
   }
 
   async function syncRegistryAndFetch(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
@@ -188,25 +219,32 @@ export const usePluginStore = defineStore('plugin', () => {
     return pendingPluginListRegistrySync
   }
 
-  async function fetchPluginStatus(pluginId?: string) {
+  async function fetchPluginStatus(pluginId?: string, force = false) {
+    if (pluginId) {
+      // A single-plugin mutation makes any in-flight full snapshot stale.
+      fetchStatusSeq += 1
+      pendingFetchStatus = null
+      pluginStatusSnapshotLoaded.value = false
+    }
     // 只对全量状态请求做防抖（单个插件状态请求不做限制）
-    if (!pluginId && pendingFetchStatus) {
+    if (!pluginId && pendingFetchStatus && !force) {
       return pendingFetchStatus
     }
     
     // 设置超时自动清理（仅对全量请求）
     let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let timeoutReject: ((reason?: unknown) => void) | null = null
+    const seq = !pluginId ? ++fetchStatusSeq : 0
     if (!pluginId) {
       timeoutId = setTimeout(() => {
-        if (pendingFetchStatus) {
+        if (seq === fetchStatusSeq && pendingFetchStatus) {
           console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
+          fetchStatusSeq += 1
           pendingFetchStatus = null
+          timeoutReject?.(new Error('获取插件状态超时'))
         }
       }, REQUEST_TIMEOUT)
     }
-    
-    // 仅对全量请求使用序列号
-    const seq = !pluginId ? ++fetchStatusSeq : 0
     
     const doFetch = async () => {
       try {
@@ -220,6 +258,8 @@ export const usePluginStore = defineStore('plugin', () => {
           // 所有插件状态
           const statuses = response as { plugins: Record<string, PluginStatusData> }
           pluginStatuses.value = statuses.plugins || {}
+          pluginStatusSnapshotLoaded.value = true
+          pluginStatusFetchedAt.value = Date.now()
         }
       } catch (err: any) {
         console.error('Failed to fetch plugin status:', err)
@@ -232,11 +272,17 @@ export const usePluginStore = defineStore('plugin', () => {
     }
     
     if (!pluginId) {
-      pendingFetchStatus = doFetch()
+      const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
+      pendingFetchStatus = Promise.race([doFetch(), timeout])
       return pendingFetchStatus
     } else {
       return doFetch()
     }
+  }
+
+  async function ensurePluginStatus(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
+    if (pluginStatusSnapshotLoaded.value && Date.now() - pluginStatusFetchedAt.value < maxAgeMs) return
+    await fetchPluginStatus()
   }
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
@@ -290,11 +336,15 @@ export const usePluginStore = defineStore('plugin', () => {
     pluginListRegistrySynced,
     loading,
     error,
+    pluginsSnapshotLoaded,
+    pluginStatusSnapshotLoaded,
     // 操作
     fetchPlugins,
+    ensurePlugins,
     syncRegistryAndFetch,
     ensurePluginListRegistrySynced,
     fetchPluginStatus,
+    ensurePluginStatus,
     start,
     stop,
     reload,

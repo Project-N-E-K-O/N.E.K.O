@@ -13,12 +13,12 @@ import type { PluginMeta } from '@/types/api'
 import {
   useGridWorkbench,
   normalizeSearchPart,
-  safePinyin,
   type FilterMode,
   type LayoutMode,
   type QualifierMatcher,
 } from '@/composables/useGridWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import { boundedMemo } from '@/utils/boundedMemo'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
 export type PluginWorkbenchFilterMode = FilterMode
@@ -46,29 +46,30 @@ function hasUi(plugin: PluginWorkbenchItem): boolean {
 }
 
 function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
-  const name = plugin.displayName || plugin.name
-  const description = plugin.displayDescription || plugin.description
-  const shortDescription = plugin.displayShortDescription || plugin.short_description
   const textParts = [
     plugin.id,
-    name,
-    description,
-    shortDescription,
+    plugin.displayName || plugin.name,
+    plugin.displayDescription || plugin.description,
+    plugin.displayShortDescription || plugin.short_description,
     plugin.type,
     plugin.version,
   ]
+  return memoizedPluginSearchIndex(JSON.stringify(textParts))
+}
 
-  const pinyinParts = [name, description, shortDescription].flatMap((value) => {
+const memoizedPluginSearchIndex = boundedMemo(512, (key) => {
+  const textParts = JSON.parse(key) as (string | null)[]
+  return textParts.map(normalizeSearchPart).filter(Boolean).join('\n')
+})
+
+function buildPluginPinyinIndex(plugin: PluginWorkbenchItem, search: (value: string, pattern: 'pinyin' | 'first') => string): string {
+  const textParts = [plugin.displayName || plugin.name, plugin.displayDescription || plugin.description, plugin.displayShortDescription || plugin.short_description]
+  return textParts.flatMap((value) => {
     const source = value || ''
-    const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
-    const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
+    const full = search(source, 'pinyin').replace(/\s+/g, ' ').trim()
+    const initials = search(source, 'first').replace(/\s+/g, '').trim()
     return [full, full.replace(/\s+/g, ''), initials]
-  })
-
-  return [...textParts, ...pinyinParts]
-    .map(normalizeSearchPart)
-    .filter(Boolean)
-    .join('\n')
+  }).map(normalizeSearchPart).filter(Boolean).join('\n')
 }
 
 // ─── qualifier matchers ─────────────────────────────────────────────
@@ -221,6 +222,7 @@ export function usePluginWorkbench<
       predicate: (item) => item.type === groupId,
     })),
     buildSearchIndex: buildPluginSearchIndex,
+    buildPinyinSearchIndex: buildPluginPinyinIndex,
     qualifierMatchers: pluginQualifiers,
   })
 
@@ -267,5 +269,6 @@ export function usePluginWorkbench<
     pruneSelection: workbench.pruneSelection,
     setMultiSelectEnabled: workbench.setMultiSelectEnabled,
     toggleMultiSelect: workbench.toggleMultiSelect,
+    retryPinyinSearch: workbench.retryPinyinSearch,
   }
 }

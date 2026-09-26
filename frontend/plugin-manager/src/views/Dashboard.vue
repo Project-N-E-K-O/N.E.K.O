@@ -16,13 +16,14 @@
     </div>
 
     <!-- ── Stats row ── -->
-    <div class="stats-row" data-yui-guide-id="plugin-dashboard-stats">
+    <div
+      class="stats-row"
+      data-yui-guide-id="plugin-dashboard-stats"
+      v-entrance="{ y: 18, stiffness: 260, damping: 24, duration: 420, scale: 0.98 }"
+    >
       <div
-        v-for="(stat, i) in statCards"
+        v-for="stat in statCards"
         :key="stat.key"
-        v-motion
-        :initial="{ opacity: 0, scale: 0.92, y: 18, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)', transition: { delay: i * 60, duration: 420, type: 'spring', stiffness: 260, damping: 24 } }"
         class="stat-card"
         :class="`stat-card--${stat.key}`"
       >
@@ -40,9 +41,6 @@
     <div class="main-grid">
       <!-- Global metrics -->
       <div
-        v-motion
-        :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 280, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
         class="panel panel--metrics"
         data-yui-guide-id="plugin-dashboard-metrics"
       >
@@ -104,9 +102,6 @@
 
       <!-- Server info -->
       <div
-        v-motion
-        :initial="{ opacity: 0, y: 24, filter: 'blur(6px)' }"
-        :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { delay: 380, duration: 460, type: 'spring', stiffness: 220, damping: 22 } }"
         class="panel panel--server"
         data-yui-guide-id="plugin-dashboard-server"
       >
@@ -143,18 +138,27 @@
 </template>
 
 <script setup lang="ts">
+import { vEntrance } from '@/composables/entranceMotion'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { getServerInfo } from '@/api/plugins'
-import { startPluginDashboardTutorial, type PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
+import { startPluginDashboardTutorial } from '@/tutorialBootstrap'
+import type { PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
+import { ElMessage } from 'element-plus'
 import { PluginStatus, METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
 import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refresh } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 
 const { t } = useI18n()
+const dashboardStartupClass = 'dashboard-starting'
+function finishDashboardStartup() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.documentElement.classList.remove(dashboardStartupClass)
+  }))
+}
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 
@@ -164,6 +168,7 @@ const serverInfoError = ref(false)
 const metricsLoading = ref(false)
 const globalMetrics = ref<GlobalMetrics | null>(null)
 let metricsTimer: number | null = null
+let dashboardDisposed = false
 const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended'
 
 function isGoodbyeResourceSuspendingOrSuspended() {
@@ -182,9 +187,18 @@ function isGoodbyeResourceSuspendingOrSuspended() {
 // ── Computed stats ────────────────────────────────────────────────────
 
 const totalPlugins = computed(() => pluginStore.plugins.length)
-const runningCount = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.status === PluginStatus.RUNNING).length)
-const stoppedCount = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.status === PluginStatus.STOPPED).length)
-const crashedCount = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.status === PluginStatus.CRASHED).length)
+const statusCounts = computed(() => {
+  const counts = { running: 0, stopped: 0, crashed: 0 }
+  for (const plugin of pluginStore.pluginsWithStatus) {
+    if (plugin.status === PluginStatus.RUNNING) counts.running += 1
+    else if (plugin.status === PluginStatus.STOPPED) counts.stopped += 1
+    else if (plugin.status === PluginStatus.CRASHED) counts.crashed += 1
+  }
+  return counts
+})
+const runningCount = computed(() => statusCounts.value.running)
+const stoppedCount = computed(() => statusCounts.value.stopped)
+const crashedCount = computed(() => statusCounts.value.crashed)
 
 const statCards = computed(() => [
   { key: 'total', icon: Box, value: totalPlugins.value, label: t('dashboard.totalPlugins') },
@@ -406,17 +420,20 @@ function handleStartTutorial() {
     },
   ]
 
-  startPluginDashboardTutorial({
+  void startPluginDashboardTutorial({
     steps,
     labels: {
       skip: t('yuiTutorial.dismiss'),
       keyboardHint: t('yuiTutorial.keyboardSkipHint'),
     },
+  }).catch(error => {
+    console.warn('Could not start tutorial', error)
+    ElMessage.error(t('messages.operationFailed'))
   })
 }
 
 function startAutoRefresh() {
-  if (isGoodbyeResourceSuspendingOrSuspended()) return
+  if (dashboardDisposed || isGoodbyeResourceSuspendingOrSuspended()) return
   stopAutoRefresh()
   metricsTimer = window.setInterval(() => {
     if (isGoodbyeResourceSuspendingOrSuspended()) {
@@ -453,18 +470,24 @@ function handleGoodbyeResourceStorage(event: StorageEvent) {
 }
 
 onMounted(async () => {
+  document.documentElement.classList.add(dashboardStartupClass)
+  dashboardDisposed = false
   await Promise.all([
-    pluginStore.fetchPlugins(),
-    pluginStore.fetchPluginStatus(),
+    pluginStore.fetchPlugins().catch(error => console.warn('Dashboard plugin list refresh failed:', error)),
+    pluginStore.fetchPluginStatus().catch(error => console.warn('Dashboard plugin status refresh failed:', error)),
     fetchServerInfo(),
     fetchGlobalMetrics(),
   ])
+  if (dashboardDisposed) return
+  finishDashboardStartup()
   window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.addEventListener('storage', handleGoodbyeResourceStorage)
   startAutoRefresh()
 })
 
 onUnmounted(() => {
+  dashboardDisposed = true
+  document.documentElement.classList.remove(dashboardStartupClass)
   window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.removeEventListener('storage', handleGoodbyeResourceStorage)
   stopAutoRefresh()
@@ -472,10 +495,17 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+:global(html.dashboard-starting) .dashboard .stat-card,
+:global(html.dashboard-starting) .dashboard .panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .dashboard {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  contain: layout style;
 }
 
 .dashboard-hero {
@@ -520,6 +550,7 @@ onUnmounted(() => {
 }
 
 .stat-card {
+  contain: layout;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -597,6 +628,7 @@ onUnmounted(() => {
 
 /* ── Panel (shared) ── */
 .panel {
+  contain: layout;
   padding: 20px;
   border-radius: 16px;
   background: color-mix(in srgb, var(--el-bg-color) 82%, transparent);

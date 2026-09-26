@@ -19,7 +19,11 @@ function onceTransitionEnd(node: HTMLElement, done: () => void) {
   window.setTimeout(finish, 420)
 }
 
-export function useAnimatedGridTransition() {
+export function useAnimatedGridTransition(options: { animateInitial?: () => boolean } = {}) {
+  // Consume only on an actual section entry, not component mount: a section
+  // can initially be empty while its first response is still pending.
+  let firstSectionEntry = true
+  const immediateEntries = new WeakSet<Element>()
   const prefersReducedMotion = ref(false)
   let mediaQuery: MediaQueryList | null = null
   let cleanupListener: (() => void) | null = null
@@ -78,6 +82,12 @@ export function useAnimatedGridTransition() {
   }
 
   function beforeSectionEnter(element: Element) {
+    const skipInitial = firstSectionEntry && options.animateInitial?.() === false
+    firstSectionEntry = false
+    if (skipInitial) {
+      immediateEntries.add(element)
+      return
+    }
     if (prefersReducedMotion.value) {
       return
     }
@@ -89,6 +99,11 @@ export function useAnimatedGridTransition() {
   }
 
   function enterSection(element: Element, done: () => void) {
+    if (immediateEntries.has(element)) {
+      immediateEntries.delete(element)
+      done()
+      return
+    }
     if (prefersReducedMotion.value) {
       done()
       return

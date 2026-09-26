@@ -8,8 +8,9 @@ const translate = vi.hoisted(() => vi.fn(
   (key: string, params?: Record<string, unknown>) => `${key}${params ? JSON.stringify(params) : ''}`,
 ))
 
+const locale = vi.hoisted(() => ({ value: 'zh-CN' }))
 vi.mock('@/i18n', () => ({
-  getLocale: () => 'zh-CN',
+  getLocale: () => locale.value,
   i18n: {
     global: {
       t: translate,
@@ -41,6 +42,7 @@ function registryRefreshResult() {
 
 describe('plugin store registry refresh policy', () => {
   beforeEach(() => {
+    locale.value = 'zh-CN'
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
@@ -60,6 +62,33 @@ describe('plugin store registry refresh policy', () => {
     expect(store.pluginListRegistrySynced).toBe(true)
     expect(refreshPluginsRegistry).toHaveBeenCalledTimes(1)
     expect(getPlugins).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reuse an in-flight list request from a different locale', async () => {
+    let complete!: (value: any) => void
+    vi.mocked(getPlugins).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    const store = usePluginStore()
+    const old = store.fetchPlugins()
+    locale.value = 'en-US'
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledTimes(2)
+    complete({ plugins: [plugin('stale')] })
+    await old
+    expect(store.plugins).toEqual([])
+  })
+
+  it('does not overwrite a fresh single status with an older full snapshot', async () => {
+    let complete!: (value: any) => void
+    vi.mocked(getPluginStatus)
+      .mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      .mockResolvedValueOnce({ status: 'running' } as any)
+    const store = usePluginStore()
+    const old = store.fetchPluginStatus()
+    await store.fetchPluginStatus('demo')
+    complete({ plugins: { demo: { status: 'stopped' } } })
+    await old
+    expect(store.pluginStatuses.demo?.status).toBe('running')
+    expect(store.pluginStatusSnapshotLoaded).toBe(false)
   })
 
   it('marks explicit registry syncs as satisfying the first plugin list open', async () => {
@@ -170,4 +199,66 @@ describe('plugin store registry refresh policy', () => {
     expect(getPluginStatus).not.toHaveBeenCalled()
     expect(getPlugins).not.toHaveBeenCalled()
   })
+
+  it('reuses a fresh plugin snapshot and refetches it after the TTL', async () => {
+    const store = usePluginStore()
+    const initialNow = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(initialNow)
+
+    await store.ensurePlugins()
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledOnce()
+
+    now.mockReturnValue(initialNow + 10_001)
+    await store.ensurePlugins()
+    expect(getPlugins).toHaveBeenCalledTimes(2)
+    now.mockRestore()
+  })
+
+  it('reuses a fresh full status snapshot', async () => {
+    const store = usePluginStore()
+    await store.ensurePluginStatus()
+    await store.ensurePluginStatus()
+
+    expect(getPluginStatus).toHaveBeenCalledOnce()
+    expect(store.pluginStatusSnapshotLoaded).toBe(true)
+  })
+
+  it('lets a forced status refresh supersede an older response', async () => {
+    const store = usePluginStore()
+    let resolveOld!: (value: any) => void
+    vi.mocked(getPluginStatus)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ plugins: { fresh: { status: 'running' } } } as any)
+
+    const oldRequest = store.fetchPluginStatus()
+    const freshRequest = store.fetchPluginStatus(undefined, true)
+    resolveOld({ plugins: { stale: { status: 'stopped' } } })
+    await Promise.all([oldRequest, freshRequest])
+
+    expect(store.pluginStatuses).toEqual({ fresh: { status: 'running' } })
+  })
+
+  it('invalidates a plugin list response that arrives after timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = usePluginStore()
+      let resolveLate!: (value: any) => void
+      vi.mocked(getPlugins).mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve }) as any)
+
+      const request = store.fetchPlugins()
+      vi.advanceTimersByTime(15_000)
+      resolveLate({ plugins: [plugin('late')] })
+      await expect(request).rejects.toThrow('获取插件列表超时')
+
+      expect(store.plugins).toEqual([])
+      expect(store.pluginsSnapshotLoaded).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
+function plugin(id: string) {
+  return { id, name: id, description: '', version: '1.0.0', type: 'plugin' }
+}

@@ -25,7 +25,7 @@
           size="small"
           @click="save"
           :loading="saving"
-          :disabled="!profilesStateLoaded || !selectedProfileName"
+          :disabled="!profilesStateLoaded || !selectedProfileName || draftLoading || !draftReady"
         >
           {{ t('common.save') }}
         </el-button>
@@ -137,6 +137,7 @@
         <div>
           <div class="preview-title">{{ t('plugins.editProfileOverlay') }}</div>
           <PluginConfigForm
+            v-if="draftReady && !draftLoading"
             :model-value="profileDraftConfig"
             :baseline-value="baseConfig"
             @update:model-value="updateProfileDraft"
@@ -148,7 +149,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -161,7 +162,8 @@ import {
   getPluginProfilesState,
   getPluginProfileConfig,
   upsertPluginProfileConfig,
-  deletePluginProfileConfig
+  deletePluginProfileConfig,
+  hotUpdatePluginConfig
 } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
@@ -191,6 +193,13 @@ const profilesStateLoaded = ref(false)
 const selectedProfileName = ref<string | null>(null)
 const profileDraftConfig = ref<Record<string, any> | null>(null)
 const originalProfileConfig = ref<Record<string, any> | null>(null)
+const draftLoading = ref(false)
+const draftReady = ref(false)
+let draftVersion = 0
+let selectionVersion = 0
+let disposed = false
+let saveVersion = 0
+let cancelledNavigationTarget: string | null = null
 
 // Plugins without persisted profiles expose an editable default draft. It is
 // persisted only when the user saves, keeping configuration page loading read-only.
@@ -462,32 +471,44 @@ const previewConfigJson = computed(() => {
 })
 
 async function loadProfileDraft(name: string, expectedVersion = loadVersion) {
-  if (!props.pluginId) return
-  if (isVirtualDefaultProfile(name)) {
-    originalProfileConfig.value = {}
-    profileDraftConfig.value = {}
-    return
-  }
+  if (!props.pluginId || disposed) return
+  const version = ++draftVersion
+  const pluginId = props.pluginId
+  const isCurrent = () => !disposed && version === draftVersion && expectedVersion === loadVersion
+    && pluginId === props.pluginId && selectedProfileName.value === name
+  draftLoading.value = true
+  draftReady.value = false
+  error.value = null
+  profileDraftConfig.value = null
+  originalProfileConfig.value = null
   try {
-    const res = await getPluginProfileConfig(props.pluginId, name)
-    if (expectedVersion !== loadVersion) return
-    const cfg = (res.config || {}) as Record<string, any>
-    originalProfileConfig.value = deepClone(cfg)
-    profileDraftConfig.value = deepClone(cfg)
-  } catch {
-    if (expectedVersion !== loadVersion) return
-    // 如果 profile 文件不存在或解析失败，则从空配置开始
-    originalProfileConfig.value = {}
-    profileDraftConfig.value = {}
+    const config = isVirtualDefaultProfile(name) ? {} : (await getPluginProfileConfig(pluginId, name)).config || {}
+    if (!isCurrent()) return
+    originalProfileConfig.value = deepClone(config)
+    profileDraftConfig.value = deepClone(config)
+    draftReady.value = true
+  } catch (caught: any) {
+    if (!isCurrent()) return
+    // A failed read is not an empty editable profile: never let Save overwrite
+    // a server profile with {} merely because the network failed.
+    error.value = caught?.message || t('plugins.configLoadFailed')
+  } finally {
+    if (isCurrent()) draftLoading.value = false
   }
 }
 
 let loadVersion = 0
 
 async function loadAll() {
-  if (!props.pluginId) return
+  if (!props.pluginId || disposed) return
 
+  draftVersion += 1
+  selectionVersion += 1
+  draftReady.value = false
+  draftLoading.value = false
   const currentVersion = ++loadVersion
+  const pluginId = props.pluginId
+  const isCurrent = () => !disposed && currentVersion === loadVersion && pluginId === props.pluginId
 
   loading.value = true
   error.value = null
@@ -495,12 +516,12 @@ async function loadAll() {
   try {
     const prevSelected = selectedProfileName.value
     const [baseRes, effectiveRes, profilesRes] = await Promise.all([
-      getPluginEffectiveBaseConfig(props.pluginId),
-      getPluginConfig(props.pluginId),
-      getPluginProfilesState(props.pluginId)
+      getPluginEffectiveBaseConfig(pluginId),
+      getPluginConfig(pluginId),
+      getPluginProfilesState(pluginId)
     ])
 
-    if (currentVersion !== loadVersion) return
+    if (!isCurrent()) return
 
     configPath.value = (baseRes as any).config_path || (effectiveRes as any).config_path
     lastModified.value = (baseRes as any).last_modified || (effectiveRes as any).last_modified
@@ -529,10 +550,10 @@ async function loadAll() {
       originalProfileConfig.value = null
     }
   } catch (e: any) {
-    if (currentVersion !== loadVersion) return
+    if (!isCurrent()) return
     error.value = e?.message || t('plugins.configLoadFailed')
   } finally {
-    if (currentVersion === loadVersion) {
+    if (isCurrent()) {
       loading.value = false
     }
   }
@@ -543,7 +564,9 @@ function updateProfileDraft(v: Record<string, any> | null) {
 }
 
 async function selectProfile(name: string) {
-  if (selectedProfileName.value === name) return
+  if (selectedProfileName.value === name && draftReady.value) return
+  const selection = ++selectionVersion
+  const pluginId = props.pluginId
   if (hasChanges.value) {
     try {
       await ElMessageBox.confirm(
@@ -555,12 +578,16 @@ async function selectProfile(name: string) {
       return
     }
   }
+  if (disposed || selection !== selectionVersion || pluginId !== props.pluginId) return
   selectedProfileName.value = name
   await loadProfileDraft(name)
 }
 
 async function addProfile() {
-  if (!props.pluginId || !profilesStateLoaded.value) return
+  if (!props.pluginId || !profilesStateLoaded.value || disposed) return
+  const pluginId = props.pluginId
+  const version = loadVersion
+  const isCurrent = () => !disposed && pluginId === props.pluginId && version === loadVersion
   if (hasChanges.value) {
     try {
       await ElMessageBox.confirm(
@@ -573,7 +600,7 @@ async function addProfile() {
     }
   }
 
-  const pluginId = props.pluginId
+  if (!isCurrent()) return
   try {
     const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
       inputPattern: /^(?!\s*$).+/u,
@@ -581,7 +608,7 @@ async function addProfile() {
     })
     const name = String(value || '').trim()
     if (!name) return
-    if (pluginId !== props.pluginId || !profilesStateLoaded.value) return
+    if (!isCurrent() || !profilesStateLoaded.value) return
     if (persistedProfileNames.value.includes(name)) {
       ElMessage.error(t('plugin.addProfile.inputError'))
       return
@@ -605,11 +632,16 @@ async function addProfile() {
 }
 
 async function removeProfile(name: string) {
+  const pluginId = props.pluginId
+  const version = loadVersion
+  const isCurrent = () => !disposed && props.pluginId === pluginId && version === loadVersion
   try {
     await ElMessageBox.confirm(t('plugin.removeProfile.confirm', { name }), t('plugin.removeProfile.title'), {
       type: 'warning'
     })
-    await deletePluginProfileConfig(props.pluginId, name)
+    if (!isCurrent()) return
+    await deletePluginProfileConfig(pluginId, name)
+    if (!isCurrent()) return
     ElMessage.success(t('common.success'))
     await loadAll()
   } catch (e: any) {
@@ -628,15 +660,20 @@ function resetDraft() {
 }
 
 async function save() {
-  if (!props.pluginId || !selectedProfileName.value || !profilesStateLoaded.value) return
+  if (!props.pluginId || !selectedProfileName.value || !profilesStateLoaded.value || !draftReady.value || draftLoading.value || disposed) return
 
   const pluginId = props.pluginId
   const profileName = selectedProfileName.value
   const saveLoadVersion = loadVersion
+  const saveDraftVersion = draftVersion
+  const currentSaveVersion = ++saveVersion
   const draftToSave = deepClone(profileDraftConfig.value || {}) as Record<string, any>
   const shouldActivate = isVirtualDefaultProfile(profileName)
   const isCurrentSave = () =>
+    !disposed &&
     saveLoadVersion === loadVersion &&
+    saveDraftVersion === draftVersion &&
+    currentSaveVersion === saveVersion &&
     pluginId === props.pluginId &&
     profileName === selectedProfileName.value
 
@@ -699,9 +736,9 @@ async function save() {
       }
     }
   } catch (e: any) {
-    error.value = e?.message || t('plugins.configSaveFailed')
+    if (isCurrentSave()) error.value = e?.message || t('plugins.configSaveFailed')
   } finally {
-    saving.value = false
+    if (currentSaveVersion === saveVersion) saving.value = false
   }
 }
 
@@ -711,7 +748,6 @@ async function hotUpdateConfig(
   config: Record<string, any>
 ) {
   try {
-    const { hotUpdatePluginConfig } = await import('@/api/config')
     const result = await hotUpdatePluginConfig(
       pluginId,
       config,
@@ -734,11 +770,31 @@ async function hotUpdateConfig(
 }
 
 onMounted(loadAll)
+onBeforeUnmount(() => {
+  disposed = true
+  loadVersion += 1
+  draftVersion += 1
+  selectionVersion += 1
+  saveVersion += 1
+})
 
 watch(
   () => props.pluginId,
   async (newId, oldId) => {
-    if (!newId) return
+    const version = ++loadVersion
+    draftVersion += 1
+    selectionVersion += 1
+    saveVersion += 1
+    saving.value = false
+    if (newId === cancelledNavigationTarget) {
+      cancelledNavigationTarget = null
+      return
+    }
+    cancelledNavigationTarget = null
+    const wasDraftReady = draftReady.value
+    draftReady.value = false
+    draftLoading.value = false
+    if (!newId || disposed) return
     if (hasChanges.value && oldId) {
       try {
         await ElMessageBox.confirm(
@@ -747,12 +803,17 @@ watch(
           { type: 'warning' }
         )
       } catch {
-        router.replace(`/plugins/${encodeURIComponent(oldId)}`)
+        if (!disposed && version === loadVersion && props.pluginId === newId) {
+          cancelledNavigationTarget = oldId
+          draftReady.value = wasDraftReady
+          await router.replace(`/plugins/${encodeURIComponent(oldId)}`)
+        }
         return
       }
     }
-    await loadAll()
-  }
+    if (!disposed && version === loadVersion && props.pluginId === newId) await loadAll()
+  },
+  { flush: 'sync' },
 )
 </script>
 

@@ -28,9 +28,7 @@
     <section
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
-      v-motion
-      :initial="{ opacity: 0, y: 16, filter: 'blur(4px)' }"
-      :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 360, type: 'spring', stiffness: 240, damping: 24 } }"
+      v-entrance="{ y: 16, stiffness: 240, damping: 24, duration: 360, blur: 4 }"
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
@@ -248,16 +246,14 @@
 
         <template v-else>
           <div
-            v-for="(section, si) in pluginSections"
+            v-for="section in pluginSections"
             :key="section.key"
-            v-motion
-            :initial="{ opacity: 0, y: 20 }"
-            :enter="{ opacity: 1, y: 0, transition: { delay: 120 + si * 80, duration: 420, type: 'spring', stiffness: 220, damping: 22 } }"
           >
             <PluginGridSection
               :title="section.title"
               :icon="section.icon"
               :items="section.items"
+              :animate-initial="false"
               :layout-mode="layoutMode"
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
@@ -474,6 +470,7 @@
 </template>
 
 <script setup lang="ts">
+import { vEntrance } from '@/composables/entranceMotion'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
@@ -485,9 +482,10 @@ import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marke
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
-import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
-import GithubMirrorSourcePanel from '@/components/plugin/GithubMirrorSourcePanel.vue'
-import MarketPanel from '@/components/plugin/MarketPanel.vue'
+import { deferredPanel } from '@/components/common/deferredPanel'
+const PackageManagerPanel = deferredPanel(() => import('@/components/plugin/PackageManagerPanel.vue'))
+const GithubMirrorSourcePanel = deferredPanel(() => import('@/components/plugin/GithubMirrorSourcePanel.vue'))
+const MarketPanel = deferredPanel(() => import('@/components/plugin/MarketPanel.vue'))
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
@@ -769,7 +767,8 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
     } else {
       await pluginStore.fetchPlugins()
     }
-    await pluginStore.fetchPluginStatus()
+    if (mode === 'full') await pluginStore.fetchPluginStatus(undefined, true)
+    else await pluginStore.ensurePluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
   }

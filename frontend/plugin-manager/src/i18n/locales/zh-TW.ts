@@ -47,6 +47,14 @@ export default {
     removeHint: "停止外掛並移除關聯？原始碼和執行資料會保留。",
   },
   common: {
+    surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
+    surfaceApplyLanguage: "套用新語言並重新載入面板",
+
+    languageLoading: "正在載入語言，目前介面仍可使用",
+    languageLoadFailed: "語言載入失敗，已保留目前語言。",
+    languageRetry: "重試語言載入",
+    languageReload: "重新載入頁面",
+
     loading: '載入中...',
     refresh: '重新整理',
     search: '搜尋',
