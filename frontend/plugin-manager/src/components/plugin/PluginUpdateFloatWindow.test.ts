@@ -298,6 +298,14 @@ describe('plugin update float window', () => {
     expect((busyRoot.querySelector('.update-item__button') as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('locks the per-item buttons while a refresh keeps the previous list', () => {
+    // ``check()`` retains the old candidates while it runs, but ``updateOne``
+    // refuses during a check — an enabled button would silently do nothing.
+    makeStore({ candidates: [candidate()], checking: true })
+    const root = mount()
+    expect((root.querySelector('.update-item__button') as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('locks the header refresh while a check or upgrade is running', async () => {
     const store = makeStore({ candidates: [candidate()] })
     const root = mount()

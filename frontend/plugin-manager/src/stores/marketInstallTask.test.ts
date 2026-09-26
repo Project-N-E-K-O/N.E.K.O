@@ -541,6 +541,45 @@ describe('market install task store — cancel', () => {
     await p
   })
 
+  it('keeps the cancel flag of a newer task in flight when a stale cancel settles', async () => {
+    let releaseStale: (value: unknown) => void = () => {}
+    let releaseFresh: (value: unknown) => void = () => {}
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't1', status: 'downloading', stage: 'download', progress: 0.2 }) as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseStale = resolve as (value: unknown) => void }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const first = store.track('t1', context(), 'panel')
+    await tick()
+    const staleCancel = store.cancel('panel')
+    store.dismiss('panel')
+    await tick()
+    await first
+
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't2', status: 'downloading', stage: 'download', progress: 0.2 }) as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFresh = resolve as (value: unknown) => void }) as never)
+    const second = store.track('t2', context(), 'panel')
+    await tick()
+    const freshCancel = store.cancel('panel')
+    expect(store.cancelling).toBe(true)
+
+    releaseStale(task({ task_id: 't1', status: 'canceled', stage: 'canceled', progress: 0.2 }))
+    await expect(staleCancel).resolves.toBe('unavailable')
+    // Regression guard: the stale request's ``finally`` used to clear the flag
+    // the newer cancel still owns, re-enabling the button mid-request.
+    expect(store.cancelling).toBe(true)
+    await expect(store.cancel('panel')).resolves.toBe('unavailable')
+
+    releaseFresh(task({ task_id: 't2', status: 'downloading', stage: 'download', progress: 0.2, cancel_requested: true }))
+    await expect(freshCancel).resolves.toBe('ok')
+    expect(store.cancelling).toBe(false)
+
+    store.dismiss()
+    await tick()
+    await second
+  })
+
   it('refuses to cancel a task owned by the other surface', async () => {
     vi.mocked(fetchBridge).mockResolvedValue(
       task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never,

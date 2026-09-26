@@ -292,6 +292,7 @@ const canUpdateAll = computed(() => (
 
 function isItemDisabled(candidate: MarketUpdateCandidate): boolean {
   return candidate.needsManualUpgrade
+    || updates.checking
     || updates.batchRunning
     || installTask.running
     || !!installTask.reservation

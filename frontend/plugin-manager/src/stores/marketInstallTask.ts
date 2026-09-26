@@ -552,7 +552,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       log.warn('cancel failed', { taskId: id, err })
       return 'failed'
     } finally {
-      cancelling.value = false
+      // A stale request must not clear the flag a newer task's cancel now owns;
+      // `dismiss` / `beginTracking` already reset it for the replacement.
+      if (myGeneration === generation) cancelling.value = false
     }
   }
 
