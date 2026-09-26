@@ -169,7 +169,13 @@
         // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
         voiceLeaseGeneration = 0;
         lastVoiceLeaseFingerprint = '';
-        return sendVoiceInputControlState(true);
+        const sent = sendVoiceInputControlState(true);
+        // 重连重置了 generation scope；进行中的恢复要改为等待本连接刚发出的那一代，
+        // 否则新连接上的 ready/failed 通知都会因 generation 不匹配被丢弃。
+        if (sent && S.voiceInputRecoveryState === 'recovering') {
+            S.voiceInputRecoveryLeaseGeneration = voiceLeaseGeneration;
+        }
+        return sent;
     }
 
     function setVoiceInputLifecycleState(state) {

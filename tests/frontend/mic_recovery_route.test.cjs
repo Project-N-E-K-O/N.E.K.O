@@ -136,3 +136,23 @@ test('stopping recording cancels pending recovery even when already stopped', ()
     assert.equal(env.S.voiceInputRecoverySessionEpoch, null);
     assert.equal(env.S.voiceInputRecoveryLeaseGeneration, null);
 });
+
+test('socket reconnect during recovery rebinds the expected lease generation', () => {
+    const env = loadCapture(true);
+    env.window.setMicMuted(false); // advance the old socket's generation scope
+    env.window.setMicMuted(true);
+    env.S.socket.readyState = 0; // unmute while the socket is down: no lease is sent
+    env.window.setMicMuted(false);
+    assert.equal(env.S.voiceInputRecoveryState, 'recovering');
+    const staleLease = env.S.voiceInputRecoveryLeaseGeneration;
+    env.S.socket.readyState = 1;
+    env.emit('voice-input-socket-open');
+    const sentLease = env.controls.at(-1).lease_generation;
+    assert.equal(sentLease, 1);
+    assert.notEqual(staleLease, sentLease);
+    env.window.dispatchEvent({
+        type: 'voice-input-recovery-ready',
+        detail: { session_epoch: env.S.voiceInputRecoverySessionEpoch, lease_generation: sentLease },
+    });
+    assert.equal(env.S.voiceInputRecoveryState, 'ready');
+});
