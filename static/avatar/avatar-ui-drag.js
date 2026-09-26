@@ -101,8 +101,27 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
     let containerStartY = 0;
     let isClick = false; // 标记是否为点击操作
 
+    const isEdgePeekLocked = () => {
+        const edgeButton = (returnButtonContainer.classList && returnButtonContainer.classList.contains('neko-idle-return-btn'))
+            ? returnButtonContainer : (returnButtonContainer.querySelector && returnButtonContainer.querySelector('.neko-idle-return-btn'));
+        return !!(window.NekoEdgePeekController
+            && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, returnButtonContainer));
+    };
+
+    returnButtonContainer.addEventListener('pointerdown', (e) => {
+        if (isEdgePeekLocked()) {
+            if (e.pointerType !== 'touch') e.preventDefault();
+            e.stopImmediatePropagation();
+        }
+    }, true);
+
     // 鼠标按下事件
     returnButtonContainer.addEventListener('mousedown', (e) => {
+        if (isEdgePeekLocked()) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
         // 允许在按钮容器本身和按钮元素上都能开始拖动
         // 这样就能在按钮正中心位置进行拖拽操作
         if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
@@ -170,6 +189,10 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
 
     // 触摸事件支持
     returnButtonContainer.addEventListener('touchstart', (e) => {
+        if (isEdgePeekLocked()) {
+            e.stopImmediatePropagation();
+            return;
+        }
         // 允许在按钮容器本身和按钮元素上都能开始拖动
         if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
             isDragging = true;

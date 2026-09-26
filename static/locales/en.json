@@ -2980,7 +2980,7 @@
         "delete": "Delete voice profile",
         "reenroll": "Enroll again",
         "filterLabel": "Activate voice conversations with your voice",
-        "filterHelp": "Audio starts uploading after your voice is confirmed. While active, you can reply directly and nearby voices may also be received. After 30 seconds without speech, activation waits for you again.",
+        "filterHelp": "Voice verification activates the conversation. If local wake words are configured and ready, a match also activates it without verifying who is speaking. While active, you can reply directly and nearby voices may also be received. After 30 seconds without speech, it waits for activation again.",
         "recordingSeconds": "{{seconds}} s",
         "saving": "Encrypting, saving, and enabling…",
         "profileReady": "Owner voice profile is saved; voice activation is on",

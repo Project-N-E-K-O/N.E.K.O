@@ -3447,6 +3447,14 @@ class IndependentAsrRuntime:
                     lifecycle.metrics.connect_latency_ms = int(
                         (time.monotonic() - connect_started_at) * 1_000
                     )
+                    await self._send_asr_status(
+                        "ASR_INDEPENDENT_READY",
+                        connected_identity.provider or "unknown",
+                        session_epoch=connected_identity.session_epoch,
+                        expected_identity=connected_identity,
+                    )
+                    if not self._runtime_identity_matches(connected_identity):
+                        return
                     if (
                         self._asr_pending_speech_confirmed
                         and lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
@@ -3516,6 +3524,12 @@ class IndependentAsrRuntime:
                             pass
                     raise
                 except Exception:
+                    logger.info(
+                        "[voice-recovery] transport_failed attempt=%s "
+                        "session_epoch=%s reason=ASR_INDEPENDENT_FAILED",
+                        attempt + 1,
+                        identity.session_epoch,
+                    )
                     if candidate is not None and self._asr_session is candidate:
                         adopted_identity = self._capture_runtime_identity()
                         await self._handle_independent_asr_error(

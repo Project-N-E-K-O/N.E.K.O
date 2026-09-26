@@ -2980,7 +2980,7 @@
         "delete": "Eliminar perfil de voz",
         "reenroll": "Volver a registrar",
         "filterLabel": "Activar conversaciones con tu voz",
-        "filterHelp": "El audio empieza a subirse cuando se confirma tu voz. Durante la activación puedes responder directamente y también se pueden recibir voces cercanas. Tras 30 segundos sin voz, vuelve a esperar tu activación.",
+        "filterHelp": "La verificación de voz activa la conversación. Si las palabras de activación locales están configuradas y el detector está listo, también la activan sin verificar quién habla. Durante la activación puedes responder directamente y también se pueden recibir voces cercanas. Tras 30 segundos sin voz, vuelve a esperar la activación.",
         "recordingSeconds": "{{seconds}} s",
         "saving": "Cifrando, guardando y activando…",
         "profileReady": "El perfil de voz del Owner está guardado; la activación por voz está encendida",

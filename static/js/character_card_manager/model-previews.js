@@ -549,6 +549,13 @@ async function destroyLive2DPreviewContext() {
     try {
         await clearLive2DPreview();
     } finally {
+        try {
+            if (typeof manager.cleanupEventListeners === 'function') {
+                manager.cleanupEventListeners();
+            }
+        } catch (cleanupError) {
+            console.warn('[CharacterCard] 清理 Live2D 预览事件监听器失败:', cleanupError);
+        }
         manager._isLoadingModel = false;
         manager._modelLoadState = 'idle';
         manager._isModelReadyForInteraction = false;
