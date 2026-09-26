@@ -1205,6 +1205,24 @@
     }
     mod.stopScreening = stopScreening;
 
+    function releaseCachedStreamForNewPicker() {
+        stopScreening();
+        if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
+            try {
+                S.screenCaptureStream.getTracks().forEach(function (track) {
+                    try { track.stop(); } catch (_) { }
+                });
+            } catch (_) { }
+        }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+    }
+    mod.releaseCachedStreamForNewPicker = releaseCachedStreamForNewPicker;
+
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
         // 更新所有存在的 manager 的按钮状态
@@ -2694,8 +2712,7 @@
                     browserPickerButton.disabled = true;
                     try {
                         var currentShareIsActive = !!(
-                            (screenButton() && screenButton().classList.contains('active'))
-                            || (S.screenCaptureStream && S.screenCaptureStream.active)
+                            screenButton() && screenButton().classList.contains('active')
                         );
                         if (currentShareIsActive) {
                             window.showStatusToast(
@@ -2706,6 +2723,9 @@
                                 3000
                             );
                             return;
+                        }
+                        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                            releaseCachedStreamForNewPicker();
                         }
                         if (typeof window.startScreenSharing === 'function') {
                             await window.startScreenSharing();
@@ -2786,8 +2806,7 @@
                 browserPickerButton.disabled = true;
                 try {
                     var currentShareIsActive = !!(
-                        (screenButton() && screenButton().classList.contains('active'))
-                        || (S.screenCaptureStream && S.screenCaptureStream.active)
+                        screenButton() && screenButton().classList.contains('active')
                     );
                     if (currentShareIsActive) {
                         window.showStatusToast(
@@ -2798,6 +2817,9 @@
                             3000
                         );
                         return;
+                    }
+                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                        releaseCachedStreamForNewPicker();
                     }
                     if (typeof window.startScreenSharing !== 'function') {
                         throw new Error('Screen sharing is unavailable');
