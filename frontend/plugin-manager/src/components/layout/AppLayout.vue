@@ -69,9 +69,7 @@
 
         <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
-            <Transition name="page">
-              <component :is="Component" :key="currentRoute.path" />
-            </Transition>
+            <component :is="Component" :key="currentRoute.path" />
           </router-view>
         </main>
       </div>
@@ -507,37 +505,6 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-/* 页面切换动画 */
-.page-enter-active {
-  transition:
-    opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    filter 0.3s ease;
-}
-
-.page-leave-active {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  pointer-events: none;
-  transition:
-    opacity 0.18s ease,
-    transform 0.18s ease,
-    filter 0.18s ease;
-}
-
-.page-enter-from {
-  opacity: 0;
-  transform: scale(0.98) translateY(8px);
-  filter: blur(2px);
-}
-
-.page-leave-to {
-  opacity: 0;
-  transform: scale(0.99) translateY(-4px);
-  filter: blur(1px);
-}
-
 /* 深色模式覆盖 */
 html.dark .window-titlebar {
   background:
@@ -566,20 +533,4 @@ html.dark .app-header {
     0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .page-enter-active,
-  .page-leave-active {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
-  }
-
-  .page-enter-from,
-  .page-leave-to {
-    transform: none;
-    filter: none;
-  }
-}
 </style>

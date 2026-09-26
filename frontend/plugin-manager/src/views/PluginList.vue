@@ -28,7 +28,6 @@
     <section
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
-      v-entrance="{ y: 16, stiffness: 240, damping: 24, duration: 360, blur: 4 }"
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
@@ -471,7 +470,6 @@
 </template>
 
 <script setup lang="ts">
-import { vEntrance } from '@/composables/entranceMotion'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'

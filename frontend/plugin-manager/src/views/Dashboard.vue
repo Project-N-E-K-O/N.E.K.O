@@ -19,7 +19,6 @@
     <div
       class="stats-row"
       data-yui-guide-id="plugin-dashboard-stats"
-      v-entrance="{ y: 18, stiffness: 260, damping: 24, duration: 420, scale: 0.98 }"
     >
       <div
         v-for="stat in statCards"
@@ -138,7 +137,6 @@
 </template>
 
 <script setup lang="ts">
-import { vEntrance } from '@/composables/entranceMotion'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
