@@ -427,6 +427,22 @@ describe('plugin update float window — drag', () => {
     expect(el.style.top).toBe('')
   })
 
+  it('ends a drag in progress when the viewport is resized', async () => {
+    const { el, header } = mountedWithGeometry()
+
+    drag(header, [520, 120], [440, 220])
+    await nextTick()
+    expect(el.style.left).toBe('200px')
+
+    // Bounds were measured against the old viewport: the drag must stop and
+    // the window return to its anchor, not keep following stale limits.
+    window.dispatchEvent(new Event('resize'))
+    window.dispatchEvent(pointer('pointermove', { pointerId: 7, clientX: 300, clientY: 220 }))
+    await nextTick()
+    expect(el.style.left).toBe('')
+    expect(el.style.top).toBe('')
+  })
+
   it('never lets the window be dragged over the app header', async () => {
     const { el, header } = mountedWithGeometry()
 

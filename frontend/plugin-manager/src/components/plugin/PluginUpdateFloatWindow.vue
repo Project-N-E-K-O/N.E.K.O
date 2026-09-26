@@ -273,9 +273,11 @@ function onDragEnd(event: PointerEvent): void {
 
 /** Dragged offsets are only clamped while dragging; after the app window
  *  shrinks they can sit entirely off-screen, with the close control out of
- *  reach. Fall back to the anchored corner, like reopening does. */
+ *  reach. Fall back to the anchored corner, like reopening does — and end a
+ *  drag in progress, whose bounds were measured against the old viewport. */
 function onViewportResize(): void {
-  if (dragOffset.value && !dragging.value) dragOffset.value = null
+  if (dragging.value) stopDragTracking()
+  dragOffset.value = null
 }
 
 window.addEventListener('resize', onViewportResize)

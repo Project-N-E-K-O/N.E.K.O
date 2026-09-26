@@ -691,10 +691,16 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
  *   - Market 不可达 / 拉版本失败时静默不更新（不闪红，不抛错）；
  *   - 仅对"已装且 latest_install_source 非空"的条目执行版本表查询。
  */
+// Sweeps can overlap (a batch upgrade from the update popup starts one per
+// plugin), and an older `/market/installed` response landing late would
+// overwrite a newer installed-version snapshot. Only the latest sweep writes.
+let yankSweepSeq = 0
+
 async function yankSweep() {
   if (!marketAvailable.value) return
+  const mySeq = ++yankSweepSeq
   const installed = await fetchInstalledFromBridge()
-  if (installed === null) return
+  if (installed === null || mySeq !== yankSweepSeq) return
   const entries: InstalledMarketEntry[] = []
   const uniqueEntries = new Map<string, InstalledMarketEntry>()
   for (const item of installed) {
@@ -769,6 +775,7 @@ async function yankSweep() {
     if (marketKey) nextYanked[marketKey] = yanked
   }
 
+  if (mySeq !== yankSweepSeq) return
   yankedMap.value = nextYanked
 }
 
