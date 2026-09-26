@@ -2,6 +2,7 @@
     'use strict';
 
     const TARGET_SAMPLE_RATE = 48000;
+    const RUNTIME_CHUNK_SAMPLES = 480;
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
     const MAX_RECORDING_MS = VERIFICATION_RECORDING_MS;
@@ -49,6 +50,7 @@
         csrfToken: '',
         enrollmentId: null,
         enrollmentRemainingSeconds: null,
+        nextSegmentIndex: 1,
         profileId: null,
         profileAvailable: false,
         profileRevision: null,
@@ -62,6 +64,8 @@
         recording: false,
         saving: false,
         cancelPending: false,
+        cancelReleaseWhenIdle: false,
+        statusEpoch: 0,
         filterPending: false,
         busy: false,
         initialized: false,
@@ -164,6 +168,7 @@
         if (!result.response.ok) {
             const error = new Error(result.payload.error_code || 'request_failed');
             error.status = result.response.status;
+            error.payload = result.payload;
             throw error;
         }
         return result.payload;
@@ -235,12 +240,20 @@
                 ['profile_id'],
                 state.profileId
             );
+            const rawNextSegment = firstScalar(
+                [enrollment, status], ['next_segment_index'], 1
+            );
+            const nextSegment = Number(rawNextSegment);
+            state.nextSegmentIndex = Number.isInteger(nextSegment)
+                && nextSegment >= 1 && nextSegment <= ENROLLMENT_SEGMENT_COUNT
+                ? nextSegment : 1;
         } else if (
             Object.prototype.hasOwnProperty.call(status, 'enrollment_active')
             || Object.prototype.hasOwnProperty.call(status, 'enrollment')
         ) {
             state.enrollmentId = null;
             state.enrollmentRemainingSeconds = null;
+            state.nextSegmentIndex = 1;
             state.profileId = null;
         }
 
@@ -276,12 +289,13 @@
     }
 
     async function reconcileStatus() {
+        const requestEpoch = state.statusEpoch;
         try {
             const status = await apiRequest('/status', { method: 'GET' });
-            applyStatus(status);
-            return true;
+            if (requestEpoch === state.statusEpoch) applyStatus(status);
+            return requestEpoch === state.statusEpoch ? status : null;
         } catch (_) {
-            return false;
+            return null;
         }
     }
 
@@ -389,8 +403,8 @@
 
         const pending = !state.initialized || state.busy
             || state.cancelPending || state.filterPending;
-        const enrollmentUnavailable = !state.profileAvailable
-            && ['secure_storage_unavailable', 'model_unavailable'].includes(state.effectiveReason);
+        const enrollmentUnavailable = ['secure_storage_unavailable', 'model_unavailable']
+            .includes(state.effectiveReason);
         elements.start.hidden = state.busy || state.cancelPending
             || (state.profileAvailable && !state.enrollmentId);
         elements.start.disabled = pending || enrollmentUnavailable;
@@ -399,7 +413,7 @@
             : translate('voiceIdentity.startEnrollment', '开始录入');
         elements.cancel.hidden = !state.busy && !state.cancelPending && !state.enrollmentId;
         elements.cancel.disabled = state.cancelPending;
-        elements.reenroll.disabled = pending;
+        elements.reenroll.disabled = pending || enrollmentUnavailable;
         elements.delete.disabled = pending;
         if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
         elements.filter.disabled = pending;
@@ -489,13 +503,18 @@
         if (!state.mediaStream) {
             let selectedMicrophoneId = null;
             try { selectedMicrophoneId = localStorage.getItem('neko_selected_microphone'); } catch (_) {}
-            const constraints = { channelCount: 1 };
+            const constraints = {
+                noiseSuppression: false,
+                echoCancellation: true,
+                autoGainControl: true,
+                channelCount: 1
+            };
             if (selectedMicrophoneId) constraints.deviceId = { exact: selectedMicrophoneId };
             try {
                 state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
             } catch (error) {
                 if (!selectedMicrophoneId || !['NotFoundError', 'OverconstrainedError'].includes(error && error.name)) throw error;
-                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 }, video: false });
+                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
             }
         }
         if (!state.audioContext) {
@@ -568,7 +587,7 @@
         let gainDb = 0;
         try {
             const savedGainDb = Number(localStorage.getItem('neko_mic_gain_db'));
-            if (Number.isFinite(savedGainDb)) gainDb = savedGainDb;
+            if (Number.isFinite(savedGainDb) && savedGainDb >= -5 && savedGainDb <= 25) gainDb = savedGainDb;
         } catch (_) {}
         const dbToLinear = window.appUtils && typeof window.appUtils.dbToLinear === 'function'
             ? window.appUtils.dbToLinear
@@ -668,7 +687,12 @@
 
         if (capturedSamples <= 0) throw new Error('incomplete_capture');
         const maximumSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
-        const pcm = new Int16Array(Math.min(capturedSamples, maximumSamples));
+        const minimumSamples = maximumSamples;
+        const alignedSamples = Math.floor(
+            Math.min(capturedSamples, maximumSamples) / RUNTIME_CHUNK_SAMPLES
+        ) * RUNTIME_CHUNK_SAMPLES;
+        if (alignedSamples < minimumSamples) throw new Error('speech_too_short');
+        const pcm = new Int16Array(alignedSamples);
         let offset = 0;
         for (const chunk of chunks) {
             const remaining = pcm.length - offset;
@@ -738,14 +762,17 @@
         });
         state.enrollmentId = null;
         state.profileId = null;
+        state.nextSegmentIndex = 1;
         applyStatus(payload);
     }
 
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
+        state.statusEpoch += 1;
         let startSettled = null;
         let settleStart = null;
         let segmentRequestPending = false;
+        let preserveActiveSession = false;
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
         state.busy = true;
@@ -783,11 +810,12 @@
                     const recordingDurationMs = segment === ENROLLMENT_SEGMENT_COUNT
                         ? VERIFICATION_RECORDING_MS : REFERENCE_RECORDING_MS;
                     if (segment > 1) {
-                        if (!await reconcileStatus()) throw new Error('status_unavailable');
+                        const refreshed = await reconcileStatus();
+                        if (!refreshed && !state.enrollmentId) throw new Error('status_unavailable');
                     }
                     if (!state.enrollmentId || (
                         Number.isFinite(state.enrollmentRemainingSeconds)
-                        && state.enrollmentRemainingSeconds < recordingDurationMs / 1000 + 1
+                        && state.enrollmentRemainingSeconds <= 0
                     )) {
                         throw new Error('stale_enrollment');
                     }
@@ -852,10 +880,42 @@
                             }
                             continue;
                         }
+                        setMessage('');
                         segmentAccepted = true;
                     } catch (error) {
                         if (state.cancelPending || state.closeStarted) return;
                         const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
+                        if (!retryable && state.enrollmentId) preserveActiveSession = true;
+                        let canonical = error && error.payload && typeof error.payload === 'object'
+                            ? error.payload : null;
+                        if (canonical && canonical.enrollment) applyStatus(canonical);
+                        if (!retryable && (!canonical || !canonical.enrollment)) canonical = await reconcileStatus();
+                        if (canonical && state.enrollmentId) {
+                            if (!retryable) preserveActiveSession = true;
+                            const canonicalNext = Number(firstScalar(
+                                [canonical.enrollment, canonical], ['next_segment_index'], null
+                            ));
+                            if (Number.isInteger(canonicalNext)
+                                && canonicalNext >= 1 && canonicalNext <= ENROLLMENT_SEGMENT_COUNT
+                                && canonicalNext !== segment) {
+                                if (canonicalNext === 1 && segment === 3) {
+                                    state.saving = false;
+                                    state.segmentPhase = 'retry'; state.uiPhase = 'retry';
+                                    setMessage(enrollmentErrorMessage(error), true);
+                                    render();
+                                    const proceed = await new Promise(function (resolve) {
+                                        state.segmentAdvance = resolve;
+                                    });
+                                    state.segmentAdvance = null;
+                                    if (!proceed || state.cancelPending || state.closeStarted) return;
+                                    segment = 1;
+                                    continue segmentLoop;
+                                }
+                                segment = canonicalNext - 1;
+                                segmentAccepted = true;
+                                continue;
+                            }
+                        }
                         if (!retryable || !state.enrollmentId) throw error;
                         segmentRequestPending = false;
                         if (window.__voiceIdentityTestAutoAdvance) throw error;
@@ -894,10 +954,13 @@
             setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
             stopMicrophone();
+            if (state.cancelPending || state.closeStarted) return;
             const reconciled = await reconcileStatus();
             const replacementConfirmed = segmentRequestPending && reconciled && state.profileAvailable && (!profileWasAvailable || (profileRevisionBefore !== null && state.profileRevision !== null && state.profileRevision !== profileRevisionBefore));
             if (replacementConfirmed) {
                 state.enrollmentId = null; state.profileId = null; setMessage(enrollmentCompleteMessage(), false);
+            } else if (preserveActiveSession && state.enrollmentId) {
+                setMessage(enrollmentErrorMessage(error), true);
             } else {
                 try { await cancelSession(); } catch (_) {}
                 const microphoneError = error && (error.name === 'NotAllowedError' || error.name === 'NotFoundError' || error.name === 'NotReadableError' || error.message === 'audio_worklet_unavailable' || error.message === 'media_devices_unavailable');
@@ -907,12 +970,18 @@
             stopMicrophone();
             if (settleStart && state.startSettled === startSettled) { state.startSettled = null; settleStart(); }
             if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
-            state.recording = false; state.saving = false; state.segmentPhase = 'idle'; state.uiPhase = 'idle'; state.segmentIndex = 0; state.voiceStatus = 'waiting'; state.busy = false; state.cancelPending = false; render();
+            state.recording = false; state.saving = false; state.segmentPhase = 'idle'; state.uiPhase = 'idle'; state.segmentIndex = 0; state.voiceStatus = 'waiting'; state.busy = false;
+            if (state.cancelReleaseWhenIdle) {
+                state.cancelReleaseWhenIdle = false;
+                state.cancelPending = false;
+            }
+            render();
         }
     }
 
     async function cancelEnrollment(options) {
         const config = options || {};
+        state.statusEpoch += 1;
         state.cancelPending = true;
         if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
         stopMicrophone('capture_cancelled');
@@ -932,6 +1001,7 @@
             }
         } finally {
             if (!state.busy) state.cancelPending = false;
+            else state.cancelReleaseWhenIdle = true;
             render();
         }
     }
