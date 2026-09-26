@@ -88,27 +88,20 @@ async function factories() {
   assert.equal(released, 3);
   const absent = await environment(null);
   let legacyDisposed = 0; let mounted = 0;
-  let controllerDisposed = 0;
-  // Same lazy proxy shape used by the existing soccer page; no new query hooks.
-  const backing = { mount() { mounted++; return { dispose() { controllerDisposed++; } }; }, dispose() { legacyDisposed++; } };
-  const legacy = { mount(config) { return backing.mount(config); }, dispose() { backing.dispose(); } };
+  const legacy = { mount() { mounted++; }, dispose() { legacyDisposed++; } };
   const legacyHost = absent.host({ avatarHost: legacy });
-  const legacyGame = await absent.game(legacyHost);
-  assert.equal(legacyGame.capabilities.has('avatar-renderer'), true);
-  const oldResponse = await legacyHost.getCharacter();
-  const oldData = await oldResponse.json();
-  assert.equal(oldData.vrm_path, '/models/neko.vrm');
-  assert.equal(oldData.language, 'ja');
-  assert.equal(oldData.language_preference_resolved, true);
-  assert.equal(legacyHost.routeLanlanName, 'Neko');
-  await legacyGame.avatar.mount({ slot: 'opponent', model: descriptor.model,
-    viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
-  assert.equal(mounted, 1);
+  const legacyGame = await absent.game(legacyHost, false);
+  assert.equal(legacyGame.capabilities.has('avatar-renderer'), false,
+    'removed soccer injection still granted an Avatar capability');
+  assert.equal(typeof legacyHost.getCharacter, 'undefined', 'raw character compatibility entry remains');
+  await assert.rejects(legacyGame.avatar.mount({ slot: 'opponent', model: descriptor.model,
+    viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } }),
+  { code: 'capability_unavailable' });
+  assert.equal(mounted, 0);
   legacyGame.dispose(); legacyHost.dispose();
-  assert.equal(legacyDisposed, 1);
-  assert.equal(controllerDisposed, 1);
+  assert.equal(legacyDisposed, 0, 'ignored caller provider ownership was transferred');
   const preferred = env.host({ avatarHost: legacy });
-  assert.equal(created, 1, 'legacy injection unnecessarily created a registered provider');
+  assert.equal(created, 2, 'removed injection overrode the registered factory');
   preferred._initializeAvatar(() => { throw new Error('must only initialize once'); });
   preferred.dispose();
   const noAvatar = await absent.game(absent.host({ trustedAvatarHost: legacy }), false);

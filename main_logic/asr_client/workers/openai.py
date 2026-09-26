@@ -27,6 +27,7 @@ import numpy as np
 import soxr
 import websockets
 
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection, normalize_zh_en_language
 
@@ -443,6 +444,7 @@ async def openai_asr_worker(
 
     async def _send_requests() -> None:
         nonlocal current_buffer_epoch, last_generation, next_utterance_id, resampler
+        delivery_evidence(request_queue)
         while True:
             request = await request_queue.get()
             try:
@@ -453,6 +455,7 @@ async def openai_asr_worker(
                 if request.kind == "audio":
                     wire_audio = _resample_pcm_16k_to_24k(resampler, request.audio)
                     if wire_audio:
+                        delivery = begin_transport_write(request_queue)
                         await websocket.send(
                             json.dumps(
                                 {
@@ -462,6 +465,10 @@ async def openai_asr_worker(
                                     ),
                                 }
                             )
+                        )
+                        complete_transport_write(
+                            delivery, len(wire_audio), generation=request.generation,
+                            buffer_epoch=request.buffer_epoch, provider="openai",
                         )
                     continue
 

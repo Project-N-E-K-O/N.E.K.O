@@ -9,8 +9,6 @@ This router owns the game-specific round state for the standalone
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import math
 import random
@@ -26,6 +24,8 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Request
+
+from main_logic.mini_game_sdk import run_isolated_structured_output
 
 from config.prompts.prompts_drawing_guess import (
     DRAWING_GUESS_CHAT_EXTRA_RULES,
@@ -68,7 +68,6 @@ WORD_DEDUP_ROLLOVER_REMAINING = 6
 SESSION_TTL_SECONDS = 60 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 5 * 60
 DRAWING_PLAN_MODEL_TIMEOUT_SECONDS = 30.0
-DRAWING_PLAN_MODEL_MAX_ATTEMPTS = 2
 MODEL_SVG_MAX_BYTES = 96_000
 MODEL_SVG_MAX_ELEMENTS = 320
 MODEL_SVG_MAX_DEPTH = 8
@@ -76,7 +75,9 @@ MODEL_SVG_MAX_PATHS = 160
 MODEL_SVG_MAX_ATTR_LENGTH = 6_000
 MODEL_SVG_MAX_CAPTION_CHARS = 300
 GAME_CHAT_TIMEOUT_SECONDS = 16.0
-GAME_EVENT_LINE_TIMEOUT_SECONDS = 6.0
+# Allow slower compatible endpoints to finish a short character reply. The
+# browser's input/timeout requests allow 30s, including intent classification.
+GAME_EVENT_LINE_TIMEOUT_SECONDS = 16.0
 INPUT_INTENT_TIMEOUT_SECONDS = 8.0
 AI_GUESS_FEEDBACK_HINT_CONFIDENCE = 0.6
 AI_GUESS_MODEL_BUDGET_SECONDS = float(ROUND_AI_GUESS_SECONDS)
@@ -87,12 +88,10 @@ GAME_CHAT_MAX_TEXT_CHARS = 260
 MEMORY_SUMMARY_MAX_CHARS = 260
 MEMORY_SUMMARY_TIMEOUT_SECONDS = 8.0
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
-VISION_GUESS_MAX_INPUT_PIXELS = 16_000_000
 VISION_GUESS_MAX_CANDIDATES = 60
 DRAWING_PLAN_VERSION = 1
 DRAWING_PLAN_WIDTH = 800
 DRAWING_PLAN_HEIGHT = 600
-DRAWING_PLAN_BACKGROUND = "#fffdfa"
 DRAWING_PLAN_MAX_BYTES = 64_000
 DRAWING_PLAN_MAX_ELEMENTS = 240
 DRAWING_PLAN_MAX_POINTS_PER_ELEMENT = 256
@@ -113,7 +112,12 @@ _AI_GUESS_TRANSITION_ROUND_KEY = "_ai_guess_transition_round_id"
 
 _DRAWING_PLAN_ELEMENT_TYPES = {"line", "polyline", "polygon", "rect", "circle", "ellipse", "path"}
 _DRAWING_PLAN_TOP_LEVEL_KEYS = frozenset({"version", "width", "height", "background", "elements"})
-_DRAWING_PLAN_COMMON_KEYS = {"type", "stroke", "fill", "stroke_width", "line_cap", "line_join"}
+_DRAWING_PLAN_COMMON_KEYS = {"type", "stroke", "fill", "stroke_width", "line_cap", "line_join", "opacity"}
+_DRAWING_PLAN_STYLE_ALIASES = {
+    "stroke-width": "stroke_width", "strokeWidth": "stroke_width",
+    "stroke-linecap": "line_cap", "strokeLinecap": "line_cap", "lineCap": "line_cap",
+    "stroke-linejoin": "line_join", "strokeLinejoin": "line_join", "lineJoin": "line_join",
+}
 _DRAWING_PLAN_GEOMETRY_KEYS = {
     "line": {"x1", "y1", "x2", "y2"},
     "polyline": {"points"},
@@ -482,6 +486,27 @@ def _session_key(lanlan_name: str, session_id: str) -> str:
     return f"{lanlan_name}:{session_id}"
 
 
+def _resolve_round_locale(data: dict[str, Any], session: dict[str, Any] | None = None) -> str:
+    from .char_info import (
+        _extract_request_language_full,
+        _extract_request_render_language_full,
+        _resolve_game_prompt_locale,
+    )
+
+    session = session or {}
+    request_locale = _extract_request_language_full(data)
+    render_locale = _extract_request_render_language_full(data)
+    # Legacy follow-up requests may omit both fields. Preserve their round's
+    # language; new SDK requests use the shared explicit-preference/UI policy.
+    if not request_locale and not render_locale and session.get("locale") in SUPPORTED_LOCALES:
+        return session["locale"]
+    return _normalize_locale(_resolve_game_prompt_locale(
+        str(data.get("lanlan_name") or session.get("lanlan_name") or ""),
+        data,
+        absorb_request_language=False,
+    ))
+
+
 async def _session_cleanup_loop() -> None:
     while True:
         await asyncio.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
@@ -622,6 +647,9 @@ def _word_aliases(word: DrawingGuessWord) -> set[str]:
 
 _TEXT_NORMALIZER_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_HAN_INNER_SPACE_RE = re.compile(
+    r"(?<=[\u3400-\u9fff\uf900-\ufaff])\s+(?=[\u3400-\u9fff\uf900-\ufaff])"
+)
 # 修饰前缀（小大白老）加入白名单：是小猫咪吗/小白兔/大乌龟属正确猜词。
 # 词表内真正危险的单字复合前缀是 火/列/动/单/電/公/月（火车≠车、月球≠球），
 # 与修饰词集合不相交；热狗（热）继续被拦。改词表时需复查这一不相交性。
@@ -687,6 +715,25 @@ _AI_RETRY_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Common score announcements in all supported locales. This is a conservative
+# backstop, not a semantic judge: reserve these phrases for scored events,
+# including when a chat reply quotes or negates them. Prompts handle paraphrases.
+_USER_GUESS_SUCCESS_LINE_RE = re.compile(
+    r"猜[对對中]|答[对對]|正解|当た(?:り|った)|當た(?:り|った)"
+    r"|정답|맞혔|맞췄"
+    r"|\byou\s+(?:guessed\s+(?:it\s+)?(?:right|correctly)|got\s+it|nailed\s+it)\b"
+    r"|\byour\s+(?:guess|answer)\s+is\s+(?:right|correct)\b"
+    r"|\b(?:ты|вы)\s+(?:угадал[аи]?|прав[аы]?)\b"
+    r"|\b(?:acertaste|adivinaste|acertou|adivinhou)\b",
+    re.IGNORECASE,
+)
+
+
+def _collapse_han_spaces(text: str) -> str:
+    # ASR may insert whitespace between every Han character. Join only those
+    # gaps, keeping punctuation and Latin/Cyrillic/Korean word separators intact.
+    # Negation and compound-word boundaries must see the same joined text.
+    return _HAN_INNER_SPACE_RE.sub("", text)
 
 
 def _fold_guess_text(value: Any) -> str:
@@ -742,9 +789,9 @@ def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
     if normalized_text == normalized_alias:
         return True
 
-    folded_alias = _fold_guess_text(alias)
+    folded_alias = _collapse_han_spaces(_fold_guess_text(alias))
     if _CJK_CHAR_RE.search(folded_alias):
-        folded_text = _fold_guess_text(text)
+        folded_text = _collapse_han_spaces(_fold_guess_text(text))
         start = folded_text.find(folded_alias)
         while start >= 0:
             end = start + len(folded_alias)
@@ -803,8 +850,8 @@ def _contains_alias_with_output_boundary(text: Any, alias: Any) -> bool:
     Hangul names are matched conservatively because those scripts commonly
     attach particles without whitespace.
     """
-    folded_text = _fold_guess_text(text)
-    folded_alias = _fold_guess_text(alias)
+    folded_text = _collapse_han_spaces(_fold_guess_text(text))
+    folded_alias = _collapse_han_spaces(_fold_guess_text(alias))
     if not folded_text or not folded_alias:
         return False
     if folded_text == folded_alias:
@@ -867,7 +914,18 @@ def _guard_hidden_answer_model_line(
 
 
 def _has_user_guess_intent(text: str) -> bool:
-    return bool(_USER_GUESS_INTENT_RE.search(str(text or "")))
+    return bool(_USER_GUESS_INTENT_RE.search(_collapse_han_spaces(str(text or ""))))
+
+
+def _has_unscored_user_guess_success(line: str, session: dict[str, Any]) -> bool:
+    # The authoritative correct-guess path changes phase before generating its
+    # reply. While user_guessing remains active, neither chat nor hints may
+    # announce success; rejecting a line never changes score or game phase.
+    return session.get("phase") == "user_guessing" and bool(
+        _USER_GUESS_SUCCESS_LINE_RE.search(
+            _collapse_han_spaces(unicodedata.normalize("NFKC", line))
+        )
+    )
 
 
 def _looks_like_compact_word_guess(text: str) -> bool:
@@ -1801,6 +1859,10 @@ def _drawing_guess_event_roles(event: str) -> dict[str, Any]:
 def _drawing_guess_chat_public_details(session: dict[str, Any], locale: str, event: str) -> dict[str, Any]:
     details: dict[str, Any] = {}
     phase = str(session.get("phase") or "")
+    if phase == "user_guessing":
+        details["backend_judgement_is_authoritative"] = True
+        details["user_guess_confirmed_correct"] = False
+        details["may_announce_user_guess_success"] = False
     ai_word_id = str(session.get("ai_word_id") or "")
     if ai_word_id in _WORD_BY_ID:
         answer = _word_public(_WORD_BY_ID[ai_word_id], locale)
@@ -1912,61 +1974,12 @@ def _parse_model_svg_payload(raw: str) -> dict[str, Any] | None:
     return None
 
 
-def _extract_image_data_url(value: Any) -> str | None:
-    data_url = str(value or "").strip()
-    if not data_url.startswith("data:image/") or "," not in data_url:
+def _bounded_vision_image_data_url(value: Any) -> str | None:
+    # Retain the game's command-size contract. The shared vision service owns
+    # MIME/byte/pixel validation, transparency and the only image re-encoding.
+    if not isinstance(value, str) or len(value) > VISION_GUESS_MAX_DATA_URL_CHARS:
         return None
-    if len(data_url) > VISION_GUESS_MAX_DATA_URL_CHARS:
-        return None
-    header, encoded = data_url.split(",", 1)
-    if ";base64" not in header.lower():
-        return None
-    try:
-        base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
-        return None
-    return data_url
-
-
-async def _prepare_vision_image_data_url(value: Any) -> str | None:
-    data_url = _extract_image_data_url(value)
-    if not data_url:
-        return None
-    try:
-        _, encoded = data_url.split(",", 1)
-        image_bytes = base64.b64decode(encoded, validate=True)
-        from utils.screenshot_utils import (
-            COMPRESS_JPEG_QUALITY,
-            COMPRESS_TARGET_HEIGHT,
-            MODEL_IMAGE_MAX_WIDTH,
-            _probe_image_profile,
-            _validate_image_data,
-            compress_screenshot,
-        )
-
-        profile = await asyncio.to_thread(_probe_image_profile, encoded)
-        if not profile:
-            return None
-        _, (width, height) = profile
-        if width <= 0 or height <= 0 or width * height > VISION_GUESS_MAX_INPUT_PIXELS:
-            return None
-        image = await asyncio.to_thread(_validate_image_data, image_bytes)
-        if image is None:
-            return None
-        if image.mode in ("RGBA", "LA", "P"):
-            image = image.convert("RGB")
-        jpg_bytes = await asyncio.to_thread(
-            compress_screenshot,
-            image,
-            target_h=COMPRESS_TARGET_HEIGHT,
-            quality=COMPRESS_JPEG_QUALITY,
-            max_w=MODEL_IMAGE_MAX_WIDTH,
-        )
-        jpg_b64 = base64.b64encode(jpg_bytes).decode("ascii")
-        normalized = f"data:image/jpeg;base64,{jpg_b64}"
-        return normalized if len(normalized) <= VISION_GUESS_MAX_DATA_URL_CHARS else None
-    except Exception:
-        return None
+    return value.strip() or None
 
 
 def _normalize_repaired_svg_attr(name: Any) -> str:
@@ -2457,7 +2470,12 @@ def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
         return None, "drawing_plan_invalid_width"
     if isinstance(raw_plan.get("height"), bool) or raw_plan.get("height") != DRAWING_PLAN_HEIGHT:
         return None, "drawing_plan_invalid_height"
-    if str(raw_plan.get("background") or "").strip().lower() != DRAWING_PLAN_BACKGROUND:
+    try:
+        background = _normalize_drawing_plan_color(raw_plan.get("background"), field="background")
+    except ValueError:
+        return None, "drawing_plan_invalid_background"
+    # Keep the canvas and JPEG review opaque, but let the model choose its color.
+    if not _drawing_plan_visible_color(background):
         return None, "drawing_plan_invalid_background"
 
     elements = raw_plan.get("elements")
@@ -2472,6 +2490,19 @@ def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
         for index, raw_element in enumerate(elements):
             if not isinstance(raw_element, dict):
                 raise ValueError(f"drawing_plan_element_not_object:{index}")
+            # Normalize only equivalent, explicitly supported style spellings.
+            # Never discard unknown fields: they may contain answer text or code.
+            raw_element = dict(raw_element)
+            for alias, canonical in _DRAWING_PLAN_STYLE_ALIASES.items():
+                if alias not in raw_element:
+                    continue
+                alias_value = raw_element.pop(alias)
+                if canonical in raw_element and (
+                    type(raw_element[canonical]) is not type(alias_value)
+                    or raw_element[canonical] != alias_value
+                ):
+                    raise ValueError(f"drawing_plan_conflicting_style_fields:{index}")
+                raw_element[canonical] = alias_value
             element_type = str(raw_element.get("type") or "").strip().lower()
             if element_type not in _DRAWING_PLAN_ELEMENT_TYPES:
                 raise ValueError(f"drawing_plan_invalid_element_type:{index}")
@@ -2494,6 +2525,10 @@ def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
                 raise ValueError(f"drawing_plan_open_shape_without_stroke:{index}")
             if not _drawing_plan_visible_color(stroke) and not _drawing_plan_visible_color(fill):
                 raise ValueError(f"drawing_plan_invisible_element:{index}")
+            opacity = _normalize_drawing_plan_number(
+                raw_element.get("opacity", 1), field=f"elements[{index}].opacity",
+                minimum=0.001, maximum=1.0,
+            )
 
             stroke_width = _normalize_drawing_plan_number(
                 raw_element.get("stroke_width", 4),
@@ -2632,6 +2667,7 @@ def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
                 "stroke_width": stroke_width,
                 "line_cap": line_cap,
                 "line_join": line_join,
+                "opacity": opacity,
             })
             sanitized_elements.append(element)
     except ValueError as exc:
@@ -2641,7 +2677,7 @@ def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
         "version": DRAWING_PLAN_VERSION,
         "width": DRAWING_PLAN_WIDTH,
         "height": DRAWING_PLAN_HEIGHT,
-        "background": DRAWING_PLAN_BACKGROUND,
+        "background": background,
         "elements": sanitized_elements,
     }, "ok"
 
@@ -2687,6 +2723,7 @@ def _drawing_plan_to_svg(plan: dict[str, Any]) -> str:
             ("stroke-width", _drawing_plan_svg_number(element["stroke_width"])),
             ("stroke-linecap", str(element["line_cap"])),
             ("stroke-linejoin", str(element["line_join"])),
+            ("opacity", _drawing_plan_svg_number(element.get("opacity", 1))),
         ))
         serialized_attrs = "".join(f" {name}={quoteattr(value)}" for name, value in attrs)
         parts.append(f"<{element_type}{serialized_attrs}/>")
@@ -2744,7 +2781,6 @@ def _build_drawing_guess_plan_prompts(
                 "version": DRAWING_PLAN_VERSION,
                 "width": DRAWING_PLAN_WIDTH,
                 "height": DRAWING_PLAN_HEIGHT,
-                "background": DRAWING_PLAN_BACKGROUND,
             },
         },
         ensure_ascii=False,
@@ -2917,6 +2953,7 @@ async def _call_drawing_guess_plan_model(
         model,
         base_url or None,
         api_key or None,
+        max_retries=0,
         max_completion_tokens=4000,
         timeout=DRAWING_PLAN_MODEL_TIMEOUT_SECONDS,
         provider_type=provider_type,
@@ -2930,6 +2967,94 @@ async def _call_drawing_guess_plan_model(
             timeout=DRAWING_PLAN_MODEL_TIMEOUT_SECONDS + 2.0,
         )
     return str(getattr(result, "content", "") or "").strip()
+
+
+def _validate_model_drawing_output(
+    raw: str | None, *, word: DrawingGuessWord, attempt: int, revision: bool,
+) -> tuple[dict[str, Any] | None, str]:
+    if not raw:
+        return None, "model_payload_unparseable" if revision else "empty_model_response"
+    raw_plan = _parse_model_drawing_plan_payload(raw)
+    if raw_plan is not None:
+        return _validated_drawing_from_plan(
+            raw_plan,
+            word=word,
+            source="model_plan_revision" if revision else "model_plan",
+            sanitizer={"attempt": attempt, **({"revision": 1} if revision else {})},
+        )
+    # Revisions only replace validated plans. Initial drawings retain the
+    # existing safe SVG fallback for models that answer in SVG instead of JSON.
+    parsed = None if revision else _parse_model_svg_payload(raw)
+    if not parsed:
+        return None, "model_payload_unparseable"
+    sanitized_svg, reason = _sanitize_model_svg(parsed.get("svg"), word)
+    if not sanitized_svg:
+        return None, reason
+    caption = str(parsed.get("caption") or "")[:MODEL_SVG_MAX_CAPTION_CHARS]
+    if _is_svg_text_leak(caption, word):
+        caption = ""
+    sanitizer: dict[str, Any] = {"ok": True, "attempt": attempt}
+    if reason != "ok":
+        sanitizer["repair"] = reason
+    return {
+        "svg": sanitized_svg,
+        "caption": caption,
+        "source": "model_svg",
+        "sanitizer": sanitizer,
+    }, "ok"
+
+
+async def _run_drawing_plan_attempts(
+    *, word: DrawingGuessWord, char_info: dict[str, Any], lanlan_name: str,
+    system_prompt: str, user_prompt: str, revision: bool = False,
+) -> dict[str, Any] | None:
+    current_attempt = 0
+    rejection_reason = "not_attempted"
+
+    async def attempt_factory(attempt: int, isolation_id: str) -> str | None:
+        nonlocal current_attempt
+        current_attempt = attempt
+        prompt = user_prompt
+        if attempt > 1:
+            retry_prompt = (_build_drawing_guess_plan_revision_retry_prompt if revision
+                            else _build_drawing_guess_plan_retry_prompt)
+            prompt = retry_prompt(
+                original_user_prompt=user_prompt,
+                rejection_reason=rejection_reason,
+                attempt=attempt,
+            )
+        # Preserve the stable system prefix. Only the original task and a
+        # validation reason enter a retry, never the rejected model response.
+        payload = json.loads(prompt)
+        payload.update(structuredOutputAttempt=attempt, structuredOutputIsolationId=isolation_id)
+        return await _call_drawing_guess_plan_model(
+            model=str(char_info.get("model") or ""),
+            base_url=str(char_info.get("base_url") or ""),
+            api_key=str(char_info.get("api_key") or ""),
+            system_prompt=system_prompt,
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+            provider_type=str(char_info.get("provider_type") or "") or None,
+            call_type="drawing_guess_drawing_revision" if revision else "drawing_guess_drawing_plan",
+        )
+
+    def validator(raw: str | None) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+        nonlocal rejection_reason
+        drawing, rejection_reason = _validate_model_drawing_output(
+            raw, word=word, attempt=current_attempt, revision=revision,
+        )
+        if drawing is not None:
+            return drawing, []
+        logger.info(
+            "drawing_guess %s rejected: lanlan=%s attempt=%s reason=%s",
+            "drawing revision" if revision else "model drawing plan",
+            lanlan_name, current_attempt, rejection_reason,
+        )
+        return None, [{"field": "drawing", "reason": rejection_reason}]
+
+    # The SDK owns the hard retry bound. The factory creates/closes a fresh
+    # provider client and message list each time, with no hidden network retry.
+    result = await run_isolated_structured_output(attempt_factory, validator, content_retries=1)
+    return result.value if result.valid else None
 
 
 async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_name: str) -> dict[str, Any] | None:
@@ -2947,64 +3072,10 @@ async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_na
             master_name=str(char_info.get("master_name") or "player"),
             lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
         )
-        prompt_for_attempt = user_prompt
-        last_reason = "not_attempted"
-        for attempt in range(1, DRAWING_PLAN_MODEL_MAX_ATTEMPTS + 1):
-            raw = await _call_drawing_guess_plan_model(
-                model=model,
-                base_url=str(char_info.get("base_url") or ""),
-                api_key=str(char_info.get("api_key") or ""),
-                system_prompt=system_prompt,
-                user_prompt=prompt_for_attempt,
-                provider_type=str(char_info.get("provider_type") or "") or None,
-            )
-            if not raw:
-                last_reason = "empty_model_response"
-            else:
-                raw_plan = _parse_model_drawing_plan_payload(raw)
-                if raw_plan is not None:
-                    drawing, last_reason = _validated_drawing_from_plan(
-                        raw_plan,
-                        word=word,
-                        source="model_plan",
-                        sanitizer={"attempt": attempt},
-                    )
-                    if drawing is not None:
-                        return drawing
-                else:
-                    parsed = _parse_model_svg_payload(raw)
-                    if not parsed:
-                        last_reason = "model_payload_unparseable"
-                        parsed = None
-                if raw_plan is None and parsed:
-                    sanitized_svg, reason = _sanitize_model_svg(parsed.get("svg"), word)
-                    if sanitized_svg:
-                        caption = str(parsed.get("caption") or "")[:MODEL_SVG_MAX_CAPTION_CHARS]
-                        if _is_svg_text_leak(caption, word):
-                            caption = ""
-                        sanitizer_payload: dict[str, Any] = {"ok": True, "attempt": attempt}
-                        if reason != "ok":
-                            sanitizer_payload["repair"] = reason
-                        return {
-                            "svg": sanitized_svg,
-                            "caption": caption,
-                            "source": "model_svg",
-                            "sanitizer": sanitizer_payload,
-                        }
-                    last_reason = reason
-            logger.info(
-                "drawing_guess model drawing plan rejected: lanlan=%s attempt=%s reason=%s",
-                lanlan_name,
-                attempt,
-                last_reason,
-            )
-            if attempt < DRAWING_PLAN_MODEL_MAX_ATTEMPTS:
-                prompt_for_attempt = _build_drawing_guess_plan_retry_prompt(
-                    original_user_prompt=user_prompt,
-                    rejection_reason=last_reason,
-                    attempt=attempt + 1,
-                )
-        return None
+        return await _run_drawing_plan_attempts(
+            word=word, char_info=char_info, lanlan_name=lanlan_name,
+            system_prompt=system_prompt, user_prompt=user_prompt,
+        )
     except asyncio.TimeoutError:
         logger.info("drawing_guess model drawing plan timed out: lanlan=%s", lanlan_name)
         return None
@@ -3041,42 +3112,10 @@ async def _generate_model_drawing_revision(
             original_plan=original_plan,
             review=review,
         )
-        prompt_for_attempt = user_prompt
-        for attempt in range(1, DRAWING_PLAN_MODEL_MAX_ATTEMPTS + 1):
-            raw = await _call_drawing_guess_plan_model(
-                model=model,
-                base_url=str(char_info.get("base_url") or ""),
-                api_key=str(char_info.get("api_key") or ""),
-                system_prompt=system_prompt,
-                user_prompt=prompt_for_attempt,
-                provider_type=str(char_info.get("provider_type") or "") or None,
-                call_type="drawing_guess_drawing_revision",
-            )
-            raw_plan = _parse_model_drawing_plan_payload(raw)
-            if raw_plan is None:
-                rejection_reason = "model_payload_unparseable"
-            else:
-                drawing, rejection_reason = _validated_drawing_from_plan(
-                    raw_plan,
-                    word=word,
-                    source="model_plan_revision",
-                    sanitizer={"attempt": attempt, "revision": 1},
-                )
-                if drawing is not None:
-                    return drawing
-            logger.info(
-                "drawing_guess drawing revision rejected: lanlan=%s attempt=%s reason=%s",
-                lanlan_name,
-                attempt,
-                rejection_reason,
-            )
-            if attempt < DRAWING_PLAN_MODEL_MAX_ATTEMPTS:
-                prompt_for_attempt = _build_drawing_guess_plan_revision_retry_prompt(
-                    original_user_prompt=user_prompt,
-                    rejection_reason=rejection_reason,
-                    attempt=attempt + 1,
-                )
-        return None
+        return await _run_drawing_plan_attempts(
+            word=word, char_info=char_info, lanlan_name=lanlan_name,
+            system_prompt=system_prompt, user_prompt=user_prompt, revision=True,
+        )
     except asyncio.TimeoutError:
         logger.info("drawing_guess drawing revision timed out: lanlan=%s", lanlan_name)
     except Exception as exc:
@@ -3226,6 +3265,8 @@ async def _generate_persona_chat_line(
                 timeout=GAME_CHAT_TIMEOUT_SECONDS + 2.0,
             )
         line = _sanitize_persona_line(getattr(result, "content", ""))
+        if _has_unscored_user_guess_success(line, session):
+            return None
         line, answer_blocked = _guard_hidden_answer_model_line(
             line,
             session=session,
@@ -3345,6 +3386,8 @@ async def _generate_persona_game_line(
                 timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS + 1.0,
             )
         line = _sanitize_persona_line(getattr(result, "content", ""))
+        if _has_unscored_user_guess_success(line, session):
+            return fallback, "fallback"
         public_details = details if isinstance(details, dict) else {}
         hidden_answer = _hidden_answer_for_model_output(session)
         allow_answer_reveal = bool(public_details.get("allow_answer_reveal"))
@@ -3826,6 +3869,24 @@ async def _generate_text_context_guess(
     return None
 
 
+def _drawing_vision_scope(session: dict[str, Any]):
+    """A request-scoped fence; never retain a round or image beyond the call."""
+    scope_keys = ("session_id", "round_id", "client_round_token", "phase",
+                  "lanlan_name", "_sdk_route_instance_id")
+    identity = tuple(session.get(key) for key in scope_keys)
+    key = _session_key(str(session.get("lanlan_name") or ""), str(session.get("session_id") or ""))
+    registered = _drawing_guess_sessions.get(key) is session
+
+    def is_current():
+        return (
+            identity == tuple(session.get(key) for key in scope_keys)
+            and (not registered or _drawing_guess_sessions.get(key) is session)
+            and _sdk_bound_drawing_guess_session_is_current(session)
+        )
+
+    return is_current
+
+
 async def _generate_vision_guess(
     *,
     session: dict[str, Any],
@@ -3833,8 +3894,10 @@ async def _generate_vision_guess(
     lanlan_name: str,
     image_data_url: str,
     user_hint: str,
+    is_current=None,
 ) -> dict[str, Any] | None:
-    data_url = await _prepare_vision_image_data_url(image_data_url)
+    current = is_current if is_current is not None else _drawing_vision_scope(session)
+    data_url = _bounded_vision_image_data_url(image_data_url)
     if not data_url:
         logger.info(
             "drawing_guess vision guess skipped: lanlan=%s session=%s reason=invalid_image",
@@ -3843,25 +3906,11 @@ async def _generate_vision_guess(
         )
         return None
     try:
-        from utils.config_manager import get_config_manager
-
-        api_config = await get_config_manager().aget_model_api_config("vision")
-        model = str(api_config.get("model") or "")
-        base_url = str(api_config.get("base_url") or "")
-        if not model.strip():
-            logger.info(
-                "drawing_guess vision guess skipped: lanlan=%s session=%s reason=no_vision_model",
-                lanlan_name,
-                session.get("session_id") or "",
-            )
-            return None
-
         from . import _get_character_info
 
         char_info = _get_character_info(lanlan_name)
 
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
-        from utils.token_tracker import set_call_type
+        from utils.game_vision import analyze_game_vision
 
         raw_messages = _build_vision_guess_messages(
             session=session,
@@ -3873,26 +3922,15 @@ async def _generate_vision_guess(
             user_hint=user_hint,
             character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
         )
-        messages = [
-            SystemMessage(content=str(raw_messages[0]["content"])),
-            HumanMessage(content=raw_messages[1]["content"]),
-        ]
-        set_call_type("drawing_guess_vision")
-        llm = await create_chat_llm_async(
-            model=model,
-            base_url=base_url or None,
-            api_key=str(api_config.get("api_key") or "") or None,
-            max_retries=0,
+        raw = await analyze_game_vision(
+            system_prompt=str(raw_messages[0]["content"]),
+            text=raw_messages[1]["content"][1]["text"],
+            attachments=[{"type": "image", "image_data_url": data_url}],
             max_completion_tokens=420,
             timeout=VISION_GUESS_TIMEOUT_SECONDS,
-            provider_type=str(api_config.get("provider_type") or "") or None,
+            is_current=current,
         )
-        async with llm:
-            result = await asyncio.wait_for(
-                llm.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET  # bounded vision prompt: one canvas data URL, fixed candidate bank, truncated hints/chat.
-                timeout=VISION_GUESS_TIMEOUT_SECONDS + 3.0,
-            )
-        parsed = _parse_vision_guess_payload(getattr(result, "content", ""), locale)
+        parsed = _parse_vision_guess_payload(raw, locale)
         if not parsed:
             logger.info(
                 "drawing_guess vision guess rejected: lanlan=%s session=%s reason=model_payload_unparseable",
@@ -3926,6 +3964,10 @@ async def _generate_vision_guess(
             "message": line,
             "source": "vision_model",
         }
+    except ValueError as exc:
+        if str(exc) == "route_inactive":
+            raise asyncio.CancelledError from exc
+        logger.info("drawing_guess shared vision unavailable: lanlan=%s", lanlan_name)
     except asyncio.TimeoutError:
         logger.info("drawing_guess vision guess timed out: lanlan=%s", lanlan_name)
     except Exception as exc:
@@ -4010,7 +4052,8 @@ async def _review_ai_drawing(
     lanlan_name: str,
     image_data_url: str,
 ) -> dict[str, Any]:
-    data_url = await _prepare_vision_image_data_url(image_data_url)
+    current = _drawing_vision_scope(session)
+    data_url = _bounded_vision_image_data_url(image_data_url)
     if not data_url:
         return {
             "available": False,
@@ -4018,45 +4061,22 @@ async def _review_ai_drawing(
             "reason": "invalid_image",
             "source": "unavailable",
         }
-    model = ""
-    provider_type = ""
     try:
-        from utils.config_manager import get_config_manager
-
-        api_config = await get_config_manager().aget_model_api_config("vision") or {}
-        model = str(api_config.get("model") or "")
-        provider_type = str(api_config.get("provider_type") or "")
-        if not model.strip():
-            return {
-                "available": False,
-                "accepted": False,
-                "reason": "no_vision_model",
-                "source": "unavailable",
-            }
-
-        from utils.llm_client import create_chat_llm_async
-        from utils.token_tracker import set_call_type
+        from utils.game_vision import analyze_game_vision
 
         messages = _build_ai_drawing_review_messages(
             session=session,
             locale=locale,
             data_url=data_url,
         )
-        set_call_type("drawing_guess_drawing_review")
-        llm = await create_chat_llm_async(
-            model=model,
-            base_url=str(api_config.get("base_url") or "") or None,
-            api_key=str(api_config.get("api_key") or "") or None,
-            max_retries=0,
+        raw = await analyze_game_vision(
+            system_prompt=messages[0].content,
+            text=messages[1].content[1]["text"],
+            attachments=[{"type": "image", "image_data_url": data_url}],
             max_completion_tokens=DRAWING_REVIEW_MAX_COMPLETION_TOKENS,
             timeout=DRAWING_REVIEW_TIMEOUT_SECONDS,
-            provider_type=provider_type or None,
+            is_current=current,
         )
-        async with llm:
-            result = await asyncio.wait_for(
-                llm.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET  # one compressed drawing plus a fixed, bounded word bank.
-                timeout=DRAWING_REVIEW_TIMEOUT_SECONDS + 3.0,
-            )
         answer_id = str(session.get("ai_word_id") or "")
         answer = _WORD_BY_ID.get(answer_id)
         if answer is None:
@@ -4067,7 +4087,7 @@ async def _review_ai_drawing(
                 "source": "unavailable",
             }
         parsed = _parse_ai_drawing_review_payload(
-            getattr(result, "content", ""),
+            raw,
             locale=locale,
             answer=answer,
         )
@@ -4079,6 +4099,12 @@ async def _review_ai_drawing(
                 "source": "unavailable",
             }
         return parsed
+    except ValueError as exc:
+        if str(exc) == "route_inactive":
+            raise asyncio.CancelledError from exc
+        reason = {"vision_unavailable": "no_vision_model", "timeout": "timeout",
+                  "invalid_image": "invalid_image"}.get(str(exc), "model_unavailable")
+        return {"available": False, "accepted": False, "reason": reason, "source": "unavailable"}
     except asyncio.TimeoutError:
         return {
             "available": False,
@@ -4271,7 +4297,7 @@ async def drawing_guess_round_start(request: Request):
             return {"ok": False, "reason": identity_error}
 
         _cleanup_sessions()
-        locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
+        locale = _resolve_round_locale(data)
         session_key = _session_key(lanlan_name, session_id)
         previous_session = _drawing_guess_sessions.get(session_key)
         requested_generation = str(data.get("sdk_route_instance_id") or "").strip()
@@ -4329,7 +4355,7 @@ async def drawing_guess_ai_draw(request: Request):
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     lock, busy = await _acquire_session_lock(session, locale)
     if busy is not None:
         return busy
@@ -4419,7 +4445,7 @@ async def drawing_guess_ai_draw_review(request: Request):
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     identity_error = _drawing_guess_session_identity_error(data, session)
     if identity_error:
         return {"ok": False, "reason": identity_error}
@@ -4577,7 +4603,7 @@ async def _handle_drawing_guess_input_payload(data: dict[str, Any]) -> dict[str,
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     text = str(data.get("text") or "").strip()
     if not text:
         return {"ok": False, "reason": "missing_text"}
@@ -4956,7 +4982,7 @@ async def drawing_guess_choose_word(request: Request):
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     lock, busy = await _acquire_session_lock(session, locale)
     if busy is not None:
         return busy
@@ -5010,7 +5036,7 @@ async def drawing_guess_timeout(request: Request):
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     lock, busy = await _acquire_session_lock(session, locale)
     if busy is not None:
         return busy
@@ -5272,6 +5298,18 @@ async def _settle_drawing_guess_ai_timeout(
         "state": _public_round_state(session, locale),
     }
     _store_ai_guess_transition_result(session, locale, result)
+    # Both lines use the same settled state and neither depends on the other.
+    # Overlap them so the longer reply budget plus memory still fits the 30s
+    # timeout-command contract. Always cancel/join the child with this request.
+    evaluation_task = asyncio.create_task(_generate_summary_evaluation(
+        session=session,
+        locale=locale,
+        lanlan_name=lanlan_name,
+        correct=False,
+        answer=answer,
+        guessed_word=None,
+        attempts=attempts,
+    ))
     try:
         line, line_source = await _generate_persona_game_line(
             session=session,
@@ -5288,15 +5326,7 @@ async def _settle_drawing_guess_ai_timeout(
         )
         result["message"] = line
         result["message_source"] = line_source
-        evaluation, evaluation_source = await _generate_summary_evaluation(
-            session=session,
-            locale=locale,
-            lanlan_name=lanlan_name,
-            correct=False,
-            answer=answer,
-            guessed_word=None,
-            attempts=attempts,
-        )
+        evaluation, evaluation_source = await evaluation_task
         result["evaluation"] = evaluation
         result["evaluation_source"] = evaluation_source
         result["memory"] = await _maybe_write_drawing_guess_memory_summary(
@@ -5311,6 +5341,10 @@ async def _settle_drawing_guess_ai_timeout(
     except asyncio.CancelledError:
         _append_game_chat(session, "assistant", result["message"], kind="vision_guess")
         raise
+    finally:
+        if not evaluation_task.done():
+            evaluation_task.cancel()
+        await asyncio.gather(evaluation_task, return_exceptions=True)
     _append_game_chat(session, "assistant", result["message"], kind="vision_guess")
     return result
 
@@ -5344,6 +5378,7 @@ async def _run_drawing_guess_vision_turn(
             "ai_guess_attempts": min(attempts, MAX_AI_GUESS_ATTEMPTS),
         }
 
+    vision_is_current = _drawing_vision_scope(session)
     model_guess = proposed_guess
     if model_guess is None:
         try:
@@ -5354,6 +5389,7 @@ async def _run_drawing_guess_vision_turn(
                     lanlan_name=lanlan_name,
                     image_data_url=image_data_url,
                     user_hint=user_hint,
+                    is_current=vision_is_current,
                 )
                 if model_guess is None:
                     model_guess = await _generate_text_context_guess(
@@ -5519,7 +5555,7 @@ async def drawing_guess_vision_guess(request: Request):
     session, error = _require_session(data)
     if error:
         return {"ok": False, "reason": error}
-    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    locale = _resolve_round_locale(data, session)
     if session.get("phase") not in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
         return {"ok": True, "handled": False, "reason": "not_ai_guessing", "state": _public_round_state(session, locale)}
 

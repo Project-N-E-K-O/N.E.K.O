@@ -237,6 +237,10 @@ function loadHarness() {
       SDK_PREFERENCE_WRITE_RETRY_DELAY_MS = Number(value) || 1;
     },
     saveModelViewSettings: saveModelViewSettings,
+    normalizeModelViewSettings: normalizeModelViewSettings,
+    loadModelViewSettings: loadModelViewSettings,
+    resizeActiveModelRenderer: resizeActiveModelRenderer,
+    resetModelView: resetModelView,
     saveColorHistory: saveColorHistory,
     configureSdkMemoryConsent: configureSdkMemoryConsent,
     normalizeAiDrawingPlan: normalizeAiDrawingPlan,
@@ -266,15 +270,20 @@ function loadHarness() {
     addNekoMessage: addNekoMessage,
     logSdkBestEffort: logSdkBestEffort,
     currentLanguage: currentLanguage,
+    syncPageLocale: syncPageLocale,
+    roundCommandPayload: roundCommandPayload,
+    routePayload: routePayload,
+    roundCommandContracts: ROUND_COMMAND_CONTRACTS,
     submitPlayerText: submitPlayerText,
     handleSdkVoiceState: handleSdkVoiceState,
-    handleSpeechPlaybackState: handleSpeechPlaybackState,
     handleSdkPageExit: handleSdkPageExit,
     querySdkVoiceRouteState: querySdkVoiceRouteState,
     stopSdkVoiceBestEffort: stopSdkVoiceBestEffort,
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
+    mountAvatarDescriptor: mountAvatarDescriptor,
     startRoute: startRoute,
+    bindDrawingCharacter: bindDrawingCharacter,
     startRound: startRound,
     finishGame: finishGame,
     updateControls: updateControls,
@@ -648,6 +657,72 @@ async function testLateModelViewHydrationMergesWithLocalPriority() {
   assertDeepEqual(api.state.modelView, local.view, 'the active model view should remain the local value');
   assertEqual(writes.length, 1, 'the merged model-view snapshot should be persisted once');
   assertEqual(writes[0].value.length, 2, 'the persisted model-view snapshot should contain both characters');
+}
+
+async function testModelViewResetSurvivesReloadAndLateHydration() {
+  for (const resetDuringHydration of [false, true]) {
+    const api = loadHarness().api;
+    const read = deferred();
+    const customView = { scale: 245, x: 12, y: -8 };
+    const other = { character: 'Other Neko', view: { scale: 175, x: -4, y: 9 } };
+    let backingValue = [{ character: 'Local Neko', view: customView }, other];
+    const storedSnapshot = JSON.parse(JSON.stringify(backingValue));
+    const writes = [];
+    const client = makeStorageClient({
+      get() { return read.promise; },
+      set(key, value) {
+        backingValue = JSON.parse(JSON.stringify(value));
+        writes.push({ key, value: backingValue });
+        return Promise.resolve(storedResult());
+      },
+    });
+    api.state.sdkClient = client;
+    api.state.lanlanName = 'Local Neko';
+    const channel = api.ensureSdkPreferenceChannels().modelViews;
+    const hydration = api.hydrateSdkPreferenceChannel(client, channel);
+    if (!resetDuringHydration) {
+      read.resolve(storageResult(storedSnapshot));
+      await hydration;
+      assertDeepEqual(api.state.modelView, customView, 'saved custom view was not loaded');
+    }
+    api.resetModelView();
+    if (resetDuringHydration) {
+      read.resolve(storageResult(storedSnapshot));
+      await hydration;
+    }
+    await waitFor(() => writes.length === 1 && !channel.inFlight,
+      'reset model view was not persisted');
+    const defaults = { scale: 260, x: 0, y: 0 };
+    assertDeepEqual(api.state.modelView, defaults, 'late hydration restored the pre-reset view');
+    assertDeepEqual(backingValue, [{ character: 'Local Neko', view: defaults }, other],
+      'reset did not replace the old view while preserving other characters');
+
+    const reloaded = loadHarness().api;
+    const reloadClient = makeStorageClient({
+      get() { return Promise.resolve(storageResult(backingValue)); },
+      set() { throw new Error('reading saved preferences must not rewrite them'); },
+    });
+    reloaded.state.sdkClient = reloadClient;
+    reloaded.state.lanlanName = 'Local Neko';
+    await reloaded.hydrateSdkPreferenceChannel(reloadClient,
+      reloaded.ensureSdkPreferenceChannels().modelViews);
+    assertDeepEqual(reloaded.state.modelView, defaults, 'reload restored the pre-reset view');
+    assertDeepEqual(reloaded.state.modelViewSettings, backingValue,
+      'reload discarded the explicitly saved default or another character');
+  }
+  const bounded = loadHarness().api;
+  const defaults = { scale: 260, x: 0, y: 0 };
+  const entries = Array.from({ length: 33 }, (_, i) => ({ character: `Neko ${i}`, view: defaults }));
+  const boundedClient = makeStorageClient({
+    get() { return Promise.resolve(storageResult(entries)); },
+    set() { throw new Error('reading saved preferences must not rewrite them'); },
+  });
+  bounded.state.sdkClient = boundedClient;
+  await bounded.hydrateSdkPreferenceChannel(boundedClient,
+    bounded.ensureSdkPreferenceChannels().modelViews);
+  assertEqual(bounded.state.modelViewSettings.length, 32, 'saved default views exceeded the entry limit');
+  assertDeepEqual(bounded.state.modelViewSettings, entries.slice(0, 32),
+    'default views did not preserve bounded first-entry ordering');
 }
 
 async function testCommittedWriteWaitsForHydrationBeforePersisting() {
@@ -1087,6 +1162,65 @@ async function testVoiceToggleUsesOfficialSdkControl() {
     'successful SDK toggle did not publish the connected notice');
 }
 
+async function testCharacterBindingIsSharedRetiredAndRebound() {
+  const { api } = loadHarness();
+  const pending = [];
+  const client = { disposed: false, runtime: {
+    session: { id: 'first', characterName: '' },
+    bindCharacter(name, options) {
+      assertEqual(options.timeoutMs, 8000, 'binding lost its timeout');
+      const request = deferred();
+      pending.push({ name, request });
+      options.signal?.addEventListener('abort', () => request.reject(new Error('cancelled')), { once: true });
+      return request.promise.then(descriptor => {
+        this.session.characterName = descriptor.name;
+        return descriptor;
+      });
+    },
+  } };
+  api.state.sdkClient = client;
+  const first = api.bindDrawingCharacter(client, '');
+  assertEqual(api.bindDrawingCharacter(client, ''), first, 'startup loaders did not share the binding');
+  assertEqual(pending.length, 1, 'duplicate character request');
+  assertEqual(pending[0].name, undefined, 'direct page entry did not resolve current character');
+  pending[0].request.resolve({ name: 'Mimi', model: { type: 'vrm', path: '/mimi.vrm' } });
+  await first;
+  assertEqual(api.state.sdkCharacterBindingPromise, null, 'settled request remained resident');
+  await api.bindDrawingCharacter(client, 'Mimi');
+  assertEqual(pending.length, 1, 'start rebound an already selected character');
+  client.runtime.session = { id: 'second', characterName: 'Mimi' };
+  const second = api.bindDrawingCharacter(client, 'Mimi');
+  assertEqual(pending.length, 2, 'new session reused stale binding');
+  pending[1].request.resolve({ name: 'Mimi' });
+  await second;
+  client.runtime.session = { id: 'third', characterName: '' };
+  const oldTarget = api.bindDrawingCharacter(client, 'Mimi');
+  const oldResult = oldTarget.then(() => 'accepted', () => 'cancelled');
+  const newTarget = api.bindDrawingCharacter(client, 'Nana');
+  assert(newTarget !== oldTarget, 'different character reused an in-flight binding');
+  assertEqual(api.bindDrawingCharacter(client, 'Nana'), newTarget, 'successor binding was not shared');
+  await api.bindDrawingCharacter(client, 'Third').then(
+    () => { throw new Error('unbounded replacement binding was admitted'); }, () => {});
+  await waitFor(() => pending.length === 4, 'replacement binding did not start after cancellation');
+  pending[3].request.resolve({ name: 'Nana' });
+  assertEqual((await newTarget).name, 'Nana', 'replacement got the old descriptor');
+  assertEqual(await oldResult, 'cancelled', 'superseded binding was accepted');
+  assertEqual(api.state.sdkCharacterBindingRequest, null, 'binding record remained resident');
+  client.runtime.session = { id: 'fourth', characterName: '' };
+  const staleSession = api.bindDrawingCharacter(client, 'Mimi');
+  client.runtime.session = { id: 'fifth', characterName: '' };
+  pending[4].request.resolve({ name: 'Mimi' });
+  await staleSession.then(() => { throw new Error('old session binding was accepted'); }, () => {});
+  assertEqual(api.state.sdkBoundCharacter, null, 'old session populated the cache');
+  const exiting = api.bindDrawingCharacter(client, 'Mimi');
+  client.disposed = true;
+  api.handleSdkPageExit();
+  pending[pending.length - 1].request.resolve({ name: 'Mimi' });
+  await exiting.then(() => { throw new Error('late binding succeeded after exit'); }, () => {});
+  assertEqual(api.state.sdkBoundCharacter, null, 'late response restored the released descriptor');
+  assertEqual(api.state.sdkCharacterBindingPromise, null, 'page exit retained the request');
+}
+
 async function testRouteStartQueriesVoiceWithoutTakingOverMicrophone() {
   const harness = loadHarness();
   const api = harness.api;
@@ -1096,6 +1230,10 @@ async function testRouteStartQueriesVoiceWithoutTakingOverMicrophone() {
     runtime: {
       state: 'idle',
       session: { id: 'drawing-query-session', routeInstanceId: 'drawing-query-route' },
+      bindCharacter(name) {
+        this.session.characterName = name;
+        return Promise.resolve({ name });
+      },
       start() {
         this.state = 'running';
         return Promise.resolve({ ok: true, data: { ok: true } });
@@ -1183,6 +1321,49 @@ async function testCanvasDrawingPlanIsBoundedRenderedAndSerializable() {
   outOfBoundsPlan.elements[0].cx = 790;
   assertEqual(api.normalizeAiDrawingPlan(outOfBoundsPlan), null,
     'the browser silently changed an out-of-bounds backend drawing plan');
+}
+
+async function testDrawingPlanPreservesChosenBackgroundAndOpacity() {
+  const harness = loadHarness();
+  const api = harness.api;
+  for (const color of ['#eef8ff', '#eef7fa', '#ffffff', '#000', ' #AbC ']) {
+    const plan = sampleDrawingPlan();
+    plan.background = color;
+    plan.elements[0].opacity = 0.125;
+    const normalized = api.normalizeAiDrawingPlan(plan);
+    assert(normalized, 'a safe chosen background was rejected');
+    assertEqual(normalized.background, color.trim().toLowerCase(), 'the chosen background was replaced');
+    assertEqual(normalized.elements[0].opacity, 0.125, 'opacity was discarded');
+
+    const canvas = harness.sandbox.document.createElement('canvas');
+    const alphaValues = [];
+    const paintedBackgrounds = [];
+    Object.defineProperty(canvas.__context, 'globalAlpha', {
+      set(value) { alphaValues.push(value); },
+    });
+    canvas.__context.fillRect = function () { paintedBackgrounds.push(this.fillStyle); };
+    assertEqual(api.renderAiDrawingPlanToCanvas(normalized, canvas), true, 'custom-color plan failed to render');
+    assertEqual(paintedBackgrounds[0], normalized.background, 'Canvas used the old fixed background');
+    assertDeepEqual(alphaValues, [1, 0.125, 1], 'Canvas did not reset/apply per-element opacity');
+    const svg = api.aiDrawingPlanToSvg(normalized);
+    assert(svg.includes(`fill="${normalized.background}"`), 'SVG lost the chosen background');
+    assert(svg.includes('opacity="0.125"'), 'SVG lost the chosen opacity');
+    const count = harness.createdCanvases.length;
+    assert(api.captureAiDrawingReviewImage(normalized).startsWith('data:image/jpeg'),
+      'custom-color plan could not be captured for review');
+    assertEqual(harness.createdCanvases[count + 1].__context.fillStyle, normalized.background,
+      'JPEG review used a different background');
+  }
+  for (const color of [null, true, 123, '', 'none', 'transparent', 'red', '#ffff', 'url(https://example.test/a)']) {
+    const plan = sampleDrawingPlan();
+    plan.background = color;
+    assertEqual(api.normalizeAiDrawingPlan(plan), null, 'unsafe or nonopaque background was accepted');
+  }
+  for (const opacity of [null, true, '0.5', 0, -1, 1.1, NaN, Infinity]) {
+    const plan = sampleDrawingPlan();
+    plan.elements[0].opacity = opacity;
+    assertEqual(api.normalizeAiDrawingPlan(plan), null, 'invalid opacity was accepted');
+  }
 }
 
 async function testRawAiSvgFillsResponsiveStage() {
@@ -2104,6 +2285,24 @@ function correctUserGuessResponse() {
   };
 }
 
+async function testGuessTimeoutAllowsExtendedPersonaReplyBudget() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies(() => correctUserGuessResponse(), events);
+  api.state.phase = 'loading_round';
+  api.state.roundFlowToken = 42;
+  api.state.activeRoundToken = 42;
+
+  await api.requestGuessTimeout(42, 0);
+
+  assertEqual(events.commands.length, 1, 'timeout issued an extra command');
+  assertEqual(events.commands[0].command, 'round:timeout', 'timeout used the wrong command');
+  assertEqual(events.commands[0].timeoutMs, 30000, 'the browser can cancel a valid slow persona reply');
+}
+
 async function testGuessTimeoutRetryIsCancelledWhenPendingInputWins() {
   const harness = loadHarness();
   const api = harness.api;
@@ -2378,7 +2577,7 @@ async function testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan() {
   assertEqual(result.calls[0].payload.image_data_url, 'data:image/jpeg;base64,384x288',
     'drawing review did not send the bounded local Canvas capture');
   assertDeepEqual(Object.keys(result.calls[0].payload).sort(),
-    ['client_round_token', 'image_data_url'],
+    ['client_round_token', 'image_data_url', 'render_language'],
     'drawing review sent model plans or host-owned identity outside its SDK contract');
   assertEqual(result.calls[0].options.timeoutMs, 120000,
     'drawing review did not use its bounded command timeout');
@@ -2455,12 +2654,264 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
     'page exit must synchronously post the voice stop before local route cleanup');
 }
 
+async function testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding() {
+  const { api } = loadHarness();
+  const elements = api.installRoundLifecycleHarness([], () => Promise.resolve());
+  elements.modelStage = { dataset: {}, style: { setProperty() {} } };
+  api.installRouteUiSpies();
+  const descriptor = {
+    name: 'route-character', rendererAvailable: true,
+    model: { type: 'live2d', path: '/model.json' },
+  };
+  let bindings = 0;
+  let mounts = 0;
+  let nextMount;
+  let canonicalDescriptor = descriptor;
+  let canonicalReads = 0;
+  const client = {
+    disposed: false,
+    runtime: {
+      state: 'inactive',
+      session: { id: 'same-session', characterName: descriptor.name },
+      bindCharacter() { bindings += 1; return Promise.resolve(descriptor); },
+      start() {
+        this.state = 'running';
+        this.session.characterName = canonicalDescriptor.name;
+        return Promise.resolve({ ok: true, data: { ok: true, state: { lanlan_name: canonicalDescriptor.name } } });
+      },
+    },
+    avatar: {
+      mount() { mounts += 1; return Promise.resolve(nextMount); },
+      getCharacter(name) {
+        canonicalReads += 1;
+        assertEqual(name, client.runtime.session.characterName, 'refresh must read the runtime-bound identity');
+        return Promise.resolve(canonicalDescriptor);
+      },
+    },
+    memory: { consent: { locked: true, configured: true, enabled: false } },
+    capabilities: { granted: [], has() { return false; } },
+    logger: { enableAfterRuntimeStart() { return Promise.resolve({ ok: false }); } },
+  };
+  function controller() {
+    return {
+      disposed: false, releases: 0,
+      setView() {}, setEmotion() {},
+      dispose() { this.disposed = true; this.releases += 1; },
+    };
+  }
+  api.state.lanlanName = descriptor.name;
+  api.state.sdkClient = client;
+  await api.bindDrawingCharacter(client, descriptor.name);
+  const current = controller();
+  nextMount = current;
+  assert(await api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken),
+    'the initial avatar must mount');
+  api.cleanupRouteResources();
+  assertEqual(current.releases, 1, 'route cleanup must dispose the mounted SDK controller');
+  assertEqual(api.state.avatarController, null, 'route cleanup must drop the controller reference');
+  assertEqual(await api.bindDrawingCharacter(client, descriptor.name), descriptor,
+    'route cleanup must preserve the same-session bound descriptor');
+  assertEqual(bindings, 1, 'restarting the same session must not rebind its character');
+
+  const delayed = deferred();
+  nextMount = delayed.promise;
+  const pending = api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken);
+  await waitFor(() => mounts === 2, 'the delayed mount must reach the SDK');
+  api.cleanupRouteResources();
+  const late = controller();
+  delayed.resolve(late);
+  assertEqual(await pending, false, 'a mount completed after cleanup must stay retired');
+  assertEqual(late.releases, 1, 'the late SDK controller must also be disposed');
+  assertEqual(api.state.avatarController, null, 'late completion must not restore the avatar');
+  assertEqual(api.state.avatarMountPromise, null, 'the settled mount must release its promise');
+
+  const restarted = controller();
+  nextMount = restarted;
+  assertEqual(await api.startRoute(), true, 'the actual route restart must succeed');
+  await waitFor(() => api.state.avatarController === restarted,
+    'the actual route restart must remount the cached character');
+  assertEqual(bindings, 1, 'remounting must not perform a prohibited runtime rebind');
+  api.cleanupRouteResources();
+  api.cleanupRouteResources();
+  assertEqual(restarted.releases, 1, 'repeated cleanup must dispose each controller once');
+  const oldPreview = controller();
+  nextMount = oldPreview;
+  await api.mountAvatarDescriptor(client, descriptor, api.state.avatarLoadToken);
+  api.state.routeActive = false;
+  client.runtime.state = 'inactive';
+  canonicalDescriptor = { ...descriptor, name: 'canonical-route-character' };
+  const canonicalAvatar = controller();
+  nextMount = canonicalAvatar;
+  assertEqual(await api.startRoute(), true, 'canonical-name startup must succeed');
+  await waitFor(() => api.state.avatarController === canonicalAvatar,
+    'canonical-name startup did not replace the old preview');
+  assertEqual(api.state.sdkBoundCharacter.name, canonicalDescriptor.name);
+  assertEqual(api.state.modelLoadState, 'ready', 'canonical remount remained in loading');
+  assertEqual(canonicalReads, 1, 'canonical identity must be refreshed through public discovery');
+  assertEqual(bindings, 1, 'running canonical refresh must not call runtime.bindCharacter');
+  assertEqual(oldPreview.releases, 1, 'canonical refresh retained the old preview');
+  api.cleanupRouteResources();
+}
+
+async function testCanonicalAvatarFailureKeepsOnlyItsRunningRoute() {
+  for (const scenario of ['network', 'timeout', 'invalid', 'ended', 'new-session', 'new-preview']) {
+    const { api } = loadHarness();
+    const elements = api.installRoundLifecycleHarness([], () => Promise.resolve());
+    elements.modelStage = { dataset: {}, style: { setProperty() {} } };
+    api.installRouteUiSpies();
+    const descriptor = { name: 'before', rendererAvailable: true,
+      model: { type: 'live2d', path: '/model.json' } };
+    const gate = deferred();
+    let reads = 0;
+    let logStarts = 0;
+    let releases = 0;
+    const client = {
+      disposed: false,
+      runtime: {
+        state: 'inactive', session: { id: 'original-session', characterName: 'before' },
+        bindCharacter() { throw new Error('the cached pre-start binding must be reused'); },
+        start() {
+          this.state = 'running';
+          this.session.characterName = 'canonical';
+          return Promise.resolve({ ok: true, data: { ok: true, state: { lanlan_name: 'canonical' } } });
+        },
+        end() { throw new Error('an optional avatar must not end a successful route'); },
+      },
+      avatar: {
+        getCharacter() { reads += 1; return gate.promise; },
+        mount() { throw new Error('a failed descriptor must not mount the stale avatar'); },
+      },
+      memory: { consent: { locked: true, configured: true, enabled: false } },
+      capabilities: { granted: [], has() { return false; } },
+      logger: { enableAfterRuntimeStart() { logStarts += 1; return Promise.resolve({ ok: false }); } },
+    };
+    Object.assign(api.state, { lanlanName: 'before', sdkClient: client,
+      sdkBoundCharacter: descriptor, sdkBoundCharacterClient: client,
+      sdkBoundCharacterSessionId: 'original-session',
+      avatarController: { dispose() { releases += 1; } } });
+    const pending = api.startRoute();
+    await waitFor(() => reads === 1, 'canonical descriptor refresh did not start');
+    if (scenario === 'ended') {
+      client.runtime.state = 'ended';
+      api.state.routeActive = false;
+      api.cleanupRouteResources();
+    } else if (scenario === 'new-session') {
+      client.runtime.session.id = 'new-session';
+      api.state.modelLoadState = 'ready';
+    } else if (scenario === 'new-preview') {
+      api.state.avatarLoadToken += 1;
+      api.state.modelLoadState = 'ready';
+    }
+    if (scenario === 'invalid') gate.resolve(null);
+    else gate.reject(Object.assign(new Error(scenario), { code: scenario === 'timeout' ? 'timeout' : 'request_failed' }));
+    const shouldStart = ['network', 'timeout', 'invalid'].includes(scenario);
+    assertEqual(await pending, shouldStart, scenario + ': optional avatar failure changed route startup');
+    assertEqual(logStarts, shouldStart ? 1 : 0, scenario + ': stale startup continued logging');
+    assertEqual(releases, 1, 'the old preview must be released exactly once');
+    assertEqual(api.state.sdkBoundCharacter, null, 'the stale descriptor must stay retired');
+    assertEqual(api.state.sdkCharacterBindingRequest, null, 'the query request must be released');
+    assertEqual(api.state.sdkStartPromise, null, 'the startup promise must be released');
+    assertEqual(api.state.modelLoadState, shouldStart ? 'fallback' : scenario === 'ended' ? 'idle' : 'ready',
+      scenario + ': late avatar failure changed the current model display');
+    assertEqual(client.runtime.state, scenario === 'ended' ? 'ended' : 'running');
+    assertEqual(api.state.routeActive, scenario !== 'ended');
+    api.cleanupRouteResources();
+  }
+}
+
+async function testRoundCommandsCarryUiLanguageWithoutClaimingExplicitPreference() {
+  const harness = loadHarness();
+  const api = harness.api;
+  api.installLocaleUiSpies();
+  for (const locale of ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'pt', 'es']) {
+    harness.sandbox.i18n = { language: locale };
+    api.syncPageLocale();
+    const payload = api.roundCommandPayload();
+    assertEqual(payload.render_language, locale, 'round request lost current UI language');
+    assertEqual(api.routePayload().render_language, locale, 'route request lost current UI language');
+    assert(!Object.hasOwn(payload, 'i18n_language'), 'UI language became an explicit conversation preference');
+    for (const [name, contract] of Object.entries(api.roundCommandContracts)) {
+      assertEqual(contract.request.properties.render_language.type, 'string', `${name} rejects the UI language field`);
+      assertEqual(contract.request.additionalProperties, false, `${name} relaxed unrelated request validation`);
+    }
+  }
+  assertEqual(harness.localStorageReads(), 0, 'language payload bypassed the SDK storage boundary');
+}
+
+async function testDefaultModelViewFramesUpperBodyAndPreservesCustomViews() {
+  const defaults = { scale: 260, x: 0, y: 0 };
+  const fitSandbox = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname,
+    '../../static/game/sdk/neko-minigame-avatar-host.js'), 'utf8'), fitSandbox);
+  const fitRectangle = fitSandbox.window.NekoMiniGameAvatarHost.fitRectangle;
+  const styles = fs.readFileSync(path.resolve(__dirname, '../../templates/drawing_guess.html'), 'utf8')
+    .match(/<style>([\s\S]*?)<\/style>/)[1];
+  for (const kind of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const { api } = loadHarness();
+    const mounts = [];
+    const views = [];
+    const controller = {
+      setView(view) { views.push({ ...view }); },
+      setEmotion() {},
+    };
+    const client = { avatar: { async mount(config) { mounts.push(config); return controller; } } };
+    api.state.lanlanName = 'Portrait Neko';
+    assertDeepEqual(api.state.modelView, defaults, `${kind} lost the initial half-body zoom`);
+    api.state.modelViewSettings = api.normalizeModelViewSettings([
+      { character: 'Portrait Neko', view: { scale: 100, x: 0, y: 0 } },
+    ]);
+    api.loadModelViewSettings();
+    assertDeepEqual(api.state.modelView, { scale: 100, x: 0, y: 0 },
+      'an explicitly saved whole-body view must remain available');
+    api.state.modelViewSettings = [];
+    api.loadModelViewSettings();
+    assertDeepEqual(api.state.modelView, defaults, 'a character without a saved view should use half-body framing');
+    await api.mountAvatarDescriptor(client, {
+      name: 'Portrait Neko', rendererAvailable: true, model: { type: kind, path: '/test-model' },
+    }, api.state.avatarLoadToken);
+    assertDeepEqual(mounts[0].fit,
+      { mode: 'height', align: 'top-center', padding: 12, scaleMultiplier: 1 },
+      `${kind} should anchor the head and use the panel height as its zoom baseline`);
+    for (const [width, height] of [[420, 610], [420, 470], [708, 470], [280, 220]]) {
+      const viewport = { width, height };
+      const fitted = fitRectangle({ width: 500, height: 1800 }, viewport, mounts[0].fit);
+      const portrait = fitRectangle({
+        width: fitted.width * defaults.scale / 100,
+        height: fitted.height * defaults.scale / 100,
+      }, viewport, { ...mounts[0].fit, autoScale: false, scaleMultiplier: 1 });
+      assertEqual(portrait.y, 12, `${kind} cropped the top of the portrait after resizing`);
+      assert(Math.abs(portrait.x + portrait.width / 2 - width / 2) < 1e-6,
+        `${kind} lost horizontal centering after resizing`);
+      assert(portrait.height > height * 2, `${kind} reverted to a full-body fit`);
+    }
+    const layerRules = new RegExp(`[^{}]*#${kind}-container[^{}]*\\{([^{}]*)\\}`, 'g');
+    for (const rule of styles.matchAll(layerRules)) {
+      assert(!/transform\s*:[^;]*var\(--dg-model-/.test(rule[1]),
+        `${kind} applies the SDK view a second time in CSS`);
+    }
+    assertDeepEqual(views[views.length - 1], defaults, `${kind} did not receive the default view`);
+    api.state.modelViewSettings = [{ character: 'Portrait Neko', view: { scale: 245, x: 12, y: -8 } }];
+    api.loadModelViewSettings();
+    assertDeepEqual(views[views.length - 1], { scale: 245, x: 12, y: -8 },
+      'a saved manual view must remain available');
+    api.resetModelView();
+    for (let i = 0; i < 5; i += 1) api.resizeActiveModelRenderer();
+    assertDeepEqual(views[views.length - 1], defaults, 'reset and resize should keep stable half-body framing');
+    assertDeepEqual(api.state.modelViewSettings[0].view, defaults, 'reset should save the new default');
+  }
+}
+
 async function main() {
+  await testCanonicalAvatarFailureKeepsOnlyItsRunningRoute();
+  await testRouteCleanupReleasesCurrentAndLateAvatarsWithoutRebinding();
+  await testDefaultModelViewFramesUpperBodyAndPreservesCustomViews();
   await testEndWaitsForRoundSessionCreation();
+  await testRoundCommandsCarryUiLanguageWithoutClaimingExplicitPreference();
   await testWordChoiceRecoversCommittedBackendTransition();
   await testLateRoundStartCannotRestoreEndAfterCleanup();
   await testLateHydrationKeepsLocalSideAndColorChanges();
   await testLateModelViewHydrationMergesWithLocalPriority();
+  await testModelViewResetSurvivesReloadAndLateHydration();
   await testCommittedWriteWaitsForHydrationBeforePersisting();
   await testFailedHydrationRetriesBeforeMergingAndWriting();
   await testPreferenceWritesAreSerializedAndCoalesceFinalSnapshot();
@@ -2474,8 +2925,10 @@ async function main() {
   await testBackgroundVoiceQueryCannotClearANewerToggle();
   await testVoiceToggleUsesOfficialSdkControl();
   await testRouteStartQueriesVoiceWithoutTakingOverMicrophone();
+  await testCharacterBindingIsSharedRetiredAndRebound();
   await testBucketFillTreatsCanvasDisplayEdgeAsBoundary();
   await testCanvasDrawingPlanIsBoundedRenderedAndSerializable();
+  await testDrawingPlanPreservesChosenBackgroundAndOpacity();
   await testRawAiSvgFillsResponsiveStage();
   await testComplexDrawingPlanSupportsCurvesAndMoreDetail();
   await testDrawingReviewCaptureIsLowResolutionOpaqueJpeg();
@@ -2498,6 +2951,7 @@ async function main() {
   await testDeferredTimeoutSettlesAfterVisionRequestFinishes();
   await testTimeoutPhaseAdvanceStopsWhenRoundChanges();
   await testUserGuessUsesFullClassifiedInputBudget();
+  await testGuessTimeoutAllowsExtendedPersonaReplyBudget();
   await testGuessTimeoutRetryIsCancelledWhenPendingInputWins();
   await testLateGuessTimeoutFailureCannotRearmAfterInputWins();
   await testRecoveredGuessTimeoutWinsWithoutDoubleApplyingInput();

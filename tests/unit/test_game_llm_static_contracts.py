@@ -96,7 +96,9 @@ def test_soccer_template_loads_split_css_and_javascript_assets():
     runtime_script = '<script src="/static/game/games/soccer/soccer-demo.js'
     assert runtime_script not in template_head
     assert template.index('<script type="importmap">') < template.index(runtime_script)
-    assert template.index(runtime_script) < template.index('<script src="/static/vrm/vrm-init.js">')
+    assert template.index(runtime_script) < template.index(
+        '<script src="/static/vrm/vrm-init.js?v={{ static_asset_version }}">'
+    )
 
 
 @pytest.mark.unit
@@ -116,6 +118,15 @@ def test_soccer_template_renders_runtime_config_and_asset_version():
     assert config_match
     assert json.loads(config_match.group(1))["vrm_defaults"]["ambientIntensity"] == 1.25
     assert "soccer-demo.css?v=test-version" in rendered
+    launch_match = re.search(
+        r'<script id="neko-minigame-host-launch" type="application/json">\s*(.*?)\s*</script>',
+        rendered,
+        re.DOTALL,
+    )
+    assert launch_match
+    assert json.loads(launch_match.group(1))["adapterUrl"] == (
+        "/static/game/sdk/neko-minigame-same-origin-host.js?v=test-version"
+    )
     assert "neko-minigame-sdk.js?v=test-version" in rendered
     assert "soccer-neko-adapter.js?v=test-version" in rendered
     assert "soccer-demo.js?v=test-version" in rendered
@@ -146,16 +157,23 @@ def test_soccer_avatar_rendering_uses_sdk_fixed_viewport_contract():
     assert "viewport: Object.freeze({ mode: 'fixed', width: 200, height: 300 })" in script
     assert "align: 'bottom-center'" in script
     assert "resize: Object.freeze({ mode: 'fixed' })" in script
-    assert script.count("soccerGame.avatar.mount(") >= 4
+    # Runtime coverage exercises both slots through the real public SDK wrapper,
+    # including cross-fit replacement. Call-site counts are not API contracts.
+    assert "soccerGame.avatar.mount(soccerAvatarMountConfig(slot, model))" in script
     assert "window.__SoccerAiAvatarController?.focus?." in script
     assert "window.__SoccerAiAvatarController?.setEmotion?." in script
     assert "window.NekoMiniGameAvatarHost.create({" in soccer_avatar_host
-    assert "window.createSoccerAvatarHost({" in script
+    registration = (SOCCER_SCRIPT_PATH.parent / "soccer-neko-host-registration.js").read_text(encoding="utf-8")
+    assert "avatarHostFactory(options)" in registration
+    assert "return window.createSoccerAvatarHost(options);" in registration
+    assert "avatarHost:" not in script
+    assert "window.createSoccerAvatarHost(" not in script
     assert "window.createSoccerAvatarHost =" in soccer_avatar_host
-    assert "let avatarEventEmitter = null;" in script
-    assert "avatarEventEmitter = emitEvent;" in script
-    assert "if (window.__SoccerPlayerAvatarController\n            && !window.__SoccerPlayerAvatarController.disposed)" in script
-    assert "if (window.__SoccerAiAvatarController\n            && !window.__SoccerAiAvatarController.disposed)" in script
+    assert "emitEvent('player-avatar-changed', { type, path });" in script
+    assert "emitEvent('ai-avatar-changed', { type, path });" in script
+    assert "characterName: window.__SoccerResolvedLanlanName" in script
+    assert "await replaceSoccerAvatar('player', { type, path });" in script
+    assert "await replaceSoccerAvatar('ai', { type, path });" in script
     assert "soccerAvatarControllers" not in script
     assert "requireSoccerAvatarLayout" not in script
     assert "new VRMManager()" not in script
@@ -183,8 +201,8 @@ def test_soccer_first_language_payload_waits_for_character_response():
     resolver_section = script[resolver_start:script.index("const _currentI18nLang", resolver_start)]
 
     assert "let soccerCharacterLanguagePreferenceResolved = false;" in script
-    assert "characterInfo?.language_preference_resolved === true" in script
-    assert "soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo?.language);" in script
+    assert "characterInfo?.languagePreference?.resolved === true" in script
+    assert "soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo.languagePreference.locale);" in script
     assert "soccerCharacterLanguageRevision === languageRevision" in script
     assert script.count("soccerCharacterLanguageRevision += 1;") == 4
     assert script.count("soccerCharacterLanguagePreferenceResolved = true;") == 3
@@ -214,7 +232,7 @@ def test_soccer_direct_open_language_change_wins_inflight_character_response():
 
     script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
     state_start = script.index("const normalizeSoccerExplicitLanguage")
-    state_end = script.index("    (async () => {", state_start)
+    state_end = script.index("    async function loadSoccerAvatars()", state_start)
     listener_start = script.index(
         "window.SoccerExplicitConversationLang = function (characterName)"
     )
@@ -234,14 +252,13 @@ def test_soccer_direct_open_language_change_wins_inflight_character_response():
   window.getExplicitConversationLanguagePreference = (name) => trustedLanguages.get(name) || '';
 
   let releaseCharacterResponse;
-  const soccerHost = {{
-    getCharacter: () => new Promise((resolve) => {{
+  const soccerGame = {{ runtime: {{
+    bindCharacter: () => new Promise((resolve) => {{
       releaseCharacterResponse = () => resolve({{
-        ok: true,
-        json: async () => ({{ lanlan_name: 'Mimi', language: 'en', language_preference_resolved: true }}),
+        name: 'Mimi', languagePreference: {{ locale: 'en', resolved: true }},
       }});
     }}),
-  }};
+  }} }};
 
   eval({json.dumps(behavior_source)} + `
     globalThis.__loadSoccerCharacter = ensureSoccerCharacterInfo;
@@ -474,7 +491,10 @@ def test_soccer_requests_use_adapter_and_runtime_lifecycle_is_owned_by_sdk():
     assert "pageExit: {" in script
     assert "soccerGame.events.on('page-exit'" in script
     assert "client.dispose({ preserveRuntimeEnd: true });" in sdk
-    assert "window.addEventListener('pagehide'" not in script
+    # Pre-SDK module observation uses pagehide only to release its pending
+    # readiness listeners. Game-route teardown remains exclusively SDK-owned.
+    runtime_source = script[script.index("  const initializeSoccerPage"):]
+    assert "window.addEventListener('pagehide'" not in runtime_source
 
     for path in (
         "character",
@@ -531,7 +551,7 @@ def test_soccer_uses_sdk_voice_and_speech_facades_instead_of_host_bypasses():
     direct_host_calls = set(re.findall(r"soccerHost\.([A-Za-z0-9_]+)", script))
     # Soccer-only legacy preference migration is deliberately outside the
     # public SDK; ordinary reads/writes still use client.storage.
-    assert direct_host_calls == {"getCharacter", "evaluatePassiveGuard", "migrateLegacySettings"}
+    assert direct_host_calls == {"evaluatePassiveGuard", "migrateLegacySettings"}
     assert "'storage'" in script.split("optionalCapabilities:", 1)[1].split("]", 1)[0]
     assert "soccerGame.storage.get(SOCCER_VOICE_MIX_STORAGE_KEY)" in script
     assert "soccerGame.storage.set(SOCCER_VOICE_MIX_STORAGE_KEY" in script

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Literal,
@@ -14,6 +15,11 @@ from typing import (
     TypeAlias,
     TypedDict,
 )
+
+from .cards import ChatCard, PluginView
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -141,15 +147,35 @@ class PluginImagesProtocol(Protocol):
     ) -> dict[str, object]: ...
 
 
+class PluginModelsProtocol(Protocol):
+    async def get_client(self) -> AsyncOpenAI: ...
+
+
 class PluginContextProtocol(Protocol):
     @property
     def images(self) -> PluginImagesProtocol: ...
+
+    @property
+    def models(self) -> PluginModelsProtocol: ...
 
     plugin_id: str
     metadata: Metadata
     logger: LoggerLike | None
     config_path: str | Path | None
     bus: BusProtocol | None
+
+    async def create_card(self, *, html: str, summary: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          target_lanlan: str | None = None) -> "ChatCard": ...
+
+    def get_card(self, card_id: str, *, target_lanlan: str | None = None) -> "ChatCard": ...
+
+    async def create_view(self, *, title: str, html: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          summary: str | None = None,
+                          target_lanlan: str | None = None) -> "PluginView": ...
+
+    def get_view(self, view_id: str, *, target_lanlan: str | None = None) -> "PluginView": ...
 
     async def get_own_config(self, timeout: float = 5.0) -> object: ...
 
@@ -295,6 +321,7 @@ __all__ = [
     "PushMessageRejected",
     "PushMessageResult",
     "PluginImagesProtocol",
+    "PluginModelsProtocol",
     "PushMessageSubmitted",
     "RouterProtocol",
 ]

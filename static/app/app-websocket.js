@@ -2312,10 +2312,21 @@
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
-            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+            if (typeof data === 'string' && /start_session|pause_session|end_session/.test(data)) {
                 try {
                     var msg = JSON.parse(data);
                     var handshakeStamped = false;
+                    if (msg && ['start_session', 'pause_session', 'end_session'].indexOf(msg.action) !== -1) {
+                        // Low-frequency diagnostics: send only bundled script names and
+                        // line numbers, never a full stack, URL, or user message.
+                        try {
+                            var sites = String(new Error().stack || '').match(/app-[a-z-]+\.js:\d{1,6}:\d{1,6}/g);
+                            if (sites) {
+                                msg.lifecycle_trace = sites.slice(0, 4).join(';');
+                                handshakeStamped = true;
+                            }
+                        } catch (_) { /* Diagnostics must not prevent sending. */ }
+                    }
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
                         handshakeStamped = true;
@@ -2349,6 +2360,56 @@
             }
             return rawSend(data);
         };
+    }
+
+    // Pull the backend VMC state after the chat socket connects, so a page that
+    // missed the one-shot vmc_state_changed broadcast still starts sampling.
+    // The status probe is a plain fetch on purpose: calling into the lazy
+    // facade would pull in the full sender on every VRM page, defeating the
+    // loader's "no VMC work until someone enables it" contract. Only a backend
+    // that reports enabled is worth waking the sender for.
+    var _vmcConnectSyncRetryArmed = false;
+
+    function _syncVmcStateOnConnect() {
+        if (!window.vrmVmcSender
+            || typeof window.vrmVmcSender.syncStatusFromBackend !== 'function') {
+            // vrm-vmc-loader.js 要等 three-ready 之后才开始拉取，聊天 WS 的
+            // onopen 有可能先到。此时不能直接放弃：本次连接周期会永远错过
+            // 恢复窗口。挂一次性监听，等 VRM 模块就绪事件再补一次探测。
+            // 非 VRM 页面不会加载门面，事件也不会来，监听器随页面闲置。
+            //
+            // 标志是模块级的，监听器也只挂一份：门面是全局单例，重连期间
+            // 再挂一份只会对同一个门面重复探测，并让 once 监听器随重连累积。
+            // 待补的那一次探测由已挂的监听器负责，因此这里直接返回。
+            if (!_vmcConnectSyncRetryArmed) {
+                _vmcConnectSyncRetryArmed = true;
+                var retryWhenFacadeReady = function () {
+                    // 先清标志再重入：若门面仍未就绪，重入会重新挂一次监听，
+                    // 否则这条恢复路径在本页面剩余生命周期内彻底失效。
+                    _vmcConnectSyncRetryArmed = false;
+                    window.removeEventListener('vrm-modules-ready', retryWhenFacadeReady);
+                    window.removeEventListener('vrm-modules-failed', retryWhenFacadeReady);
+                    _syncVmcStateOnConnect();
+                };
+                window.addEventListener('vrm-modules-ready', retryWhenFacadeReady, { once: true });
+                window.addEventListener('vrm-modules-failed', retryWhenFacadeReady, { once: true });
+            }
+            return;
+        }
+        fetch('/api/vmc/status', { credentials: 'same-origin' })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || data.success === false || data.enabled !== true) return;
+                // Already sampling: syncStatusFromBackend() is idempotent, but
+                // skipping avoids a redundant status round-trip per reconnect.
+                if (window.__NEKO_VMC_ACTIVE__ === true) return;
+                return window.vrmVmcSender.syncStatusFromBackend();
+            })
+            .catch(function (error) {
+                console.warn('[VMC] connect-time state sync failed:', error);
+            });
     }
 
     function connectWebSocket() {
@@ -2430,6 +2491,12 @@
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
             }));
+
+            // Recover a VMC enable that happened while this page was away.
+            // vmc_state_changed is a one-shot broadcast, so a plugin enabling
+            // VMC before the page loaded (or during a reconnect gap) would
+            // otherwise leave the UDP sender running with no frame source.
+            _syncVmcStateOnConnect();
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -2701,6 +2768,11 @@
                 var response = JSON.parse(event.data);
                 if (response.type === 'catgirl_switched') {
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
+                }
+
+                if (response.type === 'plugin_view') {
+                    if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
                 }
 
                 if (response.type === 'chat_blocks') {
@@ -3340,6 +3412,24 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'ASR_INPUT_CONNECTING'
+                        || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
+                        || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
+                        var deliveryMessages = {
+                            ASR_INPUT_CONNECTING: ['microphone.inputConnecting', 'Connecting speech recognition. Your audio is waiting to be sent.'],
+                            ASR_INPUT_DELIVERY_FAILED: ['microphone.inputDeliveryFailed', 'Your speech could not be delivered completely. Restart voice input and say it again.'],
+                            ASR_INPUT_DELIVERY_UNCERTAIN: ['microphone.inputDeliveryUncertain', 'Speech delivery was interrupted. Some audio may have been received; it will not be resent automatically.']
+                        };
+                        var deliveryMessage = deliveryMessages[statusCode];
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t(deliveryMessage[0]) : deliveryMessage[1],
+                                statusCode === 'ASR_INPUT_CONNECTING' ? 3000 : 6000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
@@ -3393,6 +3483,62 @@
                         window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
                         return;
                     }
+
+                    if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        var activationState = (statusDetails && statusDetails.state) || '';
+                        var allowedActivationStates = [
+                            'disabled', 'preparing', 'waiting', 'verifying',
+                            'replaying', 'active', 'unavailable', 'closed'
+                        ];
+                        if (allowedActivationStates.indexOf(activationState) !== -1) {
+                            var activationIdentity = [
+                                statusDetails.session_id,
+                                statusDetails.microphone_generation,
+                                statusDetails.route_generation,
+                                statusDetails.profile_revision,
+                                statusDetails.permission_revision
+                            ].join(':');
+                            var activationRevision = Number(statusDetails.revision) || 0;
+                            if (S.voiceSessionActivationIdentity === activationIdentity
+                                && activationRevision <= (S.voiceSessionActivationRevision || 0)) {
+                                return;
+                            }
+                            var previousActivationState = S.voiceSessionActivationState || '';
+                            S.voiceSessionActivationIdentity = activationIdentity;
+                            S.voiceSessionActivationRevision = activationRevision;
+                            S.voiceSessionActivationState = activationState;
+                            document.documentElement.setAttribute(
+                                'data-voice-session-activation-state',
+                                activationState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-session-activation-changed',
+                                { detail: statusDetails }
+                            ));
+                            if (previousActivationState !== activationState
+                                && S.isRecording === true
+                                && typeof window.showStatusToast === 'function') {
+                                if (activationState === 'waiting') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionWaiting') : 'Waiting for your voice to activate the conversation.',
+                                        2500
+                                    );
+                                } else if (activationState === 'active') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionActive') : 'Voice conversation activated.',
+                                        2500
+                                    );
+                                } else if (activationState === 'unavailable') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionUnavailable') : 'Voice activation is unavailable. Standby audio will not be uploaded.',
+                                        5000
+                                    );
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -4099,6 +4245,20 @@
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
                     }
 
+                // -------- vmc_state_changed --------
+                } else if (response.type === 'vmc_state_changed') {
+                    // A plugin (or any non-browser client) enabled the backend
+                    // VMC sender. The browser owns the frame source, so wake it
+                    // here; syncStatusFromBackend() lazy-loads the real sender,
+                    // flips __NEKO_VMC_ACTIVE__ and starts its own polling.
+                    if (response.enabled === true && window.vrmVmcSender
+                        && typeof window.vrmVmcSender.syncStatusFromBackend === 'function') {
+                        Promise.resolve(window.vrmVmcSender.syncStatusFromBackend())
+                            .catch(function (error) {
+                                console.warn('[VMC] backend-enable sync failed:', error);
+                            });
+                    }
+
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};
@@ -4714,7 +4874,6 @@
                     // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
                     var _ackAnswersThisWindow = !S.sessionStartedResolver
                         || !S._pendingSessionStartRequestId
-                        || !response.request_id
                         || response.request_id === S._pendingSessionStartRequestId;
                     if (!_ackAnswersThisWindow) {
                         console.log('[App] session_started answers another start',

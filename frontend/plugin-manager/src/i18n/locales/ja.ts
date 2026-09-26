@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 日本語言語パック
  */
 export default {
+  modelApi: modelApiMessages['ja'],
+  modelBindings: modelBindingsMessages['ja'],
   development: {
     guidePurpose: "この画面はワンクリックでプラグインを開発するものではありません。既存のソースをインポート可能なプラグインにワンクリックでパッケージ化し、継続して開発するための画面です。",
     navTitle: "開発プラグイン",

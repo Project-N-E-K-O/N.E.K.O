@@ -9,6 +9,7 @@ description = "N.E.K.O. Desktop"
 readme = "README.MD"
 requires-python = "==3.11.*"
 dependencies = [
+  "av==16.0.1",
   "fastapi~=0.115.9",
   "websockets~=15.0.1",
   "soxr~=0.5.0",
@@ -101,6 +102,16 @@ dependencies = [
   # 127.0.0.1:39539.
   "python-osc>=1.9.0",
 ]
+
+[project.optional-dependencies]
+# Optional local wake-word inference; model weights and the patched runtime are
+# provisioned separately. Keep this extra dependency-free: the upstream
+# 1.13.8 wheel is not compatible with the timestamp/decoder patches required by
+# the backend, and publishing a platform-specific custom wheel through the
+# lockfile would silently install the wrong runtime on unsupported platforms.
+# Install the locally built 1.13.8+neko.kws2 wheel as documented in
+# docs/development/wake-word-runtime.md.
+wake-word = []
 
 [tool.hatch.version]
 path = "config/application.py"

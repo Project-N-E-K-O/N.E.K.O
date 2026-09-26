@@ -30,7 +30,11 @@ await window.vrmVmcSender.disable()
 
 ## 出力
 
-backend は Three.js の右手座標を Unity/VMC 座標へ変換し、`/VMC/Ext/OK`、`/VMC/Ext/T`、`/VMC/Ext/Root/Pos`、`/VMC/Ext/Bone/Pos`、`/VMC/Ext/Blend/Val`、`/VMC/Ext/Blend/Apply` を送信します。
+backend は Three.js の右手座標を Unity/VMC 座標へ変換し、`/VMC/Ext/OK`、`/VMC/Ext/T`、`/VMC/Ext/Root/Pos`、`/VMC/Ext/Bone/Pos`、`/VMC/Ext/Blend/Val`、`/VMC/Ext/Blend/Apply` を送信します。加えて `/VMC/Ext/VRM` を低頻度で送信します（model 変更時に一度だけ。receiver 側で現在の model を識別するため）。
+
+1 frame あたり bone は最大 64、expression は最大 256 です。2 つの上限は独立に適用されます。bone が 65 本の frame は expression の数に関わらず切り詰められ、その逆も同様です。first-party sampler は固定の 55 humanoid bone を走査するため、bone の上限に達し得るのは `/api/vmc/ws` へ直接送る third-party publisher だけです。expression の上限は browser 側でも到達可能で、custom expression が数百ある model が該当します。
+
+超過分は破棄され、上限ごとに warning が一度だけ記録されます。sampler は送信前に切り詰めるため、browser publisher の expression warning は browser console に出ます。backend 側の warning は third-party publisher を対象とします。
 
 画面表示用の位置・scale・rotation は VMC root に使いません。VMC は独立した identity root を持つため、desktop avatar の移動や resize は receiver の world origin に影響しません。
 
@@ -60,6 +64,10 @@ mutation route には same-origin CSRF header が必要です。first-party code
 
 `host` は ASCII hostname または IPv4、`port` は `1..65535` の整数、`send_rate_hz` は `1..120` の整数です。
 
+frame の sampling は browser 側が担当するため、disabled から enabled への遷移時に backend が chat WebSocket 経由で `{"type": "vmc_state_changed", "enabled": true}` を broadcast し、page が完全な sender を読み込んで per-frame sampling を開始します。plugin などの非 browser client は、page の console で `enable()` を手動実行せずにこの endpoint だけで有効化できます。page が未接続の場合、UDP sender は開きますが接続されるまで frame は送出されません。
+
+再度呼び出しても（`port` の変更のみなど）sampling は既に動作しているため broadcast は行われません。
+
 ### `POST /api/vmc/disable`
 
 terminal VMC state を送信し、UDP client を閉じて disabled state を返します。
@@ -80,6 +88,10 @@ terminal VMC state を送信し、UDP client を閉じて disabled state を返�
 
 process-wide publisher は 1 つだけです。server は最新の pending normal frame を 1 件だけ保持し、in-flight frame の後に release を直列化し、10 秒間 valid frame がない publisher を解放します。
 
+browser はこの socket を `window.WebSocket` ではなく、隠し同一 origin iframe から借用した constructor で開きます。desktop build の preload は top-level constructor を差し替え、最後に作られた socket を URL で区別せず chat IPC proxy target として登録するため、そこから作った VMC socket は chat channel を奪ってしまいます。probe iframe を作成できず（CSP `frame-src`、sandbox）**かつ** top-level constructor の source が `[native code]` でない場合、VMC は reconnect を続けずに接続を拒否し、理由を log して sampling を停止します。motion 出力は復旧できますが、奪われた chat channel は復旧できません。
+
+後者は heuristic であり、host についての事実ではありません。通常の browser の constructor は native binding なので iframe が block されても代償はありませんが、WebSocket が engine 内蔵ではなく JavaScript で実装された host では source が読めるため non-native と判定されます（Node の undici `WebSocket` は `class _WebSocket extends EventTarget` と表示されます）。両方の条件が重なった場合の症状は出力が無音になることで、同一 origin frame を許可すれば（`frame-src 'self'`）復旧します。借用が成功すればこの判定自体を通りません。
+
 | Close code | 意味 |
 | --- | --- |
 | `4403` | Origin または authentication 拒否 |
@@ -95,3 +107,4 @@ process-wide publisher は 1 つだけです。server は最新の pending norma
 - full-rate rendering 中は cumulative scheduling により設定 rate に近い平均値になります。active animation や interaction がない VRM は意図的に約 30 Hz へ throttle され、activity の再開後に rate が戻ります。
 - 開発環境では `uv sync` で locked `python-osc` dependency を導入します。
 - sampling error 時は render を保護するため送信を一時停止し、後続の backend status poll 後に再試行します。
+- desktop chat channel を奪う旨の console error が出る場合、同一 origin の probe iframe が block され、**かつ** `window.WebSocket` の source が `[native code]` ではないため native constructor を取得できていません。後者は heuristic なので、preload が全く無い browser でも原理上ここに到達し得ます。いずれの場合も、同一 origin frame を許可する（`frame-src 'self'`）までは frame を送出しません。iframe から借用できればこの判定自体を通りません。

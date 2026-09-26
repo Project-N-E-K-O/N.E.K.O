@@ -293,6 +293,13 @@ async function main() {
       listCharacters() { return []; },
     },
   });
+  // Use the game's real strict command schema, so adding a payload field but
+  // forgetting its SDK contract cannot silently pass this integration test.
+  const drawingSource = fs.readFileSync(path.resolve(sdkDir, '../games/drawing_guess/drawing-guess.js'), 'utf8');
+  const contractScope = { window: {} };
+  vm.runInNewContext(drawingSource.slice(0, drawingSource.indexOf('  var ROUND_FALLBACK_SECONDS'))
+    + 'window.contracts = ROUND_COMMAND_CONTRACTS; })();', contractScope);
+  const drawingContracts = JSON.parse(JSON.stringify(contractScope.window.contracts));
   const game = await windowMock.NekoMiniGame.connect({
     id: 'drawing-guess',
     version: '0.1.0',
@@ -319,23 +326,7 @@ async function main() {
             additionalProperties: true,
           },
         },
-        'round:ai-draw-review': {
-          request: {
-            type: 'object',
-            properties: {
-              client_round_token: { type: 'integer', minimum: 0 },
-              image_data_url: { type: 'string', maxLength: 1800000 },
-            },
-            required: ['client_round_token', 'image_data_url'],
-            additionalProperties: false,
-          },
-          response: {
-            type: 'object',
-            properties: { ok: { type: 'boolean' } },
-            required: ['ok'],
-            additionalProperties: true,
-          },
-        },
+        'round:ai-draw-review': drawingContracts['round:ai-draw-review'],
       },
     },
   }, { transport, windowImpl: windowMock, documentImpl: windowMock.document });
@@ -478,6 +469,7 @@ async function main() {
 
   const commandResult = await game.commands.execute('round:start', {
     marker: 'drawing-command-round-trip',
+    render_language: 'zh-CN',
     game_type: 'forged_game_type',
     session_id: 'forged-session',
     lanlan_name: 'Forged Neko',
@@ -498,6 +490,7 @@ async function main() {
   assert(commandCall?.url === '/api/game/drawing_guess/round/start',
     `the trusted command alias/path was not used: ${commandCall?.url}`);
   assert(commandCall.body.marker === 'drawing-command-round-trip'
+    && commandCall.body.render_language === 'zh-CN'
     && commandCall.body.game_type === 'drawing_guess'
     && commandCall.body.session_id === 'drawing-sdk-session'
     && commandCall.body.lanlan_name === 'SDK Neko'
@@ -512,12 +505,14 @@ async function main() {
   const reviewImage = 'data:image/jpeg;base64,YWktZHJhd2luZw==';
   const reviewResult = await game.commands.execute('round:ai-draw-review', {
     client_round_token: 1,
+    render_language: 'zh-TW',
     image_data_url: reviewImage,
   }, { timeoutMs: 120000 });
   assert(reviewResult.ok === true && reviewResult.data.ok === true,
     'the drawing review command did not complete through the SDK');
   const reviewCall = calls.find((call) => call.url.endsWith('/ai-draw/review'));
   assert(reviewCall?.url === '/api/game/drawing_guess/ai-draw/review'
+    && reviewCall.body.render_language === 'zh-TW'
     && reviewCall.body.image_data_url === reviewImage
     && reviewCall.body.client_round_token === 1
     && reviewCall.body.game_type === 'drawing_guess'
