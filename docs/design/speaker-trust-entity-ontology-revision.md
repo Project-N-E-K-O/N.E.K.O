@@ -23,7 +23,7 @@
 
 **判据的正确性标尺**：本仓库唯一一次成功的自动跨标识链接是遥测侧的 `device_alias_edges`（`local_server/telemetry_server/storage.py:1108-1116`），它成立的**全部**依据是客户端在**同一条已认证 payload 里同时上报** `device_id` + `device_id_legacy`（`utils/token_tracker/reporting.py:470`）。**没有共现就没有边。** QQ 侧封堵 A 说明共现在结构上不存在。
 
-**唯一在两侧都存在的同类字段是显示名**，而它在代码里的取值口径本身就不一致：`qq_client.py:455` 先 `nickname` 后 `card`，`message_dispatcher.py:64` 先 `card` 后 `nickname`（**优先级相反**）；`card` 还是按群作用域；`qq_open_plat.py:582` 的 `author.username` 在本仓无任何证据会被填充。基于它自动合并 = 把两个人焊成一个 entity = 账本双份 = 评审认定的致命类。**我不设计这个启发式，也不设计它的任何变体**（时序相邻、编辑距离、bootstrap 提权、首见配对）。
+**唯一在两侧都存在的同类字段是显示名**，而它在代码里的取值口径本身就不一致：`onebot_client.py:692` 先 `nickname` 后 `card`，`message_dispatcher.py:64` 先 `card` 后 `nickname`（**优先级相反**）；`card` 还是按群作用域；`qq_open_plat.py:582` 的 `author.username` 在本仓无任何证据会被填充。基于它自动合并 = 把两个人焊成一个 entity = 账本双份 = 评审认定的致命类。**我不设计这个启发式，也不设计它的任何变体**（时序相邻、编辑距离、bootstrap 提权、首见配对）。
 
 ### (2) 「可以拆」—— 在非碰撞情形下**今天已经是拆开的**
 
@@ -515,7 +515,7 @@ existing.update(desired_provenance)                                #    / speake
 
 **本设计对此的处理：不判。** 迁移逐条做 `normalize_account_id(f"qq:{bare_key}")`，与运行期路径同一个函数、同一个结果。`legacy_import` 哨兵按 `(source, account_id)` 记，account_id 是**不可变量** ⇒ 原 §5.3 的幂等语义**逐字保持**，不存在前置方案 A 那条「键随 deployment_mode 变化 ⇒ 切模式重启即二次导入」的击穿。
 
-> 有一条**单向硬判据**存在（`qq_client.py:626/680/759` 三处发送侧硬做 `int(user_id)` ⇒ **非纯数字 key 一定不是 NapCat 起源**），但本设计**不使用它**——因为本设计不需要给任何 key 定通道。记录在此供 §2.12 的条件升级路径使用，并附反向证据：开放平台侧的 `@` 提取正则**也**写死 `\d+`（`qq_open_plat.py:610`），且 `_convert_event` 全仓**零测试覆盖**，说明该假设从未被守卫。
+> 有一条**单向硬判据**存在（`onebot_client.py:883/929/1010` 三处发送侧硬做 `int(user_id)` ⇒ **非纯数字 key 一定不是 NapCat 起源**），但本设计**不使用它**——因为本设计不需要给任何 key 定通道。记录在此供 §2.12 的条件升级路径使用，并附反向证据：开放平台侧的 `@` 提取正则**也**写死 `\d+`（`qq_open_plat.py:610`），且 `_convert_event` 全仓**零测试覆盖**，说明该假设从未被守卫。
 
 ### 2.10.4 `areconcile_from_facts` 保持可用
 
@@ -556,7 +556,7 @@ existing.update(desired_provenance)                                #    / speake
 
 绝不基于以下任何一项建立 entity 边：
 
-1. **显示名 / 昵称 / 群名片** —— `qq_client.py:455`（先 nickname）、`message_dispatcher.py:64`（先 card，**优先级相反**）、`qq_open_plat.py:582`。用户可改、非唯一、`card` 按群作用域。
+1. **显示名 / 昵称 / 群名片** —— `onebot_client.py:692`（先 nickname）、`message_dispatcher.py:64`（先 card，**优先级相反**）、`qq_open_plat.py:582`。用户可改、非唯一、`card` 按群作用域。
 2. **bootstrap 提权**（`message_dispatcher.py:44-54`）—— 触发条件是 `list_users()` 为空这个**配置状态**，不是身份证明。
 3. **时序相邻** —— 切换前后第一个说话的人。
 4. **任何编辑距离 / 相似度 / 形状启发式**。
