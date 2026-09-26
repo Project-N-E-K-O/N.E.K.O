@@ -266,6 +266,15 @@ class LLMSessionManager(
         self.goodbye_silent_updated_at: float = 0.0
         self.goodbye_silent_started_monotonic: float = 0.0
         self.goodbye_silent_completed_duration: float | None = None
+        # ── Quiet companion 模式（Issue #3156）─────────────────────
+        # 用户主动选择"猫咪安静陪伴"模式：只留桌面宠物（毛团），
+        # 不显示聊天框，不主动搭话。语义上不同于 goodbye_silent
+        # （那是"猫娘挂机离开"），这里是"用户要安静陪伴"。
+        # 复用 _park_proactive_for_goodbye 的 park 逻辑，并在
+        # delivery.py 的 preflight 里做 OR 判断。
+        self.quiet_companion: bool = False
+        self.quiet_companion_reason: str = ""
+        self.quiet_companion_updated_at: float = 0.0
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、

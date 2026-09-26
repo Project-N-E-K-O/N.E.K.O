@@ -111,6 +111,36 @@ class LifecycleMixin:
         self.goodbye_silent_completed_duration = None
         return duration
 
+    # ── Quiet companion 模式（Issue #3156）─────────────────────────
+    # 用户主动选择"猫咪安静陪伴"：只留桌面宠物，不显示聊天框，
+    # 不主动搭话。语义不同于 goodbye_silent（猫娘挂机离开），
+    # 这里是用户要安静陪伴。复用 _park_proactive_for_goodbye 的
+    # park 逻辑（把待释放 proactive 放持久队列，不丢不触发）。
+
+    def is_quiet_companion(self) -> bool:
+        """Whether the user has chosen quiet-companion (cat-only, no chat) mode."""
+        return bool(getattr(self, "quiet_companion", False))
+
+    def set_quiet_companion(self, active: bool, reason: str = "") -> None:
+        """Toggle quiet-companion mode. When entering, park pending proactive
+        callbacks so they are not dropped or released during the silence.
+        Leaving the mode does NOT auto-replay parked callbacks — they stay
+        queued until the next normal proactive cycle picks them up.
+        """
+        active = bool(active)
+        reason = str(reason or "")[:64]
+        was_active = self.is_quiet_companion()
+        self.quiet_companion = active
+        self.quiet_companion_reason = reason
+        self.quiet_companion_updated_at = time.time()
+        if active and not was_active:
+            self._park_proactive_for_goodbye()
+        if was_active != active:
+            logger.info(
+                "[%s] quiet_companion=%s reason=%s",
+                self.lanlan_name, active, reason or "-",
+            )
+
 
     async def handle_silence_timeout(self, *, expected_session=None):
         """Handle voice-input silence timeout: automatically close the session while keeping the Live2D display"""

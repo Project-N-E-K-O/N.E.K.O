@@ -885,6 +885,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     _fire_task(goodbye_mgr.trigger_agent_callbacks())
                 continue
 
+            # Quiet companion 模式（Issue #3156）：用户主动选择"猫咪安静陪伴"。
+            # 前端在切到 quiet_companion surface mode 时通过 WebSocket 通知后端，
+            # 后端抑制 proactive 主动搭话。切回 compact/full 时发 active=false。
+            if action == "quiet_companion_state":
+                qc_active = bool(message.get("active"))
+                qc_reason = str(
+                    message.get("reason")
+                    or ("quiet_companion" if qc_active else "return")
+                ).strip().lower()[:64]
+                qc_mgr = session_manager[lanlan_name]
+                qc_mgr.set_quiet_companion(qc_active, qc_reason)
+                continue
+
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
