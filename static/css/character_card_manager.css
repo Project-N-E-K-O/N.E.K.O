@@ -383,6 +383,8 @@ z-index: 5;
     overflow-y: auto;
     overflow-x: hidden;
     align-content: start;
+    /* 按内容撑开每行，避免滚动区域高度受限时压缩卡片并裁切按钮。 */
+    grid-auto-rows: max-content;
     scrollbar-width: thin;
     scrollbar-color: #7dd3ff transparent;
 }
@@ -2726,7 +2728,8 @@ line-height: 1.4;
     margin: auto 8px 0 8px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    /* 两个按钮各有 6px 外扩描边，额外保留 10px 可见间距。 */
+    gap: 22px;
 }
 
 .workshop-card .card-actions button,
@@ -7100,6 +7103,8 @@ margin-top: 10px;
 [data-theme="dark"] .layout-container {
     background-color: #121820;
     background-image: linear-gradient(180deg, rgba(20, 68, 92, 0.32), rgba(18, 24, 32, 0.92)), url('/static/icons/steam_shop_bg.png');
+    /* 遮罩铺满容器，底图等比覆盖，避免高窗口底部露出纯色背景。 */
+    background-size: 100% 100%, cover;
     color: #e6edf3;
 }
 
