@@ -111,6 +111,32 @@ class LifecycleMixin:
         self.goodbye_silent_completed_duration = None
         return duration
 
+    # ── Work companion 模式（Issue #3157）─────────────────────────
+    # 用户选择"工作陪伴"：紧凑聊天 UI + 小模型 + 较低 proactive 频率。
+    # 不同于 goodbye_silent（猫娘挂机）——work_companion 不抑制 proactive，
+    # 只是降频（delivery.py preflight 里以概率跳过部分投递）。
+
+    def is_work_companion(self) -> bool:
+        """Whether the user is in work-companion (focused, lower-cost) mode."""
+        return bool(getattr(self, "work_companion", False))
+
+    def set_work_companion(self, active: bool, reason: str = "") -> None:
+        """Toggle work-companion mode. Unlike goodbye_silent, this does NOT
+        park proactive callbacks — proactive delivery continues but at a
+        reduced rate (delivery.py preflight skips some cues probabilistically).
+        """
+        active = bool(active)
+        reason = str(reason or "")[:64]
+        was_active = self.is_work_companion()
+        self.work_companion = active
+        self.work_companion_reason = reason
+        self.work_companion_updated_at = time.time()
+        if was_active != active:
+            logger.info(
+                "[%s] work_companion=%s reason=%s",
+                self.lanlan_name, active, reason or "-",
+            )
+
 
     async def handle_silence_timeout(self, *, expected_session=None):
         """Handle voice-input silence timeout: automatically close the session while keeping the Live2D display"""
@@ -1624,6 +1650,10 @@ class LifecycleMixin:
             on_tool_call=None,
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
+            # Work companion 模式 history 裁剪（Issue #3157）
+            # OmniOfflineClient 会在每次 Human/AI message append 后调这个回调，
+            # 如果返回 True 就裁剪 history 保留最近 N 轮。
+            work_companion_check=lambda: self.is_work_companion(),
         )
         session.on_proactive_done = self.handle_proactive_complete
         session.on_thinking_active = self._make_thinking_active_callback(session)

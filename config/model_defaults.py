@@ -69,6 +69,10 @@ DEFAULT_TTS_MODEL_API_KEY = "" # 与Realtime对应的TTS模型(Native TTS)
 DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
+# Work companion 小模型（Issue #3157）用户自定义配置
+DEFAULT_COMPANION_WORK_MODEL_URL = ""
+DEFAULT_COMPANION_WORK_MODEL_API_KEY = ""
+
 # 模型配置常量（默认值）
 # 注：以下退环境的常量已经从导出列表里删除（2026-04）：
 #   * SETTING_PROPOSER_MODEL / SETTING_VERIFIER_MODEL —— 旧的 memory.settings
@@ -91,6 +95,13 @@ DEFAULT_CORRECTION_MODEL = 'qwen-max'
 DEFAULT_EMOTION_MODEL = 'qwen3.6-flash-2026-04-16'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
 DEFAULT_AGENT_MODEL = "qwen3.5-plus"
+
+# Work companion 小模型（Issue #3157）：工作陪伴模式用的较轻量、便宜的模型。
+# 默认用 qwen3.6-flash（比 qwen-max 便宜约 80%，延迟更低）。
+# 用户可以在 core_config.json 里设 COMPANION_WORK_MODEL 覆盖。
+DEFAULT_COMPANION_WORK_MODEL = "qwen3.6-flash-2026-04-16"
+DEFAULT_COMPANION_WORK_MODEL_URL = ""
+DEFAULT_COMPANION_WORK_MODEL_API_KEY = ""
 
 # 用户自定义模型配置（可选，暂未使用）
 DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐

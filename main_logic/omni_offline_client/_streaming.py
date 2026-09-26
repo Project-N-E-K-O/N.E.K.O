@@ -121,6 +121,44 @@ class _StreamingMixin:
                 self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
             logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
+    def _maybe_trim_history_for_work_companion(self) -> None:
+        """Work companion 模式 history 裁剪（Issue #3157）。
+
+        保留 SystemMessage（index 0）+ 最近 N 轮 Human/AI 消息对，丢弃中间的。
+        不裁剪 tool 消息（太复杂且罕见）。裁剪是幂等的——多次调用不会破坏
+        已裁剪好的 history。
+
+        触发条件：
+        - ``_work_companion_check`` 不为 None
+        - 调用返回 True
+        - ``_conversation_history`` 长度超过 1 + keep_turns * 2
+        """
+        check = getattr(self, "_work_companion_check", None)
+        if not callable(check):
+            return
+        try:
+            if not bool(check()):
+                return
+        except Exception:
+            return  # fail-open：回调异常时不裁剪，避免误伤
+
+        keep_turns = getattr(self, "_work_companion_keep_turns", 3)
+        history = getattr(self, "_conversation_history", None)
+        if not history or len(history) <= 1 + keep_turns * 2:
+            return
+
+        # 保留 SystemMessage（index 0）和最后 keep_turns * 2 条
+        # （每轮 = 1 Human + 1 AI）
+        tail_len = keep_turns * 2
+        trimmed = history[:1] + history[-tail_len:]
+        if len(trimmed) < len(history):
+            logger.info(
+                "OmniOfflineClient: work_companion history trimmed %d → %d "
+                "(keep_turns=%d)",
+                len(history), len(trimmed), keep_turns,
+            )
+            self._conversation_history = trimmed
+
     def _match_name_prefix(self, text: str, name: str) -> int:
         """Check if text starts with a name prefix like 'Name | ' or 'Name |'.
         Returns the length of the matched prefix, or 0 if no match.
@@ -888,6 +926,8 @@ class _StreamingMixin:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        # Work companion 模式裁剪（Issue #3157）
+        self._maybe_trim_history_for_work_companion()
         # 本次调用自己的「已提交」标记。调用方不能用全局 history 长度判断：并发的
         # 另一条文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进去了。
         if callable(on_turn_committed):
