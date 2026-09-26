@@ -53,6 +53,13 @@ from utils.doubao_tts import (
     DoubaoTtsError,
     DoubaoVoiceCloneClient,
 )
+from utils.glm_tts import (
+    GLM_TTS_DEFAULT_BASE_URL,
+    GLM_VOICE_STORAGE_KEY,
+    GlmTtsError,
+    GlmVoiceCloneClient,
+    build_glm_voice_name,
+)
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -315,7 +322,7 @@ async def voice_clone(
         prefix: voice prefix name
         ref_language: language of the reference audio; one of: ch, en, fr, de, ja, ko, ru
                       Note: this is the language of the reference audio, not the target voice
-        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, vllm_omni
+        provider: service provider; one of: cosyvoice (Alibaba Bailian), cosyvoice_intl (Alibaba international), minimax (China), minimax_intl (international), elevenlabs, mimo, vllm_omni, doubao_tts, glm_tts (Zhipu GLM voice clone)
         ref_text: transcript of the reference audio (vLLM-Omni inline clone only; must
                   correspond strictly to the audio content)
     """
@@ -555,6 +562,20 @@ async def voice_clone(
         storage_key = f'{DOUBAO_VOICE_STORAGE_KEY}{api_key[-8:]}'
         provider_label = '豆包语音'
 
+    elif provider == 'glm_tts':
+        # 智谱 GLM 声音复刻（对偶 doubao_tts 的远端注册型克隆）：key 走
+        # get_tts_api_key('glm_tts') → ASSIST_API_KEY_GLM（core/assist=glm 时自动
+        # 回退 coreApiKey），桶名 __GLM_TTS__{key 末 8 位}。
+        if not api_key:
+            return JSONResponse({
+                'error': 'GLM_TTS_API_KEY_MISSING',
+                'code': 'GLM_TTS_API_KEY_MISSING',
+                'message': '未配置智谱 GLM API Key，请先在设置中填写'
+            }, status_code=400)
+        base_url = GLM_TTS_DEFAULT_BASE_URL
+        storage_key = f'{GLM_VOICE_STORAGE_KEY}{api_key[-8:]}'
+        provider_label = '智谱GLM'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -755,6 +776,32 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
+        elif provider == 'glm_tts':
+            # GLM 声音复刻两步流（对偶 doubao）：POST /files 上传示例音频（purpose=
+            # voice-clone-input）→ POST /voice/clone 注册远端音色。voice_name 官方要求
+            # 账号内唯一，由 build_glm_voice_name 用「neko_前缀_音频MD5片段」构造，
+            # 维度与 MD5 去重键对齐；返回的 voice 即合成时的音色 ID（/audio/speech 的
+            # voice 参数官方明确支持复刻音色，dispatch 复用 cogtts worker）。
+            client = GlmVoiceCloneClient(api_key=api_key, base_url=base_url)
+            voice_name = build_glm_voice_name(prefix, audio_md5)
+            voice_id = await client.clone_voice(
+                normalized_buffer,
+                voice_name=voice_name,
+                filename=normalized_filename,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'glm_tts',
+                'source': 'clone',
+                'glm_base_url': base_url,
+                'glm_voice_name': voice_name,
+                'clone_model': 'glm-tts-clone',
+                'created_at': datetime.now().isoformat()
+            }
+
         else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import (
                 get_cosyvoice_clone_model,
@@ -801,7 +848,7 @@ async def voice_clone(
             'code': 'ELEVENLABS_UPSTREAM_ERROR',
             'provider': provider,
         }, status_code=502)
-    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError, DoubaoTtsError) as e:
+    except (MinimaxVoiceCloneError, QwenVoiceCloneError, MimoVoiceCloneError, DoubaoTtsError, GlmTtsError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
         if '超时' in error_detail:

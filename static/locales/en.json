@@ -1715,6 +1715,7 @@
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
         "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
         "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Save the Doubao Speech (Volcengine) key in the API Key Book.",
+        "glmTtsApiRequired": "This feature requires a Zhipu GLM API Key. Save the GLM key in API Key settings.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
@@ -1734,6 +1735,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Zhipu GLM Voice Clone",
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",

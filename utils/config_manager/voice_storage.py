@@ -23,6 +23,7 @@ from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
+from utils.glm_tts import GLM_VOICE_STORAGE_KEY
 from utils.tts.native_voice_registry import (
     is_free_lanlan_app_route,
     is_saveable_native_voice,
@@ -131,7 +132,15 @@ class VoiceStorageMixin:
         - mimo: ASSIST_API_KEY_MIMO
         - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
           then the dedicated Doubao Speech keybook entry
+        - glm_tts: ASSIST_API_KEY_GLM (assist GLM keybook entry; core/assist=glm
+          falls back to coreApiKey via the core_config snapshot)
         """
+        if provider == 'glm_tts':
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_GLM') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         if provider == 'cosyvoice':
             core_config = self.get_core_config()
             if self._is_vllm_omni_tts_selected(core_config):
@@ -376,6 +385,24 @@ class VoiceStorageMixin:
                 result.append(bucket)
         return result
 
+    def _get_glm_tts_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for the current GLM API key.
+
+        Dual to :meth:`_get_doubao_tts_storage_keys`: GLM cloned voices live in a
+        ``__GLM_TTS__{suffix}`` bucket keyed by the GLM API key, and a GLM clone
+        is selected by ``voice_meta.provider`` at dispatch (see
+        ``workers/cogtts.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('glm_tts')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'{GLM_VOICE_STORAGE_KEY}{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     def _get_vllm_omni_storage_keys(self) -> list[str]:
         """Return the list of voice_storage keys for vLLM-Omni cloned voices.
 
@@ -401,6 +428,8 @@ class VoiceStorageMixin:
             return 'mimo'
         if storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY):
             return 'doubao_tts'
+        if storage_key.startswith(GLM_VOICE_STORAGE_KEY):
+            return 'glm_tts'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -531,6 +560,15 @@ class VoiceStorageMixin:
                 if vid not in result:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
                         vdata['provider'] = 'doubao_tts'
+                    result[vid] = vdata
+
+        # 合并 GLM 克隆音色（dual to doubao_tts；__GLM_TTS__{suffix} 桶 + voice_meta 选中）
+        for glm_key in self._get_glm_tts_storage_keys():
+            glm_voices = voice_storage.get(glm_key, {})
+            for vid, vdata in glm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'glm_tts'
                     result[vid] = vdata
 
         # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶

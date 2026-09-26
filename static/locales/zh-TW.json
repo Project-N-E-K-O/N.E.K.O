@@ -1715,6 +1715,7 @@
         "mimoDirectLinkUnsupported": "MiMo 暫不支持直鏈克隆，請改用本地文件上傳",
         "directLinkUnsupported": "當前服務商暫不支持直鏈克隆，請改用本地文件上傳",
         "doubaoTtsApiRequired": "此功能需要豆包語音 API Key，請在 API 管理簿中填寫豆包語音(火山引擎) Key",
+        "glmTtsApiRequired": "此功能需要智譜 GLM API Key，請在 API 設定中填寫智譜（GLM）Key",
         "vllmOmniNotice": "本地 vLLM-Omni 服務，無需 API Key，請確保已配置本地服務地址",
         "vllmRefTextLabel": "參考音頻原文（vLLM-Omni 克隆必填，須與音頻內容嚴格對應）",
         "vllmRefTextHint": "逐字輸入參考音頻裡說的話，文本與音頻不符會導致克隆音質下降",
@@ -1734,6 +1735,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
             "doubao_tts": "豆包語音(火山引擎)",
+            "glm_tts": "智譜GLM聲音復刻",
             "vllm_omni": "vLLM-Omni（本機複製）"
         },
         "sourcePreset": "預製",

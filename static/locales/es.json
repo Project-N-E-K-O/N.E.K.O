@@ -1715,6 +1715,7 @@
         "mimoDirectLinkUnsupported": "MiMo no admite la clonación por enlace directo; suba un archivo local en su lugar.",
         "directLinkUnsupported": "El proveedor seleccionado no admite la clonación por enlace directo; suba un archivo local.",
         "doubaoTtsApiRequired": "Esta función requiere una clave de API de Doubao Speech. Guarda la clave de Doubao Speech (Volcengine) en el Libro de claves de API.",
+        "glmTtsApiRequired": "Esta función requiere una clave de API de Zhipu GLM. Guarda la clave GLM en la configuración de API Key.",
         "vllmOmniNotice": "Servicio local vLLM-Omni — no se necesita API Key; asegúrese de configurar la URL del servicio local",
         "vllmRefTextLabel": "Transcripción del audio de referencia (obligatorio para clonar con vLLM-Omni; debe coincidir exactamente con el audio)",
         "vllmRefTextHint": "Escriba exactamente lo que se dice en el audio de referencia; un texto incorrecto degradará la calidad del clon",
@@ -1734,6 +1735,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Clonación de voz Zhipu GLM",
             "vllm_omni": "vLLM-Omni (Clon local)"
         },
         "sourcePreset": "Predefinido",
