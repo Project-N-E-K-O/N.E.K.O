@@ -201,3 +201,33 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         return synthesize, client.aclose
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="CogTTS")
+
+
+def _glm_voice_meta_is_clone(vm) -> bool:
+    return bool(vm and vm.get("provider") == "glm_tts")
+
+
+def _glm_clone_is_selected(ctx) -> bool:
+    """GLM 克隆音色按 voice_meta.provider 选中（对偶 doubao 的 clone 选中）。
+
+    刻意不判断 config 选中（ttsModelProvider=='glm_tts'）：core_api_type=='glm' 的
+    原生 CogTTS 路径仍由 get_tts_worker 的 core 分支处理（其 key 走 tts_custom 槽），
+    若此处同时认 config，注册表优先级会把未克隆的原生用户也拦截到本条目、改用
+    assistApiKeyGlm 鉴权，破坏现有 GLM TTS 行为。"""
+    return _glm_voice_meta_is_clone(ctx.voice_meta)
+
+
+def _glm_clone_resolve(ctx):
+    from .dummy import dummy_tts_worker
+
+    vm = ctx.voice_meta or {}
+    api_key = (ctx.cm.get_tts_api_key("glm_tts") or "").strip()
+    if "***" in api_key:
+        api_key = ""
+    if not api_key:
+        logger.warning("GLM 克隆音色已选中但 API Key 缺失，改用 dummy TTS worker")
+        return dummy_tts_worker, None, None
+    # cogtts worker 的 voice 参数官方明确支持复刻音色：直接以克隆音色 ID 合成，
+    # 走同一条 SSE 流式 + 水印检测路径（vm 留作将来按 voice_meta 定制 base_url）。
+    _ = vm
+    return cogtts_tts_worker, api_key, "glm_tts"

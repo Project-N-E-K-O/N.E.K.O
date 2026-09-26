@@ -1715,6 +1715,7 @@
         "mimoDirectLinkUnsupported": "MiMo は直リンククローンに未対応です。ローカルファイルのアップロードをご利用ください",
         "directLinkUnsupported": "選択中のプロバイダーは直リンククローンに未対応です。ローカルファイルをアップロードしてください",
         "doubaoTtsApiRequired": "この機能には Doubao Speech の API Key が必要です。API 管理簿に Doubao Speech（Volcengine）のキーを保存してください。",
+        "glmTtsApiRequired": "この機能には智譜 GLM API Key が必要です。API 設定に GLM キーを保存してください。",
         "vllmOmniNotice": "ローカル vLLM-Omni サービス — APIキー不要；ローカルサービスURLが設定されていることを確認してください",
         "vllmRefTextLabel": "参考音声の書き起こし（vLLM-Omni クローンでは必須、音声内容と厳密に一致させること）",
         "vllmRefTextHint": "参考音声で話されている内容をそのまま入力してください。テキストと音声が合わないとクローン品質が低下します",
@@ -1734,6 +1735,7 @@
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo（小米）",
             "doubao_tts": "Doubao Speech (Volcengine)",
+            "glm_tts": "Zhipu GLM ボイスクローン",
             "vllm_omni": "vLLM-Omni（ローカルクローン）"
         },
         "sourcePreset": "プリセット",

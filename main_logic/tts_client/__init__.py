@@ -80,7 +80,7 @@ from .workers.cosyvoice import (
     _cosyvoice_clone_is_selected,
     _cosyvoice_clone_resolve,
 )
-from .workers.cogtts import cogtts_tts_worker
+from .workers.cogtts import cogtts_tts_worker, _glm_clone_is_selected, _glm_clone_resolve
 from .workers.gemini import gemini_tts_worker
 from .workers.openai import (
     openai_tts_worker,
@@ -193,6 +193,7 @@ __all__ = [
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
     "_doubao_is_selected", "_doubao_resolve",
+    "_glm_clone_is_selected", "_glm_clone_resolve",
 ]
 
 
@@ -624,6 +625,27 @@ _tts_providers.register(_tts_providers.TTSProvider(
     editable_endpoint=True,
     probe_kind='http_tts',
     probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
+))
+
+# GLM 克隆音色（voice_meta.provider=='glm_tts' 选中，priority 66 紧随 doubao）。
+# 与 doubao 的差异：合成复用 cogtts_tts_worker（/paas/v4/audio/speech 的 voice 参数
+# 官方支持复刻音色，走同一条 SSE 流式 + 水印检测路径），key 从 assistApiKeyGlm
+# （core/assist=glm 时回退 coreApiKey）解析，不引入独立 worker。is_selected 只认
+# voice_meta、不认 config——core_api_type=='glm' 的原生路径仍走 get_tts_worker 的
+# core 分支，避免本条目拦截未克隆的原生 GLM 用户。tts_dropdown_only=True /
+# tts_config_visible=False：GLM 本身已是 core/assist LLM provider，不进 TTS 下拉。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='glm_tts',
+    kind='hosted',
+    priority=66,
+    capabilities=frozenset({'clone'}),
+    is_selected=_glm_clone_is_selected,
+    resolve=_glm_clone_resolve,
+    default_url='https://open.bigmodel.cn/api/paas/v4',
+    default_model='glm-tts-clone',
+    default_voice='',
     tts_dropdown_only=True,
     tts_config_visible=False,
 ))
