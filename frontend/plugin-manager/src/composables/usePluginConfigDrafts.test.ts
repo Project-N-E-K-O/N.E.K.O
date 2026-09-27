@@ -525,3 +525,30 @@ describe('field undo', () => {
     expect(drafts.dirty.value).toBe(false)
   })
 })
+
+describe('refresh failure after save', () => {
+  it('keeps a retained draft savable when the post-save refresh fails', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        files: { default: { path: 'default.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.canSave.value).toBe(true))
+
+    drafts.updateDraft({ cache: { ttl: 9 } })
+    vi.mocked(getPluginProfilesState).mockRejectedValueOnce(new Error('offline'))
+    await drafts.saveProfile()
+    expect(drafts.error.value).not.toBeNull()
+
+    // A later edit survives the failed refresh and must remain savable.
+    drafts.updateDraft({ cache: { ttl: 10 } })
+    expect(drafts.canSave.value).toBe(true)
+  })
+})

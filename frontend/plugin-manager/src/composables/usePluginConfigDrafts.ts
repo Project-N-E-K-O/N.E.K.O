@@ -124,7 +124,10 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       version = ++loadVersion
     if (!id) return
     loading.value = true
-    ready.value = false
+    // Only a discarding reload invalidates what was loaded. A refresh that keeps drafts
+    // (such as the one after a save) keeps the previous state usable when it fails, so a
+    // retained dirty draft can still be saved again.
+    if (discardDrafts) ready.value = false
     error.value = null
     try {
       const [baseResult, effectiveResult, profileResult] = await Promise.all([
