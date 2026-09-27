@@ -131,6 +131,13 @@ async function flushDeletion() {
 describe('profile deletion lifecycle', () => {
   it('shows success for the current mounted plugin', async () => {
     const { deletion, success } = await startProfileDeletion()
+    // The refreshed list no longer has the deleted profile, so the selection moves on.
+    vi.mocked(configApi.getPluginProfilesState).mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: { active: null, files: {} },
+    })
     deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
     await vi.waitFor(() => expect(success).toHaveBeenCalledExactlyOnceWith('common.success'))
   })

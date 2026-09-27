@@ -612,7 +612,8 @@ async function removeProfile() {
     )
     if (!alive || id !== props.pluginId || name !== selected.value) return
     await drafts.deleteProfile(name)
-    if (!alive || id !== props.pluginId || name !== selected.value) return
+    // The refreshed list no longer holds `name`, so the selection has moved on by now.
+    if (!alive || id !== props.pluginId) return
     ElMessage.success(t('common.success'))
   } catch (err) {
     if (alive && id === props.pluginId && err !== 'cancel' && err !== 'close')
