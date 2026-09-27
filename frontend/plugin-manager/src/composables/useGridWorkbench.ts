@@ -161,6 +161,7 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   let pinyinRetryAfter = 0
   let pinyinRetryTimer: ReturnType<typeof setTimeout> | null = null
   let pinyinAutoRetries = 0
+  let pinyinDisposed = false
   // `baseItems` creates an immutable snapshot only when this workbench owns
   // the search index. Keeping that snapshot independent from query state is
   // important: typing in the filter must not clone every item, while an
@@ -169,10 +170,15 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const pinyinIndexCache = new WeakMap<object, { key: string; value: T }>()
 
   function ensurePinyinSearch() {
-    if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
+    if (pinyinDisposed || !config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
     pinyinLoad = import('@/utils/pinyinSearch')
-      .then(({ safePinyin }) => { pinyinSearch.value = safePinyin })
+      .then(({ safePinyin }) => {
+        if (!pinyinDisposed) pinyinSearch.value = safePinyin
+      })
       .catch(() => {
+        // Dispose can win the race: the import fails after the scope cleanup
+        // already ran, and a timer created here would otherwise keep retrying.
+        if (pinyinDisposed) return
         // The watcher only runs when the query text changes. A failed import
         // would otherwise stay failed for as long as the user keeps typing nothing.
         pinyinRetryAfter = Date.now() + 5000
@@ -181,7 +187,7 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
         pinyinRetryTimer = setTimeout(() => {
           pinyinRetryTimer = null
           pinyinRetryAfter = 0
-          if (state.filterText.value.trim()) void ensurePinyinSearch()
+          if (!pinyinDisposed && state.filterText.value.trim()) void ensurePinyinSearch()
         }, 5000)
       })
       .finally(() => { pinyinLoad = null })
@@ -190,7 +196,9 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
 
   if (getCurrentScope()) {
     onScopeDispose(() => {
+      pinyinDisposed = true
       if (pinyinRetryTimer) clearTimeout(pinyinRetryTimer)
+      pinyinRetryTimer = null
     })
   }
 
