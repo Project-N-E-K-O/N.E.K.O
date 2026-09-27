@@ -127,6 +127,7 @@ function createHarness({
     manualAudio = false,
     autoFinish = true,
     autoAdvance = true,
+    startResponseErrorAfterCreate = false,
     profileError,
     verificationFailures = 0,
     profileTransportErrorAfterCommit = false,
@@ -215,6 +216,7 @@ function createHarness({
         if (call.url === `${API_ROOT}/enrollment/start`) {
             if (startGate) await startGate.promise;
             enrollmentId = 'enrollment-1';
+            if (startResponseErrorAfterCreate) throw new Error('start_response_lost');
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/segment` || call.url === `${API_ROOT}/enrollment/profile`) {
@@ -596,6 +598,16 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
 });
 
+test('a lost enrollment-start response adopts the active server session', async () => {
+    const harness = createHarness({ startResponseErrorAfterCreate: true });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-start');
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+});
+
 test('accepted segment waits for explicit next-segment action', async () => {
     const harness = createHarness({ autoAdvance: false });
     await harness.initialize();
@@ -687,6 +699,33 @@ test('a late focus status response cannot clear a newly started enrollment', asy
 
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+});
+
+test('a stale passive refresh cannot overwrite a newer refresh', async () => {
+    const focusStatusGate = deferred();
+    const harness = createHarness({
+        initialProfile: true,
+        initialRequested: true,
+        focusStatusGate,
+    });
+    await harness.initialize();
+
+    harness.dispatch('focus');
+    await flush(2);
+    harness.dispatch('focus');
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-filter').checked, true);
+
+    focusStatusGate.resolve(jsonResponse({
+        requested_enabled: false,
+        effective_enabled: false,
+        effective_reason: 'disabled',
+        has_profile: true,
+        enrollment: null,
+        runtime_mode: 'enforce',
+    }));
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-filter').checked, true);
 });
 
 test('a short remaining lease is rejected before starting a futile recording', async () => {

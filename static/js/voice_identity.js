@@ -75,6 +75,7 @@
         cancelPending: false,
         cancelReleaseWhenIdle: false,
         statusEpoch: 0,
+        statusRefreshSequence: 0,
         filterPending: false,
         busy: false,
         initialized: false,
@@ -301,10 +302,13 @@
 
     async function reconcileStatus() {
         const requestEpoch = state.statusEpoch;
+        const requestSequence = ++state.statusRefreshSequence;
         try {
             const status = await apiRequest('/status', { method: 'GET' });
-            if (requestEpoch === state.statusEpoch) applyStatus(status);
-            return requestEpoch === state.statusEpoch ? status : null;
+            const current = requestEpoch === state.statusEpoch
+                && requestSequence === state.statusRefreshSequence;
+            if (current) applyStatus(status);
+            return current ? status : null;
         } catch (_) {
             return null;
         }
@@ -824,7 +828,13 @@
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
             let started;
-            try { started = await apiRequest('/enrollment/start', { method: 'POST' }); }
+            try {
+                started = await apiRequest('/enrollment/start', { method: 'POST' });
+            } catch (error) {
+                const canonical = await reconcileStatus();
+                if (!canonical || !state.enrollmentId) throw error;
+                started = canonical;
+            }
             finally {
                 if (settleStart) settleStart();
                 if (state.startSettled === startSettled) state.startSettled = null;
