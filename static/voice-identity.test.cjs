@@ -120,6 +120,8 @@ function createHarness({
     startGate,
     mediaGate,
     mediaError,
+    selectedMicrophoneId,
+    profileStatus = 422,
     audioChunks = FULL_AUDIO_CHUNKS,
     manualAudio = false,
     autoFinish = true,
@@ -213,7 +215,7 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/enrollment/segment` || call.url === `${API_ROOT}/enrollment/profile`) {
             const segment = call.options.headers.get('x-voice-identity-segment');
-            if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: 422 });
+            if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: profileStatus });
             if (segment === '3' && remainingInconsistentReferences > 0) {
                 remainingInconsistentReferences -= 1;
                 serverNextSegment = 1;
@@ -353,6 +355,9 @@ function createHarness({
                 'voiceIdentity.errorSevereClipping': 'Recording is distorted.',
                 'voiceIdentity.errorIncompleteCapture': 'Recording did not finish.',
                 'voiceIdentity.errorInsufficientTime': 'Not enough time remains for the next recording.',
+                'voiceIdentity.errorModelUnavailable': 'Voice model unavailable.',
+                'voiceIdentity.errorAudioProcessingUnavailable': 'Audio processing unavailable.',
+                'voiceIdentity.errorSecureStorageUnavailable': 'Secure storage unavailable.',
                 'voiceIdentity.deleteConfirm': 'Delete the profile?',
                 'voiceIdentity.delete': 'Delete voice profile',
             };
@@ -417,7 +422,9 @@ function createHarness({
                     mediaRequests += 1;
                     mediaConstraintCalls.push(constraints);
                     if (mediaGate) await mediaGate.promise;
-                    if (mediaError) throw mediaError;
+                    const requestError = Array.isArray(mediaError)
+                        ? mediaError[mediaRequests - 1] : mediaError;
+                    if (requestError) throw requestError;
                     const track = { stopped: false, stop() { this.stopped = true; } };
                     const stream = { getTracks: () => [track], track };
                     mediaStreams.push(stream);
@@ -425,6 +432,9 @@ function createHarness({
                 },
             },
         },
+        localStorage: selectedMicrophoneId
+            ? { getItem: key => key === 'neko_selected_microphone' ? selectedMicrophoneId : null }
+            : undefined,
         fetch: async (url, options = {}) => {
             const call = { url, options: { ...options, headers: new MockHeaders(options.headers) } };
             fetchCalls.push(call);
@@ -568,6 +578,7 @@ test('accepted segment waits for explicit next-segment action', async () => {
     await flush(4);
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-voice-state').textContent, 'Waiting for speech');
     assert.equal(harness.mediaRequests, 1);
     await harness.emit('voice-identity-next');
     await flush(4);
@@ -643,7 +654,7 @@ test('a late focus status response cannot clear a newly started enrollment', asy
 });
 
 test('a short remaining lease is rejected before starting a futile recording', async () => {
-    const harness = createHarness({ remainingSeconds: 5 });
+    const harness = createHarness({ remainingSeconds: 34 });
     await harness.initialize();
 
     await harness.emit('voice-identity-start');
@@ -729,6 +740,23 @@ test('canonical enrollment audio errors show localized messages', async () => {
     );
 });
 
+test('stable backend failures keep their actionable enrollment messages', async () => {
+    const cases = [
+        ['model_unavailable', 'Voice model unavailable.'],
+        ['audio_processing_unavailable', 'Audio processing unavailable.'],
+        ['secure_storage_unavailable', 'Secure storage unavailable.'],
+    ];
+    for (const [profileError, expectedMessage] of cases) {
+        const harness = createHarness({ profileError, profileStatus: 503 });
+        await harness.initialize();
+        const enrolling = harness.emit('voice-identity-start');
+        await flush(8);
+        assert.equal(harness.elements.get('voice-identity-message').textContent, expectedMessage);
+        await harness.elements.get('voice-identity-cancel').emit('click');
+        await enrolling;
+    }
+});
+
 test('missing Web Crypto cancels enrollment without attempting an upload', async () => {
     const harness = createHarness({ webCryptoAvailable: false });
     await harness.initialize();
@@ -759,6 +787,17 @@ test('microphone denial prevents enrollment start and reports a useful error', a
         false,
     );
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Microphone unavailable.');
+});
+
+test('an unreadable selected microphone falls back to the default device', async () => {
+    const harness = createHarness({
+        selectedMicrophoneId: 'stale-device',
+        mediaError: [{ name: 'NotReadableError' }, null],
+    });
+    await harness.initialize();
+    await harness.emit('voice-identity-start');
+    assert.equal(harness.mediaConstraintCalls[0].audio.deviceId.exact, 'stale-device');
+    assert.equal('deviceId' in harness.mediaConstraintCalls[1].audio, false);
 });
 
 test('canonical has_profile reveals only switch, re-enroll, and delete controls', async () => {

@@ -6,6 +6,10 @@
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
     const MAX_RECORDING_MS = VERIFICATION_RECORDING_MS;
+    // Keep the server's model timeout available for normalization and
+    // validation after capture, rather than starting a request that
+    // is certain to race the enrollment lease.
+    const ENROLLMENT_PROCESSING_MARGIN_MS = 30000;
     const ENROLLMENT_SEGMENT_COUNT = 4;
     const SEGMENT_HEADER = 'X-Voice-Identity-Segment';
     const AUDIO_CONTRACT_HEADER = 'X-Voice-Audio-Contract';
@@ -44,6 +48,9 @@
         voice_samples_inconsistent: ['voiceIdentity.errorVoiceSamplesInconsistent', '几段声音差异较大，请按提示重新录入。'],
         owner_verification_failed: ['voiceIdentity.errorOwnerVerificationFailed', '声纹验证未通过，请重录当前段。'],
         stale_enrollment: ['voiceIdentity.errorStaleEnrollment', '本次录入已过期，请重新开始。'],
+        model_unavailable: ['voiceIdentity.errorModelUnavailable', '声纹模型暂时不可用，请检查模型资源后重试。'],
+        audio_processing_unavailable: ['voiceIdentity.errorAudioProcessingUnavailable', '麦克风音频处理暂时不可用，请重启麦克风后重试。'],
+        secure_storage_unavailable: ['voiceIdentity.errorSecureStorageUnavailable', '安全存储不可用，无法保存声纹。'],
         insufficient_enrollment_time: ['voiceIdentity.errorInsufficientTime', '剩余时间不足以完成下一段，请重新开始录入。']
     });
 
@@ -518,7 +525,7 @@
             try {
                 state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
             } catch (error) {
-                if (!selectedMicrophoneId || !['NotFoundError', 'OverconstrainedError'].includes(error && error.name)) throw error;
+                if (!selectedMicrophoneId || !['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error && error.name)) throw error;
                 state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
             }
         }
@@ -698,6 +705,8 @@
         } finally {
             chunks.forEach(function (chunk) { chunk.fill(0); });
             state.captureReady = false;
+            state.voiceStatus = 'waiting';
+            state.lastVoiceAt = 0;
             state.captureAbort = null;
             state.captureFinish = null;
             window.clearInterval(timer);
@@ -779,7 +788,7 @@
         if (!Number.isFinite(state.enrollmentRemainingSeconds)) return;
         const remainingMs = state.enrollmentRemainingSeconds * 1000
             - (performance.now() - state.enrollmentStatusAt);
-        if (remainingMs <= durationMs) throw new Error('insufficient_enrollment_time');
+        if (remainingMs <= durationMs + ENROLLMENT_PROCESSING_MARGIN_MS) throw new Error('insufficient_enrollment_time');
     }
 
     async function startEnrollment() {
