@@ -989,7 +989,7 @@ async def get_subscribed_workshop_items():
                     # 使用缓存数据填充（仅在该条目 TTL 有效时）
                     cached = _ugc_details_cache[item_id_int]
                     for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
-                                'steamIDOwner', 'authorName', 'tags'):
+                                'steamIDOwner', 'authorName', 'tags', 'previewImageUrl'):
                         if key in cached:
                             item_info[key] = cached[key]
                     logger.debug(f"从缓存填充物品 {item_id} 详情: title={item_info.get('title', '?')}")

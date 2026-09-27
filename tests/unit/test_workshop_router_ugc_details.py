@@ -1,10 +1,12 @@
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from main_routers import workshop_router
 from main_routers.workshop_router import items as wr_items
+from main_routers.workshop_router import publish as wr_publish
 from main_routers.workshop_router import ugc as wr_ugc
 
 
@@ -118,3 +120,44 @@ async def test_subscribed_workshop_items_degrades_when_ugc_details_unsupported(
     assert response["total"] == 1
     assert response["items"][0]["publishedFileId"] == "123456"
     assert response["items"][0]["title"] == "未知物品_123456"
+
+
+@pytest.mark.asyncio
+async def test_subscribed_workshop_items_cache_preserves_preview_image_url(
+    monkeypatch,
+):
+    steamworks = SimpleNamespace(Workshop=_FakeWorkshop())
+    monkeypatch.setattr(wr_items, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_ugc, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(wr_ugc, "_request_workshop_item_download", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wr_ugc, "_ugc_details_cache", {
+        123456: {
+            "title": "Cached item",
+            "description": "cached description",
+            "previewImageUrl": "https://cdn.example.test/preview.png",
+            "_cache_ts": time.time(),
+        },
+    })
+
+    response = await workshop_router.get_subscribed_workshop_items()
+
+    assert response["success"] is True
+    assert response["items"][0]["previewImageUrl"] == "https://cdn.example.test/preview.png"
+
+
+@pytest.mark.asyncio
+async def test_existing_workshop_item_validation_rejects_wrong_owner(monkeypatch):
+    async def _details(*args, **kwargs):
+        return {123456: SimpleNamespace(steamIDOwner=99, title=b"Card")}
+
+    steamworks = SimpleNamespace(
+        Users=SimpleNamespace(GetSteamID=lambda: 42),
+    )
+    monkeypatch.setattr(wr_publish, "_query_ugc_details_batch", _details)
+
+    valid, error = await wr_publish._validate_existing_workshop_item(
+        steamworks, 123456, "Card"
+    )
+
+    assert valid is False
+    assert "不属于当前 Steam 账号" in error
