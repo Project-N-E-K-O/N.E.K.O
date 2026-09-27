@@ -139,6 +139,7 @@ function createHarness({
     nativeConfirm = true,
     webCryptoAvailable = true,
     initialEffectiveReason = null,
+    audioContextSampleRate = 48000,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -158,6 +159,7 @@ function createHarness({
         'voice-identity-finish',
         'voice-identity-cancel',
         'voice-identity-profile-controls',
+        'voice-identity-profile-actions',
         'voice-identity-reenroll',
         'voice-identity-delete',
         'voice-identity-filter',
@@ -285,7 +287,7 @@ function createHarness({
         constructor(options) {
             assert.equal(options?.sampleRate, TARGET_SAMPLE_RATE);
             audioContext = this;
-            this.sampleRate = 48000;
+            this.sampleRate = audioContextSampleRate;
             this.destination = {};
             this.state = 'suspended';
             this.audioWorklet = {
@@ -598,6 +600,17 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     assert.equal(harness.elements.get('voice-identity-enrollment').hidden, false);
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+});
+
+test('a browser 44.1 kHz context is resampled to the enrollment contract', async () => {
+    const harness = createHarness({ audioContextSampleRate: 44100 });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-start');
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(upload.options.headers.get('content-type'), PCM_CONTENT_TYPE);
 });
 
 test('a lost enrollment-start response adopts the active server session', async () => {
@@ -939,6 +952,23 @@ test('backend degradation disables re-enrollment for an existing profile', async
     await harness.initialize();
 
     assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+});
+
+test('a pending filter request stays available when the profile is unavailable', async () => {
+    const harness = createHarness({
+        initialRequested: true,
+        initialEffectiveReason: 'profile_incompatible',
+    });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-profile-actions').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-filter').checked, true);
+
+    harness.elements.get('voice-identity-filter').checked = false;
+    await harness.emit('voice-identity-filter', 'change');
+
+    assert.equal(harness.elements.get('voice-identity-filter').checked, false);
 });
 
 test('filter toggle sends the requested boolean and adopts canonical state', async () => {

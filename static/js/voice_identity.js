@@ -127,6 +127,7 @@
         elements.finish = document.getElementById('voice-identity-finish');
         elements.cancel = document.getElementById('voice-identity-cancel');
         elements.profileControls = document.getElementById('voice-identity-profile-controls');
+        elements.profileActions = document.getElementById('voice-identity-profile-actions');
         elements.reenroll = document.getElementById('voice-identity-reenroll');
         elements.delete = document.getElementById('voice-identity-delete');
         elements.filter = document.getElementById('voice-identity-filter');
@@ -455,7 +456,11 @@
             || state.busy || state.cancelPending || Boolean(state.enrollmentId);
         const enrollmentVisible = enrollmentActive || hasMessage;
         elements.enrollment.hidden = !enrollmentVisible;
-        elements.profileControls.hidden = !state.profileAvailable || enrollmentActive;
+        const enrollmentBusy = state.busy || state.cancelPending
+            || Boolean(state.enrollmentId) || state.segmentIndex > 0;
+        elements.profileControls.hidden = enrollmentBusy
+            || (!state.profileAvailable && !state.requestedEnabled);
+        elements.profileActions.hidden = !state.profileAvailable || enrollmentBusy;
         elements.statusDot.className = 'status-dot';
         if (state.effectiveEnabled) elements.statusDot.classList.add('ready');
         else if (state.profileAvailable) elements.statusDot.classList.add('warning');
@@ -590,11 +595,11 @@
             if (!AudioContextClass || typeof AudioWorkletNode !== 'function') {
                 throw new Error('audio_worklet_unavailable');
             }
+            // Some browsers cannot honor the requested rate. The worklet
+            // receives the actual context rate and resamples to the 48 kHz
+            // enrollment contract before upload, so do not block enrollment
+            // on a browser-specific context choice.
             const context = new AudioContextClass({ sampleRate: TARGET_SAMPLE_RATE });
-            if (context.sampleRate !== TARGET_SAMPLE_RATE) {
-                await context.close().catch(function () {});
-                throw new Error('audio_sample_rate_unsupported');
-            }
             try {
                 await context.audioWorklet.addModule('/static/audio-processor.js');
             } catch (error) {

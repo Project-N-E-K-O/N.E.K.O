@@ -138,6 +138,8 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert 'data-i18n="voiceIdentity.enrollAndEnable"' in template
     assert 'id="voice-identity-capture-status" hidden' in template
     assert 'id="voice-identity-profile-controls"' in template
+    assert 'id="voice-identity-filter-controls"' in template
+    assert 'id="voice-identity-profile-actions"' in template
     assert 'aria-labelledby="voice-filter-title"' in template
     assert 'aria-describedby="voice-filter-help"' in template
     assert 'role="status" aria-live="polite" aria-atomic="true"' in template
