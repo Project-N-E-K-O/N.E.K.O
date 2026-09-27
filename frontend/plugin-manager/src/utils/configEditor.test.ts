@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { applyProfileOverlay, configNodeMatches, restoreConfigPath } from './configEditor'
+import {
+  applyProfileOverlay,
+  configChanges,
+  configNodeMatches,
+  restoreConfigPath,
+} from './configEditor'
 
 const owns = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -157,6 +162,21 @@ describe('server merge markers and empty tables', () => {
     applyProfileOverlay(base, overlay)
     expect(base).toEqual({ a: { keep: 1, t: { x: 1 } }, cache: { ttl: 120 } })
     expect(overlay).toEqual({ a: { t: { __replace__: true, y: 3 } }, cache: {} })
+  })
+})
+
+describe('configChanges', () => {
+  it('records deleting a literal constructor table', () => {
+    const before = JSON.parse('{"constructor":{"prototype":{}}}')
+    expect(configChanges(before, {})).toEqual([
+      {
+        path: ['constructor', 'prototype'],
+        before: {},
+        after: undefined,
+        beforePresent: true,
+        afterPresent: false,
+      },
+    ])
   })
 })
 

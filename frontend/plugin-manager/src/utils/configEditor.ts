@@ -58,10 +58,12 @@ export function configChanges(
   const result: ConfigChange[] = []
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (path.length === 0 && key === 'plugin') continue
-    const a = before[key],
-      b = after[key]
     const hasA = hasOwn(before, key),
       hasB = hasOwn(after, key)
+    // Own properties only: a key that one side lacks must not resolve a prototype
+    // member (a literal `constructor` would compare against Object itself).
+    const a = hasA ? before[key] : undefined,
+      b = hasB ? after[key] : undefined
     if (hasA === hasB && configEqual(a, b)) continue
     if (
       (isConfigObject(a) || !hasA) &&
