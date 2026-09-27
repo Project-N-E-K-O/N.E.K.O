@@ -1,6 +1,10 @@
 """阿里国际版默认 TTS 路由回归测试。"""
 
 from main_logic import tts_client
+from main_logic.tts_client.workers.qwen import (
+    _QWEN_REALTIME_TTS_MODEL,
+    _resolve_qwen_realtime_tts_url,
+)
 
 
 class _FakeConfigManager:
@@ -46,3 +50,52 @@ def test_qwen_intl_default_routes_to_realtime_tts(monkeypatch):
     assert worker is tts_client.qwen_realtime_tts_worker
     assert api_key_override is None
     assert provider_key == 'qwen'
+
+
+def _patch_qwen_core_config(monkeypatch, core_config):
+    class _CM:
+        def get_core_config(self):
+            return core_config
+
+    monkeypatch.setattr(
+        "main_logic.tts_client.workers.qwen.get_config_manager",
+        lambda: _CM(),
+    )
+
+
+def test_qwen_realtime_tts_url_uses_configured_model_without_legacy_prefix(monkeypatch):
+    """新的 realtime TTS 模型名不再以 qwen3-tts 开头，配置值应原样进 URL。"""
+    _patch_qwen_core_config(monkeypatch, {
+        "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "TTS_MODEL": "qwen3-tts-flash-realtime-2026-09-01",
+        "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
+    })
+
+    url = _resolve_qwen_realtime_tts_url()
+
+    assert url.endswith("?model=qwen3-tts-flash-realtime-2026-09-01")
+
+
+def test_qwen_realtime_tts_url_ignores_realtime_model_alias(monkeypatch):
+    """TTS_MODEL 默认等于 REALTIME_MODEL，那是全模态模型名，不能拿去连 TTS。"""
+    _patch_qwen_core_config(monkeypatch, {
+        "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "TTS_MODEL": "qwen3.8-omni-flash-realtime",
+        "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
+    })
+
+    url = _resolve_qwen_realtime_tts_url()
+
+    assert url.endswith(f"?model={_QWEN_REALTIME_TTS_MODEL}")
+
+
+def test_qwen_realtime_tts_url_falls_back_when_tts_model_blank(monkeypatch):
+    _patch_qwen_core_config(monkeypatch, {
+        "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "TTS_MODEL": "  ",
+        "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
+    })
+
+    url = _resolve_qwen_realtime_tts_url()
+
+    assert url.endswith(f"?model={_QWEN_REALTIME_TTS_MODEL}")

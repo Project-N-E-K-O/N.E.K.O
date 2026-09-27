@@ -15,6 +15,8 @@
 
 from ._shared import (
     GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
+    GLM_REALTIME_BETA_FIELDS,
+    glm_realtime_gateway_model,
     Any,
     Callable,
     Dict,
@@ -32,6 +34,7 @@ from ._shared import (
     asyncio,
     base64,
     calculate_text_similarity,
+    canonical_realtime_dialect,
     get_stepfun_tts_default_voice,
     json,
     logger,
@@ -587,7 +590,13 @@ class _TransportMixin:
         self._clear_uplink_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
-        url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
+        # GLM Plus 不能出现在 ?model= 上，见 glm_realtime_gateway_model。
+        query_model = (
+            glm_realtime_gateway_model(self.model)
+            if self._is_glm_realtime()
+            else self.model
+        )
+        url = f"{self.base_url}?model={query_model}" if self._model_lower != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
@@ -644,6 +653,7 @@ class _TransportMixin:
             # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
             # Best-effort — provider may reject; if so we degrade to local-suppression-only.
             glm_session = {
+                "model": self.model,
                 "instructions": instructions,
                 "modalities": self._modalities ,
                 "voice": self.voice if self.voice else "tongtong",
@@ -655,10 +665,7 @@ class _TransportMixin:
                 "input_audio_noise_reduction": {
                     "type": "far_field",
                 },
-                "beta_fields":{
-                    "chat_mode": "video_passive",
-                    "auto_search": True,
-                },
+                "beta_fields": dict(GLM_REALTIME_BETA_FIELDS),
                 "temperature": 1.0
             }
             # GLM Realtime: tools only honoured in audio mode per docs.
@@ -673,12 +680,8 @@ class _TransportMixin:
                 "voice": self.voice if self.voice else "Momo",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
-                "input_audio_transcription": {
-                    "model": "gummy-realtime-v1"
-                },
                 "turn_detection": None if is_manual else {
-                    # TODO: 未来需要cover更多型号
-                    "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
+                    "type": "semantic_vad",
                     "threshold": 0.55,
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 650
@@ -1121,6 +1124,12 @@ class _TransportMixin:
 
                 raise
 
+    def _is_glm_realtime(self) -> bool:
+        """True when this socket speaks the GLM Realtime session dialect."""
+        if canonical_realtime_dialect(getattr(self, "_api_type", "")) == "glm":
+            return True
+        return "glm" in str(getattr(self, "_model_lower", "") or "")
+
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
         # Mirror the chat-completion chokepoint: catch any unrendered
@@ -1136,6 +1145,18 @@ class _TransportMixin:
             raise
         except Exception:
             pass
+        # GLM 的 session.update 会重置没带上的字段。缺 beta_fields 会把
+        # video_passive 打回 audio 并拆掉下游；缺 model 会把 Plus 退回默认
+        # glm-realtime。调用方显式传入时尊重调用方。
+        if self._is_glm_realtime():
+            pinned: Dict[str, Any] = {}
+            if "beta_fields" not in config:
+                pinned["beta_fields"] = dict(GLM_REALTIME_BETA_FIELDS)
+            requested_model = str(getattr(self, "model", "") or "").strip()
+            if requested_model and "model" not in config:
+                pinned["model"] = requested_model
+            if pinned:
+                config = {**config, **pinned}
         event = {
             "type": "session.update",
             "session": config

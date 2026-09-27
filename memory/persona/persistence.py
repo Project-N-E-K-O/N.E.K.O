@@ -364,6 +364,47 @@ class PersistenceMixin:
         if migrated_count:
             logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（settings）")
 
+    def _localize_synced_card_configs(self, name: str, master_basic_config, lanlan_basic_config):
+        """Re-render rename facts in this persona's own conversation language.
+
+        ``get_character_data`` builds the sentence with ``get_global_language_full()``.
+        Persona refine and scoped refine temporarily set that to the character
+        locale, then the embedding sweep and other ensure paths see the process
+        language again. Both paths persist the card, so one fact flips between
+        the two sentences on every 30-minute pass.
+        """
+        reader = getattr(self._config_manager, "_read_durable_prompt_locale", None)
+        if not callable(reader):
+            return master_basic_config, lanlan_basic_config
+        try:
+            locale = reader(name)
+        except Exception:
+            return master_basic_config, lanlan_basic_config
+        if not locale:
+            return master_basic_config, lanlan_basic_config
+        try:
+            characters = self._config_manager.load_characters()
+        except Exception:
+            return master_basic_config, lanlan_basic_config
+        if not isinstance(characters, dict):
+            return master_basic_config, lanlan_basic_config
+
+        from utils.config_manager.persona_payload import _build_effective_character_payload
+
+        master = characters.get("主人")
+        if isinstance(master, dict):
+            master_basic_config = _build_effective_character_payload(
+                master, entity="master", lang=locale,
+            )
+        catgirls = characters.get("猫娘")
+        if isinstance(catgirls, dict) and isinstance(catgirls.get(name), dict):
+            localized = dict(lanlan_basic_config or {})
+            localized[name] = _build_effective_character_payload(
+                catgirls[name], lang=locale,
+            )
+            lanlan_basic_config = localized
+        return master_basic_config, lanlan_basic_config
+
     def _apply_character_card_sync(
         self, name: str, persona: dict,
         master_basic_config, lanlan_basic_config,
@@ -500,6 +541,9 @@ class PersistenceMixin:
             )
         except Exception:
             return False
+        master_basic_config, lanlan_basic_config = self._localize_synced_card_configs(
+            name, master_basic_config, lanlan_basic_config,
+        )
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
         )
@@ -511,6 +555,9 @@ class PersistenceMixin:
             )
         except Exception:
             return False
+        master_basic_config, lanlan_basic_config = self._localize_synced_card_configs(
+            name, master_basic_config, lanlan_basic_config,
+        )
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
         )

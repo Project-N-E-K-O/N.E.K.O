@@ -250,7 +250,11 @@ def _get_persona_override(character_payload: dict) -> dict | None:
     return override
 
 
-def _build_effective_character_payload(character_payload: dict, entity: str = "neko") -> dict:
+def _build_effective_character_payload(
+    character_payload: dict,
+    entity: str = "neko",
+    lang: str | None = None,
+) -> dict:
     if not isinstance(character_payload, dict):
         return {}
 
@@ -261,6 +265,7 @@ def _build_effective_character_payload(character_payload: dict, entity: str = "n
             character_payload,
             existing_fields=set(effective_payload.keys()),
             entity=entity,
+            lang=lang,
         ).items():
             effective_payload[field] = value
         return effective_payload
@@ -272,6 +277,7 @@ def _build_effective_character_payload(character_payload: dict, entity: str = "n
         character_payload,
         existing_fields=set(effective_payload.keys()),
         entity=entity,
+        lang=lang,
     ).items():
         effective_payload[field] = value
     return effective_payload
@@ -333,16 +339,43 @@ def _join_profile_rename_old_names(lang: str | None, names: list[str]) -> str:
     return separator.join(names)
 
 
+def _resolve_profile_rename_language(explicit: str | None) -> str | None:
+    """Pick the language for a rename sentence that may be stored in persona.
+
+    An explicit locale wins over ``get_global_language_full()``. The global
+    value follows ``language_context`` and otherwise falls back to the process
+    language, which on Windows/Steam is often English. Character-card sync
+    persists whatever sentence it renders, so that fallback rewrites a saved
+    Chinese rename fact into English as soon as the temporary context ends.
+    """
+    from utils.language_utils import (
+        get_global_language_full,
+        is_supported_language_code,
+        normalize_language_code,
+    )
+
+    if is_supported_language_code(explicit):
+        return normalize_language_code(str(explicit), format="full")
+    try:
+        return get_global_language_full()
+    except Exception:
+        return None
+
+
 def _build_ai_context_fields(
     character_payload: dict,
     existing_fields: set[str] | None = None,
     entity: str = "neko",
+    lang: str | None = None,
 ) -> dict[str, str]:
     """Expand hidden runtime events into synthetic fields used only for prompt/memory sync.
 
     entity indicates whether this payload is the catgirl (neko) or the master, which decides
     the person used in rename records: the master's records go into the master section of the
     catgirl persona and must be second person, never first person.
+
+    ``lang`` pins the sentence. When it is absent, rendering follows the
+    process language, including any active ``language_context``.
     """
     if not isinstance(character_payload, dict):
         return {}
@@ -356,11 +389,7 @@ def _build_ai_context_fields(
     if not isinstance(rename_events, list):
         return {}
 
-    try:
-        from utils.language_utils import get_global_language_full
-        lang = get_global_language_full()
-    except Exception:
-        lang = None
+    lang = _resolve_profile_rename_language(lang)
 
     from config.prompts.prompts_memory import render_profile_rename_event_context
 

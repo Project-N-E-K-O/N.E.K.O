@@ -53,13 +53,20 @@ def _resolve_qwen_realtime_tts_url() -> str:
         _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
     )
     configured_model = str(core_config.get("TTS_MODEL") or "").strip()
-    model = configured_model if configured_model.startswith("qwen3-tts") else _QWEN_REALTIME_TTS_MODEL
+    realtime_model = str(core_config.get("REALTIME_MODEL") or "").strip()
+    # TTS_MODEL 默认与 REALTIME_MODEL 同值（全模态模型名），那不是这条
+    # realtime TTS 通道的模型 id。用户另填的名字不再要求 qwen3-tts 前缀。
+    if configured_model and configured_model != realtime_model:
+        model = configured_model
+    else:
+        model = _QWEN_REALTIME_TTS_MODEL
     return f"{base_ws_url}?model={quote(model, safe='')}"
 
 def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     Qwen realtime TTS worker (for default voices)
-    Uses Aliyun's realtime TTS API (qwen3-tts-flash-realtime)
+    Uses Aliyun's realtime TTS API. The model comes from TTS_MODEL when set
+    to something other than REALTIME_MODEL; otherwise qwen3-tts-flash-realtime.
     
     Args:
         request_queue: multiprocess request queue receiving (speech_id, text) tuples

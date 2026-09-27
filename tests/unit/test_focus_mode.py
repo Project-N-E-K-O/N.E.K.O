@@ -547,6 +547,28 @@ def test_focus_extra_body_provider_dialects():
     assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
 
 
+def test_step_reasoning_effort_stays_low():
+    """Step flash / step-5-preview reject reasoning_effort=none.
+
+    low is the floor and thinking cannot be turned off, so regular and focus
+    turns send the same body. Pin the constant identity: a same-shaped dict
+    registered in ``_THINKING_ENABLE_FORM`` would flip on focus.
+    """
+    from config.providers import (
+        EXTRA_BODY_STEP_LOW, MODELS_EXTRA_BODY_MAP, focus_extra_body, get_extra_body,
+    )
+
+    for model in (
+        "step-5-preview",
+        "step-3.7-flash",
+        "step-3.5-flash",
+        "step-3.5-flash-2603",
+    ):
+        assert MODELS_EXTRA_BODY_MAP[model] is EXTRA_BODY_STEP_LOW
+        assert get_extra_body(model) == {"reasoning_effort": "low"}
+        assert focus_extra_body(model) == {"reasoning_effort": "low"}
+
+
 def test_official_deepseek_v4_registers_the_thinking_type_dialect():
     """Official DeepSeek V4 defaults to thinking-on, so it belongs in the map.
 

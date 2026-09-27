@@ -240,6 +240,29 @@ class CharactersMixin:
     async def aget_character_data(self):
         return await asyncio.to_thread(self.get_character_data)
 
+    def _read_durable_prompt_locale(self, name: str) -> str | None:
+        """Read ``memory/{name}/prompt_locale.json`` without creating the directory.
+
+        This is the conversation language persisted for long-lived jobs. Card
+        sync must use it when writing rename facts; the process-global language
+        flips for the duration of those jobs and would rewrite the same fact.
+        """
+        if not name:
+            return None
+        path = os.path.join(str(self.memory_dir), str(name), "prompt_locale.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        language = payload.get("language")
+        from utils.language_utils import is_supported_language_code, normalize_language_code
+        if not is_supported_language_code(language):
+            return None
+        return normalize_language_code(str(language), format="full")
+
     async def aload_characters(self, character_json_path=None):
         """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
         with N catgirls the copy can take several ms — offload to avoid blocking the event loop."""

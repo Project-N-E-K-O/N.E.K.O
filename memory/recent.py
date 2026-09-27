@@ -39,6 +39,7 @@ from utils.tokenize import acount_tokens
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+    MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -206,7 +207,7 @@ def _review_response_hit_output_limit(response) -> bool:
     if output_tokens is None:
         output_tokens = usage.get('output_tokens')
     try:
-        return int(output_tokens or 0) >= LLM_OUTPUT_GUARD_MAX_TOKENS
+        return int(output_tokens or 0) >= MEMORY_REVIEW_OUTPUT_MAX_TOKENS
     except (TypeError, ValueError):
         return False
 
@@ -634,7 +635,7 @@ class CompressedRecentHistoryManager:
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
-            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
+            max_completion_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS,  # thinking shares this budget with the corrected-dialogue JSON
             extra_body=None,
             provider_type=api_config.get('provider_type'),
         )

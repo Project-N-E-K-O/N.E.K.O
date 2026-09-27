@@ -4160,6 +4160,34 @@ async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
     assert sess.get("turn_detection") == {"type": "server_vad"}, (
         "GLM 必须同时传 turn_detection"
     )
+    assert sess.get("beta_fields") == {
+        "chat_mode": "video_passive",
+        "auto_search": True,
+    }, (
+        "GLM 局部 session.update 必须带回 beta_fields，否则服务端把 "
+        "video_passive 打回 audio，下游重连超限后关掉连接"
+    )
+
+
+def test_glm_realtime_gateway_model_keeps_allowlisted_names():
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    assert glm_realtime_gateway_model("glm-realtime-air") == "glm-realtime-air"
+    assert glm_realtime_gateway_model("glm-realtime-flash") == "glm-realtime-flash"
+    assert glm_realtime_gateway_model("glm-realtime") == "glm-realtime"
+    assert glm_realtime_gateway_model("glm-realtime-plus") == "glm-realtime-air"
+    assert glm_realtime_gateway_model("  glm-realtime-plus  ") == "glm-realtime-air"
+
+
+@pytest.mark.asyncio
+async def test_realtime_glm_partial_update_pins_requested_model():
+    """省略 model 时智谱把会话退回默认 glm-realtime。Plus 必须每次都带上。"""
+    client, sent = _make_rt_client("glm")
+    client.model = "glm-realtime-plus"
+    await client.update_session({"tools": []})
+    sess = sent[0]["session"]
+    assert sess["model"] == "glm-realtime-plus"
+    assert "beta_fields" in sess
 
 
 @pytest.mark.asyncio

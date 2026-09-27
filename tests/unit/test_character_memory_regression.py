@@ -1366,6 +1366,74 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
 
 
 @pytest.mark.unit
+def test_persona_card_sync_pins_rename_fact_to_durable_locale():
+    """进程语言和 language_context 都不能把已保存的改名记录改写成另一种语言。
+
+    人格整理会临时把全局语言切到会话 locale，嵌入补全等其它 ensure 路径又看
+    进程语言。两条路径都写 persona，于是同一条主人改名记录每 30 分钟来回翻面。
+    """
+    from memory.persona import PersonaManager
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        characters = cm.load_characters()
+        characters["主人"]["_reserved"] = {
+            "ai_context": {
+                "rename_events": [
+                    {"type": "profile_rename", "old_name": "博士", "new_name": "IKUN"},
+                    {"type": "profile_rename", "old_name": "IKUN", "new_name": "哀坤"},
+                    {"type": "profile_rename", "old_name": "哀坤", "new_name": "棍母"},
+                ]
+            }
+        }
+        her_name = characters.get("当前猫娘") or next(iter(characters["猫娘"]))
+        cm.save_characters(characters)
+        locale_dir = Path(cm.memory_dir) / her_name
+        locale_dir.mkdir(parents=True, exist_ok=True)
+        locale_path = locale_dir / "prompt_locale.json"
+        locale_path.write_text('{"language": "zh-CN"}', encoding="utf-8")
+
+        pm = PersonaManager()
+        pm._config_manager = cm
+        persona = {"master": {"facts": []}, "neko": {"facts": []}}
+
+        def _rename_text() -> str:
+            for fact in persona["master"]["facts"]:
+                text = str(fact.get("text") or "")
+                if text.startswith(("改名记录:", "Profile Rename Record:")):
+                    return text
+            return ""
+
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is True
+            pinned = _rename_text()
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is False
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert pinned.startswith("改名记录:")
+        assert "博士、IKUN、哀坤" in pinned
+        assert "棍母" in pinned
+        assert "Profile Rename Record" not in pinned
+        assert _rename_text() == pinned
+
+        locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is True
+            switched = _rename_text()
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert switched.startswith("Profile Rename Record:")
+        assert "博士, IKUN, 哀坤" in switched
+        assert "棍母" in switched
+        assert _rename_text() == switched
+
+
+@pytest.mark.unit
 def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
     monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
     from utils.config_manager import _build_effective_character_payload

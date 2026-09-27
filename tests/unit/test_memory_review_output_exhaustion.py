@@ -44,14 +44,14 @@ def test_review_response_does_not_treat_short_empty_response_as_output_limit():
     assert _review_response_hit_output_limit(response) is False
 
 
-def test_review_response_detects_empty_response_at_shared_output_guard():
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+def test_review_response_detects_empty_response_at_review_output_cap():
+    from config import MEMORY_REVIEW_OUTPUT_MAX_TOKENS
     from memory.recent import _review_response_hit_output_limit
 
     response = SimpleNamespace(
         content="",
         response_metadata={
-            "token_usage": {"output_tokens": LLM_OUTPUT_GUARD_MAX_TOKENS},
+            "token_usage": {"output_tokens": MEMORY_REVIEW_OUTPUT_MAX_TOKENS},
         },
     )
 
