@@ -645,7 +645,10 @@ const {
   toggleMultiSelect,
 } = usePluginWorkbench(rawPlugins)
 
-const loading = computed(() => pluginStore.loading)
+// Covers the registry sync that precedes the summary fetch, so a first open
+// shows the skeleton instead of flashing the empty state.
+const pendingListRefreshes = ref(0)
+const loading = computed(() => pendingListRefreshes.value > 0)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
 
@@ -780,6 +783,7 @@ type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
 
 async function refreshPluginListData(mode: PluginListRefreshMode) {
   let warningMessage = ''
+  pendingListRefreshes.value += 1
   try {
     if (mode === 'full') {
       const syncResult = await pluginStore.syncRegistryAndFetchSummaries()
@@ -802,6 +806,8 @@ async function refreshPluginListData(mode: PluginListRefreshMode) {
     else await pluginStore.ensurePluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
+  } finally {
+    pendingListRefreshes.value -= 1
   }
   if (showMetrics.value) {
     try {

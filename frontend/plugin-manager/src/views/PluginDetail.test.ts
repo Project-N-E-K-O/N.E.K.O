@@ -19,6 +19,8 @@ const routerMocks = vi.hoisted(() => ({
   route: { params: { id: 'study_companion' }, query: {} as Record<string, string> },
 }))
 const hostedFrameMocks = vi.hoisted(() => ({ refreshContext: vi.fn() }))
+const configEditorMocks = vi.hoisted(() => ({ mounts: 0 }))
+const localeRef = ref('en-US')
 
 vi.mock('@/api/plugins', () => ({
   getPluginUiSurfaceInfo: apiMocks.getPluginUiSurfaceInfo,
@@ -32,7 +34,7 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: routerMocks.push, replace: routerMocks.replace }),
 }))
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }),
+  useI18n: () => ({ locale: localeRef, t: (key: string) => key }),
 }))
 vi.mock('@/components/plugin/PluginActions.vue', async () => {
   const { defineComponent, h } = await import('vue')
@@ -93,8 +95,11 @@ vi.mock('@/components/metrics/MetricsCard.vue', async () => {
   return { default: defineComponent(() => () => h('div')) }
 })
 vi.mock('@/components/plugin/PluginConfigEditor.vue', async () => {
-  const { defineComponent, h } = await import('vue')
-  return { default: defineComponent(() => () => h('div')) }
+  const { defineComponent, h, onMounted } = await import('vue')
+  return { default: defineComponent(() => {
+    onMounted(() => { configEditorMocks.mounts += 1 })
+    return () => h('div', { 'data-testid': 'config-editor' })
+  }) }
 })
 vi.mock('@/components/plugin/PluginModelBindings.vue', async () => {
   const { defineComponent, h } = await import('vue')
@@ -191,6 +196,24 @@ describe('PluginDetail surface selection', () => {
     routerMocks.push.mockReset()
     routerMocks.replace.mockReset()
     hostedFrameMocks.refreshContext.mockReset()
+    configEditorMocks.mounts = 0
+    localeRef.value = 'en-US'
+  })
+
+  it('keeps the detail card and its drafts mounted when only the locale changes', async () => {
+    const mounted = await mountDetail([surface({ id: 'main' })])
+    expect(configEditorMocks.mounts).toBe(1)
+
+    localeRef.value = 'zh-CN'
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve()
+      await nextTick()
+    }
+
+    expect(mounted.container.querySelector('[data-testid="config-editor"]')).not.toBeNull()
+    expect(configEditorMocks.mounts).toBe(1)
+    expect(apiMocks.getPluginUiSurfaceInfo).toHaveBeenLastCalledWith('study_companion', 'zh-CN', expect.anything())
+    mounted.unmount()
   })
 
   it('keeps legacy compatibility main without adding a duplicate static UI tab when hosted panels exist', async () => {

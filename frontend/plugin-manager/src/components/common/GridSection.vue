@@ -259,10 +259,28 @@ function itemClass(item: T) {
  * while letting Chromium skip layout/paint work for far-off cards in large
  * registries. The placeholder height tracks a typical card so the scroll
  * track barely moves before an item is first measured; `auto` keeps the real
- * size afterwards. */
+ * size afterwards.
+ *
+ * The paint containment this implies clips the hover shadow/lift and the
+ * select badge. The clip margin is scoped to the states that paint outside
+ * the card: on every item it costs ~15% scroll fps under CPU throttling.
+ * Dropping it waits out the card's 0.24s shadow fade. */
 .grid-section--large .grid-section__item {
   content-visibility: auto;
   contain-intrinsic-size: auto 0px auto 200px;
+  transition: overflow-clip-margin 0s 0.24s allow-discrete;
+}
+
+/* Select badge sits 6px outside, plus its own shadow. */
+.grid-section--large .grid-section__item--selection-mode {
+  overflow-clip-margin: 20px;
+  transition-delay: 0s;
+}
+
+/* Hover and selected shadows reach 48px below the card. */
+.grid-section--large .grid-section__item:is(:hover, :focus-within, .grid-section__item--selected) {
+  overflow-clip-margin: 48px;
+  transition-delay: 0s;
 }
 
 .grid-section__select {

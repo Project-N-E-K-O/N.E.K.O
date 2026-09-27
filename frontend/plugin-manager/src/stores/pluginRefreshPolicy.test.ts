@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { usePluginStore } from './plugin'
-import { getPlugins, getPluginSummaries, getPluginStatus, refreshPluginsRegistry, startPlugin } from '@/api/plugins'
+import { getPlugin, getPlugins, getPluginSummaries, getPluginStatus, refreshPluginsRegistry, startPlugin } from '@/api/plugins'
+import type { PluginMeta } from '@/types/api'
 
 const translate = vi.hoisted(() => vi.fn(
   (key: string, params?: Record<string, unknown>) => `${key}${params ? JSON.stringify(params) : ''}`,
@@ -19,6 +20,7 @@ vi.mock('@/i18n', () => ({
 }))
 
 vi.mock('@/api/plugins', () => ({
+  getPlugin: vi.fn(),
   getPlugins: vi.fn(),
   getPluginSummaries: vi.fn(),
   getPluginStatus: vi.fn(),
@@ -47,6 +49,7 @@ describe('plugin store registry refresh policy', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.mocked(getPlugins).mockResolvedValue({ plugins: [], message: '' })
+    vi.mocked(getPlugin).mockImplementation(async (id: string) => plugin(id))
     vi.mocked(getPluginSummaries).mockResolvedValue({ plugins: [], message: '' })
     vi.mocked(getPluginStatus).mockResolvedValue({} as any)
     vi.mocked(startPlugin).mockResolvedValue({ success: true, plugin_id: 'demo', message: '' })
@@ -202,6 +205,54 @@ describe('plugin store registry refresh policy', () => {
     expect(getPlugins).not.toHaveBeenCalled()
   })
 
+  it('reports a successful start even when the follow-up refresh fails', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginSummaries()
+    vi.mocked(getPluginSummaries).mockRejectedValueOnce(new Error('network down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(store.start('demo')).resolves.toBeUndefined()
+
+    expect(getPluginSummaries).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('drops cached details of plugins missing from a fresh summary list', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginDetail('kept')
+    await store.fetchPluginDetail('removed')
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin('kept')], message: '' })
+
+    await store.fetchPluginSummaries(true)
+
+    expect(Object.keys(store.pluginDetails)).toEqual(['kept'])
+  })
+
+  it('serves a cached detail immediately and revalidates it in the background', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginDetail('demo')
+    let resolveFresh!: (value: PluginMeta) => void
+    vi.mocked(getPlugin).mockImplementationOnce(() => new Promise(resolve => { resolveFresh = resolve }))
+
+    const cached = await store.ensurePlugin('demo')
+    expect(cached?.version).toBe('1.0.0')
+    expect(getPlugin).toHaveBeenCalledTimes(2)
+
+    resolveFresh(plugin('demo', { version: '2.0.0' }))
+    await vi.waitFor(() => expect(store.getPluginById('demo')?.version).toBe('2.0.0'))
+  })
+
+  it('forgets a cached detail when neither detail route nor full list has the plugin', async () => {
+    const store = usePluginStore()
+    await store.fetchPluginDetail('gone')
+    vi.mocked(getPlugin).mockRejectedValueOnce({ response: { status: 404 } })
+
+    await store.fetchPluginDetail('gone', true)
+
+    expect(store.pluginDetails).toEqual({})
+  })
+
   it('reuses a fresh plugin snapshot and refetches it after the TTL', async () => {
     const store = usePluginStore()
     const initialNow = Date.now()
@@ -261,6 +312,6 @@ describe('plugin store registry refresh policy', () => {
   })
 })
 
-function plugin(id: string) {
-  return { id, name: id, description: '', version: '1.0.0', type: 'plugin' }
+function plugin(id: string, overrides: Partial<PluginMeta> = {}): PluginMeta {
+  return { id, name: id, description: '', version: '1.0.0', type: 'plugin', ...overrides }
 }

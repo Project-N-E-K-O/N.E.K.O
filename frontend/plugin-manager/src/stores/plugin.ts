@@ -199,7 +199,9 @@ export const usePluginStore = defineStore('plugin', () => {
           ? { preserveMessagesOn404: true }
           : undefined)
         if (seq !== fetchSummariesSeq) return
-        pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, response.plugins || [])
+        const nextSummaries = response.plugins || []
+        pruneDetails(new Set(nextSummaries.map(plugin => plugin.id)))
+        pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
         pluginSummarySnapshotLoaded.value = true
         pluginSummaryFetchedAt.value = Date.now()
         pluginSummaryFetchedLocale.value = requestLocale
@@ -240,8 +242,13 @@ export const usePluginStore = defineStore('plugin', () => {
         // remains a safe fallback when the single-plugin route is unavailable.
         const response = await getPlugins(getLocale())
         const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
-        if (detail && fetchDetailSeq.get(pluginId) === seq) {
+        if (fetchDetailSeq.get(pluginId) !== seq) return
+        if (detail) {
           pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+        } else if (pluginId in pluginDetails.value) {
+          const rest = { ...pluginDetails.value }
+          delete rest[pluginId]
+          pluginDetails.value = rest
         }
       } finally {
         if (pendingFetchDetails.get(pluginId) === request) pendingFetchDetails.delete(pluginId)
@@ -251,15 +258,24 @@ export const usePluginStore = defineStore('plugin', () => {
     return request
   }
 
+  // Installs and upgrades only refresh summaries, so a cached copy is served
+  // immediately and revalidated in the background.
   async function ensurePlugin(pluginId: string) {
-    if (pluginDetails.value[pluginId]) return pluginDetails.value[pluginId]
-    const full = plugins.value.find(plugin => plugin.id === pluginId)
-    if (full) {
-      pluginDetails.value = { ...pluginDetails.value, [pluginId]: full }
-      return full
+    const cached = pluginDetails.value[pluginId] || plugins.value.find(plugin => plugin.id === pluginId)
+    if (cached) {
+      fetchPluginDetail(pluginId).catch(err => console.warn(`Failed to revalidate plugin ${pluginId}:`, err))
+      return cached
     }
     await fetchPluginDetail(pluginId)
     return pluginDetails.value[pluginId] || null
+  }
+
+  function pruneDetails(liveIds: ReadonlySet<string>) {
+    const ids = Object.keys(pluginDetails.value)
+    if (ids.every(id => liveIds.has(id))) return
+    pluginDetails.value = Object.fromEntries(
+      Object.entries(pluginDetails.value).filter(([id]) => liveIds.has(id)),
+    )
   }
 
   function getPluginById(pluginId: string) {
@@ -415,43 +431,29 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await startPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPluginsAfterMutation()
-      }
-    } catch (err: any) {
-      throw err
-    }
+    await startPlugin(pluginId)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function stop(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await stopPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPluginsAfterMutation()
-      }
-    } catch (err: any) {
-      throw err
-    }
+    await stopPlugin(pluginId)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
-    try {
-      await reloadPlugin(pluginId)
-      if (options.refresh !== false) {
-        await fetchPluginStatus(pluginId)
-        await fetchPluginsAfterMutation()
-      }
-    } catch (err: any) {
-      throw err
-    }
+    await reloadPlugin(pluginId)
+    if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
-  async function fetchPluginsAfterMutation() {
-    await refreshLoadedPluginData()
+  // The mutation already succeeded; a failed follow-up refresh must not be
+  // reported to the caller as a failed start/stop/reload.
+  async function refreshAfterMutation(pluginId: string) {
+    await fetchPluginStatus(pluginId)
+    try {
+      await refreshLoadedPluginData()
+    } catch (err) {
+      console.warn('Failed to refresh plugin data after mutation:', err)
+    }
   }
 
   function setSelectedPlugin(pluginId: string | null) {

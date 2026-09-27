@@ -594,17 +594,21 @@ watch(
     surfaceController = null
     detailGeneration += 1
     currentSurfaceLoadId += 1
-    if (id !== previous?.[0]) {
-      userTabIntent = false
-      surfaces.value = []
-      surfaceWarnings.value = []
-      activePanelSurfaceId.value = ''
-      activeGuideSurfaceId.value = ''
-      activeTab.value = 'info'
-      panelSurfaceFrameRefs.clear()
-      guideSurfaceFrameRefs.clear()
-      surfaceActivationRevisions.value = {}
+    if (id === previous?.[0] && !loading.value) {
+      // Locale only: main.ts refreshes the cached detail. Toggling `loading`
+      // here would unmount the card and drop config/panel drafts.
+      if (detailMounted) void fetchSurfaces()
+      return
     }
+    userTabIntent = false
+    surfaces.value = []
+    surfaceWarnings.value = []
+    activePanelSurfaceId.value = ''
+    activeGuideSurfaceId.value = ''
+    activeTab.value = 'info'
+    panelSurfaceFrameRefs.clear()
+    guideSurfaceFrameRefs.clear()
+    surfaceActivationRevisions.value = {}
     if (detailMounted) void loadDetail()
   },
   { flush: 'sync' },

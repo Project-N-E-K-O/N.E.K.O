@@ -59,8 +59,8 @@ function mountApp() {
   if (localeStartup) void localeStartup.finally(() => { initialLocalePending = false })
   watch(i18n.global.locale, () => {
     if (initialLocalePending) return
-      void import('./stores/plugin')
-        .then(({ usePluginStore }) => usePluginStore().refreshLoadedPluginData())
+    void import('./stores/plugin')
+      .then(({ usePluginStore }) => usePluginStore().refreshLoadedPluginData())
       .catch(error => console.warn('Could not refresh localized plugin metadata', error))
   })
   const connectionStore = useConnectionStore()
@@ -68,7 +68,15 @@ function mountApp() {
   window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
 }
 
-// Preserve preactivation before mount for opener handoffs; ordinary tabs do not
-// load the tutorial graph. A missing optional chunk must not strand the shell.
-mountApp()
-if (tutorialStartup) void tutorialStartup.catch(console.warn)
+// Opener handoffs preactivate the tutorial overlay before the app becomes
+// interactive; ordinary tabs do not load the tutorial graph. The cap keeps a
+// slow or missing optional chunk from stranding the boot shell.
+const TUTORIAL_MOUNT_WAIT_MS = 1500
+if (tutorialStartup) {
+  void Promise.race([
+    tutorialStartup.catch(console.warn),
+    new Promise(resolve => setTimeout(resolve, TUTORIAL_MOUNT_WAIT_MS)),
+  ]).then(mountApp)
+} else {
+  mountApp()
+}
