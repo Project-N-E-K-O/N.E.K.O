@@ -363,6 +363,31 @@ describe('plugin updates store — upgrade', () => {
     return store
   }
 
+  it('does not re-offer an installed release when the registry sync failed', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    // The backend upgrade succeeds, but the refresh throws before the plugin
+    // list is refetched: it still says alpha is on 1.0.0.
+    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+
+    // The upgrade itself did happen, so it is still reported as a success.
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+    await store.check({ force: true })
+    // Regression guard: the stale list used to put 1.1.0 straight back.
+    expect(store.candidates).toEqual([])
+
+    // A genuinely newer release is still offered, measured from 1.1.0.
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.2.0']]))
+    await store.check({ force: true })
+    expect(store.candidates.map((c) => `${c.currentVersion}->${c.latestVersion}`)).toEqual(['1.1.0->1.2.0'])
+  })
+
   it('stays busy until the registry refresh after an upgrade has finished', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     mockFetch((url) => {

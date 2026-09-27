@@ -139,6 +139,11 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
    *  installed-version snapshot instead of offering the same upgrade again. */
   const completedUpgrades = ref(0)
   let forceCheckQueued = false
+  /** pluginId → version an upgrade from this popup just installed. The registry
+   *  sync that follows can fail before the plugin list is refetched, leaving the
+   *  pre-upgrade version in it; checks treat this as the installed floor until
+   *  the list catches up, so the release is not offered again. */
+  const installedThisSession = new Map<string, string>()
 
   const updating = computed(
     () => candidates.value.some((candidate) => candidate.status === 'updating'),
@@ -218,7 +223,16 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       // failed upgrade must not silently clear the reason it failed, and a
       // builtin override must not look auto-upgradable again on the next boot.
       const previous = new Map(candidates.value.map((entry) => [entry.pluginId, entry]))
-      for (const target of targets) {
+      for (const listed of targets) {
+        const floor = installedThisSession.get(listed.pluginId)
+        let target = listed
+        if (floor) {
+          if (hasNewerVersion(listed.currentVersion, floor)) {
+            target = { ...listed, currentVersion: floor }
+          } else {
+            installedThisSession.delete(listed.pluginId) // the list caught up
+          }
+        }
         const latest = marketVersions.latest(target.marketId, target.channel)
         if (!latest) {
           unresolvedCount += 1
@@ -292,7 +306,10 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     // Sync before dropping the row: while it is still `updating` the popup stays
     // busy, so a refresh cannot snapshot the pre-upgrade plugin list and offer
     // the version that was just installed again.
+    installedThisSession.set(candidate.pluginId, candidate.latestVersion)
     await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {
+      // The backend upgrade itself succeeded, so this stays a success; the
+      // floor recorded above keeps later checks from re-offering the release.
       updateLog.warn('registry sync failed after upgrade', err)
     })
     candidates.value = candidates.value.filter((entry) => entry.pluginId !== candidate.pluginId)
