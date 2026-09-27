@@ -477,6 +477,41 @@ def get_cosyvoice_clone_model(provider: str | None = None) -> str:
     )
 
 
+def get_cosyvoice_user_preferred_model(provider: str | None = None) -> str | None:
+    """Return the CosyVoice model the user configured on the TTS endpoint, if usable.
+
+    NEKO's voice-clone/design pages have no model selector of their own; the only
+    place users express a CosyVoice model preference is the TTS endpoint's model
+    ID field (core_config ``TTS_MODEL``). Voice enrollment binds the resulting
+    voice to ``target_model`` (Alibaba docs: a cloned voice cannot be used across
+    models), so enrollment must follow that preference instead of always using
+    the configured default — otherwise a ``cosyvoice-v3.5-flash`` selection keeps
+    synthesizing (and billing) as ``cosyvoice-v3.5-plus``.
+
+    Rules:
+    - Only strings starting with ``cosyvoice-v`` are adopted, mirroring how the
+      Qwen worker validates its ``qwen3-tts`` prefix; anything else (other
+      vendors' IDs, blanks) falls back to ``None`` -> caller keeps the default.
+    - International deployments are ignored: Singapore only supports
+      ``cosyvoice-v3-plus`` for enrolled voices, which is already the intl
+      default, so there is nothing for the user to override.
+    """
+    normalized_provider = str(provider or '').strip().lower()
+    if normalized_provider == 'cosyvoice_intl':
+        return None
+    try:
+        # config_manager imports this module at package scope; import lazily
+        # (same pattern as voice_storage) to avoid a circular import.
+        from utils.config_manager import get_config_manager
+        core_config = get_config_manager().get_core_config() or {}
+    except Exception:
+        return None
+    configured = str(core_config.get('TTS_MODEL') or '').strip()
+    if configured.startswith('cosyvoice-v'):
+        return configured
+    return None
+
+
 def cosyvoice_model_supports_language_hints(model: str | None) -> bool:
     """language_hints only applies to v3 / v3.5 series models; v2 does not support it."""
     return not str(model or _COSYVOICE_CLONE_MODEL_DEFAULT).startswith("cosyvoice-v2")
@@ -605,6 +640,7 @@ __all__ = [
     'get_native_tts_voice_provider_config',
     'get_native_tts_voice_provider_configs',
     'get_cosyvoice_clone_model',
+    'get_cosyvoice_user_preferred_model',
     'cosyvoice_model_supports_language_hints',
     'get_meme_moderation_config',
     'get_livestream_config',

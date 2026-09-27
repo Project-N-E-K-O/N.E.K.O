@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -336,11 +339,11 @@ def test_frontend_status_and_expression_state_have_race_guards():
     assert "window.vrmVmcSender.releaseVrm" in manager_source
     assert "state.currentVrm !== vrm" in source
     assert "state.retiringExpressionNames" in source
-    assert "if (state.exprBuf.length >= 256) break" in source
+    assert "if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break" in source
     assert "state.retiringExpressionNames.delete(name)" in source
     assert "message.type === 'frame_ack'" in source
     assert "messageType: 'release'" in source
-    assert "Math.ceil(expressionNames.length / 256)" in source
+    assert "Math.ceil(expressionNames.length / MAX_EXPRESSIONS_PER_FRAME)" in source
     assert "if (!await result.ackPromise) return false" in source
     assert "source_released: index === expressionChunks.length - 1" in source
     assert "else if (!state.enabled || !state.releaseInProgress) closeWebSocket()" in source
@@ -1052,3 +1055,498 @@ async def test_config_save_failure_does_not_contradict_runtime_state(
     assert disabled_status["enabled"] is False
     assert sender._client is None
     assert client.closed is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_callback_fires_only_on_disabled_to_enabled_transition(
+    monkeypatch,
+):
+    """The browser wake-up broadcast must be one-shot, not per-request.
+
+    A plugin re-posting /api/vmc/enable to retune the endpoint should not
+    re-broadcast: the sampler is already running and a redundant
+    syncStatusFromBackend() round-trip buys nothing.
+    """
+    fired: list[bool] = []
+
+    async def record(enabled: bool) -> None:
+        fired.append(enabled)
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=record)
+    monkeypatch.setattr(
+        sender, "_build_client", lambda _host, _port: _RecordingOscClient()
+    )
+
+    await sender.enable(host="127.0.0.1", port=39539, send_rate_hz=60)
+    assert fired == [True]
+
+    # Already enabled: retuning the endpoint is not a transition.
+    fired.clear()
+    await sender.enable(port=39540)
+    assert fired == []
+
+    # Off and on again is a fresh transition; the sampler needs waking.
+    await sender.disable()
+    await sender.enable()
+    assert fired == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_survives_a_failing_callback():
+    """A broken WebSocket fan-out must not fail the plugin's enable request."""
+
+    async def explode(_enabled: bool) -> None:
+        raise RuntimeError("no sessions connected")
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=explode)
+    sender._build_client = lambda _host, _port: _RecordingOscClient()
+
+    status = await sender.enable()
+    assert status["enabled"] is True
+    assert sender.enabled is True
+
+
+@pytest.mark.unit
+def test_set_vmc_enabled_callback_does_not_construct_the_singleton(monkeypatch):
+    """Routers register at import time, before the config manager exists.
+
+    Building the singleton then would resolve config_dir to None and silently
+    disable vmc_config.json persistence for the life of the process.
+    """
+    monkeypatch.setattr(vmc_sender_module, "_singleton", None)
+    monkeypatch.setattr(vmc_sender_module, "_enabled_callback", None)
+
+    async def noop(_enabled: bool) -> None:
+        return None
+
+    vmc_sender_module.set_vmc_enabled_callback(noop)
+    assert vmc_sender_module._singleton is None
+    assert vmc_sender_module._enabled_callback is noop
+
+    # The parked callback is applied when the singleton is finally built.
+    sender = vmc_sender_module.get_vmc_sender()
+    assert sender._on_enabled_callback is noop
+
+
+@pytest.mark.unit
+def test_set_vmc_enabled_callback_patches_an_existing_singleton(monkeypatch):
+    existing = VmcSender(config_dir=None)
+    monkeypatch.setattr(vmc_sender_module, "_singleton", existing)
+    monkeypatch.setattr(vmc_sender_module, "_enabled_callback", None)
+
+    async def noop(_enabled: bool) -> None:
+        return None
+
+    vmc_sender_module.set_vmc_enabled_callback(noop)
+    assert existing._on_enabled_callback is noop
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_wakes_browser_samplers(monkeypatch):
+    """The wake-up rides the chat WebSocket, not the isolated /api/vmc/ws.
+
+    The dedicated VMC socket only exists once the browser is already sampling,
+    so it cannot carry the signal that starts sampling in the first place.
+    """
+    from app.main_server import character_runtime
+
+    sent: list[dict] = []
+
+    async def fake_broadcast(payload: dict) -> int:
+        sent.append(payload)
+        return 2
+
+    monkeypatch.setattr(
+        character_runtime, "_broadcast_to_all_connected", fake_broadcast
+    )
+
+    await character_runtime._broadcast_vmc_enabled(True)
+    assert sent == [{"type": "vmc_state_changed", "enabled": True}]
+
+    # Disable needs no broadcast: the browser learns it from its own poll and
+    # waking a sampler for a dead sender would only burn frames.
+    sent.clear()
+    await character_runtime._broadcast_vmc_enabled(False)
+    assert sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_swallows_transport_failures(monkeypatch):
+    from app.main_server import character_runtime
+
+    async def explode(_payload: dict) -> int:
+        raise RuntimeError("event loop closed")
+
+    monkeypatch.setattr(
+        character_runtime, "_broadcast_to_all_connected", explode
+    )
+
+    await character_runtime._broadcast_vmc_enabled(True)
+
+
+@pytest.mark.unit
+def test_enable_broadcast_is_wired_up_at_import_time():
+    """Importing the app layer must register the broadcast hook.
+
+    The wiring sits in character_runtime rather than beside the
+    ``/api/vmc/enable`` route it serves, because a router (L3) cannot import
+    ``app`` (L6) without tripping check_module_layering. Nothing else asserts
+    the callback is installed, so a move that dropped the registration would
+    leave the UDP sender running with no frame source while every other VMC
+    test stayed green.
+    """
+    from app.main_server import character_runtime
+
+    assert (
+        vmc_sender_module._enabled_callback is character_runtime._broadcast_vmc_enabled
+    )
+
+
+@pytest.mark.unit
+def test_model_info_sent_once_per_model():
+    """``/VMC/Ext/VRM`` announces the model on change, not on every frame."""
+    sender, client = _enabled_sender()
+
+    frame_a = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame_a)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    client.messages.clear()
+    assert sender.send_frame(frame_a)
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+    frame_b = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/bob.vrm", "title": "Bob"},
+    }
+    client.messages.clear()
+    assert sender.send_frame(frame_b)
+    assert ("/VMC/Ext/VRM", ["/models/bob.vrm", "Bob"]) in client.messages
+
+    client.messages.clear()
+    assert sender.send_frame(frame_b)
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+
+@pytest.mark.unit
+def test_model_info_is_truncated():
+    """Oversized paths/titles cannot bloat the UDP datagram."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame(
+        {
+            "bones": [],
+            "expressions": [],
+            "model": {"path": "x" * 600, "title": "t" * 300},
+        }
+    )
+    sent = [values for address, values in client.messages if address == "/VMC/Ext/VRM"]
+    assert len(sent) == 1
+    assert len(sent[0][0]) == 512
+    assert len(sent[0][1]) == 256
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model",
+    [None, {}, {"path": "/a.vrm"}, {"path": 123, "title": "Alice"}],
+)
+def test_model_info_ignores_malformed_payloads(model):
+    """A frame without usable model metadata sends no /VMC/Ext/VRM."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame({"bones": [], "expressions": [], "model": model})
+    assert not any(address == "/VMC/Ext/VRM" for address, _ in client.messages)
+
+
+@pytest.mark.unit
+def test_model_info_is_reannounced_after_endpoint_change():
+    """A retuned endpoint is a fresh receiver: it must be told the model again."""
+    sender, client = _enabled_sender()
+
+    frame = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    # Same model, new UDP client: the announcement cache belonged to the
+    # retired endpoint, so the replacement must not inherit it.
+    replacement = _RecordingOscClient()
+    sender._replace_client(replacement)
+
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in replacement.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_model_info_is_reannounced_after_disable_and_reenable():
+    """disable() ends the stream; the next receiver starts with no model context."""
+    sender, client = _enabled_sender()
+
+    frame = {
+        "bones": [],
+        "expressions": [],
+        "model": {"path": "/models/alice.vrm", "title": "Alice"},
+    }
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in client.messages
+
+    await sender.disable()
+    assert sender._model_info is None
+    assert sender._model_info_sent is False
+
+    reenabled = _RecordingOscClient()
+    sender._enabled = True
+    sender._client = reenabled
+    sender._min_interval = 0.0
+
+    assert sender.send_frame(frame)
+    assert ("/VMC/Ext/VRM", ["/models/alice.vrm", "Alice"]) in reenabled.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_broadcast_cannot_hang_the_control_endpoint(monkeypatch):
+    """A backpressured chat socket must not stall POST /api/vmc/enable.
+
+    ``_broadcast_to_all_connected`` gathers ``send_json()`` calls with no
+    per-socket timeout, so a stuck socket never raises — it simply never
+    returns. Only a bounded wait keeps the endpoint responsive.
+    """
+    monkeypatch.setattr(vmc_sender_module, "_ENABLED_CALLBACK_TIMEOUT_SEC", 0.05)
+
+    async def never_returns(_enabled: bool) -> None:
+        await asyncio.Event().wait()
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=never_returns)
+    sender._enabled = True
+
+    started = time.monotonic()
+    # Wrap the call itself: without the sender's own wait_for, this await never
+    # returns, and an unbounded test would hang the suite instead of failing.
+    # The outer budget is deliberately well above the 0.05s timeout under test
+    # so it only trips on a missing timeout, never on scheduling noise.
+    try:
+        await asyncio.wait_for(sender._notify_enabled_changed(True), timeout=5.0)
+    except asyncio.TimeoutError:
+        pytest.fail(
+            "_notify_enabled_changed() never returned: the enable broadcast has "
+            "no per-call timeout, so one backpressured socket stalls "
+            "POST /api/vmc/enable forever"
+        )
+    elapsed = time.monotonic() - started
+
+    # Bound the wait near the configured timeout, not merely "not forever":
+    # a 1.0s ceiling on a 0.05s timeout would still pass if the timeout were
+    # ignored and something else happened to unblock the await.
+    assert elapsed < 0.5, f"notification took {elapsed:.3f}s for a 0.05s timeout"
+    # The state enable() already committed survives a failed notification.
+    assert sender.enabled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enable_reports_the_state_it_returns_in(monkeypatch):
+    """enable() must not answer with a snapshot taken before the broadcast.
+
+    The broadcast runs outside ``_lock`` so a backpressured socket cannot stall
+    the control endpoint. That window lets a concurrent ``disable()`` finish
+    first — and a snapshot captured before the broadcast would then report
+    ``enabled: True`` after the disable response already said ``False``.
+    """
+    disable_started = asyncio.Event()
+
+    async def disable_midway(_enabled: bool) -> None:
+        # Stand in for the real fan-out: run a disable while enable() is
+        # parked outside the lock, exactly as a concurrent request would.
+        disable_started.set()
+        await sender.disable()
+
+    sender = VmcSender(config_dir=None, on_enabled_callback=disable_midway)
+    sender._build_client = lambda _host, _port: _RecordingOscClient()
+
+    status = await sender.enable()
+
+    assert disable_started.is_set(), "the callback never ran; the test proves nothing"
+    assert sender.enabled is False
+    assert status["enabled"] is False, (
+        "enable() returned a pre-broadcast snapshot: it claims the sender is on "
+        "after a concurrent disable() already reported it off"
+    )
+
+
+@pytest.mark.unit
+def test_expression_name_map_covers_vrm_presets():
+    """VRM 1.0 preset names must reach receivers as VRM 0.x blendshape names."""
+    sender, client = _enabled_sender()
+
+    assert sender.send_frame(
+        {
+            "bones": [],
+            "expressions": [
+                {"name": "neutral", "value": 1.0},
+                {"name": "surprised", "value": 0.5},
+                {"name": "lookUp", "value": 0.25},
+            ],
+        }
+    )
+    assert ("/VMC/Ext/Blend/Val", ["Neutral", 1.0]) in client.messages
+    assert ("/VMC/Ext/Blend/Val", ["Surprised", 0.5]) in client.messages
+    assert ("/VMC/Ext/Blend/Val", ["LookUp", 0.25]) in client.messages
+
+
+@contextlib.contextmanager
+def _captured_warnings():
+    """Collect vmc_sender warnings.
+
+    N.E.K.O. loggers do not propagate to root, so caplog's root-mounted
+    handler never receives these records; attach the collector to the module
+    logger itself instead.
+    """
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collector(level=logging.WARNING)
+    logger = vmc_sender_module.logger
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.mark.unit
+def test_bone_overflow_warns_once():
+    """Dropping bones must be audible in the log, but only on the first frame."""
+    sender, client = _enabled_sender()
+    cap = vmc_sender_module._MAX_BONES_PER_FRAME
+    frame = {
+        "bones": [
+            {
+                "name": "hips",
+                "px": 0.0, "py": 0.0, "pz": 0.0,
+                "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+            }
+        ]
+        * (cap + 5),
+        "expressions": [],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+        assert sender.send_frame(frame)
+
+    warnings = [r for r in records if "bones" in r.getMessage()]
+    assert len(warnings) == 1
+    assert str(cap) in warnings[0].getMessage()
+    assert len([a for a, _ in client.messages if a == "/VMC/Ext/Bone/Pos"]) == cap * 2
+
+
+@pytest.mark.unit
+def test_expression_overflow_warns_once():
+    """A VRM with hundreds of custom expressions must not silently lose them."""
+    sender, client = _enabled_sender()
+    cap = vmc_sender_module._MAX_EXPRESSIONS_PER_FRAME
+    frame = {
+        "bones": [],
+        "expressions": [{"name": f"custom{i}", "value": 0.0} for i in range(cap + 5)],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+        assert sender.send_frame(frame)
+
+    warnings = [r for r in records if "expressions" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len([a for a, _ in client.messages if a == "/VMC/Ext/Blend/Val"]) == cap * 2
+
+
+@pytest.mark.unit
+def test_no_overflow_warning_for_normal_frames():
+    """A full humanoid rig is well under the cap and must stay quiet."""
+    sender, _client = _enabled_sender()
+    frame = {
+        "bones": [
+            {
+                "name": name,
+                "px": 0.0, "py": 0.0, "pz": 0.0,
+                "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+            }
+            for name in vmc_sender_module._VRM_BONE_NAMES
+        ],
+        "expressions": [{"name": "happy", "value": 1.0}],
+    }
+
+    with _captured_warnings() as records:
+        assert sender.send_frame(frame)
+
+    assert not [r for r in records if "only the first" in r.getMessage()]
+    # 完整人形骨架有 55 根，必须全部送出，不能被 cap 削掉。
+    sent = [a for a, _ in _client.messages if a == "/VMC/Ext/Bone/Pos"]
+    assert len(sent) == len(vmc_sender_module._VRM_BONE_NAMES)
+
+
+@pytest.mark.unit
+def test_expression_cap_matches_between_sampler_and_sender():
+    """The sampler truncates first; the backend cap is only the second gate.
+
+    With the constant written independently on each side, raising the backend
+    one alone has no effect — the frame was already silently truncated in the
+    browser. This turns the "keep these in sync" comment into an executable
+    assertion.
+    """
+    source = Path("static/vrm/vrm-vmc-sender.js").read_text(encoding="utf-8")
+    match = re.search(r"const MAX_EXPRESSIONS_PER_FRAME = (\d+);", source)
+    assert match is not None, "sampler lost its named expression cap"
+    assert int(match.group(1)) == vmc_sender_module._MAX_EXPRESSIONS_PER_FRAME
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "suite_name",
+    ["vmc_websocket_isolation.test.cjs", "vmc_expression_budget.test.cjs"],
+)
+def test_vmc_frontend_node_suites(suite_name: str) -> None:
+    """pytest entry point for the two node:test suites.
+
+    ``unit-tests.yml`` only runs ``pytest tests/unit``, so a ``.test.cjs`` file
+    with no pytest caller never executes in CI no matter what it asserts. Both
+    of these suites landed without one — they were green locally and dead in the
+    pipeline. Parametrised by file name rather than globbed, because these two
+    are the VMC pair; other suites keep their own entry points next to the code
+    they cover.
+    """
+    import shutil
+
+    from tests.node_harness import run_node_script
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node not found")
+
+    suite_path = Path(__file__).resolve().parents[2] / "tests" / "frontend" / suite_name
+    result = run_node_script(
+        node_path,
+        suite_path.read_text(encoding="utf-8"),
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout

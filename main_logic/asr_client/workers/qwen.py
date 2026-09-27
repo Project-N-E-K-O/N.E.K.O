@@ -28,6 +28,13 @@ from typing import Any, TypeAlias
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from ..delivery import (
+    TransportDeliveryEvidence,
+    begin_transport_write,
+    complete_transport_write,
+    delivery_evidence,
+    log_delivery_phase,
+)
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection
 
@@ -84,6 +91,7 @@ class _QwenConnectionState:
     buffer_epoch: int
     next_utterance_id: int
     emit_ready: bool
+    delivery: TransportDeliveryEvidence | None = None
     item_keys: dict[str, _ItemKey] = field(default_factory=dict)
     pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
     # Monotonic timestamps of provider endpoints whose transcription final is
@@ -242,6 +250,7 @@ async def _qwen_sender(
     config: AsrSessionConfig,
     state: _QwenConnectionState,
 ) -> tuple[str, _AsrWorkerRequest | None]:
+    delivery_evidence(request_queue)
     await state.configured.wait()
     try:
         while True:
@@ -249,6 +258,8 @@ async def _qwen_sender(
             try:
                 if request.kind == "audio":
                     state.last_utterance_id = request.utterance_id
+                    delivery = begin_transport_write(request_queue)
+                    state.delivery = delivery
                     await ws.send(
                         json.dumps(
                             {
@@ -259,6 +270,10 @@ async def _qwen_sender(
                                 ),
                             }
                         )
+                    )
+                    complete_transport_write(
+                        delivery, len(request.audio), generation=request.generation,
+                        buffer_epoch=request.buffer_epoch, provider="qwen",
                     )
                     continue
 
@@ -386,6 +401,18 @@ async def _qwen_receiver(
                 return "error"
 
             event_type = event.get("type")
+            if event_type in (
+                "input_audio_buffer.speech_stopped",
+                "conversation.item.input_audio_transcription.completed",
+            ):
+                log_delivery_phase(
+                    state.delivery,
+                    phase=("provider_endpoint_received" if event_type ==
+                           "input_audio_buffer.speech_stopped" else
+                           "provider_final_received"),
+                    generation=state.generation,
+                    buffer_epoch=state.buffer_epoch,
+                )
             if event_type == "session.updated":
                 if not state.configured.is_set():
                     state.configured.set()

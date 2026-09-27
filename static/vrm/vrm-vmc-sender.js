@@ -41,6 +41,16 @@
     const SOURCE_IDLE_TIMEOUT_MS = 3000;
     const FRAME_ACK_TIMEOUT_MS = 1500;
     const MAX_BUFFERED_BYTES = 256 * 1024;
+    // Must stay in sync with _MAX_EXPRESSIONS_PER_FRAME in main_logic/vmc_sender.py.
+    // The backend re-applies this cap at its trust boundary, so raising it there
+    // alone changes nothing: frames are truncated here first, and silently.
+    const MAX_EXPRESSIONS_PER_FRAME = 256;
+    // Slots held back for zero-value retirement frames while any expression is
+    // retiring. Without a reserved share, a model that fills the cap on its own
+    // would starve retirements forever and strand the previous model's weights
+    // in the receiver. Live expressions are resent in full every frame, so the
+    // ones displaced here reappear on the next frame that owes no retirements.
+    const RETIREMENT_QUOTA_PER_FRAME = 16;
     const CSRF_HEADER_NAME = 'X-CSRF-Token';
     // VMC owns its coordinate origin. vrm.scene is also moved/scaled/rotated
     // by webpage layout and drag controls, so it must never be used as the
@@ -74,8 +84,10 @@
         bonesBuf: [],
         exprBuf: [],
         currentVrm: null,
+        currentModelInfo: null,
         knownExpressionNames: new Set(),
         retiringExpressionNames: new Set(),
+        expressionOverflowWarned: false,
         tPoseDeadline: 0,
         tPoseGeneration: 0,
         samplingSuspended: false,
@@ -142,6 +154,136 @@
         return scheme + '//' + window.location.host + '/api/vmc/ws';
     }
 
+    // The Electron Pet preload overwrites window.WebSocket and registers the
+    // most recently constructed socket as the desktop chat IPC proxy target,
+    // without discriminating by URL. A VMC socket built from that wrapper
+    // therefore steals the chat channel, and desktop chat messages get sent
+    // into /api/vmc/ws where the router drops every non-frame message.
+    // Borrowing the constructor from a same-origin child frame avoids the
+    // wrapper entirely: the preload only installs into the top frame. The
+    // probe frame must stay attached, because a detached frame's WebSocket
+    // cannot open connections.
+    //
+    // When the frame cannot be created (CSP frame-src, sandbox), the fallback
+    // depends on whether the top-level constructor reads as native. In a plain
+    // browser it normally does, so falling back costs nothing. Under a preload
+    // wrapper it does not, and falling back would reintroduce exactly the
+    // channel theft this module exists to prevent -- so VMC refuses to connect
+    // instead. A dead VMC output is recoverable; a hijacked chat channel is
+    // not. "Reads as native" is the operative phrase: see looksNative() below
+    // for where that test is wrong in each direction.
+    let _wsConstructor = null;
+    let _wsConstants = null;
+    let _wsUnavailableReason = null;
+
+    // A native constructor stringifies to "[native code]". A preload wrapper
+    // is a user-defined function, so its source is visible. This is a
+    // heuristic and it errs in BOTH directions, so neither outcome may be
+    // catastrophic:
+    //   false negative -- a wrapper whose source reads as native (anything
+    //     built with .bind() or wrapped in a Proxy stringifies that way). VMC
+    //     then takes the old fallback, i.e. exactly the pre-fix behaviour.
+    //   false positive -- a genuine constructor whose source is visible. This
+    //     is not hypothetical: a WebSocket implemented in JavaScript rather
+    //     than by the engine reads as non-native (Node's undici stringifies as
+    //     "class _WebSocket extends EventTarget"). Chromium's is a native
+    //     binding, so a real browser is very likely fine -- "very likely" is
+    //     not "certainly". Then VMC refuses in a host that had no preload at
+    //     all, and motion output is lost until same-origin frames are allowed.
+    // The false positive is only reachable when the probe iframe ALSO fails,
+    // because a successful borrow skips this check entirely; and it is a dead
+    // output rather than a stolen chat channel. That is the trade being made
+    // here, not an absence of risk.
+    function looksNative(candidate) {
+        if (typeof candidate !== 'function') return false;
+        try {
+            return /\[native code\]/.test(Function.prototype.toString.call(candidate));
+        } catch (_) {
+            // A constructor whose toString throws is not one we can vouch for.
+            return false;
+        }
+    }
+
+    function nativeWebSocketCtor() {
+        if (_wsConstructor) return _wsConstructor;
+        if (_wsUnavailableReason) return null;
+        if (typeof window.WebSocket !== 'function') {
+            // sample() consults this helper on every frame, so a missing
+            // constructor must not throw into the render loop.
+            _wsUnavailableReason = 'window.WebSocket is not available in this environment.';
+            window.__NEKO_VMC_TRANSPORT_BLOCKED__ = _wsUnavailableReason;
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('[VRM-VMC] ' + _wsUnavailableReason);
+            }
+            return null;
+        }
+        let ctor = window.WebSocket;
+        let constants = {
+            CONNECTING: window.WebSocket.CONNECTING,
+            OPEN: window.WebSocket.OPEN,
+            CLOSING: window.WebSocket.CLOSING,
+            CLOSED: window.WebSocket.CLOSED,
+        };
+        let borrowedFromFrame = false;
+        try {
+            const probe = document.createElement('iframe');
+            probe.style.display = 'none';
+            probe.setAttribute('aria-hidden', 'true');
+            probe.setAttribute('data-neko-websocket-probe', 'true');
+            (document.body || document.documentElement).appendChild(probe);
+            const borrowed = probe.contentWindow && probe.contentWindow.WebSocket;
+            if (typeof borrowed === 'function') {
+                ctor = borrowed;
+                constants = {
+                    CONNECTING: borrowed.CONNECTING,
+                    OPEN: borrowed.OPEN,
+                    CLOSING: borrowed.CLOSING,
+                    CLOSED: borrowed.CLOSED,
+                };
+                borrowedFromFrame = true;
+                window.__nekoNativeWebSocketProbe = probe;
+            } else {
+                probe.remove();
+            }
+        } catch (err) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn('[VRM-VMC] Failed to borrow native WebSocket from iframe; CSP frame-src or sandbox attribute may block same-origin frames.', err);
+            }
+        }
+        if (!borrowedFromFrame && !looksNative(ctor)) {
+            // Refusing here is the whole point: constructing from the wrapper
+            // would register this socket as the desktop chat proxy target.
+            _wsUnavailableReason =
+                'window.WebSocket is wrapped (Electron preload) and no same-origin '
+                + 'frame is available to borrow a native constructor from. VMC output '
+                + 'is disabled to avoid hijacking the desktop chat channel.';
+            window.__NEKO_VMC_TRANSPORT_BLOCKED__ = _wsUnavailableReason;
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('[VRM-VMC] ' + _wsUnavailableReason);
+            }
+            return null;
+        }
+        _wsConstructor = ctor;
+        _wsConstants = constants;
+        window.__nekoNativeWebSocket = ctor;
+        return ctor;
+    }
+
+    // Resolves the constructor on first use and reports why it is missing.
+    // Callers use this instead of comparing against null so the decision to
+    // stop (rather than retry) lives in one place.
+    function webSocketTransportBlockedReason() {
+        if (!_wsConstructor && !_wsUnavailableReason) nativeWebSocketCtor();
+        return _wsUnavailableReason;
+    }
+
+    function wsReadyState() {
+        if (!_wsConstants) nativeWebSocketCtor();
+        // Every readyState comparison must still resolve once the constructor
+        // is unavailable; the numeric values are fixed by the WebSocket spec.
+        return _wsConstants || { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+    }
+
     function closeWebSocket() {
         state.wsReady = false;
         for (const waiter of state.ackWaiters.values()) {
@@ -157,7 +299,7 @@
         state.reconnectRefreshAuth = false;
         const socket = state.ws;
         state.ws = null;
-        if (socket && socket.readyState < WebSocket.CLOSING) {
+        if (socket && socket.readyState < wsReadyState().CLOSING) {
             try { socket.close(1000, 'VMC disabled'); } catch (_) { /* ignored */ }
         }
     }
@@ -188,8 +330,11 @@
         if (state.wsReady && releaseSocket) {
             const expressionChunks = expressionNames.length > 0
                 ? Array.from(
-                    { length: Math.ceil(expressionNames.length / 256) },
-                    (_, index) => expressionNames.slice(index * 256, (index + 1) * 256)
+                    { length: Math.ceil(expressionNames.length / MAX_EXPRESSIONS_PER_FRAME) },
+                    (_, index) => expressionNames.slice(
+                        index * MAX_EXPRESSIONS_PER_FRAME,
+                        (index + 1) * MAX_EXPRESSIONS_PER_FRAME
+                    )
                 )
                 : [[]];
             // Send sequentially so a large custom expression set cannot trip
@@ -260,6 +405,9 @@
 
     function scheduleReconnect(refreshAuth) {
         if (!state.enabled || !state.sourceActive) return;
+        // A blocked transport never becomes available within a page lifetime,
+        // so retrying would just burn timers forever.
+        if (webSocketTransportBlockedReason()) return;
         // An early `error` may be followed by a more informative 4403 close.
         // Preserve the stronger token-refresh request even when a retry timer
         // has already been scheduled.
@@ -294,13 +442,17 @@
 
     function ensureWebSocket(forceTokenRefresh) {
         if (!state.enabled || !state.sourceActive) return Promise.resolve(false);
+        // Bail before touching the network: without a native constructor the
+        // only way to open a socket is through the preload wrapper, and that
+        // is worse than having no VMC output at all.
+        if (webSocketTransportBlockedReason()) return Promise.resolve(false);
         // The render loop calls this function whenever a frame cannot be sent.
         // Respect the scheduled backoff instead of reconnecting on the next
         // animation frame and bypassing scheduleReconnect().
         if (state.reconnectTimer) return Promise.resolve(false);
         if (
             state.ws
-            && state.ws.readyState === WebSocket.OPEN
+            && state.ws.readyState === wsReadyState().OPEN
             && state.wsReady
         ) {
             return Promise.resolve(true);
@@ -315,7 +467,7 @@
             }
             return new Promise(function (resolve) {
                 let settled = false;
-                const socket = new WebSocket(websocketUrl());
+                const socket = new (nativeWebSocketCtor())(websocketUrl());
                 state.ws = socket;
                 state.wsReady = false;
 
@@ -421,7 +573,7 @@
         if (
             !state.wsReady
             || !socket
-            || socket.readyState !== WebSocket.OPEN
+            || socket.readyState !== wsReadyState().OPEN
             || (!allowInactive && !state.sourceActive)
         ) {
             ensureWebSocket();
@@ -558,10 +710,24 @@
         };
     }
 
+    function readModelInfo(vrm) {
+        // VRM 0.x exposes meta.title; VRM 1.0 renamed it to meta.name.
+        const meta = vrm && vrm.meta;
+        const title = (meta && (meta.name || meta.title)) || '';
+        const model = window.vrmManager && window.vrmManager.currentModel;
+        const path = (model && model.vrm === vrm && model.url) || '';
+        if (!path && !title) return null;
+        return { path: String(path), title: String(title) };
+    }
+
     function sample(vrm) {
         if (state.samplingSuspended) return;
         if (!vrm || !vrm.humanoid) return;
         if (!state.enabled) return;
+        // No transport means no receiver for this frame. Bail before the
+        // per-bone/per-expression work rather than sampling 60 times a second
+        // into a socket that will never exist.
+        if (webSocketTransportBlockedReason()) return;
         markSourceActive();
         const nowMs = performance.now();
         const nowSeconds = nowMs / 1000;
@@ -579,14 +745,17 @@
 
         if (state.currentVrm !== vrm) {
             // Preserve old names only until one zero-value retirement frame is
-            // accepted. Current-model expressions are always queued first so
-            // the backend's 256-expression safety cap cannot starve them.
+            // accepted. Current-model expressions are queued first, but
+            // RETIREMENT_QUOTA_PER_FRAME keeps a share of each frame for the
+            // retiring side, so a model that fills the cap still lets the
+            // previous model's weights drain to zero.
             state.retiringExpressionNames = new Set([
                 ...state.retiringExpressionNames,
                 ...state.knownExpressionNames,
             ]);
             state.knownExpressionNames.clear();
             state.currentVrm = vrm;
+            state.currentModelInfo = readModelInfo(vrm);
         }
 
         state.bonesBuf.length = 0;
@@ -610,8 +779,44 @@
             }
         }
         state.exprBuf.length = 0;
+        // 新旧模型同名的表情无需退役：live 循环每帧全量驱动其值。但同名项
+        // 不会进入退役帧的 ack 清单，若不移出集合将永久滞留并虚占 liveCap
+        // 的预留配额。Set 迭代中删除当前项是安全的。
+        for (const name of state.retiringExpressionNames) {
+            if (state.knownExpressionNames.has(name)) {
+                state.retiringExpressionNames.delete(name);
+            }
+        }
+        // 存在待退役名时为退役侧预留每帧配额，防止挤满上限的模型把退役
+        // 饿死；预留量取 min(配额, 待退役数)，单个退役名不再挤掉整段配额。
+        // live 表情逐帧全量重发，被挤掉的会迟到若干帧（待退役名需
+        // ceil(数量/配额) 帧排空）而非丢失。
+        const liveCap = MAX_EXPRESSIONS_PER_FRAME - Math.min(
+            RETIREMENT_QUOTA_PER_FRAME,
+            state.retiringExpressionNames.size
+        );
+        // 后端的 warn-once 溢出日志看不到这里：截断发生在帧离开浏览器之前，
+        // 后端收到的永远是已经削到上限的数组。超额时在采样侧补一条同语义的
+        // 告警，否则文档承诺的「超限会告警」在这条链路上是空的。
+        const totalExpressionDemand =
+            state.knownExpressionNames.size + state.retiringExpressionNames.size;
+        if (totalExpressionDemand > MAX_EXPRESSIONS_PER_FRAME) {
+            if (!state.expressionOverflowWarned) {
+                state.expressionOverflowWarned = true;
+                if (typeof console !== 'undefined' && console.warn) {
+                    console.warn(
+                        '[VRM-VMC] 模型的表情数量 ' + totalExpressionDemand
+                        + ' 超过每帧上限 ' + MAX_EXPRESSIONS_PER_FRAME
+                        + '，超出的表情本帧不会发送。此告警只提示一次。'
+                    );
+                }
+            }
+        } else {
+            // 换模型后回到上限内就重新武装，下一个超限模型仍能得到告警。
+            state.expressionOverflowWarned = false;
+        }
         for (const name of state.knownExpressionNames) {
-            if (state.exprBuf.length >= 256) break;
+            if (state.exprBuf.length >= liveCap) break;
             state.exprBuf.push({
                 name,
                 value: currentExpressions.has(name) ? currentExpressions.get(name) : 0,
@@ -619,7 +824,10 @@
         }
         const retiringNamesInFrame = [];
         for (const name of state.retiringExpressionNames) {
-            if (state.exprBuf.length >= 256) break;
+            // Retirements get the reserved tail of the frame. Names clear from
+            // the set once the backend acks them, so a batch that exceeds the
+            // quota drains over the next few frames rather than being dropped.
+            if (state.exprBuf.length >= MAX_EXPRESSIONS_PER_FRAME) break;
             if (state.knownExpressionNames.has(name)) continue;
             state.exprBuf.push({ name, value: 0 });
             retiringNamesInFrame.push(name);
@@ -631,6 +839,7 @@
             expressions: state.exprBuf,
             t_pose: isTPose,
             t_pose_generation: state.tPoseGeneration,
+            model: state.currentModelInfo,
             ts: Date.now(),
         }, {
             requireAck: retiringNamesInFrame.length > 0,
@@ -686,6 +895,14 @@
                 state.samplingSuspended = false;
                 resetSampleSchedule();
                 applySendRate(data.send_rate_hz);
+                const blocked = webSocketTransportBlockedReason();
+                if (blocked) {
+                    // The backend is enabled but this page can never publish.
+                    // Say so on the control path, because the per-frame path
+                    // is silent by design.
+                    console.error('[VRM-VMC] enabled on the backend, but this page cannot publish frames: ' + blocked);
+                    return data;
+                }
                 if (state.sourceActive) await ensureWebSocket();
                 return data;
             } catch (error) {

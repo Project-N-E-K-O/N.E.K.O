@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 import websockets
 
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import (
     AsrSessionConfig,
     _AsrRequestQueue,
@@ -439,6 +440,7 @@ async def soniox_asr_worker(
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
         nonlocal pending_finalize, provider_wire_audio_bytes
         nonlocal reconnect_attempted, replay_carryover_bytes, replay_complete
+        delivery_evidence(request_queue)
         while True:
             if deferred_requests and (
                 pending_finalize is None
@@ -605,7 +607,12 @@ async def soniox_asr_worker(
                                 replay_audio.clear()
                                 replay_carryover_bytes = 0
                         provider_wire_audio_bytes += len(request.audio)
+                        delivery = begin_transport_write(request_queue)
                         await connection.send(request.audio)
+                        complete_transport_write(
+                            delivery, len(request.audio), generation=request.generation,
+                            buffer_epoch=request.buffer_epoch, provider="soniox",
+                        )
                         audio_frame_count += 1
                         audio_bytes_sent += len(request.audio)
                     continue
@@ -657,6 +664,13 @@ async def soniox_asr_worker(
 
     try:
         while True:
+            evidence = delivery_evidence(request_queue)
+            if replay_audio and replay_complete and evidence.protected and evidence.attempted:
+                await emit_error(
+                    "ASR_SONIOX_PROTECTED_REPLAY_DISABLED",
+                    "Protected audio cannot be replayed after a transport attempt",
+                )
+                return
             connected_at = time.monotonic()
             websocket = await websockets.connect(
                 SONIOX_REGION_URLS[region],
@@ -664,7 +678,12 @@ async def soniox_asr_worker(
             )
             await websocket.send(json.dumps(_soniox_config(api_key, config)))
             if replay_audio and replay_complete:
+                delivery = begin_transport_write(request_queue)
                 await websocket.send(bytes(replay_audio))
+                complete_transport_write(
+                    delivery, len(replay_audio), generation=state.generation,
+                    buffer_epoch=state.buffer_epoch, provider="soniox",
+                )
             if pending_finalize is not None:
                 await websocket.send(json.dumps({"type": "finalize"}))
             if not ready_sent:
@@ -704,6 +723,13 @@ async def soniox_asr_worker(
             if action in {"reconnect", "reset", "rotate"} and not failure_sent:
                 if action == "reconnect":
                     has_wire_audio = provider_wire_audio_bytes > 0
+                    evidence = delivery_evidence(request_queue)
+                    if evidence.protected and (has_wire_audio or evidence.attempted):
+                        await emit_error(
+                            "ASR_SONIOX_PROTECTED_REPLAY_DISABLED",
+                            "Protected audio cannot be replayed after a transport attempt",
+                        )
+                        return
                     if has_wire_audio and not replay_complete:
                         await emit_error(
                             "ASR_SONIOX_REPLAY_INCOMPLETE",

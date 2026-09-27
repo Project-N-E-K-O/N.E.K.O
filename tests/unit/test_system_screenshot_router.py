@@ -157,6 +157,9 @@ def test_backend_screenshot_returns_safe_macos_pyobjc_reason(monkeypatch):
 @pytest.mark.unit
 def test_backend_screenshot_does_not_expose_raw_import_details(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    # Linux deliberately skips the PyAutoGUI import preflight; exercise the
+    # non-Linux privacy contract regardless of the CI host platform.
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
 
     real_import = builtins.__import__
 
@@ -178,6 +181,33 @@ def test_backend_screenshot_does_not_expose_raw_import_details(monkeypatch):
         "reason": "AGENT_PYAUTOGUI_IMPORT_FAILED",
     }
     assert "/Users/alice" not in response.text
+
+
+@pytest.mark.unit
+def test_backend_screenshot_on_linux_does_not_require_pyautogui(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        system_router_module,
+        "capture_desktop_screenshot",
+        lambda: Image.new("RGB", (32, 32), (20, 40, 60)),
+    )
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pyautogui":
+            raise RuntimeError("X11 DISPLAY unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with _build_client() as client:
+        response = client.post(SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["data"].startswith("data:image/jpeg;base64,")
 
 
 @pytest.mark.unit

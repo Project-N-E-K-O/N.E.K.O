@@ -135,6 +135,23 @@ def response_arbiter_fail_open_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# Opt-in structural trace of the realtime wire and of the response arbiter's
+# decisions, for attributing provider lifecycle quirks from a field log. Same
+# support path as the hatch above: set it, restart, send the Main log. Read
+# once per client construction. Records carry types, ids, counts, names and
+# statuses (see ``_wire_trace``), never conversation content. The one free-text
+# exception: provider error messages, arbiter dispatch-failure exception text
+# and connection-loss reasons are included, truncated to 200 characters.
+_REALTIME_WIRE_TRACE_ENV_VAR = "NEKO_REALTIME_WIRE_TRACE"
+
+
+def realtime_wire_trace_enabled() -> bool:
+    """Read the realtime wire-trace switch. Default off."""
+
+    raw = os.getenv(_REALTIME_WIRE_TRACE_ENV_VAR, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 # ``api_type`` carries the provider key that ``CORE_API_TYPE`` resolves to
 # ('openai', 'qwen_intl', ...), never a model-name fragment. Several wire
 # branches were written against 'gpt' — a value the config layer has never

@@ -25,6 +25,9 @@ _SERVER_RESPONSE_ID_LIMIT = arbiter_module._SERVER_RESPONSE_ID_LIMIT
 RealtimeResponseArbiter = arbiter_module.RealtimeResponseArbiter
 
 
+pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")
+
+
 async def _wait_for_arbiter_source(
     arbiter: RealtimeResponseArbiter,
     source: str | None,
@@ -4126,7 +4129,7 @@ async def test_the_item_ack_wait_reports_what_it_spent(caplog):
 
     arbiter = RealtimeResponseArbiter(send)
     with caplog.at_level(
-        logging.INFO, logger="main_logic.omni_realtime_client._response_arbiter"
+        logging.INFO, logger=arbiter_module.logger.name
     ):
         ticket = await arbiter.enqueue(
             source="external_asr",

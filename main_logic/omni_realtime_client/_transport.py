@@ -153,6 +153,148 @@ class RealtimeImagePayloadTooLargeError(RuntimeError):
 class _TransportMixin:
     _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
 
+    def _note_voice_handoff_input_open(self) -> int:
+        """Record local evidence that native PCM belongs to an open utterance."""
+        self._voice_handoff_input_sequence = (
+            getattr(self, "_voice_handoff_input_sequence", 0) + 1
+        )
+        self._voice_handoff_input_generation = self._connection_generation
+        self._voice_handoff_input_open = True
+        return self._voice_handoff_input_sequence
+
+    def _rollback_voice_handoff_input_open(self, expected_sequence: int) -> None:
+        """Undo an onset marker when this frame was definitely not admitted."""
+        if (
+            getattr(self, "_voice_handoff_input_sequence", 0) == expected_sequence
+            and getattr(self, "_voice_handoff_input_generation", None)
+            == getattr(self, "_connection_generation", None)
+            and getattr(self, "_voice_handoff_sent_input_sequence", 0)
+            < expected_sequence
+        ):
+            self._voice_handoff_input_open = False
+            self._voice_handoff_input_sequence = max(0, expected_sequence - 1)
+
+    def _ensure_voice_handoff_audio_timeline(self) -> None:
+        generation = self._connection_generation
+        if getattr(self, "_voice_handoff_audio_generation", None) == generation:
+            return
+        self._voice_handoff_audio_generation = generation
+        self._voice_handoff_audio_samples = 0
+        self._voice_handoff_sent_input_sequence = 0
+        self._voice_handoff_loud_end_sample = None
+        self._voice_handoff_server_item_id = None
+        self._voice_handoff_server_boundary_unknown = False
+
+    def _note_voice_handoff_audio_append(
+        self, *, samples: int, input_sequence: int,
+    ) -> None:
+        """Bind admitted input to the server's cumulative PCM sample timeline.
+
+        This runs at send_event's pre-send boundary, after throttling and its
+        semaphore. A louder frame still waiting for admission has a newer
+        local sequence and cannot be cleared by an earlier server endpoint.
+        """
+        self._ensure_voice_handoff_audio_timeline()
+        self._voice_handoff_audio_samples += samples
+        if input_sequence > self._voice_handoff_sent_input_sequence:
+            self._voice_handoff_sent_input_sequence = input_sequence
+            self._voice_handoff_loud_end_sample = self._voice_handoff_audio_samples
+
+    def _note_voice_handoff_server_boundary(self, event: dict) -> bool:
+        """Apply only the PCM range actually ended by server VAD.
+
+        OpenAI-compatible server VAD reports audio_end_ms from the session's
+        input-audio timeline. Wall time and response arrival order cannot
+        identify which local PCM an old speech_stopped event has consumed.
+        """
+        self._ensure_voice_handoff_audio_timeline()
+        item_id = event.get("item_id")
+        current_item = getattr(self, "_voice_handoff_server_item_id", None)
+        if item_id and current_item and item_id != current_item:
+            return False
+        end_ms = event.get("audio_end_ms")
+        if type(end_ms) is not int or end_ms < 0:
+            if self._has_server_vad:
+                self._voice_handoff_server_boundary_unknown = True
+                return False
+            return True
+        self._voice_handoff_server_boundary_unknown = False
+        end_sample = getattr(self, "_voice_handoff_loud_end_sample", None)
+        sequence = getattr(self, "_voice_handoff_sent_input_sequence", 0)
+        if (
+            end_sample is not None
+            and getattr(self, "_voice_handoff_audio_generation", None)
+            == self._connection_generation
+            and end_sample * 1000 <= end_ms * self._uplink_sample_rate
+        ):
+            self._note_voice_handoff_input_boundary(expected_sequence=sequence)
+        return True
+
+    def _note_voice_handoff_input_boundary(
+        self,
+        *,
+        expected_sequence: int | None = None,
+    ) -> None:
+        """Close only the input marker owned by the current connection."""
+        if (
+            expected_sequence is not None
+            and getattr(self, "_voice_handoff_input_sequence", 0)
+            != expected_sequence
+        ):
+            return
+        if getattr(self, "_voice_handoff_input_generation", None) == getattr(
+            self,
+            "_connection_generation",
+            None,
+        ):
+            self._voice_handoff_input_open = False
+
+    def can_handoff_voice_input(self) -> bool:
+        """Whether native microphone input is at a safe connection boundary.
+
+        The Core hot-swap path calls this before pausing its local activation
+        writer and once more after that pause has settled.  It must therefore
+        be a synchronous observation only: waiting here would stop the PCM or
+        receive path that is responsible for reaching the next boundary.
+
+        Server-VAD providers expose an open utterance through
+        ``_audio_in_buffer`` and close the local marker at ``speech_stopped``.
+        Providers without those events close it at their owned manual commit or
+        response terminal.  Loud PCM opens the generation-stamped marker before
+        audio processing, covering the gap between admission and a delayed
+        server ``speech_started`` event.  A false result defers the normal
+        hot-swap to a later turn-completion event; it never closes or clears
+        this input.
+        """
+        if getattr(self, "_fatal_error_occurred", False):
+            return False
+        if getattr(self, "_is_gemini", False):
+            if getattr(self, "_gemini_session", None) is None:
+                return False
+        elif getattr(self, "ws", None) is None:
+            return False
+        input_open = bool(
+            getattr(self, "_voice_handoff_input_open", False)
+            and getattr(self, "_voice_handoff_input_generation", None)
+            == getattr(self, "_connection_generation", None)
+        )
+        input_after_response_start = (
+            getattr(self, "_voice_handoff_input_generation", None)
+            == getattr(self, "_connection_generation", None)
+            and getattr(self, "_voice_handoff_input_sequence", 0)
+            > getattr(self, "_voice_handoff_response_input_sequence", 0)
+        )
+        return not bool(
+            getattr(self, "_audio_in_buffer", False)
+            or input_open
+            or input_after_response_start
+            or (
+                getattr(self, "_voice_handoff_server_boundary_unknown", False)
+                and getattr(self, "_voice_handoff_audio_generation", None)
+                == getattr(self, "_connection_generation", None)
+            )
+        )
+
     def _clear_input_route_identities(self) -> None:
         self._input_route_identity_captured = False
         self._input_route_identity = None
@@ -609,10 +751,11 @@ class _TransportMixin:
             # server-side tool stripping the user mentioned will be
             # lifted, after which our tools propagate naturally.
             # lanlan.app (international free) backs onto Vertex AI
-            # Live; that path is currently TODO (no client→server
-            # tools propagation confirmed). Tools below match the
-            # StepFun shape and become a no-op on lanlan.app until
-            # the proxy supports them.
+            # Live. It forwards the StepFun-shape tools list below and
+            # returns response.function_call_arguments.* events
+            # (observed 2026-09-07: minecraft_task calls in
+            # lanlan_app_gemini voice sessions; 2026-09-12: 29
+            # recall_memory calls in voice mode).
             #
             # MANUAL mode: both proxies receive ``turn_detection: null``
             # via the StepFun-shape websocket session config. lanlan.tech
@@ -928,7 +1071,23 @@ class _TransportMixin:
                 transport = self.ws
                 if not transport:
                     return False
+                # 结构化 wire trace（NEKO_REALTIME_WIRE_TRACE，默认关）：写出之后才记，
+                # 只记类型/id/计数；recorder 自己吞掉异常，不会影响发送结果。
+                # generation 必须在 await send 之前同步读：等待期间换上新连接会把
+                # generation 加 1，这条写到旧 socket 上的事件不能记到新连接名下。
+                wire_trace = getattr(self, "_wire_trace", None)
+                trace_generation = (
+                    getattr(self, "_connection_generation", None)
+                    if wire_trace is not None
+                    else None
+                )
                 await transport.send(payload)
+                if wire_trace is not None:
+                    wire_trace.record_send(
+                        event,
+                        generation=trace_generation,
+                        size=len(payload),
+                    )
                 return True
             except _RealtimeEventOwnerRetired:
                 raise
@@ -1036,16 +1195,26 @@ class _TransportMixin:
         audio_chunk: bytes,
         *,
         captured_at: float | None = None,
-    ) -> None:
+        raise_on_error: bool = False,
+        require_output_commit: bool = False,
+    ) -> bool | None:
         """Stream raw audio data to the API.
 
         Supports two input modes:
         - 48kHz from PC: Apply RNNoise then downsample to 16kHz
         - 16kHz from mobile: Pass through directly (no RNNoise)
+
+        ``False`` means the provider transport definitively did not accept the
+        frame. ``None`` preserves the legacy locally-buffered result for DSP or
+        resampler frames that did not produce a provider write yet.
+
+        ``require_output_commit`` is an activation-only receipt contract.  The
+        ordinary microphone path deliberately keeps the BASE return value of
+        ``None`` even when the transport reports a definitive result.
         """
         # 检查是否已发生致命错误，如果是则直接返回
         if self._fatal_error_occurred:
-            return
+            return False if require_output_commit else None
 
         audio_timeline_at = (
             float(captured_at)
@@ -1055,6 +1224,8 @@ class _TransportMixin:
 
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
         ingress_route_identity = self._read_input_route_identity()
+        self._ensure_voice_handoff_audio_timeline()
+        handoff_input_sequence = getattr(self, "_voice_handoff_input_sequence", 0)
         # Observe ownership on every frame, not only on frames the local onset
         # gate accepts: server VAD may commit an utterance the gate never heard.
         self._note_input_route_identity_frame(ingress_route_identity)
@@ -1071,6 +1242,7 @@ class _TransportMixin:
             # below.
             self._last_local_loud_time = audio_timeline_at
             self._user_recent_activity_time = time.time()
+            handoff_input_sequence = self._note_voice_handoff_input_open()
 
         # Detect input sample rate based on chunk size
         # 48kHz: 480 samples (10ms) = 960 bytes
@@ -1087,7 +1259,8 @@ class _TransportMixin:
 
             # Skip if RNNoise is buffering (returns empty)
             if len(audio_chunk) == 0:
-                return
+                self._rollback_voice_handoff_input_open(handoff_input_sequence)
+                return None
 
         audio_processor = self._audio_processor
         use_rnnoise_path = use_rnnoise_path and audio_processor is not None
@@ -1103,7 +1276,7 @@ class _TransportMixin:
         # receive-side audio/done/error events remain continuously drainable.
         async with self._ensure_turn_admission_lock():
             if self._fatal_error_occurred:
-                return
+                return False
             admitted_at = time.time()
 
             # Unified VAD update (priority: server VAD > RNNoise > RMS).
@@ -1122,6 +1295,7 @@ class _TransportMixin:
             # stored, not which route it names.
             if _rnnoise_vad_live:
                 if audio_processor.speech_probability > 0.4:
+                    handoff_input_sequence = self._note_voice_handoff_input_open()
                     self._capture_input_route_identity_snapshot(
                         ingress_route_identity
                     )
@@ -1158,15 +1332,19 @@ class _TransportMixin:
 
             # Gemini uses different API (16kHz, no uplink resample needed)
             if self._is_gemini:
-                await self._stream_audio_gemini(audio_chunk)
-                return
+                await self._stream_audio_gemini(
+                    audio_chunk,
+                    raise_on_error=raise_on_error,
+                )
+                return True if require_output_commit else None
 
             # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
             # mobile-native, or hot-swap-cache replay). Upsample to the provider
             # uplink rate as the very last step (24kHz for OpenAI; no-op others).
             audio_chunk = self._resample_uplink(audio_chunk)
             if not audio_chunk:
-                return  # resampler still buffering — nothing to send this frame
+                self._rollback_voice_handoff_input_open(handoff_input_sequence)
+                return None  # resampler still buffering — nothing to send this frame
 
             audio_b64 = base64.b64encode(audio_chunk).decode()
 
@@ -1174,7 +1352,17 @@ class _TransportMixin:
                 "type": "input_audio_buffer.append",
                 "audio": audio_b64
             }
-            await self.send_event(append_event)
+            sent = await self.send_event(
+                append_event,
+            )
+            if sent:
+                self._note_voice_handoff_audio_append(
+                    samples=len(audio_chunk) // 2,
+                    input_sequence=handoff_input_sequence,
+                )
+            elif sent is False:
+                self._rollback_voice_handoff_input_open(handoff_input_sequence)
+            return sent if require_output_commit else None
 
     async def _analyze_image_with_vision_model(
         self,
@@ -2237,6 +2425,11 @@ class _TransportMixin:
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
         self._current_turn_host_id = self._read_host_turn_id()
+        self._voice_handoff_response_input_sequence = getattr(
+            self,
+            "_voice_handoff_input_sequence",
+            0,
+        )
         self._interrupted = False
         # A stable successor id also closes the id-less quarantine opened by
         # a fail-open release; ordered socket delivery puts this evidence
@@ -2396,6 +2589,20 @@ class _TransportMixin:
                 self._current_turn_host_id,
             )
             return
+        if not self._has_server_vad and step_timeout is None:
+            # This provider family has no speech_stopped event. Reaching the
+            # owned response terminal is its authoritative native-input
+            # boundary. The ownership checks above ensure a late terminal can
+            # never close a successor turn's marker. A bounded arbiter
+            # fail-open release passes step_timeout and deliberately does not
+            # count: it is a local recovery decision, not Provider evidence.
+            self._note_voice_handoff_input_boundary(
+                expected_sequence=getattr(
+                    self,
+                    "_voice_handoff_response_input_sequence",
+                    0,
+                )
+            )
         if self.on_response_done:
             try:
                 if step_timeout is None:
@@ -2824,10 +3031,14 @@ class _TransportMixin:
                 )
                 return True
 
+            # 结构化 wire trace（默认关）：在任何分发/过滤之前记录，陈旧事件也照记。
+            wire_trace = getattr(self, "_wire_trace", None)
             async for message in message_ws:
                 if await retire_if_replaced():
                     return
                 event = json.loads(message)
+                if wire_trace is not None:
+                    wire_trace.record_recv(event, generation=message_generation)
                 event_type = event.get("type")
 
                 # if event_type not in ["response.audio.delta", "response.audio_transcript.delta",  "response.output_audio.delta", "response.output_audio_transcript.delta"]:
@@ -2948,6 +3159,19 @@ class _TransportMixin:
                         # its first turn onward and the stale filter behaves
                         # exactly as before.
                         and self._announces_responses
+                        # A mismatched function/terminal ID alone does not
+                        # enter this branch: the observed Lanlan/livestream
+                        # trace never announced response.created. Its original
+                        # timeout was owner binding, not this stale filter.
+                        # Do not exempt mismatched function-call IDs here,
+                        # even on the Lanlan route. A first-time delayed call
+                        # from a cancelled response can have an unseen call ID;
+                        # capturing the CURRENT tool scope below would bless it
+                        # as the successor's work. Neither deduplication nor a
+                        # post-receive scope check proves its origin. Without
+                        # independent correlation, quarantine ambiguous calls
+                        # on announcing connections. Never-announcing proxies
+                        # retain their existing path via the latch above.
                     ):
                         if event_type == "response.done":
                             # A terminal event must reach the arbiter even when
@@ -3188,6 +3412,8 @@ class _TransportMixin:
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
                     self.note_user_turn_started()
+                    self._ensure_voice_handoff_audio_timeline()
+                    self._voice_handoff_server_item_id = event.get("item_id")
                     self._note_raw_speech_started_scope(event.get("item_id"))
                     self._speech_started_total += 1
                     logger.info("Speech detected")
@@ -3211,6 +3437,9 @@ class _TransportMixin:
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
+                    handoff_boundary_is_current = (
+                        self._note_voice_handoff_server_boundary(event)
+                    )
                     # Only an ended utterance can causally create the automatic
                     # server-VAD response.  Marking this at speech_started can
                     # steal an explicit response.created whose create was
@@ -3238,7 +3467,8 @@ class _TransportMixin:
                             self._response_arbiter.arm_server_vad_response_pending_timeout()
                     if await retire_if_replaced():
                         return
-                    self._audio_in_buffer = False
+                    if handoff_boundary_is_current:
+                        self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now

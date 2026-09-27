@@ -51,6 +51,305 @@
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
     let _jukeboxControlQueue = Promise.resolve();
+    let _computerUseStream = null;
+    let _computerUseStreamPending = null;
+    let _computerUseDisplayRequestPending = null;
+    let _computerUseStreamGeneration = 0;
+    let _computerUseStreamOwnerToken = null;
+    let _computerUseCaptureFailure = '';
+    let _agentTaskReconcileTimer = null;
+    let _agentTaskReconcileInFlight = false;
+    const _agentTaskMissingCounts = new Map();
+
+    function scheduleAgentTaskReconciliation() {
+        if (_agentTaskReconcileTimer || !window._agentTaskMap) return;
+        if (!Array.from(window._agentTaskMap.values()).some(function (task) {
+            return task.status === 'running' || task.status === 'queued';
+        })) return;
+        _agentTaskReconcileTimer = setInterval(async function () {
+            var taskMap = window._agentTaskMap;
+            if (!taskMap || !Array.from(taskMap.values()).some(function (task) {
+                return task.status === 'running' || task.status === 'queued';
+            })) {
+                clearInterval(_agentTaskReconcileTimer);
+                _agentTaskReconcileTimer = null;
+                return;
+            }
+            if (_agentTaskReconcileInFlight) return;
+            _agentTaskReconcileInFlight = true;
+            try {
+                var result = await fetch('/api/agent/tasks', { cache: 'no-store' });
+                if (!result.ok) return;
+                var body = await result.json();
+                if (!body || !Array.isArray(body.tasks)) return;
+                // A WebSocket status snapshot may replace the map while the
+                // HTTP request is in flight. Reconcile the current map only.
+                taskMap = window._agentTaskMap;
+                if (!taskMap) return;
+                var serverTasks = new Map(body.tasks.filter(function (task) {
+                    return task && task.id;
+                }).map(function (task) { return [task.id, task]; }));
+                var changed = false;
+                taskMap.forEach(function (task, id) {
+                    if (task.status !== 'running' && task.status !== 'queued') {
+                        _agentTaskMissingCounts.delete(id);
+                        return;
+                    }
+                    var current = serverTasks.get(id);
+                    if (!current) {
+                        // The server is authoritative. Allow one successful
+                        // poll for registration races, then retire a task whose
+                        // terminal event and retained record were both missed.
+                        var misses = (_agentTaskMissingCounts.get(id) || 0) + 1;
+                        if (misses >= 2) {
+                            taskMap.delete(id);
+                            _agentTaskMissingCounts.delete(id);
+                            changed = true;
+                        } else {
+                            _agentTaskMissingCounts.set(id, misses);
+                        }
+                        return;
+                    }
+                    _agentTaskMissingCounts.delete(id);
+                    if (['completed', 'failed', 'cancelled'].indexOf(current.status) === -1) return;
+                    var terminalAt = Date.now();
+                    taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
+                    changed = true;
+                    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+                    if (window._agentTaskRemoveTimers.has(id)) clearTimeout(window._agentTaskRemoveTimers.get(id));
+                    window._agentTaskRemoveTimers.set(id, setTimeout(function () {
+                        if (window._agentTaskMap.get(id)?.terminal_at === terminalAt) {
+                            window._agentTaskMap.delete(id);
+                            if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                var remaining = Array.from(window._agentTaskMap.values());
+                                window.AgentHUD.updateAgentTaskHUD({
+                                    success: true, tasks: remaining, total_count: remaining.length,
+                                    running_count: remaining.filter(function (item) { return item.status === 'running'; }).length,
+                                    queued_count: remaining.filter(function (item) { return item.status === 'queued'; }).length,
+                                    completed_count: remaining.filter(function (item) { return item.status === 'completed'; }).length,
+                                    failed_count: remaining.filter(function (item) { return item.status === 'failed'; }).length,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
+                        }
+                        window._agentTaskRemoveTimers.delete(id);
+                    }, 10000));
+                });
+                _agentTaskMissingCounts.forEach(function (_count, id) {
+                    if (!taskMap.has(id)) _agentTaskMissingCounts.delete(id);
+                });
+                if (changed && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                    var tasks = Array.from(taskMap.values());
+                    window.AgentHUD.updateAgentTaskHUD({
+                        success: true, tasks: tasks, total_count: tasks.length,
+                        running_count: tasks.filter(function (task) { return task.status === 'running'; }).length,
+                        queued_count: tasks.filter(function (task) { return task.status === 'queued'; }).length,
+                        completed_count: tasks.filter(function (task) { return task.status === 'completed'; }).length,
+                        failed_count: tasks.filter(function (task) { return task.status === 'failed'; }).length,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (_) { /* WebSocket remains primary; retry on the next tick. */ }
+            finally { _agentTaskReconcileInFlight = false; }
+        }, 5000);
+    }
+
+    window.computerUseNeedsCaptureStream = function () {
+        var provider = resolveDesktopCaptureProvider();
+        return !!(provider && provider.computerUseNeedsStream);
+    };
+    window.getComputerUseCaptureFailure = function () { return _computerUseCaptureFailure; };
+    window.computerUseNativeCaptureAvailable = async function () {
+        try {
+            var controller = new AbortController();
+            var timer = setTimeout(function () { controller.abort(); }, 1500);
+            try {
+                var response = await fetch('/api/agent/computer-use/native-capture-available', {
+                    cache: 'no-store', signal: controller.signal
+                });
+                if (!response.ok) return false;
+                var body = await response.json();
+                return body && body.success === true && body.available === true;
+            } finally { clearTimeout(timer); }
+        } catch (_) { return false; }
+    };
+
+    function releaseComputerUseCapture() {
+        _computerUseStreamGeneration += 1;
+        _computerUseStreamPending = null;
+        var provider = resolveDesktopCaptureProvider();
+        if (provider && _computerUseStreamOwnerToken
+            && typeof provider.setComputerUseStreamOwner === 'function') {
+            provider.setComputerUseStreamOwner(false, _computerUseStreamOwnerToken).catch(function () {});
+        }
+        _computerUseStreamOwnerToken = null;
+        var stream = _computerUseStream;
+        _computerUseStream = null;
+        if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
+    }
+
+    async function captureComputerUseLiveStream(provider) {
+        var stream = _computerUseStream && _computerUseStream.active
+            ? _computerUseStream : S.screenCaptureStream;
+        var videoTrack = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+        var surface = videoTrack && videoTrack.getSettings
+            ? videoTrack.getSettings().displaySurface : null;
+        var selectedScreen = stream === _computerUseStream
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('screen:'));
+        if (!stream || !stream.active || !videoTrack || videoTrack.readyState !== 'live'
+            || (surface !== 'monitor' && (surface || !selectedScreen))
+            || typeof window.captureFrameFromStream !== 'function') return null;
+        // A failed display lookup or frame read means "no reusable frame", so
+        // callers still reach their fallback instead of reporting a hard error.
+        try {
+            var displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                ? await provider.getComputerUseDisplayCount() : null;
+            if (displayCount !== 1) return null;
+            var frame = await window.captureFrameFromStream(stream, 0.8, true);
+            return frame && frame.dataUrl ? await boundCaptureBridgeRegionImage(frame.dataUrl) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    var computerUseBrokerProvider = resolveDesktopCaptureProvider();
+    if (computerUseBrokerProvider && typeof computerUseBrokerProvider.onComputerUseFrameRequest === 'function') {
+        computerUseBrokerProvider.onComputerUseFrameRequest(async function () {
+            var image = await captureComputerUseLiveStream(computerUseBrokerProvider);
+            return image ? { success: true, dataUrl: image } : { success: false };
+        });
+    }
+
+    // Called synchronously from the user's keyboard-control toggle so Chromium
+    // sees a user gesture. The portal chooser is opened once and the live stream
+    // is reused by later Agent requests.
+    window.prepareComputerUseCapture = function () {
+        var provider = resolveDesktopCaptureProvider();
+        // Only a Wayland desktop needs the authorised stream. Elsewhere the
+        // backend captures natively, so a screen-share prompt (or macOS
+        // screen-recording indicator) would be pure cost.
+        if (!provider || provider.computerUseNeedsStream !== true) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(false);
+        }
+        if (typeof provider.captureComputerUseScreen !== 'function'
+            || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia
+            || (window.screen && window.screen.isExtended === true)
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('window:'))) {
+            _computerUseCaptureFailure = 'capture_unavailable_or_window_selected';
+            return Promise.resolve(false);
+        }
+        if (_computerUseStream && _computerUseStream.active) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(true);
+        }
+        if (_computerUseStreamPending) return _computerUseStreamPending;
+        // The UI timeout cannot cancel Chromium's chooser. Wait for that
+        // request to settle before allowing another system permission prompt.
+        if (_computerUseDisplayRequestPending) {
+            _computerUseCaptureFailure = 'display_media_pending';
+            return Promise.resolve(false);
+        }
+
+        var generation = _computerUseStreamGeneration;
+        // Invoke getDisplayMedia before any await: transient user activation
+        // would otherwise be lost while querying Electron display metadata.
+        var request;
+        try {
+            request = navigator.mediaDevices.getDisplayMedia({
+                video: { displaySurface: 'monitor', frameRate: { max: 1 } },
+                audio: false
+            });
+        } catch (_) {
+            _computerUseCaptureFailure = 'display_media_request_failed';
+            return Promise.resolve(false);
+        }
+        var displayRequest = Promise.resolve(request);
+        _computerUseDisplayRequestPending = displayRequest;
+        displayRequest.then(function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        }, function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        });
+        // Chromium may leave getDisplayMedia pending without showing a portal
+        // chooser. Settle the UI, and stop any stream delivered after timeout.
+        var requestTimedOut = false;
+        var boundedRequest = new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () {
+                requestTimedOut = true;
+                resolve(null);
+            }, 5000);
+            displayRequest.then(function (stream) {
+                if (requestTimedOut) {
+                    stream.getTracks().forEach(function (track) { track.stop(); });
+                    return;
+                }
+                clearTimeout(timer);
+                resolve(stream);
+            }, function (error) {
+                if (requestTimedOut) return;
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+        var pending = boundedRequest.then(async function (stream) {
+            if (!stream) {
+                _computerUseCaptureFailure = 'display_media_timeout';
+                return false;
+            }
+            var track = stream.getVideoTracks()[0];
+            var surface = track && track.getSettings ? track.getSettings().displaySurface : null;
+            var displayCount = null;
+            try {
+                displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                    ? await provider.getComputerUseDisplayCount() : null;
+            } catch (_) { /* no trusted display mapping */ }
+            if (generation !== _computerUseStreamGeneration || !track
+                || track.readyState !== 'live'
+                || (surface && surface !== 'monitor')
+                || displayCount !== 1) {
+                _computerUseCaptureFailure = displayCount !== 1
+                    ? 'single_display_required' : 'monitor_stream_unavailable';
+                stream.getTracks().forEach(function (item) { item.stop(); });
+                return false;
+            }
+            if (typeof provider.setComputerUseStreamOwner === 'function') {
+                var ownerToken = String(generation) + ':' + Date.now();
+                var ownership;
+                try {
+                    ownership = await provider.setComputerUseStreamOwner(true, ownerToken);
+                } catch (error) {
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    throw error;
+                }
+                if (!ownership || ownership.success !== true || generation !== _computerUseStreamGeneration) {
+                    provider.setComputerUseStreamOwner(false, ownerToken).catch(function () {});
+                    _computerUseCaptureFailure = 'screen_stream_owner_unavailable';
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    return false;
+                }
+                _computerUseStreamOwnerToken = ownerToken;
+            }
+            _computerUseStream = stream;
+            _computerUseCaptureFailure = '';
+            track.addEventListener('ended', function () {
+                if (_computerUseStream === stream) releaseComputerUseCapture();
+            }, { once: true });
+            return true;
+        }).catch(function (error) {
+            _computerUseCaptureFailure = error && error.name || 'display_media_denied';
+            return false;
+        }).finally(function () {
+            if (_computerUseStreamPending === pending) _computerUseStreamPending = null;
+        });
+        _computerUseStreamPending = pending;
+        return pending;
+    };
+    window.releaseComputerUseCapture = releaseComputerUseCapture;
+    window.addEventListener('beforeunload', releaseComputerUseCapture);
     // 「顶替」世代。就地取消只够停住「已经在跑」的那条；还在队列里等着的那条尚未
     // 取到任何取消世代，轮到它时会把此刻的世代当成最新的，于是在用户最后那条指令
     // 之后又响起来——而 play 要等运行时初始化、预检、动画加载，这一响可能是好几秒。
@@ -164,7 +463,8 @@
                     getSources: !!(dc && dc.getSources),
                     captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
                     captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko),
-                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)
+                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl),
+                    captureComputerUseScreen: !!(dc && dc.captureComputerUseScreen)
                 }
             }));
             return available;
@@ -2312,10 +2612,21 @@
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
-            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+            if (typeof data === 'string' && /start_session|pause_session|end_session/.test(data)) {
                 try {
                     var msg = JSON.parse(data);
                     var handshakeStamped = false;
+                    if (msg && ['start_session', 'pause_session', 'end_session'].indexOf(msg.action) !== -1) {
+                        // Low-frequency diagnostics: send only bundled script names and
+                        // line numbers, never a full stack, URL, or user message.
+                        try {
+                            var sites = String(new Error().stack || '').match(/app-[a-z-]+\.js:\d{1,6}:\d{1,6}/g);
+                            if (sites) {
+                                msg.lifecycle_trace = sites.slice(0, 4).join(';');
+                                handshakeStamped = true;
+                            }
+                        } catch (_) { /* Diagnostics must not prevent sending. */ }
+                    }
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
                         handshakeStamped = true;
@@ -2349,6 +2660,56 @@
             }
             return rawSend(data);
         };
+    }
+
+    // Pull the backend VMC state after the chat socket connects, so a page that
+    // missed the one-shot vmc_state_changed broadcast still starts sampling.
+    // The status probe is a plain fetch on purpose: calling into the lazy
+    // facade would pull in the full sender on every VRM page, defeating the
+    // loader's "no VMC work until someone enables it" contract. Only a backend
+    // that reports enabled is worth waking the sender for.
+    var _vmcConnectSyncRetryArmed = false;
+
+    function _syncVmcStateOnConnect() {
+        if (!window.vrmVmcSender
+            || typeof window.vrmVmcSender.syncStatusFromBackend !== 'function') {
+            // vrm-vmc-loader.js 要等 three-ready 之后才开始拉取，聊天 WS 的
+            // onopen 有可能先到。此时不能直接放弃：本次连接周期会永远错过
+            // 恢复窗口。挂一次性监听，等 VRM 模块就绪事件再补一次探测。
+            // 非 VRM 页面不会加载门面，事件也不会来，监听器随页面闲置。
+            //
+            // 标志是模块级的，监听器也只挂一份：门面是全局单例，重连期间
+            // 再挂一份只会对同一个门面重复探测，并让 once 监听器随重连累积。
+            // 待补的那一次探测由已挂的监听器负责，因此这里直接返回。
+            if (!_vmcConnectSyncRetryArmed) {
+                _vmcConnectSyncRetryArmed = true;
+                var retryWhenFacadeReady = function () {
+                    // 先清标志再重入：若门面仍未就绪，重入会重新挂一次监听，
+                    // 否则这条恢复路径在本页面剩余生命周期内彻底失效。
+                    _vmcConnectSyncRetryArmed = false;
+                    window.removeEventListener('vrm-modules-ready', retryWhenFacadeReady);
+                    window.removeEventListener('vrm-modules-failed', retryWhenFacadeReady);
+                    _syncVmcStateOnConnect();
+                };
+                window.addEventListener('vrm-modules-ready', retryWhenFacadeReady, { once: true });
+                window.addEventListener('vrm-modules-failed', retryWhenFacadeReady, { once: true });
+            }
+            return;
+        }
+        fetch('/api/vmc/status', { credentials: 'same-origin' })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || data.success === false || data.enabled !== true) return;
+                // Already sampling: syncStatusFromBackend() is idempotent, but
+                // skipping avoids a redundant status round-trip per reconnect.
+                if (window.__NEKO_VMC_ACTIVE__ === true) return;
+                return window.vrmVmcSender.syncStatusFromBackend();
+            })
+            .catch(function (error) {
+                console.warn('[VMC] connect-time state sync failed:', error);
+            });
     }
 
     function connectWebSocket() {
@@ -2431,6 +2792,12 @@
                 detail: { socket: _thisSocket }
             }));
 
+            // Recover a VMC enable that happened while this page was away.
+            // vmc_state_changed is a one-shot broadcast, so a plugin enabling
+            // VMC before the page loaded (or during a reconnect gap) would
+            // otherwise leave the UDP sender running with no frame source.
+            _syncVmcStateOnConnect();
+
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
                 fetch('/api/agent/health').then(function (r) { return r.ok; }).catch(function () { return false; }),
@@ -2465,6 +2832,7 @@
                         : activeTasks;
                     window._agentTaskMap = new Map();
                     filteredTasks.forEach(function (t) { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    scheduleAgentTaskReconciliation();
                     var tasks = Array.from(window._agentTaskMap.values());
                     var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                     if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -2701,6 +3069,11 @@
                 var response = JSON.parse(event.data);
                 if (response.type === 'catgirl_switched') {
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
+                }
+
+                if (response.type === 'plugin_view') {
+                    if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
                 }
 
                 if (response.type === 'chat_blocks') {
@@ -3340,6 +3713,24 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'ASR_INPUT_CONNECTING'
+                        || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
+                        || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
+                        var deliveryMessages = {
+                            ASR_INPUT_CONNECTING: ['microphone.inputConnecting', 'Connecting speech recognition. Your audio is waiting to be sent.'],
+                            ASR_INPUT_DELIVERY_FAILED: ['microphone.inputDeliveryFailed', 'Your speech could not be delivered completely. Restart voice input and say it again.'],
+                            ASR_INPUT_DELIVERY_UNCERTAIN: ['microphone.inputDeliveryUncertain', 'Speech delivery was interrupted. Some audio may have been received; it will not be resent automatically.']
+                        };
+                        var deliveryMessage = deliveryMessages[statusCode];
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t(deliveryMessage[0]) : deliveryMessage[1],
+                                statusCode === 'ASR_INPUT_CONNECTING' ? 3000 : 6000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
@@ -3385,6 +3776,69 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        var activationState = (statusDetails && statusDetails.state) || '';
+                        var allowedActivationStates = [
+                            'disabled', 'preparing', 'waiting', 'verifying',
+                            'replaying', 'active', 'unavailable', 'closed'
+                        ];
+                        if (allowedActivationStates.indexOf(activationState) !== -1) {
+                            var activationIdentity = [
+                                statusDetails.session_id,
+                                statusDetails.microphone_generation,
+                                statusDetails.route_generation,
+                                statusDetails.profile_revision,
+                                statusDetails.permission_revision
+                            ].join(':');
+                            var activationRevision = Number(statusDetails.revision) || 0;
+                            if (S.voiceSessionActivationIdentity === activationIdentity
+                                && activationRevision <= (S.voiceSessionActivationRevision || 0)) {
+                                return;
+                            }
+                            var previousActivationState = S.voiceSessionActivationState || '';
+                            S.voiceSessionActivationIdentity = activationIdentity;
+                            S.voiceSessionActivationRevision = activationRevision;
+                            S.voiceSessionActivationState = activationState;
+                            document.documentElement.setAttribute(
+                                'data-voice-session-activation-state',
+                                activationState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-session-activation-changed',
+                                { detail: statusDetails }
+                            ));
+                            if (previousActivationState !== activationState
+                                && S.isRecording === true
+                                && typeof window.showStatusToast === 'function') {
+                                if (activationState === 'waiting') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionWaiting') : 'Waiting for your voice to activate the conversation.',
+                                        2500
+                                    );
+                                } else if (activationState === 'active') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionActive') : 'Voice conversation activated.',
+                                        2500
+                                    );
+                                } else if (activationState === 'unavailable') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionUnavailable') : 'Voice activation is unavailable. Standby audio will not be uploaded.',
+                                        5000
+                                    );
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'VOICE_INPUT_READY') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
+                        return;
+                    }
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -3416,9 +3870,29 @@
                     }
 
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var statusSessionEpoch = statusDetails && statusDetails.session_epoch;
+                        if (statusSessionEpoch != null
+                                && S.voiceSessionEpoch != null
+                                && Number(statusSessionEpoch) < Number(S.voiceSessionEpoch)) {
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_FAILED'
+                                || statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                            var statusLeaseGeneration = statusDetails && statusDetails.lease_generation;
+                            if (statusLeaseGeneration == null
+                                    || S.voiceInputCurrentLeaseGeneration == null
+                                    || Number(statusLeaseGeneration)
+                                        !== Number(S.voiceInputCurrentLeaseGeneration)) {
+                                return;
+                            }
+                        }
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
+                        if (statusSessionEpoch != null) {
+                            S.voiceSessionEpoch = statusSessionEpoch;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
                             if (S.gameRouteActive === true) {
@@ -3429,7 +3903,9 @@
                                     reason: 'asr_ready'
                                 });
                             }
-                            if (typeof window.showStatusToast === 'function') {
+                            // Background reconnect/warm-idle wake only refreshes
+                            // routing. Recovery has its own VOICE_INPUT_READY toast.
+                            if (!wasIndependentAsrActive && typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
                                     3000
@@ -4088,6 +4564,20 @@
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
                     }
 
+                // -------- vmc_state_changed --------
+                } else if (response.type === 'vmc_state_changed') {
+                    // A plugin (or any non-browser client) enabled the backend
+                    // VMC sender. The browser owns the frame source, so wake it
+                    // here; syncStatusFromBackend() lazy-loads the real sender,
+                    // flips __NEKO_VMC_ACTIVE__ and starts its own polling.
+                    if (response.enabled === true && window.vrmVmcSender
+                        && typeof window.vrmVmcSender.syncStatusFromBackend === 'function') {
+                        Promise.resolve(window.vrmVmcSender.syncStatusFromBackend())
+                            .catch(function (error) {
+                                console.warn('[VMC] backend-enable sync failed:', error);
+                            });
+                    }
+
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};
@@ -4099,6 +4589,13 @@
                     window._agentStatusSnapshot = snapshot;
                     var serverOnline = snapshot.server_online !== false;
                     var flags = snapshot.flags || {};
+                    var pendingComputerUseToggle = window.agent_ui_v2_state
+                        && window.agent_ui_v2_state.pending
+                        && window.agent_ui_v2_state.pending.has('computer_use_enabled');
+                    if (flags.computer_use_enabled === false && !pendingComputerUseToggle
+                        && _computerUseStream) {
+                        releaseComputerUseCapture();
+                    }
                     if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
                         flags.agent_enabled = !!snapshot.analyzer_enabled;
                     }
@@ -4136,6 +4633,7 @@
                             }
                         });
                         window._agentTaskMap = newMap;
+                        scheduleAgentTaskReconciliation();
                         var tasks2 = Array.from(window._agentTaskMap.values());
                         if (tasks2.length > 0) {
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -4222,6 +4720,7 @@
                             }
                         }
                         var tasks3 = Array.from(window._agentTaskMap.values());
+                        scheduleAgentTaskReconciliation();
                         var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                         if (tasks3.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
@@ -4254,6 +4753,55 @@
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
+
+                // -------- capture_bridge_computer_use_request (full desktop) --------
+                } else if (response.type === 'capture_bridge_computer_use_request') {
+                    (async function () {
+                        var responseSocket = _thisSocket;
+                        var requestId = response.request_id || '';
+                        var sendResult = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_computer_use_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        try {
+                            var dc = resolveDesktopCaptureProvider();
+                            if (!dc || typeof dc.captureComputerUseScreen !== 'function') {
+                                sendResult({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var reused = await captureComputerUseLiveStream(dc);
+                            if (reused) {
+                                sendResult({ success: true, image: reused });
+                                return;
+                            }
+                            // A Linux source enumeration may reopen the desktop
+                            // portal every step. A broker reads the already-owned
+                            // stream in Chat without enumerating sources.
+                            if (dc.sourceEnumerationMayPrompt === true
+                                && !(dc.computerUseSharedStreamBroker === true
+                                    && dc.computerUseNeedsStream === true)) {
+                                sendResult({ success: false, error: 'SCREEN_STREAM_REQUIRED' });
+                                return;
+                            }
+                            var frame = await window.invokeDesktopCaptureWithTimeout(
+                                dc, 'captureComputerUseScreen', [], 22000
+                            );
+                            if (!frame || frame.success !== true || !frame.dataUrl) {
+                                sendResult({ success: false, error: frame && frame.error || 'capture_failed' });
+                                return;
+                            }
+                            var boundedFrame = await boundCaptureBridgeRegionImage(frame.dataUrl);
+                            if (!boundedFrame) {
+                                sendResult({ success: false, error: 'image_too_large' });
+                                return;
+                            }
+                            sendResult({ success: true, image: boundedFrame });
+                        } catch (captureError) {
+                            sendResult({ success: false, error: captureError && captureError.code || 'capture_failed' });
+                        }
+                    })();
 
                 // -------- capture_bridge_region_request (interactive desktop selection) --------
                 } else if (response.type === 'capture_bridge_region_request') {
@@ -4703,7 +5251,6 @@
                     // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
                     var _ackAnswersThisWindow = !S.sessionStartedResolver
                         || !S._pendingSessionStartRequestId
-                        || !response.request_id
                         || response.request_id === S._pendingSessionStartRequestId;
                     if (!_ackAnswersThisWindow) {
                         console.log('[App] session_started answers another start',
@@ -4713,6 +5260,23 @@
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
+                    if (response.session_epoch != null) {
+                        S.voiceSessionEpoch = response.session_epoch;
+                    }
+                    // The session acknowledgement is the authoritative route
+                    // for this session. Clear stale independent-ASR state when
+                    // a new native realtime session replaces an old ASR one.
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
+                            && (response.microphone_route === 'native'
+                                || response.microphone_route === 'independent')) {
+                        S.independentAsrActive = response.microphone_route === 'independent';
+                        if (response.microphone_route === 'native'
+                                && window.appAudioCapture
+                                && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                            window.appAudioCapture.resetVoiceInputRecoveryState();
+                        }
+                    }
                     if (_ackAnswersThisWindow) S.voiceStartPending = false;
                     // NOTE: the fail-closed latch is deliberately NOT cleared
                     // here. lifecycle.py runs _start_independent_asr_if_enabled

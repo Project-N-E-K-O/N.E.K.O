@@ -109,3 +109,30 @@ await disposalQueue.start({topic:'cats'});
 assert.equal(disposalSubmissions,2);
 assert.equal(disposalStates.some(state=>state.candidate),false,'a failure after disposal must not publish exclusion state');
 console.log('next-video queue: a candidate is retried once, then excluded after its second failure');
+
+for (const failureStage of ['prepare', 'preparation']) {
+  const states=[];
+  let rejectPending;
+  const game={media:{async request(action){
+    if(action==='discover')return {video:{bvid:'stale',url:'video'}};
+    if(action===failureStage)return new Promise((_,reject)=>{rejectPending=reject;});
+    if(action==='prepare')return {id:'job'};
+  }}};
+  const queue=createNextVideoQueue(game,state=>states.push(state));
+  const attempt=async stale=>{
+    const work=queue.start({topic:'cats'});
+    await new Promise(resolve=>setImmediate(resolve));
+    if(stale)queue.clear();
+    assert.equal(queue.busy,true,'invalidation retains the occupied preparation slot');
+    rejectPending(Error('late failure'));
+    await work;
+  };
+  await attempt(true);
+  await attempt(false);
+  assert.equal(states.some(state=>state.candidate),false,'invalidated failures must not contribute to the retry threshold');
+  await attempt(true);
+  assert.equal(states.some(state=>state.candidate),false,'invalidated second failure must not exclude the candidate');
+  await attempt(false);
+  assert.deepEqual(states.filter(state=>state.candidate).map(state=>state.candidate),['stale']);
+}
+console.log('next-video queue: stale submission and polling failures have no candidate side effects');
