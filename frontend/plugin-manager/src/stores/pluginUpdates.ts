@@ -336,16 +336,22 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     return false
   }
 
-  function isStillOutdated(candidate: MarketUpdateCandidate): boolean {
+  /** The version installed *now* for the candidate's install, or null when the
+   *  plugin is gone or no longer comes from the same Market id and channel —
+   *  the upgrade fetches and submits the release from `candidate.channel`, so a
+   *  plugin that switched channel would be pulled back onto the old one. */
+  function installedVersionNow(candidate: MarketUpdateCandidate): string | null {
     const target = collectMarketUpdateTargets(usePluginStore().pluginsWithStatus)
       .find((entry) => entry.pluginId === candidate.pluginId)
-    // Same source as when the check ran: the upgrade fetches and submits the
-    // release from `candidate.channel`, so a plugin that switched channel since
-    // would be pulled back onto the old one.
     if (!target || target.marketId !== candidate.marketId || target.channel !== candidate.channel) {
-      return false
+      return null
     }
-    return hasNewerVersion(effectiveVersion(target), candidate.latestVersion)
+    return effectiveVersion(target)
+  }
+
+  function isStillOutdated(candidate: MarketUpdateCandidate): boolean {
+    const installed = installedVersionNow(candidate)
+    return installed !== null && hasNewerVersion(installed, candidate.latestVersion)
   }
 
   async function finishCandidate(candidate: MarketUpdateCandidate): Promise<void> {
@@ -440,7 +446,11 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       // check saw: a row carried over a partial lookup may point at a release
       // that has since been withdrawn or superseded.
       const release = newestUsableRelease(versions)
-      if (!release || !hasNewerVersion(candidate.currentVersion, release.version)) {
+      // Compare against what is installed *now*, re-read after the await: the
+      // plugin may have been upgraded elsewhere meanwhile, and measuring from
+      // the checked version could then install a lower release (a downgrade).
+      const installedNow = installedVersionNow(candidate)
+      if (!release || installedNow === null || !hasNewerVersion(installedNow, release.version)) {
         updateLog.info('candidate dropped: channel no longer offers a newer release', {
           pluginId,
           detected: candidate.latestVersion,
@@ -457,6 +467,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         })
         candidate.latestVersion = release.version
       }
+      candidate.currentVersion = installedNow
       const packageUrl = release.package_url
       const packageSha256 = release.package_sha256
       if (!packageUrl || !packageSha256) {

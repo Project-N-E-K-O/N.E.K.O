@@ -440,6 +440,22 @@ describe('plugin updates store — upgrade', () => {
     ])
   })
 
+  it('never downgrades a plugin that was upgraded elsewhere during the lookup', async () => {
+    const fetchMock = mockFetch(() => undefined)
+    const store = await seedOneCandidate() // 1.0.0 → 1.1.0
+    vi.mocked(fetchMarketPluginVersions).mockImplementation(async () => {
+      // Meanwhile upgraded to 1.0.5 from the Market page; 1.1.0 got withdrawn.
+      setPlugins([plugin('alpha', marketSource('15', '1.0.5'))])
+      return [{ ...release('1.1.0'), yanked_at: '2026-01-03T00:00:00Z' }, release('1.0.1')]
+    })
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    // Regression guard: 1.0.1 was measured against the checked 1.0.0 and would
+    // have been installed over 1.0.5.
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates).toEqual([])
+  })
+
   it('drops the row when the channel no longer offers anything newer', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([
       { ...release('1.1.0'), yanked_at: '2026-01-03T00:00:00Z' },
