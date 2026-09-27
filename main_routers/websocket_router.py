@@ -801,11 +801,33 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     data = ws_event.get("text")
                     if not isinstance(data, str):
                         raise ValueError("WEBSOCKET_MESSAGE_INVALID")
-                    message = json.loads(data)
+                    try:
+                        message = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        logger.warning(
+                            "[%s] dropping malformed JSON frame: %s",
+                            lanlan_name, exc,
+                        )
+                        if session_id.get(lanlan_name) != this_session_id and not voice_input_claimed:
+                            logger.info("[%s] stale connection dropping on bad frame", lanlan_name)
+                            await websocket.close()
+                            break
+                        continue
             else:
                 # 兼容只实现 receive_text 的测试 double。
                 data = await websocket.receive_text()
-                message = json.loads(data)
+                try:
+                    message = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "[%s] dropping malformed JSON frame: %s",
+                        lanlan_name, exc,
+                    )
+                    if session_id.get(lanlan_name) != this_session_id and not voice_input_claimed:
+                        logger.info("[%s] stale connection dropping on bad frame", lanlan_name)
+                        await websocket.close()
+                        break
+                    continue
             _log_voice_lifecycle_request(
                 message,
                 connection_id=this_session_id,

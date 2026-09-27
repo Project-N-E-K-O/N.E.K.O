@@ -86,6 +86,8 @@ def _pyautogui_unavailable_reason() -> str:
 
 _load_pyautogui()
 
+_cua_held_keys: list[str] = []
+
 
 # ─── Connectivity probe error classification ────────────────────────────
 #
@@ -295,6 +297,54 @@ HISTORY_TEMPLATE_NON_THINKING = "## Thought:\n{thought}\n\n## Action:\n{action}\
 # ─── Response Parser ────────────────────────────────────────────────────
 
 
+_CUA_ALLOWED_METHODS = frozenset({
+    "click", "doubleClick", "rightClick", "moveTo", "dragTo",
+    "scroll", "write", "typewrite", "press", "keyDown", "keyUp",
+    "hotkey",
+})
+
+
+def _sanitize_generated_code(code: str) -> str:
+    import ast
+    tree = ast.parse(code, mode="exec")
+
+    def _is_literal(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float, str, bool, type(None))):
+            return True
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+            return _is_literal(n.operand)
+        if isinstance(n, ast.List):
+            return all(_is_literal(e) for e in n.elts)
+        if isinstance(n, ast.Tuple):
+            return all(_is_literal(e) for e in n.elts)
+        return False
+
+    for stmt in tree.body:
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            raise ValueError("only direct action calls are allowed")
+        call = stmt.value
+        fn = call.func
+        if not (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)):
+            raise ValueError("unsupported call target")
+        target_name = fn.value.id
+        target_method = fn.attr
+        if target_name == "pyautogui" and target_method in _CUA_ALLOWED_METHODS:
+            pass
+        elif target_name == "time" and target_method == "sleep":
+            pass
+        else:
+            raise ValueError("unsupported method: %s.%s" % (target_name, target_method))
+        for arg in call.args:
+            if not _is_literal(arg):
+                raise ValueError("non-literal argument")
+        for kw in call.keywords:
+            if kw.arg is None:
+                raise ValueError("keyword unpacking not supported")
+            if not _is_literal(kw.value):
+                raise ValueError("non-literal keyword argument")
+    return code
+
+
 def parse_response(
     response_content: str, reasoning_content: Optional[str] = None
 ) -> Dict[str, str]:
@@ -398,28 +448,31 @@ class _ScaledPyAutoGUI:
     _COORD_MAX = 999
     _FAILSAFE_EDGE_PX = 4
 
+    _ALLOWED_METHODS = frozenset({
+        "click", "doubleClick", "rightClick", "moveTo", "dragTo",
+        "scroll", "write", "typewrite", "press", "keyDown", "keyUp",
+        "hotkey", "screenshot",
+    })
+
+    def __getattribute__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
-        backend,
         screen_w: int,
         screen_h: int,
         cancel_event: Optional[threading.Event] = None,
     ):
-        self._backend = backend
         self._w = screen_w
         self._h = screen_h
         self._cancel_event = cancel_event
-
-    def __getattr__(self, name):
-        attr = getattr(self._backend, name)
-        if callable(attr):
-
-            def _wrapped(*args, **kwargs):
-                self._ensure_not_cancelled()
-                return attr(*args, **kwargs)
-
-            return _wrapped
-        return attr
 
     def _ensure_not_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -500,7 +553,7 @@ class _ScaledPyAutoGUI:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
-        return self._backend.click(*a, **kw)
+        return pyautogui.click(*a, **kw)
 
     def doubleClick(self, *a, **kw):
         self._ensure_not_cancelled()
@@ -510,7 +563,7 @@ class _ScaledPyAutoGUI:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
-        return self._backend.doubleClick(*a, **kw)
+        return pyautogui.doubleClick(*a, **kw)
 
     def rightClick(self, *a, **kw):
         self._ensure_not_cancelled()
@@ -520,28 +573,28 @@ class _ScaledPyAutoGUI:
             self._smooth_move_to(tx, ty)
             self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
-        return self._backend.rightClick(*a, **kw)
+        return pyautogui.rightClick(*a, **kw)
 
     def moveTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         if "duration" not in kw and len(a) < 3:
             kw["duration"] = 0.3
-        return self._backend.moveTo(*a, **kw)
+        return pyautogui.moveTo(*a, **kw)
 
     def dragTo(self, *a, **kw):
         self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         if "duration" not in kw and len(a) < 3:
             kw["duration"] = 0.5
-        return self._backend.dragTo(*a, **kw)
+        return pyautogui.dragTo(*a, **kw)
 
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
         self._ensure_not_cancelled()
         if x is not None and y is not None:
             scaled_x, scaled_y = self._project_pair(x, y)
-            return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
-        return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
+            return pyautogui.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
+        return pyautogui.scroll(clicks, x=x, y=y, *args, **kwargs)
 
     # ── Smooth movement & click halo ─────────────────────────────────────
 
@@ -569,10 +622,8 @@ class _ScaledPyAutoGUI:
     def _smooth_move_to(self, x: int, y: int, duration: float = 0.3):
         """Smoothly move the cursor to (x, y) with easeOutQuad tween."""
         try:
-            tween = getattr(self._backend, "easeOutQuad", None)
-            if tween is None and pyautogui is not None:
-                tween = getattr(pyautogui, "easeOutQuad", None)
-            self._backend.moveTo(
+            tween = getattr(pyautogui, "easeOutQuad", None)
+            pyautogui.moveTo(
                 x,
                 y,
                 duration=duration,
@@ -580,28 +631,21 @@ class _ScaledPyAutoGUI:
                 **({"tween": tween} if tween else {}),
             )
         except Exception:
-            # Fallback: instant move
             try:
-                self._backend.moveTo(x, y, _pause=False)
+                pyautogui.moveTo(x, y, _pause=False)
             except Exception:
                 pass
 
     def _show_click_halo(self, x: int, y: int):
-        """Show a brief expanding-ring halo at (x, y). Windows only, via ctypes."""
-        # TODO: 光圈暂未实现。当前方案存在问题：
-        #   1. ctypes.wintypes 没有 WNDCLASS 结构体，需手动定义 WNDCLASSEXW
-        #   2. GDI 绘制需要消息循环 (PeekMessage/DispatchMessage) 才能渲染
-        #   3. 可考虑改用 UpdateLayeredWindow + 内存 DC 一次性贴图，或由 Electron 前端渲染
         pass
 
     def _clipboard_type(self, text: str):
-        """Type text via clipboard paste — handles CJK / Unicode reliably."""
         self._ensure_not_cancelled()
         import pyperclip
 
         paste_key = "command" if platform.system() == "Darwin" else "ctrl"
         pyperclip.copy(text)
-        self._backend.hotkey(paste_key, "v")
+        pyautogui.hotkey(paste_key, "v")
         time.sleep(0.05)
 
     def _coerce_write_args(self, args, kwargs):
@@ -618,20 +662,37 @@ class _ScaledPyAutoGUI:
     def write(self, *a, **kw):
         self._ensure_not_cancelled()
         text_str, a, kw = self._coerce_write_args(a, kw)
-        # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
-        # that pyautogui.write() cannot handle natively.
-        # For ASCII-only text, use real key simulation so it works in games
-        # and other non-text-field contexts where Ctrl+V is ignored.
         if any(ord(c) > 127 for c in text_str):
             try:
                 self._clipboard_type(text_str)
                 return
             except Exception:
                 pass
-        self._backend.write(text_str, *a, **kw)
+        pyautogui.write(text_str, *a, **kw)
 
     def typewrite(self, *a, **kw):
         self.write(*a, **kw)
+
+    def press(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        return pyautogui.press(key, *a, **kw)
+
+    def keyDown(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        result = pyautogui.keyDown(key, *a, **kw)
+        _cua_held_keys.append(key)
+        return result
+
+    def keyUp(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        result = pyautogui.keyUp(key, *a, **kw)
+        while key in _cua_held_keys:
+            _cua_held_keys.remove(key)
+        return result
+
+    def hotkey(self, *keys, **kw):
+        self._ensure_not_cancelled()
+        return pyautogui.hotkey(*keys, **kw)
 
 
 # ─── Main Adapter ───────────────────────────────────────────────────────
@@ -1073,30 +1134,51 @@ class ComputerUseAdapter:
         self._cancel_event.wait(timeout=seconds)
 
     def _make_cancellable_time_module(self):
-        """Return a *time*-like namespace whose ``sleep`` is interruptible."""
-        import types
+        """Return a *time*-like namespace whose ``sleep`` is interruptible.
 
+        Does NOT inject real time module functions: their ``__globals__``
+        expose the host module's imports (including ``os``), which would
+        let generated code escape the sandbox via ``time.monotonic.__globals__['os']``.
+        Only exposes safe scalar values and a cancellable sleep.
+        """
+        import types
         fake = types.ModuleType("time")
         cancel_event = self._cancel_event
-        for attr in (
-            "monotonic",
-            "time",
-            "perf_counter",
-            "strftime",
-            "gmtime",
-            "localtime",
-            "mktime",
-        ):
-            if hasattr(time, attr):
-                setattr(fake, attr, getattr(time, attr))
-
         def _cancellable_sleep(seconds):
             cancel_event.wait(timeout=min(float(seconds), 30))
             if cancel_event.is_set():
                 raise InterruptedError("Task cancelled")
-
         fake.sleep = _cancellable_sleep
+        _now = time.monotonic()
+        fake.monotonic = lambda: time.monotonic()
+        fake.perf_counter = lambda: time.perf_counter()
         return fake
+
+    def _build_exec_env(self) -> dict:
+        exec_env: dict = {
+            "__builtins__": {
+                "True": True,
+                "False": False,
+                "None": None,
+                "abs": abs,
+                "int": int,
+                "len": len,
+                "max": max,
+                "min": min,
+                "print": print,
+                "range": range,
+                "round": round,
+                "str": str,
+                "sum": sum,
+            }
+        }
+        exec_env["pyautogui"] = _ScaledPyAutoGUI(
+            self.screen_width,
+            self.screen_height,
+            cancel_event=self._cancel_event,
+        )
+        exec_env["time"] = self._make_cancellable_time_module()
+        return exec_env
 
     def run_instruction(
         self, instruction: str, session_id: Optional[str] = None
@@ -1179,16 +1261,8 @@ class ComputerUseAdapter:
 
                 # ── Execute pyautogui code ───────────────────────────
                 try:
-                    exec_env: dict = {"__builtins__": __builtins__}
-                    exec_env["pyautogui"] = _ScaledPyAutoGUI(
-                        pyautogui,
-                        self.screen_width,
-                        self.screen_height,
-                        cancel_event=self._cancel_event,
-                    )
-                    exec_env["time"] = self._make_cancellable_time_module()
-                    exec_env["os"] = os
-                    exec(code, exec_env)
+                    exec_env = self._build_exec_env()
+                    exec(compile(_sanitize_generated_code(code), "<cua>", "exec"), exec_env)
                     self._interruptible_sleep(0.3)
                 except InterruptedError:
                     logger.info("[CUA] Task cancelled during exec at step %d", step)
@@ -1209,6 +1283,15 @@ class ComputerUseAdapter:
             return {"success": False, "error": str(e)}
         finally:
             self._done_event.set()
+            try:
+                if pyautogui is not None:
+                    for key in list(_cua_held_keys):
+                        try:
+                            pyautogui.keyUp(key)
+                        except Exception:
+                            pass
+            finally:
+                _cua_held_keys.clear()
 
         return {
             "success": success,

@@ -16,6 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
 import textwrap
 from typing import Dict, List, Tuple
 
@@ -32,6 +33,47 @@ from brain.cua.utils.common_utils import (
 )
 
 logger = get_module_logger(__name__, "Agent")
+
+
+def _safe_agent_call(agent, code: str):
+    tree = ast.parse(code, mode="eval")
+    node = tree.body
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "agent"
+    ):
+        raise ValueError("not an agent.<method>(...) call")
+    method_name = node.func.attr
+    method = getattr(agent, method_name, None)
+    if method is None or not getattr(method, "is_agent_action", False):
+        raise ValueError(f"not an agent action: {method_name}")
+    def _literal(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+            return -node.operand.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd) and isinstance(node.operand, ast.Constant):
+            return +node.operand.value
+        if isinstance(node, ast.List):
+            return [_literal(e) for e in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(_literal(e) for e in node.elts)
+        if isinstance(node, ast.Dict):
+            return {
+                _literal(k): _literal(v)
+                for k, v in zip(node.keys, node.values)
+                if k is not None
+            }
+        raise ValueError("non-literal argument")
+    args = [_literal(a) for a in node.args]
+    kwargs = {}
+    for kw in node.keywords:
+        if kw.arg is None:
+            raise ValueError("keyword argument unpacking not supported")
+        kwargs[kw.arg] = _literal(kw.value)
+    return method(*args, **kwargs)
 
 
 class Worker(BaseModule):
@@ -202,11 +244,11 @@ class Worker(BaseModule):
             plan_code = parse_single_code_from_string(plan.split("Grounded Action")[-1])
             plan_code = sanitize_code(plan_code)
             plan_code = extract_first_agent_function(plan_code)
-            exec_code = eval(plan_code)
+            exec_code = _safe_agent_call(agent, plan_code)
         except Exception as e:
             logger.error("Error in parsing plan code: %s", e)
             plan_code = "agent.wait(1.0)"
-            exec_code = eval(plan_code)
+            exec_code = _safe_agent_call(agent, plan_code)
 
         executor_info = {
             "full_plan": full_plan,
