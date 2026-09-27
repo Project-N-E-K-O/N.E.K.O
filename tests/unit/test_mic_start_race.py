@@ -294,6 +294,7 @@ function loadModule() {
 
   return {
     mod: sandbox.window.appAudioCapture,
+    win: sandbox.window,
     S: appState,
     streams,
     contexts,

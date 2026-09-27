@@ -1294,6 +1294,24 @@
 
     // 设置页的 15 秒试麦。和正式录音分开，结束时只关掉这次临时流。
     let settingsMicVolumeTest = null;
+    // 每次 start / stop 都递增。start 跨 await 回来时比对一次：
+    // 过期就只关掉自己拿到的流，不碰别人的 probe，也不再发布。
+    let settingsMicVolumeGeneration = 0;
+
+    function stopSettingsMicTestStream(stream) {
+        try {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(function (track) { track.stop(); });
+            }
+        } catch (_) {}
+    }
+
+    // 正式录音已接管时，临时 probe 立即让位，避免两路流同时占着麦克风。
+    function yieldSettingsMicVolumeProbeToLive() {
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
+        releaseSettingsMicVolumeProbe();
+        settingsMicVolumeTest = { mode: 'live' };
+    }
 
     function settingsMicTestLinearGain(gainDb) {
         if (window.appUtils && typeof window.appUtils.dbToLinear === 'function') {
@@ -1306,11 +1324,7 @@
         const probe = settingsMicVolumeTest;
         settingsMicVolumeTest = null;
         if (!probe || probe.mode !== 'probe') return;
-        try {
-            if (probe.stream && typeof probe.stream.getTracks === 'function') {
-                probe.stream.getTracks().forEach(function (track) { track.stop(); });
-            }
-        } catch (_) {}
+        stopSettingsMicTestStream(probe.stream);
         try {
             if (probe.context && probe.context.state !== 'closed') probe.context.close();
         } catch (_) {}
@@ -1782,6 +1796,7 @@
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            yieldSettingsMicVolumeProbeToLive();
             refreshMicLease();
             return true;
 
@@ -2495,10 +2510,7 @@
     let micVolumeSampleBuffer = null;
 
     function sampleMicVolumeLevel() {
-        if (S.isRecording && S.inputAnalyser && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'probe') {
-            releaseSettingsMicVolumeProbe();
-            settingsMicVolumeTest = { mode: 'live' };
-        }
+        if (S.isRecording && S.inputAnalyser) yieldSettingsMicVolumeProbeToLive();
         const analyser = (S.isRecording && S.inputAnalyser)
             ? S.inputAnalyser
             : (settingsMicVolumeTest && settingsMicVolumeTest.analyser);
@@ -2734,12 +2746,13 @@
     }
 
     async function startSettingsMicVolumeTest() {
+        const generation = ++settingsMicVolumeGeneration;
+        const isCurrent = function () { return generation === settingsMicVolumeGeneration; };
+        releaseSettingsMicVolumeProbe();
         if (S.isRecording && S.inputAnalyser) {
-            releaseSettingsMicVolumeProbe();
             settingsMicVolumeTest = { mode: 'live' };
             return { ok: true, mode: 'live' };
         }
-        releaseSettingsMicVolumeProbe();
         const audio = {
             noiseSuppression: false,
             echoCancellation: true,
@@ -2751,6 +2764,7 @@
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio });
         } catch (error) {
+            if (!isCurrent()) return { ok: false };
             if (!S.selectedMicrophoneId) throw error;
             const fallback = {
                 noiseSuppression: false,
@@ -2761,9 +2775,22 @@
             stream = await navigator.mediaDevices.getUserMedia({ audio: fallback });
         }
         if (!stream) throw new Error('microphone unavailable');
-        const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-        const context = new AudioContextConstructor();
+        // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
+        if (!isCurrent()) {
+            stopSettingsMicTestStream(stream);
+            return { ok: false };
+        }
+        // 等待期间正式录音已启动：直接用正式录音的 analyser。
+        if (S.isRecording && S.inputAnalyser) {
+            stopSettingsMicTestStream(stream);
+            settingsMicVolumeTest = { mode: 'live' };
+            return { ok: true, mode: 'live' };
+        }
+        let context = null;
+        let probe = null;
         try {
+            const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+            context = new AudioContextConstructor();
             const source = context.createMediaStreamSource(stream);
             const gain = context.createGain();
             gain.gain.value = settingsMicTestLinearGain(S.microphoneGainDb);
@@ -2772,28 +2799,39 @@
             analyser.smoothingTimeConstant = 0.8;
             source.connect(gain);
             gain.connect(analyser);
-            settingsMicVolumeTest = { mode: 'probe', stream, context, gain, analyser };
+            probe = { mode: 'probe', stream, context, gain, analyser };
+            settingsMicVolumeTest = probe;
             if (context.state === 'suspended') {
                 try { await context.resume(); } catch (_) {}
             }
+            // resume 期间被 stop / 取代时，probe 已由对方释放。
+            if (settingsMicVolumeTest !== probe) return { ok: false };
+            // 仍未运行的 context 采不到任何数据，与其一直显示静音，不如如实报失败。
+            if (context.state !== 'running') {
+                releaseSettingsMicVolumeProbe();
+                return { ok: false };
+            }
             return { ok: true, mode: 'probe' };
         } catch (error) {
-            try { stream.getTracks().forEach(function (track) { track.stop(); }); } catch (_) {}
-            try { if (context.state !== 'closed') context.close(); } catch (_) {}
+            if (probe && settingsMicVolumeTest === probe) settingsMicVolumeTest = null;
+            stopSettingsMicTestStream(stream);
+            try { if (context && context.state !== 'closed') context.close(); } catch (_) {}
             throw error;
         }
     }
 
     function stopSettingsMicVolumeTest() {
+        settingsMicVolumeGeneration += 1;
         releaseSettingsMicVolumeProbe();
         return { ok: true };
     }
 
+    // 内部抛错路径只会清理本次自己创建的资源；这里不能再无条件 release，
+    // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
     window.startSettingsMicVolumeTest = async function () {
         try {
             return await startSettingsMicVolumeTest();
         } catch (_) {
-            releaseSettingsMicVolumeProbe();
             return { ok: false };
         }
     };
