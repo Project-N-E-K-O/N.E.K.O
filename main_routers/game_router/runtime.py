@@ -2075,14 +2075,15 @@ async def game_route_start(game_type: str, request: Request):
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
                 mgr._takeover_callback_sink = None
-                if game_type == "watch-together":
-                    # The scene speaks plugin responses itself (reaction gaps and
-                    # intermissions), so respond cues go to its route inbox.
+                if game_type in {"watch-together", "drawing_guess"}:
+                    # These routes speak plugin responses themselves, so respond
+                    # cues go to the route inbox instead of ordinary proactive.
                     from main_logic.watch_together.live import LiveInbox
                     inbox = LiveInbox()
                     state[_TAKEOVER_CALLBACK_INBOX_KEY] = inbox
                     mgr._takeover_callback_sink = inbox.accept
-                    await _start_watch_speech_takeover(state, mgr)
+                    if game_type == "watch-together":
+                        await _start_watch_speech_takeover(state, mgr)
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
