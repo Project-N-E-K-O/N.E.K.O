@@ -282,7 +282,8 @@ function createHarness({
     });
 
     class MockAudioContext {
-        constructor() {
+        constructor(options) {
+            assert.equal(options?.sampleRate, TARGET_SAMPLE_RATE);
             audioContext = this;
             this.sampleRate = 48000;
             this.destination = {};
@@ -532,6 +533,7 @@ test('mutation controls stay disabled until CSRF and canonical status resolve', 
     await flush(2);
 
     assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
     statusGate.resolve(jsonResponse({
         requested_enabled: false,
         effective_enabled: false,
@@ -726,6 +728,33 @@ test('a stale passive refresh cannot overwrite a newer refresh', async () => {
     }));
     await flush(2);
     assert.equal(harness.elements.get('voice-identity-filter').checked, true);
+});
+
+test('a failed newer refresh falls back to an older successful response', async () => {
+    const focusStatusGate = deferred();
+    const harness = createHarness({
+        initialProfile: true,
+        initialRequested: true,
+        focusStatusGate,
+        statusFailures: 1,
+    });
+    await harness.initialize();
+
+    harness.dispatch('focus');
+    await flush(2);
+    harness.dispatch('focus');
+    await flush(2);
+    focusStatusGate.resolve(jsonResponse({
+        requested_enabled: false,
+        effective_enabled: false,
+        effective_reason: 'disabled',
+        has_profile: true,
+        enrollment: null,
+        runtime_mode: 'enforce',
+    }));
+    await flush(3);
+
+    assert.equal(harness.elements.get('voice-identity-filter').checked, false);
 });
 
 test('a short remaining lease is rejected before starting a futile recording', async () => {

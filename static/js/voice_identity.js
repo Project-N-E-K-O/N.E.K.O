@@ -87,7 +87,12 @@
         segmentPhase: 'idle',
         segmentAdvance: null,
         uiPhase: 'idle',
-        initializationError: false
+        initializationError: false,
+        statusRefreshFallback: null,
+        statusRefreshFallbackEpoch: 0,
+        statusRefreshFallbackSequence: 0,
+        statusRefreshFailureSequence: 0,
+        statusRefreshRecoverySequence: 0
     };
 
     const elements = {};
@@ -303,13 +308,53 @@
     async function reconcileStatus() {
         const requestEpoch = state.statusEpoch;
         const requestSequence = ++state.statusRefreshSequence;
+        state.statusRefreshFallback = null;
+        state.statusRefreshFailureSequence = 0;
+        state.statusRefreshRecoverySequence = 0;
         try {
             const status = await apiRequest('/status', { method: 'GET' });
-            const current = requestEpoch === state.statusEpoch
-                && requestSequence === state.statusRefreshSequence;
-            if (current) applyStatus(status);
-            return current ? status : null;
+            if (requestEpoch !== state.statusEpoch) return null;
+            if (requestSequence === state.statusRefreshSequence) {
+                applyStatus(status);
+                state.statusRefreshFallback = null;
+                state.statusRefreshRecoverySequence = 0;
+                return status;
+            }
+            if (state.statusRefreshFailureSequence === state.statusRefreshSequence) {
+                if (state.statusRefreshRecoverySequence > 0
+                    && requestSequence <= state.statusRefreshRecoverySequence) return null;
+                if (state.statusRefreshFallback
+                    && state.statusRefreshFallbackSequence > requestSequence) {
+                    const fallback = state.statusRefreshFallback;
+                    state.statusRefreshFallback = null;
+                    state.statusRefreshRecoverySequence = state.statusRefreshFallbackSequence;
+                    applyStatus(fallback);
+                    return fallback;
+                }
+                applyStatus(status);
+                state.statusRefreshFallback = null;
+                state.statusRefreshRecoverySequence = requestSequence;
+                return status;
+            }
+            if (!state.statusRefreshFallback
+                || requestSequence > state.statusRefreshFallbackSequence) {
+                state.statusRefreshFallback = status;
+                state.statusRefreshFallbackEpoch = requestEpoch;
+                state.statusRefreshFallbackSequence = requestSequence;
+            }
+            return null;
         } catch (_) {
+            if (requestEpoch !== state.statusEpoch
+                || requestSequence !== state.statusRefreshSequence) return null;
+            state.statusRefreshFailureSequence = requestSequence;
+            if (state.statusRefreshFallbackEpoch === requestEpoch
+                && state.statusRefreshFallback) {
+                const fallback = state.statusRefreshFallback;
+                state.statusRefreshFallback = null;
+                state.statusRefreshRecoverySequence = state.statusRefreshFallbackSequence;
+                applyStatus(fallback);
+                return fallback;
+            }
             return null;
         }
     }
@@ -426,7 +471,10 @@
         elements.start.textContent = state.enrollmentId
             ? translate('voiceIdentity.continueEnrollment', '继续录入')
             : translate('voiceIdentity.startEnrollment', '开始录入');
-        elements.cancel.hidden = !state.busy && !state.cancelPending && !state.enrollmentId;
+        elements.cancel.hidden = !state.cancelPending
+            && !state.enrollmentId
+            && !state.startSettled
+            && !state.segmentIndex;
         elements.cancel.disabled = state.cancelPending;
         elements.reenroll.disabled = pending || enrollmentUnavailable;
         elements.delete.disabled = pending;
@@ -542,7 +590,11 @@
             if (!AudioContextClass || typeof AudioWorkletNode !== 'function') {
                 throw new Error('audio_worklet_unavailable');
             }
-            const context = new AudioContextClass();
+            const context = new AudioContextClass({ sampleRate: TARGET_SAMPLE_RATE });
+            if (context.sampleRate !== TARGET_SAMPLE_RATE) {
+                await context.close().catch(function () {});
+                throw new Error('audio_sample_rate_unsupported');
+            }
             try {
                 await context.audioWorklet.addModule('/static/audio-processor.js');
             } catch (error) {
