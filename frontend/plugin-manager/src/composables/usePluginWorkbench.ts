@@ -18,7 +18,6 @@ import {
   type QualifierMatcher,
 } from '@/composables/useGridWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
-import { boundedMemo } from '@/utils/boundedMemo'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
 export type PluginWorkbenchFilterMode = FilterMode
@@ -50,21 +49,15 @@ function hasUi(plugin: PluginWorkbenchItem): boolean {
 }
 
 function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
-  const textParts = [
+  return [
     plugin.id,
     plugin.displayName || plugin.name,
     plugin.displayDescription || plugin.description,
     plugin.displayShortDescription || plugin.short_description,
     plugin.type,
     plugin.version,
-  ]
-  return memoizedPluginSearchIndex(JSON.stringify(textParts))
+  ].map(normalizeSearchPart).filter(Boolean).join('\n')
 }
-
-const memoizedPluginSearchIndex = boundedMemo(512, (key) => {
-  const textParts = JSON.parse(key) as (string | null)[]
-  return textParts.map(normalizeSearchPart).filter(Boolean).join('\n')
-})
 
 function buildPluginPinyinIndex(plugin: PluginWorkbenchItem, search: (value: string, pattern: 'pinyin' | 'first') => string): string {
   const textParts = [plugin.displayName || plugin.name, plugin.displayDescription || plugin.description, plugin.displayShortDescription || plugin.short_description]

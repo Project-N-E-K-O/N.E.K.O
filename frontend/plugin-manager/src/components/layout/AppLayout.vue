@@ -69,7 +69,9 @@
 
         <main class="app-main" data-yui-guide-id="plugin-main">
           <router-view v-slot="{ Component, route: currentRoute }">
-            <component :is="Component" :key="currentRoute.path" />
+            <MotionTransition preset="page">
+              <component :is="Component" :key="currentRoute.path" />
+            </MotionTransition>
           </router-view>
         </main>
       </div>
@@ -79,6 +81,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import MotionTransition from '@/motion/MotionTransition.vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
 import { useI18n } from 'vue-i18n'

@@ -8,10 +8,12 @@ function isCjkText(value: string): boolean {
   return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value)
 }
 
-const memoizedPinyin = boundedMemo(1024, (key) => {
-  const [value, pattern] = JSON.parse(key) as [string, PinyinPattern]
+// LRU scans thrash once the working set exceeds capacity, and each plugin
+// contributes up to six entries (three texts x two patterns).
+const memoizedPinyin = boundedMemo(8192, (key) => {
+  const pattern = key[0] === 'f' ? 'first' : 'pinyin'
   try {
-    return pinyin(value, {
+    return pinyin(key.slice(1), {
       toneType: 'none',
       type: 'string',
       pattern,
@@ -26,5 +28,5 @@ const memoizedPinyin = boundedMemo(1024, (key) => {
 
 export const safePinyin: PinyinSearch = (value, pattern) => {
   if (!value.trim() || !isCjkText(value)) return ''
-  return memoizedPinyin(JSON.stringify([value, pattern]))
+  return memoizedPinyin(`${pattern === 'first' ? 'f' : 'p'}${value}`)
 }

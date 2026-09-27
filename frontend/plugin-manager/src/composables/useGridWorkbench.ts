@@ -203,12 +203,15 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     }) as T[]
   })
 
+  // A separate boolean computed keeps keystrokes from re-walking every item:
+  // only entering/leaving search (or a source change) rebuilds pinyin indexes.
+  const searching = computed(() => state.filterText.value.trim().length > 0)
+
   const items = computed<T[]>(() => {
     const base = baseItems.value
     const pinyinBuilder = config.buildPinyinSearchIndex
-    const includePinyin = state.filterText.value.trim().length > 0
     const search = pinyinSearch.value
-    if (!includePinyin || !search || !pinyinBuilder) return base
+    if (!searching.value || !search || !pinyinBuilder) return base
 
     return base.map((item) => {
       const pinyinIndex = pinyinBuilder(item, search)

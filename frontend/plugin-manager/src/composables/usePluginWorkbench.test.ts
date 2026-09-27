@@ -132,4 +132,25 @@ describe('usePluginWorkbench scoped selection state', () => {
       expect(safePinyin).toHaveBeenCalled()
     }, { timeout: 1000 })
   })
+
+  it('does not rebuild pinyin indexes on every keystroke of an active search', async () => {
+    const buildPinyin = vi.fn(() => 'chajian')
+    const workbench = useGridWorkbench([{ id: 'a' }, { id: 'b' }], {
+      scope: 'grid-workbench-pinyin-keystroke-test',
+      groups: [{ id: 'all', predicate: () => true }],
+      buildPinyinSearchIndex: buildPinyin,
+    })
+    workbench.filterText.value = 'c'
+    await vi.waitFor(() => {
+      void workbench.filteredItems.value
+      expect(buildPinyin).toHaveBeenCalledTimes(2)
+    }, { timeout: 1000 })
+
+    for (const text of ['ch', 'cha', 'chaj']) {
+      workbench.filterText.value = text
+      void workbench.filteredItems.value
+    }
+    expect(buildPinyin).toHaveBeenCalledTimes(2)
+    expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['a', 'b'])
+  })
 })

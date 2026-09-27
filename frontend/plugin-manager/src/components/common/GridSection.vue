@@ -1,12 +1,10 @@
 <template>
   <Transition
     appear
-    @before-enter="beforeSectionEnter"
+    :css="false"
+    @leave-cancelled="cancel"
     @enter="enterSection"
-    @after-enter="afterSectionEnter"
-    @before-leave="beforeSectionLeave"
     @leave="leaveSection"
-    @after-leave="afterSectionLeave"
   >
     <section
       v-if="items.length > 0"
@@ -14,8 +12,8 @@
       :class="[
         sectionClass,
         {
-          'grid-section--quiet': motionMode === 'quiet',
-          'grid-section--large': items.length > 80,
+          'grid-section--filter': motionPhase === 'filter',
+          'grid-section--large': items.length > motionPolicy.largeList,
         },
       ]"
       :data-yui-guide-id="sectionGuideId"
@@ -42,7 +40,11 @@
       </div>
 
       <TransitionGroup
-        name="grid-item"
+        :css="false"
+        :move-class="motionPhase === 'filter' || items.length > motionPolicy.largeList ? 'grid-item-still' : 'grid-item-move'"
+        @enter="enterItem"
+        @leave="leaveItem"
+        @leave-cancelled="element => { cancel(element); clearLeavingItemStyles(element) }"
         tag="div"
         class="grid-section__grid"
         :class="gridLayoutClass"
@@ -55,7 +57,7 @@
           class="grid-section__item"
           :class="itemClass(item)"
           :data-yui-guide-id="itemGuideIdFor(item, index)"
-          :style="itemMotionStyle(index)"
+          :data-motion-index="index"
         >
           <Transition name="check-pop">
             <button
@@ -105,7 +107,8 @@
 <script setup lang="ts" generic="T extends { id: string }">
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useAnimatedGridTransition } from '@/composables/useAnimatedGridTransition'
+import { useGridMotionController } from '@/motion/grid'
+import { motionPolicy } from '@/motion/policy'
 import type { LayoutMode } from '@/composables/useGridWorkbench'
 
 const props = withDefaults(defineProps<{
@@ -121,14 +124,14 @@ const props = withDefaults(defineProps<{
   /** False only when a parent already owns this grid's initial entrance. */
   animateInitial?: boolean
   /** Lightweight updates used while the user is actively filtering. */
-  motionMode?: 'normal' | 'quiet'
+  motionPhase?: 'initial' | 'filter'
 }>(), {
   title: undefined,
   icon: undefined,
   variant: 'default',
   guidePrefix: undefined,
   animateInitial: true,
-  motionMode: 'normal',
+  motionPhase: 'initial',
 })
 
 defineEmits<{
@@ -138,17 +141,12 @@ defineEmits<{
 const { t } = useI18n()
 
 const {
-  itemMotionStyle,
-  pinLeavingItem,
-  clearLeavingItemStyles,
-  beforeSectionEnter,
-  enterSection,
-  afterSectionEnter,
-  beforeSectionLeave,
-  leaveSection,
-  afterSectionLeave,
-} = useAnimatedGridTransition({ animateInitial: () => props.animateInitial })
-
+  pinLeavingItem, clearLeavingItemStyles, enterSection, leaveSection,
+  enterItem, leaveItem, cancel,
+} = useGridMotionController({
+  animateInitial: () => props.animateInitial,
+  phase: () => props.motionPhase,
+})
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 
 const headerClass = computed(() => {
@@ -175,8 +173,10 @@ function itemGuideIdFor(item: T, index: number): string | undefined {
     : `${props.guidePrefix}-card-${item.id}`
 }
 
+const selectedIdSet = computed(() => new Set(props.selectedIds))
+
 function isItemSelected(id: string): boolean {
-  return props.selectedIds.includes(id)
+  return selectedIdSet.value.has(id)
 }
 
 function itemClass(item: T) {
@@ -323,7 +323,7 @@ function itemClass(item: T) {
   width: 14px;
   height: 14px;
   color: #fff;
-  animation: check-draw 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: check-draw var(--motion-duration-normal) var(--motion-ease-spring) forwards;
 }
 
 @keyframes check-draw {
@@ -339,14 +339,14 @@ function itemClass(item: T) {
 
 .check-pop-enter-active {
   transition:
-    opacity 0.22s ease,
-    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+    opacity var(--motion-duration-normal) var(--motion-ease-standard),
+    transform var(--motion-duration-emphasis) var(--motion-ease-spring);
 }
 
 .check-pop-leave-active {
   transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-fast) var(--motion-ease-exit);
 }
 
 .check-pop-enter-from {
@@ -414,71 +414,15 @@ function itemClass(item: T) {
   flex-direction: column;
 }
 
-.grid-item-enter-active,
-.grid-item-leave-active {
-  transition:
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    filter 0.24s ease;
-}
-
-.grid-section--quiet .grid-item-enter-active,
-.grid-section--quiet .grid-item-leave-active {
-  transition:
-    transform 0.14s ease-out,
-    opacity 0.12s ease-out;
-  transition-delay: 0ms;
-}
-
-.grid-section--quiet .grid-item-move {
-  transition: none;
-}
-
-.grid-item-enter-active {
-  transition-delay: var(--item-stagger-delay, 0ms);
-}
-
-.grid-item-enter-from {
-  opacity: 0;
-  transform: scale(0.95) translateY(12px);
-  filter: blur(var(--item-motion-blur, 4px));
-}
-
-.grid-section--quiet .grid-item-enter-from,
-.grid-section--quiet .grid-item-leave-to {
-  transform: translate3d(0, 4px, 0);
-  filter: none;
-}
-
-.grid-item-leave-to {
-  opacity: 0;
-  transform: scale(0.94) translateY(-12px);
-  filter: blur(var(--item-motion-blur, 4px));
-}
-
-.grid-item-enter-to,
-.grid-item-leave-from {
-  opacity: 1;
-  transform: scale(1) translateY(0);
-  filter: blur(0);
-}
-
-.grid-item-leave-active {
-  position: absolute;
-  z-index: 0;
-  pointer-events: none;
-  margin: 0;
-}
-
 .grid-item-move {
-  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .count-fade-enter-active,
 .count-fade-leave-active {
   transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .count-fade-enter-from,
@@ -488,8 +432,6 @@ function itemClass(item: T) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .grid-item-enter-active,
-  .grid-item-leave-active,
   .grid-item-move,
   .count-fade-enter-active,
   .count-fade-leave-active {

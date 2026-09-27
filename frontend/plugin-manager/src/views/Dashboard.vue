@@ -21,7 +21,8 @@
       data-yui-guide-id="plugin-dashboard-stats"
     >
       <div
-        v-for="stat in statCards"
+        v-for="(stat, index) in statCards"
+        v-motion="{ preset: 'card', index }"
         :key="stat.key"
         class="stat-card"
         :class="`stat-card--${stat.key}`"
@@ -40,6 +41,7 @@
     <div class="main-grid">
       <!-- Global metrics -->
       <div
+        v-motion="{ preset: 'section', index: 4 }"
         class="panel panel--metrics"
         data-yui-guide-id="plugin-dashboard-metrics"
       >
@@ -101,6 +103,7 @@
 
       <!-- Server info -->
       <div
+        v-motion="{ preset: 'section', index: 5 }"
         class="panel panel--server"
         data-yui-guide-id="plugin-dashboard-server"
       >
@@ -138,6 +141,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { vMotion } from '@/motion/directive'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -151,12 +155,6 @@ import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refres
 import dayjs from 'dayjs'
 
 const { t } = useI18n()
-const dashboardStartupClass = 'dashboard-starting'
-function finishDashboardStartup() {
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    document.documentElement.classList.remove(dashboardStartupClass)
-  }))
-}
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 
@@ -473,7 +471,6 @@ function handleVisibilityChange() {
 }
 
 onMounted(async () => {
-  document.documentElement.classList.add(dashboardStartupClass)
   dashboardDisposed = false
   await Promise.all([
     pluginStore.fetchPluginSummaries().catch(error => console.warn('Dashboard plugin list refresh failed:', error)),
@@ -482,7 +479,6 @@ onMounted(async () => {
     fetchGlobalMetrics(),
   ])
   if (dashboardDisposed) return
-  finishDashboardStartup()
   window.addEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.addEventListener('storage', handleGoodbyeResourceStorage)
   document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -491,7 +487,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   dashboardDisposed = true
-  document.documentElement.classList.remove(dashboardStartupClass)
   window.removeEventListener('neko:goodbye-resource-suspend-state', handleGoodbyeResourceState)
   window.removeEventListener('storage', handleGoodbyeResourceStorage)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -500,12 +495,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-:global(html.dashboard-starting) .dashboard .stat-card,
-:global(html.dashboard-starting) .dashboard .panel {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 .dashboard {
   display: flex;
   flex-direction: column;

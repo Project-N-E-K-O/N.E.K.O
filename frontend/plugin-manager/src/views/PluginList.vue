@@ -252,8 +252,7 @@
               :title="section.title"
               :icon="section.icon"
               :items="section.items"
-              :animate-initial="false"
-              :motion-mode="filterText.trim() ? 'quiet' : 'normal'"
+              :motion-phase="filterText.trim() ? 'filter' : 'initial'"
               :layout-mode="layoutMode"
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
@@ -301,90 +300,93 @@
       </div>
     </aside>
 
-    <!-- Floating multi-select action bar -->
-    <Transition name="float-bar">
-      <div v-if="multiSelectEnabled" class="floating-select-bar" data-yui-guide-id="plugin-list-float-bar">
-        <!-- Batch operations row (visible when plugins are selected) -->
-        <Transition name="batch-row">
-          <div v-if="selectedCount > 0" class="floating-select-bar__batch">
-            <button
-              class="fab-action fab-action--batch fab-action--success"
-              :disabled="batchBusy"
-              @click="handleBatchStart"
-            >
-              <el-icon><VideoPlay /></el-icon>
-              <span>{{ $t('plugins.start') }}</span>
-            </button>
-            <button
-              class="fab-action fab-action--batch fab-action--warn"
-              :disabled="batchBusy"
-              @click="handleBatchStop"
-            >
-              <el-icon><VideoPause /></el-icon>
-              <span>{{ $t('plugins.stop') }}</span>
-            </button>
-            <button
-              class="fab-action fab-action--batch"
-              :disabled="batchBusy"
-              @click="handleBatchReload"
-            >
-              <el-icon><RefreshRight /></el-icon>
-              <span>{{ $t('plugins.reload') }}</span>
-            </button>
-            <div class="floating-select-bar__batch-divider" />
-            <button
-              class="fab-action fab-action--batch fab-action--danger"
-              :disabled="batchBusy"
-              @click="handleBatchDelete"
-            >
-              <el-icon><Delete /></el-icon>
-              <span>{{ $t('plugins.delete') }}</span>
-            </button>
-            <div class="floating-select-bar__batch-divider" />
-            <button
-              class="fab-action fab-action--batch fab-action--export"
-              :disabled="batchBusy"
-              @click="handleBatchExport"
-            >
-              <el-icon><Download /></el-icon>
-              <span>{{ $t('plugins.export') }}</span>
+    <!-- Floating multi-select action bar; teleported so the route transition's
+         transform never becomes its containing block. -->
+    <Teleport to="body">
+      <Transition name="float-bar">
+        <div v-if="multiSelectEnabled" class="floating-select-bar" data-yui-guide-id="plugin-list-float-bar">
+          <!-- Batch operations row (visible when plugins are selected) -->
+          <Transition name="batch-row">
+            <div v-if="selectedCount > 0" class="floating-select-bar__batch">
+              <button
+                class="fab-action fab-action--batch fab-action--success"
+                :disabled="batchBusy"
+                @click="handleBatchStart"
+              >
+                <el-icon><VideoPlay /></el-icon>
+                <span>{{ $t('plugins.start') }}</span>
+              </button>
+              <button
+                class="fab-action fab-action--batch fab-action--warn"
+                :disabled="batchBusy"
+                @click="handleBatchStop"
+              >
+                <el-icon><VideoPause /></el-icon>
+                <span>{{ $t('plugins.stop') }}</span>
+              </button>
+              <button
+                class="fab-action fab-action--batch"
+                :disabled="batchBusy"
+                @click="handleBatchReload"
+              >
+                <el-icon><RefreshRight /></el-icon>
+                <span>{{ $t('plugins.reload') }}</span>
+              </button>
+              <div class="floating-select-bar__batch-divider" />
+              <button
+                class="fab-action fab-action--batch fab-action--danger"
+                :disabled="batchBusy"
+                @click="handleBatchDelete"
+              >
+                <el-icon><Delete /></el-icon>
+                <span>{{ $t('plugins.delete') }}</span>
+              </button>
+              <div class="floating-select-bar__batch-divider" />
+              <button
+                class="fab-action fab-action--batch fab-action--export"
+                :disabled="batchBusy"
+                @click="handleBatchExport"
+              >
+                <el-icon><Download /></el-icon>
+                <span>{{ $t('plugins.export') }}</span>
+              </button>
+            </div>
+          </Transition>
+
+          <!-- Selection controls row -->
+          <div class="floating-select-bar__inner">
+            <div class="floating-select-bar__count">
+              <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
+              <span class="floating-select-bar__count-label">{{ $t('plugins.selectedCount', { count: selectedCount }) }}</span>
+            </div>
+
+            <div class="floating-select-bar__divider" />
+
+            <div class="floating-select-bar__actions">
+              <button class="fab-action" @click="selectAllVisible">
+                <el-icon><Finished /></el-icon>
+                <span>{{ $t('plugins.selectAllVisible') }}</span>
+              </button>
+              <button class="fab-action" @click="invertVisibleSelection">
+                <el-icon><Sort /></el-icon>
+                <span>{{ $t('plugins.invertVisibleSelection') }}</span>
+              </button>
+              <button class="fab-action fab-action--danger" @click="clearSelection">
+                <el-icon><CircleClose /></el-icon>
+                <span>{{ $t('plugins.clearSelection') }}</span>
+              </button>
+            </div>
+
+            <div class="floating-select-bar__divider" />
+
+            <button class="fab-action fab-action--exit" @click="toggleMultiSelectMode">
+              <el-icon><Close /></el-icon>
+              <span>{{ $t('plugins.exitMultiSelect') }}</span>
             </button>
           </div>
-        </Transition>
-
-        <!-- Selection controls row -->
-        <div class="floating-select-bar__inner">
-          <div class="floating-select-bar__count">
-            <span class="floating-select-bar__count-num">{{ selectedCount }}</span>
-            <span class="floating-select-bar__count-label">{{ $t('plugins.selectedCount', { count: selectedCount }) }}</span>
-          </div>
-
-          <div class="floating-select-bar__divider" />
-
-          <div class="floating-select-bar__actions">
-            <button class="fab-action" @click="selectAllVisible">
-              <el-icon><Finished /></el-icon>
-              <span>{{ $t('plugins.selectAllVisible') }}</span>
-            </button>
-            <button class="fab-action" @click="invertVisibleSelection">
-              <el-icon><Sort /></el-icon>
-              <span>{{ $t('plugins.invertVisibleSelection') }}</span>
-            </button>
-            <button class="fab-action fab-action--danger" @click="clearSelection">
-              <el-icon><CircleClose /></el-icon>
-              <span>{{ $t('plugins.clearSelection') }}</span>
-            </button>
-          </div>
-
-          <div class="floating-select-bar__divider" />
-
-          <button class="fab-action fab-action--exit" @click="toggleMultiSelectMode">
-            <el-icon><Close /></el-icon>
-            <span>{{ $t('plugins.exitMultiSelect') }}</span>
-          </button>
         </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
 
     <PluginContextMenu
       :visible="contextMenuVisible"
@@ -1452,16 +1454,20 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.plugin-workbench,
+.floating-select-bar {
+  /* ── Unified radius system (the floating bar is teleported out of the workbench) ── */
+  --radius-card: 16px;       /* large containers: card, dropdown */
+  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
+  --radius-control: 10px;    /* buttons, inputs, interactive controls */
+  --radius-chip: 8px;
+}
+
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
   --drawer-duration: 320ms;
   --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* ── Unified radius system ── */
-  --radius-card: 16px;       /* large containers: card, dropdown */
-  --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
-  --radius-control: 10px;    /* buttons, inputs, interactive controls */
-  --radius-chip: 8px;
   display: flex;
   align-items: stretch;
   /*
@@ -1545,7 +1551,6 @@ onUnmounted(() => {
   width: var(--drawer-width);
   max-width: 100%;
   transition: transform var(--drawer-duration) var(--drawer-ease);
-  will-change: transform;
 }
 
 .plugin-workbench__rail--market .plugin-workbench__rail-inner {
