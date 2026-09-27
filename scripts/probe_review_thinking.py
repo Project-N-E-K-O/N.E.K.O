@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Compare correction-model thinking depth on one synthetic history review.
 
-Three calls, same dialogue:
-  baseline       — same as review: no extra_body, native thinking
-  prompt_shallow — a short instruction asking for a brief reasoning trace
-  budget_256     — DashScope thinking_budget=256, prompt unchanged
+Three calls, same dialogue, same output cap as the real review:
+  baseline       — review prompt without its reasoning-limit paragraph,
+                   no extra_body, native thinking
+  prompt_shallow — the shipped review prompt, reasoning limit included
+  budget_256     — baseline prompt with DashScope thinking_budget=256
 
 Prints timing and token counts only. Does not print the API key or the reply.
 """
@@ -19,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from openai import OpenAI  # noqa: E402
 
+from config import MEMORY_REVIEW_OUTPUT_MAX_TOKENS  # noqa: E402
 from config.prompts.prompts_memory import get_history_review_prompt  # noqa: E402
 from utils.config_manager import get_config_manager  # noqa: E402
 
@@ -30,16 +32,17 @@ HISTORY = """棍: 今天耳朵有点痒。
 悠怡: 用户在强调边界，我应该道歉并停止追问。策略：1. 道歉 2. 换话题。
 """
 
-SHALLOW = (
-    "推理限制：内部思考最多四句，不要复述原文，不要列举备选方案。"
-    "思考结束后立刻输出 JSON，不要把思考过程写进 explanation。\n\n"
-)
+# The shipped template opens with the reasoning-limit paragraph; the
+# baseline arm drops it so the comparison has exactly one variable.
+REASONING_LIMIT_PREFIX = "推理限制："
 
 
 def _build_prompt(shallow: bool) -> str:
     template = get_history_review_prompt("zh")
-    if shallow:
-        template = SHALLOW + template
+    if not template.startswith(REASONING_LIMIT_PREFIX):
+        raise SystemExit("review template no longer starts with the reasoning limit")
+    if not shallow:
+        template = template.split("\n\n", 1)[1]
     return (
         template
         % ("棍", "悠怡", HISTORY, "棍", "悠怡")
@@ -67,7 +70,7 @@ def _run(client: OpenAI, model: str, name: str, *, shallow: bool, extra_body: di
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": _build_prompt(shallow)}],
-            max_tokens=2048,
+            max_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
             extra_body=extra_body,
             timeout=90,
         )

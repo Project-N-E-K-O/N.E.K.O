@@ -1,5 +1,7 @@
 """阿里国际版默认 TTS 路由回归测试。"""
 
+import pytest
+
 from main_logic import tts_client
 from main_logic.tts_client.workers.qwen import (
     _QWEN_REALTIME_TTS_MODEL,
@@ -64,35 +66,31 @@ def _patch_qwen_core_config(monkeypatch, core_config):
 
 
 def test_qwen_realtime_tts_url_uses_configured_model_without_legacy_prefix(monkeypatch):
-    """新的 realtime TTS 模型名不再以 qwen3-tts 开头，配置值应原样进 URL。"""
+    """A Qwen TTS model outside the qwen3-tts prefix is passed through unchanged."""
     _patch_qwen_core_config(monkeypatch, {
         "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "TTS_MODEL": "qwen3-tts-flash-realtime-2026-09-01",
+        "TTS_MODEL": "qwen3.5-tts-flash-realtime",
         "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
     })
 
     url = _resolve_qwen_realtime_tts_url()
 
-    assert url.endswith("?model=qwen3-tts-flash-realtime-2026-09-01")
+    assert url.endswith("?model=qwen3.5-tts-flash-realtime")
 
 
-def test_qwen_realtime_tts_url_ignores_realtime_model_alias(monkeypatch):
-    """TTS_MODEL 默认等于 REALTIME_MODEL，那是全模态模型名，不能拿去连 TTS。"""
+@pytest.mark.parametrize("tts_model", [
+    # Default: TTS_MODEL copies the omni realtime model name.
+    "qwen3.8-omni-flash-realtime",
+    # Fallback after another provider failed: its model id is still configured.
+    "tts-1",
+    "cosyvoice-v3-plus",
+    "  ",
+])
+def test_qwen_realtime_tts_url_falls_back_for_non_qwen_tts_models(monkeypatch, tts_model):
+    """Only Qwen TTS model ids may reach the DashScope realtime TTS endpoint."""
     _patch_qwen_core_config(monkeypatch, {
         "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "TTS_MODEL": "qwen3.8-omni-flash-realtime",
-        "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
-    })
-
-    url = _resolve_qwen_realtime_tts_url()
-
-    assert url.endswith(f"?model={_QWEN_REALTIME_TTS_MODEL}")
-
-
-def test_qwen_realtime_tts_url_falls_back_when_tts_model_blank(monkeypatch):
-    _patch_qwen_core_config(monkeypatch, {
-        "CORE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "TTS_MODEL": "  ",
+        "TTS_MODEL": tts_model,
         "REALTIME_MODEL": "qwen3.8-omni-flash-realtime",
     })
 

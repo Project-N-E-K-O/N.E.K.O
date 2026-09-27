@@ -78,12 +78,15 @@ EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low（开思考但取最低努力档）。
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
-# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M3 始终内部
-# 推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
+# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
+# 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
 # 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
 # 思考本就常开、无需动它；且 True 让 CoT 留在独立字段、不混进 content 被 TTS 当台词
 # 念出（与 leaks_thinking_in_content 防的是同一类问题）。
+# M3 可以关思考（thinking.type=disabled/adaptive），所以下方映射表里 M3 走
+# EXTRA_BODY_CLAUDE，凝神翻成 enabled，不用本常量。
 # 文档 https://platform.minimax.io/docs/guides/text-m3-function-call
+#      https://platform.minimax.io/docs/api-reference/text-openai-api
 EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
 # Step 的 reasoning_effort 不支持 none：三档模型只收 low / medium / high，
@@ -150,11 +153,13 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
     # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
     # 不会被这几行波及。vision-exp 是同端口同代的视觉版，方言一致。
+    # V4.1 起官方调用名是 deepseek-flash（自带视觉）；v4-flash / vision-exp
+    # 仍被接受，服务端转给 V4.1 Flash。Pro 没有 4.1 版，仍叫 deepseek-v4-pro。
+    # 文档 https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
-    "deepseek-v4.1-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
-    "deepseek-v4.1-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # reasoning_effort 无 none，思考无法关闭，平时与凝神都走 low。

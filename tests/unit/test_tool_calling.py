@@ -4181,7 +4181,7 @@ def test_glm_realtime_gateway_model_keeps_allowlisted_names():
 
 @pytest.mark.asyncio
 async def test_realtime_glm_partial_update_pins_requested_model():
-    """省略 model 时智谱把会话退回默认 glm-realtime。Plus 必须每次都带上。"""
+    """Omitting model resets the GLM session to glm-realtime; Plus must ride every update."""
     client, sent = _make_rt_client("glm")
     client.model = "glm-realtime-plus"
     await client.update_session({"tools": []})

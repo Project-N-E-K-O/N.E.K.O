@@ -193,12 +193,12 @@
       "name": "DeepSeek",
       "description": "性价比极高，推理能力强",
       "openrouter_url": "https://api.deepseek.com/v1",
-      "conversation_model": "deepseek-v4.1-flash",
-      "summary_model": "deepseek-v4.1-flash",
-      "correction_model": "deepseek-v4.1-flash",
-      "emotion_model": "deepseek-v4.1-flash",
-      "vision_model": "deepseek-v4.1-flash",
-      "agent_model": "deepseek-v4.1-flash"
+      "conversation_model": "deepseek-flash",
+      "summary_model": "deepseek-flash",
+      "correction_model": "deepseek-flash",
+      "emotion_model": "deepseek-flash",
+      "vision_model": "deepseek-flash",
+      "agent_model": "deepseek-flash"
     },
     "doubao": {
       "key": "doubao",

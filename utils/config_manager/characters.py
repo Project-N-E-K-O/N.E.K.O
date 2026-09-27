@@ -246,6 +246,12 @@ class CharactersMixin:
         This is the conversation language persisted for long-lived jobs. Card
         sync must use it when writing rename facts; the process-global language
         flips for the duration of those jobs and would rewrite the same fact.
+
+        A missing or malformed file means no persisted language (``None``).
+        Any other ``OSError`` propagates, mirroring the canonical reader in
+        ``app/memory_server/locale_state.py``: a transient failure must not
+        look like "no locale", or the caller would write the fact in the
+        process language.
         """
         if not name:
             return None
@@ -253,7 +259,9 @@ class CharactersMixin:
         try:
             with open(path, encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except (OSError, json.JSONDecodeError, UnicodeError):
+        except FileNotFoundError:
+            return None
+        except (json.JSONDecodeError, UnicodeError):
             return None
         if not isinstance(payload, dict):
             return None

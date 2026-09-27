@@ -633,14 +633,16 @@ async def _run_connect_and_capture_session(client):
 
 @pytest.mark.unit
 async def test_connect_qwen_manual_vad_sends_null_turn_detection():
-    """Qwen MANUAL: turn_detection=None, transcription model preserved."""
+    """Qwen MANUAL: turn_detection=None, server-side transcription left alone."""
     client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
     session = await _run_connect_and_capture_session(client)
 
     assert session is not None, "session.update event not captured"
     assert session.get("turn_detection") is None
-    # Qwen's input_audio_transcription must remain pinned to gummy-realtime-v1
-    assert session.get("input_audio_transcription") == {"model": "gummy-realtime-v1"}
+    # DashScope enables input transcription by default (session.created already
+    # carries the transcription model) and documents it as not configurable,
+    # so the client no longer overrides it.
+    assert "input_audio_transcription" not in session
 
 
 @pytest.mark.unit
