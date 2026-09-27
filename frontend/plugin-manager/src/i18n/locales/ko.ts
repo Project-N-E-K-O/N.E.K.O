@@ -148,6 +148,7 @@ export default {
     installDialogTitle: '{name} 설치 중',
     installDialogTitleUpgrade: '{name} 업그레이드 중',
     installFailedTitle: '설치 실패: {name}',
+    installFailedTitleUpgrade: '업그레이드 실패: {name}',
     installCompleted: '설치 완료',
     installCompletedUpgrade: '업그레이드 완료',
     rollbackRunning: '설치 실패, 롤백 중...',

@@ -159,7 +159,7 @@ describe('market install task store — tracking', () => {
 
     const store = useMarketInstallTaskStore()
     const p = store.track('t', context(), 'panel')
-    await tick()
+    for (let i = 0; i < 15; i += 1) await tick()
     await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.pairRequired' })
 
     expect(store.running).toBe(false)
@@ -178,19 +178,64 @@ describe('market install task store — tracking', () => {
     await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.installTaskLost' })
   })
 
-  it('bails out immediately when the bridge rejects the token', async () => {
+  it('gives up after a run of rejected tokens, not on the first one', async () => {
     vi.mocked(fetchBridge).mockResolvedValue({ status: 403 } as never)
 
     const store = useMarketInstallTaskStore()
     const p = store.track('t', context(), 'panel')
-    await tick()
+    for (let i = 0; i < 14; i += 1) await tick()
+    // A brief 403 burst must not abandon a task the backend is still running.
+    expect(store.running).toBe(true)
 
+    await tick()
     await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.pairRequired' })
+  })
+
+  it('stops holding the slot when no bridge token can be obtained', async () => {
+    vi.mocked(fetchBridge).mockResolvedValue(null as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    for (let i = 0; i < 15; i += 1) await tick()
+
+    // Regression guard: a missing token used to be polled forever, keeping the
+    // task running and refusing every later install until a reload.
+    await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.pairRequired' })
+    expect(store.running).toBe(false)
+  })
+
+  it('recovers when the token comes back within the tolerance', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(null as never)
+      .mockResolvedValueOnce({ status: 403 } as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    for (let i = 0; i < 3; i += 1) await tick()
+
+    await expect(p).resolves.toEqual({ ok: true })
+  })
+
+  it('keeps polling through transport failures without giving up', async () => {
+    vi.mocked(fetchBridge).mockRejectedValue(new TypeError('Failed to fetch'))
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    for (let i = 0; i < 30; i += 1) await tick()
+    // An unreachable bridge is not a pairing problem: the task may be running.
+    expect(store.running).toBe(true)
+
+    vi.mocked(fetchBridge).mockResolvedValue(
+      task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never,
+    )
+    await tick()
+    await expect(p).resolves.toEqual({ ok: true })
   })
 
   it('keeps polling when the bridge is temporarily unreachable', async () => {
     vi.mocked(fetchBridge)
-      .mockResolvedValueOnce(null as never)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
       .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never)
 
     const store = useMarketInstallTaskStore()
@@ -665,6 +710,23 @@ describe('market install task store — cancel', () => {
 
     await expect(store.cancel('panel')).resolves.toBe('unavailable')
     await expect(store.cancel('float')).resolves.toBe('ok')
+
+    store.dismiss()
+    await tick()
+    await p
+  })
+
+  it('reports a cancel without a bridge token as unpaired', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2 }) as never)
+      .mockResolvedValueOnce(null as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+
+    // Mapped to "pairing required" by the callers, as before the refactor.
+    await expect(store.cancel()).resolves.toBe('unpaired')
 
     store.dismiss()
     await tick()

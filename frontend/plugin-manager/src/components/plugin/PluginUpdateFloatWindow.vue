@@ -346,7 +346,8 @@ async function handleUpdate(pluginId: string): Promise<void> {
 
 async function handleCancelUpdate(): Promise<void> {
   const result = await installTask.cancel('float')
-  if (result !== 'ok') ElMessage.warning(t('market.cancelInstallUnavailable'))
+  if (result === 'unpaired') ElMessage.warning(t('market.pairRequired'))
+  else if (result !== 'ok') ElMessage.warning(t('market.cancelInstallUnavailable'))
 }
 
 async function handleUpdateAll(): Promise<void> {

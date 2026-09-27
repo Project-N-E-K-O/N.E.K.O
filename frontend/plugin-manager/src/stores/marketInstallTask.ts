@@ -191,6 +191,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
   let lastRunningStep: InstallStepId | null = null
   let failedStep: InstallStepId | null = null
   let missingPolls = 0
+  let authFailures = 0
   let overtimeTimer: ReturnType<typeof setTimeout> | null = null
   /** Bumped per tracking run so an abandoned poll loop cannot touch fresh state. */
   let generation = 0
@@ -334,6 +335,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     lastRunningStep = null
     failedStep = null
     missingPolls = 0
+    authFailures = 0
     speed.value = null
     eta.value = null
     overtime.value = false
@@ -461,24 +463,35 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       }
 
       let res: Response | null = null
+      let unreachable = false
       try {
-        res = await fetchBridge(`/market/tasks/${id}`)
+        res = await fetchBridge(`/market/tasks/${id}`, undefined, { throwOnTransportError: true })
       } catch (err) {
+        unreachable = true
         log.warn('task poll threw', { taskId: id, err })
       }
       // Re-check after every await: a dismiss during the request must not let
       // this loop write state back into a closed task.
       if (myGeneration !== generation) return { ok: false, aborted: true }
-      if (!res) {
+      if (unreachable) {
         // Bridge temporarily unreachable: keep polling, it usually comes back.
-        log.warn('task poll has no bridge', { taskId: id })
+        // Giving up here would abandon a task that is still running.
         continue
       }
-      if (res.status === 401 || res.status === 403) {
-        log.warn('task poll rejected', { taskId: id, status: res.status })
-        failTracking('market.pairRequired')
-        return { ok: false, errorKey: 'market.pairRequired' }
+      if (!res || res.status === 401 || res.status === 403) {
+        // No bridge token, or one the bridge rejects even after a refresh.
+        // The pre-refactor dialog failed at once on a missing token and polled
+        // a 403 forever; tolerate a short burst (a token refetch can race a
+        // restart), then stop instead of holding the install slot for good.
+        authFailures += 1
+        log.warn('task poll unauthorized', { taskId: id, status: res?.status ?? 'no-token', authFailures })
+        if (authFailures >= TASK_MISSING_TOLERANCE) {
+          failTracking('market.pairRequired')
+          return { ok: false, errorKey: 'market.pairRequired' }
+        }
+        continue
       }
+      authFailures = 0
       if (res.status === 404) {
         missingPolls += 1
         if (missingPolls >= TASK_MISSING_TOLERANCE) {
@@ -531,7 +544,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
 
   async function cancel(
     requester?: MarketInstallOwner,
-  ): Promise<'ok' | 'unavailable' | 'failed'> {
+  ): Promise<'ok' | 'unavailable' | 'unpaired' | 'failed'> {
     const id = taskId.value
     if (!id || done.value || cancelling.value) return 'unavailable'
     // Same ownership rule as `dismiss`: a surface may only touch its own task.
@@ -550,9 +563,15 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     const myGeneration = generation
     cancelling.value = true
     try {
-      const res = await fetchBridge(`/market/tasks/${id}/cancel`, { method: 'POST' })
+      // A transport failure throws (→ 'failed'); `null` then only means there
+      // is no bridge token, which the caller reports as "pairing required".
+      const res = await fetchBridge(
+        `/market/tasks/${id}/cancel`,
+        { method: 'POST' },
+        { throwOnTransportError: true },
+      )
       if (myGeneration !== generation) return 'unavailable'
-      if (!res) return 'failed'
+      if (!res) return 'unpaired'
       if (res.ok) {
         const body = (await res.json().catch(() => null)) as MarketInstallTask | null
         if (myGeneration !== generation) return 'unavailable'
@@ -606,6 +625,7 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     lastRunningStep = null
     failedStep = null
     missingPolls = 0
+    authFailures = 0
     speed.value = null
     eta.value = null
     overtime.value = false

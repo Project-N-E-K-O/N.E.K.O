@@ -148,6 +148,7 @@ export default {
     installDialogTitle: '正在安装 {name}',
     installDialogTitleUpgrade: '正在升级 {name}',
     installFailedTitle: '安装失败：{name}',
+    installFailedTitleUpgrade: '升级失败：{name}',
     installCompleted: '安装完成',
     installCompletedUpgrade: '升级完成',
     rollbackRunning: '安装失败，正在回滚...',

@@ -148,6 +148,7 @@ export default {
     installDialogTitle: '{name} をインストール中',
     installDialogTitleUpgrade: '{name} をアップグレード中',
     installFailedTitle: 'インストール失敗：{name}',
+    installFailedTitleUpgrade: 'アップグレード失敗：{name}',
     installCompleted: 'インストール完了',
     installCompletedUpgrade: 'アップグレード完了',
     rollbackRunning: 'インストールに失敗しました。ロールバック中...',

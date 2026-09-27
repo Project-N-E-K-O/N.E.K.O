@@ -148,6 +148,7 @@ export default {
     installDialogTitle: 'Installing {name}',
     installDialogTitleUpgrade: 'Upgrading {name}',
     installFailedTitle: 'Install failed: {name}',
+    installFailedTitleUpgrade: 'Upgrade failed: {name}',
     installCompleted: 'Install completed',
     installCompletedUpgrade: 'Upgrade completed',
     rollbackRunning: 'Install failed; rolling back...',

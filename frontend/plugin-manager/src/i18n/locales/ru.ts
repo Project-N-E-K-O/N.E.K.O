@@ -148,6 +148,7 @@ export default {
     installDialogTitle: 'Установка {name}',
     installDialogTitleUpgrade: 'Обновление {name}',
     installFailedTitle: 'Не удалось установить: {name}',
+    installFailedTitleUpgrade: 'Не удалось обновить: {name}',
     installCompleted: 'Установка завершена',
     installCompletedUpgrade: 'Обновление завершено',
     rollbackRunning: 'Установка не удалась; выполняется откат...',

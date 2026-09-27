@@ -211,6 +211,7 @@
       :lock-scroll="true"
       :close-on-click-modal="false"
       :show-close="installTask.done"
+      @closed="onInstallTaskDialogClosed"
     >
       <MarketInstallProgress />
       <template #footer>
@@ -390,9 +391,14 @@ watch(() => installTask.owner, (ownerNow) => {
 
 const installTaskTitle = computed(() => {
   const name = installTask.context?.name || ''
-  if (installTask.task?.status === 'failed') return t('market.installFailedTitle', { name })
+  // Every replacement mode (upgrade / reinstall / override_builtin) reads as an
+  // upgrade, failed or not — same rule as the pre-refactor dialog.
   const mode = installTask.context?.mode
-  if (mode && mode !== 'install') return t('market.installDialogTitleUpgrade', { name })
+  const replacing = !!mode && mode !== 'install'
+  if (installTask.task?.status === 'failed') {
+    return t(replacing ? 'market.installFailedTitleUpgrade' : 'market.installFailedTitle', { name })
+  }
+  if (replacing) return t('market.installDialogTitleUpgrade', { name })
   return t('market.installDialogTitle', { name })
 })
 
@@ -420,6 +426,10 @@ function marketInstallContext(
     toVersion: plugin.version || null,
   }
 }
+
+/** Outcomes where tracking stopped without a backend failure verdict; the
+ *  pre-refactor dialog reported these as warnings, not errors. */
+const NOTICE_ONLY_OUTCOMES = new Set(['market.installTaskLost', 'market.pairRequired'])
 
 /** One toast per explicit user action; the panel itself shows the rest. */
 async function runInstallTask(
@@ -450,6 +460,9 @@ async function runInstallTask(
   } else if (outcome.aborted) {
     // Dialog closed mid-install: the task keeps running server-side and the
     // resume bar still reaches it, so say nothing.
+  } else if (outcome.errorKey && NOTICE_ONLY_OUTCOMES.has(outcome.errorKey)) {
+    // Tracking ended without a backend verdict: the task may still be fine.
+    ElMessage.warning(t(outcome.errorKey))
   } else {
     ElMessage.error(t(outcome.errorKey || 'market.installFailed'))
   }
@@ -458,23 +471,33 @@ async function runInstallTask(
 
 async function handleCancelInstall(): Promise<void> {
   const result = await installTask.cancel('panel')
-  if (result === 'unavailable') ElMessage.warning(t('market.cancelInstallUnavailable'))
-  else if (result === 'failed') ElMessage.warning(resolveApiErrorMessage(null, 'market.cancelInstallUnavailable'))
+  if (result === 'unpaired') ElMessage.warning(t('market.pairRequired'))
+  else if (result !== 'ok') ElMessage.warning(t('market.cancelInstallUnavailable'))
 }
 
 function closeInstallTaskDialog(): void {
   installTaskDialogVisible.value = false
 }
 
-// Same rule as the update popup: once the dialog is closed a finished task has
+// True from opening until el-dialog's leave transition has finished: dismissing
+// on `visible` alone empties the body and flips title/footer mid-fade.
+const installTaskDialogShown = ref(false)
+watch(installTaskDialogVisible, (visible) => {
+  if (visible) installTaskDialogShown.value = true
+})
+function onInstallTaskDialogClosed(): void {
+  installTaskDialogShown.value = false
+}
+
+// Same rule as the update popup: once the dialog is gone a finished task has
 // nowhere to be shown, but while this panel still holds the slot the operation
 // is reconciling (registry sync, installed snapshot, popup re-check). Dismissing
 // then would free the slot early and let the popup upgrade against its stale
 // candidates. Re-evaluated when the slot or the task settles.
 watch(
-  () => [installTaskDialogVisible.value, installTask.reservation, installTask.done] as const,
-  ([visible, reservation, done]) => {
-    if (!visible && done && reservation !== 'panel') installTask.dismiss('panel')
+  () => [installTaskDialogShown.value, installTask.reservation, installTask.done] as const,
+  ([shown, reservation, done]) => {
+    if (!shown && done && reservation !== 'panel') installTask.dismiss('panel')
   },
 )
 
