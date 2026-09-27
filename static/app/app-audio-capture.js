@@ -2765,7 +2765,9 @@
             stream = await navigator.mediaDevices.getUserMedia({ audio });
         } catch (error) {
             if (!isCurrent()) return { ok: false };
-            if (!S.selectedMicrophoneId) throw error;
+            // 与正式录音 openMicrophoneStreamWithFallback 同一口径：只有设备类错误才退回默认麦克风，
+            // 权限拒绝 / 安全 / 中止类错误直接抛出，避免再弹一次权限框或打开用户没选的设备。
+            if (!S.selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
             const fallback = {
                 noiseSuppression: false,
                 echoCancellation: true,

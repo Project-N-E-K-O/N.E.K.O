@@ -42,6 +42,12 @@ function isLive(stream) {
   return stream.getTracks()[0].stopped === false;
 }
 
+function mediaError(name) {
+  const error = new Error(name);
+  error.name = name;
+  return error;
+}
+
 async function stopDuringPermissionCase() {
   const env = loadModule();
   const release = env.parkGetUserMedia();
@@ -101,7 +107,7 @@ async function staleFailureKeepsNewerProbeCase() {
 
   releaseSecond();
   assert((await second).ok === true, 'the newer start must publish its probe');
-  env.failNextGetUserMedia(new Error('OverconstrainedError'));
+  env.failNextGetUserMedia(mediaError('OverconstrainedError'));
   releaseFirst();
   const firstResult = await first;
 
@@ -124,7 +130,7 @@ async function staleFallbackThrowKeepsNewerProbeCase() {
   const first = env.win.startSettingsMicVolumeTest();
   await settle();
   const releaseFallback = env.parkGetUserMedia();
-  env.failNextGetUserMedia(new Error('OverconstrainedError'));
+  env.failNextGetUserMedia(mediaError('OverconstrainedError'));
   releaseSelected();
   await settle();
   assert(env.getUserMediaCalls.length === 2, 'the first start is parked in its fallback');
@@ -135,11 +141,36 @@ async function staleFallbackThrowKeepsNewerProbeCase() {
   releaseSecond();
   assert((await second).ok === true, 'the newer start must publish its probe');
 
-  env.failNextGetUserMedia(new Error('NotReadableError'));
+  env.failNextGetUserMedia(mediaError('NotReadableError'));
   releaseFallback();
   assert((await first).ok === false, 'the stale start reports failure');
   assert(env.streams.length === 1 && isLive(env.streams[0]) && env.contexts[0].state !== 'closed',
          "a stale start's thrown failure must not release the newer probe");
+}
+
+async function permissionDeniedDoesNotFallBackCase() {
+  // Only device-class errors may retry on the default microphone, matching
+  // openMicrophoneStreamWithFallback. A permission denial must surface as-is:
+  // retrying would re-prompt, or open a device the user never picked.
+  for (const name of ['NotAllowedError', 'SecurityError', 'AbortError']) {
+    const env = loadModule();
+    env.S.selectedMicrophoneId = 'usb-mic';
+    env.failNextGetUserMedia(mediaError(name));
+    const result = await env.win.startSettingsMicVolumeTest();
+
+    assert(result.ok === false, name + ' must report failure');
+    assert(env.getUserMediaCalls.length === 1, name + ' must not retry the default microphone');
+    assert(env.streams.length === 0 && env.contexts.length === 0,
+           name + ' must not open any stream or context');
+  }
+
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'usb-mic';
+  env.failNextGetUserMedia(mediaError('NotFoundError'));
+  const result = await env.win.startSettingsMicVolumeTest();
+  assert(result.ok === true && result.mode === 'probe', 'a missing device falls back to the default');
+  assert(env.getUserMediaCalls.length === 2 && env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the fallback request must drop the exact deviceId');
 }
 
 async function contextConstructionFailureCase() {
@@ -183,6 +214,7 @@ async function liveRecordingTakesOverCase() {
   await overlappingStartsCase();
   await staleFailureKeepsNewerProbeCase();
   await staleFallbackThrowKeepsNewerProbeCase();
+  await permissionDeniedDoesNotFallBackCase();
   await contextConstructionFailureCase();
   await resumeFailureCase();
   await liveRecordingTakesOverCase();
