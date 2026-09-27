@@ -1225,7 +1225,6 @@ async def test_restored_tutorial_routes_supply_static_asset_version_to_template(
         steamworks=None,
         templates=_DummyTemplates(),
         config_manager=SimpleNamespace(),
-        logger=None,
         initialize_character_data=None,
     )
 

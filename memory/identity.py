@@ -104,9 +104,27 @@ def derive_entity_id(account_id: str, generation: int = 0) -> str:
     ).hexdigest()[:24]
 
 
+def derive_conversation_id(
+    conversation_account_id: str, generation: int = 0,
+) -> str:
+    """Derive a seed conversation-entity id.
+
+    Same construction as :func:`derive_entity_id` (and therefore the same
+    namespace-disjointness proof): the prefix carries no colon, while every
+    ``account_id`` must contain one.
+    """
+    raw = f"neko.conversation.v1|{conversation_account_id}|{int(generation)}"
+    return CONVERSATION_ID_PREFIX + hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()[:24]
+
+
 def is_entity_id(value: Any) -> bool:
     return _ENTITY_ID_RE.fullmatch(str(value or "")) is not None
 
+
+def is_conversation_id(value: Any) -> bool:
+    return _CONVERSATION_ID_RE.fullmatch(str(value or "")) is not None
 
 
 def account_platform(account_id: Any) -> str:

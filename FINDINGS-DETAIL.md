@@ -13,3 +13,44 @@
 
 ### Evidence level
 Every edited line verified by `git diff` + targeted pytest (161 pass, 0 fail for affected subsets). Full-suite unrelated error in test_speaker_identity.py (pre-existing ImportError: memory.identity missing `derive_conversation_id` — no relationship to D-boundary edits). Visual map: NOT delivered (text proof authoritative; graph reachability not treated as runtime impact per visual-reporting.md).
+
+---
+## 2026-09-27 (E-boundary / repair + survey findings S1-S4)
+### Survey findings (cleanup map: ../N.E.K.O-audit-artifacts/neko-survey.cleanup-map.html)
+- S1 [brain/cua/__init__.py]: 休眠 vendored Agent-S 子树（约 2700 行），零包外消费者；活跃 CUA 路径为 channels→_shared.py:43→brain/computer_use.py。**已随 E-boundary 切除**（接受提交删除，撤出错乱的暂存恢复）。
+- S2 [plugin/server/runs/manager.py]: 暂存恢复造成与 plugin/runs/ 正本字节级重复的零引用副本。**已切除**（git rm 10 个 plugin/server 恢复文件）。
+- S3 [scripts/diagnose_pc_day1_capsule_wobble.py]: 10 个零引用一次性脚本（约 3300 行，CI/package.json/文档全零引用）。**已切除**。
+- S4 [requirements_monitor.txt:1]: 无引用化石文件 + 孤儿 plugin/package-lock.json。**已切除**；quota_rules.yaml 改为保留并恢复 dropper.py 加载器（提交的移除属未记录变更，按非有意处理）。
+- Rejected: agent_event_bus/lifecycle_bus/cross_server（三种不同传输，均活跃）；utils/*_state 兼容别名（sys.modules 自替换，对外兼容面）；brain/agent_session.py 在 origin/main 有 3 个运行时导入方，非死代码。
+### Repair corrections to D-boundary
+- tests/unit/voice_input/{plugin_api,registrar} 的消费方 tests/unit/test_voice_input_registry.py 在 HEAD 存活 → 两文件保留（提交的删除会使 HEAD 无法收集该测试）。
+- tests/unit/voice_turn/test_contracts.py 的删除经 pytest 证明是正确且一致的（AsrTurnCapabilities 已随 asr_composition 特性一并移除）→ 维持删除。
+- main_logic/quota/dropper.py 恢复 origin/main 版本（撤销未记录的 _load_rules 移除）。
+- 证据：残留 grep 零命中；import smoke 14/14；ruff 通过；定向 pytest 见 HANDOFF.md 回执。
+
+---
+## 2026-09-27 (pre-PR reconciliation / repair-2)
+### Corrections to prior receipts
+- S37 [memory/identity.py#107]: 提交删除了 derive_conversation_id + is_conversation_id（未记录切除；唯一消费方为存活的 tests/unit/test_speaker_identity.py:16-18）。此前回执将其误判为"pre-existing ImportError"。两函数已按 origin/main 字节恢复。
+- S38 [main_logic/voice_input/registry.py + tests/unit/test_voice_input_registry.py]: E-boundary 保留 plugin_api/registrar 的裁决不完整——同一提交还移除了 registry.issue_plugin_registrar/_register_plugin 与测试的 import+用例，使恢复文件成为零消费孤儿。两文件恢复至 origin/main → plugin voice-input SPI 对 origin/main 净零、测试消费方（test 文件第 17 行）复活。
+- S39 [tests/test_agent_rewrite_regression.py#1228]: S14 迁移漏网调用方——init_shared_state 已去 logger 形参，该测试仍传 logger=None → 1 个 PR 引入失败。已移除该 kwarg。
+### Verification
+- pytest test_speaker_identity + test_voice_input_registry：60 passed。
+- pytest test_agent_rewrite_regression：13 failed / 150 passed，失败名单与 origin/main 基线（git worktree 对照）逐条一致；少 2 条用例 = agent_bridge 测试对随主体正确移除。
+- ruff check .（0.15.4 == CI 钉版）：通过。import smoke 17/17。plugin test_trigger_service 4 passed。
+- 对 origin/main 净零面：memory/identity.py、voice_input/{registry,plugin_api,registrar}、quota/{dropper.py,quota_rules.yaml}（恢复面 = 审计范围外，维持原样）。
+
+---
+## 2026-09-27 (full-gate reconciliation / repair-3, S40)
+### Finding
+- S40 [main_routers/shared_state.py#170 × 12 test files]: S14 移除 init_shared_state 的 logger 形参时仅迁移 app/main_server + 4 个测试文件；其余 7 个测试文件共 93 处调用仍传 `logger=None,` → 全量 CI 门（tests/unit, -n auto）158 failed / 61 errors，根因均为 _build_client/_refresh_shared_state 中的 TypeError。之前"161/166 passed"结论只覆盖了被迁移文件的子集，未跑全量门——教训：签名变更必须 grep 全部调用点。
+### Fix
+- 括号感知机械迁移：删除 7 文件内 init_shared_state 调用块中的 93 行 `logger=None,`（纯删除 94 行含 agent_rewrite 1 行，零插入、零行尾搅动；GameAgentService(logger=…) 为无关类未动）。
+### Provenance ruling (closes advisory State-A/B question)
+- plugin_api.py/registrar.py/test_voice_input_registry.py 三者均诞生于 e32972f（2026-09-26 19:07，切片审计前 ~20h，与插件市场同期）→ 属维护者有意铺设的扩展点脚手架；删除属产品决策、需维护者签字 → 维持净零保留（State B-full）。registrar.py:39 对 _register_plugin 的调用随 registry.py 恢复而重新闭合。
+### Additional gates run
+- gitleaks 8.30.1：PR 净 diff（stdin 模式，474KB）0 leaks；git 历史扫描 110 处存量命中（非本 PR 引入）。npm audit：plugin-manager 25 漏洞（1 critical/15 high/3 moderate...精确：3 low/6 moderate/15 high/1 critical）、react-neko-chat 10 漏洞（1 low/3 moderate/5 high/1 critical）——均为既有 pin，PR 未触 frontend/。mypy（用户侧 uvx 探索跑）：4875 errors/498 files——仓库无类型门配置，属存量基线，不作 PR 判定依据。
+### Final full-gate parity (post S40 fix)
+- 分支（本工作区）：**9 failed / 25,724 passed / 177 skipped**（5:54）。origin/main 基线（同命令、worktree 对照）：**20 failed / 25,738 passed / 177 skipped**（14:15）。分支严格更绿；残余 9 = asr speaker_shadow 时序 flaky（基线全量同样红、隔离跑全绿）+ avatar_tool_store 符号链接特权（WinError 1314，两侧同败）——环境/时序类，非代码回归。用户首轮全量 158F/61E 的 207 项 S40 簇已全数修复（107+145 分组复验全绿）。
+
+- 消费方普查（origin/main，`git grep issue_plugin_registrar|PluginVoiceInputRegistrar`）：命中仅 plugin_api.py:20（定义）、registry.py:27/102（实现）、test_voice_input_registry.py:17/238/240/277（测试）——**当前 main 上该 SPI 为 test-only，无运行时接线**。此事实供未来产品决策对话直接引用（若维护者确认废弃，可整体切除 4 文件面）。

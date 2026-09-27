@@ -14,6 +14,7 @@ from main_logic.voice_input import (
     VoiceInputHandleError,
     VoiceInputRegistry,
 )
+from main_logic.voice_input.plugin_api import PluginVoiceInputRegistrar
 from main_logic.voice_turn.contracts import (
     VoiceIngressToken,
     VoicePartialEvent,
@@ -229,6 +230,51 @@ async def test_consumer_capability_blocks_partial_delivery() -> None:
         is VoiceInputDispatchResult.REJECTED
     )
     game.on_partial.assert_not_awaited()
+
+
+async def test_fake_plugin_registers_through_namespaced_registrar() -> None:
+    registry = VoiceInputRegistry()
+    plugin = _consumer()
+    registrar = registry.issue_plugin_registrar("study-companion")
+
+    assert isinstance(registrar, PluginVoiceInputRegistrar)
+    registration = registrar.register_consumer(
+        plugin,
+        capabilities=VoiceInputConsumerCapabilities(
+            accepts_partial=True,
+            accepts_final=True,
+        ),
+    )
+    assert registration.handle.identity.namespace == "plugin"
+    assert registration.handle.identity.name == "study-companion"
+
+    registry.activate(registration.handle)
+    turn = _turn()
+    assert registry.begin_utterance(turn)
+    assert await registry.prepare_utterance(turn)
+    event = VoiceTranscriptEvent(
+        turn_token=turn,
+        provider="soniox",
+        text="note",
+    )
+    assert (
+        await registry.dispatch_final(event)
+        is VoiceInputDispatchResult.DELIVERED
+    )
+    plugin.on_final.assert_awaited_once_with(event)
+
+
+@pytest.mark.parametrize(
+    "plugin_id",
+    ("core_chat", "game", "", "spaces are invalid", "../escape"),
+)
+async def test_plugin_registrar_rejects_reserved_or_invalid_ids(
+    plugin_id: str,
+) -> None:
+    registry = VoiceInputRegistry()
+
+    with pytest.raises(ValueError, match="PLUGIN_ID_INVALID"):
+        registry.issue_plugin_registrar(plugin_id)
 
 
 async def test_unavailable_consumer_keeps_input_fail_closed() -> None:
