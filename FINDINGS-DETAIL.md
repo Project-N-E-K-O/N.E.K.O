@@ -54,3 +54,16 @@ Every edited line verified by `git diff` + targeted pytest (161 pass, 0 fail for
 - 分支（本工作区）：**9 failed / 25,724 passed / 177 skipped**（5:54）。origin/main 基线（同命令、worktree 对照）：**20 failed / 25,738 passed / 177 skipped**（14:15）。分支严格更绿；残余 9 = asr speaker_shadow 时序 flaky（基线全量同样红、隔离跑全绿）+ avatar_tool_store 符号链接特权（WinError 1314，两侧同败）——环境/时序类，非代码回归。用户首轮全量 158F/61E 的 207 项 S40 簇已全数修复（107+145 分组复验全绿）。
 
 - 消费方普查（origin/main，`git grep issue_plugin_registrar|PluginVoiceInputRegistrar`）：命中仅 plugin_api.py:20（定义）、registry.py:27/102（实现）、test_voice_input_registry.py:17/238/240/277（测试）——**当前 main 上该 SPI 为 test-only，无运行时接线**。此事实供未来产品决策对话直接引用（若维护者确认废弃，可整体切除 4 文件面）。
+
+---
+## 2026-09-27 (review round 2 / repair-4 + S5 retraction)
+### S5 RETRACTED — maintainer directive (dev team, via user)
+- steamworks/ 为**整体收录的第三方 Steamworks 专用库**（未进 PyPI，来自其他 repo），维护者立场：即使部分接口当前未用也**必须整体保留**——删掉会让未来 AI/运行时找不到接口面。S5 的"静态零消费"证据不适用于回调动态派发 + vendored 整体性原则。**已全量恢复至 origin/main（8 文件 +411 行净零）**，8/8 模块导入通过。教训入档：vendored 面的"死接口"判断必须先问收录意图。
+### Review-driven fixes (CodeRabbit/Greptile, PR #3182)
+- R2-1 [plugin/runs/websocket.py:5]：误删 `import time`（token 内联实现迁往 tokens 模块时的连带误删）→ 3 处 `time.time()` NameError（握手/心跳）。已恢复。
+- R2-2 [brain/browser_use_adapter.py:1007]：删除 `del self._agents[session_id]` 时截断了上一行，残留 `await self._` → AttributeError 覆盖原始异常并跳过遮罩清理。已恢复为 `await self._remove_overlay(browser_session)`（方法存续于 :714，同型调用 :942/:974）。
+- R2-3 [app/agent_server/channels/computer_use.py:294]：CUA 会话块删除后残留 `cu_session.session_id` 引用 → NameError 被 except 吞掉，初始 task_update 静默断流。已删除该行。
+- R2-4 [plugin/settings.py:952]：`validate_config` 被误加进公开快照白名单 tuple（`__all__` 原有条目未动）→ 查询响应会携带函数 repr。已移除。
+- R2-5 [app/monitor.py:367]：S33 把 origin 的日译条件分支错误坍缩为**无条件** turn-end 重播——但字幕已随每个 gemini_response 增量广播，每回合多一帧重复。已删除重播（保留 should_clear_next）。
+- R2-6 [launcher.py] **证伪不改**：runtime/bootstrap 模块级导入仅 stdlib（subprocess/socket/ctypes 等），重量级加载都在 start_launcher() 内部；origin 同样在模块级导入 bootstrap（:20）后才做辅助模式早退。`_tiktoken_cache` 为 bootstrap 模块级 `if IS_FROZEN:` 副作用，launcher.py:22 的导入即触发；origin 的显式再导入是冗余保险（noqa: F401）。
+- 工具盲区备注：仓库 ruff 配置未含 F821（显式 `--select F821` 才报 cu_session/time×3）；已建议维护者纳入，不在本 PR 改门禁。

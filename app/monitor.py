@@ -362,11 +362,8 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                         await broadcast_subtitle()
 
                 elif msg_type == "turn end":
-                    # 处理回合结束
-                    if current_subtitle:
-                        await broadcast_subtitle_text(current_subtitle)
-
-                    # 清空字幕区域，准备下一条
+                    # 处理回合结束：字幕已随每个 gemini_response 增量广播，
+                    # 此处只标记清空（origin 的日译分支随 S33 死码一并移除）。
                     global should_clear_next
                     should_clear_next = True
 

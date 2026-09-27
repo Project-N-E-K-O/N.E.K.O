@@ -1,5 +1,5 @@
 # N.E.K.O audit — resumption (D-boundary + proof)
-Status: Pre-PR reconciliation complete, full-gate verified (2026-09-27). Branch = origin/main + 1 commit; repairs 2+3 applied in worktree; full unit gate 9F/25,724P vs main-baseline 20F/25,738P (strictly greener; residual = asr timing flaky + Windows symlink privilege). Ready to commit + push pending user confirmation.
+Status: PR #3182 open (upstream), review round 2 applied in worktree (2026-09-27). Repairs 2+3 committed as 7a5e3d0; S5 retracted (steamworks = vendored 3rd-party lib per dev team, restored net-zero); CodeRabbit/Greptile P1/P2 fixes pending commit below.
 Authority: text proof = authoritative; visual only for confirmed nodes/edges (not drawn as runtime impact).
 
 ## Repair receipt (2026-09-27, E-boundary: index reconciliation + documented cuts)
@@ -15,7 +15,7 @@ Authority: text proof = authoritative; visual only for confirmed nodes/edges (no
 ## Execution receipt (D-boundary / Change phase, post-interrupt)
 - S5 (steamworks dead interfaces): 11 imports/instantiations removed, 2 methods (relaunch, run_forever) deleted, 3 dead interfaces dropped from _LINUX_OPTIONAL_WRAPPER_METHODS. Import smoke pass.
 - S12 (launcher.py facade): reduced to bootstrap + start_launcher (2034 bytes, 135 lines removed). Smoke pass.
-- S14 (shared_state dead fields): removed sync_shutdown_event, sync_process, websocket_locks, logger params + init_shared_state adapter builds. 2 test files (test_storage_location_router.py, test_cloudsave_autocloud_router.py, test_cloudsave_autocloud.py, test_cloudsave_lifecycle_flow.py) retargeted; 160 passed.
+- S14 (shared_state dead fields): removed sync_shutdown_event, sync_process, websocket_locks, logger params + init_shared_state adapter builds. 4 test files (test_storage_location_router.py, test_cloudsave_autocloud_router.py, test_cloudsave_autocloud.py, test_cloudsave_lifecycle_flow.py) retargeted; 160 passed. (S40 later completed the migration: 7 more files, 93 sites.)
 - R8 (tool_router aliases): removed 2 re-export aliases; retargeted test_cloudsave_autocloud_router.py import to main_logic.tool_calling canonicals. Pass.
 - S33 (monitor demo translate): removed is_japanese + translate_japanese_to_chinese + no-op branch; 20 lines removed.
 - S17/35/36 (dead files + docker docs): 11 dead files deleted; docker/env.template + README.MD + docker/README_Docker.md + docker/CONFIG_REFERENCE.md cleaned.

@@ -291,7 +291,6 @@ async def dispatch(
                         "type": ti.get("type"),
                         "start_time": ti.get("start_time"),
                         "params": ti.get("params", {}),
-                        "session_id": cu_session.session_id,
                     },
                 )
             except Exception as e:

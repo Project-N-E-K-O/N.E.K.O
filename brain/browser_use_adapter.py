@@ -1004,7 +1004,7 @@ class BrowserUseAdapter:
                     await self._close_browser()
                     continue
                 if browser_session:
-                    await self._
+                    await self._remove_overlay(browser_session)
                 if self._is_browser_disconnected_error(e):
                     logger.warning("[BrowserUse] Browser disconnected, task aborted: %s", e)
                     return {"success": False, "error": "Browser disconnected - browser window was closed"}
