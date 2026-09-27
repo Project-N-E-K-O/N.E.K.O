@@ -1175,6 +1175,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 
+            elif action == "capture_bridge_computer_use_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
             elif action == "capture_bridge_region_response":
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)

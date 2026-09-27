@@ -43,6 +43,7 @@ from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
 from main_logic.activity.system_signals import is_remote_backend_deployment
+from utils.desktop_capture import native_wayland_capture_available
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = get_module_logger(__name__, "Main")
@@ -327,6 +328,15 @@ async def get_agent_state():
         return r.json()
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=502)
+
+
+@router.get('/computer-use/native-capture-available')
+async def get_computer_use_native_capture_available():
+    """Let a local Wayland UI fall back when screen sharing cannot start."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    return {"success": True, "available": native_wayland_capture_available()}
 
 
 @router.post('/command')

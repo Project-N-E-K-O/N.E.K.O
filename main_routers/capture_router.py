@@ -90,6 +90,43 @@ async def capture_health(request: Request):
     return JSONResponse({"success": True, "available": True})
 
 
+@router.post("/computer-use")
+async def capture_computer_use_screen(request: Request):
+    """Local Agent bridge for one full-screen ComputerUse frame."""
+    if not _is_loopback_request(request):
+        return JSONResponse({"success": False, "error": "loopback_only"}, status_code=403)
+    # Browser pages cannot trigger background desktop capture through localhost.
+    if request.headers.get("origin") is not None or request.headers.get("referer") is not None:
+        return JSONResponse({"success": False, "error": "browser_request_denied"}, status_code=403)
+    if not capture_bridge.has_computer_use_capture_client():
+        return JSONResponse({"success": False, "error": "no_renderer"}, status_code=503)
+    capture_task = asyncio.create_task(capture_bridge.request_computer_use_screenshot())
+
+    async def watch_disconnect() -> None:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.05)
+
+    disconnect_task = asyncio.create_task(watch_disconnect())
+    try:
+        done, _ = await asyncio.wait(
+            (capture_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED,
+        )
+        if disconnect_task in done:
+            capture_task.cancel()
+            return JSONResponse({"success": False, "error": "client_disconnected"}, status_code=499)
+        result = await capture_task
+    except capture_bridge.CaptureBridgeError as exc:
+        message = str(exc)
+        status = 504 if "timeout" in message else 502
+        return JSONResponse({"success": False, "error": message}, status_code=status)
+    finally:
+        disconnect_task.cancel()
+        if not capture_task.done():
+            capture_task.cancel()
+        await asyncio.gather(capture_task, disconnect_task, return_exceptions=True)
+    return JSONResponse({"success": True, "image": result["image"]})
+
+
 @router.post("/screenshot")
 async def capture_screenshot(request: Request):
     if not _is_loopback_request(request):
