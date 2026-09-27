@@ -59,7 +59,7 @@ _LATIN_ALIAS_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _MIN_STOP_NAME_LEN = 2
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=256)
 def _latin_boundary_re(name: str) -> "re.Pattern[str]":
     pattern = (
         r"(?<![A-Za-z0-9_])"
