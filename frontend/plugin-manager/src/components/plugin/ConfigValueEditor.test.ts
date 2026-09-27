@@ -129,13 +129,19 @@ describe('literal configuration keys', () => {
       const { host, emitted } = mountEditor(overlay, baseline, true)
       await nextTick()
       const editor = host.querySelector(`[data-config-path="${table}"] .cve`)!
+      // Work only in the dialog this call opens: a rejected name leaves a dialog open,
+      // and a global query could then drive another editor's.
+      const opened = document.querySelectorAll('.el-dialog').length
       editor.querySelector<HTMLButtonElement>(':scope > .obj > .add button')!.click()
-      await vi.waitFor(() => expect(document.querySelector('.el-dialog input')).not.toBeNull())
-      const input = document.querySelector<HTMLInputElement>('.el-dialog input')!
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll('.el-dialog').length).toBeGreaterThan(opened)
+      )
+      const dialog = [...document.querySelectorAll<HTMLElement>('.el-dialog')].at(-1)!
+      const input = dialog.querySelector<HTMLInputElement>('input')!
       input.value = name
       input.dispatchEvent(new Event('input'))
       await nextTick()
-      const confirm = [...document.querySelectorAll<HTMLButtonElement>('.el-dialog button')].find(
+      const confirm = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(
         (b) => b.textContent?.trim() === 'common.confirm'
       )!
       confirm.click()
