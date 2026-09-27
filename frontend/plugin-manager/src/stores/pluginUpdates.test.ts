@@ -416,6 +416,48 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates.map((c) => `${c.currentVersion}->${c.latestVersion}`)).toEqual(['1.1.0->1.2.0'])
   })
 
+  it('trusts the plugin list again once it shows anything but the replaced version', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+    // Later reinstalled lower from the Market page; a 1.0.5 release appears.
+    setPlugins([plugin('alpha', marketSource('15', '0.9.0'))])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.0.5']]))
+    await store.check({ force: true })
+    // Regression guard: the remembered 1.1.0 used to mask the real 0.9.0 and
+    // hide this update for the rest of the session.
+    expect(store.candidates.map((c) => `${c.currentVersion}->${c.latestVersion}`)).toEqual(['0.9.0->1.0.5'])
+  })
+
+  it('keeps masking a still-stale list across chained upgrades', async () => {
+    vi.mocked(fetchMarketPluginVersions)
+      .mockResolvedValueOnce([release('1.1.0')])
+      .mockResolvedValueOnce([release('1.2.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValue(new Error('registry down'))
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.2.0']]))
+    await store.check({ force: true })
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+    // The list still says 1.0.0 after both failed syncs.
+    await store.check({ force: true })
+    expect(store.candidates).toEqual([])
+  })
+
   it('stays busy until the registry refresh after an upgrade has finished', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     mockFetch((url) => {

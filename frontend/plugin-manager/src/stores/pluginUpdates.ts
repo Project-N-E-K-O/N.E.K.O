@@ -139,11 +139,20 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
    *  installed-version snapshot instead of offering the same upgrade again. */
   const completedUpgrades = ref(0)
   let forceCheckQueued = false
-  /** pluginId → version an upgrade from this popup just installed. The registry
-   *  sync that follows can fail before the plugin list is refetched, leaving the
-   *  pre-upgrade version in it; checks treat this as the installed floor until
-   *  the list catches up, so the release is not offered again. */
-  const installedThisSession = new Map<string, string>()
+  /** pluginId → the version an upgrade from this popup replaced and the one it
+   *  installed. The registry sync that follows can fail before the plugin list
+   *  is refetched, leaving the replaced version in it. Only while the list still
+   *  shows exactly that version is it treated as stale; any other value (caught
+   *  up, reinstalled lower from the Market page, ...) is the truth again. */
+  const installedThisSession = new Map<string, { from: string; to: string }>()
+
+  function effectiveVersion(target: MarketUpdateTarget): string {
+    const record = installedThisSession.get(target.pluginId)
+    if (!record) return target.currentVersion
+    if (target.currentVersion === record.from) return record.to
+    installedThisSession.delete(target.pluginId)
+    return target.currentVersion
+  }
 
   const updating = computed(
     () => candidates.value.some((candidate) => candidate.status === 'updating'),
@@ -224,15 +233,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       // builtin override must not look auto-upgradable again on the next boot.
       const previous = new Map(candidates.value.map((entry) => [entry.pluginId, entry]))
       for (const listed of targets) {
-        const floor = installedThisSession.get(listed.pluginId)
-        let target = listed
-        if (floor) {
-          if (hasNewerVersion(listed.currentVersion, floor)) {
-            target = { ...listed, currentVersion: floor }
-          } else {
-            installedThisSession.delete(listed.pluginId) // the list caught up
-          }
-        }
+        const target = { ...listed, currentVersion: effectiveVersion(listed) }
         const latest = marketVersions.latest(target.marketId, target.channel)
         if (!latest) {
           unresolvedCount += 1
@@ -301,9 +302,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     const target = collectMarketUpdateTargets(usePluginStore().pluginsWithStatus)
       .find((entry) => entry.pluginId === candidate.pluginId)
     if (!target || target.marketId !== candidate.marketId) return false
-    const floor = installedThisSession.get(target.pluginId)
-    const current = floor && hasNewerVersion(target.currentVersion, floor) ? floor : target.currentVersion
-    return hasNewerVersion(current, candidate.latestVersion)
+    return hasNewerVersion(effectiveVersion(target), candidate.latestVersion)
   }
 
   async function finishCandidate(candidate: MarketUpdateCandidate): Promise<void> {
@@ -315,7 +314,12 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     // Sync before dropping the row: while it is still `updating` the popup stays
     // busy, so a refresh cannot snapshot the pre-upgrade plugin list and offer
     // the version that was just installed again.
-    installedThisSession.set(candidate.pluginId, candidate.latestVersion)
+    // Chained upgrades on a still-stale list keep the version the list shows.
+    const previous = installedThisSession.get(candidate.pluginId)
+    installedThisSession.set(candidate.pluginId, {
+      from: previous?.to === candidate.currentVersion ? previous.from : candidate.currentVersion,
+      to: candidate.latestVersion,
+    })
     await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {
       // The backend upgrade itself succeeded, so this stays a success; the
       // floor recorded above keeps later checks from re-offering the release.
