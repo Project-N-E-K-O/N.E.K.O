@@ -214,7 +214,19 @@
         <p class="data-hint">{{ t('plugins.configUi.reviewHint') }}</p>
         <p v-if="!changes.length" class="no-changes">{{ t('plugins.configUi.noChanges') }}</p>
         <div v-for="change in changes" :key="JSON.stringify(change.path)" class="change-row">
-          <code>{{ change.path.join('.') }}</code>
+          <div class="change-path">
+            <code>{{ change.path.join('.') }}</code>
+            <!-- Every change is undoable here, including a deleted field whose row the
+                 form no longer shows. -->
+            <el-button
+              link
+              size="small"
+              :title="t('plugins.configUi.undoField')"
+              :aria-label="t('plugins.configUi.undoField')"
+              @click="undoField(change.path)"
+              >{{ t('plugins.configUi.undoShort') }}</el-button
+            >
+          </div>
           <div>
             <small>{{ t('plugins.configUi.beforeSave') }}</small>
             <pre>{{ configValueText(configValueAt(originalPreview, change.path)) }}</pre>
@@ -698,6 +710,11 @@ watch([() => props.pluginId, selected], () => {
   operationError.value = null
   applicationNotice.value = ''
 })
+// A new unapplied write (such as activating the selected profile) outdates any earlier
+// completion notice, which would otherwise mask the pending-apply message.
+watch(pendingApplication, (pending, wasPending) => {
+  if (pending && !wasPending) applicationNotice.value = ''
+})
 watch(
   () => props.pluginId,
   () => {
@@ -1050,6 +1067,13 @@ onBeforeUnmount(() => {
   padding: 12px 0;
   border-bottom: 1px solid var(--el-border-color-extra-light);
 }
+.change-path {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
 .change-row code {
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -1122,7 +1146,7 @@ onBeforeUnmount(() => {
   .change-row {
     grid-template-columns: 1fr 1fr;
   }
-  .change-row code {
+  .change-path {
     grid-column: 1 / -1;
   }
 }

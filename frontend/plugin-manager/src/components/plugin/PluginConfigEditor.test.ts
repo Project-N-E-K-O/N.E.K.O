@@ -11,10 +11,13 @@ import * as configApi from '@/api/config'
 import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ mergeLocaleMessage: vi.fn(), t: (key: string) => key }) }))
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({ mergeLocaleMessage: vi.fn(), t: (key: string) => key }),
+}))
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
-vi.mock('@/stores/plugin', () => ({ usePluginStore: () => ({ reload: vi.fn() }) }))
+const storeReload = vi.hoisted(() => vi.fn())
+vi.mock('@/stores/plugin', () => ({ usePluginStore: () => ({ reload: storeReload }) }))
 vi.mock('@/api/config', () => ({
   getPluginEffectiveBaseConfig: async () => ({
     config: {
@@ -363,6 +366,44 @@ describe('saved profile hot updates', () => {
   })
 })
 
+describe('change review', () => {
+  it('undoes a deleted profile-only field whose row the form no longer shows', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: { search: { extra: 'x' } },
+    })
+    const { host, unmount } = await mountEditor()
+    const row = () => host.querySelector<HTMLElement>('[data-config-path="search.extra"]')
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    const button = (root: ParentNode, label: string) =>
+      [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === label
+      )!
+
+    button(row()!, 'common.delete').click()
+    await vi.waitFor(() => expect(row()).toBeNull())
+
+    button(host, 'plugins.configUi.reviewChanges').click()
+    await vi.waitFor(() => expect(document.querySelector('.change-path button')).not.toBeNull())
+    document.querySelector<HTMLButtonElement>('.change-path button')!.click()
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="search.extra"]')!.value).toBe(
+      'x'
+    )
+    unmount()
+  })
+})
+
 describe('virtual default materialization', () => {
   it('persists the current draft instead of writing an empty profile', async () => {
     const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
@@ -432,6 +473,30 @@ describe('pending state synchronisation', () => {
     // The store clears the flag itself once the host matches the saved configuration, and
     // only while no newer write claimed it. This harness stubs the store out, so a
     // surviving notice proves the editor did not clear the flag behind its back.
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+    unmount()
+  })
+
+  it('drops the reload-complete notice once a new write is pending', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    // The store clears the flag when the reload applied the saved configuration.
+    storeReload.mockImplementationOnce(async () => setPendingReload('test', false))
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )!
+    reload.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.reloadComplete'
+      )
+    )
+
+    // Activating the selected profile flags it again without changing the selection.
+    setPendingReload('test', true)
+    await nextTick()
     expect(host.querySelector('.apply-status')?.textContent).toContain(
       'plugins.configUi.pendingApply'
     )
