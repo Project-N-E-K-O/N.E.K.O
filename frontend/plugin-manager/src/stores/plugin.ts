@@ -124,22 +124,26 @@ export const usePluginStore = defineStore('plugin', () => {
   async function fetchPluginDetail(pluginId: string, force = false) {
     const existing = pendingFetchDetails.get(pluginId)
     if (existing && !force) return existing
+    const requestLocale = getLocale()
     const seq = (fetchDetailSeq.get(pluginId) || 0) + 1
     fetchDetailSeq.set(pluginId, seq)
     let request!: Promise<void>
+    // A locale switch or a summary that dropped this plugin bumps the fence.
+    // The late response must not republish the detail it fetched.
+    const stillCurrent = () => fetchDetailSeq.get(pluginId) === seq && getLocale() === requestLocale
     request = (async () => {
       try {
-        const detail = await getPlugin(pluginId, getLocale())
-        if (fetchDetailSeq.get(pluginId) !== seq) return
+        const detail = await getPlugin(pluginId, requestLocale)
+        if (!stillCurrent()) return
         pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
       } catch (error: any) {
         const status = error?.response?.status
         if (status !== 404 && status !== 405) throw error
         // Compatibility with older plugin servers: the old full list endpoint
         // remains a safe fallback when the single-plugin route is unavailable.
-        const response = await getPlugins(getLocale())
+        const response = await getPlugins(requestLocale)
         const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
-        if (fetchDetailSeq.get(pluginId) !== seq) return
+        if (!stillCurrent()) return
         if (detail) {
           pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
         } else if (pluginId in pluginDetails.value) {
@@ -163,13 +167,31 @@ export const usePluginStore = defineStore('plugin', () => {
       fetchPluginDetail(pluginId).catch(err => console.warn(`Failed to revalidate plugin ${pluginId}:`, err))
       return cached
     }
-    await fetchPluginDetail(pluginId)
+    let current = fetchPluginDetail(pluginId)
+    await current
+    // A locale refresh may have replaced the request while this one was in flight.
+    for (;;) {
+      const pending = pendingFetchDetails.get(pluginId)
+      if (!pending || pending === current) break
+      current = pending
+      await current
+    }
     return pluginDetails.value[pluginId] || null
   }
 
+  function invalidateDetail(pluginId: string) {
+    fetchDetailSeq.set(pluginId, (fetchDetailSeq.get(pluginId) || 0) + 1)
+  }
+
   function pruneDetails(liveIds: ReadonlySet<string>) {
-    const ids = Object.keys(pluginDetails.value)
-    if (ids.every(id => liveIds.has(id))) return
+    const ids = new Set([...Object.keys(pluginDetails.value), ...pendingFetchDetails.keys()])
+    let dropped = false
+    for (const id of ids) {
+      if (liveIds.has(id)) continue
+      invalidateDetail(id)
+      dropped = true
+    }
+    if (!dropped) return
     pluginDetails.value = Object.fromEntries(
       Object.entries(pluginDetails.value).filter(([id]) => liveIds.has(id)),
     )
@@ -184,7 +206,13 @@ export const usePluginStore = defineStore('plugin', () => {
     if (pluginSummarySnapshotLoaded.value) {
       tasks.push(fetchPluginSummaries(true, options))
     }
-    for (const id of Object.keys(pluginDetails.value)) {
+    // Include requests that have not landed yet. A locale switch otherwise
+    // leaves that response free to publish the previous language.
+    const detailIds = new Set([
+      ...Object.keys(pluginDetails.value),
+      ...pendingFetchDetails.keys(),
+    ])
+    for (const id of detailIds) {
       tasks.push(fetchPluginDetail(id, true))
     }
     if (tasks.length === 0) {

@@ -229,6 +229,39 @@ describe('plugin store registry refresh policy', () => {
     expect(Object.keys(store.pluginDetails)).toEqual(['kept'])
   })
 
+  it('does not restore a plugin removed by a summary when its detail returns later', async () => {
+    let resolveRemoved!: (value: PluginMeta) => void
+    vi.mocked(getPlugin).mockImplementation((id: string) => {
+      if (id === 'removed') return new Promise(resolve => { resolveRemoved = resolve })
+      return Promise.resolve(plugin(id))
+    })
+    const store = usePluginStore()
+    const pending = store.fetchPluginDetail('removed')
+    vi.mocked(getPluginSummaries).mockResolvedValueOnce({ plugins: [plugin('kept')], message: '' })
+
+    await store.fetchPluginSummaries(true)
+    resolveRemoved(plugin('removed', { name: 'stale' }))
+    await pending
+
+    expect(store.pluginDetails.removed).toBeUndefined()
+    expect(store.getPluginById('removed')).toBeNull()
+  })
+
+  it('replaces an in-flight detail when the locale changes before it returns', async () => {
+    let resolveOld!: (value: PluginMeta) => void
+    vi.mocked(getPlugin).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+    const store = usePluginStore()
+    const old = store.fetchPluginDetail('demo')
+    locale.value = 'en-US'
+
+    const refresh = store.refreshLoadedPluginData()
+    resolveOld(plugin('demo', { name: '旧语言' }))
+    await Promise.all([old, refresh])
+
+    expect(store.getPluginById('demo')?.name).toBe('demo')
+    expect(getPlugin).toHaveBeenCalledWith('demo', 'en-US')
+  })
+
   it('serves a cached detail immediately and revalidates it in the background', async () => {
     const store = usePluginStore()
     await store.fetchPluginDetail('demo')
