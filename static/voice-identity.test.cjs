@@ -442,7 +442,7 @@ function createHarness({
                     const requestError = Array.isArray(mediaError)
                         ? mediaError[mediaRequests - 1] : mediaError;
                     if (requestError) throw requestError;
-                    const track = { stopped: false, stop() { this.stopped = true; } };
+                    const track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
                     const stream = { getTracks: () => [track], track };
                     mediaStreams.push(stream);
                     return stream;
@@ -592,6 +592,7 @@ test('one click records three reference segments and one five-second verificatio
     assert.deepEqual(harness.workletModules, ['/static/audio-processor.js']);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
+    assert.equal(harness.elements.get('voice-identity-enrollment').hidden, false);
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
 });
 
@@ -604,6 +605,7 @@ test('accepted segment waits for explicit next-segment action', async () => {
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
     assert.equal(harness.elements.get('voice-identity-voice-state').textContent, 'Waiting for speech');
     assert.equal(harness.mediaRequests, 1);
+    assert.equal(harness.mediaStreams[0].track.enabled, false);
     await harness.emit('voice-identity-next');
     await flush(4);
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 2);

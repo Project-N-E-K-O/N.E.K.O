@@ -367,7 +367,7 @@
             }
             const unavailableKey = EFFECTIVE_REASON_KEYS[state.effectiveReason]
                 || 'voiceIdentity.reasonRuntimeDegraded';
-            return translate(unavailableKey, '声纹暂时不可用，独立 ASR 将正常放行');
+            return translate(unavailableKey, '声纹暂时不可用，激活未就绪时不会上传待机音频');
         }
         if (state.effectiveEnabled) {
             return translate('voiceIdentity.profileReady', 'Owner 声纹已保存并启用');
@@ -377,7 +377,7 @@
         }
         const key = EFFECTIVE_REASON_KEYS[state.effectiveReason]
             || 'voiceIdentity.reasonRuntimeDegraded';
-        return translate(key, '声纹暂时不可用，独立 ASR 将正常放行');
+        return translate(key, '声纹暂时不可用，激活未就绪时不会上传待机音频');
     }
 
     function enrollmentCompleteMessage() {
@@ -400,7 +400,7 @@
         const hasMessage = Boolean(
             elements.message
             && elements.message.textContent
-            && elements.message.classList.contains('error')
+            && elements.message.textContent.trim()
         );
         const enrollmentActive = !state.profileAvailable
             || state.busy || state.cancelPending || Boolean(state.enrollmentId);
@@ -528,6 +528,10 @@
                 if (!selectedMicrophoneId || !['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error && error.name)) throw error;
                 state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
             }
+        } else {
+            state.mediaStream.getTracks().forEach(function (track) {
+                track.enabled = true;
+            });
         }
         if (!state.audioContext) {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -717,6 +721,7 @@
             source.disconnect();
             mute.disconnect();
             elements.timer.textContent = '';
+            pauseMicrophone();
         }
 
     }
@@ -736,6 +741,13 @@
             state.audioContext = null;
             Promise.resolve(context.close()).catch(function () {});
         }
+    }
+
+    function pauseMicrophone() {
+        if (!state.mediaStream) return;
+        state.mediaStream.getTracks().forEach(function (track) {
+            track.enabled = false;
+        });
     }
 
     function createProfileId() {
