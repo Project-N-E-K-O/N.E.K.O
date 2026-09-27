@@ -8,8 +8,10 @@ const root = path.resolve(__dirname, '../..');
 const frontendRequire = createRequire(path.join(root, 'frontend/react-neko-chat/package.json'));
 const { JSDOM } = frontendRequire('jsdom');
 // Allows the same behavioral cases to run against the unmodified checkout.
-const source = fs.readFileSync(process.env.MUSIC_UI_SOURCE_PATH
-    || path.join(root, 'static/jukebox/music_ui.js'), 'utf8');
+const source = process.env.MUSIC_UI_REVISION
+    ? require('node:child_process').execFileSync('git', ['show', `${process.env.MUSIC_UI_REVISION}:static/jukebox/music_ui.js`], {cwd:root, encoding:'utf8'})
+    : fs.readFileSync(process.env.MUSIC_UI_SOURCE_PATH
+        || path.join(root, 'static/jukebox/music_ui.js'), 'utf8');
 
 async function flush() {
     for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -59,7 +61,9 @@ function createSurface(t, options = {}) {
                 sent.push(data);
                 for (const peer of options.channelHub) {
                     if (peer !== this && peer.name === this.name && peer.onmessage) {
-                        peer.onmessage({data:JSON.parse(JSON.stringify(data))});
+                        const deliver = () => peer.onmessage && peer.onmessage({data:JSON.parse(JSON.stringify(data))});
+                        if (options.asyncTransport) w.queueMicrotask(deliver);
+                        else deliver();
                     }
                 }
             }
@@ -73,6 +77,7 @@ function createSurface(t, options = {}) {
     class Player {
         constructor(config) {
             this.container = config.container;
+            this.autoplayRequested = config.autoplay;
             this.handlers = new Map();
             this.destroyed = false;
             this.audio = new w.EventTarget();
@@ -123,15 +128,21 @@ function createSurface(t, options = {}) {
     }
     w.APlayer = Player;
     let completeInit;
-    if (options.deferInit) {
+    if (options.deferInit || options.factoryGlobals) {
         w.initializeAPlayer = (config) => new Promise(resolve => {
-            completeInit = () => {
+            const finishInit = () => {
+                if (options.honorCancellation && config.isCurrentRequest && !config.isCurrentRequest()) {
+                    resolve(null);
+                    return;
+                }
                 const player = new Player(config);
                 // The real factory installs global controls before resolving.
                 w.aplayer = player;
                 w.aplayerControls = { play: () => player.play() };
                 resolve(player);
             };
+            if (options.deferInit) completeInit = finishInit;
+            else finishInit();
         });
         w.destroyAPlayer = () => {
             if (!w.aplayer) return true;
@@ -140,7 +151,7 @@ function createSurface(t, options = {}) {
         };
     }
     w.eval(source);
-    t.after(() => { w.dispatchEvent(new w.Event('beforeunload')); timers.clear(); w.close(); });
+    t.after(() => { w.dispatchEvent(new w.PageTransitionEvent('pagehide')); timers.clear(); w.close(); });
     return {
         w, sent, players, errors, timers, trackedMaps,
         setRelay(fn) { relay = fn; },
@@ -148,8 +159,8 @@ function createSurface(t, options = {}) {
         receive(event) { w.dispatchEvent(new w.CustomEvent('neko:electron-music-bridge', { detail: event })); },
         bar() { return w.document.getElementById('music-player-bar'); },
         clickClose() { assert.ok(this.bar(), 'bar exists before close'); this.bar().querySelector('.music-bar-close').click(); },
-        async start() {
-            const promise = w.sendMusicMessageDetailed({name:'test', artist:'test', url:'https://music.163.com/test.mp3'}, false);
+        async start(autoplay = false) {
+            const promise = w.sendMusicMessageDetailed({name:'test', artist:'test', url:'https://music.163.com/test.mp3'}, autoplay);
             await flush();
             return { promise };
         },
@@ -171,9 +182,13 @@ function createSurface(t, options = {}) {
 
 function pair(t, options = {}) {
     const owner = createSurface(t, options);
-    const follower = createSurface(t, {channelHub:options.channelHub});
-    owner.setRelay(event => follower.receive(event));
-    follower.setRelay(event => owner.receive(event));
+    const follower = createSurface(t, {channelHub:options.channelHub, asyncTransport:options.asyncTransport});
+    const deliver = (surface, event) => {
+        if (options.asyncTransport) surface.w.queueMicrotask(() => surface.receive(event));
+        else surface.receive(event);
+    };
+    owner.setRelay(event => deliver(follower, event));
+    follower.setRelay(event => deliver(owner, event));
     return { owner, follower };
 }
 
@@ -418,7 +433,7 @@ test('closed playback tracking is bounded, expires, and releases on unload', asy
     s.receive(remoteEvent('bar_state', {...endedState, playbackId:'new-playback'}));
     for (const map of populated) assert.equal(map.size, 0, 'expired identities release on the next event');
     s.receive(remoteEvent('bar_destroyed', {playbackId:'new-playback', fullTeardown:true}));
-    s.w.dispatchEvent(new s.w.Event('beforeunload'));
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide'));
     for (const map of populated) assert.equal(map.size, 0, 'unload releases retained identities');
     assert.equal(s.bar(), null);
 });
@@ -452,4 +467,222 @@ test('a state update during mount replacement does not create duplicate mirror b
     s.clickClose();
     await s.advance(400);
     assert.equal(s.bar(), null);
+});
+
+for (const initializing of [false, true]) {
+    test(`local bar relocates when an attribute mutation precedes removal (initializing=${initializing})`, async t => {
+        const s = createSurface(t, {deferInit:initializing});
+        const {promise} = await s.start();
+        if (!initializing) await promise;
+        await s.advance(20);
+        const bar = s.bar();
+        const mount = s.w.document.getElementById('music-player-mount');
+        mount.classList.add('changing-layout');
+        const replacement = mount.cloneNode(false);
+        mount.replaceWith(replacement);
+        await s.advance(40);
+        assert.equal(s.bar(), bar);
+        assert.equal(bar.parentNode, replacement);
+        s.clickClose();
+        if (initializing) { s.completeInit(); await promise; }
+        await s.advance(400);
+        assert.equal(s.bar(), null);
+    });
+}
+
+test('detaching an active local bar does not lose music occupancy', async t => {
+    const s = createSurface(t);
+    await (await s.start()).promise;
+    s.players[0].play();
+    s.w.document.getElementById('music-player-mount').remove();
+    assert.equal(s.w.isMusicOccupied(), true);
+    s.w.destroyMusicPlayer(true, true, true);
+    assert.equal(s.w.isMusicOccupied(), false);
+});
+
+test('requesting the same song while detached preserves its player', async t => {
+    const s = createSurface(t);
+    await (await s.start()).promise;
+    s.players[0].play();
+    s.w.document.getElementById('music-player-mount').remove();
+    await (await s.start()).promise;
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].destroyed, false);
+});
+
+test('non-full teardown releases factory global controls', async t => {
+    const s = createSurface(t, {factoryGlobals:true});
+    await (await s.start()).promise;
+    assert.ok(s.w.aplayerControls);
+    s.w.destroyMusicPlayer(true, false, true);
+    assert.equal(s.w.aplayerControls, undefined);
+    assert.equal(s.w.aplayer, null);
+    assert.equal(s.players[0].destroyed, true);
+});
+
+test('canceled deferred autoplay is never delegated to the constructor', async t => {
+    const s = createSurface(t, {deferInit:true});
+    const {promise} = await s.start(true);
+    s.clickClose();
+    s.completeInit();
+    await promise;
+    assert.equal(s.players[0].autoplayRequested, false);
+    assert.equal(s.players[0].destroyed, true);
+});
+
+test('canceling beforeunload retains dismissed playback identities', async t => {
+    const s = createSurface(t);
+    s.receive(remoteEvent('bar_state', endedState));
+    s.clickClose();
+    await s.advance(400);
+    s.w.addEventListener('beforeunload', event => event.preventDefault());
+    const event = new s.w.Event('beforeunload', {cancelable:true});
+    assert.equal(s.w.dispatchEvent(event), false);
+    s.receive(remoteEvent('bar_state', endedState));
+    await s.advance(40);
+    assert.equal(s.bar(), null);
+});
+
+test('real APlayer factory checks cancellation after library loading and before construction', async t => {
+    const {pathToFileURL} = require('node:url');
+    const s = createSurface(t);
+    const saved = Object.fromEntries(['window', 'document', 'APlayer'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    t.after(() => {
+        for (const [key, descriptor] of Object.entries(saved)) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else delete globalThis[key];
+        }
+    });
+    globalThis.window = s.w;
+    globalThis.document = s.w.document;
+    delete globalThis.APlayer;
+    const factory = await import(pathToFileURL(path.join(root, 'static/js/APlayer/main.js')).href);
+    let current = true;
+    let constructed = 0;
+    const pending = factory.initializeAPlayer({isCurrentRequest:() => current, autoplay:true});
+    current = false;
+    globalThis.APlayer = class { constructor() { constructed++; throw new Error('canceled request reached constructor'); } };
+    s.w.document.querySelector('script[src*="APlayer.min.js"]').onload();
+    assert.equal(await pending, null);
+    assert.equal(constructed, 0);
+    assert.equal(s.w.aplayerControls, undefined);
+});
+
+test('caller supplies the factory cancellation check and treats null as superseded', async t => {
+    const s = createSurface(t, {deferInit:true, honorCancellation:true});
+    const {promise} = await s.start(true);
+    s.clickClose();
+    s.completeInit();
+    const result = await promise;
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'superseded');
+    assert.equal(s.players.length, 0);
+});
+
+test('valid autoplay is scheduled after initialization and can still be canceled', async t => {
+    const s = createSurface(t);
+    await (await s.start(true)).promise;
+    assert.equal(s.players[0].autoplayRequested, false);
+    await s.advance(100);
+    assert.equal(s.players[0].audio.paused, false);
+    s.clickClose();
+    assert.equal(s.players[0].audio.paused, true);
+});
+
+for (const transport of ['IPC', 'BroadcastChannel']) {
+    const options = () => ({asyncTransport:true, ...(transport === 'BroadcastChannel' ? {channelHub:new Set()} : {})});
+    test(`asynchronous ${transport} close cancels pending initialization`, async t => {
+        const {owner, follower} = pair(t, {...options(), deferInit:true, honorCancellation:true});
+        const {promise} = await owner.start(true);
+        follower.clickClose();
+        await flush();
+        owner.completeInit();
+        assert.equal((await promise).ok, false);
+        assert.equal(owner.players.length, 0);
+        await owner.advance(400);
+        await follower.advance(400);
+        assert.equal(owner.bar(), null);
+        assert.equal(follower.bar(), null);
+    });
+
+    test(`canceled beforeunload and BFCache preserve ${transport} control`, async t => {
+        const {owner, follower} = pair(t, options());
+        await (await owner.start()).promise;
+        for (const s of [owner, follower]) {
+            s.w.addEventListener('beforeunload', event => event.preventDefault());
+            s.w.dispatchEvent(new s.w.Event('beforeunload', {cancelable:true}));
+            s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide', {persisted:true}));
+            s.w.dispatchEvent(new s.w.PageTransitionEvent('pageshow', {persisted:true}));
+        }
+        await flush();
+        assert.ok(follower.bar());
+        follower.clickClose();
+        await owner.advance(400);
+        await follower.advance(400);
+        assert.equal(owner.players[0].destroyed, true);
+        assert.equal(owner.bar(), null);
+        assert.equal(follower.bar(), null);
+    });
+}
+
+test('actual pagehide releases channels', async t => {
+    const hub = new Set();
+    const s = createSurface(t, {channelHub:hub});
+    s.receive(remoteEvent('bar_state', endedState));
+    assert.ok(hub.size > 0);
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide'));
+    assert.equal(hub.size, 0);
+});
+
+test('BFCache pagehide retains terminal identities until actual departure', async t => {
+    const s = createSurface(t);
+    s.receive(remoteEvent('bar_state', endedState));
+    s.clickClose();
+    await s.advance(400);
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide', {persisted:true}));
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pageshow', {persisted:true}));
+    s.receive(remoteEvent('bar_state', endedState));
+    assert.equal(s.bar(), null);
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide'));
+    for (const map of s.trackedMaps) assert.equal(map.size, 0);
+});
+
+test('non-full teardown releases the real keyboard shortcut before the next player', async t => {
+    const {pathToFileURL} = require('node:url');
+    const s = createSurface(t, {factoryGlobals:true});
+    const initializeFromHarness = s.w.initializeAPlayer;
+    const saved = Object.fromEntries(['window', 'document', 'Element'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    globalThis.window = s.w;
+    globalThis.document = s.w.document;
+    globalThis.Element = s.w.Element;
+    const listeners = await import(pathToFileURL(path.join(root, 'static/js/APlayer/event_listeners.js')).href);
+    const factory = await import(pathToFileURL(path.join(root, 'static/js/APlayer/main.js')).href);
+    s.w.initializeAPlayer = initializeFromHarness;
+    t.after(() => {
+        listeners.removeKeyboardShortcuts();
+        for (const [key, descriptor] of Object.entries(saved)) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else delete globalThis[key];
+        }
+    });
+    s.w.destroyAPlayer = factory.destroyAPlayer;
+    await (await s.start()).promise;
+    const previous = s.players[0];
+    let oldCalls = 0;
+    previous.toggle = () => oldCalls++;
+    listeners.setupKeyboardShortcuts(previous);
+    const pressSpace = () => s.w.document.body.dispatchEvent(new s.w.KeyboardEvent('keydown', {code:'Space', bubbles:true}));
+    pressSpace();
+    assert.equal(oldCalls, 1);
+    s.w.destroyMusicPlayer(true, false, true);
+    pressSpace();
+    assert.equal(oldCalls, 1, 'destroyed player must no longer receive shortcuts');
+    await (await s.start()).promise;
+    let newCalls = 0;
+    const next = s.players.at(-1);
+    next.toggle = () => newCalls++;
+    listeners.setupKeyboardShortcuts(next);
+    pressSpace();
+    assert.equal(oldCalls, 1);
+    assert.equal(newCalls, 1, 'replacement player must receive the shortcut');
 });
