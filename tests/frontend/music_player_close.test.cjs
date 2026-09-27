@@ -129,8 +129,9 @@ function createSurface(t, options = {}) {
     w.APlayer = Player;
     let completeInit;
     if (options.deferInit || options.factoryGlobals) {
-        w.initializeAPlayer = (config) => new Promise(resolve => {
+        w.initializeAPlayer = (config) => new Promise((resolve, reject) => {
             const finishInit = () => {
+                if (options.rejectInit) { reject(new Error('injected factory rejection')); return; }
                 if (options.honorCancellation && config.isCurrentRequest && !config.isCurrentRequest()) {
                     resolve(null);
                     return;
@@ -195,6 +196,78 @@ function pair(t, options = {}) {
 const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finished-1', paused:true,
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
+
+for (const stage of ['late player', 'canceled factory', 'rejected factory', 'media wait']) {
+    test(`rejected replacement removes superseded bar after ${stage}`, async t => {
+        const s = createSurface(t, {
+            deferInit: stage !== 'media wait', mediaPending: stage === 'media wait',
+            honorCancellation: stage === 'canceled factory', rejectInit: stage === 'rejected factory'
+        });
+        const {promise} = await s.start();
+        const oldBar = s.bar();
+        const mount = s.w.document.getElementById('music-player-mount');
+        mount.remove();
+        await flush();
+        const replacement = s.w.sendMusicMessageDetailed({name:'rejected', url:'https://not-allowed.invalid/song.mp3'}, false);
+        await s.advance(500);
+        assert.equal((await replacement).reason, 'unsafe_url');
+        if (stage !== 'media wait') s.completeInit();
+        await flush();
+        assert.equal((await promise).reason, 'superseded');
+        s.w.document.querySelector('.app-shell').appendChild(mount);
+        await s.advance(400);
+        assert.equal(s.bar(), null, 'superseded bar must not be restored');
+        assert.equal(oldBar.isConnected, false);
+        assert.equal(s.w.getMusicPlayerInstance(), null);
+        assert.equal(s.w.isMusicOccupied(), false);
+        assert.ok(s.players.every(player => player.destroyed), 'canceled media must be released');
+    });
+}
+
+test('superseded cleanup preserves a queued valid replacement request', async t => {
+    const s = createSurface(t, {deferInit:true, honorCancellation:true});
+    const {promise} = await s.start();
+    const replacement = s.w.sendMusicMessageDetailed({name:'replacement', url:'https://music.163.com/next.mp3'}, false);
+    await flush();
+    s.completeInit();
+    await flush();
+    assert.equal((await promise).reason, 'superseded');
+    s.completeInit();
+    await flush();
+    assert.equal((await replacement).ok, true);
+    assert.equal(s.bar().querySelector('.music-bar-title-seg-primary').textContent, 'replacement');
+    assert.equal(s.w.getMusicPlayerInstance().destroyed, false);
+});
+
+for (const transport of ['IPC', 'BroadcastChannel']) {
+    for (const pending of [true, false]) {
+        test(`${transport} close requires current playback identity while ${pending ? 'pending' : 'ready'}`, async t => {
+            const s = createSurface(t, {deferInit:pending, asyncTransport:true,
+                ...(transport === 'BroadcastChannel' ? {channelHub:new Set()} : {})});
+            const {promise} = await s.start();
+            if (!pending) await promise;
+            const state = s.sent.find(event => event.type === (transport === 'IPC' ? 'bar_state' : 'state'));
+            const playbackId = (state.payload || state).playbackId;
+            assert.ok(playbackId);
+            const sender = transport === 'BroadcastChannel' ? new s.w.BroadcastChannel('neko_music_bar') : null;
+            if (sender) t.after(() => sender.close());
+            const send = async (identity, ctrlId) => {
+                const payload = {target:state.sender, action:'close', ctrlId, ...identity};
+                if (sender) sender.postMessage({type:'ctrl', sender:'test-follower', ...payload});
+                else s.receive({type:'bar_ctrl', sender:'test-follower', payload});
+                await s.advance(400);
+            };
+            await send({}, 'missing');
+            assert.ok(s.bar(), 'identity-less close must be ignored');
+            await send({playbackId:'previous-playback'}, 'stale');
+            assert.ok(s.bar(), 'stale identity must be ignored');
+            await send({playbackId}, 'current');
+            assert.equal(s.bar(), null, 'matching identity must still close');
+            if (pending) { s.completeInit(); await flush(); await promise; }
+            assert.equal(s.w.getMusicPlayerInstance(), null);
+        });
+    }
+}
 
 test('local close cancels a deferred initialization before its player can start', async t => {
     const s = createSurface(t, {deferInit:true});

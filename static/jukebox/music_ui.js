@@ -1542,6 +1542,9 @@
     function applyBarCtrl(payload) {
         if (!isBarOwner() && !(payload.action === 'close' && currentMusicPlaybackId)) return false;
         if (payload.target !== MUSIC_COORD_SENDER_ID) return false;
+        // A destructive control without an identity cannot be assigned safely
+        // to this playback. Legacy non-destructive controls remain supported.
+        if (payload.action === 'close' && !payload.playbackId) return false;
         if (payload.playbackId && payload.playbackId !== getCurrentMusicPlaybackId()) return false;
         if (shouldSkipProcessedBarCtrl(payload.ctrlId)) return false;
         handleRemoteBarCtrl(payload.action, payload.value);
@@ -3144,6 +3147,16 @@
             destroyMusicPlayer(true, false, true);
             showErrorToast('music.playError', 'Music playback failed to load');
             return musicPlayResult(false, 'player_error');
+        } finally {
+            // A replacement can invalidate this request and then fail URL
+            // validation without ever entering executePlay. Retire only the
+            // canceled lifecycle, without invalidating the replacement token.
+            if (currentToken !== latestMusicRequestToken && currentMusicPlaybackId === playbackIdForRequest) {
+                if (musicCardMessageId && !['error', 'ended'].includes(musicCardState)) {
+                    updateMusicCard('ended', currentPlayingTrack);
+                }
+                destroyMusicPlayer(true, false, false);
+            }
         }
     };
 
