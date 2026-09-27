@@ -287,10 +287,13 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       marketId: candidate.marketId,
       version: candidate.latestVersion,
     })
-    candidates.value = candidates.value.filter((entry) => entry.pluginId !== candidate.pluginId)
+    // Sync before dropping the row: while it is still `updating` the popup stays
+    // busy, so a refresh cannot snapshot the pre-upgrade plugin list and offer
+    // the version that was just installed again.
     await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {
       updateLog.warn('registry sync failed after upgrade', err)
     })
+    candidates.value = candidates.value.filter((entry) => entry.pluginId !== candidate.pluginId)
     completedUpgrades.value += 1
   }
 

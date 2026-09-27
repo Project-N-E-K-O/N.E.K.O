@@ -163,6 +163,25 @@ describe('market install progress', () => {
     expect(items[0]!.textContent).toContain('8.5 MB / 25.0 MB')
   })
 
+  it('labels a completed replacement as an upgrade and a fresh install as an install', () => {
+    const completed = {
+      task: { task_id: 't', status: 'completed', stage: 'completed', progress: 1 } as MarketInstallTask,
+      done: true,
+      running: false,
+    }
+    const status = (root: Element) => root.querySelector('.install-progress__status')?.textContent?.trim()
+
+    for (const mode of ['upgrade', 'reinstall', 'override_builtin'] as const) {
+      makeStore({ ...completed, context: { pluginId: 'p', name: 'P', mode, channel: 'stable' } as MarketInstallContext })
+      // Regression guard: every replacement used to read "Install completed".
+      expect(status(mount())).toBe('market.installCompletedUpgrade')
+      cleanup()
+    }
+
+    makeStore({ ...completed, context: { pluginId: 'p', name: 'P', mode: 'install', channel: 'stable' } as MarketInstallContext })
+    expect(status(mount())).toBe('market.installCompleted')
+  })
+
   it('reports the terminal states with their own copy', () => {
     makeStore({
       task: { task_id: 't', status: 'completed', stage: 'completed', progress: 1 },

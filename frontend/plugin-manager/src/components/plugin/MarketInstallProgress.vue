@@ -148,7 +148,12 @@ const stageText = computed(() => (
 /** Terminal copy only — the running state is already carried by the stage line. */
 const statusText = computed(() => {
   const status = store.task?.status
-  if (status === 'completed') return t('market.installCompleted')
+  if (status === 'completed') {
+    // Same rule as the Market dialog title: every replacement mode
+    // (upgrade / reinstall / override_builtin) reads as an upgrade.
+    const mode = store.context?.mode
+    return t(mode && mode !== 'install' ? 'market.installCompletedUpgrade' : 'market.installCompleted')
+  }
   if (status === 'canceled') return t('market.installCancelled')
   if (status === 'failed') return t(store.errorKey || 'market.installFailed')
   return ''

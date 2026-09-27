@@ -341,6 +341,28 @@ describe('plugin updates store — upgrade', () => {
     return store
   }
 
+  it('stays busy until the registry refresh after an upgrade has finished', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    let busyDuringSync: boolean | null = null
+    mocks.pluginStore.syncRegistryAndFetch.mockImplementation(async () => {
+      busyDuringSync = store.busy
+      return { registryRefreshed: true, warningMessage: null }
+    })
+
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+    // Regression guard: the row used to be dropped before the sync, so a
+    // refresh during it could re-read the old list and re-offer the version.
+    expect(busyDuringSync).toBe(true)
+    expect(store.candidates).toEqual([])
+    expect(store.busy).toBe(false)
+  })
+
   it('upgrades through the bridge, then drops the candidate', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     const fetchMock = mockFetch((url) => {
