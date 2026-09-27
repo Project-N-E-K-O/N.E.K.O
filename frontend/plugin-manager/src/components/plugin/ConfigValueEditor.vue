@@ -371,11 +371,14 @@ const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() =
   return 'string'
 })
 
-// A table carrying its own `__replace__ = true` replaces the base table outright,
-// subtree included (config_merge.py), so it follows the same rules as array items.
+// A nested table carrying its own `__replace__ = true` replaces the base table
+// outright, subtree included (config_merge.py), so it follows the same rules as array
+// items. On a top-level section the marker is ordinary data (config_profiles.py).
 const replacesBaseline = computed(
   () =>
-    props.replaceSemantics === true || asPlainObject(props.modelValue)?.[REPLACE_MARKER] === true
+    props.replaceSemantics === true ||
+    ((props.segments?.length ?? 0) >= 2 &&
+      asPlainObject(props.modelValue)?.[REPLACE_MARKER] === true)
 )
 // 数组项内的对象同理：overlay 项存在时它就是生效值的全部，基线独有的字段
 // 不会被继承，列出来只会让人以为它还在。此时基线只用于「重置」已覆盖的字段。

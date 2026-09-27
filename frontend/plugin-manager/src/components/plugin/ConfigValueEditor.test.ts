@@ -93,22 +93,31 @@ describe('literal configuration keys', () => {
     expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
   })
 
-  it('does not list base fields under a table marked __replace__', async () => {
-    // The server replaces such a table outright, so base-only fields are not in effect.
-    const baseline = { cache: { size: 1, ttl: 2 } }
+  it('does not list base fields under a nested table marked __replace__', async () => {
+    // The server replaces such a nested table outright, so base-only fields are not in
+    // effect. On a top-level section or the root the marker is ordinary data.
+    const baseline = { net: { cache: { size: 1, ttl: 2 } }, top: 1 }
     const rowPaths = (host: HTMLElement) =>
       Array.from(host.querySelectorAll('[data-config-path]')).map((r) =>
         r.getAttribute('data-config-path')
       )
 
-    const replaced = mountEditor({ cache: { __replace__: true, size: 5 } }, baseline, true)
+    const replaced = mountEditor({ net: { cache: { __replace__: true, size: 5 } } }, baseline, true)
     await nextTick()
-    expect(rowPaths(replaced.host)).toContain('cache.size')
-    expect(rowPaths(replaced.host)).not.toContain('cache.ttl')
+    expect(rowPaths(replaced.host)).toContain('net.cache.size')
+    expect(rowPaths(replaced.host)).not.toContain('net.cache.ttl')
 
-    const merged = mountEditor({ cache: { size: 5 } }, baseline, true)
+    const merged = mountEditor({ net: { cache: { size: 5 } } }, baseline, true)
     await nextTick()
-    expect(rowPaths(merged.host)).toContain('cache.ttl')
+    expect(rowPaths(merged.host)).toContain('net.cache.ttl')
+
+    const topLevel = mountEditor({ net: { __replace__: true } }, baseline, true)
+    await nextTick()
+    expect(rowPaths(topLevel.host)).toContain('net.cache.ttl')
+
+    const root = mountEditor({ __replace__: true }, baseline, true)
+    await nextTick()
+    expect(rowPaths(root.host)).toContain('top')
   })
 
   it('keeps a quoted top-level "plugin.id" key editable', async () => {

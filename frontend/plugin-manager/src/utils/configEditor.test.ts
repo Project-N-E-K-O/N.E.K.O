@@ -184,13 +184,18 @@ describe('configNodeMatches', () => {
     )
   })
 
-  it('does not match base fields dropped by a __replace__ table', () => {
-    // The form hides base-only fields under such a table, so search must agree.
-    const baseline = { cache: { ttl: 120, deep: { ttl: 1 } } }
-    const replaced = { cache: { __replace__: true, size: 5 } }
+  it('does not match base fields dropped by a nested __replace__ table', () => {
+    // The form hides base-only fields under such a table, so search must agree. On a
+    // top-level section or the root the marker is ordinary data.
+    const baseline = { net: { cache: { ttl: 120 } }, top: 1 }
+    const replaced = { net: { cache: { __replace__: true, size: 5 } } }
     expect(configNodeMatches(replaced, baseline, [], 'ttl', 'all', [], false)).toBe(false)
     expect(configNodeMatches(replaced, baseline, [], 'size', 'all', [], false)).toBe(true)
-    expect(configNodeMatches({ cache: { size: 5 } }, baseline, [], 'ttl', 'all', [], false)).toBe(
+    const merged = { net: { cache: { size: 5 } } }
+    expect(configNodeMatches(merged, baseline, [], 'ttl', 'all', [], false)).toBe(true)
+    const topLevel = { net: { __replace__: true } }
+    expect(configNodeMatches(topLevel, baseline, [], 'ttl', 'all', [], false)).toBe(true)
+    expect(configNodeMatches({ __replace__: true }, baseline, [], 'top', 'all', [], false)).toBe(
       true
     )
   })
