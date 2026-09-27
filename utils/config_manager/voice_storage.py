@@ -712,6 +712,7 @@ class VoiceStorageMixin:
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY)
+                or storage_key.startswith(GLM_VOICE_STORAGE_KEY)
                 or storage_key.startswith('__COSYVOICE_INTL__')
                 or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):

@@ -25,14 +25,20 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output."""
+def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+    """Zhipu AI CogTTS worker — per-sentence synthesis, SSE streaming audio output.
+
+    base_url is optional (defaults to the official open.bigmodel.cn endpoint); the
+    GLM clone resolver passes the glm_base_url persisted at registration time so
+    historical clone entries keep synthesizing against their registration endpoint."""
     import httpx
 
     if not voice_id:
         voice_id = "tongtong"
 
-    tts_url = "https://open.bigmodel.cn/api/paas/v4/audio/speech"
+    from utils.glm_tts import glm_speech_url
+
+    tts_url = glm_speech_url(base_url)
 
     async def setup(response_queue):
         headers = {
@@ -208,16 +214,22 @@ def _glm_voice_meta_is_clone(vm) -> bool:
 
 
 def _glm_clone_is_selected(ctx) -> bool:
-    """GLM 克隆音色按 voice_meta.provider 选中（对偶 doubao 的 clone 选中）。
+    """GLM cloned voices are selected via voice_meta.provider (dual to doubao).
 
-    刻意不判断 config 选中（ttsModelProvider=='glm_tts'）：core_api_type=='glm' 的
-    原生 CogTTS 路径仍由 get_tts_worker 的 core 分支处理（其 key 走 tts_custom 槽），
-    若此处同时认 config，注册表优先级会把未克隆的原生用户也拦截到本条目、改用
-    assistApiKeyGlm 鉴权，破坏现有 GLM TTS 行为。"""
+    Deliberately does NOT consider config selection (ttsModelProvider=='glm_tts'):
+    the native core_api_type=='glm' CogTTS path is still handled by
+    get_tts_worker's core branch (its key comes from the tts_custom slot). If
+    this entry also claimed config selection, the registry priority would
+    intercept un-cloned native users too and re-authenticate them with
+    assistApiKeyGlm, breaking the existing GLM TTS behavior."""
     return _glm_voice_meta_is_clone(ctx.voice_meta)
 
 
 def _glm_clone_resolve(ctx):
+    from functools import partial
+
+    from utils.glm_tts import GLM_TTS_DEFAULT_BASE_URL
+
     from .dummy import dummy_tts_worker
 
     vm = ctx.voice_meta or {}
@@ -228,6 +240,8 @@ def _glm_clone_resolve(ctx):
         logger.warning("GLM 克隆音色已选中但 API Key 缺失，改用 dummy TTS worker")
         return dummy_tts_worker, None, None
     # cogtts worker 的 voice 参数官方明确支持复刻音色：直接以克隆音色 ID 合成，
-    # 走同一条 SSE 流式 + 水印检测路径（vm 留作将来按 voice_meta 定制 base_url）。
-    _ = vm
-    return cogtts_tts_worker, api_key, "glm_tts"
+    # 走同一条 SSE 流式 + 水印检测路径。voice_meta 里存了注册时的 glm_base_url，
+    # 传给 worker 让历史条目继续用注册端点合成（缺失时回退官方默认地址）。
+    base_url = str(vm.get("glm_base_url") or "").strip() or GLM_TTS_DEFAULT_BASE_URL
+    worker = partial(cogtts_tts_worker, base_url=base_url)
+    return worker, api_key, "glm_tts"

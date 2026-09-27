@@ -382,7 +382,10 @@ async def voice_clone(
     # vLLM-Omni uses an inline reference sample and has no /speakers/register
     # endpoint. Even when another active TTS provider is a local WS service,
     # its generic registration route must not consume a vLLM-Omni clone.
-    if is_local_tts and provider != 'vllm_omni':
+    # Same for GLM: a glm_tts clone registers remotely at bigmodel.cn — routing
+    # it into the local /v1/speakers/register flow would silently produce a
+    # local-speaker clone instead of calling the GLM voice-clone API.
+    if is_local_tts and provider not in ('vllm_omni', 'glm_tts'):
         # ==================== 本地 TTS 注册流程 ====================
         # MD5 + ref_language 去重：检查是否已有相同音频 + 相同语言注册过的音色
         existing = _config_manager.find_voice_by_audio_md5('__LOCAL_TTS__', audio_md5, ref_language)
@@ -783,7 +786,7 @@ async def voice_clone(
             # 维度与 MD5 去重键对齐；返回的 voice 即合成时的音色 ID（/audio/speech 的
             # voice 参数官方明确支持复刻音色，dispatch 复用 cogtts worker）。
             client = GlmVoiceCloneClient(api_key=api_key, base_url=base_url)
-            voice_name = build_glm_voice_name(prefix, audio_md5)
+            voice_name = build_glm_voice_name(prefix, audio_md5, ref_language)
             voice_id = await client.clone_voice(
                 normalized_buffer,
                 voice_name=voice_name,

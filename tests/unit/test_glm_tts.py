@@ -26,15 +26,25 @@ def test_sanitize_glm_voice_prefix_keeps_alnum_only():
 
 @pytest.mark.unit
 def test_build_glm_voice_name_is_stable_and_unique_per_audio():
-    first = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899")
-    second = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899")
-    other_audio = build_glm_voice_name("Miko", "ffeeddccbbaa00112233445566778899")
+    first = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ch")
+    second = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ch")
+    other_audio = build_glm_voice_name("Miko", "ffeeddccbbaa00112233445566778899", "ch")
+    # 同音频换 ref_language：本地 MD5 去重不命中（ref_language 是去重键的一部分），
+    # voice_name 必须随之变化，否则 GLM 按账号内唯一性拒绝第二次注册。
+    other_language = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ja")
 
     assert first == second
     assert first != other_audio
-    assert first.startswith("neko_miko_")
+    assert first != other_language
+    assert first.startswith("neko_miko_ch_")
     assert first.endswith("aabbccddeeff")
     assert len(first) <= 64
+
+
+@pytest.mark.unit
+def test_build_glm_voice_name_without_language_keeps_legacy_shape():
+    # 不传 ref_language 时保持旧形状（无语言段），纯函数向后兼容。
+    assert build_glm_voice_name("Miko", "aabbccddeeff00112233") == "neko_miko_aabbccddeeff"
 
 
 @pytest.mark.unit
@@ -76,7 +86,41 @@ def test_get_tts_worker_routes_glm_clone_voice(monkeypatch):
         voice_id="voice_clone_20260926_001",
     )
 
-    assert worker is tts_client.cogtts_tts_worker
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.cogtts_tts_worker
+    assert worker.keywords["base_url"] == GLM_TTS_DEFAULT_BASE_URL
+    assert api_key == "glm-key"
+    assert provider_key == "glm_tts"
+
+
+@pytest.mark.unit
+def test_glm_clone_resolver_passes_persisted_base_url_to_worker(monkeypatch):
+    """The glm_base_url persisted in voice_meta must be forwarded to the cogtts
+    worker: historical clone entries keep synthesizing against their
+    registration endpoint instead of silently dropping back to the official one."""
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            return "glm-key"
+
+    from utils.tts.provider_registry import DispatchContext
+
+    ctx = DispatchContext(
+        core_config={},
+        cm=_CM(),
+        voice_id="voice_clone_x",
+        has_custom_voice=True,
+        voice_meta_loader=lambda: {
+            "provider": "glm_tts",
+            "source": "clone",
+            "glm_base_url": "https://glm-proxy.example.com/api/paas/v4",
+        },
+    )
+    worker, api_key, provider_key = tts_client._glm_clone_resolve(ctx)
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.cogtts_tts_worker
+    assert worker.keywords["base_url"] == "https://glm-proxy.example.com/api/paas/v4"
     assert api_key == "glm-key"
     assert provider_key == "glm_tts"
 
@@ -119,9 +163,10 @@ def test_get_tts_worker_glm_clone_without_key_falls_back_to_dummy(monkeypatch):
 
 @pytest.mark.unit
 def test_glm_clone_selection_ignores_config_without_voice_meta(monkeypatch):
-    """config 选 GLM（ttsModelProvider=glm_tts）但无克隆 voice_meta 时不得被 glm_tts
-    注册条目拦截——原生 core_api_type=='glm' 路径仍由 get_tts_worker 的 core 分支
-    处理（key 走 tts_custom 槽），保持既有行为。"""
+    """Config-selecting GLM (ttsModelProvider=glm_tts) without a clone voice_meta
+    must NOT be intercepted by the glm_tts registry entry — the native
+    core_api_type=='glm' path is still handled by get_tts_worker's core branch
+    (key from the tts_custom slot), preserving existing behavior."""
     from utils.tts.provider_registry import DispatchContext
 
     class _CM:
@@ -269,13 +314,21 @@ def test_glm_tts_frontend_and_backend_are_wired():
     assert "glm_tts: 'glm'" in voice_clone_js
     assert "['glm_tts', 'assistApiKeyGlm']" in voice_clone_js
     assert "voice.glmTtsApiRequired" in voice_clone_js
+    # 直链克隆禁用：/voice_clone_direct 的 valid_providers 不含 glm_tts，前端必须
+    # 像 mimo/doubao_tts 一样禁用直链方式，否则提交会吃到 TTS_PROVIDER_INVALID。
+    direct_link_fn = voice_clone_js.split("function isDirectLinkUnsupportedProvider")[1].split("}")[0]
+    assert "'glm_tts'" in direct_link_fn
     assert "key='glm_tts'" in registry_py
     assert "_glm_clone_is_selected" in registry_py
     assert "GLM_TTS_API_KEY_MISSING" in router_py
     assert "GlmVoiceCloneClient(api_key=api_key, base_url=base_url)" in router_py
+    # 本地 WS TTS 激活时不得把 glm_tts 克隆误送进 /v1/speakers/register 本地注册流。
+    assert "provider not in ('vllm_omni', 'glm_tts')" in router_py
     assert "GLM_TTS_PREVIEW_FAILED" in preview_py
     assert "provider == 'glm_tts'" in preview_py
     assert "get_tts_api_key('glm_tts')" in storage_py
+    # 删除白名单必须覆盖 __GLM_TTS__ 分桶，否则标准删除接口删不掉已注册的 GLM 音色。
+    assert "storage_key.startswith(GLM_VOICE_STORAGE_KEY)" in storage_py
     assert GLM_VOICE_STORAGE_KEY == "__GLM_TTS__"
     assert zh_locale["voice"]["provider"]["glm_tts"] == "智谱GLM声音复刻"
     assert zh_locale["voice"]["glmTtsApiRequired"]

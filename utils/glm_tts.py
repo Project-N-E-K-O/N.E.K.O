@@ -14,22 +14,26 @@
 
 """Zhipu GLM (bigmodel.cn) TTS helpers — voice cloning + preview.
 
-对偶 ``utils/doubao_tts.py`` 的结构（远端注册型克隆 provider）：
+Structural dual of ``utils/doubao_tts.py`` (a remotely-registered clone provider):
   - ``GlmVoiceCloneClient.upload_file``    → POST /paas/v4/files (purpose=voice-clone-input)
   - ``GlmVoiceCloneClient.clone_voice``    → POST /paas/v4/voice/clone (model=glm-tts-clone)
-  - ``GlmVoiceCloneClient.synthesize_preview`` → POST /paas/v4/audio/speech (voice=复刻音色)
+  - ``GlmVoiceCloneClient.synthesize_preview`` → POST /paas/v4/audio/speech (voice=<cloned id>)
 
-官方文档（docs.bigmodel.cn，API 参考 → 模型 API → 音色复刻 / 文本转语音 / 上传文件）：
-  - 上传：multipart ``file`` + ``purpose``，音色克隆示例音频仅支持 mp3/wav，
-    单文件 ≤10MB，建议时长 3-30 秒；响应 ``{id, object:"file", ...}``。
-  - 复刻：JSON ``{model, voice_name, input, file_id, text?, request_id?}``；
-    ``voice_name`` 必须账号内唯一；``input`` 是克隆时同步生成的试听文本（必填）；
-    响应 ``{voice, file_id, file_purpose, request_id}``，``voice`` 即合成用的复刻音色 ID。
-  - 合成：``/audio/speech`` 的 ``voice`` 官方明确「支持系统音色以及复刻音色两种类型」。
+Per the official docs (docs.bigmodel.cn, API reference → model APIs → voice clone /
+text-to-speech / file upload):
+  - Upload: multipart ``file`` + ``purpose``; clone samples only accept mp3/wav,
+    ≤10MB per file, 3-30 seconds recommended; response ``{id, object:"file", ...}``.
+  - Clone: JSON ``{model, voice_name, input, file_id, text?, request_id?}``;
+    ``voice_name`` must be unique per account; ``input`` is the preview text
+    synthesized during cloning (required); response ``{voice, file_id,
+    file_purpose, request_id}`` where ``voice`` is the cloned id used for synthesis.
+  - Synthesis: the ``voice`` field of ``/audio/speech`` officially supports both
+    system voices and cloned voices.
 
-httpx 不在模块顶层 import（与 doubao_tts 同构）：GLM_VOICE_STORAGE_KEY 字符串常量被
-utils/config_manager 引用、坐在 launcher 启动导入链上，httpx 的 eager CLI import
-（rich/pygments/click）会拖慢进程启动到端口 bind 的时间，用到时再 import。
+httpx is NOT imported at module top level (same convention as doubao_tts): the
+GLM_VOICE_STORAGE_KEY string constant is referenced by utils/config_manager and
+thus sits on the launcher's startup import chain, where httpx's eager CLI import
+(rich/pygments/click) would slow down startup-to-port-bind; import it lazily.
 """
 
 from __future__ import annotations
@@ -82,24 +86,29 @@ def glm_api_headers(api_key: str, *, json_body: bool = False) -> dict[str, str]:
 
 
 def sanitize_glm_voice_prefix(prefix: str) -> str:
-    """用户前缀 → voice_name 安全片段：仅保留字母数字，转小写。"""
+    """User prefix → voice_name-safe fragment: alphanumerics only, lowercased."""
     cleaned = re.sub(r"[^0-9a-zA-Z]", "", str(prefix or "")).lower()
     return cleaned[:24]
 
 
-def build_glm_voice_name(prefix: str, audio_md5: str) -> str:
-    """构造账号内唯一的 voice_name（官方必填字段）。
+def build_glm_voice_name(prefix: str, audio_md5: str, ref_language: str = "") -> str:
+    """Build an account-unique voice_name (a required field upstream).
 
-    维度对齐本地 MD5 去重键 (storage_key, audio_md5, ref_language) 中的音频维度：
-    同音频换语言重克隆会生成不同的 audio_md5 片段，不撞名。
+    The dimensions mirror the local MD5 dedup key (storage_key, audio_md5,
+    ref_language): audio_md5 alone does not change when the user re-clones the
+    same bytes under a different ref_language (dedup misses), so ref_language
+    must be part of the name too — otherwise the second registration reuses
+    the first name and GLM rejects it for violating per-account uniqueness.
     """
     safe_prefix = sanitize_glm_voice_prefix(prefix) or "voice"
+    lang = re.sub(r"[^0-9a-zA-Z]", "", str(ref_language or "")).lower()[:4]
     digest = re.sub(r"[^0-9a-fA-F]", "", str(audio_md5 or "")).lower()[:12] or uuid.uuid4().hex[:12]
-    return f"{GLM_VOICE_NAME_PREFIX}_{safe_prefix}_{digest}"[:GLM_VOICE_NAME_MAX_LENGTH]
+    suffix = f"{lang}_{digest}" if lang else digest
+    return f"{GLM_VOICE_NAME_PREFIX}_{safe_prefix}_{suffix}"[:GLM_VOICE_NAME_MAX_LENGTH]
 
 
 def _raise_glm_api_error(action: str, payload: dict[str, Any]) -> None:
-    """解析智谱统一错误体 ``{"error": {"code", "message"}}`` 并抛 GlmTtsError。"""
+    """Parse Zhipu's uniform error body ``{"error": {"code", "message"}}`` and raise."""
     err = payload.get("error")
     if isinstance(err, dict):
         code = err.get("code") or ""
@@ -109,7 +118,7 @@ def _raise_glm_api_error(action: str, payload: dict[str, Any]) -> None:
 
 
 class GlmVoiceCloneClient:
-    """GLM 声音复刻客户端（两步：上传示例音频 → /voice/clone 注册远端音色）。"""
+    """GLM voice-clone client (two steps: upload sample → /voice/clone)."""
 
     def __init__(self, api_key: str, *, base_url: str | None = None):
         self.api_key = api_key
@@ -121,7 +130,7 @@ class GlmVoiceCloneClient:
         filename: str,
         mime_type: str = "audio/wav",
     ) -> str:
-        """上传示例音频（purpose=voice-clone-input），返回 file_id。"""
+        """Upload the sample audio (purpose=voice-clone-input) and return file_id."""
         import httpx
 
         audio_buffer.seek(0)
@@ -167,7 +176,7 @@ class GlmVoiceCloneClient:
         ref_text: str = "",
         mime_type: str = "audio/wav",
     ) -> str:
-        """上传 + 注册组合流程，返回远端复刻音色 ID（合成时作 voice 使用）。"""
+        """Upload + register in one call; returns the cloned voice id for synthesis."""
         import httpx
 
         file_id = await self.upload_file(audio_buffer, filename, mime_type=mime_type)
@@ -214,11 +223,12 @@ class GlmVoiceCloneClient:
         *,
         model: str = GLM_TTS_SPEECH_MODEL,
     ) -> bytes:
-        """用复刻音色合成试听音频（非流式 wav），返回音频 bytes。
+        """Synthesize a preview WAV with the cloned voice (non-streaming).
 
-        与 workers/cogtts.py 同一 ``/audio/speech`` 端点；voice 官方支持复刻音色。
-        非流式 + response_format=wav 一次性返回（对偶 MiMo 的非流式校验请求，
-        不要 pcm16 裸流）。
+        Same ``/audio/speech`` endpoint as workers/cogtts.py; the voice field
+        officially supports cloned voices. Non-streaming + response_format=wav
+        returns the audio in one shot (dual to MiMo's non-streaming validation
+        request — never ask for a raw pcm16 stream here).
         """
         import httpx
 
