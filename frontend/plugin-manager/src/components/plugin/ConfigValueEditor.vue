@@ -550,15 +550,21 @@ function childPath(k: string) {
   return base ? `${base}.${k}` : k
 }
 
-function isProtectedKey(k: string) {
-  const p = childPath(k)
-  return p === 'plugin.id' || p === 'plugin.entry'
+// Compare path segments, not the dotted display path: a quoted top-level TOML key such
+// as "plugin.id" flattens to the same string as [plugin].id but is an ordinary field.
+function isProtectedPath(segments: readonly string[]) {
+  return (
+    segments.length === 2 &&
+    segments[0] === 'plugin' &&
+    (segments[1] === 'id' || segments[1] === 'entry')
+  )
 }
 
-const isReadOnly = computed(() => {
-  const p = props.path || ''
-  return p === 'plugin.id' || p === 'plugin.entry'
-})
+function isProtectedKey(k: string) {
+  return isProtectedPath([...(props.segments || []), k])
+}
+
+const isReadOnly = computed(() => isProtectedPath(props.segments || []))
 
 const indentStyle = computed(() => {
   if (props.compact) return {}

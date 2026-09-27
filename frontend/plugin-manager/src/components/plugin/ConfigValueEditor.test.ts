@@ -92,6 +92,27 @@ describe('literal configuration keys', () => {
     expect(written['__proto__']).toBe(9)
     expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
   })
+
+  it('keeps a quoted top-level "plugin.id" key editable', async () => {
+    // It flattens to the same display path as [plugin].id, but only the top-level
+    // plugin table is protected, and that table is not rendered at the root at all.
+    const baseline = JSON.parse('{"plugin.id":"literal","plugin":{"id":"demo"}}')
+    const { host, emitted } = mountEditor({}, baseline, true)
+    await nextTick()
+
+    const fieldInput = (segments: string[]) =>
+      host.querySelector<HTMLInputElement>(
+        `[id="${'config-field-' + encodeURIComponent(JSON.stringify(segments))}"]`
+      )
+    expect(fieldInput(['plugin', 'id'])).toBeNull()
+
+    const literal = fieldInput(['plugin.id'])!
+    expect(literal.disabled).toBe(false)
+    typeInto(literal, 'changed')
+    await nextTick()
+    expect(lastEmit(emitted)['plugin.id']).toBe('changed')
+    expect(rowFor(host, 'plugin.id').querySelector('.field-actions')).not.toBeNull()
+  })
 })
 
 describe('compact numeric field', () => {
