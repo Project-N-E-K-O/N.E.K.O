@@ -646,6 +646,28 @@ async def test_connect_qwen_manual_vad_sends_null_turn_detection():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(("model", "vad_type"), [
+    ("qwen3.8-omni-flash-realtime", "semantic_vad"),
+    ("qwen3.5-omni-flash-realtime-2026-03-15", "semantic_vad"),
+    ("qwen3-omni-flash-realtime", "semantic_vad"),
+    # Does not answer a semantic_vad session.update; keep the old server_vad.
+    ("qwen-omni-turbo-realtime", "server_vad"),
+])
+async def test_connect_qwen_server_vad_type_follows_model(model, vad_type):
+    """Qwen SERVER_VAD: semantic_vad only for the Qwen3 omni line."""
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model=model,
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="qwen",
+    )
+    session = await _run_connect_and_capture_session(client)
+
+    assert session is not None, "session.update event not captured"
+    assert session["turn_detection"]["type"] == vad_type
+
+@pytest.mark.unit
 async def test_connect_openai_manual_vad_sends_null_audio_input_turn_detection():
     """OpenAI MANUAL: audio.input.turn_detection=None, transcription preserved."""
     client = _make_manual_client(

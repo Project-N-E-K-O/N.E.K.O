@@ -85,7 +85,7 @@ def test_empty_feed_is_noop():
 
 
 def test_classifier_flags_qwen_hybrids_only():
-    for leaky in ("qwen3.5-plus", "qwen3.6-flash", "qwen3.7-plus-2026-05-26",
+    for leaky in ("qwen3.5-plus", "qwen3.6-flash", "qwen3.7-plus-2026-05-26", "qwen3.8-flash",
                   "Qwen/Qwen3.5-397B-A17B", "qwen/qwen3.5-9b"):
         assert leaks_thinking_in_content(leaky) is True, leaky
     for clean in ("qwen3-vl-plus", "qwen3-vl-flash", "gpt-4o", "claude-opus-4-8",

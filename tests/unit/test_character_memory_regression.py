@@ -1455,26 +1455,56 @@ def test_persona_card_sync_pins_rename_fact_to_durable_locale():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_async_persona_card_sync_pins_rename_fact_off_the_event_loop():
-    """The async ensure path writes the same pinned sentence, localized in a worker thread."""
+    """The async ensure path writes the same pinned sentence, reading files off the loop."""
     from utils.language_utils import language_context
 
     with TemporaryDirectory() as td:
         fx = _rename_card_sync_fixture(td)
         loop_thread = threading.get_ident()
-        localize_threads: list[int] = []
-        original = fx.pm._localize_synced_card_configs
+        read_threads: list[int] = []
+        original_locale = fx.cm._read_durable_prompt_locale
+        original_load = fx.cm.load_characters
 
-        def _recording_localize(*args, **kwargs):
-            localize_threads.append(threading.get_ident())
-            return original(*args, **kwargs)
+        def _recording_locale(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_locale(*args, **kwargs)
 
-        fx.pm._localize_synced_card_configs = _recording_localize
+        def _recording_load(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_load(*args, **kwargs)
+
+        fx.cm._read_durable_prompt_locale = _recording_locale
+        fx.cm.load_characters = _recording_load
 
         with language_context("en"):
             assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
 
         assert fx.rename_text().startswith("改名记录:")
-        assert localize_threads and all(t != loop_thread for t in localize_threads)
+        assert read_threads and all(t != loop_thread for t in read_threads)
+
+
+@pytest.mark.unit
+def test_persona_card_sync_reads_character_config_once():
+    """A second read could fall back to default characters and sync them over the card."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loads = 0
+        original_load = fx.cm.load_characters
+
+        def _counting_load(*args, **kwargs):
+            nonlocal loads
+            loads += 1
+            return original_load(*args, **kwargs)
+
+        fx.cm.load_characters = _counting_load
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        assert loads == 1
+        assert fx.rename_text().startswith("改名记录:")
 
 
 @pytest.mark.unit

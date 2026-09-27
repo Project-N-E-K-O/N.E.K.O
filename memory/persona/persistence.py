@@ -364,51 +364,31 @@ class PersistenceMixin:
         if migrated_count:
             logger.info(f"[Persona] {name}: 迁移了 {migrated_count} 条 persona 数据（settings）")
 
-    def _localize_synced_card_configs(self, name: str, master_basic_config, lanlan_basic_config):
-        """Re-render rename facts in this persona's own conversation language.
+    def _durable_card_sync_locale(self, name: str) -> tuple[bool, str | None]:
+        """Language to render this persona's card facts in, read before the card.
 
-        ``get_character_data`` builds the sentence with ``get_global_language_full()``.
-        Persona refine and scoped refine temporarily set that to the character
-        locale, then the embedding sweep and other ensure paths see the process
-        language again. Both paths persist the card, so one fact flips between
-        the two sentences on every 30-minute pass.
+        ``get_character_data`` renders rename facts with
+        ``get_global_language_full()``. Persona refine and scoped refine
+        temporarily set that to the character locale, then the embedding sweep
+        and other ensure paths see the process language again. Both paths
+        persist the card, so one fact used to flip between the two sentences on
+        every 30-minute pass. Rendering in ``prompt_locale.json`` pins it.
 
-        Returns ``None`` when a persisted locale may exist but cannot be applied
-        this pass (transient read failure, unreadable character config). The
-        caller then skips the sync; falling back to the process language would
-        rewrite the stored fact, which is the flip this method prevents.
+        Returns ``(False, None)`` when the locale file exists but could not be
+        read this pass; the caller skips the sync, since falling back to the
+        process language would rewrite the stored fact. ``(True, None)`` means
+        no persisted locale: render as before.
         """
         reader = getattr(self._config_manager, "_read_durable_prompt_locale", None)
         if not callable(reader):
-            return master_basic_config, lanlan_basic_config
+            return True, None
         try:
             locale = reader(name)
         except Exception:
-            return None
-        if not locale:
-            return master_basic_config, lanlan_basic_config
-        try:
-            characters = self._config_manager.load_characters()
-        except Exception:
-            return None
-        if not isinstance(characters, dict):
-            return None
-
-        from utils.config_manager.persona_payload import _build_effective_character_payload
-
-        master = characters.get("主人")
-        if isinstance(master, dict):
-            master_basic_config = _build_effective_character_payload(
-                master, entity="master", lang=locale,
-            )
-        catgirls = characters.get("猫娘")
-        if isinstance(catgirls, dict) and isinstance(catgirls.get(name), dict):
-            localized = dict(lanlan_basic_config or {})
-            localized[name] = _build_effective_character_payload(
-                catgirls[name], lang=locale,
-            )
-            lanlan_basic_config = localized
-        return master_basic_config, lanlan_basic_config
+            return False, None
+        if isinstance(locale, str) and locale:
+            return True, locale
+        return True, None
 
     def _apply_character_card_sync(
         self, name: str, persona: dict,
@@ -540,38 +520,36 @@ class PersistenceMixin:
 
         Returns True if any change was made.
         """
+        readable, locale = self._durable_card_sync_locale(name)
+        if not readable:
+            return False
         try:
+            # One read of the character config, rendered in the pinned locale.
+            # A second read could fall back to the default characters on a
+            # transient error and sync those over the real card.
             _, _, master_basic_config, lanlan_basic_config, _, _, _, _, _ = (
-                self._config_manager.get_character_data()
+                self._config_manager.get_character_data(lang=locale)
+                if locale else self._config_manager.get_character_data()
             )
         except Exception:
             return False
-        localized = self._localize_synced_card_configs(
-            name, master_basic_config, lanlan_basic_config,
-        )
-        if localized is None:
-            return False
-        master_basic_config, lanlan_basic_config = localized
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
         )
 
     async def _async_sync_character_card(self, name: str, persona: dict) -> bool:
+        # Reads prompt_locale.json; keep it off the event loop like the
+        # character config read below.
+        readable, locale = await asyncio.to_thread(self._durable_card_sync_locale, name)
+        if not readable:
+            return False
         try:
             _, _, master_basic_config, lanlan_basic_config, _, _, _, _, _ = (
-                await self._config_manager.aget_character_data()
+                await self._config_manager.aget_character_data(lang=locale)
+                if locale else await self._config_manager.aget_character_data()
             )
         except Exception:
             return False
-        # Reads prompt_locale.json and deep-copies the character config again;
-        # keep both off the event loop like aget_character_data above.
-        localized = await asyncio.to_thread(
-            self._localize_synced_card_configs,
-            name, master_basic_config, lanlan_basic_config,
-        )
-        if localized is None:
-            return False
-        master_basic_config, lanlan_basic_config = localized
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
         )

@@ -681,7 +681,10 @@ class _TransportMixin:
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
-                    "type": "semantic_vad",
+                    # Qwen3 系全模态（qwen3-omni / 3.5 / 3.8）实测都接受
+                    # semantic_vad；qwen-omni-turbo-realtime 收到它不回
+                    # session.updated，沿用 server_vad。
+                    "type": "semantic_vad" if "qwen3" in self._model_lower else "server_vad",
                     "threshold": 0.55,
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 650

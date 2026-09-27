@@ -168,15 +168,21 @@ class CharactersMixin:
 
     # --- Character metadata helpers ---
 
-    def get_character_data(self):
-        """Get character base data and related paths"""
+    def get_character_data(self, *, lang: str | None = None):
+        """Get character base data and related paths.
+
+        ``lang`` renders the synthetic rename-fact fields in that language
+        instead of the process language (see ``_build_ai_context_fields``).
+        """
         character_data = self.load_characters()
         defaults = self.get_default_characters()
 
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
-        master_basic_config = _build_effective_character_payload(character_data.get('主人', {}), entity="master")
+        master_basic_config = _build_effective_character_payload(
+            character_data.get('主人', {}), entity="master", lang=lang,
+        )
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
         raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
@@ -207,7 +213,7 @@ class CharactersMixin:
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         effective_character_data = {
-            name: _build_effective_character_payload(raw_character_data.get(name, {}))
+            name: _build_effective_character_payload(raw_character_data.get(name, {}), lang=lang)
             for name in catgirl_names
         }
         lanlan_prompt_map = {}
@@ -237,8 +243,8 @@ class CharactersMixin:
             recent_log,
         )
 
-    async def aget_character_data(self):
-        return await asyncio.to_thread(self.get_character_data)
+    async def aget_character_data(self, *, lang: str | None = None):
+        return await asyncio.to_thread(self.get_character_data, lang=lang)
 
     def _read_durable_prompt_locale(self, name: str) -> str | None:
         """Read ``memory/{name}/prompt_locale.json`` without creating the directory.
