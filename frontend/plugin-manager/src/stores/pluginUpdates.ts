@@ -258,7 +258,9 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       checking.value = false
       if (forceCheckQueued) {
         forceCheckQueued = false
-        void check({ force: true })
+        // Awaited, so callers that act on the result (the boot popup decision,
+        // the batch's final reconcile) see the re-checked list, not the stale one.
+        await check({ force: true })
       }
     }
   }

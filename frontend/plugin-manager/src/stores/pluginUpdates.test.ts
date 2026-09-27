@@ -198,9 +198,31 @@ describe('plugin updates store — check', () => {
     await first
     // Regression guard: the forced request used to be dropped, so the check
     // that read the pre-upgrade version kept offering the installed release.
-    await vi.waitFor(() => expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(store.checking).toBe(false))
+    // The first call resolves only after the re-check, so a caller acting on
+    // its result (the boot popup) never sees the stale list.
+    expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(2)
+    expect(store.checking).toBe(false)
     expect(store.candidates).toEqual([])
+  })
+
+  it('decides the boot popup only after a queued re-check has run', async () => {
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    let releaseFirst: (rows: ReturnType<typeof latestRows>) => void = () => {}
+    vi.mocked(fetchMarketLatestVersions)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve }))
+      .mockResolvedValueOnce(latestRows([[15, '1.1.0']]))
+
+    const store = usePluginUpdatesStore()
+    const boot = store.checkOnBoot()
+    await vi.waitFor(() => expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(1))
+
+    setPlugins([plugin('alpha', marketSource('15', '1.1.0'))])
+    await store.check({ force: true })
+    releaseFirst(latestRows([[15, '1.1.0']]))
+    await boot
+
+    expect(store.candidates).toEqual([])
+    expect(store.popupOpen).toBe(false)
   })
 
   it('counts plugins the market did not report instead of calling them up to date', async () => {
