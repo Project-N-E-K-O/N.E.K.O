@@ -259,7 +259,27 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // A read for that name may still be in flight; leaving it behind would make the next
       // `loadProfile(name)` reuse it and end up with no record for the recreated profile.
       requests.delete(name)
+      // Reflect the deletion locally before refreshing: if the refresh fails, the list
+      // and the selection must not keep pointing at a profile that no longer exists.
+      const state = profiles.value
+      if (state?.config_profiles) {
+        const files = { ...state.config_profiles.files }
+        delete files[name]
+        profiles.value = {
+          ...state,
+          config_profiles: {
+            ...state.config_profiles,
+            files,
+            active: state.config_profiles.active === name ? null : state.config_profiles.active,
+          },
+        }
+      }
+      if (selected.value === name)
+        selected.value =
+          active.value && names.value.includes(active.value) ? active.value : names.value[0] || null
       await loadAll()
+      if (valid(id, epoch) && selected.value && !records.has(selected.value))
+        await loadProfile(selected.value)
     } finally {
       if (valid(id, epoch)) saving.value = false
     }

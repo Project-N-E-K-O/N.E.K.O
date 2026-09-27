@@ -552,3 +552,33 @@ describe('refresh failure after save', () => {
     expect(drafts.canSave.value).toBe(true)
   })
 })
+
+describe('refresh failure after delete', () => {
+  it('moves off the deleted profile even when the follow-up refresh fails', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: {
+          prod: { path: 'prod.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }))
+    vi.mocked(deletePluginProfileConfig).mockResolvedValue({} as never)
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    await drafts.selectProfile('other')
+
+    vi.mocked(getPluginProfilesState).mockRejectedValueOnce(new Error('offline'))
+    await drafts.deleteProfile('other')
+
+    expect(drafts.names.value).toEqual(['prod'])
+    expect(drafts.selected.value).toBe('prod')
+    expect(drafts.current.value?.loaded).toBe(true)
+  })
+})
