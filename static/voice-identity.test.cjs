@@ -628,6 +628,7 @@ test('one click records three reference segments and one five-second verificatio
         `${API_ROOT}/enrollment/segment`,
         `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/segment`,
+        `${API_ROOT}/status`,
     ]);
     assert.deepEqual(harness.autoFinishDurations, [
         REFERENCE_RECORDING_MS,
@@ -820,7 +821,7 @@ test('failed fourth verification stays in the session and retries the holdout', 
     const segments = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.equal(segments.length, 4);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
-    assert.equal(harness.elements.get('voice-identity-capture-status').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-capture-status').hidden, true);
     assert.match(harness.elements.get('voice-identity-message').textContent, /31/);
     await harness.emit('voice-identity-next');
     await enrolling;

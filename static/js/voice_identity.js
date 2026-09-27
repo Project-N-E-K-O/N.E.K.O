@@ -71,6 +71,7 @@
         audioContext: null,
         captureAbort: null,
         uploadAbort: null,
+        statusAbort: null,
         startAbort: null,
         captureFinish: null,
         promptPaintAbort: null,
@@ -320,11 +321,17 @@
     async function reconcileStatus() {
         const requestEpoch = state.statusEpoch;
         const requestSequence = ++state.statusRefreshSequence;
+        const statusController = typeof AbortController === 'function'
+            ? new AbortController() : null;
+        state.statusAbort = statusController;
         state.statusRefreshFallback = null;
         state.statusRefreshFailureSequence = 0;
         state.statusRefreshRecoverySequence = 0;
         try {
-            const status = await apiRequest('/status', { method: 'GET' });
+            const status = await apiRequest('/status', {
+                method: 'GET',
+                signal: statusController ? statusController.signal : undefined
+            });
             if (requestEpoch !== state.statusEpoch) return null;
             if (requestSequence === state.statusRefreshSequence) {
                 if (requestSequence < state.statusRefreshAppliedSequence) return null;
@@ -375,6 +382,8 @@
                 return fallback;
             }
             return null;
+        } finally {
+            if (state.statusAbort === statusController) state.statusAbort = null;
         }
     }
 
@@ -522,7 +531,7 @@
 
     function renderEnrollment() {
         const active = state.segmentIndex > 0;
-        const captureVisible = active && state.uiPhase !== 'idle' && state.uiPhase !== 'success';
+        const captureVisible = active && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
         elements.captureStatus.hidden = !captureVisible;
         elements.captureStatus.classList.toggle('saving', state.saving);
         elements.captureStatus.classList.toggle('voice-detected', state.voiceStatus === 'detected');
@@ -926,12 +935,12 @@
         if (config.keepalive) {
             state.enrollmentId = null;
             state.profileId = null;
-            await fetch(`${API_ROOT}/enrollment/cancel`, {
+            void fetch(`${API_ROOT}/enrollment/cancel`, {
                 method: 'POST',
                 headers,
                 credentials: 'same-origin',
                 keepalive: true
-            });
+            }).catch(function () {});
             return;
         }
         const payload = await apiRequest('/enrollment/cancel', {
@@ -1206,8 +1215,15 @@
             state.segmentPhase = 'finalizing'; state.uiPhase = 'finalizing';
             state.saving = true;
             render();
-            if (!state.profileAvailable && !await reconcileStatus()) throw new Error('profile_status_unavailable');
-            if (!state.profileAvailable) throw new Error('profile_not_confirmed');
+            const finalizedStatus = await reconcileStatus();
+            if (!finalizedStatus || !state.profileAvailable) throw new Error('profile_not_confirmed');
+            if (profileWasAvailable && (
+                profileRevisionBefore === null
+                || state.profileRevision === null
+                || state.profileRevision === profileRevisionBefore
+            )) {
+                throw new Error('profile_replacement_not_confirmed');
+            }
             state.enrollmentId = null;
             state.profileId = null;
             state.uiPhase = 'success';
@@ -1244,6 +1260,7 @@
         const pendingStart = state.startSettled;
         state.statusEpoch += 1;
         state.cancelPending = true;
+        if (state.statusAbort) state.statusAbort.abort();
         if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
         stopMicrophone('capture_cancelled');
         render();
@@ -1257,7 +1274,7 @@
                 if (timeoutId !== null) window.clearTimeout(timeoutId);
             }
             await cancelSession(config);
-            if (!state.enrollmentId && pendingStart) {
+            if (!config.keepalive && !state.enrollmentId && pendingStart) {
                 const reconciled = await reconcileStatus();
                 if (reconciled && state.enrollmentId) await cancelSession(config);
             }

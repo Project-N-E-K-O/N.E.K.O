@@ -521,7 +521,7 @@ input:focus-visible,
 
 .segment-progress span.active {
     border-color: var(--voice-blue-strong);
-    color: #fff;
+    color: var(--voice-ink);
     background: var(--voice-blue-strong);
     box-shadow: 0 0 0 4px rgba(85, 189, 242, 0.16);
 }
@@ -545,7 +545,7 @@ input:focus-visible,
 
 .segment-progress span.current {
     border-color: var(--voice-blue-strong);
-    color: #fff;
+    color: var(--voice-ink);
     background: var(--voice-blue-strong);
     box-shadow: 0 0 0 4px rgba(85, 189, 242, 0.16);
 }
