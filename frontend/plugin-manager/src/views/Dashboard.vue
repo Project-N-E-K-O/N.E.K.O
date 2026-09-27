@@ -429,7 +429,8 @@ function handleStartTutorial() {
 }
 
 function startAutoRefresh() {
-  if (dashboardDisposed || document.hidden || isGoodbyeResourceSuspendingOrSuspended()) return
+  if (dashboardDisposed || document.hidden) return
+  if (isGoodbyeResourceSuspendingOrSuspended()) return
   stopAutoRefresh()
   metricsTimer = window.setInterval(() => {
     if (isGoodbyeResourceSuspendingOrSuspended()) {
