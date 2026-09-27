@@ -20,6 +20,7 @@
     const ACTIVE_FRAME_RMS = 0.008;
     const WINDOW_CLOSE_START_WAIT_MS = 500;
     const CANCEL_STATUS_TIMEOUT_MS = 1000;
+    const FINAL_STATUS_TIMEOUT_MS = 1000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -1055,7 +1056,10 @@
                     signal: startController ? startController.signal : undefined
                 });
             } catch (error) {
-                const canonical = await reconcileStatus();
+                const canonical = await reconcileStatus({
+                    timeoutMs: state.cancelPending || state.closeStarted
+                        ? CANCEL_STATUS_TIMEOUT_MS : undefined
+                });
                 if (!canonical || !state.enrollmentId) throw error;
                 started = canonical;
             }
@@ -1235,8 +1239,12 @@
             state.segmentPhase = 'finalizing'; state.uiPhase = 'finalizing';
             state.saving = true;
             render();
-            const finalizedStatus = await reconcileStatus();
-            if (!finalizedStatus || !state.profileAvailable) throw new Error('profile_not_confirmed');
+            const finalizedStatus = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
+            const finalProfileConfirmed = state.profileAvailable && (
+                finalizedStatus
+                || finalSegmentCommitted
+            );
+            if (!finalProfileConfirmed) throw new Error('profile_not_confirmed');
             if (profileWasAvailable && (
                 profileRevisionBefore === null
                 || state.profileRevision === null
@@ -1251,7 +1259,7 @@
         } catch (error) {
             stopMicrophone();
             if (state.cancelPending || state.closeStarted) return;
-            const reconciled = await reconcileStatus();
+            const reconciled = await reconcileStatus({ timeoutMs: FINAL_STATUS_TIMEOUT_MS });
             const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
             const profileCommitConfirmed = replacementConfirmed
                 && (reconciled || finalSegmentCommitted)
