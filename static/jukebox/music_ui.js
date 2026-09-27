@@ -3151,7 +3151,13 @@
             // A replacement can invalidate this request and then fail URL
             // validation without ever entering executePlay. Retire only the
             // canceled lifecycle, without invalidating the replacement token.
-            if (currentToken !== latestMusicRequestToken && currentMusicPlaybackId === playbackIdForRequest) {
+            // Same-track fast paths retain playbackId but transfer the player
+            // to their request token. The former request must not tear it down.
+            if (
+                currentToken !== latestMusicRequestToken
+                && currentMusicPlaybackId === playbackIdForRequest
+                && (!localPlayer || localPlayer._latestToken === currentToken)
+            ) {
                 if (musicCardMessageId && !['error', 'ended'].includes(musicCardState)) {
                     updateMusicCard('ended', currentPlayingTrack);
                 }

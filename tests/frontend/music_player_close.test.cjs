@@ -224,6 +224,37 @@ for (const stage of ['late player', 'canceled factory', 'rejected factory', 'med
     });
 }
 
+for (const mode of ['duplicate', 'paused', 'resume']) {
+    for (const readyEvent of [false, true]) {
+        test(`same-track ${mode} retains adopted player with readiness event=${readyEvent}`, async t => {
+            const s = createSurface(t, {mediaPending:true});
+            const {promise} = await s.start();
+            const player = s.players[0];
+            const bar = s.bar();
+            const identity = s.sent.find(event => event.type === 'bar_state').payload.playbackId;
+            player.audio.readyState = 4;
+            if (mode === 'duplicate') player.play();
+            // Resolve the old wait without giving its continuation a turn, or
+            // leave it pending so the new request cancels it itself.
+            if (readyEvent) player.audio.dispatchEvent(new s.w.Event('canplay'));
+            const replacement = s.w.sendMusicMessageDetailed(
+                {name:'test', artist:'test', url:'https://music.163.com/test.mp3'}, mode !== 'paused');
+            assert.equal((await replacement).reason, mode === 'duplicate' ? 'duplicate' : 'already_playing');
+            assert.equal((await promise).reason, 'superseded');
+            await s.advance(400);
+            assert.equal(s.w.getMusicPlayerInstance(), player, 'new request owns the reused instance');
+            assert.equal(s.bar(), bar);
+            assert.equal(player.destroyed, false);
+            assert.equal(player.audio.paused, mode === 'paused');
+            assert.equal(s.sent.some(event => event.type === 'bar_destroyed' && event.payload.playbackId === identity), false);
+            s.clickClose();
+            await s.advance(400);
+            assert.equal(s.bar(), null);
+            assert.equal(player.destroyed, true);
+        });
+    }
+}
+
 test('superseded cleanup preserves a queued valid replacement request', async t => {
     const s = createSurface(t, {deferInit:true, honorCancellation:true});
     const {promise} = await s.start();
