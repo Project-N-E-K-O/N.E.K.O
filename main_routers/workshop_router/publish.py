@@ -56,22 +56,17 @@ from utils.workshop_utils import (
 publish_lock = threading.Lock()
 
 
-def _decode_workshop_text(value) -> str:
-    """Normalize Steam's bytes/text fields for publish-time validation."""
-    if isinstance(value, bytes):
-        return value.decode('utf-8', errors='replace').strip('\x00').strip()
-    return str(value or '').strip('\x00').strip()
-
-
-async def _validate_existing_workshop_item(steamworks, item_id: int, expected_title: str) -> tuple[bool, str]:
+async def _validate_existing_workshop_item(steamworks, item_id: int) -> tuple[bool, str]:
     """Guard updates against stale metadata pointing at an unrelated item.
 
     The character-card sidecar is the local source of truth for update intent,
     but old/copy-pasted sidecars can contain an item ID that no longer belongs
-    to the card. When rich UGC details are available, verify both the Steam
-    owner and the Workshop title before entering ``StartItemUpdate``. Older
-    wrappers may not expose the query bridge; preserve the existing update
-    path in that case and let Steam perform its normal authorization check.
+    to the card. When rich UGC details are available, verify the Steam owner
+    before entering ``StartItemUpdate``. The Workshop title is intentionally
+    not compared here because renaming an existing item is a supported update.
+    Older wrappers may not expose the query bridge; preserve the existing
+    update path in that case and let Steam perform its normal authorization
+    check.
     """
     try:
         details_by_id = await _query_ugc_details_batch(
@@ -102,14 +97,6 @@ async def _validate_existing_workshop_item(steamworks, item_id: int, expected_ti
 
     if owner_id and current_user_id and owner_id != current_user_id:
         return False, f'Workshop 物品 {item_id} 不属于当前 Steam 账号，已阻止更新'
-
-    remote_title = _decode_workshop_text(getattr(details, 'title', ''))
-    normalized_title = _decode_workshop_text(expected_title)
-    if remote_title and normalized_title and remote_title != normalized_title:
-        return False, (
-            f'本地角色卡标题与 Workshop 物品 {item_id} 不一致 '
-            f'（远端: {remote_title!r}，本次: {normalized_title!r}），已阻止更新'
-        )
 
     return True, ''
 
@@ -613,7 +600,7 @@ async def publish_to_workshop(request: Request):
                     item_id_for_validation = 0
                 if item_id_for_validation > 0:
                     is_valid, validation_error = await _validate_existing_workshop_item(
-                        steamworks, item_id_for_validation, title
+                        steamworks, item_id_for_validation
                     )
                     if not is_valid:
                         return JSONResponse(content={

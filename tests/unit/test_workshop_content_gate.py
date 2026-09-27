@@ -4336,8 +4336,8 @@ def _is_allowed_unclaimed(
 # worker 内的 partial claim + atomic write，因此不再列为欠账。
 _KNOWN_GAPS = {
     # 绑定到具体源码位置，而不是同函数同名操作的数量；旧点被修、新点冒出来不能互换。
-    ('publish', 'publish_to_workshop', 665, 'copy2'),
-    ('publish', 'publish_to_workshop', 689, 'copy2'),
+    ('publish', 'publish_to_workshop', 652, 'copy2'),
+    ('publish', 'publish_to_workshop', 676, 'copy2'),
 }
 
 

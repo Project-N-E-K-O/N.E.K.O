@@ -156,8 +156,26 @@ async def test_existing_workshop_item_validation_rejects_wrong_owner(monkeypatch
     monkeypatch.setattr(wr_publish, "_query_ugc_details_batch", _details)
 
     valid, error = await wr_publish._validate_existing_workshop_item(
-        steamworks, 123456, "Card"
+        steamworks, 123456
     )
 
     assert valid is False
     assert "不属于当前 Steam 账号" in error
+
+
+@pytest.mark.asyncio
+async def test_existing_workshop_item_validation_allows_rename(monkeypatch):
+    async def _details(*args, **kwargs):
+        return {123456: SimpleNamespace(steamIDOwner=42, title=b"Old card title")}
+
+    steamworks = SimpleNamespace(
+        Users=SimpleNamespace(GetSteamID=lambda: 42),
+    )
+    monkeypatch.setattr(wr_publish, "_query_ugc_details_batch", _details)
+
+    valid, error = await wr_publish._validate_existing_workshop_item(
+        steamworks, 123456
+    )
+
+    assert valid is True
+    assert error == ""
