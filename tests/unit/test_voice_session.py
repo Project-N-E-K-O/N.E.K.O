@@ -668,6 +668,30 @@ async def test_connect_qwen_server_vad_type_follows_model(model, vad_type):
     assert session["turn_detection"]["type"] == vad_type
 
 @pytest.mark.unit
+@pytest.mark.parametrize(("ws_url", "query_model"), [
+    ("wss://open.bigmodel.cn/api/paas/v4/realtime", "glm-realtime-air"),
+    ("wss://glm-proxy.example.test/realtime", "glm-realtime-plus"),
+])
+async def test_connect_glm_query_model_remapped_only_on_public_gateway(ws_url, query_model):
+    """The public gateway rejects Plus on ?model=; custom endpoints keep the configured name."""
+    client = OmniRealtimeClient(
+        base_url=ws_url,
+        api_key="sk-test",
+        model="glm-realtime-plus",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="glm",
+    )
+    mock_ws = AsyncMock()
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+        finally:
+            await client.close()
+
+    assert mock_connect.call_args.args[0] == f"{ws_url}?model={query_model}"
+
+@pytest.mark.unit
 async def test_connect_openai_manual_vad_sends_null_audio_input_turn_detection():
     """OpenAI MANUAL: audio.input.turn_detection=None, transcription preserved."""
     client = _make_manual_client(

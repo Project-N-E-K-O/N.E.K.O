@@ -193,7 +193,9 @@ GLM_REALTIME_BETA_FIELDS = {
 
 # 公开 WebSocket 的 ?model= 只放行这些名字。glm-realtime-plus 写在查询参数里
 # 会在握手后被 code 1234 / close 1003 拒绝。查询参数用已放行的型号进门，
-# 真正的型号放进 session.update。
+# 真正的型号放进 session.update。只对智谱官方网关这样改写：自定义地址（代理、
+# 自建）可能按查询参数路由，照旧用用户填的型号。
+_GLM_REALTIME_PUBLIC_HOST = "open.bigmodel.cn"
 _GLM_REALTIME_GATEWAY_MODELS = frozenset({
     "glm-realtime",
     "glm-realtime-air",
@@ -202,11 +204,17 @@ _GLM_REALTIME_GATEWAY_MODELS = frozenset({
 _GLM_REALTIME_GATEWAY_FALLBACK = "glm-realtime-air"
 
 
-def glm_realtime_gateway_model(model: object) -> str:
-    """Model name the public GLM realtime gateway accepts on the URL."""
+def glm_realtime_gateway_model(model: object, base_url: object) -> str:
+    """Model name to put on the URL; remapped only for the public GLM gateway."""
 
     name = str(model or "").strip()
-    if name in _GLM_REALTIME_GATEWAY_MODELS:
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(str(base_url or "")).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host != _GLM_REALTIME_PUBLIC_HOST or name in _GLM_REALTIME_GATEWAY_MODELS:
         return name
     return _GLM_REALTIME_GATEWAY_FALLBACK
 

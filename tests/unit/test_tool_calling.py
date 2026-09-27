@@ -4172,11 +4172,20 @@ async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
 def test_glm_realtime_gateway_model_keeps_allowlisted_names():
     from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
 
-    assert glm_realtime_gateway_model("glm-realtime-air") == "glm-realtime-air"
-    assert glm_realtime_gateway_model("glm-realtime-flash") == "glm-realtime-flash"
-    assert glm_realtime_gateway_model("glm-realtime") == "glm-realtime"
-    assert glm_realtime_gateway_model("glm-realtime-plus") == "glm-realtime-air"
-    assert glm_realtime_gateway_model("  glm-realtime-plus  ") == "glm-realtime-air"
+    public = "wss://open.bigmodel.cn/api/paas/v4/realtime"
+    assert glm_realtime_gateway_model("glm-realtime-air", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("glm-realtime-flash", public) == "glm-realtime-flash"
+    assert glm_realtime_gateway_model("glm-realtime", public) == "glm-realtime"
+    assert glm_realtime_gateway_model("glm-realtime-plus", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("  glm-realtime-plus  ", public) == "glm-realtime-air"
+
+
+def test_glm_realtime_gateway_model_leaves_custom_endpoints_alone():
+    """A proxy or self-hosted endpoint may route by ?model=; keep the configured name."""
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    for url in ("wss://proxy.example.com/v4/realtime", "ws://127.0.0.1:8080/realtime", ""):
+        assert glm_realtime_gateway_model("glm-realtime-plus", url) == "glm-realtime-plus"
 
 
 @pytest.mark.asyncio

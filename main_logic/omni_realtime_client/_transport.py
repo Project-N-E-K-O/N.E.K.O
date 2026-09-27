@@ -592,7 +592,7 @@ class _TransportMixin:
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         # GLM Plus 不能出现在 ?model= 上，见 glm_realtime_gateway_model。
         query_model = (
-            glm_realtime_gateway_model(self.model)
+            glm_realtime_gateway_model(self.model, self.base_url)
             if self._is_glm_realtime()
             else self.model
         )

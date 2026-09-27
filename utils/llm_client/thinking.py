@@ -55,7 +55,7 @@ class ThinkingStreamStripper:
     ``strip_thinking_segments`` only runs on a *whole* non-streaming reply.
     Focus (thinking-on) turns stream token-by-token straight into TTS + the UI, so a
     provider that leaks chain-of-thought into ``content`` would speak its
-    reasoning aloud. Only the Qwen3.5/3.6/3.7/3.8 hybrids do this: they dump the
+    reasoning aloud. Only the Qwen3.5/3.6/3.7 hybrids do this: they dump the
     whole CoT into ``content`` terminated by a lone ``</think>`` (clean
     providers route reasoning to the separate ``reasoning_content`` field,
     which the streaming loop already withholds). So this holds **all** content
