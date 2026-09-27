@@ -179,16 +179,6 @@ class UserPluginDecision:
 
 
 @dataclass
-class OpenClawDecision:
-    """OpenClaw standalone-agent execution decision"""
-    has_task: bool = False
-    can_execute: bool = False
-    task_description: str = ""
-    instruction: str = ""
-    reason: str = ""
-
-
-@dataclass
 class UnifiedChannelDecision:
     """Unified channel assessment result — each channel is a dict or None"""
     qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
@@ -660,28 +650,7 @@ class DirectTaskExecutor:
             latest_text = "请分析用户提供的图片内容，并根据图片完成任务。"
         return latest_text, latest_attachments
     
-    def _format_tools(self, capabilities: Dict[str, Dict[str, Any]]) -> str:
-        """Format the tool list for LLM reference"""
-        if not capabilities:
-            return "No MCP tools available."
-        
-        lines = []
-        for tool_name, info in capabilities.items():
-            desc = info.get('description', 'No description')
-            schema = info.get('input_schema', {})
-            params = schema.get('properties', {})
-            required = schema.get('required', [])
-            param_desc = []
-            for p_name, p_info in params.items():
-                p_type = p_info.get('type', 'any')
-                is_required = '(required)' if p_name in required else '(optional)'
-                param_desc.append(f"    - {p_name}: {p_type} {is_required}")
-            
-            lines.append(f"- {tool_name}: {desc}")
-            if param_desc:
-                lines.extend(param_desc)
-        
-        return "\n".join(lines)
+    
 
     def _extract_latest_user_intent(self, conversation: str) -> str:
         """Extract the latest user request from formatted conversation text."""
@@ -2640,7 +2609,3 @@ class DirectTaskExecutor:
             )
         finally:
             reset_active_character(char_token)
-    
-    async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
-        """Kept for interface compatibility; MCP has been removed, always returns empty."""
-        return {}

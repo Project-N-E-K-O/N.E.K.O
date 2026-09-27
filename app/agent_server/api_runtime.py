@@ -130,7 +130,6 @@ from .api_shared import (  # noqa: F401
     channels,
     datetime,
     get_config_manager,
-    get_session_manager,
     httpx,
     json,
     log_config,

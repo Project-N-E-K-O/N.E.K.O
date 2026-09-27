@@ -130,7 +130,6 @@ from .api_shared import (  # noqa: F401
     channels,
     datetime,
     get_config_manager,
-    get_session_manager,
     httpx,
     json,
     log_config,
@@ -1324,7 +1323,6 @@ async def admin_control(payload: Dict[str, Any]):
             if Modules.browser_use:
                 Modules.browser_use.cancel_running()
                 Modules.browser_use._stop_overlay()
-                Modules.browser_use._agents.clear()
                 try:
                     if Modules.browser_use._browser_session is not None:
                         await Modules.browser_use._remove_overlay(Modules.browser_use._browser_session)

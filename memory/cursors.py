@@ -40,7 +40,6 @@ logger = get_module_logger(__name__, "Memory")
 
 # cursor 键名常量，避免字符串魔法值散落
 CURSOR_REBUTTAL_CHECKED_UNTIL = "rebuttal_checked_until"
-CURSOR_EXTRACTED_UNTIL = "extracted_until"  # 为 P1 outbox / fact_extraction 预留
 
 
 class CursorStore:

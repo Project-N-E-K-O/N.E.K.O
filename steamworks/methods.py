@@ -6,17 +6,6 @@ from ctypes import *
 # (ala CFUNCTYPE vs WINFUNCTYPE), but so far even on Win64, it's all cdecl
 MAKE_CALLBACK = CFUNCTYPE
 
-class InputAnalogActionData_t(Structure):
-    _fields_ = [('eMode', c_uint32),
-                ('x', c_float),
-                ('y', c_float),
-                ('bActive', c_bool)]
-
-class InputDigitalActionData_t(Structure):
-    _fields_ = [('bState', c_bool),
-                ('bActive', c_bool)]
-
-
 STEAMWORKS_METHODS = {
     'SteamShutdown': {
         'restype': None
@@ -135,64 +124,6 @@ STEAMWORKS_METHODS = {
         'restype': None,
         'argtypes': [c_uint64]
     },
-    'SetInputActionManifestFilePath': {
-        'restype': bool,
-        'argtypes': [c_char_p]
-    },
-    'ActivateActionSet': {
-        'restype': None,
-        'argtypes': [c_uint64, c_uint64]
-    },
-    'GetActionSetHandle': {
-        'restype': c_uint64,
-        'argtypes': [c_char_p]
-    },
-    'GetAnalogActionHandle': {
-        'restype': c_uint64,
-        'argtypes': [c_char_p]
-    },
-    'GetAnalogActionData': {
-        'restype': InputAnalogActionData_t,
-        'argtypes': [c_uint64, c_uint64]
-    },
-    'GetControllerForGamepadIndex': {
-        'restype': c_uint64
-    },
-    'GetCurrentActionSet': {
-        'restype': c_uint64
-    },
-    'GetConnectedControllers': {
-        'restype': POINTER(c_uint64)
-    },
-    'GetInputTypeForHandle': {
-        'restype': c_uint64
-    },
-    'GetDigitalActionHandle': {
-        'restype': c_uint64
-    },
-    'GetDigitalActionData': {
-        'restype': InputDigitalActionData_t,
-        'argtypes': [c_uint64, c_uint64]
-    },
-    'GetGamepadIndexForController': {
-        'restype': int
-    },
-    'ControllerInit': {
-        'restype': bool,
-        'argtypes': [c_bool]
-    },
-    'RunFrame': {
-        'restype': None
-    },
-    'ShowBindingPanel': {
-        'restype': bool
-    },
-    'ControllerShutdown': {
-        'restype': bool
-    },
-    'TriggerVibration': {
-        'restype': None
-    },
     'CreateLobby': {
         'restype': None,
         'argtypes': [c_uint64, c_uint64]
@@ -209,38 +140,8 @@ STEAMWORKS_METHODS = {
         'restype': None,
         'argtypes': [c_uint64, c_uint64]
     },
-    'MusicIsEnabled': {
-        'restype': None
-    },
-    'MusicIsPlaying': {
-        'restype': None
-    },
-    'MusicGetVolume': {
-        'restype': c_float
-    },
-    'MusicPause': {
-        'restype': None
-    },
-    'MusicPlay': {
-        'restype': None
-    },
-    'MusicPlayNext': {
-        'restype': None
-    },
-    'MusicPlayPrev': {
-        'restype': None
-    },
-    'MusicSetVolume': {
-        'restype': None
-    },
     'AddScreenshotToLibrary': {
         'restype': c_uint32
-    },
-    'HookScreenshots': {
-        'restype': None
-    },
-    'IsScreenshotsHooked': {
-        'restype': bool
     },
     'SetLocation': {
         'restype': None
@@ -364,9 +265,6 @@ STEAMWORKS_METHODS = {
     'SetVRHeadsetStreamingEnabled': {
         'restype': None
     },
-    'ShowGamepadTextInput': {
-        'restype': bool
-    },
     'StartVRDashboard': {
         'restype': None
     },
@@ -485,9 +383,5 @@ STEAMWORKS_METHODS = {
     'Workshop_GetQueryUGCResult': {
         'restype': bool,
         'argtypes': [c_uint64, c_uint32, POINTER(structs.SteamUGCDetails_t)]
-    },
-    'MicroTxn_SetAuthorizationResponseCallback': {
-        'restype': None,
-        'argtypes': [MAKE_CALLBACK(None, structs.MicroTxnAuthorizationResponse_t)]
     },
 }

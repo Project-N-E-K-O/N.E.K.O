@@ -1379,7 +1379,6 @@ class OpenClawAdapter:
         attachments: Optional[list] = None,
         sender_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
         role_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         self.reload_config()
@@ -1390,7 +1389,6 @@ class OpenClawAdapter:
             role_name=role_name,
             sender_id=sender,
         )
-        del conversation_id
         responses_payload = self._build_responses_payload(
             session_id=resolved_session_id,
             user_id=sender,

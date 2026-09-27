@@ -1156,7 +1156,6 @@ async def on_startup():
             steamworks=steamworks,
             templates=templates,
             config_manager=_config_manager,
-            logger=logger,
             initialize_character_data=initialize_character_data,
             switch_current_catgirl_fast=switch_current_catgirl_fast,
             init_one_catgirl=init_one_catgirl,

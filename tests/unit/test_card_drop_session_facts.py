@@ -1004,25 +1004,13 @@ def test_local_credit_routes_are_retired_for_delegates(
     assert read.json() == mutate.json() == {"detail": "cloud_forge_credits_required"}
 
 
-def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
+def test_retired_credit_routes_ignore_delegate_principal(
     client,
-    tmp_path,
     monkeypatch,
 ):
-    from main_logic import forge_credit_ledger
-
-    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
-    forge_credit_ledger.grant_credit(
-        {
-            "trigger_type": "emotion_combo",
-            "idem_key": "delegate-owner-isolation",
-        },
-        rarity="SR",
-    )
-    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
-    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "33333333-3333-4333-8333-333333333333"
     card_id = "44444444-4444-4444-8444-444444444444"
+    credit_id = "22222222-2222-4222-8222-222222222222"
 
     session_a = _delegate_session()
     token_a = _issue_delegate_from_local_ui(client, monkeypatch, session_a)
@@ -1071,7 +1059,6 @@ def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
-    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
@@ -1079,9 +1066,6 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
     tmp_path,
     monkeypatch,
 ):
-    from main_logic import forge_credit_ledger
-
-    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
     _write_v2_desktop_session(
         tmp_path,
         monkeypatch,
@@ -1095,15 +1079,7 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
             "browser-token-after-refresh": (USER_A_ID, "oauth"),
         },
     )
-    forge_credit_ledger.grant_credit(
-        {
-            "trigger_type": "emotion_combo",
-            "idem_key": "desktop-refresh-owner",
-        },
-        rarity="R",
-    )
-    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
-    ledger_before = forge_credit_ledger.list_credits()
+    credit_id = "22222222-2222-4222-8222-222222222222"
     operation_id = "55555555-5555-4555-8555-555555555555"
     card_id = "66666666-6666-4666-8666-666666666666"
 
@@ -1156,7 +1132,6 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
-    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):

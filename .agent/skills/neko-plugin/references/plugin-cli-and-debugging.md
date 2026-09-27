@@ -70,7 +70,7 @@ Before using a command, run CLI help or read the command module enough to confir
 
 ## Useful Source Areas
 
-- Trigger execution: `plugin/server/runs/trigger_service.py`
+- Trigger execution: `plugin/runs/trigger_service.py`
 - Start/stop lifecycle: `plugin/server/application/plugins/lifecycle_service.py`
 - Registry refresh: `plugin/server/application/plugins/registry_service.py`
 - Config reads/writes: `plugin/server/application/config/`

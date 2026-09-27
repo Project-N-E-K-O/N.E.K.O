@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
-import secrets
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, Tuple
 
@@ -15,70 +10,7 @@ from plugin.logging_config import logger
 
 from plugin.core.state import state
 from plugin.runs.manager import ExportListResponse, RunRecord, get_run, list_export_for_run
-from plugin.settings import RUN_TOKEN_SECRET, RUN_TOKEN_TTL_SECONDS
-
-
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _b64url_decode(s: str) -> bytes:
-    pad = "=" * ((4 - (len(s) % 4)) % 4)
-    return base64.urlsafe_b64decode((s + pad).encode("ascii"))
-
-
-def issue_run_token(*, run_id: str, perm: str = "read") -> Tuple[str, int]:
-    exp = int(time.time()) + int(RUN_TOKEN_TTL_SECONDS)
-    payload = {
-        "run_id": str(run_id),
-        "exp": exp,
-        "nonce": secrets.token_urlsafe(16),
-        "perm": str(perm),
-    }
-    payload_raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    payload_b64 = _b64url_encode(payload_raw)
-    key = str(RUN_TOKEN_SECRET).encode("utf-8")
-    sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
-    token = payload_b64 + "." + _b64url_encode(sig)
-    return token, exp
-
-
-def verify_run_token(token: str) -> Tuple[str, str, int]:
-    if not isinstance(token, str) or "." not in token:
-        raise ValueError("invalid token")
-    p1, p2 = token.split(".", 1)
-    if not p1 or not p2:
-        raise ValueError("invalid token")
-    key = str(RUN_TOKEN_SECRET).encode("utf-8")
-    expected = hmac.new(key, p1.encode("ascii"), hashlib.sha256).digest()
-    got = _b64url_decode(p2)
-    if not hmac.compare_digest(expected, got):
-        raise ValueError("invalid token")
-
-    payload_raw = _b64url_decode(p1)
-    payload = json.loads(payload_raw.decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("invalid token")
-
-    run_id = payload.get("run_id")
-    perm = payload.get("perm")
-    exp = payload.get("exp")
-    if not isinstance(run_id, str) or not run_id.strip():
-        raise ValueError("invalid token")
-    if not isinstance(perm, str) or not perm.strip():
-        perm = "read"
-    if isinstance(exp, bool):
-        raise ValueError("invalid token")
-    if not isinstance(exp, int):
-        if exp is None:
-            raise ValueError("invalid token")
-        try:
-            exp = int(exp)
-        except Exception:
-            raise ValueError("invalid token")
-    if int(time.time()) > int(exp):
-        raise ValueError("expired")
-    return run_id.strip(), perm.strip(), int(exp)
+from plugin.runs.tokens import issue_run_token, verify_run_token
 
 
 @dataclass(frozen=True)

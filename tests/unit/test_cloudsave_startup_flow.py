@@ -234,8 +234,6 @@ def test_runtime_config_reload_preserves_negotiated_fallback_ports(monkeypatch):
         "MEMORY_SERVER_PORT": 53112,
         "TOOL_SERVER_PORT": 53115,
         "USER_PLUGIN_SERVER_PORT": 53116,
-        "AGENT_MQ_PORT": 53117,
-        "MAIN_AGENT_EVENT_PORT": 53118,
     }
     stale_ports = {name: port - 1000 for name, port in selected_ports.items()}
 
@@ -283,8 +281,6 @@ def test_launcher_partial_existing_services_force_multi_mode(monkeypatch, footpr
     }
     internal_ports = {
         "USER_PLUGIN_SERVER_PORT": 43116,
-        "AGENT_MQ_PORT": 43117,
-        "MAIN_AGENT_EVENT_PORT": 43118,
     }
     expected_roles = {
         "MAIN_SERVER_PORT": "main",

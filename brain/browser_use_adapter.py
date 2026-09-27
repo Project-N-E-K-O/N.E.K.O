@@ -374,7 +374,6 @@ class BrowserUseAdapter:
         self._chrome_path: Optional[str] = None
         self._browser_session: Any = None
         self._session_ever_started: bool = False
-        self._agents: Dict[str, Any] = {}
         self._overlay_task: Optional[asyncio.Task] = None
         self._cancelled: bool = False
         try:
@@ -721,14 +720,12 @@ class BrowserUseAdapter:
         self,
         instruction: str,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
-        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a browser task.
 
         Args:
             instruction: What to do.
             timeout_s: Max seconds before timeout (default 300s).
-            session_id: Reuse Agent if same session_id (multi-turn).
         """
         self._cancelled = False
 
@@ -792,11 +789,7 @@ class BrowserUseAdapter:
                 for mode in mode_order:
                     try:
                         print(f"[BrowserUse] trying mode={mode}", flush=True)
-                        llm = self._build_llm(mode=mode)
-                        if session_id and session_id in self._agents:
-                            del self._agents[session_id]
-
-                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
+                        llm = self._build_llm(mode=mode)                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
                         if ip_info_future is not None:
                             try:
                                 ip_addr, country = await asyncio.wait_for(
@@ -833,9 +826,6 @@ class BrowserUseAdapter:
                                 {"evaluate": {"code": _OVERLAY_JS}},
                             ],
                         )
-                        if session_id:
-                            self._agents[session_id] = agent
-
                         self._start_overlay(browser_session)
                         _disconnect_errors = 0
                         _content_filter_errors = 0
@@ -989,10 +979,7 @@ class BrowserUseAdapter:
                         logger.debug(
                             "[BrowserUse] overlay removal during cancel failed: %s",
                             overlay_err,
-                        )
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
-                # Re-raise so the dispatch wrapper hits its CancelledError branch
+                        )                # Re-raise so the dispatch wrapper hits its CancelledError branch
                 # and marks the task as "cancelled" (not "failed"). Swallowing
                 # cancels here caused the HUD to show a cancel as a failure.
                 raise
@@ -1000,8 +987,6 @@ class BrowserUseAdapter:
                 logger.warning("[BrowserUse] Task timed out after %ss", timeout_s)
                 if browser_session:
                     await self._remove_overlay(browser_session)
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
                 return {"success": False, "error": f"timed out after {timeout_s}s"}
             except Exception as e:
                 if (
@@ -1019,9 +1004,7 @@ class BrowserUseAdapter:
                     await self._close_browser()
                     continue
                 if browser_session:
-                    await self._remove_overlay(browser_session)
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
+                    await self._
                 if self._is_browser_disconnected_error(e):
                     logger.warning("[BrowserUse] Browser disconnected, task aborted: %s", e)
                     return {"success": False, "error": "Browser disconnected - browser window was closed"}
@@ -1050,10 +1033,6 @@ class BrowserUseAdapter:
                     ip_info_future = None
         return {"success": False, "error": "browser-use execution failed"}
 
-    async def close_session(self, session_id: str) -> None:
-        """Close and discard a specific session's Agent."""
-        self._agents.pop(session_id, None)
-
     async def _close_browser(self) -> None:
         self._stop_overlay()
         if self._browser_session is not None:
@@ -1078,7 +1057,6 @@ class BrowserUseAdapter:
 
             self._browser_session = None
         self._session_ever_started = False
-        self._agents.clear()
 
     @staticmethod
     def _force_kill_browser(browser_pid: Optional[int]) -> None:
