@@ -184,6 +184,17 @@ describe('configNodeMatches', () => {
     )
   })
 
+  it('does not match base fields dropped by a __replace__ table', () => {
+    // The form hides base-only fields under such a table, so search must agree.
+    const baseline = { cache: { ttl: 120, deep: { ttl: 1 } } }
+    const replaced = { cache: { __replace__: true, size: 5 } }
+    expect(configNodeMatches(replaced, baseline, [], 'ttl', 'all', [], false)).toBe(false)
+    expect(configNodeMatches(replaced, baseline, [], 'size', 'all', [], false)).toBe(true)
+    expect(configNodeMatches({ cache: { size: 5 } }, baseline, [], 'ttl', 'all', [], false)).toBe(
+      true
+    )
+  })
+
   it('does not match the root as configured when the overlay is empty', () => {
     const overlay = {}
     const baseline = { cache: { ttl: 120 }, nested: { value: 1 } }

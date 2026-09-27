@@ -146,7 +146,9 @@ export function configNodeMatches(
   const value = overlay !== undefined ? overlay : baseline
   if (isConfigObject(value)) {
     const a = isConfigObject(overlay) ? overlay : {}
-    const b = !replacement && isConfigObject(baseline) ? baseline : {}
+    // A table marked `__replace__` drops its base fields, as the form does.
+    const replaces = replacement || a[REPLACE_MARKER] === true
+    const b = !replaces && isConfigObject(baseline) ? baseline : {}
     const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(
       (k) => path.length || k !== 'plugin'
     )
@@ -173,7 +175,7 @@ export function configNodeMatches(
           query,
           filter,
           changes,
-          replacement
+          replaces
         )
       )
     return false
