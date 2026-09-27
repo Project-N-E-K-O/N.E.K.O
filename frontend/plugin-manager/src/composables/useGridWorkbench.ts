@@ -175,11 +175,6 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     return pinyinLoad
   }
 
-  function retryPinyinSearch() {
-    pinyinRetryAfter = 0
-    return ensurePinyinSearch()
-  }
-
   if (config.buildPinyinSearchIndex) {
     watch(() => state.filterText.value.trim(), (text) => {
       if (text) void ensurePinyinSearch()
@@ -403,6 +398,5 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     pruneSelection,
     toggleMultiSelect,
     setMultiSelectEnabled,
-    retryPinyinSearch,
   }
 }

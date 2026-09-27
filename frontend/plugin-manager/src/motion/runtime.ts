@@ -30,10 +30,18 @@ export function cancelMotion(element: HTMLElement) {
 
 const pinnedProperties = ['position', 'left', 'top', 'width', 'height', 'margin', 'pointer-events']
 
-/** Takes a leaving element out of flow at its current box so its siblings can
- * take its place immediately. All reads happen before the single write. */
-export function pinInPlace(element: HTMLElement) {
+export type PinBox = Pick<HTMLElement, 'offsetLeft' | 'offsetTop' | 'offsetWidth' | 'offsetHeight'>
+
+export function measurePinBox(element: HTMLElement): PinBox {
   const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = element
+  return { offsetLeft, offsetTop, offsetWidth, offsetHeight }
+}
+
+/** Takes a leaving element out of flow at its current box so its siblings can
+ * take its place immediately. All reads happen before the single write; pass a
+ * box measured earlier when siblings may already have been pinned. */
+export function pinInPlace(element: HTMLElement, box: PinBox = measurePinBox(element)) {
+  const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = box
   Object.assign(element.style, {
     position: 'absolute',
     left: `${offsetLeft}px`, top: `${offsetTop}px`,

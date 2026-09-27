@@ -108,7 +108,8 @@ const rendererReloadRequired = ref(false)
 // A live plugin document owns its language. An app-language update must not
 // discard drafts or cancel a surviving static document's pending mutations.
 const documentLocale = ref<string | null>(null)
-const localeChangePending = computed(() => !!hostedDocument.value && documentLocale.value !== String(locale.value))
+const localeChangePending = computed(() => !!hostedDocument.value && props.surface.mode !== 'markdown'
+  && documentLocale.value !== String(locale.value))
 const runtimeError = ref('')
 const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
@@ -676,17 +677,23 @@ watch(
   () => [locale.value, props.surface.mode, props.pluginId, props.surface.id, props.surface.entry, surfaceTitle.value],
   (current, previous) => {
     if (current.slice(1, 5).some((value, index) => !Object.is(value, previous[index + 1]))) return
-    if (current.every((value, index) => Object.is(value, previous[index]))) return
+    const localeChanged = !Object.is(current[0], previous[0])
+    if (!localeChanged && Object.is(current[5], previous[5])) return
     // Static plugin documents cannot receive the hosted locale handshake.
     // Reload them when the app locale changes, matching the old full-page
-    // reload behavior while keeping the rest of the app mounted.
+    // reload behavior while keeping the rest of the app mounted. Their title
+    // only lives on the iframe attribute, so a title change needs no reload.
     if (props.surface.mode === 'static') {
+      if (!localeChanged) return
       staticSurfaceReady.value = false
       pendingStaticSurfaceMessages.length = 0
       iframeKey.value += 1
       return
     }
-    if (!hostedDocument.value || (props.surface.mode === 'markdown' && current[0] === previous[0] && documentLocale.value === String(locale.value))) void loadHostedTsx()
+    // Markdown is read-only, so there is no work to protect: follow the app
+    // locale and the localized title. Hosted TSX keeps its document until the
+    // user applies the new language.
+    if (!hostedDocument.value || props.surface.mode === 'markdown') void loadHostedTsx()
   },
   { flush: 'sync' },
 )
@@ -694,7 +701,7 @@ watch(
 async function applyDocumentLocale() {
   const generation = hostedRequestGeneration
   try {
-    await ElMessageBox.confirm(t('plugins.unsavedChangesWarning'), t('common.warning'), { type: 'warning' })
+    await ElMessageBox.confirm(t('common.surfaceApplyLanguageConfirm'), t('common.warning'), { type: 'warning' })
   } catch { return }
   if (!componentMounted || generation !== hostedRequestGeneration) return
   void loadHostedTsx()

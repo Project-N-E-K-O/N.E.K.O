@@ -1,16 +1,16 @@
 import { onBeforeUnmount } from 'vue'
-import { cancelMotion, pinInPlace, playMotion, releasePin, type MotionOptions } from './runtime'
+import { cancelMotion, measurePinBox, pinInPlace, playMotion, releasePin, type MotionOptions, type PinBox } from './runtime'
 import { motionPolicy } from './policy'
 
 /** Vue owns DOM identity and FLIP moves; the motion runtime owns entrances,
  * exits and cancellation. Section entrances animate bounded visible children,
  * never the height or transform of a potentially enormous list container. */
 export function useGridMotionController(options: {
-  animateInitial?: () => boolean
   phase?: () => 'initial' | 'filter'
 } = {}) {
-  let firstSectionEntry = true
-  const owned = new Set<HTMLElement>()
+  // Keyed by run: a superseded run's `done` fires inside the replacing
+  // playMotion and must not drop the replacement's ownership.
+  const owned = new Map<HTMLElement, object>()
   const animatedLeaves = new WeakSet<HTMLElement>()
 
   function visible(node: HTMLElement) {
@@ -21,25 +21,42 @@ export function useGridMotionController(options: {
       && rect.right > 0 && rect.left < window.innerWidth
   }
 
+  function motionIndex(node: HTMLElement) {
+    return Number(node.dataset.motionIndex || 0)
+  }
+
   // The index check needs no layout, so bulk removals never reach `visible`.
   function animatable(node: HTMLElement) {
-    return Number(node.dataset.motionIndex || 0) < motionPolicy.maxItems && visible(node)
+    return motionIndex(node) < motionPolicy.maxItems && visible(node)
+  }
+
+  // Vue runs before-leave once per removed item, interleaved with our pins: a
+  // later item measured after an earlier pin has already slid into the freed
+  // slot. Measure every candidate once, before the first pin of the patch.
+  let leaveCandidates: Map<HTMLElement, PinBox | null> | null = null
+  function measureLeaveCandidates(node: HTMLElement) {
+    if (leaveCandidates) return leaveCandidates
+    const candidates = new Map<HTMLElement, PinBox | null>()
+    for (const child of node.parentElement?.children ?? [node]) {
+      if (!(child instanceof HTMLElement) || animatedLeaves.has(child)) continue
+      if (motionIndex(child) >= motionPolicy.maxItems) continue
+      candidates.set(child, visible(child) ? measurePinBox(child) : null)
+    }
+    leaveCandidates = candidates
+    queueMicrotask(() => { leaveCandidates = null })
+    return candidates
   }
 
   function run(node: HTMLElement, options: MotionOptions) {
-    owned.add(node)
+    const token = {}
+    owned.set(node, token)
     playMotion(node, { ...options, done: () => {
-      owned.delete(node)
+      if (owned.get(node) === token) owned.delete(node)
       options.done?.()
     } })
   }
 
   function section(element: Element, done: () => void, leaving = false) {
-    if (!leaving) {
-      const skip = firstSectionEntry && options.animateInitial?.() === false
-      firstSectionEntry = false
-      if (skip) { done(); return }
-    }
     // The section owns one animation. Items are owned exclusively by the
     // nested TransitionGroup; never animate the same element from both hooks.
     const node = element as HTMLElement
@@ -58,7 +75,7 @@ export function useGridMotionController(options: {
   function enterItem(element: Element, done: () => void) {
     const node = element as HTMLElement
     if (!animatable(node)) { done(); return }
-    run(node, { preset: preset(), done })
+    run(node, { preset: preset(), index: motionIndex(node), done })
   }
 
   function leaveItem(element: Element, done: () => void) {
@@ -69,9 +86,11 @@ export function useGridMotionController(options: {
 
   function pinLeavingItem(element: Element) {
     const node = element as HTMLElement
-    if (!animatable(node)) return
+    if (motionIndex(node) >= motionPolicy.maxItems) return
+    const box = measureLeaveCandidates(node).get(node)
+    if (!box) return
     animatedLeaves.add(node)
-    pinInPlace(node)
+    pinInPlace(node, box)
   }
 
   function clearLeavingItemStyles(element: Element) {
@@ -83,12 +102,12 @@ export function useGridMotionController(options: {
   function cancel(element: Element) {
     const node = element as HTMLElement
     cancelMotion(node)
-    for (const child of [...owned]) {
+    for (const child of [...owned.keys()]) {
       if (node.contains(child)) cancelMotion(child)
     }
   }
 
-  onBeforeUnmount(() => { for (const node of [...owned]) cancelMotion(node) })
+  onBeforeUnmount(() => { for (const node of [...owned.keys()]) cancelMotion(node) })
   return {
     enterSection: (el: Element, done: () => void) => section(el, done),
     leaveSection: (el: Element, done: () => void) => section(el, done, true),

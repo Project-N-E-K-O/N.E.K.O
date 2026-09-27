@@ -5,6 +5,8 @@ export const motionPolicy = {
   exitEasing: 'cubic-bezier(0.4, 0, 1, 1)',
   quickDuration: 140,
   staggerStep: 24,
+  /** Grid/list item stagger cap (upstream: 7 × 18ms). Not the CSS
+   * `--motion-stagger-max`, which caps the filter bar's chip cascade. */
   maxDelay: 120,
   maxItems: 12,
   largeList: 80,

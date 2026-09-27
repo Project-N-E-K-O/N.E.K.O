@@ -34,16 +34,9 @@ type PluginMutationOptions = {
 
 export const usePluginStore = defineStore('plugin', () => {
   // 状态
-  const plugins = ref<PluginMeta[]>([])
   const pluginSummaries = ref<PluginListSummary[]>([])
   const pluginDetails = ref<Record<string, PluginMeta>>({})
   const pluginStatuses = ref<Record<string, PluginStatusData>>({})
-  const selectedPluginId = ref<string | null>(null)
-  const loading = ref(false)
-  const error = ref<string | null>(null)
-  const pluginsSnapshotLoaded = ref(false)
-  const pluginsFetchedAt = ref(0)
-  const pluginsFetchedLocale = ref<string | null>(null)
   const pluginStatusSnapshotLoaded = ref(false)
   const pluginStatusFetchedAt = ref(0)
   const PLUGIN_SNAPSHOT_MAX_AGE = 10_000
@@ -52,8 +45,6 @@ export const usePluginStore = defineStore('plugin', () => {
   const pluginSummaryFetchedLocale = ref<string | null>(null)
   
   // 防止请求堆积：正在进行的请求
-  let pendingFetchPlugins: Promise<void> | null = null
-  let pendingFetchPluginsLocale: string | null = null
   let pendingFetchStatus: Promise<void> | null = null
   let pendingFetchSummaries: Promise<void> | null = null
   let pendingFetchSummariesLocale: string | null = null
@@ -63,128 +54,34 @@ export const usePluginStore = defineStore('plugin', () => {
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
   // 请求序列号，用于忽略过期响应
-  let fetchPluginsSeq = 0
   let fetchStatusSeq = 0
   let fetchSummariesSeq = 0
   const fetchDetailSeq = new Map<string, number>()
 
+  // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
+  // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
+  // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
+  // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
+  // 现在直接信任 runtime status（stopped / running / load_failed），
+  // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
+  // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
+  function withDisplayState<P extends PluginListSummary>(plugin: P) {
+    return {
+      ...plugin,
+      status: typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED,
+      enabled: plugin.runtime_enabled !== false,
+      autoStart: plugin.runtime_auto_start !== false,
+    }
+  }
+
+  // Read precedence: detail > summary.
   function resolvePluginById(pluginId: string) {
     const plugin = pluginDetails.value[pluginId]
-      || plugins.value.find(item => item.id === pluginId)
       || pluginSummaries.value.find(item => item.id === pluginId)
-    if (!plugin) return null
-    const status = pluginStatuses.value[pluginId]?.status
-    return {
-      ...plugin,
-      status: typeof status === 'string' ? status : (plugin.status || StatusEnum.STOPPED),
-      enabled: plugin.runtime_enabled !== false,
-      autoStart: plugin.runtime_auto_start !== false,
-    }
+    return plugin ? withDisplayState(plugin) : null
   }
 
-  // All callers use the same read precedence: detail > full snapshot > summary.
-  // This keeps legacy full-list consumers coherent while the list page uses the
-  // lighter summary snapshot.
-  const selectedPlugin = computed(() => {
-    if (!selectedPluginId.value) return null
-    return resolvePluginById(selectedPluginId.value)
-  })
-
-  const pluginsWithStatus = computed(() => {
-    return plugins.value.map(plugin => {
-      const enabled = plugin.runtime_enabled !== false
-      const autoStart = plugin.runtime_auto_start !== false
-      // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
-      // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
-      // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
-      // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
-      // 现在直接信任 runtime status（stopped / running / load_failed），
-      // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
-      // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
-      const displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-      
-      return {
-        ...plugin,
-        status: displayStatus,
-        enabled,
-        autoStart
-      }
-    })
-  })
-
-  const pluginSummariesWithStatus = computed(() => pluginSummaries.value.map(plugin => {
-    const status = pluginStatuses.value[plugin.id]
-    const statusValue = status?.status
-    return {
-      ...plugin,
-      status: typeof statusValue === 'string' ? statusValue : (plugin.status || StatusEnum.STOPPED),
-      enabled: plugin.runtime_enabled !== false,
-      autoStart: plugin.runtime_auto_start !== false,
-    }
-  }))
-
-  const normalPlugins = computed(() => {
-    return pluginsWithStatus.value
-  })
-
-  // 操作
-  async function fetchPlugins(force = false, options: RegistrySyncOptions = {}) {
-    const requestLocale = getLocale()
-    // 防止请求堆积
-    if (!force && pendingFetchPlugins && pendingFetchPluginsLocale === requestLocale) {
-      return pendingFetchPlugins
-    }
-    
-    loading.value = true
-    error.value = null
-    
-    // 设置超时自动清理，防止请求堆积
-    const seq = ++fetchPluginsSeq
-    let timeoutId: ReturnType<typeof setTimeout> | null = null
-    let timeoutReject: ((reason?: unknown) => void) | null = null
-    timeoutId = setTimeout(() => {
-      if (seq === fetchPluginsSeq && pendingFetchPlugins) {
-        console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
-        fetchPluginsSeq += 1
-        pendingFetchPlugins = null
-        pendingFetchPluginsLocale = null
-        loading.value = false
-        timeoutReject?.(new Error('获取插件列表超时'))
-      }
-    }, REQUEST_TIMEOUT)
-    pendingFetchPluginsLocale = requestLocale
-    pendingFetchPlugins = (async () => {
-      try {
-        const response = await getPlugins(
-          requestLocale,
-          options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
-        )
-        // 忽略过期响应，防止旧数据覆盖新数据
-        if (seq !== fetchPluginsSeq) return
-        plugins.value = reconcilePluginSnapshot(plugins.value, response.plugins || [])
-        pluginsSnapshotLoaded.value = true
-        pluginsFetchedAt.value = Date.now()
-        pluginsFetchedLocale.value = requestLocale
-      } catch (err: any) {
-        if (seq !== fetchPluginsSeq) return
-        error.value = err.message || '获取插件列表失败'
-        console.error('Failed to fetch plugins:', err)
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId)
-        if (seq === fetchPluginsSeq) {
-          loading.value = false
-          pendingFetchPlugins = null
-          pendingFetchPluginsLocale = null
-        }
-      }
-    })()
-    const timeout = new Promise<void>((_, reject) => { timeoutReject = reject })
-    pendingFetchPlugins = Promise.race([pendingFetchPlugins, timeout]).finally(() => {
-      if (timeoutId) clearTimeout(timeoutId)
-    })
-    
-    return pendingFetchPlugins
-  }
+  const pluginSummariesWithStatus = computed(() => pluginSummaries.value.map(withDisplayState))
 
   async function fetchPluginSummaries(force = false, options: RegistrySyncOptions = {}) {
     const requestLocale = getLocale()
@@ -261,7 +158,7 @@ export const usePluginStore = defineStore('plugin', () => {
   // Installs and upgrades only refresh summaries, so a cached copy is served
   // immediately and revalidated in the background.
   async function ensurePlugin(pluginId: string) {
-    const cached = pluginDetails.value[pluginId] || plugins.value.find(plugin => plugin.id === pluginId)
+    const cached = pluginDetails.value[pluginId]
     if (cached) {
       fetchPluginDetail(pluginId).catch(err => console.warn(`Failed to revalidate plugin ${pluginId}:`, err))
       return cached
@@ -282,22 +179,10 @@ export const usePluginStore = defineStore('plugin', () => {
     return resolvePluginById(pluginId)
   }
 
-  async function ensurePlugins(maxAgeMs = PLUGIN_SNAPSHOT_MAX_AGE) {
-    const locale = getLocale()
-    const fresh = pluginsSnapshotLoaded.value
-      && pluginsFetchedLocale.value === locale
-      && Date.now() - pluginsFetchedAt.value < maxAgeMs
-    if (fresh) return
-    await fetchPlugins()
-  }
-
   async function refreshLoadedPluginData(options: RegistrySyncOptions = {}) {
     const tasks: Promise<unknown>[] = []
     if (pluginSummarySnapshotLoaded.value) {
       tasks.push(fetchPluginSummaries(true, options))
-    }
-    if (pluginsSnapshotLoaded.value) {
-      tasks.push(fetchPlugins(true, options))
     }
     for (const id of Object.keys(pluginDetails.value)) {
       tasks.push(fetchPluginDetail(id, true))
@@ -308,10 +193,7 @@ export const usePluginStore = defineStore('plugin', () => {
     await Promise.all(tasks)
   }
 
-  async function syncRegistryAndFetchView(
-    view: 'summary' | 'full',
-    options: RegistrySyncOptions = {},
-  ): Promise<RegistrySyncResult> {
+  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
     let result: RegistrySyncResult
     try {
       const response = await refreshPluginsRegistry(
@@ -337,18 +219,9 @@ export const usePluginStore = defineStore('plugin', () => {
           : status === 404 ? i18n.global.t('messages.resourceNotFound') : i18n.global.t('messages.pluginListRefreshUnauthenticated'),
       }
     }
-    if (view === 'summary') await fetchPluginSummaries(true, options)
-    else await fetchPlugins(true, options)
+    await fetchPluginSummaries(true, options)
     pluginListRegistrySynced.value = true
     return result
-  }
-
-  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}) {
-    return syncRegistryAndFetchView('full', options)
-  }
-
-  async function syncRegistryAndFetchSummaries(options: RegistrySyncOptions = {}) {
-    return syncRegistryAndFetchView('summary', options)
   }
 
   async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
@@ -456,36 +329,21 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
-  function setSelectedPlugin(pluginId: string | null) {
-    selectedPluginId.value = pluginId
-  }
-
   return {
     // 状态
-    plugins,
     pluginSummaries,
     pluginDetails,
     pluginStatuses,
-    selectedPluginId,
-    selectedPlugin,
-    pluginsWithStatus,
     pluginSummariesWithStatus,
     getPluginById,
-    normalPlugins,
     pluginListRegistrySynced,
-    loading,
-    error,
-    pluginsSnapshotLoaded,
     pluginStatusSnapshotLoaded,
     // 操作
-    fetchPlugins,
     fetchPluginSummaries,
     ensurePluginSummaries,
     fetchPluginDetail,
     ensurePlugin,
-    ensurePlugins,
     refreshLoadedPluginData,
-    syncRegistryAndFetch,
     syncRegistryAndFetchSummaries,
     ensurePluginListRegistrySynced,
     fetchPluginStatus,
@@ -493,6 +351,5 @@ export const usePluginStore = defineStore('plugin', () => {
     start,
     stop,
     reload,
-    setSelectedPlugin
   }
 })

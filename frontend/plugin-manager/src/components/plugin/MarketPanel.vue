@@ -535,12 +535,7 @@ function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'
 }
 
 // ─── 本地插件对比：slug / repo plugin_id / lock 三路配对 ───────────
-const localPluginKeys = computed(() => {
-  const plugins = pluginStore.pluginSummariesWithStatus.length > 0
-    ? pluginStore.pluginSummariesWithStatus
-    : pluginStore.pluginsWithStatus
-  return localPluginIdentityKeys(plugins)
-})
+const localPluginKeys = computed(() => localPluginIdentityKeys(pluginStore.pluginSummariesWithStatus))
 
 function isInstalled(plugin: MarketPlugin): boolean {
   if (getInstalledState(plugin)) return true
@@ -1205,7 +1200,7 @@ async function initialize() {
     await loadPlugins()
     yankSweep().catch(() => {})
   }
-  if (pluginStore.pluginsWithStatus.length === 0 && pluginStore.pluginSummariesWithStatus.length === 0) {
+  if (pluginStore.pluginSummariesWithStatus.length === 0) {
     pluginStore.fetchPluginSummaries().catch(() => {})
   }
 }

@@ -49,6 +49,7 @@ export default {
   common: {
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
     surfaceApplyLanguage: "Apply language and reload panel",
+    surfaceApplyLanguageConfirm: "Reloading the panel discards its unsaved work. Continue?",
 
     languageLoading: "Loading language; the interface remains available",
     languageLoadFailed: "Language could not load. The current language was kept.",

@@ -49,6 +49,7 @@ export default {
   common: {
     surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
     surfaceApplyLanguage: "言語を適用してパネルを再読み込み",
+    surfaceApplyLanguageConfirm: "パネルを再読み込みすると、未保存の内容は失われます。続行しますか？",
 
     languageLoading: "言語を読み込み中です。画面は引き続き利用できます",
     languageLoadFailed: "言語を読み込めませんでした。現在の言語を維持します。",

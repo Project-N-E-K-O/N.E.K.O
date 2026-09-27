@@ -146,8 +146,6 @@ export interface PluginMeta {
   entry_count?: number
   dependency_count?: number
   has_input_schema?: boolean
-  has_ui?: boolean
-  ui_path?: string | null
 }
 
 /**

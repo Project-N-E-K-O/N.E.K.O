@@ -7,6 +7,7 @@ import { useGridMotionController } from './grid'
 import MotionTransition from './MotionTransition.vue'
 
 const elements: HTMLElement[] = []
+const nativeAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
 let reduced = false
 let hidden = false
 let preferenceChanged: () => void
@@ -43,7 +44,37 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  if (nativeAnimate) Object.defineProperty(HTMLElement.prototype, 'animate', nativeAnimate)
+  else delete (HTMLElement.prototype as Partial<HTMLElement>).animate
 })
+
+function mountGridController() {
+  let controller!: ReturnType<typeof useGridMotionController>
+  const app = createApp(defineComponent({
+    setup() {
+      controller = useGridMotionController()
+      return () => null
+    },
+  }))
+  app.mount(document.createElement('div'))
+  return { controller, app }
+}
+
+/** Grid children whose offsetTop reflows as earlier siblings leave the flow. */
+function gridItems(count: number) {
+  const grid = document.createElement('div')
+  const items = Array.from({ length: count }, (_, index) => {
+    const { element: item } = fixture()
+    item.dataset.motionIndex = String(index)
+    vi.spyOn(item, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 100, left: 0, right: 100 } as DOMRect)
+    Object.defineProperty(item, 'offsetTop', {
+      get: () => 100 * items.slice(0, index).filter(sibling => sibling.style.position !== 'absolute').length,
+    })
+    grid.appendChild(item)
+    return item
+  })
+  return items
+}
 
 it('releases the effect and callback once, leaving authored styles untouched', async () => {
   const { element, animate, animation, finish } = fixture()
@@ -177,15 +208,43 @@ it('continues an interrupted entrance from its current frame instead of snapping
   app.unmount()
 })
 
+it('pins every item of a batch removal at the box it had before the first pin', () => {
+  const { controller, app } = mountGridController()
+  const items = gridItems(3)
+
+  for (const item of items) controller.pinLeavingItem(item)
+
+  expect(items.map(item => item.style.top)).toEqual(['0px', '100px', '200px'])
+  app.unmount()
+})
+
+it('staggers grid entrances by their position in the list', () => {
+  const { controller, app } = mountGridController()
+  const items = gridItems(4)
+
+  controller.enterItem(items[3]!, vi.fn())
+
+  const [, timing] = vi.mocked(items[3]!.animate).mock.calls[0] as unknown as [Keyframe[], KeyframeAnimationOptions]
+  expect(timing.delay).toBe(72)
+  app.unmount()
+})
+
+it('still cancels a replacement grid animation when the controller unmounts', () => {
+  const { controller, app } = mountGridController()
+  const item = gridItems(1)[0]!
+  const replacement = { cancel: vi.fn(), finished: new Promise<void>(() => {}) }
+  vi.spyOn(window, 'getComputedStyle').mockImplementation(() => ({ opacity: '0.5', transform: 'none' }) as CSSStyleDeclaration)
+
+  controller.enterItem(item, vi.fn())
+  vi.mocked(item.animate).mockReturnValueOnce(replacement as unknown as Animation)
+  controller.enterItem(item, vi.fn())
+  app.unmount()
+
+  expect(replacement.cancel).toHaveBeenCalledOnce()
+})
+
 it('skips layout reads and pinning for bulk grid removals beyond the animated window', () => {
-  let controller!: ReturnType<typeof useGridMotionController>
-  const app = createApp(defineComponent({
-    setup() {
-      controller = useGridMotionController()
-      return () => null
-    },
-  }))
-  app.mount(document.createElement('div'))
+  const { controller, app } = mountGridController()
   const node = document.createElement('div')
   node.dataset.motionIndex = '40'
   const rect = vi.spyOn(node, 'getBoundingClientRect')

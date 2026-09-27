@@ -558,9 +558,11 @@ async function loadDetail() {
     // Basic information and navigation do not wait for /surfaces or an optional
     // renderer. Requests below retain their existing API semantics.
     loading.value = false
-    pluginStore.setSelectedPlugin(currentPluginId)
     void pluginStore.fetchPluginStatus(currentPluginId)
     await fetchSurfaces()
+  } catch (error) {
+    // The template falls back to the not-found state once loading clears.
+    if (isCurrent()) console.warn(`Failed to load plugin ${currentPluginId}:`, error)
   } finally {
     if (isCurrent()) loading.value = false
   }

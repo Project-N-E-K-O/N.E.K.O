@@ -49,6 +49,7 @@ export default {
   common: {
     surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
     surfaceApplyLanguage: "应用新语言并重新载入面板",
+    surfaceApplyLanguageConfirm: "重新载入面板会丢失其中未保存的内容。是否继续？",
 
     languageLoading: "正在加载语言，当前界面仍可使用",
     languageLoadFailed: "语言加载失败，已保留当前语言。",

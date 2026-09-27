@@ -576,7 +576,7 @@ _PLUGIN_SUMMARY_FIELDS = (
     "sdk_version", "sdk_recommended", "sdk_supported", "sdk_untested",
     "sdk_conflicts", "runtime_enabled", "runtime_auto_start",
     "runtime_source_missing", "runtime_load_state", "effective_source",
-    "source", "author", "dependencies", "has_ui", "ui_path",
+    "source", "author", "dependencies",
 )
 
 
@@ -589,33 +589,10 @@ def _build_plugin_summary_sync(locale: str | None = None) -> list[dict[str, obje
     ordering, status resolution, i18n and install-source behavior.
     """
     effective_locale = locale or _resolve_default_locale()
-    try:
-        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
-        if not plugins_snapshot:
-            try:
-                with state.acquire_plugins_read_lock(timeout=2.0):
-                    plugins_snapshot = dict(state.plugins)
-            except TimeoutError as exc:
-                raise _PluginRegistryUnavailableError from exc
-            if not plugins_snapshot:
-                return []
-        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
-        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
-    except _PluginRegistryUnavailableError:
-        raise
-    except IO_RUNTIME_ERRORS as exc:
-        logger.warning(
-            "failed to get state snapshots for plugin summary: err_type={}, err={}",
-            type(exc).__name__, str(exc),
-        )
-        raise _PluginRegistryUnavailableError from exc
-
-    running_plugin_ids = {
-        plugin_id
-        for plugin_id, host_obj in hosts_snapshot.items()
-        if isinstance(plugin_id, str)
-        and _host_is_alive(host_obj)
-    }
+    snapshots = _read_registry_snapshots("plugin summary")
+    if snapshots is None:
+        return []
+    plugins_snapshot, running_plugin_ids, handlers_snapshot = snapshots
     install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
     handlers_by_plugin = _index_plugin_entry_handlers(handlers_snapshot)
     result: list[dict[str, object]] = []
@@ -679,6 +656,43 @@ def _host_is_alive(host_obj: object) -> bool:
         return False
 
 
+def _read_registry_snapshots(
+    context: str,
+) -> tuple[Mapping[object, object], set[str], Mapping[object, object]] | None:
+    """Return ``(plugins, running plugin ids, handlers)``, or ``None`` when the
+    registry is genuinely empty."""
+    try:
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
+        if not plugins_snapshot:
+            # The cached API intentionally collapses a lock timeout into an
+            # empty mapping. Confirm emptiness under the public read lock so
+            # callers can distinguish a genuinely empty registry from lock
+            # contention instead of auto-disabling user plugins.
+            try:
+                with state.acquire_plugins_read_lock(timeout=2.0):
+                    plugins_snapshot = dict(state.plugins)
+            except TimeoutError as exc:
+                raise _PluginRegistryUnavailableError from exc
+            if not plugins_snapshot:
+                return None
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
+        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
+    except _PluginRegistryUnavailableError:
+        raise
+    except IO_RUNTIME_ERRORS as exc:
+        logger.warning(
+            "failed to get state snapshots for {}: err_type={}, err={}",
+            context, type(exc).__name__, str(exc),
+        )
+        raise _PluginRegistryUnavailableError from exc
+    running_plugin_ids = {
+        plugin_id
+        for plugin_id, host_obj in hosts_snapshot.items()
+        if isinstance(plugin_id, str) and _host_is_alive(host_obj)
+    }
+    return plugins_snapshot, running_plugin_ids, handlers_snapshot
+
+
 def _append_plugin_fallback(
     *,
     result: list[dict[str, object]],
@@ -721,41 +735,10 @@ def _build_plugin_list_sync(
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     effective_locale = locale or _resolve_default_locale()
-    try:
-        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
-        if not plugins_snapshot:
-            # The cached API intentionally collapses a lock timeout into an
-            # empty mapping. Confirm emptiness under the public read lock so
-            # callers can distinguish a genuinely empty registry from lock
-            # contention instead of auto-disabling user plugins.
-            try:
-                with state.acquire_plugins_read_lock(timeout=2.0):
-                    plugins_snapshot = dict(state.plugins)
-            except TimeoutError as exc:
-                raise _PluginRegistryUnavailableError from exc
-            if not plugins_snapshot:
-                return result
-        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
-        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
-    except _PluginRegistryUnavailableError:
-        raise
-    except IO_RUNTIME_ERRORS as exc:
-        logger.warning(
-            "failed to get state snapshots for plugin list: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
-        raise _PluginRegistryUnavailableError from exc
-
-    running_plugin_ids = set()
-    for plugin_id, host_obj in hosts_snapshot.items():
-        if not isinstance(plugin_id, str):
-            continue
-        try:
-            if hasattr(host_obj, "is_alive") and host_obj.is_alive():
-                running_plugin_ids.add(plugin_id)
-        except Exception:
-            pass
+    snapshots = _read_registry_snapshots("plugin list")
+    if snapshots is None:
+        return result
+    plugins_snapshot, running_plugin_ids, handlers_snapshot = snapshots
 
     install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
     handlers_by_plugin = _index_plugin_entry_handlers(handlers_snapshot)

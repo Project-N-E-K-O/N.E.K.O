@@ -71,15 +71,15 @@ describe('plugin store registry refresh policy', () => {
 
   it('does not reuse an in-flight list request from a different locale', async () => {
     let complete!: (value: any) => void
-    vi.mocked(getPlugins).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    vi.mocked(getPluginSummaries).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
     const store = usePluginStore()
-    const old = store.fetchPlugins()
+    const old = store.fetchPluginSummaries()
     locale.value = 'en-US'
-    await store.ensurePlugins()
-    expect(getPlugins).toHaveBeenCalledTimes(2)
+    await store.ensurePluginSummaries()
+    expect(getPluginSummaries).toHaveBeenCalledTimes(2)
     complete({ plugins: [plugin('stale')] })
     await old
-    expect(store.plugins).toEqual([])
+    expect(store.pluginSummaries).toEqual([])
   })
 
   it('does not overwrite a fresh single status with an older full snapshot', async () => {
@@ -99,20 +99,20 @@ describe('plugin store registry refresh policy', () => {
   it('marks explicit registry syncs as satisfying the first plugin list open', async () => {
     const store = usePluginStore()
 
-    await store.syncRegistryAndFetch()
+    await store.syncRegistryAndFetchSummaries()
     const initialOpenResult = await store.ensurePluginListRegistrySynced()
 
     expect(initialOpenResult).toBeNull()
     expect(store.pluginListRegistrySynced).toBe(true)
     expect(refreshPluginsRegistry).toHaveBeenCalledTimes(1)
-    expect(getPlugins).toHaveBeenCalledTimes(1)
+    expect(getPluginSummaries).toHaveBeenCalledTimes(1)
   })
 
   it('localizes unauthenticated registry refresh warnings', async () => {
     vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 401 } })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch()
+    const result = await store.syncRegistryAndFetchSummaries()
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshUnauthenticated')
     expect(result.warningMessage).toBe('messages.pluginListRefreshUnauthenticated')
@@ -126,7 +126,7 @@ describe('plugin store registry refresh policy', () => {
     })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch()
+    const result = await store.syncRegistryAndFetchSummaries()
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartial', {
       target: 'broken',
@@ -141,7 +141,7 @@ describe('plugin store registry refresh policy', () => {
     vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 403 } })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch()
+    const result = await store.syncRegistryAndFetchSummaries()
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshForbidden')
     expect(result.warningMessage).toBe('messages.pluginListRefreshForbidden')
@@ -155,7 +155,7 @@ describe('plugin store registry refresh policy', () => {
     })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch()
+    const result = await store.syncRegistryAndFetchSummaries()
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartialUnknown')
     expect(result.warningMessage).toBe('messages.pluginListRefreshPartialUnknown')
@@ -172,7 +172,7 @@ describe('plugin store registry refresh policy', () => {
     })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch()
+    const result = await store.syncRegistryAndFetchSummaries()
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartialMultiple', {
       count: 2,
@@ -188,11 +188,11 @@ describe('plugin store registry refresh policy', () => {
     vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 404 } })
     const store = usePluginStore()
 
-    const result = await store.syncRegistryAndFetch({ preserveMessagesOn404: true })
+    const result = await store.syncRegistryAndFetchSummaries({ preserveMessagesOn404: true })
 
     expect(translate).toHaveBeenCalledWith('messages.resourceNotFound')
     expect(result.warningMessage).toBe('messages.resourceNotFound')
-    expect(getPlugins).toHaveBeenCalledWith('zh-CN', { preserveMessagesOn404: true })
+    expect(getPluginSummaries).toHaveBeenCalledWith('zh-CN', { preserveMessagesOn404: true })
   })
 
   it('can defer lifecycle refreshes so batch operations refresh once afterward', async () => {
@@ -202,7 +202,7 @@ describe('plugin store registry refresh policy', () => {
 
     expect(startPlugin).toHaveBeenCalledWith('demo')
     expect(getPluginStatus).not.toHaveBeenCalled()
-    expect(getPlugins).not.toHaveBeenCalled()
+    expect(getPluginSummaries).not.toHaveBeenCalled()
   })
 
   it('reports a successful start even when the follow-up refresh fails', async () => {
@@ -258,13 +258,13 @@ describe('plugin store registry refresh policy', () => {
     const initialNow = Date.now()
     const now = vi.spyOn(Date, 'now').mockReturnValue(initialNow)
 
-    await store.ensurePlugins()
-    await store.ensurePlugins()
-    expect(getPlugins).toHaveBeenCalledOnce()
+    await store.ensurePluginSummaries()
+    await store.ensurePluginSummaries()
+    expect(getPluginSummaries).toHaveBeenCalledOnce()
 
     now.mockReturnValue(initialNow + 10_001)
-    await store.ensurePlugins()
-    expect(getPlugins).toHaveBeenCalledTimes(2)
+    await store.ensurePluginSummaries()
+    expect(getPluginSummaries).toHaveBeenCalledTimes(2)
     now.mockRestore()
   })
 
@@ -290,25 +290,6 @@ describe('plugin store registry refresh policy', () => {
     await Promise.all([oldRequest, freshRequest])
 
     expect(store.pluginStatuses).toEqual({ fresh: { status: 'running' } })
-  })
-
-  it('invalidates a plugin list response that arrives after timeout', async () => {
-    vi.useFakeTimers()
-    try {
-      const store = usePluginStore()
-      let resolveLate!: (value: any) => void
-      vi.mocked(getPlugins).mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve }) as any)
-
-      const request = store.fetchPlugins()
-      vi.advanceTimersByTime(15_000)
-      resolveLate({ plugins: [plugin('late')] })
-      await expect(request).rejects.toThrow('获取插件列表超时')
-
-      expect(store.plugins).toEqual([])
-      expect(store.pluginsSnapshotLoaded).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
   })
 })
 

@@ -4,7 +4,6 @@
     :icon="icon"
     :items="items"
     :layout-mode="layoutMode"
-    :animate-initial="animateInitial"
     :motion-phase="motionPhase"
     :multi-select-enabled="multiSelectEnabled"
     :selected-ids="selectedPluginIds"
@@ -48,9 +47,8 @@ withDefaults(defineProps<{
   showSourceDetail?: boolean
   identityPluginIds: string[]
   variant?: 'default' | 'adapter'
-  animateInitial?: boolean
   motionPhase?: 'initial' | 'filter'
-}>(), { animateInitial: true, motionPhase: 'initial' })
+}>(), { motionPhase: 'initial' })
 
 defineEmits<{
   'item-click': [pluginId: string]

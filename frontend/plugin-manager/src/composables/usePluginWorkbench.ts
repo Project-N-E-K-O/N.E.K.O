@@ -34,7 +34,6 @@ export type PluginWorkbenchItem = PluginMeta & {
   entry_count?: number
   dependency_count?: number
   has_input_schema?: boolean
-  has_ui?: boolean
 }
 
 const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter']
@@ -266,6 +265,5 @@ export function usePluginWorkbench<
     pruneSelection: workbench.pruneSelection,
     setMultiSelectEnabled: workbench.setMultiSelectEnabled,
     toggleMultiSelect: workbench.toggleMultiSelect,
-    retryPinyinSearch: workbench.retryPinyinSearch,
   }
 }

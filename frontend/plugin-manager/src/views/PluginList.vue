@@ -620,7 +620,6 @@ const dangerDialogMessage = computed(() => {
 })
 
 const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
-const rawNormalPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -1133,7 +1132,7 @@ async function handleDangerActionConfirm() {
 }
 
 const runningPlugins = computed(() => {
-  return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running')
+  return rawPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
 // ── Import (upload + install) ─────────────────────────────────────────

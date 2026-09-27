@@ -11,10 +11,7 @@
       class="grid-section"
       :class="[
         sectionClass,
-        {
-          'grid-section--filter': motionPhase === 'filter',
-          'grid-section--large': items.length > motionPolicy.largeList,
-        },
+        { 'grid-section--large': items.length > motionPolicy.largeList },
       ]"
       :data-yui-guide-id="sectionGuideId"
     >
@@ -121,8 +118,6 @@ const props = withDefaults(defineProps<{
   variant?: string
   /** 可选：用于 data-yui-guide-id 的前缀（如 "plugin-list"）。 */
   guidePrefix?: string
-  /** False only when a parent already owns this grid's initial entrance. */
-  animateInitial?: boolean
   /** Lightweight updates used while the user is actively filtering. */
   motionPhase?: 'initial' | 'filter'
 }>(), {
@@ -130,7 +125,6 @@ const props = withDefaults(defineProps<{
   icon: undefined,
   variant: 'default',
   guidePrefix: undefined,
-  animateInitial: true,
   motionPhase: 'initial',
 })
 
@@ -144,7 +138,6 @@ const {
   pinLeavingItem, clearLeavingItemStyles, enterSection, leaveSection,
   enterItem, leaveItem, cancel,
 } = useGridMotionController({
-  animateInitial: () => props.animateInitial,
   phase: () => props.motionPhase,
 })
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)

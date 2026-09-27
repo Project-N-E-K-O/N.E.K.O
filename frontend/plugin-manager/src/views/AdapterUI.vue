@@ -143,8 +143,7 @@ async function loadSurfaces() {
 }
 
 onMounted(async () => {
-  const hadSnapshot = pluginStore.pluginsWithStatus.length > 0
-    || pluginStore.pluginSummariesWithStatus.length > 0
+  const hadSnapshot = pluginStore.pluginSummariesWithStatus.length > 0
   loading.value = !hadSnapshot
   loadError.value = null
   try {

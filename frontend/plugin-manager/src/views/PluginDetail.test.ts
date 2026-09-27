@@ -10,6 +10,7 @@ import { usePluginStore } from '@/stores/plugin'
 const apiMocks = vi.hoisted(() => ({
   getPluginUiSurfaceInfo: vi.fn(),
   get: vi.fn(),
+  getPlugin: vi.fn(),
   getPlugins: vi.fn(),
   getPluginStatus: vi.fn(),
 }))
@@ -24,6 +25,7 @@ const localeRef = ref('en-US')
 
 vi.mock('@/api/plugins', () => ({
   getPluginUiSurfaceInfo: apiMocks.getPluginUiSurfaceInfo,
+  getPlugin: apiMocks.getPlugin,
   getPlugins: apiMocks.getPlugins,
   getPluginStatus: apiMocks.getPluginStatus,
 }))
@@ -132,7 +134,7 @@ function surface(overrides: Partial<PluginUiSurface>): PluginUiSurface {
   }
 }
 
-async function mountDetail(surfaces: PluginUiSurface[]): Promise<MountedDetail> {
+async function mountDetail(surfaces: PluginUiSurface[], { seedStore = true } = {}): Promise<MountedDetail> {
   apiMocks.getPluginUiSurfaceInfo.mockResolvedValue({ surfaces, warnings: [] })
   apiMocks.get.mockResolvedValue({ has_ui: true })
   const plugin = {
@@ -149,7 +151,7 @@ async function mountDetail(surfaces: PluginUiSurface[]): Promise<MountedDetail> 
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = usePluginStore()
-  store.plugins = [plugin]
+  if (seedStore) store.pluginDetails = { [plugin.id]: plugin }
   const app = createApp(PluginDetail)
   app.use(pinia)
   app.config.globalProperties.$t = (key: string) => key
@@ -198,6 +200,24 @@ describe('PluginDetail surface selection', () => {
     hostedFrameMocks.refreshContext.mockReset()
     configEditorMocks.mounts = 0
     localeRef.value = 'en-US'
+  })
+
+  it('falls back to the not-found state without an unhandled rejection when the detail fails to load', async () => {
+    apiMocks.getPlugin.mockRejectedValue(new Error('network down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+
+    const mounted = await mountDetail([], { seedStore: false })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mounted.container.querySelector('[data-testid="config-editor"]')).toBeNull()
+    expect(apiMocks.getPluginUiSurfaceInfo).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalled()
+    expect(unhandled).not.toHaveBeenCalled()
+    process.off('unhandledRejection', unhandled)
+    warn.mockRestore()
+    mounted.unmount()
   })
 
   it('keeps the detail card and its drafts mounted when only the locale changes', async () => {

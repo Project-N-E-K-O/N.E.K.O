@@ -62,12 +62,7 @@ const route = useRoute()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
 
-const adapters = computed(() => {
-  const plugins = pluginStore.pluginSummariesWithStatus.length > 0
-    ? pluginStore.pluginSummariesWithStatus
-    : pluginStore.pluginsWithStatus
-  return plugins.filter((p) => p.type === 'adapter')
-})
+const adapters = computed(() => pluginStore.pluginSummariesWithStatus.filter((p) => p.type === 'adapter'))
 
 const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },

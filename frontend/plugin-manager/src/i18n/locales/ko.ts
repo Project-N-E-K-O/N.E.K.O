@@ -49,6 +49,7 @@ export default {
   common: {
     surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",
     surfaceApplyLanguage: "언어 적용 및 패널 새로고침",
+    surfaceApplyLanguageConfirm: "패널을 새로고침하면 저장하지 않은 내용이 손실됩니다. 계속하시겠습니까?",
 
     languageLoading: "언어를 불러오는 중입니다. 화면은 계속 사용할 수 있습니다",
     languageLoadFailed: "언어를 불러오지 못했습니다. 현재 언어를 유지합니다.",
