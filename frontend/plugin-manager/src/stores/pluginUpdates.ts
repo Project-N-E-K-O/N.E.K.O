@@ -143,13 +143,20 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
    *  installed. The registry sync that follows can fail before the plugin list
    *  is refetched, leaving the replaced version in it. Only while the list still
    *  shows exactly that version is it treated as stale; any other value (caught
-   *  up, reinstalled lower from the Market page, ...) is the truth again. */
-  const installedThisSession = new Map<string, { from: string; to: string }>()
+   *  up, reinstalled lower from the Market page, ...) is the truth again. The
+   *  Market id and channel must match too: the same version string from another
+   *  source is a different install. */
+  interface SessionInstall { marketId: string; channel: string; from: string; to: string }
+  const installedThisSession = new Map<string, SessionInstall>()
+
+  function sameSource(record: SessionInstall, source: { marketId: string; channel: string }): boolean {
+    return record.marketId === source.marketId && record.channel === source.channel
+  }
 
   function effectiveVersion(target: MarketUpdateTarget): string {
     const record = installedThisSession.get(target.pluginId)
     if (!record) return target.currentVersion
-    if (target.currentVersion === record.from) return record.to
+    if (sameSource(record, target) && target.currentVersion === record.from) return record.to
     installedThisSession.delete(target.pluginId)
     return target.currentVersion
   }
@@ -316,8 +323,11 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     // the version that was just installed again.
     // Chained upgrades on a still-stale list keep the version the list shows.
     const previous = installedThisSession.get(candidate.pluginId)
+    const chained = !!previous && sameSource(previous, candidate) && previous.to === candidate.currentVersion
     installedThisSession.set(candidate.pluginId, {
-      from: previous?.to === candidate.currentVersion ? previous.from : candidate.currentVersion,
+      marketId: candidate.marketId,
+      channel: candidate.channel,
+      from: chained ? previous.from : candidate.currentVersion,
       to: candidate.latestVersion,
     })
     await usePluginStore().syncRegistryAndFetch().catch((err: unknown) => {

@@ -436,6 +436,27 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates.map((c) => `${c.currentVersion}->${c.latestVersion}`)).toEqual(['0.9.0->1.0.5'])
   })
 
+  it('ignores the remembered install once the plugin comes from another channel', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    mocks.pluginStore.syncRegistryAndFetch.mockRejectedValueOnce(new Error('registry down'))
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+
+    // Reinstalled from beta at the very version the stable upgrade replaced.
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0', 'beta'))])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.0.5', 'beta']]))
+    await store.check({ force: true })
+    // Regression guard: matching on the version string alone reused the stable
+    // record and hid this beta update.
+    expect(store.candidates.map((c) => `${c.channel}:${c.currentVersion}->${c.latestVersion}`))
+      .toEqual(['beta:1.0.0->1.0.5'])
+  })
+
   it('keeps masking a still-stale list across chained upgrades', async () => {
     vi.mocked(fetchMarketPluginVersions)
       .mockResolvedValueOnce([release('1.1.0')])
