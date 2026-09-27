@@ -232,15 +232,7 @@ USER_PLUGIN_EXEC_ROOT = get_user_plugin_exec_root()
 USER_PLUGIN_CONFIG_ROOT = USER_PLUGIN_EXEC_ROOT
 USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
 USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root()
-# Deprecated compatibility alias for older single-root callers.
-PLUGIN_CONFIG_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
 PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
-warnings.warn(
-    "plugin.settings.PLUGIN_CONFIG_ROOT is deprecated; use PLUGIN_CONFIG_ROOTS "
-    "or USER_PLUGIN_CONFIG_ROOT instead.",
-    DeprecationWarning,
-    stacklevel=2,
-)
 
 
 # ========== 队列容量配置 ==========
@@ -367,9 +359,6 @@ MARKET_API_URL = _validate_http_url(
     allow_empty=True,
 )
 
-# Backward-compatible alias for older imports. Do not use this as an auth URL.
-MARKET_URL = MARKET_API_URL
-
 # 插件市场 Web URL。插件管理器打开详情页时使用这个地址，而 API 请求仍走
 # MARKET_API_URL + /api/v1。本地开发默认前端 Vite 端口 5173；生产未显式配置时
 # 默认与 MARKET_API_URL 同源。
@@ -441,9 +430,6 @@ STATUS_CONSUMER_SLEEP_INTERVAL = 0.1
 
 # 消息消费任务的休眠间隔（秒）
 MESSAGE_CONSUMER_SLEEP_INTERVAL = 0.1
-
-# 结果消费任务的休眠间隔（秒）
-RESULT_CONSUMER_SLEEP_INTERVAL = 0.1
 
 # 是否打印插件消息转发日志（[MESSAGE FORWARD]）
 # Env: NEKO_PLUGIN_LOG_MESSAGE_FORWARD, default=True
@@ -680,22 +666,6 @@ if _sync_policy not in ("warn", "reject"):
     _sync_policy = "warn"
 SYNC_CALL_IN_HANDLER_POLICY = _sync_policy
 
-# ========== 插件 Logger 文件配置 ==========
-
-# 插件文件日志默认配置（使用 loguru 创建的进程内 file handler）
-# 默认日志级别（字符串格式，loguru 使用）
-PLUGIN_LOG_LEVEL = "INFO"
-
-# 单个日志文件最大大小（字节），默认 5MB
-PLUGIN_LOG_MAX_BYTES = 5 * 1024 * 1024
-
-# 轮转备份文件数量，默认 10 个
-PLUGIN_LOG_BACKUP_COUNT = 10
-
-# 最多保留的日志文件总数（包括当前和备份），默认 20 个
-PLUGIN_LOG_MAX_FILES = 20
-
-
 # ========== 插件状态持久化配置 ==========
 
 # 插件状态持久化后端（统一管理 freeze 和自动保存）
@@ -725,13 +695,6 @@ PLUGIN_ENABLE_DEPENDENCY_CHECK = os.getenv("PLUGIN_ENABLE_DEPENDENCY_CHECK", "fa
 # - False：跳过 ID 冲突检查，允许多个插件声明相同 ID（可能导致不可预期行为，仅建议调试使用）；
 # - True：启用严格 ID 冲突检测和重命名逻辑。
 PLUGIN_ENABLE_ID_CONFLICT_CHECK = os.getenv("PLUGIN_ENABLE_ID_CONFLICT_CHECK", "false").lower() in ("true", "1", "yes")
-
-
-# ========== 主进程 loguru 配置 ==========
-
-# 主进程 loguru 日志等级（仅影响主进程；插件子进程会各自配置 loguru）
-# Env: NEKO_LOGURU_LEVEL, default="INFO"
-NEKO_LOGURU_LEVEL = os.getenv("NEKO_LOGURU_LEVEL", "INFO")
 
 
 # ========== 配置验证 ==========
@@ -855,12 +818,10 @@ __all__ = [
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
     "USER_PLUGIN_PACKAGES_ROOT",
-    "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "NEKO_AUTH_URL",
     "NEKO_AUTH_CLIENT_ID",
     "MARKET_API_URL",
-    "MARKET_URL",
     "MARKET_WEB_URL",
     "MARKET_ORIGINS",
     "get_builtin_plugin_config_root",
@@ -906,7 +867,6 @@ __all__ = [
     # 其他配置
     "STATUS_CONSUMER_SLEEP_INTERVAL",
     "MESSAGE_CONSUMER_SLEEP_INTERVAL",
-    "RESULT_CONSUMER_SLEEP_INTERVAL",
     "PLUGIN_LOG_MESSAGE_FORWARD",
     "PLUGIN_LOG_SYNC_CALL_WARNINGS",
     "PLUGIN_LOG_BUS_SUBSCRIPTIONS",
@@ -924,20 +884,14 @@ __all__ = [
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
     "MESSAGE_PLANE_VALIDATE_MODE",
-    
-    # 插件Logger配置
-    "PLUGIN_LOG_LEVEL",
-    "PLUGIN_LOG_MAX_BYTES",
-    "PLUGIN_LOG_BACKUP_COUNT",
-    "PLUGIN_LOG_MAX_FILES",
-    
+
     # 状态持久化配置
     "PLUGIN_STATE_BACKEND_DEFAULT",
-    
+
     # Run 配置
     "RUN_EXECUTION_TIMEOUT",
     "RUN_STORE_MAX_COMPLETED",
-    
+
     # 验证函数
     "validate_config",
 ]
@@ -949,12 +903,10 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "USER_PLUGIN_CONFIG_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
     "USER_PLUGIN_PACKAGES_ROOT",
-    "PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOTS",
     "NEKO_AUTH_URL",
     "NEKO_AUTH_CLIENT_ID",
     "MARKET_API_URL",
-    "MARKET_URL",
     "MARKET_WEB_URL",
     "EVENT_QUEUE_MAX",
     "LIFECYCLE_QUEUE_MAX",
@@ -979,7 +931,6 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS",
     "STATUS_CONSUMER_SLEEP_INTERVAL",
     "MESSAGE_CONSUMER_SLEEP_INTERVAL",
-    "RESULT_CONSUMER_SLEEP_INTERVAL",
     "PLUGIN_LOG_MESSAGE_FORWARD",
     "PLUGIN_LOG_SYNC_CALL_WARNINGS",
     "PLUGIN_LOG_BUS_SUBSCRIPTIONS",
@@ -991,18 +942,12 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS",
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
     "SYNC_CALL_IN_HANDLER_POLICY",
-    "MESSAGE_PLANE_BACKEND",
-    "MESSAGE_PLANE_RUST_BIN",
-    "MESSAGE_PLANE_WORKERS",
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
     "MESSAGE_PLANE_VALIDATE_MODE",
-    "PLUGIN_LOG_LEVEL",
-    "PLUGIN_LOG_MAX_BYTES",
-    "PLUGIN_LOG_BACKUP_COUNT",
-    "PLUGIN_LOG_MAX_FILES",
     "PLUGIN_STATE_BACKEND_DEFAULT",
     "RUN_EXECUTION_TIMEOUT",
     "RUN_STORE_MAX_COMPLETED",
+    "validate_config",
 )

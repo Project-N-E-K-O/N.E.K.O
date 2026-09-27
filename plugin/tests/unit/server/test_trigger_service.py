@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.server.runs import trigger_service as module
+from plugin.runs import trigger_service as module
 from plugin.sdk.shared.core.events import EventMeta
 
 

@@ -176,26 +176,3 @@ class TurnDetector(Protocol):
     async def reset(self) -> None: ...
 
     async def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AsrTurnCapabilities:
-    """Only the capability needed to choose an endpoint authority."""
-
-    semantic_endpoint: bool
-
-
-def requires_external_turn_detector(capabilities: AsrTurnCapabilities) -> bool:
-    """Return false for Soniox-like providers with authoritative endpoints."""
-
-    return not capabilities.semantic_endpoint
-
-
-def build_turn_detector_if_required(
-    capabilities: AsrTurnCapabilities, factory: Callable[[], TurnDetector]
-) -> TurnDetector | None:
-    """Construct only for providers without an authoritative semantic endpoint."""
-
-    if not requires_external_turn_detector(capabilities):
-        return None
-    return factory()

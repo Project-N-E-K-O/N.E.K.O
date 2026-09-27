@@ -10,7 +10,7 @@ This matrix tracks `plugin/` test scope for SDK + server config scenarios.
 
 ## Covered Now
 
-- `server.requests.common`
+- `server.messaging.handlers.common`
   - timeout coercion defaults, finite checks, max clamp
 - `server.infrastructure.config_profiles`
   - profile path under base dir

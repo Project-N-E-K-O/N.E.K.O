@@ -91,11 +91,6 @@ from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
 
-# Re-export under the historical private names so existing unit tests keep
-# importing from this module.
-_parse_tool_images = parse_tool_images
-_tool_result_output_payload = tool_result_output_payload
-
 
 def _validate_local_callback_url(url: str) -> str:
     """callback_url host whitelist validation: it may only point at local loopback.

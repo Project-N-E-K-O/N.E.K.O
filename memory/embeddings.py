@@ -716,11 +716,6 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
     return result
 
 
-def detect_avx_vnni() -> bool:
-    """Backward-compatible: whether AVX-VNNI was detected."""
-    has_vnni, _confirmed = detect_avx_vnni_details()
-    return has_vnni
-
 
 def detect_avx2_details() -> tuple[bool, bool]:
     """Return ``(has_avx2, absence_confirmed)`` for x86; ARM is treated as

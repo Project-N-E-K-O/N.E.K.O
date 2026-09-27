@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from main_logic.voice_turn.contracts import (
     VoicePartialEvent,
@@ -22,13 +20,6 @@ from .contracts import (
     VoiceInputDispatchResult,
     VoiceInputRegistration,
 )
-
-if TYPE_CHECKING:
-    from .plugin_api import PluginVoiceInputRegistrar
-
-
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_RESERVED_PLUGIN_IDS = {consumer.value for consumer in BuiltinVoiceInputConsumer}
 
 
 class VoiceInputHandleError(RuntimeError):
@@ -97,22 +88,6 @@ class VoiceInputRegistry:
             VoiceInputConsumerIdentity("builtin", consumer_id.value),
             consumer,
             capabilities or VoiceInputConsumerCapabilities(),
-        )
-
-    def issue_plugin_registrar(self, plugin_id: str) -> PluginVoiceInputRegistrar:
-        """Issue one namespace-bound registrar for a host-validated plugin."""
-
-        normalized = str(plugin_id or "").strip().lower()
-        if (
-            not _PLUGIN_ID_PATTERN.fullmatch(normalized)
-            or normalized in _RESERVED_PLUGIN_IDS
-        ):
-            raise ValueError("VOICE_INPUT_PLUGIN_ID_INVALID")
-        from .registrar import VoiceInputRegistrar
-
-        return VoiceInputRegistrar(
-            self,
-            VoiceInputConsumerIdentity("plugin", normalized),
         )
 
     def activate(self, handle: VoiceInputConsumerHandle) -> None:
@@ -278,16 +253,6 @@ class VoiceInputRegistry:
             self._records.clear()
             self._closed = True
         await self.wait_idle()
-
-    def _register_plugin(
-        self,
-        identity: VoiceInputConsumerIdentity,
-        consumer: VoiceInputConsumer,
-        capabilities: VoiceInputConsumerCapabilities,
-    ) -> VoiceInputRegistration:
-        if identity.namespace != "plugin":
-            raise ValueError("VOICE_INPUT_PLUGIN_NAMESPACE_REQUIRED")
-        return self._register(identity, consumer, capabilities)
 
     def _register(
         self,

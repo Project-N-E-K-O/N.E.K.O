@@ -1028,9 +1028,6 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 lanlan_name,
                 on_compress_done=review._on_compress_done,
             )
-            # 旧模块已禁用（性能不足）：
-            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # 异步事实提取（不阻塞返回，失败静默跳过）

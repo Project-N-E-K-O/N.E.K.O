@@ -62,12 +62,6 @@
 | 评论服务器端口 | `COMMENTER_SERVER_PORT` | - | `48914` | 评论服务 |
 | 工具服务器端口 | `TOOL_SERVER_PORT` | `NEKO_TOOL_SERVER_PORT` | `48915` | Agent 服务 |
 
-### 4. MCP Router 配置
-
-| 配置项 | 代码常量 | 环境变量 | 默认值 |
-|-------|---------|---------|--------|
-| MCP Router URL | `MCP_ROUTER_URL` | `NEKO_MCP_ROUTER_URL` | `http://localhost:3283` |
-
 ### 5. 模型配置
 
 > 历史上的 `ROUTER_MODEL` / `SEMANTIC_MODEL` / `RERANKER_MODEL` /
@@ -77,19 +71,11 @@
 
 #### 通过 config_manager 动态获取的模型
 
-| 配置项 | 代码常量 | 环境变量 | 默认值 | 用途 |
-|-------|---------|---------|--------|------|
-| 摘要模型 | `DEFAULT_SUMMARY_MODEL` | `NEKO_SUMMARY_MODEL` | `qwen-plus` | 对话摘要 |
-| 纠错模型 | `DEFAULT_CORRECTION_MODEL` | `NEKO_CORRECTION_MODEL` | `qwen-max` | 文本纠错 |
-| 情感模型 | `DEFAULT_EMOTION_MODEL` | `NEKO_EMOTION_MODEL` | `qwen-turbo` | 情感分析 |
-| 视觉模型 | `DEFAULT_VISION_MODEL` | `NEKO_VISION_MODEL` | `qwen3-vl-plus-2025-09-23` | 图像理解 |
-
-#### 未使用的占位符模型（config/__init__.py 第 39-40 行）
-
-| 配置项 | 代码常量 | 默认值 | 状态 |
-|-------|---------|--------|------|
-| 全模态模型 | `DEFAULT_REALTIME_MODEL` | `""` | 暂未使用 |
-| TTS 模型 | `DEFAULT_TTS_MODEL` | `""` | 暂未使用 |
+memory 子系统按 tier 走 `config_manager.get_model_api_config(<tier>)`；
+API 提供商与默认模型在 `config/__init__.py` 的 `DEFAULT_CORE_API_PROFILES`
+和 `DEFAULT_ASSIST_API_PROFILES` 中定义，不再支持单独的环境变量
+覆写（已删除未消费的 `NEKO_SUMMARY_MODEL` / `NEKO_CORRECTION_MODEL`
+/ `NEKO_EMOTION_MODEL` / `NEKO_VISION_MODEL`）。
 
 ### 6. API 提供商详细配置
 

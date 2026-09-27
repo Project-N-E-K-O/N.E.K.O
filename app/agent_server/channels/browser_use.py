@@ -29,7 +29,6 @@ from utils.result_parser import (
     _phrase as _rp_phrase,
     _get_lang as _rp_lang,
 )
-from brain.agent_session import get_session_manager
 
 from .. import _shared
 from .._shared import logger
@@ -48,10 +47,6 @@ async def dispatch(
 ) -> None:
     """Handle an analyzer decision routed to the browser-use channel."""
     if _shared.Modules.agent_flags.get("browser_use_enabled", False) and _shared.Modules.browser_use:
-        sm = get_session_manager()
-        bu_session = sm.get_or_create(None, "browser_use")
-        bu_session.add_task(result.task_description)
-
         bu_task_id = str(uuid.uuid4())
         bu_start = _now_iso()
         bu_info = {
@@ -61,7 +56,6 @@ async def dispatch(
             "start_time": bu_start,
             "params": {"instruction": result.task_description},
             "lanlan_name": lanlan_name,
-            "session_id": bu_session.session_id,
             "result": None,
             "error": None,
             "_trigger_user_fingerprint": trigger_user_msg_sig,
@@ -76,8 +70,7 @@ async def dispatch(
             await _emit_main_event(
                 "task_update", lanlan_name,
                 task={"id": bu_task_id, "status": "queued", "type": "browser_use",
-                      "start_time": bu_start, "params": {"instruction": result.task_description},
-                      "session_id": bu_session.session_id},
+                      "start_time": bu_start, "params": {"instruction": result.task_description}},
             )
         except Exception as e:
             logger.debug("[BrowserUse] emit task_update(queued) failed: task_id=%s error=%s", bu_task_id, e)
@@ -125,8 +118,7 @@ async def dispatch(
                             await _emit_main_event(
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": "cancelled", "type": "browser_use",
-                                      "end_time": bu_info["end_time"], "error": bu_info["error"],
-                                      "session_id": bu_session.session_id},
+                                      "end_time": bu_info["end_time"], "error": bu_info["error"]},
                             )
                         except Exception as emit_err:
                             logger.debug("[BrowserUse] emit task_update(disabled-drop) failed: task_id=%s error=%s", bu_task_id, emit_err)
@@ -139,15 +131,12 @@ async def dispatch(
                             "task_update", lanlan_name,
                             task={"id": bu_task_id, "status": "running", "type": "browser_use",
                                   "start_time": bu_info["start_time"],
-                                  "params": {"instruction": result.task_description},
-                                  "session_id": bu_session.session_id},
+                                  "params": {"instruction": result.task_description}},
                         )
                     except Exception as e:
                         logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
                     bres = await adapter.run_instruction(
-                        result.task_description,
-                        session_id=bu_session.session_id,
-                    )
+                        result.task_description,                    )
                 if bu_info.get("status") == "cancelled":
                     # cancel_task set the terminal state before run_instruction
                     # returned (e.g. via fire-and-forget CDP teardown winning
@@ -161,7 +150,6 @@ async def dispatch(
                     summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=bu_parsed)
                 else:
                     summary = _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
-                bu_session.complete_task(bu_parsed or summary, success)
                 _task_tracker.record_completed(
                     lanlan_name, task_id=bu_task_id, method="browser_use",
                     desc=result.task_description or "",
@@ -186,8 +174,7 @@ async def dispatch(
                         "task_update", lanlan_name,
                         task={"id": bu_task_id, "status": bu_info["status"],
                               "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                              "error": (_tt(bu_parsed, TASK_ERROR_MAX_TOKENS) if bu_parsed else "") if not success else None,
-                              "session_id": bu_session.session_id},
+                              "error": (_tt(bu_parsed, TASK_ERROR_MAX_TOKENS) if bu_parsed else "") if not success else None},
                     )
                 except Exception as emit_err:
                     logger.debug("[BrowserUse] emit task_update(terminal) failed: task_id=%s error=%s", bu_task_id, emit_err)
@@ -195,7 +182,6 @@ async def dispatch(
                 cancel_msg = str(e)[:EXCEPTION_TEXT_MAX_CHARS] if str(e) else "cancelled"
                 bu_info["status"] = "cancelled"
                 bu_info["error"] = cancel_msg
-                bu_session.complete_task(cancel_msg, success=False)
                 _task_tracker.record_completed(
                     lanlan_name, task_id=bu_task_id, method="browser_use",
                     desc=result.task_description or "", detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
@@ -216,7 +202,7 @@ async def dispatch(
                         "task_update", lanlan_name,
                         task={"id": bu_task_id, "status": "cancelled", "type": "browser_use",
                               "start_time": bu_start, "end_time": _now_iso(),
-                              "error": cancel_msg, "session_id": bu_session.session_id},
+                              "error": cancel_msg},
                     )
                 except Exception as emit_err:
                     logger.debug("[BrowserUse] emit task_update(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
@@ -237,7 +223,6 @@ async def dispatch(
                     desc=result.task_description or "", detail=str(e)[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False,
                 )
                 bu_info["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
-                bu_session.complete_task(str(e), success=False)
                 try:
                     await _emit_task_result(
                         lanlan_name,
@@ -254,8 +239,7 @@ async def dispatch(
                         "task_update", lanlan_name,
                         task={"id": bu_task_id, "status": "failed", "type": "browser_use",
                               "start_time": bu_start, "end_time": _now_iso(),
-                              "error": _tt(str(e), TASK_ERROR_MAX_TOKENS),
-                              "session_id": bu_session.session_id},
+                              "error": _tt(str(e), TASK_ERROR_MAX_TOKENS)},
                     )
                 except Exception as emit_err:
                     logger.debug("[BrowserUse] emit task_update(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)

@@ -172,7 +172,6 @@ def init_shared_state(
     steamworks,
     templates,
     config_manager,
-    logger,
     initialize_character_data=None,
     switch_current_catgirl_fast=None,
     init_one_catgirl=None,
@@ -194,7 +193,6 @@ def init_shared_state(
     set_steamworks(steamworks)
     _state['templates'] = templates
     _state['config_manager'] = config_manager
-    _state['logger'] = logger
     _state['initialize_character_data'] = initialize_character_data
     _state['switch_current_catgirl_fast'] = switch_current_catgirl_fast
     _state['init_one_catgirl'] = init_one_catgirl
@@ -203,14 +201,9 @@ def init_shared_state(
     _state['release_storage_startup_barrier'] = release_storage_startup_barrier
 
     # Pre-build adapter views (legacy API).
-    # Note: legacy dict was named "websocket_locks" (plural) but the consolidated
-    # field is "websocket_lock" (singular, one per role).
     _state['sync_message_queue'] = _RoleStateFieldView(role_state, 'sync_message_queue')
-    _state['sync_shutdown_event'] = _RoleStateFieldView(role_state, 'sync_shutdown_event')
     _state['session_manager'] = _RoleStateFieldView(role_state, 'session_manager')
     _state['session_id'] = _RoleStateFieldView(role_state, 'session_id')
-    _state['sync_process'] = _RoleStateFieldView(role_state, 'sync_process')
-    _state['websocket_locks'] = _RoleStateFieldView(role_state, 'websocket_lock')
 
 
 def _check_initialized(key: str) -> None:
@@ -259,22 +252,6 @@ def get_session_id() -> Dict:
     return _state['session_id']
 
 
-def get_sync_process() -> Dict:
-    """Get a dict-like view of per-role sync_process."""
-    _check_initialized('sync_process')
-    return _state['sync_process']
-
-
-def get_websocket_locks() -> Dict:
-    """Get a dict-like view of per-role websocket_lock.
-
-    Note: legacy plural name preserved for API compatibility; the underlying
-    field on RoleState is ``websocket_lock`` (singular).
-    """
-    _check_initialized('websocket_locks')
-    return _state['websocket_locks']
-
-
 def get_templates():
     """Get the templates dictionary."""
     _check_initialized('templates')
@@ -285,12 +262,6 @@ def get_config_manager():
     """Get the config_manager dictionary."""
     _check_initialized('config_manager')
     return _state['config_manager']
-
-
-def get_logger():
-    """Get the logger dictionary."""
-    _check_initialized('logger')
-    return _state['logger']
 
 
 def get_request_app_shutdown():

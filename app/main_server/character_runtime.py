@@ -676,9 +676,6 @@ class RoleState:
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
-    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
-    sync_shutdown_event: Optional[Any] = None
-    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问

@@ -116,9 +116,9 @@ def test_merge_with_no_fields_still_normalizes_a_non_dict_output():
 from main_routers.tool_router import (  # noqa: E402
     _MAX_TOOL_IMAGES,
     _MAX_TOOL_IMAGE_B64_BYTES,
-    _parse_tool_images,
-    _tool_result_output_payload,
 )
+from main_logic.tool_calling import parse_tool_images as _parse_tool_images
+from main_logic.tool_calling import tool_result_output_payload as _tool_result_output_payload
 
 # 1x1 PNG — valid base64 that survives decode checks without needing a file.
 _TINY_PNG_B64 = (

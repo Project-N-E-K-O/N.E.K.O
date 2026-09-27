@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Legacy ``settings.json`` accessor.
+"""Legacy ``settings.json`` accessor (read-only).
 
 History
 --------
@@ -20,8 +20,7 @@ This module originally carried two responsibilities:
 
 1. Reading/writing ``memory/{name}/settings.json``. Still in use —
    ``memory_server.py`` and the testbench/dump tools call ``get_settings`` /
-   ``load_settings`` / ``save_settings`` to merge the legacy on-disk fields
-   into the prompt.
+   ``load_settings`` to merge the legacy on-disk fields into the prompt.
 2. Using an LLM to extract new settings from conversations + run LLM
    contradiction resolution. Fully superseded by the evidence / reflection
    pipeline — see the "old module disabled (insufficient performance)" note in
@@ -31,16 +30,14 @@ This module originally carried two responsibilities:
 To keep these two dead methods from dragging along retired hard-coded
 constants like ``SETTING_PROPOSER_MODEL`` / ``SETTING_VERIFIER_MODEL`` (and to
 avoid carving out dead-code exceptions in the project-wide "no temperature"
-gate), this cleanup removes the LLM paths outright and keeps only the disk IO.
-If this ever truly needs reviving, follow the evidence/reflection paradigm —
-do not resurrect the old code.
+gate), this cleanup removes the LLM paths and the write-side disk IO outright
+and keeps only the disk read. ``settings.json`` is now a frozen legacy import
+source — cloudsave may sync it but the app no longer writes back.
 """
 import json
 
 from config import CHARACTER_RESERVED_FIELDS
-from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json
 
 
 class ImportantSettingsManager:
@@ -67,19 +64,6 @@ class ImportantSettingsManager:
                     self.settings[i] = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 self.settings[i] = {i: {}, self.name_mapping['human']: {}}
-
-    def save_settings(self, lanlan_name):
-        assert_cloudsave_writable(
-            self._config_manager,
-            operation="save",
-            target=f"memory/{lanlan_name}/settings.json",
-        )
-        atomic_write_json(
-            self.settings_file[lanlan_name],
-            self.settings[lanlan_name],
-            indent=2,
-            ensure_ascii=False,
-        )
 
     def get_settings(self, lanlan_name):
         self.load_settings()

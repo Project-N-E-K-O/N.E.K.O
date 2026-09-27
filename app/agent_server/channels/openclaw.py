@@ -875,7 +875,6 @@ async def dispatch(
                     attachments=attachments,
                     sender_id=nk_sender_id,
                     session_id=nk_session_id,
-                    conversation_id=conversation_id,
                     role_name=lanlan_name,
                 )
                 success = bool(nk_result.get("success"))
