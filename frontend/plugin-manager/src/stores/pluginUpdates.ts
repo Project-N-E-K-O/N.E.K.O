@@ -308,7 +308,12 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   function isStillOutdated(candidate: MarketUpdateCandidate): boolean {
     const target = collectMarketUpdateTargets(usePluginStore().pluginsWithStatus)
       .find((entry) => entry.pluginId === candidate.pluginId)
-    if (!target || target.marketId !== candidate.marketId) return false
+    // Same source as when the check ran: the upgrade fetches and submits the
+    // release from `candidate.channel`, so a plugin that switched channel since
+    // would be pulled back onto the old one.
+    if (!target || target.marketId !== candidate.marketId || target.channel !== candidate.channel) {
+      return false
+    }
     return hasNewerVersion(effectiveVersion(target), candidate.latestVersion)
   }
 

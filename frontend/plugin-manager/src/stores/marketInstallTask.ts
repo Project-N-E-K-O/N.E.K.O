@@ -291,8 +291,9 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     const rollbackFailed = current.status === 'failed' && rollbackRan && !rolledBack
       && rollbackInfo?.running !== true
     // An upgrade that dies while rolling back reports ``stage: rollback``; the
-    // failure then belongs to the step it undid.
-    if (rolledBack && failedStep === 'rollback') {
+    // rollback only ran because the step before it failed, so that step carries
+    // the failure — whether or not the rollback then restored everything.
+    if (failedStep === 'rollback') {
       const undone = ordered[ordered.indexOf('rollback') - 1]
       if (undone) failed = orderOf(undone)
     }
@@ -591,7 +592,15 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
         // The body is the pre-cancel snapshot. A poll may already have seen the
         // task finish and ended the loop; adopting the body then would bring a
         // stopped task back as running and hold the install slot forever.
-        if (body && !done.value) task.value = body
+        if (body && !done.value) {
+          task.value = body
+          // The task may have advanced since the last poll; record that stage
+          // exactly as a poll would, so a following `canceled` is attributed
+          // to the step it actually stopped in.
+          observe(performance.now(), body)
+          const step = TERMINAL_STATUSES.has(body.status) ? null : stageToStep(body.stage)
+          if (step) lastRunningStep = step
+        }
         return 'ok'
       }
       // 409 = already inside a stage that cannot be torn down safely.

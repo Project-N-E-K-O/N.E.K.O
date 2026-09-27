@@ -438,7 +438,9 @@ describe('market install task store — step checklist', () => {
     await tick()
     await p
 
-    expect(store.steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'failed', 'pending'])
+    // The replacement failed first (that is why rollback ran), and the
+    // rollback then failed too: both carry the failure.
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'done', 'failed', 'failed', 'pending'])
     store.dismiss()
   })
 
@@ -477,6 +479,27 @@ describe('market install task store — step checklist', () => {
     await tick()
     await tick()
     expect(store.steps.map((step) => step.state)).toEqual(['done', 'active', 'pending', 'pending'])
+    store.dismiss()
+  })
+
+  it('records the stage a cancel response reports before the task stops', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.5 }) as never)
+      // The task reached verification between the last poll and the cancel.
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7, cancel_requested: true }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'canceled', stage: 'canceled', progress: 0.7, error_code: 'install_cancelled' }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    await expect(store.cancel('panel')).resolves.toBe('ok')
+    await tick()
+    await expect(p).resolves.toEqual({ ok: false, errorKey: 'market.installCancelled', canceled: true })
+
+    // Regression guard: the cancel snapshot skipped stage bookkeeping, so the
+    // cancellation was pinned on download and verification stayed pending.
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'active', 'pending', 'pending'])
+    expect(store.stageLabelKey).toBe('market.installStage.verify')
     store.dismiss()
   })
 

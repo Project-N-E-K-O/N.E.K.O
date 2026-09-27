@@ -381,6 +381,19 @@ describe('plugin updates store — upgrade', () => {
     expect(fetchMarketPluginVersions).not.toHaveBeenCalled()
   })
 
+  it('drops a candidate whose plugin switched channel since the check', async () => {
+    const fetchMock = mockFetch(() => undefined)
+    const store = await seedOneCandidate()
+    // Same local and Market id, now installed from beta.
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0', 'beta'))])
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    // Regression guard: the stale stable candidate used to pass the preflight
+    // and pull the plugin back onto the stable channel.
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates).toEqual([])
+  })
+
   it('drops a candidate that was already upgraded elsewhere', async () => {
     const fetchMock = mockFetch(() => undefined)
     const store = await seedOneCandidate()
