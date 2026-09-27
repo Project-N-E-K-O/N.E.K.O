@@ -146,9 +146,7 @@ export function configNodeMatches(
   const value = overlay !== undefined ? overlay : baseline
   if (isConfigObject(value)) {
     const a = isConfigObject(overlay) ? overlay : {}
-    // A nested table marked `__replace__` drops its base fields, as the form does; on a
-    // top-level section the marker is ordinary data.
-    const replaces = replacement || (path.length >= 2 && a[REPLACE_MARKER] === true)
+    const replaces = replacement || replacesBaseTable(overlay, path)
     const b = !replaces && isConfigObject(baseline) ? baseline : {}
     const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(
       (k) => path.length || k !== 'plugin'
@@ -256,6 +254,17 @@ export function deepClone<T>(v: T): T {
 // they are only interpreted here and never by `applyProfileOverlay`.
 const DELETE_MARKER = '__DELETE__'
 export const REPLACE_MARKER = '__replace__'
+
+/**
+ * Whether a table's own overlay replaces the base table at `path` outright. deep_merge
+ * only runs below a top-level section (config_profiles.py), so this holds for a nested
+ * table that carries `__replace__` or is explicitly empty; on a top-level section or the
+ * root both are ordinary data.
+ */
+export function replacesBaseTable(overlay: unknown, path: readonly string[]): boolean {
+  if (path.length < 2 || !isMapping(overlay)) return false
+  return overlay[REPLACE_MARKER] === true || Object.keys(overlay).length === 0
+}
 
 function isMapping(value: any): value is ConfigObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)

@@ -4,6 +4,7 @@
 import { del, get, post } from './index'
 import type { AxiosRequestConfig } from 'axios'
 import { PLUGIN_LIFECYCLE_TIMEOUT, PLUGIN_RELOAD_ALL_TIMEOUT } from '@/utils/constants'
+import { setPendingReload } from '@/utils/pendingReload'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -152,9 +153,13 @@ export interface DeletePluginResult {
   message: string
 }
 
-export function deletePlugin(pluginId: string): Promise<DeletePluginResult> {
+export async function deletePlugin(pluginId: string): Promise<DeletePluginResult> {
   const safeId = encodeURIComponent(pluginId)
-  return del(`/plugin/${safeId}`)
+  const result = await del<DeletePluginResult>(`/plugin/${safeId}`)
+  // Uninstalling removes the profiles, and a restored built-in or later reinstall under
+  // the same id starts from the resolved configuration, so nothing is left to apply.
+  setPendingReload(pluginId, false)
+  return result
 }
 
 /**

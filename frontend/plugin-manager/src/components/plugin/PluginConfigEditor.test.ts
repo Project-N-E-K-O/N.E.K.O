@@ -43,13 +43,18 @@ afterEach(() => {
   setPendingReload('test', false)
   localStorage.clear()
 })
-async function mountEditor({ expectNav = true }: { expectNav?: boolean } = {}) {
+async function mountEditor({
+  expectNav = true,
+  onLayoutModeChange,
+}: { expectNav?: boolean; onLayoutModeChange?: (pageScroll: boolean) => void } = {}) {
   const host = document.createElement('main')
   host.dataset.yuiGuideId = 'plugin-main'
   Object.defineProperty(host, 'clientHeight', { value: 1000 })
   document.body.append(host)
   const pluginId = ref('test')
-  const app = createApp({ render: () => h(PluginConfigEditor, { pluginId: pluginId.value }) })
+  const app = createApp({
+    render: () => h(PluginConfigEditor, { pluginId: pluginId.value, onLayoutModeChange }),
+  })
   app.use(ElementPlus)
   app.mount(host)
   let mounted = true
@@ -370,6 +375,17 @@ describe('saved profile hot updates', () => {
     )
     expect(hot).not.toHaveBeenCalled()
     expect(hotButton(host)?.disabled).toBe(false)
+  })
+})
+
+describe('layout mode', () => {
+  it('reports its initial mode so a remount resets the parent', async () => {
+    // The parent keeps the last reported mode across an editor remount; a fresh editor
+    // that measures the same fixed layout would otherwise never correct it.
+    const modes: boolean[] = []
+    const { unmount } = await mountEditor({ onLayoutModeChange: (mode) => modes.push(mode) })
+    expect(modes[0]).toBe(false)
+    unmount()
   })
 })
 

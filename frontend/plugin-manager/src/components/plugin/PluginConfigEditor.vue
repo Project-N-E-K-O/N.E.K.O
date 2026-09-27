@@ -429,7 +429,8 @@ const { pageScroll, scrollContainer, scrollToElement, resetScroll } = useConfigE
   navigation,
   footer,
 })
-watch(pageScroll, (value) => emit('layout-mode-change', value), { flush: 'sync' })
+// Immediate: a remounted editor must reset a parent still holding the previous mode.
+watch(pageScroll, (value) => emit('layout-mode-change', value), { flush: 'sync', immediate: true })
 function sectionRows() {
   return [
     ...(contentScroll.value?.querySelectorAll<HTMLElement>('.cve.is-root > .obj > .row') || []),

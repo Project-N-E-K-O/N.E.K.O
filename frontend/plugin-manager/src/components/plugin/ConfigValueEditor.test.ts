@@ -120,6 +120,11 @@ describe('literal configuration keys', () => {
       expect(await rowPaths({ net: { __replace__: true } })).toContain('net.cache.ttl')
     })
 
+    it('hides base fields under a nested explicitly empty table', async () => {
+      // deep_merge replaces a nested table with an explicit {} as well.
+      expect(await rowPaths({ net: { cache: {} } })).not.toContain('net.cache.ttl')
+    })
+
     it('treats the marker at the root as data', async () => {
       expect(await rowPaths({ __replace__: true })).toContain('top')
     })

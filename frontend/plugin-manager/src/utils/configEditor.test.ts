@@ -200,6 +200,15 @@ describe('configNodeMatches', () => {
     )
   })
 
+  it('does not match base fields dropped by a nested empty table', () => {
+    // deep_merge replaces a nested table with an explicit {}; a top-level {} is a no-op.
+    const baseline = { net: { cache: { ttl: 120 } } }
+    expect(configNodeMatches({ net: { cache: {} } }, baseline, [], 'ttl', 'all', [], false)).toBe(
+      false
+    )
+    expect(configNodeMatches({ net: {} }, baseline, [], 'ttl', 'all', [], false)).toBe(true)
+  })
+
   it('does not match the root as configured when the overlay is empty', () => {
     const overlay = {}
     const baseline = { cache: { ttl: 120 }, nested: { value: 1 } }
