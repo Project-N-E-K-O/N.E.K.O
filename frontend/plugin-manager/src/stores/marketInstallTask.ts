@@ -73,7 +73,8 @@ export interface MarketInstallTask {
 }
 
 export type InstallStepId = 'download' | 'verify' | 'install' | 'replace' | 'rollback' | 'completed'
-export type InstallStepState = 'done' | 'active' | 'failed' | 'pending'
+/** ``stopped``: where a canceled task halted — terminal, so it must not spin. */
+export type InstallStepState = 'done' | 'active' | 'failed' | 'stopped' | 'pending'
 
 export interface InstallStep {
   id: InstallStepId
@@ -314,6 +315,8 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
         state = order === failed ? 'failed' : order < failed ? 'done' : 'pending'
       } else if (current.status === 'completed') {
         state = 'done'
+      } else if (current.status === 'canceled') {
+        state = order < active ? 'done' : order === active ? 'stopped' : 'pending'
       } else if (order < active) {
         state = 'done'
       } else if (order === active) {
@@ -593,13 +596,20 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
         // task finish and ended the loop; adopting the body then would bring a
         // stopped task back as running and hold the install slot forever.
         if (body && !done.value) {
-          task.value = body
           // The task may have advanced since the last poll; record that stage
           // exactly as a poll would, so a following `canceled` is attributed
-          // to the step it actually stopped in.
-          observe(performance.now(), body)
+          // to the step it actually stopped in. The snapshot can also be *older*
+          // than a poll that landed first — then it only contributes the
+          // cancel flag and must not walk the stage back.
           const step = TERMINAL_STATUSES.has(body.status) ? null : stageToStep(body.stage)
-          if (step) lastRunningStep = step
+          const behind = !!step && !!lastRunningStep && orderOf(step) < orderOf(lastRunningStep)
+          if (behind) {
+            if (task.value) task.value = { ...task.value, cancel_requested: body.cancel_requested }
+          } else {
+            task.value = body
+            observe(performance.now(), body)
+            if (step) lastRunningStep = step
+          }
         }
         return 'ok'
       }

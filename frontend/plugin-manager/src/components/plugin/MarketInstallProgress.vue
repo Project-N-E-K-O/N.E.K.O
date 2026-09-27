@@ -54,6 +54,7 @@
             <el-icon v-if="step.state === 'done'"><Check /></el-icon>
             <el-icon v-else-if="step.state === 'failed'"><CloseBold /></el-icon>
             <el-icon v-else-if="step.state === 'active'" class="is-spinning"><Loading /></el-icon>
+            <el-icon v-else-if="step.state === 'stopped'"><Remove /></el-icon>
           </span>
           <span class="install-step__label">{{ t(step.labelKey) }}</span>
           <span v-if="step.id === 'download' && store.transferText" class="install-step__hint">
@@ -109,7 +110,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowDown, ArrowUp, Check, CloseBold, Loading } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Check, CloseBold, Loading, Remove } from '@element-plus/icons-vue'
 
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 
@@ -290,6 +291,11 @@ const rollbackIncomplete = computed(() => {
 
 .install-step--failed {
   color: var(--el-color-danger);
+  font-weight: 600;
+}
+
+.install-step--stopped {
+  color: var(--el-color-warning);
   font-weight: 600;
 }
 

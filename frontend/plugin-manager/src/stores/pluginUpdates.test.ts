@@ -205,6 +205,27 @@ describe('plugin updates store — check', () => {
     expect(store.candidates).toEqual([])
   })
 
+  it('does not reopen a popup the user closed while the boot check ran', async () => {
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    let release: (rows: ReturnType<typeof latestRows>) => void = () => {}
+    vi.mocked(fetchMarketLatestVersions)
+      .mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const store = usePluginUpdatesStore()
+    const boot = store.checkOnBoot()
+    await vi.waitFor(() => expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(1))
+
+    // Opened from the toolbar mid-check (its own forced check queues), then closed.
+    void store.openFromButton()
+    store.closePopup()
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0']]))
+    release(latestRows([[15, '1.1.0']]))
+    await boot
+
+    // Regression guard: the boot check used to pop the window back open.
+    expect(store.candidates).toHaveLength(1)
+    expect(store.popupOpen).toBe(false)
+  })
+
   it('decides the boot popup only after a queued re-check has run', async () => {
     setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
     let releaseFirst: (rows: ReturnType<typeof latestRows>) => void = () => {}
@@ -223,6 +244,24 @@ describe('plugin updates store — check', () => {
 
     expect(store.candidates).toEqual([])
     expect(store.popupOpen).toBe(false)
+  })
+
+  it('keeps a known candidate when a later lookup omits that plugin', async () => {
+    setPlugins([
+      plugin('alpha', marketSource('15', '1.0.0')),
+      plugin('beta', marketSource('18', '1.0.0')),
+    ])
+    vi.mocked(fetchMarketLatestVersions)
+      .mockResolvedValueOnce(latestRows([[15, '1.1.0'], [18, '1.1.0']]))
+      .mockResolvedValueOnce(latestRows([[18, '1.1.0']])) // alpha omitted
+    const store = usePluginUpdatesStore()
+    await store.check()
+    await store.check({ force: true })
+
+    // Regression guard: a transient partial response used to make alpha's
+    // confirmed update vanish from the list.
+    expect(store.candidates.map((c) => c.pluginId).sort()).toEqual(['alpha', 'beta'])
+    expect(store.unresolved).toBe(1)
   })
 
   it('counts plugins the market did not report instead of calling them up to date', async () => {

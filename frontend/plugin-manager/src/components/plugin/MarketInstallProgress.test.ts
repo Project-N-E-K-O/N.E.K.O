@@ -163,6 +163,24 @@ describe('market install progress', () => {
     expect(items[0]!.textContent).toContain('8.5 MB / 25.0 MB')
   })
 
+  it('marks the step a canceled task stopped in without a spinner', () => {
+    makeStore({
+      detailsExpanded: true,
+      steps: [
+        step('download', 'done'),
+        step('verify', 'stopped'),
+        step('replace', 'pending'),
+        step('completed', 'pending'),
+      ],
+    })
+    const root = mount()
+
+    const stopped = root.querySelector('[data-step="verify"]') as HTMLElement
+    expect(stopped.getAttribute('data-state')).toBe('stopped')
+    expect(stopped.querySelector('.install-step__marker')?.children).toHaveLength(1)
+    expect(root.querySelector('.is-spinning')).toBeNull()
+  })
+
   it('labels a completed replacement as an upgrade and a fresh install as an install', () => {
     const completed = {
       task: { task_id: 't', status: 'completed', stage: 'completed', progress: 1 } as MarketInstallTask,

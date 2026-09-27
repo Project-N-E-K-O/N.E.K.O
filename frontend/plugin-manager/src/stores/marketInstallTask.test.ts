@@ -498,7 +498,34 @@ describe('market install task store — step checklist', () => {
 
     // Regression guard: the cancel snapshot skipped stage bookkeeping, so the
     // cancellation was pinned on download and verification stayed pending.
-    expect(store.steps.map((step) => step.state)).toEqual(['done', 'active', 'pending', 'pending'])
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'stopped', 'pending', 'pending'])
+    expect(store.stageLabelKey).toBe('market.installStage.verify')
+    store.dismiss()
+  })
+
+  it('does not let an older cancel snapshot walk the stage back', async () => {
+    let releaseCancel: (value: unknown) => void = () => {}
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.5 }) as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseCancel = resolve as (value: unknown) => void }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7 }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'canceled', stage: 'canceled', progress: 0.7 }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    const cancelling = store.cancel('panel')
+    await tick() // a poll sees `verify` first
+    // The cancel response was produced earlier, while still downloading.
+    releaseCancel(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.5, cancel_requested: true }))
+    await expect(cancelling).resolves.toBe('ok')
+    expect(store.task?.stage).toBe('verify')
+    expect(store.task?.cancel_requested).toBe(true)
+
+    await tick()
+    await p
+    // Regression guard: the older snapshot used to reset the last running step
+    // to download, so the cancellation was pinned on the wrong step.
     expect(store.stageLabelKey).toBe('market.installStage.verify')
     store.dismiss()
   })
@@ -519,7 +546,9 @@ describe('market install task store — step checklist', () => {
       canceled: true,
     })
 
-    expect(store.steps.map((step) => step.state)).toEqual(['done', 'active', 'pending', 'pending'])
+    // Regression guard: the step it stopped in used to stay `active`, i.e. a
+    // spinner under "installation canceled".
+    expect(store.steps.map((step) => step.state)).toEqual(['done', 'stopped', 'pending', 'pending'])
     store.dismiss()
   })
 })

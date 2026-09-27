@@ -139,6 +139,8 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
    *  installed-version snapshot instead of offering the same upgrade again. */
   const completedUpgrades = ref(0)
   let forceCheckQueued = false
+  /** Bumped whenever the user opens or closes the popup themselves. */
+  let popupInteractions = 0
   /** pluginId → the version an upgrade from this popup replaced and the one it
    *  installed. The registry sync that follows can fail before the plugin list
    *  is refetched, leaving the replaced version in it. Only while the list still
@@ -244,6 +246,18 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         const latest = marketVersions.latest(target.marketId, target.channel)
         if (!latest) {
           unresolvedCount += 1
+          // A partial response is not evidence the update went away: keep a
+          // previously found candidate for the same install until this target
+          // is resolved again or confirmed current.
+          const known = previous.get(target.pluginId)
+          if (
+            known
+            && known.marketId === target.marketId
+            && known.channel === target.channel
+            && hasNewerVersion(target.currentVersion, known.latestVersion)
+          ) {
+            next.push({ ...known, currentVersion: target.currentVersion })
+          }
           updateLog.warn('no latest version reported', {
             pluginId: target.pluginId,
             marketId: target.marketId,
@@ -549,11 +563,13 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   // ─── popup plumbing ──────────────────────────────────────────────────────
 
   function closePopup(): void {
+    popupInteractions += 1
     popupOpen.value = false
   }
 
   /** Toolbar button: always gives feedback, even when there is nothing to show. */
   async function openFromButton(): Promise<void> {
+    popupInteractions += 1
     popupOpen.value = true
     if (busy.value) return
     await check({ force: true })
@@ -571,7 +587,14 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       return
     }
     markPopupShown()
+    const interactionsBefore = popupInteractions
     await check()
+    // The user opened or closed the popup while the check ran: that choice
+    // stands — reopening it after a slow response would override a close.
+    if (popupInteractions !== interactionsBefore) {
+      updateLog.info('boot check leaves the popup as the user set it')
+      return
+    }
     if (candidates.value.length > 0) {
       popupOpen.value = true
       updateLog.info('boot check opened the popup', { count: candidates.value.length })
