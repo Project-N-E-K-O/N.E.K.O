@@ -179,3 +179,55 @@ async def test_existing_workshop_item_validation_allows_rename(monkeypatch):
 
     assert valid is True
     assert error == ""
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_existing_workshop_item_with_wrong_owner(
+    monkeypatch, tmp_path
+):
+    content_folder = tmp_path / "card"
+    content_folder.mkdir()
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+
+    steamworks = SimpleNamespace()
+
+    async def _workshop_path():
+        return str(tmp_path)
+
+    async def _reject_existing_item(*args, **kwargs):
+        return False, "Workshop 物品 123456 不属于当前 Steam 账号，已阻止更新"
+
+    class _Request:
+        async def json(self):
+            return {
+                "title": "Card",
+                "content_folder": str(content_folder),
+                "visibility": 0,
+                "character_card_name": "Card",
+            }
+
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(
+        wr_publish,
+        "get_workshop_path_async",
+        _workshop_path,
+    )
+    monkeypatch.setattr(
+        wr_publish,
+        "read_workshop_meta",
+        lambda _name: {"workshop_item_id": 123456},
+    )
+    monkeypatch.setattr(
+        wr_publish,
+        "_validate_existing_workshop_item",
+        _reject_existing_item,
+    )
+
+    response = await wr_publish.publish_to_workshop(
+        _Request()
+    )
+
+    assert response.status_code == 409
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["error"] == "Workshop 更新目标校验失败"
+    assert payload["workshop_item_id"] == "123456"
