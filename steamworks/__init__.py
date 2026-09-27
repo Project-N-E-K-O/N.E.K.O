@@ -60,6 +60,10 @@ def _linux_dlopen_mode(*, global_symbols: bool = False, lazy: bool = False) -> i
 
 _LINUX_OPTIONAL_WRAPPER_METHODS = {
     "SteamShutdown",
+    "SetInputActionManifestFilePath",
+    "GetAnalogActionData",
+    "GetConnectedControllers",
+    "GetDigitalActionData",
     "GetAuthSessionTicket",
     "GetNumAchievements",
     "GetAchievementName",
@@ -73,6 +77,7 @@ _LINUX_OPTIONAL_WRAPPER_METHODS = {
     "Workshop_SetQueryCompletedCallback",
     "Workshop_SendQueryUGCRequest",
     "Workshop_GetQueryUGCResult",
+    "MicroTxn_SetAuthorizationResponseCallback",
 }
 
 _LINUX_UNSAFE_WRAPPER_METHODS = {
@@ -104,10 +109,15 @@ def _linux_get_symbol(cdll_handle, *names: str):
 
 from steamworks.interfaces.apps         import SteamApps
 from steamworks.interfaces.friends      import SteamFriends
+from steamworks.interfaces.matchmaking  import SteamMatchmaking
+from steamworks.interfaces.music        import SteamMusic
+from steamworks.interfaces.screenshots  import SteamScreenshots
 from steamworks.interfaces.users        import SteamUsers
 from steamworks.interfaces.userstats    import SteamUserStats
 from steamworks.interfaces.utils        import SteamUtils
 from steamworks.interfaces.workshop     import SteamWorkshop
+from steamworks.interfaces.microtxn     import SteamMicroTxn
+from steamworks.interfaces.input        import SteamInput
 
 class STEAMWORKS(object):
     """
@@ -254,10 +264,15 @@ class STEAMWORKS(object):
         """
         self.Apps           = SteamApps(self)
         self.Friends        = SteamFriends(self)
+        self.Matchmaking    = SteamMatchmaking(self)
+        self.Music          = SteamMusic(self)
+        self.Screenshots    = SteamScreenshots(self)
         self.Users          = SteamUsers(self)
         self.UserStats      = SteamUserStats(self)
         self.Utils          = SteamUtils(self)
         self.Workshop       = SteamWorkshop(self)
+        self.MicroTxn       = SteamMicroTxn(self)
+        self.Input          = SteamInput(self)
 
 
     def initialize(self) -> bool:
@@ -293,6 +308,14 @@ class STEAMWORKS(object):
 
         return True
 
+    def relaunch(self, app_id: int) -> bool:
+        """
+
+        :param app_id: int
+        :return: None
+        """
+        return self._cdll.RestartAppIfNecessary()
+
     def unload(self) -> None:
         """Shuts down the Steamworks API, releases pointers and frees memory.
 
@@ -325,3 +348,13 @@ class STEAMWORKS(object):
 
         self._cdll.RunCallbacks()
         return True
+
+    def run_forever(self, base_interval: float = 1.0) -> None:
+        """Loop and call Steam.run_callbacks in specified interval
+
+        :param base_interval: float
+        :return: None
+        """
+        while True:
+            self.run_callbacks()
+            time.sleep(base_interval)

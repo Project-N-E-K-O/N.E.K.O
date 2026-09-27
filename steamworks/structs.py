@@ -114,3 +114,12 @@ class SteamUGCDetails_t(Structure):
         ("numChildren", c_uint32),
     ]
 
+
+class MicroTxnAuthorizationResponse_t(Structure):
+    # u32 + u64 + bool：pack=8 时 u64@8，pack=4 时 u64@4。
+    _pack_ = _STEAM_CALLBACK_PACK
+    _fields_ = [
+        ("appId", c_uint32),
+        ("orderId", c_uint64),
+        ("authorized", c_bool)
+    ]
