@@ -83,6 +83,10 @@ class MetricsCollector:
         self._cache: list[dict[str, object]] = []
         self._cache_timestamp: float = 0.0
         self._cache_ttl: float = 0.5  # 500ms 缓存
+        # Appends bump this. A full-query cache publish must not replace a
+        # snapshot that was taken later.
+        self._history_version = 0
+        self._cache_version = -1
     
     async def start(self, plugin_hosts_getter: Callable[[], dict[str, object]]) -> None:
         """启动指标收集任务"""
@@ -134,6 +138,7 @@ class MetricsCollector:
                                 if plugin_id not in self._metrics_history:
                                     self._metrics_history[plugin_id] = []
                                 self._metrics_history[plugin_id].append(metrics)
+                                self._history_version += 1
                                 # 只保留最近 MAX_HISTORY_SIZE 条记录
                                 if len(self._metrics_history[plugin_id]) > self.MAX_HISTORY_SIZE:
                                     self._metrics_history[plugin_id].pop(0)
@@ -252,16 +257,22 @@ class MetricsCollector:
                 return self._cache
             
             with self._lock:
+                version = self._history_version
                 latest_records = [
                     history[-1]
                     for history in self._metrics_history.values()
                     if history
                 ]
             # Existing records are not mutated after append, so conversion can
-            # safely happen after releasing the collector lock.
+            # safely happen after releasing the collector lock. Publish only if
+            # no newer snapshot has already filled the cache.
             result = [self._metrics_to_dict(record) for record in latest_records]
-            self._cache = result
-            self._cache_timestamp = now
+            with self._lock:
+                if version < self._cache_version and self._cache:
+                    return self._cache
+                self._cache = result
+                self._cache_timestamp = time.time()
+                self._cache_version = version
             logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
             return result
     

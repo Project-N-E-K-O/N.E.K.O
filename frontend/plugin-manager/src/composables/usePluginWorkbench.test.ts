@@ -121,6 +121,7 @@ describe('usePluginWorkbench scoped selection state', () => {
   })
 
   it('also builds the index for a CJK query', async () => {
+    safePinyin.mockClear()
     const workbench = useGridWorkbench([{ id: 'plugin' }], {
       scope: 'grid-workbench-cjk-search-test',
       groups: [{ id: 'all', predicate: () => true }],

@@ -11,7 +11,7 @@
  * 状态按 `scope` 在模块级缓存，同 scope 共享，不同 scope 隔离。业务相关语义全部
  * 通过 predicate / qualifier / spec 注入，composable 本身不知业务。
  */
-import { computed, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
+import { computed, getCurrentScope, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
 import type { PinyinSearch } from '@/utils/pinyinSearch'
 
 import { tryCompileSafeRegex, warnReDoSOnce } from '@/utils/safeRegex'
@@ -159,6 +159,8 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   const pinyinSearch = ref<PinyinSearch | null>(null)
   let pinyinLoad: Promise<void> | null = null
   let pinyinRetryAfter = 0
+  let pinyinRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let pinyinAutoRetries = 0
   // `baseItems` creates an immutable snapshot only when this workbench owns
   // the search index. Keeping that snapshot independent from query state is
   // important: typing in the filter must not clone every item, while an
@@ -170,13 +172,31 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     if (!config.buildPinyinSearchIndex || pinyinSearch.value || pinyinLoad || Date.now() < pinyinRetryAfter) return pinyinLoad
     pinyinLoad = import('@/utils/pinyinSearch')
       .then(({ safePinyin }) => { pinyinSearch.value = safePinyin })
-      .catch(() => { pinyinRetryAfter = Date.now() + 5000 })
+      .catch(() => {
+        // The watcher only runs when the query text changes. A failed import
+        // would otherwise stay failed for as long as the user keeps typing nothing.
+        pinyinRetryAfter = Date.now() + 5000
+        if (pinyinRetryTimer || pinyinAutoRetries >= 3) return
+        pinyinAutoRetries += 1
+        pinyinRetryTimer = setTimeout(() => {
+          pinyinRetryTimer = null
+          pinyinRetryAfter = 0
+          if (state.filterText.value.trim()) void ensurePinyinSearch()
+        }, 5000)
+      })
       .finally(() => { pinyinLoad = null })
     return pinyinLoad
   }
 
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      if (pinyinRetryTimer) clearTimeout(pinyinRetryTimer)
+    })
+  }
+
   if (config.buildPinyinSearchIndex) {
     watch(() => state.filterText.value.trim(), (text) => {
+      pinyinAutoRetries = 0
       if (text) void ensurePinyinSearch()
     }, { immediate: true })
   }

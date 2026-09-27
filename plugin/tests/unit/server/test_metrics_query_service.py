@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from plugin.server.application.monitoring import query_service as module
@@ -77,6 +79,42 @@ def test_current_metrics_serializes_after_releasing_collector_lock(
     assert collector.get_current_metrics() == [{"plugin_id": "demo"}]
     assert collector.get_current_metrics("demo") == [{"plugin_id": "demo"}]
     assert lock_states == [False, False]
+
+
+def test_older_full_snapshot_does_not_overwrite_a_newer_metrics_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collector = MetricsCollector()
+    older = PluginMetrics(plugin_id="demo", timestamp="2026-01-01T00:00:00+00:00")
+    newer = PluginMetrics(plugin_id="demo", timestamp="2026-01-01T00:00:01+00:00")
+    collector._metrics_history["demo"] = [older]
+    collector._history_version = 1
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _serialize(value: PluginMetrics) -> dict[str, object]:
+        if value.timestamp == older.timestamp:
+            entered.set()
+            assert release.wait(2)
+        return {"timestamp": value.timestamp}
+
+    monkeypatch.setattr(collector, "_metrics_to_dict", _serialize)
+    stale: dict[str, object] = {}
+
+    def _run_stale() -> None:
+        stale["value"] = collector.get_current_metrics()
+
+    worker = threading.Thread(target=_run_stale)
+    worker.start()
+    assert entered.wait(2)
+    collector._metrics_history["demo"] = [newer]
+    collector._history_version = 2
+    assert collector.get_current_metrics() == [{"timestamp": newer.timestamp}]
+    release.set()
+    worker.join(2)
+
+    assert collector._cache == [{"timestamp": newer.timestamp}]
+    assert stale["value"] == [{"timestamp": newer.timestamp}]
 
 
 def test_metrics_history_filters_and_serializes_after_releasing_collector_lock(
