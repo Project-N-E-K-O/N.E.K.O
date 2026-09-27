@@ -442,6 +442,30 @@ describe('market install task store — step checklist', () => {
     store.dismiss()
   })
 
+  it('lists an override rollback that reports only through rollback_code', async () => {
+    async function finish(rollback: Record<string, unknown>) {
+      vi.mocked(fetchBridge)
+        .mockResolvedValueOnce(task({ task_id: 't', status: 'installing', stage: 'install', progress: 0.8 }) as never)
+        // Source switch failed: stage stays `install`, no `prepared` flag.
+        .mockResolvedValueOnce(task({ task_id: 't', status: 'failed', stage: 'install', progress: 0.8, rollback }) as never)
+      const store = useMarketInstallTaskStore()
+      const p = store.track('t', context({ mode: 'override_builtin' }), 'panel')
+      await tick()
+      await tick()
+      await p
+      const result = store.steps.map((step) => `${step.id}:${step.state}`)
+      store.dismiss()
+      return result
+    }
+
+    // Regression guard: the rollback row used to be missing, leaving only a
+    // failed install step next to the "rolled back" alert.
+    await expect(finish({ rollback_code: 'override_rollback_completed', restored: true, running: false }))
+      .resolves.toEqual(['download:done', 'verify:done', 'install:failed', 'rollback:done', 'completed:pending'])
+    await expect(finish({ rollback_code: 'override_rollback_incomplete', restored: false, running: false }))
+      .resolves.toEqual(['download:done', 'verify:done', 'install:failed', 'rollback:failed', 'completed:pending'])
+  })
+
   it('does not walk the checklist backwards when a retry re-enters download', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7 }) as never)

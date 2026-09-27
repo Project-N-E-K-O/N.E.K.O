@@ -265,7 +265,16 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     // it flips ``stage``, so a prepared rollback belongs in the list already.
     // A successful upgrade keeps ``prepared`` (the backup exists) although the
     // rollback never ran; listing it then would read as "rolled back".
-    if (current.rollback?.prepared && current.status !== 'completed') ids.add('rollback')
+    // An override source switch reports its rollback through ``restored`` /
+    // ``rollback_code`` only — no ``prepared``, and ``stage`` stays ``install``.
+    const rollbackInfo = current.rollback
+    const rollbackRan = !!rollbackInfo && (
+      rollbackInfo.restored === true
+      || rollbackInfo.running === true
+      || !!rollbackInfo.rollback_code
+      || failedStep === 'rollback'
+    )
+    if ((rollbackInfo?.prepared && current.status !== 'completed') || rollbackRan) ids.add('rollback')
 
     const ordered = [...ids].sort((a, b) => orderOf(a) - orderOf(b))
     ordered.push('completed')
@@ -275,13 +284,15 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
     // grows a step mid-flight.
     const furthest = furthestStep ? orderOf(furthestStep) : -1
     let failed = failedStep ? orderOf(failedStep) : -1
-    // A restored rollback still ends as ``failed`` with ``stage: rollback``,
-    // but the rollback itself succeeded: the failure belongs to the step it
-    // undid, otherwise the checklist contradicts the "rolled back" alert.
-    const rolledBack = current.status === 'failed'
-      && failedStep === 'rollback'
-      && current.rollback?.restored === true
-    if (rolledBack) {
+    // A task whose rollback ran still ends as ``failed``; the rollback row gets
+    // its own outcome, so it neither contradicts the "rolled back" alert nor
+    // reads as still pending under the "rollback incomplete" one.
+    const rolledBack = current.status === 'failed' && rollbackInfo?.restored === true
+    const rollbackFailed = current.status === 'failed' && rollbackRan && !rolledBack
+      && rollbackInfo?.running !== true
+    // An upgrade that dies while rolling back reports ``stage: rollback``; the
+    // failure then belongs to the step it undid.
+    if (rolledBack && failedStep === 'rollback') {
       const undone = ordered[ordered.indexOf('rollback') - 1]
       if (undone) failed = orderOf(undone)
     }
@@ -296,6 +307,8 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       let state: InstallStepState
       if (rolledBack && id === 'rollback') {
         state = 'done'
+      } else if (rollbackFailed && id === 'rollback') {
+        state = 'failed'
       } else if (current.status === 'failed' && failed >= 0) {
         state = order === failed ? 'failed' : order < failed ? 'done' : 'pending'
       } else if (current.status === 'completed') {
