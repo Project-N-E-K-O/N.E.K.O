@@ -420,6 +420,61 @@ describe('plugin updates store — upgrade', () => {
     expect(fetchMarketPluginVersions).not.toHaveBeenCalled()
   })
 
+  it('installs the newest usable release, not a withdrawn or superseded one', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([
+      { ...release('1.1.0'), yanked_at: '2026-01-03T00:00:00Z' },
+      { ...release('1.2.0'), package_sha256: 'c'.repeat(64) },
+    ])
+    const fetchMock = mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate() // detected 1.1.0
+
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+    // Regression guard: the checked 1.1.0 was installed although it had been
+    // withdrawn and 1.2.0 was available.
+    expect(installBodies(fetchMock)).toEqual([
+      expect.objectContaining({ version: '1.2.0', package_sha256: 'c'.repeat(64) }),
+    ])
+  })
+
+  it('drops the row when the channel no longer offers anything newer', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([
+      { ...release('1.1.0'), yanked_at: '2026-01-03T00:00:00Z' },
+      release('1.0.0'),
+    ])
+    const fetchMock = mockFetch(() => undefined)
+    const store = await seedOneCandidate()
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates).toEqual([])
+  })
+
+  it('does not carry a manual-only verdict onto a different install', async () => {
+    vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) {
+        return { status: 409, body: { detail: { code: 'override_confirmation_required' } } }
+      }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    await store.updateOne('alpha')
+    expect(store.candidates[0]!.needsManualUpgrade).toBe(true)
+
+    // Same local id, now installed from beta.
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0', 'beta'))])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0', 'beta']]))
+    await store.check({ force: true })
+    // Regression guard: the stable install's verdict disabled the beta row.
+    expect(store.candidates[0]!.channel).toBe('beta')
+    expect(store.candidates[0]!.needsManualUpgrade).toBe(false)
+  })
+
   it('drops a candidate whose plugin switched channel since the check', async () => {
     const fetchMock = mockFetch(() => undefined)
     const store = await seedOneCandidate()

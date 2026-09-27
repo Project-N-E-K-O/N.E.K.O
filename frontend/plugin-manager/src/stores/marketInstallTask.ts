@@ -316,7 +316,10 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       } else if (current.status === 'completed') {
         state = 'done'
       } else if (current.status === 'canceled') {
-        state = order < active ? 'done' : order === active ? 'stopped' : 'pending'
+        // Where it actually stopped: after a mirror retry re-enters download,
+        // the furthest step is no longer the one it was running.
+        const stoppedAt = lastRunningStep ? orderOf(lastRunningStep) : active
+        state = order < stoppedAt ? 'done' : order === stoppedAt ? 'stopped' : 'pending'
       } else if (order < active) {
         state = 'done'
       } else if (order === active) {

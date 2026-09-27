@@ -17,7 +17,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { fetchMarketPluginVersions } from '@/api/market'
+import { fetchMarketPluginVersions, type MarketPluginVersion } from '@/api/market'
 import { fetchBridge, readErrorCode } from '@/api/marketBridge'
 import { isGithubReleaseDownloadUrl, useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
@@ -123,6 +123,16 @@ export function collectMarketUpdateTargets(plugins: readonly PluginMeta[]): Mark
     })
   }
   return [...byPluginId.values()]
+}
+
+/** Highest non-withdrawn release that can actually be installed. */
+function newestUsableRelease(versions: readonly MarketPluginVersion[]): MarketPluginVersion | null {
+  let best: MarketPluginVersion | null = null
+  for (const entry of versions) {
+    if (entry.yanked_at || !entry.package_url || !entry.package_sha256) continue
+    if (!best || hasNewerVersion(best.version, entry.version)) best = entry
+  }
+  return best
 }
 
 export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
@@ -273,7 +283,14 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
           current: target.currentVersion,
           latest,
         })
-        const prior = previous.get(target.pluginId)
+        // Verdicts belong to one install: a plugin that was replaced or moved
+        // channel since is a different upgrade and starts clean.
+        const priorEntry = previous.get(target.pluginId)
+        const prior = priorEntry
+          && priorEntry.marketId === target.marketId
+          && priorEntry.channel === target.channel
+          ? priorEntry
+          : undefined
         next.push({
           ...target,
           latestVersion: latest,
@@ -405,20 +422,40 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     })
 
     try {
-      // Fetch the version table for the candidate's *own* channel and pick the
-      // exact release the check detected. The plugin-detail endpoint returns
-      // whatever the default channel calls "latest", so using it here would
-      // silently pull a beta install back onto stable.
+      // Fetch the version table for the candidate's *own* channel. The
+      // plugin-detail endpoint returns whatever the default channel calls
+      // "latest", so using it here would silently pull a beta install back onto
+      // stable.
       const versions = await fetchMarketPluginVersions(candidate.marketId, {
         channel: candidate.channel,
       })
-      const release = versions?.find((entry) => entry.version === candidate.latestVersion)
-      if (!release) {
+      if (!versions) {
         return failCandidate(
           candidate,
           'market.marketListFetchFailed',
-          `release ${candidate.latestVersion} missing on channel ${candidate.channel}`,
+          `version table unavailable on channel ${candidate.channel}`,
         )
+      }
+      // Install what the channel offers *now*, not blindly the version the
+      // check saw: a row carried over a partial lookup may point at a release
+      // that has since been withdrawn or superseded.
+      const release = newestUsableRelease(versions)
+      if (!release || !hasNewerVersion(candidate.currentVersion, release.version)) {
+        updateLog.info('candidate dropped: channel no longer offers a newer release', {
+          pluginId,
+          detected: candidate.latestVersion,
+        })
+        candidate.status = 'idle'
+        candidates.value = candidates.value.filter((entry) => entry.pluginId !== pluginId)
+        return false
+      }
+      if (release.version !== candidate.latestVersion) {
+        updateLog.info('newest release differs from the checked one', {
+          pluginId,
+          detected: candidate.latestVersion,
+          installing: release.version,
+        })
+        candidate.latestVersion = release.version
       }
       const packageUrl = release.package_url
       const packageSha256 = release.package_sha256

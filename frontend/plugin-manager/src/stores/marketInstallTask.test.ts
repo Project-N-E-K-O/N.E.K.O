@@ -530,6 +530,25 @@ describe('market install task store — step checklist', () => {
     store.dismiss()
   })
 
+  it('pins a cancellation on the step it was running, even after a retry', async () => {
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7 }) as never)
+      // Mirror fallback: back to download, then canceled there.
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.1 }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'canceled', stage: 'canceled', progress: 0.1 }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    for (let i = 0; i < 3; i += 1) await tick()
+    await p
+
+    // Regression guard: `verify` (the furthest step) was marked stopped and
+    // `download`, where it actually stopped, read as done.
+    expect(store.steps.map((step) => `${step.id}:${step.state}`))
+      .toEqual(['download:stopped', 'verify:pending', 'replace:pending', 'completed:pending'])
+    store.dismiss()
+  })
+
   it('remembers the running step when the backend wipes it on cancel', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'verifying', stage: 'verify', progress: 0.7 }) as never)
