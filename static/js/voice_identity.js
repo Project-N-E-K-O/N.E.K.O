@@ -19,6 +19,7 @@
     const SILENCE_HINT_MS = 800;
     const ACTIVE_FRAME_RMS = 0.008;
     const WINDOW_CLOSE_START_WAIT_MS = 500;
+    const CANCEL_STATUS_TIMEOUT_MS = 1000;
     const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
@@ -318,7 +319,8 @@
         render();
     }
 
-    async function reconcileStatus() {
+    async function reconcileStatus(options) {
+        const config = options || {};
         const requestEpoch = state.statusEpoch;
         const requestSequence = ++state.statusRefreshSequence;
         const statusController = typeof AbortController === 'function'
@@ -327,11 +329,24 @@
         state.statusRefreshFallback = null;
         state.statusRefreshFailureSequence = 0;
         state.statusRefreshRecoverySequence = 0;
+        let timeoutId = null;
         try {
-            const status = await apiRequest('/status', {
+            const request = apiRequest('/status', {
                 method: 'GET',
                 signal: statusController ? statusController.signal : undefined
             });
+            const timeoutMs = Number(config.timeoutMs);
+            const status = Number.isFinite(timeoutMs) && timeoutMs > 0
+                ? await Promise.race([
+                    request,
+                    new Promise(function (_, reject) {
+                        timeoutId = window.setTimeout(function () {
+                            if (statusController) statusController.abort();
+                            reject(new Error('status_timeout'));
+                        }, timeoutMs);
+                    })
+                ])
+                : await request;
             if (requestEpoch !== state.statusEpoch) return null;
             if (requestSequence === state.statusRefreshSequence) {
                 if (requestSequence < state.statusRefreshAppliedSequence) return null;
@@ -383,6 +398,7 @@
             }
             return null;
         } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
             if (state.statusAbort === statusController) state.statusAbort = null;
         }
     }
@@ -1014,6 +1030,7 @@
         let startSettled = null;
         let settleStart = null;
         let segmentRequestPending = false;
+        let finalSegmentCommitted = false;
         let preserveActiveSession = false;
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
@@ -1161,6 +1178,9 @@
                         }
                         setMessage('');
                         segmentAccepted = true;
+                        if (segment === ENROLLMENT_SEGMENT_COUNT && state.profileAvailable) {
+                            finalSegmentCommitted = true;
+                        }
                     } catch (error) {
                         if (state.cancelPending || state.closeStarted) return;
                         const retryable = ['invalid_pcm', 'speech_too_short', 'silence', 'severe_clipping', 'audio_too_long', 'volume_too_low', 'no_speech_detected'].includes(error && error.message);
@@ -1232,8 +1252,12 @@
             stopMicrophone();
             if (state.cancelPending || state.closeStarted) return;
             const reconciled = await reconcileStatus();
-            const replacementConfirmed = segmentRequestPending && reconciled && state.profileAvailable && (!profileWasAvailable || (profileRevisionBefore !== null && state.profileRevision !== null && state.profileRevision !== profileRevisionBefore));
-            if (replacementConfirmed) {
+            const replacementConfirmed = segmentRequestPending || finalSegmentCommitted;
+            const profileCommitConfirmed = replacementConfirmed
+                && (reconciled || finalSegmentCommitted)
+                && state.profileAvailable
+                && (!profileWasAvailable || (profileRevisionBefore !== null && state.profileRevision !== null && state.profileRevision !== profileRevisionBefore));
+            if (profileCommitConfirmed) {
                 state.enrollmentId = null; state.profileId = null; setMessage(enrollmentCompleteMessage(), false);
             } else if (preserveActiveSession && state.enrollmentId) {
                 setMessage(enrollmentErrorMessage(error), true);
@@ -1275,13 +1299,13 @@
             }
             await cancelSession(config);
             if (!config.keepalive && !state.enrollmentId && pendingStart) {
-                const reconciled = await reconcileStatus();
+                const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
                 if (reconciled && state.enrollmentId) await cancelSession(config);
             }
             if (!config.silent) setMessage('');
         } catch (_) {
             if (!config.keepalive) {
-                const reconciled = await reconcileStatus();
+                const reconciled = await reconcileStatus({ timeoutMs: CANCEL_STATUS_TIMEOUT_MS });
                 if (!config.silent && (!reconciled || state.enrollmentId)) {
                     setMessage(
                         translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
