@@ -473,9 +473,11 @@ const sectionChanges = (name: string) =>
   changes.value.filter((change) => change.path[0] === name).length
 const visibleSections = computed(() =>
   sectionNames.value.filter((name) =>
+    // Own properties only: a base-only literal `constructor` or `__proto__` section must
+    // not resolve a prototype member and look configured.
     configNodeMatches(
-      current.value?.draft[name],
-      base.value[name],
+      configValueAt(current.value?.draft, [name]),
+      configValueAt(base.value, [name]),
       [name],
       search.value,
       filter.value,

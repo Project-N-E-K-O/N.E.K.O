@@ -546,6 +546,29 @@ describe('configuration navigation boundaries', () => {
     )
   })
 
+  it('does not enable a base-only literal section under the configured filter', async () => {
+    // A top-level `constructor` table read off the empty draft must not resolve the
+    // prototype member and count as configured.
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: JSON.parse(
+        '{"plugin_runtime":{"enabled":true},"search":{"max_results":8},"constructor":{"ttl":1}}'
+      ),
+    } as never)
+    const { host } = await mountEditor()
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="plugins.configUi.filterFields"]')!
+      .click()
+    await vi.waitFor(() => expect(document.querySelector('.el-dropdown-menu__item')).not.toBeNull())
+    const configured = [...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')].find(
+      (item) => item.textContent?.includes('plugins.configUi.configured')
+    )!
+    configured.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('plugins.configUi.configured'))
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.config-nav button')]
+    await vi.waitFor(() => expect(buttons.every((button) => button.disabled)).toBe(true))
+  })
+
   it('disables nonmatching sections and handles an empty search result', async () => {
     const { host } = await mountEditor()
     await search(host, 'max_results')
