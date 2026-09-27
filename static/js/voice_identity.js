@@ -70,6 +70,7 @@
         audioContext: null,
         captureAbort: null,
         uploadAbort: null,
+        startAbort: null,
         captureFinish: null,
         captureReady: false,
         recording: false,
@@ -566,7 +567,7 @@
             else item.textContent = String(index + 1);
         });
         if (elements.stepTitle) elements.stepTitle.textContent = active ? translate('voiceIdentity.readingPromptLabel', '朗读提示语') : translate('voiceIdentity.privacyTitle', '录入 3 段声纹和 1 段验证语音');
-        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.privacyBody', '请使用平时聊天的自然音量和语速朗读下面这句话，达到所需时长后会自动结束录音。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音，第 1 至 3 段需录满 3 秒，第 4 段需录满 5 秒，达到时长后会自动结束录音。');
+        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请使用平时聊天的自然音量和语速朗读下面这句话，达到所需时长后会自动结束录音。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音，第 1 至 3 段需录满 3 秒，第 4 段需录满 5 秒，达到时长后会自动结束录音。');
         if (elements.prompt) {
             const prompt = active ? fixedPrompts()[state.segmentIndex - 1] : '';
             elements.prompt.textContent = prompt || '';
@@ -656,6 +657,7 @@
 
     function updateVoiceActivity(chunk) {
         if (!chunk || !chunk.length) return;
+        const previousStatus = state.voiceStatus;
         let sumSquares = 0;
         for (let index = 0; index < chunk.length; index += 1) {
             const sample = chunk[index] / 32768;
@@ -669,7 +671,17 @@
         } else if (rms > ACTIVE_FRAME_RMS * 0.25) {
             state.voiceStatus = 'quiet';
         }
-        renderEnrollment();
+        if (state.voiceStatus !== previousStatus) renderEnrollment();
+    }
+
+    function waitForPromptPaint() {
+        return new Promise(function (resolve) {
+            if (typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(function () { resolve(); });
+            } else {
+                window.setTimeout(resolve, 0);
+            }
+        });
     }
 
     async function capturePcm16(maxRecordingMs = MAX_RECORDING_MS) {
@@ -700,6 +712,7 @@
         let startedAt = performance.now();
         let finishCapture = null;
         let flushTimeoutId = null;
+        const requiredSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
         inputGain = context.createGain();
         let gainDb = 0;
         try {
@@ -727,7 +740,7 @@
                 `${(elapsed / 1000).toFixed(1)} 秒`,
                 { seconds: (elapsed / 1000).toFixed(1) }
             );
-            if (now - state.lastVoiceAt >= SILENCE_HINT_MS) {
+            if (now - state.lastVoiceAt >= SILENCE_HINT_MS && state.voiceStatus !== 'waiting') {
                 state.voiceStatus = 'waiting';
                 renderEnrollment();
             }
@@ -777,7 +790,7 @@
                         if (tail.length) {
                             chunks.push(tail);
                             capturedSamples += tail.length;
-                            state.captureReady = capturedSamples >= TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
+                            state.captureReady = capturedSamples >= requiredSamples;
                             updateVoiceActivity(tail);
                         }
                         settle();
@@ -787,12 +800,12 @@
                     if (chunk.length === 0) return;
                     chunks.push(chunk);
                     capturedSamples += chunk.length;
-                    state.captureReady = capturedSamples >= TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
+                    state.captureReady = capturedSamples >= requiredSamples;
                     updateVoiceActivity(chunk);
+                    if (state.captureReady && finishCapture) finishCapture();
                 };
             });
             if (capturedSamples <= 0) throw new Error('incomplete_capture');
-            const requiredSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
             const alignedSamples = Math.floor(
                 Math.min(capturedSamples, requiredSamples) / RUNTIME_CHUNK_SAMPLES
             ) * RUNTIME_CHUNK_SAMPLES;
@@ -816,6 +829,8 @@
             window.clearInterval(timer);
             if (flushTimeoutId !== null) window.clearTimeout(flushTimeoutId);
             processor.port.onmessage = null;
+            try { processor.port.postMessage({ type: 'shutdown' }); } catch (_) {}
+            try { if (typeof processor.port.close === 'function') processor.port.close(); } catch (_) {}
             processor.disconnect();
             inputGain.disconnect();
             source.disconnect();
@@ -827,6 +842,11 @@
     }
 
     function stopMicrophone(reason) {
+        const startAbort = state.startAbort;
+        state.startAbort = null;
+        if (startAbort) {
+            try { startAbort.abort(); } catch (_) {}
+        }
         const uploadAbort = state.uploadAbort;
         state.uploadAbort = null;
         if (uploadAbort) {
@@ -908,6 +928,54 @@
         if (remainingMs <= durationMs + ENROLLMENT_PROCESSING_MARGIN_MS) throw new Error('insufficient_enrollment_time');
     }
 
+    function enrollmentRemainingMs() {
+        if (!Number.isFinite(state.enrollmentRemainingSeconds)
+            || !Number.isFinite(state.enrollmentStatusAt)) return null;
+        return state.enrollmentRemainingSeconds * 1000
+            - (performance.now() - state.enrollmentStatusAt);
+    }
+
+    async function waitForSegmentAdvance() {
+        const remainingMs = enrollmentRemainingMs();
+        const enrollmentId = state.enrollmentId;
+        let leaseTimer = null;
+        let advance;
+        const result = await new Promise(function (resolve) {
+            let settled = false;
+            const settle = function (value) {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            advance = function (value) {
+                settle(value === true ? 'advance' : 'cancel');
+            };
+            state.segmentAdvance = advance;
+            if (remainingMs !== null) {
+                leaseTimer = window.setTimeout(function () {
+                    if (state.segmentAdvance === advance) state.segmentAdvance = null;
+                    state.segmentPhase = 'checking';
+                    state.uiPhase = 'checking';
+                    render();
+                    settle('expired');
+                }, Math.max(0, Math.ceil(remainingMs)));
+            }
+        });
+        if (leaseTimer !== null) window.clearTimeout(leaseTimer);
+        if (state.segmentAdvance === advance) state.segmentAdvance = null;
+        if (result !== 'expired') return result === 'advance';
+
+        const reconciled = await reconcileStatus();
+        if (!state.cancelPending && !state.closeStarted
+            && state.enrollmentId && state.enrollmentId === enrollmentId) {
+            try { await cancelSession({ silent: true }); } catch (_) {}
+        }
+        if (!state.cancelPending && !state.closeStarted) {
+            setMessage(enrollmentErrorMessage(new Error('stale_enrollment')), true);
+        }
+        return false;
+    }
+
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
         state.statusEpoch += 1;
@@ -928,15 +996,22 @@
             if (state.closeStarted || state.cancelPending) return;
             startSettled = new Promise(function (resolve) { settleStart = resolve; });
             state.startSettled = startSettled;
+            const startController = typeof AbortController === 'function'
+                ? new AbortController() : null;
+            state.startAbort = startController;
             let started;
             try {
-                started = await apiRequest('/enrollment/start', { method: 'POST' });
+                started = await apiRequest('/enrollment/start', {
+                    method: 'POST',
+                    signal: startController ? startController.signal : undefined
+                });
             } catch (error) {
                 const canonical = await reconcileStatus();
                 if (!canonical || !state.enrollmentId) throw error;
                 started = canonical;
             }
             finally {
+                if (state.startAbort === startController) state.startAbort = null;
                 if (settleStart) settleStart();
                 if (state.startSettled === startSettled) state.startSettled = null;
             }
@@ -975,6 +1050,8 @@
                     render();
                     await ensureMicrophone();
                     if (state.cancelPending || state.closeStarted) return;
+                    await waitForPromptPaint();
+                    if (state.cancelPending || state.closeStarted) return;
                     requireCaptureTime(recordingDurationMs);
                     state.captureReady = false;
                     state.segmentPhase = 'recording'; state.uiPhase = 'recording';
@@ -992,10 +1069,7 @@
                         state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                         setMessage(enrollmentErrorMessage(error), true);
                         render();
-                        const proceed = await new Promise(function (resolve) {
-                            state.segmentAdvance = resolve;
-                        });
-                        state.segmentAdvance = null;
+                        const proceed = await waitForSegmentAdvance();
                         if (!proceed || state.cancelPending || state.closeStarted) return;
                         continue;
                     }
@@ -1036,10 +1110,7 @@
                             state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                             setMessage(verificationRetryMessage(verification), true);
                             render();
-                            const proceed = await new Promise(function (resolve) {
-                                state.segmentAdvance = resolve;
-                            });
-                            state.segmentAdvance = null;
+                            const proceed = await waitForSegmentAdvance();
                             if (!proceed || state.cancelPending || state.closeStarted) return;
                             if (nextSegment === 1) {
                                 segment = 1;
@@ -1071,10 +1142,7 @@
                                     state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                                     setMessage(enrollmentErrorMessage(error), true);
                                     render();
-                                    const proceed = await new Promise(function (resolve) {
-                                        state.segmentAdvance = resolve;
-                                    });
-                                    state.segmentAdvance = null;
+                                    const proceed = await waitForSegmentAdvance();
                                     if (!proceed || state.cancelPending || state.closeStarted) return;
                                     segment = 1;
                                     continue segmentLoop;
@@ -1090,10 +1158,7 @@
                         state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                         setMessage(enrollmentErrorMessage(error), true);
                         render();
-                        const proceed = await new Promise(function (resolve) {
-                            state.segmentAdvance = resolve;
-                        });
-                        state.segmentAdvance = null;
+                        const proceed = await waitForSegmentAdvance();
                         if (!proceed || state.cancelPending || state.closeStarted) return;
                     }
                 }
@@ -1101,11 +1166,8 @@
                 if (segment < ENROLLMENT_SEGMENT_COUNT) {
                     state.segmentPhase = 'ready'; state.uiPhase = 'ready';
                     render();
-                    const proceed = await new Promise(function (resolve) {
-                        state.segmentAdvance = resolve;
-                        if (window.__voiceIdentityTestAutoAdvance && elements.next) window.setTimeout(function () { elements.next.emit('click'); }, 0);
-                    });
-                    state.segmentAdvance = null;
+                    if (window.__voiceIdentityTestAutoAdvance && elements.next) window.setTimeout(function () { elements.next.emit('click'); }, 0);
+                    const proceed = await waitForSegmentAdvance();
                     if (!proceed || state.cancelPending || state.closeStarted) return;
                 }
                 segment += 1;
@@ -1148,13 +1210,26 @@
 
     async function cancelEnrollment(options) {
         const config = options || {};
+        const pendingStart = state.startSettled;
         state.statusEpoch += 1;
         state.cancelPending = true;
         if (state.segmentAdvance) { state.segmentAdvance(false); state.segmentAdvance = null; }
         stopMicrophone('capture_cancelled');
         render();
         try {
+            if (pendingStart) {
+                let timeoutId = null;
+                const waitLimit = new Promise(function (resolve) {
+                    timeoutId = window.setTimeout(resolve, WINDOW_CLOSE_START_WAIT_MS);
+                });
+                await Promise.race([pendingStart, waitLimit]);
+                if (timeoutId !== null) window.clearTimeout(timeoutId);
+            }
             await cancelSession(config);
+            if (!config.keepalive && !state.enrollmentId && pendingStart) {
+                const reconciled = await reconcileStatus();
+                if (reconciled && state.enrollmentId) await cancelSession(config);
+            }
             if (!config.silent) setMessage('');
         } catch (_) {
             if (!config.keepalive) {
@@ -1302,13 +1377,15 @@
 
     async function retryConnection() {
         if (state.busy) return;
+        state.statusEpoch += 1;
         state.busy = true;
         state.initializationError = false;
         setMessage('');
         render();
         try {
             await loadCsrfToken();
-            const status = await apiRequest('/status', { method: 'GET' });
+            const status = await reconcileStatus();
+            if (!status) throw new Error('status_unavailable');
             state.initialized = true;
             applyStatus(status);
         } catch (error) {

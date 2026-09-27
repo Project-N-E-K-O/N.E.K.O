@@ -138,6 +138,7 @@ function createHarness({
     segmentGate,
     inconsistentReference = false,
     remainingSeconds = 45,
+    promptPaintGate,
     showConfirm,
     nativeConfirm = true,
     webCryptoAvailable = true,
@@ -186,6 +187,8 @@ function createHarness({
     const mediaConstraintCalls = [];
     let timerId = 0;
     let intervalCallback = null;
+    let enrollmentLeaseTimeoutCallback = null;
+    let promptPaintFrames = 0;
     let fakeNow = 1000;
     const autoFinishDurations = [];
     let audioContext = null;
@@ -456,12 +459,22 @@ function createHarness({
                 Promise.resolve().then(callback);
             } else if (delay === WINDOW_CLOSE_START_WAIT_MS) {
                 Promise.resolve().then(callback);
+            } else if (delay > VERIFICATION_TIMEOUT_MS) {
+                enrollmentLeaseTimeoutCallback = callback;
             } else {
                 throw new Error(`unmodeled setTimeout delay: ${delay}`);
             }
             return timerId;
         },
         clearTimeout() {},
+        requestAnimationFrame(callback) {
+            promptPaintFrames += 1;
+            if (promptPaintGate && promptPaintFrames === 2) {
+                promptPaintGate.promise.then(callback);
+            } else {
+                Promise.resolve().then(callback);
+            }
+        },
         AudioContext: MockAudioContext,
         webkitAudioContext: undefined,
         showConfirm,
@@ -543,6 +556,11 @@ function createHarness({
                 ? samples
                 : new Int16Array(samples).fill(1024);
             processor?.emitInput(chunk);
+        },
+        expireEnrollmentLease() {
+            serverNextSegment = 1;
+            enrollmentId = null;
+            enrollmentLeaseTimeoutCallback?.();
         },
         async initialize() {
             await documentListeners.get('DOMContentLoaded')();
@@ -692,6 +710,60 @@ test('accepted segment waits for explicit next-segment action', async () => {
     await harness.emit('voice-identity-next');
     await flush(4);
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 2);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('enrollment lease expiry releases the saved-segment wait', async () => {
+    const harness = createHarness({ autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+
+    harness.expireEnrollmentLease();
+    await enrolling;
+    await flush(2);
+
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '本次录入已过期，请重新开始。');
+    assert.equal(harness.elements.get('voice-identity-next').hidden, true);
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+});
+
+test('later segment prompt paints before recording starts', async () => {
+    const promptPaintGate = deferred();
+    const harness = createHarness({ autoAdvance: false, promptPaintGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
+
+    await harness.emit('voice-identity-next');
+    await flush(2);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
+    assert.equal(harness.elements.get('voice-identity-prompt').hidden, false);
+
+    promptPaintGate.resolve();
+    await flush(4);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 2);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('sample count finishes a capture without waiting for the duration timer', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(4);
+    harness.emitAudio(new Int16Array(REFERENCE_SAMPLES).fill(1024));
+    await flush(4);
+
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
     await harness.emit('voice-identity-cancel');
     await enrolling;
 });

@@ -2943,6 +2943,7 @@
         "localOnly": "이 장치에서만 처리",
         "privacyTitle": "짧은 녹음 4개로 기기 내 음성 지문 등록",
         "privacyBody": "같은 마이크와 평소 음량으로 서로 다른 완전한 문장 네 개를 말해 주세요. 오디오는 이 장치에서만 처리되며 검증에 성공한 뒤에만 음성 지문이 암호화되어 저장됩니다.",
+        "activeRecordingBody": "평소 음량과 속도로 아래 문장을 읽어 주세요. 필요한 시간이 되면 녹음이 자동으로 끝납니다.",
         "recordingHints": "녹음 도움말",
         "progressLabel": "음성 지문 등록 진행률",
         "hintSameMicrophone": "같은 마이크를 계속 사용하세요",

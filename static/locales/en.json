@@ -2943,6 +2943,7 @@
         "localOnly": "Processed only on this device",
         "privacyTitle": "Four short recordings for an on-device voice profile",
         "privacyBody": "Use the same microphone and normal volume to say four different complete sentences. Audio is processed only on this device, and the voice profile is encrypted only after verification succeeds.",
+        "activeRecordingBody": "Use your normal speaking volume to read the sentence below; recording ends automatically when the required duration is reached.",
         "recordingHints": "Recording tips",
         "progressLabel": "Voice enrollment progress",
         "hintSameMicrophone": "Keep using the same microphone",

@@ -2943,6 +2943,7 @@
         "localOnly": "Procesado solo en este dispositivo",
         "privacyTitle": "Cuatro grabaciones breves para un perfil de voz local",
         "privacyBody": "Usa el mismo micrófono y un volumen normal para decir cuatro frases completas diferentes. El audio solo se procesa en este dispositivo y el perfil se cifra tras superar la verificación.",
+        "activeRecordingBody": "Lee la frase siguiente con tu volumen y ritmo habituales; la grabación terminará automáticamente al alcanzar la duración necesaria.",
         "recordingHints": "Consejos de grabación",
         "progressLabel": "Progreso del registro de voz",
         "hintSameMicrophone": "Sigue usando el mismo micrófono",

@@ -80,6 +80,11 @@ def test_audio_worklet_flush_emits_tail_and_completion_without_changing_full_blo
             aligned.port.messages[1][0].pcmData.length !== 0) {
           throw new Error('aligned stream did not acknowledge flush');
         }
+
+        aligned.port.onmessage({ data: { type: 'shutdown' } });
+        if (aligned.process([[new Float32Array([0.25])]], [], {}) !== false) {
+          throw new Error('shutdown did not terminate the worklet');
+        }
         """
     )
     result = run_node_script(

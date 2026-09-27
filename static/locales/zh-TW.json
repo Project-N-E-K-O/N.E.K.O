@@ -2943,6 +2943,7 @@
         "localOnly": "僅在本機處理",
         "privacyTitle": "四段短語音，完成本機聲紋錄入",
         "privacyBody": "使用同一支麥克風，以正常音量說四句不同的完整話。語音僅在本機處理，驗證成功後才會加密儲存聲紋。",
+        "activeRecordingBody": "請使用平時聊天的自然音量和語速朗讀下面這句話，達到所需時長後會自動結束錄音。",
         "recordingHints": "錄音提示",
         "progressLabel": "聲紋錄入進度",
         "hintSameMicrophone": "持續使用同一支麥克風",

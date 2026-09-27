@@ -210,6 +210,10 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
 
     assert "maxRecordingMs + CAPTURE_TIMEOUT_GRACE_MS" in script
     assert "processor.port.postMessage({ type: 'flush' })" in script
+    assert "processor.port.postMessage({ type: 'shutdown' })" in script
+    assert "typeof processor.port.close === 'function'" in script
+    assert "activeRecordingBody" in script
+    assert "startAbort" in script
     assert "flush_complete" in script
     assert "capturedSamples <= 0" in script
     assert "state.profileId || createProfileId()" in script
@@ -368,6 +372,7 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "localOnly",
         "privacyTitle",
         "privacyBody",
+        "activeRecordingBody",
         "recordingRule",
         "enrollAndEnable",
         "recording",
