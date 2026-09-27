@@ -68,6 +68,7 @@ export interface MarketInstallTask {
     restored?: boolean
     running?: boolean
     cause_code?: string
+    rollback_code?: string
   } | null
 }
 

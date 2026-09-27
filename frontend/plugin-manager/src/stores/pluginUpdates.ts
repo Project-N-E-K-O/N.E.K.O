@@ -317,6 +317,10 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     // POST: a plain `running` read is racy because this method awaits in
     // between, so the Market panel could create a second, untracked worker.
     const installTask = useMarketInstallTaskStore()
+    // Drop this popup's previous result first, while no slot is held yet (so the
+    // dismiss cannot release a reservation): otherwise its "completed" panel
+    // stays up through the next preflight, and beside it if that fails early.
+    if (installTask.done && installTask.owner === 'float') installTask.dismiss('float')
     if (!installTask.reserve('float')) {
       updateLog.warn('upgrade refused: an install slot is already claimed', { pluginId })
       return false

@@ -507,6 +507,39 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates[0]!.errorKey).toBe('market.installFailed')
   })
 
+  it('clears its own finished task before the next upgrade starts', async () => {
+    setPlugins([
+      plugin('alpha', marketSource('15', '1.0.0')),
+      plugin('beta', marketSource('18', '1.0.0')),
+    ])
+    vi.mocked(fetchMarketLatestVersions).mockResolvedValue(latestRows([[15, '1.1.0'], [18, '1.1.0']]))
+    vi.mocked(fetchMarketPluginVersions)
+      .mockResolvedValueOnce([release('1.1.0')])
+      .mockResolvedValue(null)
+    mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: { task_id: 'task-a' } }
+      if (url.startsWith('/market/tasks/task-a')) {
+        return { status: 200, body: { status: 'completed', stage: 'completed', progress: 1 } }
+      }
+      return undefined
+    })
+    const store = usePluginUpdatesStore()
+    await store.check()
+    const installTask = useMarketInstallTaskStore()
+
+    await expect(store.updateOne('alpha')).resolves.toBe(true)
+    expect(installTask.done).toBe(true)
+    expect(installTask.owner).toBe('float')
+
+    // beta fails in its preflight, before any task is tracked.
+    await expect(store.updateOne('beta')).resolves.toBe(false)
+    // Regression guard: alpha's "completed" panel used to stay up beside
+    // beta's failure until the popup was closed.
+    expect(installTask.task).toBeNull()
+    expect(installTask.reservation).toBeNull()
+  })
+
   it('keeps a failed upgrade flagged across a later re-check', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue(null)
     mockFetch((url) => {

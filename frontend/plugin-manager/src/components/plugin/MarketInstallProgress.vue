@@ -163,12 +163,14 @@ const statusTone = computed(() => (
   store.task?.status === 'failed' ? 'install-progress__status--error' : ''
 ))
 
-const rollbackIncomplete = computed(() => (
-  store.rollback?.running !== true
-  && store.rollback?.restored !== true
-  && store.rollback?.prepared === true
-  && store.task?.status === 'failed'
-))
+// Driven by the backend's rollback verdict, as the Market dialog did before:
+// `prepared` is set before the transaction even revalidates (a changed plan
+// fails without touching anything), and an override source-switch failure
+// reports its damage through `rollback_code` without ever setting `prepared`.
+const rollbackIncomplete = computed(() => {
+  const code = store.rollback?.rollback_code || store.task?.error_code || ''
+  return code === 'override_rollback_incomplete' || code === 'upgrade_rollback_incomplete'
+})
 </script>
 
 <style scoped>

@@ -260,5 +260,29 @@ describe('market install progress', () => {
     })
     root = mount()
     expect(text(root)).toContain('market.rollbackIncomplete')
+
+    // An override source-switch failure reports damage through rollback_code
+    // alone; `prepared` is never set on that path.
+    cleanup()
+    makeStore({
+      task: { task_id: 't', status: 'failed', stage: 'replace', progress: 0.8, error_code: 'override_source_switch_failed' },
+      done: true,
+      running: false,
+      rollback: { restored: false, running: false, rollback_code: 'override_rollback_incomplete' },
+    })
+    root = mount()
+    expect(text(root)).toContain('market.rollbackIncomplete')
+
+    // Regression guard: `prepared` is set before revalidation, so a changed
+    // plan used to raise a false "rollback incomplete" although nothing ran.
+    cleanup()
+    makeStore({
+      task: { task_id: 't', status: 'failed', stage: 'replace', progress: 0.8, error_code: 'plugin_upgrade_plan_changed' },
+      done: true,
+      running: false,
+      rollback: { prepared: true, restored: false },
+    })
+    root = mount()
+    expect(text(root)).not.toContain('market.rollbackIncomplete')
   })
 })
