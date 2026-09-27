@@ -306,6 +306,7 @@ import {
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { createStaleResponseGuard } from '@/utils/staleResponseGuard'
 import {
   confirmBuiltinOverride,
   confirmManualTakeover,
@@ -463,8 +464,19 @@ async function handleCancelInstall(): Promise<void> {
 
 function closeInstallTaskDialog(): void {
   installTaskDialogVisible.value = false
-  if (installTask.done) installTask.dismiss('panel')
 }
+
+// Same rule as the update popup: once the dialog is closed a finished task has
+// nowhere to be shown, but while this panel still holds the slot the operation
+// is reconciling (registry sync, installed snapshot, popup re-check). Dismissing
+// then would free the slot early and let the popup upgrade against its stale
+// candidates. Re-evaluated when the slot or the task settles.
+watch(
+  () => [installTaskDialogVisible.value, installTask.reservation, installTask.done] as const,
+  ([visible, reservation, done]) => {
+    if (!visible && done && reservation !== 'panel') installTask.dismiss('panel')
+  },
+)
 
 function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installFailed'): string {
   const code = readErrorCode(payload)
@@ -692,15 +704,15 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
  *   - 仅对"已装且 latest_install_source 非空"的条目执行版本表查询。
  */
 // Sweeps can overlap (a batch upgrade from the update popup starts one per
-// plugin), and an older `/market/installed` response landing late would
-// overwrite a newer installed-version snapshot. Only the latest sweep writes.
-let yankSweepSeq = 0
+// plugin): a late response must not overwrite a newer snapshot, yet a newer
+// sweep that fails must not discard an older sweep's valid data either.
+const yankSweepGuard = createStaleResponseGuard<'installed' | 'yanked'>()
 
 async function yankSweep() {
   if (!marketAvailable.value) return
-  const mySeq = ++yankSweepSeq
+  const ticket = yankSweepGuard.begin()
   const installed = await fetchInstalledFromBridge()
-  if (installed === null || mySeq !== yankSweepSeq) return
+  if (installed === null || !yankSweepGuard.accept('installed', ticket)) return
   const entries: InstalledMarketEntry[] = []
   const uniqueEntries = new Map<string, InstalledMarketEntry>()
   for (const item of installed) {
@@ -775,7 +787,7 @@ async function yankSweep() {
     if (marketKey) nextYanked[marketKey] = yanked
   }
 
-  if (mySeq !== yankSweepSeq) return
+  if (!yankSweepGuard.accept('yanked', ticket)) return
   yankedMap.value = nextYanked
 }
 
