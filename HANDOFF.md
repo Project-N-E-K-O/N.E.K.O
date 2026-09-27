@@ -13,11 +13,11 @@ Authority: text proof = authoritative; visual only for confirmed nodes/edges (no
 - Residual risk (post repair-2): 13 个 test_agent_rewrite_regression 内容钉死断言在 origin/main 基线同样失败（静态资产未随之更新，仓库既有债，与本 PR 无关）；依赖审计 24 包 268 条 advisory 均为 requirements.txt 既有 pin（本 PR 未改依赖）；brain/cua 外部 fork 引用无法排除；quota 掉落规则功能维持 origin/main 原样，仍需产品确认是否保留。
 
 ## Execution receipt (D-boundary / Change phase, post-interrupt)
-- S5 (steamworks dead interfaces): 11 imports/instantiations removed, 2 methods (relaunch, run_forever) deleted, 3 dead interfaces dropped from _LINUX_OPTIONAL_WRAPPER_METHODS. Import smoke pass.
+- S5 (steamworks dead interfaces): 11 imports/instantiations removed, 2 methods (relaunch, run_forever) deleted, 3 dead interfaces dropped from _LINUX_OPTIONAL_WRAPPER_METHODS. Import smoke pass. **（已整条撤回 — vendored 第三方库整体保留，见 review round 2 / FINDINGS；提交 283cb87 全量净零恢复）**
 - S12 (launcher.py facade): reduced to bootstrap + start_launcher (2034 bytes, 135 lines removed). Smoke pass.
 - S14 (shared_state dead fields): removed sync_shutdown_event, sync_process, websocket_locks, logger params + init_shared_state adapter builds. 4 test files (test_storage_location_router.py, test_cloudsave_autocloud_router.py, test_cloudsave_autocloud.py, test_cloudsave_lifecycle_flow.py) retargeted; 160 passed. (S40 later completed the migration: 7 more files, 93 sites.)
 - R8 (tool_router aliases): removed 2 re-export aliases; retargeted test_cloudsave_autocloud_router.py import to main_logic.tool_calling canonicals. Pass.
-- S33 (monitor demo translate): removed is_japanese + translate_japanese_to_chinese + no-op branch; 20 lines removed.
+- S33 (monitor demo translate): removed is_japanese + translate_japanese_to_chinese + no-op branch; 20 lines removed. **（分支坍缩方向已由 R2-5 纠正：turn-end 无条件重播删除，见 FINDINGS repair-4）**
 - S17/35/36 (dead files + docker docs): 11 dead files deleted; docker/env.template + README.MD + docker/README_Docker.md + docker/CONFIG_REFERENCE.md cleaned.
 
 ## Validation (D-boundary only — full-suite unrelated error in test_speaker_identity.py)
