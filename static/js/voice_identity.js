@@ -2,6 +2,7 @@
     'use strict';
 
     const TARGET_SAMPLE_RATE = 48000;
+    const AUDIO_PROCESSOR_CACHE_VERSION = 'voice-identity-flush-v1';
     const RUNTIME_CHUNK_SAMPLES = 480;
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
@@ -68,6 +69,7 @@
         mediaStream: null,
         audioContext: null,
         captureAbort: null,
+        uploadAbort: null,
         captureFinish: null,
         captureReady: false,
         recording: false,
@@ -76,6 +78,7 @@
         cancelReleaseWhenIdle: false,
         statusEpoch: 0,
         statusRefreshSequence: 0,
+        statusRefreshAppliedSequence: 0,
         filterPending: false,
         busy: false,
         initialized: false,
@@ -321,7 +324,9 @@
             const status = await apiRequest('/status', { method: 'GET' });
             if (requestEpoch !== state.statusEpoch) return null;
             if (requestSequence === state.statusRefreshSequence) {
+                if (requestSequence < state.statusRefreshAppliedSequence) return null;
                 applyStatus(status);
+                state.statusRefreshAppliedSequence = requestSequence;
                 state.statusRefreshFallback = null;
                 state.statusRefreshRecoverySequence = 0;
                 return status;
@@ -330,14 +335,17 @@
                 if (state.statusRefreshRecoverySequence > 0
                     && requestSequence <= state.statusRefreshRecoverySequence) return null;
                 if (state.statusRefreshFallback
-                    && state.statusRefreshFallbackSequence > requestSequence) {
+                    && state.statusRefreshFallbackSequence > state.statusRefreshAppliedSequence) {
                     const fallback = state.statusRefreshFallback;
                     state.statusRefreshFallback = null;
                     state.statusRefreshRecoverySequence = state.statusRefreshFallbackSequence;
                     applyStatus(fallback);
+                    state.statusRefreshAppliedSequence = state.statusRefreshRecoverySequence;
                     return fallback;
                 }
+                if (requestSequence <= state.statusRefreshAppliedSequence) return null;
                 applyStatus(status);
+                state.statusRefreshAppliedSequence = requestSequence;
                 state.statusRefreshFallback = null;
                 state.statusRefreshRecoverySequence = requestSequence;
                 return status;
@@ -354,11 +362,13 @@
                 || requestSequence !== state.statusRefreshSequence) return null;
             state.statusRefreshFailureSequence = requestSequence;
             if (state.statusRefreshFallbackEpoch === requestEpoch
-                && state.statusRefreshFallback) {
+                && state.statusRefreshFallback
+                && state.statusRefreshFallbackSequence > state.statusRefreshAppliedSequence) {
                 const fallback = state.statusRefreshFallback;
                 state.statusRefreshFallback = null;
                 state.statusRefreshRecoverySequence = state.statusRefreshFallbackSequence;
                 applyStatus(fallback);
+                state.statusRefreshAppliedSequence = state.statusRefreshRecoverySequence;
                 return fallback;
             }
             return null;
@@ -570,6 +580,10 @@
     }
 
     async function ensureMicrophone() {
+        const setupEpoch = state.statusEpoch;
+        const isStale = function () {
+            return setupEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted;
+        };
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new Error('media_devices_unavailable');
         }
@@ -585,10 +599,20 @@
             const selectedConstraints = selectedMicrophoneId
                 ? { ...constraints, deviceId: { exact: selectedMicrophoneId } } : constraints;
             try {
-                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
+                if (isStale()) {
+                    stream.getTracks().forEach(function (track) { track.stop(); });
+                    throw new Error('capture_cancelled');
+                }
+                state.mediaStream = stream;
             } catch (error) {
                 if (!selectedMicrophoneId || !['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error && error.name)) throw error;
-                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
+                if (isStale()) {
+                    stream.getTracks().forEach(function (track) { track.stop(); });
+                    throw new Error('capture_cancelled');
+                }
+                state.mediaStream = stream;
             }
         } else {
             state.mediaStream.getTracks().forEach(function (track) {
@@ -605,13 +629,19 @@
             // enrollment contract before upload, so do not block enrollment
             // on a browser-specific context choice.
             const context = new AudioContextClass({ sampleRate: TARGET_SAMPLE_RATE });
+            state.audioContext = context;
             try {
-                await context.audioWorklet.addModule('/static/audio-processor.js');
+                await context.audioWorklet.addModule(
+                    `/static/audio-processor.js?v=${AUDIO_PROCESSOR_CACHE_VERSION}`
+                );
+                if (isStale()) throw new Error('capture_cancelled');
             } catch (error) {
-                await context.close();
+                if (state.audioContext === context) {
+                    state.audioContext = null;
+                    await context.close();
+                }
                 throw error;
             }
-            state.audioContext = context;
         }
     }
 
@@ -646,7 +676,11 @@
         if (!Number.isFinite(maxRecordingMs) || maxRecordingMs <= 0) {
             throw new Error('invalid_recording_duration');
         }
+        const captureEpoch = state.statusEpoch;
         await ensureMicrophone();
+        if (captureEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted) {
+            throw new Error('capture_cancelled');
+        }
         const context = state.audioContext;
         const source = context.createMediaStreamSource(state.mediaStream);
         const processor = new AudioWorkletNode(context, 'audio-processor', {
@@ -793,6 +827,11 @@
     }
 
     function stopMicrophone(reason) {
+        const uploadAbort = state.uploadAbort;
+        state.uploadAbort = null;
+        if (uploadAbort) {
+            try { uploadAbort.abort(); } catch (_) {}
+        }
         const abort = state.captureAbort;
         state.captureAbort = null;
         if (abort) abort(new Error(reason || 'capture_cancelled'));
@@ -970,9 +1009,18 @@
                     segmentRequestPending = true;
                     try {
                         let payload;
+                        const uploadController = typeof AbortController === 'function'
+                            ? new AbortController() : null;
+                        state.uploadAbort = uploadController;
                         try {
-                            payload = await apiRequest('/enrollment/segment', { method: 'PUT', body: pcm16, headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', [AUDIO_CONTRACT_HEADER]: AUDIO_CONTRACT_ID, [SESSION_HEADER]: state.enrollmentId, [PROFILE_HEADER]: state.profileId, [SEGMENT_HEADER]: String(segment) } });
+                            payload = await apiRequest('/enrollment/segment', {
+                                method: 'PUT',
+                                body: pcm16,
+                                signal: uploadController ? uploadController.signal : undefined,
+                                headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', [AUDIO_CONTRACT_HEADER]: AUDIO_CONTRACT_ID, [SESSION_HEADER]: state.enrollmentId, [PROFILE_HEADER]: state.profileId, [SEGMENT_HEADER]: String(segment) }
+                            });
                         } finally {
+                            if (state.uploadAbort === uploadController) state.uploadAbort = null;
                             new Uint8Array(pcm16).fill(0);
                         }
                         segmentRequestPending = false;

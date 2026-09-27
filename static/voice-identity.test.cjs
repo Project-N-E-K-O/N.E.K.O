@@ -134,6 +134,8 @@ function createHarness({
     profileTransportErrorAfterCommit = false,
     statusFailures = 0,
     focusStatusGate,
+    statusGates = {},
+    segmentGate,
     inconsistentReference = false,
     remainingSeconds = 45,
     showConfirm,
@@ -210,6 +212,7 @@ function createHarness({
             statusRequestCount += 1;
             if (statusGate && statusRequestCount === 1) return statusGate.promise;
             if (focusStatusGate && statusRequestCount === 2) return focusStatusGate.promise;
+            if (statusGates[statusRequestCount]) return statusGates[statusRequestCount].promise;
             if (statusFailures > 0 && statusRequestCount > 1) {
                 statusFailures -= 1;
                 throw new Error('status_transient');
@@ -224,6 +227,15 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/enrollment/segment` || call.url === `${API_ROOT}/enrollment/profile`) {
             const segment = call.options.headers.get('x-voice-identity-segment');
+            if (segmentGate && call.url.endsWith('/segment')) {
+                await new Promise((resolve, reject) => {
+                    const signal = call.options.signal;
+                    const onAbort = () => reject(new Error('aborted'));
+                    if (signal?.aborted) return onAbort();
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                    segmentGate.promise.then(resolve, reject);
+                });
+            }
             if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: profileStatus });
             if (segment === '3' && remainingInconsistentReferences > 0) {
                 remainingInconsistentReferences -= 1;
@@ -497,6 +509,7 @@ function createHarness({
         Uint8Array,
         Int16Array,
         ArrayBuffer,
+        AbortController,
         Promise,
         Error,
         JSON,
@@ -623,7 +636,7 @@ test('one click records three reference segments and one five-second verificatio
         assert.equal(call.audio.autoGainControl, true);
         assert.equal(call.audio.channelCount, 1);
     }
-    assert.deepEqual(harness.workletModules, ['/static/audio-processor.js']);
+    assert.deepEqual(harness.workletModules, ['/static/audio-processor.js?v=voice-identity-flush-v1']);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     assert.equal(harness.elements.get('voice-identity-enrollment').hidden, false);
@@ -694,6 +707,24 @@ test('the upcoming prompt is visible while the first microphone is preparing', a
     assert.notEqual(harness.elements.get('voice-identity-prompt').textContent, '');
     mediaGate.resolve();
     await enrolling;
+});
+
+test('cancellation during microphone setup releases a late stream and context', async () => {
+    const mediaGate = deferred();
+    const harness = createHarness({ mediaGate, manualAudio: true });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(2);
+    await harness.emit('voice-identity-cancel');
+    mediaGate.resolve();
+    await enrolling;
+    await flush(2);
+
+    assert.equal(harness.mediaStreams.length, 1);
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.getAudioContext(), null);
+    assert.equal(harness.fetchCalls.some(call => call.url.endsWith('/enrollment/start')), false);
 });
 
 test('resumed enrollment shows the canonical segment prompt before microphone setup', async () => {
@@ -804,6 +835,45 @@ test('a failed newer refresh falls back to an older successful response', async 
         requested_enabled: false,
         effective_enabled: false,
         effective_reason: 'disabled',
+        has_profile: true,
+        enrollment: null,
+        runtime_mode: 'enforce',
+    }));
+    await flush(3);
+
+    assert.equal(harness.elements.get('voice-identity-filter').checked, false);
+});
+
+test('a late response cannot roll back an already applied passive refresh', async () => {
+    const request2 = deferred();
+    const request3 = deferred();
+    const request4 = deferred();
+    const harness = createHarness({
+        initialProfile: true,
+        initialRequested: true,
+        statusGates: { 2: request2, 3: request3, 4: request4 },
+    });
+    await harness.initialize();
+
+    harness.dispatch('focus');
+    harness.dispatch('focus');
+    harness.dispatch('focus');
+    await flush(2);
+    request3.resolve(jsonResponse({
+        requested_enabled: false,
+        effective_enabled: false,
+        effective_reason: 'disabled',
+        has_profile: true,
+        enrollment: null,
+        runtime_mode: 'enforce',
+    }));
+    await flush(2);
+    request4.reject(new Error('status_transient'));
+    await flush(2);
+    request2.resolve(jsonResponse({
+        requested_enabled: true,
+        effective_enabled: true,
+        effective_reason: 'ready',
         has_profile: true,
         enrollment: null,
         runtime_mode: 'enforce',
@@ -1106,6 +1176,25 @@ test('explicit cancel aborts an active capture and keeps controls locked until i
     assert.ok(cancel);
     assert.equal(cancel.options.headers.get('x-voice-identity-enrollment'), 'enrollment-1');
     assert.equal(harness.elements.get('voice-identity-start').hidden, false);
+});
+
+test('cancellation aborts a pending segment upload and clears its PCM', async () => {
+    const segmentGate = deferred();
+    const harness = createHarness({ segmentGate });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.ok(upload);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+    await flush(2);
+    segmentGate.resolve();
+
+    assert.equal(upload.options.signal.aborted, true);
+    assert.equal(new Int16Array(upload.options.body).every(sample => sample === 0), true);
+    assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`));
 });
 
 test('manual finish rejects a capture shorter than the backend contract', async () => {
