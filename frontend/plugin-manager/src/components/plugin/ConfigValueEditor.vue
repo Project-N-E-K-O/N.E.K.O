@@ -45,7 +45,7 @@
                   @update:model-value="(val) => updateObjectKey(k, val)"
                   :baseline-value="baselineChild(k)"
                   :path="childPath(k)"
-                  :replace-semantics="replaceSemantics"
+                  :replace-semantics="replacesBaseline"
                   :compact="compact"
                   :segments="[...(segments || []), k]"
                   :search="search"
@@ -60,7 +60,7 @@
                 inline
                 :path="childPath(k)"
                 :type="valueType(k)"
-                :can-undo="!replaceSemantics && changedKey(k)"
+                :can-undo="!replacesBaseline && changedKey(k)"
                 :can-restore="isOverriddenKey(k)"
                 :custom="isCustomKey(k)"
                 :baseline="baselineChild(k)"
@@ -79,7 +79,7 @@
               v-if="compact && !isProtectedKey(k)"
               :path="childPath(k)"
               :type="valueType(k)"
-              :can-undo="!replaceSemantics && changedKey(k)"
+              :can-undo="!replacesBaseline && changedKey(k)"
               :can-restore="isOverriddenKey(k)"
               :custom="isCustomKey(k)"
               :baseline="baselineChild(k)"
@@ -244,6 +244,7 @@ import {
   setConfigKey,
   configValueText,
   hasConfigChangesAt,
+  REPLACE_MARKER,
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
@@ -299,7 +300,7 @@ function visibleKey(k: string) {
     props.search || '',
     props.filter || 'all',
     props.changes || [],
-    props.replaceSemantics
+    replacesBaseline.value
   )
 }
 async function fieldCommand(k: string, command: string) {
@@ -370,10 +371,16 @@ const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() =
   return 'string'
 })
 
+// A table carrying its own `__replace__ = true` replaces the base table outright,
+// subtree included (config_merge.py), so it follows the same rules as array items.
+const replacesBaseline = computed(
+  () =>
+    props.replaceSemantics === true || asPlainObject(props.modelValue)?.[REPLACE_MARKER] === true
+)
 // 数组项内的对象同理：overlay 项存在时它就是生效值的全部，基线独有的字段
 // 不会被继承，列出来只会让人以为它还在。此时基线只用于「重置」已覆盖的字段。
 const isReplacedObject = computed(
-  () => props.replaceSemantics === true && asPlainObject(props.modelValue) !== null
+  () => replacesBaseline.value && asPlainObject(props.modelValue) !== null
 )
 
 const objectKeys = computed(() => {
@@ -588,7 +595,7 @@ function updateObjectKey(k: string, v: any) {
   // 也空了就继续向上冒泡。基线里没有的键是 profile 自己建的空表，属显式意图，
   // 保留。
   if (
-    !props.replaceSemantics &&
+    !replacesBaseline.value &&
     isEmptyPlainObject(v) &&
     asPlainObject(baselineChild(k)) !== null
   ) {
@@ -604,7 +611,7 @@ function updateObjectKey(k: string, v: any) {
 // 所以必须把基线值显式写回。
 function resetObjectKey(k: string) {
   if (!canWriteKey(k)) return
-  if (!props.replaceSemantics) {
+  if (!replacesBaseline.value) {
     removeObjectKey(k)
     return
   }

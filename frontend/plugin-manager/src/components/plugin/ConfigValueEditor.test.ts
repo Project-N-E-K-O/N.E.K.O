@@ -93,6 +93,24 @@ describe('literal configuration keys', () => {
     expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
   })
 
+  it('does not list base fields under a table marked __replace__', async () => {
+    // The server replaces such a table outright, so base-only fields are not in effect.
+    const baseline = { cache: { size: 1, ttl: 2 } }
+    const rowPaths = (host: HTMLElement) =>
+      Array.from(host.querySelectorAll('[data-config-path]')).map((r) =>
+        r.getAttribute('data-config-path')
+      )
+
+    const replaced = mountEditor({ cache: { __replace__: true, size: 5 } }, baseline, true)
+    await nextTick()
+    expect(rowPaths(replaced.host)).toContain('cache.size')
+    expect(rowPaths(replaced.host)).not.toContain('cache.ttl')
+
+    const merged = mountEditor({ cache: { size: 5 } }, baseline, true)
+    await nextTick()
+    expect(rowPaths(merged.host)).toContain('cache.ttl')
+  })
+
   it('keeps a quoted top-level "plugin.id" key editable', async () => {
     // It flattens to the same display path as [plugin].id, but only the top-level
     // plugin table is protected, and that table is not rendered at the root at all.

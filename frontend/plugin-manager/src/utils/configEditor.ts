@@ -252,7 +252,7 @@ export function deepClone<T>(v: T): T {
 // except while merging into a table that already exists in the base, which is why
 // they are only interpreted here and never by `applyProfileOverlay`.
 const DELETE_MARKER = '__DELETE__'
-const REPLACE_MARKER = '__replace__'
+export const REPLACE_MARKER = '__replace__'
 
 function isMapping(value: any): value is ConfigObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
