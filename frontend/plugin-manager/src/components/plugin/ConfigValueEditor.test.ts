@@ -120,18 +120,20 @@ describe('compact numeric field', () => {
     const emitted: any[] = []
     const host = document.createElement('div')
     document.body.appendChild(host)
-    const Wrapper = defineComponent(() => () => {
+    const baseline = { temp: 1 }
+    const Wrapper = defineComponent(() => {
       const model = ref<any>({ temp: 1 })
-      return h(ConfigValueEditor as any, {
-        modelValue: model.value,
-        baselineValue: model.value,
-        compact: true,
-        path: '',
-        'onUpdate:modelValue': (v: any) => {
-          model.value = v
-          emitted.push(v)
-        },
-      })
+      return () =>
+        h(ConfigValueEditor as any, {
+          modelValue: model.value,
+          baselineValue: baseline,
+          compact: true,
+          path: '',
+          'onUpdate:modelValue': (v: any) => {
+            model.value = v
+            emitted.push(v)
+          },
+        })
     })
     const app = createApp(Wrapper)
     app.use(ElementPlus)
@@ -168,6 +170,56 @@ describe('compact numeric field', () => {
       expect(await type(char, text)).toBe(text + char)
     }
     expect(lastEmit(emitted)).toEqual({ temp: 1.5 })
+  })
+
+  it('keeps a typed spelling whose value prints differently', async () => {
+    // "-0" and "1e2" parse to numbers that print as "0" and "100". The field's own
+    // update must not rewrite the text, or the next keystroke builds the wrong number.
+    const emitted: any[] = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const baseline = { temp: 7 }
+    const Wrapper = defineComponent(() => {
+      const model = ref<any>({ temp: 7 })
+      return () =>
+        h(ConfigValueEditor as any, {
+          modelValue: model.value,
+          baselineValue: baseline,
+          compact: true,
+          path: '',
+          'onUpdate:modelValue': (v: any) => {
+            model.value = v
+            emitted.push(v)
+          },
+        })
+    })
+    const app = createApp(Wrapper)
+    app.use(ElementPlus)
+    app.mount(host)
+    mounted.push({ unmount: () => app.unmount(), host })
+    await nextTick()
+
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="temp"]')!
+    const typeAll = async (text: string) => {
+      input.value = ''
+      input.dispatchEvent(new Event('input'))
+      for (let i = 1; i <= text.length; i++) {
+        input.value = input.value + text[i - 1]
+        input.dispatchEvent(new Event('input'))
+        await nextTick()
+        expect(input.value).toBe(text.slice(0, i))
+      }
+    }
+
+    await typeAll('-0.5')
+    expect(lastEmit(emitted)).toEqual({ temp: -0.5 })
+    await typeAll('1e20')
+    expect(lastEmit(emitted)).toEqual({ temp: 1e20 })
+
+    // Blur still normalises the spelling.
+    input.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+    expect(input.value).toBe(String(1e20))
   })
 })
 

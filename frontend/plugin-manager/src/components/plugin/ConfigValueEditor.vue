@@ -420,7 +420,11 @@ watch(
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') {
       numVal.value = typeof v === 'number' ? v : undefined
-      numberText.value = typeof v === 'number' ? String(v) : ''
+      // Keep the text when it already reads as this value: the field's own update
+      // would otherwise turn "-0" into "0" or "1e2" into "100" mid-typing. Blur
+      // normalises the spelling.
+      if (!Object.is(parseNumberText(numberText.value), v))
+        numberText.value = typeof v === 'number' ? String(v) : ''
     }
     if (kind.value === 'boolean') boolVal.value = typeof v === 'boolean' ? v : false
   },
