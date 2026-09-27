@@ -179,6 +179,30 @@ describe('plugin updates store — check', () => {
     expect(store.checkFailed).toBe(false)
   })
 
+  it('re-runs a forced check that arrived while an older check was in flight', async () => {
+    setPlugins([plugin('alpha', marketSource('15', '1.0.0'))])
+    let releaseFirst: (rows: ReturnType<typeof latestRows>) => void = () => {}
+    vi.mocked(fetchMarketLatestVersions)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve }))
+      .mockResolvedValueOnce(latestRows([[15, '1.1.0']]))
+
+    const store = usePluginUpdatesStore()
+    const first = store.check()
+    await vi.waitFor(() => expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(1))
+
+    // The Market page upgrades alpha meanwhile and asks for a forced re-check.
+    setPlugins([plugin('alpha', marketSource('15', '1.1.0'))])
+    await store.check({ force: true })
+
+    releaseFirst(latestRows([[15, '1.1.0']]))
+    await first
+    // Regression guard: the forced request used to be dropped, so the check
+    // that read the pre-upgrade version kept offering the installed release.
+    await vi.waitFor(() => expect(fetchMarketLatestVersions).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(store.checking).toBe(false))
+    expect(store.candidates).toEqual([])
+  })
+
   it('counts plugins the market did not report instead of calling them up to date', async () => {
     setPlugins([
       plugin('alpha', marketSource('15', '1.0.0')),

@@ -443,7 +443,7 @@ async function runInstallTask(
     )
     await pluginStore.syncRegistryAndFetch().catch(() => undefined)
     await yankSweep().catch(() => undefined)
-    if (pluginUpdates.candidates.length > 0) void pluginUpdates.check({ force: true })
+    void pluginUpdates.check({ force: true })
   } else if (outcome.canceled) {
     ElMessage.info(t('market.installCancelled'))
   } else if (outcome.aborted) {

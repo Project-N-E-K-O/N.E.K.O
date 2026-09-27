@@ -138,6 +138,7 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   /** Bumped per successful popup upgrade, so the Market page can drop its own
    *  installed-version snapshot instead of offering the same upgrade again. */
   const completedUpgrades = ref(0)
+  let forceCheckQueued = false
 
   const updating = computed(
     () => candidates.value.some((candidate) => candidate.status === 'updating'),
@@ -148,7 +149,12 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
   // ─── check ───────────────────────────────────────────────────────────────
 
   async function check(options: { force?: boolean } = {}): Promise<void> {
-    if (checking.value) return
+    if (checking.value) {
+      // The running check may have read its targets before an upgrade landed;
+      // a forced request must not be dropped, or the stale list wins.
+      if (options.force) forceCheckQueued = true
+      return
+    }
     // Re-deriving the list mid-upgrade would replace the very object
     // `updateOne` is mutating, so its failure state would be written to an
     // orphan and never reach the UI.
@@ -250,6 +256,10 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
       updateLog.error('check failed', err)
     } finally {
       checking.value = false
+      if (forceCheckQueued) {
+        forceCheckQueued = false
+        void check({ force: true })
+      }
     }
   }
 
