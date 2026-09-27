@@ -73,6 +73,7 @@ import math
 import os
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -275,6 +276,8 @@ def bm25_score(
 
     total = 0.0
     per_term_total: Dict[str, float] = {}
+    fg_counts = [Counter(doc) for doc in fg_docs]
+    fg_lens = [len(doc) or 1 for doc in fg_docs]
     for term in draft_unique:
         n = df.get(term, 0)
         # IDF Robertson-Sparck-Jones (+0.5 平滑)。term 没在 BG 里出现也按
@@ -285,13 +288,11 @@ def bm25_score(
         if idf <= 0:
             continue
         term_score = 0.0
-        for doc in fg_docs:
-            tf = doc.count(term)
-            if tf == 0:
+        for tf, dl in zip(fg_counts, fg_lens):
+            if tf[term] == 0:
                 continue
-            dl = len(doc) or 1
             norm = 1 - b + b * dl / avgdl
-            term_score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
+            term_score += idf * (tf[term] * (k1 + 1)) / (tf[term] + k1 * norm)
         if term_score > 0:
             per_term_total[term] = term_score
             total += term_score

@@ -46,6 +46,10 @@ def _extract_keywords(text: str, stop_names: list[str] | None = None) -> set[str
         seg = seg.strip()
         if not seg:
             continue
+        if seg.isascii():
+            if len(seg) >= 2:
+                keywords.add(seg)
+            continue
         cjk_count = sum(
             1 for ch in seg
             if '\u4e00' <= ch <= '\u9fff'
