@@ -246,6 +246,7 @@ import {
   hasConfigChangesAt,
   replacesBaseTable,
   REPLACE_MARKER,
+  DELETE_MARKER,
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
@@ -318,7 +319,15 @@ async function fieldCommand(k: string, command: string) {
   }
 }
 
-const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+// Merge markers are reserved as well: a new field named after one would change how
+// its table merges instead of holding a value.
+const FORBIDDEN_KEYS = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+  REPLACE_MARKER,
+  DELETE_MARKER,
+])
 // Guards keys created through the Add-field dialog: dotted and reserved spellings
 // cannot be expressed as a path or a plain property.
 function isValidNewKey(key: string) {

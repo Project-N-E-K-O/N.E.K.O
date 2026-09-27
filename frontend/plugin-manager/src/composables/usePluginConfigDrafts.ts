@@ -3,7 +3,10 @@ import * as api from '@/api/config'
 import {
   configChanges,
   configEqual,
+  configValueAt,
   deepClone,
+  isConfigObject,
+  REPLACE_MARKER,
   restoreConfigPath,
   type ConfigObject,
 } from '@/utils/configEditor'
@@ -163,8 +166,25 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     if (current.value?.loaded) current.value.draft = deepClone(current.value.original)
   }
   function undoField(path: string[]) {
-    if (current.value?.loaded)
-      current.value.draft = restoreConfigPath(current.value.draft, current.value.original, path)
+    const record = current.value
+    if (!record?.loaded) return
+    let draft = restoreConfigPath(record.draft, record.original, path)
+    // Adding the first field to an explicitly empty table also wrote `__replace__`.
+    // Once that field is undone the marker is all that is left of the edit, so undo it
+    // too rather than leave a change the user never made.
+    const parent = path.slice(0, -1)
+    const table = configValueAt(draft, parent)
+    const before = configValueAt(record.original, parent)
+    if (
+      parent.length > 0 &&
+      isConfigObject(table) &&
+      Object.keys(table).length === 1 &&
+      table[REPLACE_MARKER] === true &&
+      isConfigObject(before) &&
+      Object.keys(before).length === 0
+    )
+      draft = restoreConfigPath(draft, record.original, parent)
+    record.draft = draft
   }
 
   async function saveProfile(): Promise<string | null> {

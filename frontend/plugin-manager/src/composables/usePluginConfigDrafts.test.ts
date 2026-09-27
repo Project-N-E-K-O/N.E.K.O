@@ -495,3 +495,33 @@ describe('config draft lifecycle', () => {
     expect(drafts.current.value?.draft).toEqual({ cache: { ttl: 1 } })
   })
 })
+
+describe('field undo', () => {
+  it('drops the replace marker added with the first field of an empty table', async () => {
+    vi.mocked(getPluginProfilesState).mockImplementation(async (id: string) => ({
+      plugin_id: id,
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        files: { default: { path: 'default.toml', resolved_path: null, exists: true } },
+      },
+    }))
+    vi.mocked(getPluginProfileConfig).mockResolvedValue({
+      plugin_id: 'alpha',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { net: { cache: {} } },
+    } as never)
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+
+    // What the form writes when a field is added to the explicitly empty table.
+    drafts.updateDraft({ net: { cache: { __replace__: true, extra: '' } } })
+    drafts.undoField(['net', 'cache', 'extra'])
+
+    expect(drafts.current.value?.draft).toEqual({ net: { cache: {} } })
+    expect(drafts.dirty.value).toBe(false)
+  })
+})

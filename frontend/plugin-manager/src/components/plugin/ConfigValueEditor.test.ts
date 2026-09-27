@@ -139,19 +139,25 @@ describe('literal configuration keys', () => {
       )!
       confirm.click()
       await nextTick()
-      return lastEmit(emitted)
+      return emitted
     }
 
     it('keeps an explicitly empty nested table replaced when adding its first field', async () => {
       // Without the marker the new field would turn the table back into a merge and
       // bring the base `ttl` back into effect.
-      expect(await addField({ net: { cache: {} } }, 'extra')).toEqual({
+      expect(lastEmit(await addField({ net: { cache: {} } }, 'extra'))).toEqual({
         net: { cache: { __replace__: true, extra: '' } },
       })
     })
 
+    it('refuses a new field named after a merge marker', async () => {
+      // It would change how the table merges instead of holding a value.
+      expect(await addField({ net: { cache: {} } }, '__replace__')).toEqual([])
+      expect(await addField({ net: { cache: {} } }, '__DELETE__')).toEqual([])
+    })
+
     it('adds no marker to a nested table that merges with its base', async () => {
-      expect(await addField({ net: { cache: { size: 5 } } }, 'extra')).toEqual({
+      expect(lastEmit(await addField({ net: { cache: { size: 5 } } }, 'extra'))).toEqual({
         net: { cache: { size: 5, extra: '' } },
       })
     })
