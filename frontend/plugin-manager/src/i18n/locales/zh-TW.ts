@@ -301,6 +301,7 @@ export default {
     installFallback: '無法選擇鏡像來源，已使用 GitHub 直連。'
   },
   plugins: {
+    configSchemaInvalid: '外掛程式設定 Schema 無效，已使用通用設定編輯器。',
     title: '外掛列表',
     name: '外掛名稱',
     id: '外掛ID',

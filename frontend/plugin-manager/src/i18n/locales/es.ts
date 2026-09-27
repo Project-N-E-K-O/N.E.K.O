@@ -301,6 +301,7 @@ export default {
     installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
+    configSchemaInvalid: 'El esquema de configuración del complemento no es válido. Se muestra el editor de configuración genérico.',
     title: 'Plugins',
     name: 'Nombre del plugin',
     id: 'ID del plugin',

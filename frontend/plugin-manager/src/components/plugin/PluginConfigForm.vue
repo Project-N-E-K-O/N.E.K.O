@@ -16,6 +16,7 @@
         :model-value="modelValue"
         @update:model-value="(v) => emit('update:modelValue', v)"
         :baseline-value="baselineValue"
+        :schema="schema"
         path=""
       />
     </div>
@@ -27,7 +28,10 @@ import { useI18n } from 'vue-i18n'
 
 import ConfigValueEditor from '@/components/plugin/ConfigValueEditor.vue'
 
+import type { ConfigEditorSchema } from '@/types/configSchema'
+
 interface Props {
+  schema?: ConfigEditorSchema
   modelValue: Record<string, any> | null
   baselineValue: Record<string, any> | null
 }

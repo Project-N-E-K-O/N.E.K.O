@@ -301,6 +301,7 @@ export default {
     installFallback: '无法选择镜像源，已使用 GitHub 直连。'
   },
   plugins: {
+    configSchemaInvalid: '插件配置 Schema 无效，已使用通用配置编辑器。',
     title: '插件列表',
     name: '插件名称',
     id: '插件ID',

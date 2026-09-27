@@ -301,6 +301,7 @@ export default {
     installFallback: '미러 소스를 선택할 수 없어 GitHub 직접 연결을 사용합니다.'
   },
   plugins: {
+    configSchemaInvalid: '플러그인 설정 스키마가 유효하지 않아 일반 설정 편집기를 표시합니다.',
     title: '플러그인 목록',
     name: '플러그인 이름',
     id: '플러그인 ID',

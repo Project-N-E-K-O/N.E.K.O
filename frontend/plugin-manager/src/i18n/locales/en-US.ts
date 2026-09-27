@@ -301,6 +301,7 @@ export default {
     installFallback: 'Could not select a mirror source; using GitHub Direct.'
   },
   plugins: {
+    configSchemaInvalid: 'The plugin configuration schema is invalid. Showing the generic configuration editor.',
     title: 'Plugins',
     name: 'Plugin Name',
     id: 'Plugin ID',

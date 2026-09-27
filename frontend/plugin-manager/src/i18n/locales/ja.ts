@@ -301,6 +301,7 @@ export default {
     installFallback: 'ミラーソースを選択できないため、GitHub 直結を使用します。'
   },
   plugins: {
+    configSchemaInvalid: 'プラグインの設定スキーマが無効なため、汎用設定エディターを表示しています。',
     title: 'プラグイン一覧',
     name: 'プラグイン名',
     id: 'プラグインID',
