@@ -11,6 +11,7 @@ import { i18n, initializeLocale } from './i18n'
 import router from './router'
 import { useConnectionStore } from './stores/connection'
 import { initTutorialBootstrap } from './tutorialBootstrap'
+import { initScrollHoverGuard } from './utils/scrollHoverGuard'
 
 initDarkMode()
 const localeStartup = initializeLocale()
@@ -39,6 +40,7 @@ function initNativeDragGuard() {
 }
 
 initNativeDragGuard()
+initScrollHoverGuard()
 
 const app = createApp(App)
 

@@ -246,13 +246,23 @@ function itemClass(item: T) {
   height: 100%;
 }
 
+/* Swallows hover while scrolling. A shield instead of pointer-events on the
+   grid: that inherited toggle restyles every card node at scroll start/stop. */
+[data-scrolling] .grid-section__grid::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
 /* Keep the full DOM for selection, tutorial anchors, and keyboard navigation,
  * while letting Chromium skip layout/paint work for far-off cards in large
- * registries. The intrinsic size keeps the scroll track stable before an item
- * is first measured. */
+ * registries. The placeholder height tracks a typical card so the scroll
+ * track barely moves before an item is first measured; `auto` keeps the real
+ * size afterwards. */
 .grid-section--large .grid-section__item {
   content-visibility: auto;
-  contain-intrinsic-size: 0 180px;
+  contain-intrinsic-size: auto 0px auto 200px;
 }
 
 .grid-section__select {
