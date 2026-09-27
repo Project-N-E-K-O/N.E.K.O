@@ -363,6 +363,34 @@ describe('plugin updates store — upgrade', () => {
     return store
   }
 
+  it('drops a candidate whose plugin was removed since the check, without posting', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.startsWith('/market/bridge-token')) return { status: 200, body: { bridge_token: 'tok' } }
+      if (url.startsWith('/market/install')) return { status: 200, body: {} }
+      return undefined
+    })
+    const store = await seedOneCandidate()
+    // Deleted from the plugin list, which refreshes the plugin store only.
+    setPlugins([plugin('beta', marketSource('18', '1.0.0'))])
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    // Regression guard: the stale row used to post an upgrade for a plugin that
+    // is gone, then linger as "update in the Market".
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates).toEqual([])
+    expect(fetchMarketPluginVersions).not.toHaveBeenCalled()
+  })
+
+  it('drops a candidate that was already upgraded elsewhere', async () => {
+    const fetchMock = mockFetch(() => undefined)
+    const store = await seedOneCandidate()
+    setPlugins([plugin('alpha', marketSource('15', '1.1.0'))])
+
+    await expect(store.updateOne('alpha')).resolves.toBe(false)
+    expect(installBodies(fetchMock)).toEqual([])
+    expect(store.candidates).toEqual([])
+  })
+
   it('does not re-offer an installed release when the registry sync failed', async () => {
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([release('1.1.0')])
     mockFetch((url) => {

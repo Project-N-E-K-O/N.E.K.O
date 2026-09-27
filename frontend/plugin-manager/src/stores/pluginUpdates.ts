@@ -297,6 +297,15 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     return false
   }
 
+  function isStillOutdated(candidate: MarketUpdateCandidate): boolean {
+    const target = collectMarketUpdateTargets(usePluginStore().pluginsWithStatus)
+      .find((entry) => entry.pluginId === candidate.pluginId)
+    if (!target || target.marketId !== candidate.marketId) return false
+    const floor = installedThisSession.get(target.pluginId)
+    const current = floor && hasNewerVersion(target.currentVersion, floor) ? floor : target.currentVersion
+    return hasNewerVersion(current, candidate.latestVersion)
+  }
+
   async function finishCandidate(candidate: MarketUpdateCandidate): Promise<void> {
     updateLog.info('upgrade succeeded', {
       pluginId: candidate.pluginId,
@@ -327,6 +336,16 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
     // while checking, so this only closes the hole structurally.
     if (checking.value) {
       updateLog.warn('upgrade refused: an update check is in flight', { pluginId })
+      return false
+    }
+
+    // The list is a snapshot from the last check; plugins can be removed or
+    // upgraded elsewhere since (e.g. deleted from the plugin list, which does
+    // not re-run the check). Re-read the installed state before posting, or an
+    // upgrade goes out for a plugin that is no longer there.
+    if (!isStillOutdated(candidate)) {
+      updateLog.info('candidate dropped: no longer installed or no longer outdated', { pluginId })
+      candidates.value = candidates.value.filter((entry) => entry.pluginId !== pluginId)
       return false
     }
 

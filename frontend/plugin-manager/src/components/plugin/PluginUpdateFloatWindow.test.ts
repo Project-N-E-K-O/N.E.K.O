@@ -247,6 +247,23 @@ describe('plugin update float window', () => {
     expect(mocks.messages.success).toHaveBeenCalledWith('pluginUpdates.updateSucceeded')
   })
 
+  it('stays quiet when the row is dropped without an upgrade', async () => {
+    const store = makeStore({ candidates: [candidate()] })
+    store.updateOne.mockImplementation(async () => {
+      store.candidates = []
+      return false
+    })
+    const root = mount()
+
+    ;(root.querySelector('.update-item__button') as HTMLButtonElement).click()
+    await nextTick()
+    await nextTick()
+
+    // Regression guard: a vanished row used to be read as a success.
+    expect(mocks.messages.success).not.toHaveBeenCalled()
+    expect(mocks.messages.error).not.toHaveBeenCalled()
+  })
+
   it('keeps a failed plugin listed and surfaces its error', async () => {
     const store = makeStore({ candidates: [candidate()] })
     store.updateOne.mockImplementation(async () => {

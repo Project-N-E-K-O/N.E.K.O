@@ -323,12 +323,15 @@ function isItemDisabled(candidate: MarketUpdateCandidate): boolean {
 
 /** Failures stay visible in the list; the toast only confirms the click was
  *  understood. Nothing here blocks the rest of the panel. */
-function announceOutcome(pluginId: string, name: string): void {
+function announceOutcome(pluginId: string, name: string, succeeded: boolean): void {
   const candidate = updates.candidates.find((entry) => entry.pluginId === pluginId)
-  if (!candidate) {
+  if (succeeded) {
     ElMessage.success(t('pluginUpdates.updateSucceeded', { name }))
     return
   }
+  // Dropped without an upgrade (no longer installed / no longer outdated): the
+  // row simply disappears, which is the whole answer.
+  if (!candidate) return
   if (candidate.needsManualUpgrade) {
     ElMessage.warning(t('pluginUpdates.manualRequired'))
     return
@@ -340,8 +343,8 @@ function announceOutcome(pluginId: string, name: string): void {
 
 async function handleUpdate(pluginId: string): Promise<void> {
   const name = updates.candidates.find((entry) => entry.pluginId === pluginId)?.name || pluginId
-  await updates.updateOne(pluginId)
-  announceOutcome(pluginId, name)
+  const succeeded = await updates.updateOne(pluginId)
+  announceOutcome(pluginId, name, succeeded)
 }
 
 async function handleCancelUpdate(): Promise<void> {
