@@ -245,6 +245,7 @@ import {
   configValueText,
   hasConfigChangesAt,
   replacesBaseTable,
+  REPLACE_MARKER,
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
@@ -713,6 +714,16 @@ function confirmAddKey() {
   }
 
   next[key] = initialValueByType(newType.value)
+  // An explicitly empty nested table replaces its base table. Its first field would
+  // turn it back into a merge and bring every base field back, so keep the replacement
+  // explicit.
+  if (
+    !props.replaceSemantics &&
+    isEmptyPlainObject(props.modelValue) &&
+    replacesBaseline.value &&
+    Object.keys(asPlainObject(props.baselineValue) ?? {}).length > 0
+  )
+    setConfigKey(next, REPLACE_MARKER, true)
   emitUpdate(next)
   addKeyDialog.value = false
 }

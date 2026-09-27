@@ -125,6 +125,37 @@ describe('literal configuration keys', () => {
       expect(await rowPaths({ net: { cache: {} } })).not.toContain('net.cache.ttl')
     })
 
+    const addField = async (overlay: any, name: string) => {
+      const { host, emitted } = mountEditor(overlay, baseline, true)
+      await nextTick()
+      host.querySelector<HTMLButtonElement>('[data-config-path="net.cache"] .add button')!.click()
+      await vi.waitFor(() => expect(document.querySelector('.el-dialog input')).not.toBeNull())
+      const input = document.querySelector<HTMLInputElement>('.el-dialog input')!
+      input.value = name
+      input.dispatchEvent(new Event('input'))
+      await nextTick()
+      const confirm = [...document.querySelectorAll<HTMLButtonElement>('.el-dialog button')].find(
+        (b) => b.textContent?.trim() === 'common.confirm'
+      )!
+      confirm.click()
+      await nextTick()
+      return lastEmit(emitted)
+    }
+
+    it('keeps an explicitly empty nested table replaced when adding its first field', async () => {
+      // Without the marker the new field would turn the table back into a merge and
+      // bring the base `ttl` back into effect.
+      expect(await addField({ net: { cache: {} } }, 'extra')).toEqual({
+        net: { cache: { __replace__: true, extra: '' } },
+      })
+    })
+
+    it('adds no marker to a nested table that merges with its base', async () => {
+      expect(await addField({ net: { cache: { size: 5 } } }, 'extra')).toEqual({
+        net: { cache: { size: 5, extra: '' } },
+      })
+    })
+
     it('treats the marker at the root as data', async () => {
       expect(await rowPaths({ __replace__: true })).toContain('top')
     })
