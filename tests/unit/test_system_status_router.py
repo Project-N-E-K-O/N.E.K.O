@@ -108,19 +108,23 @@ def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
 def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "  https://social.example.test/api/  ")
+    monkeypatch.setenv("NEKO_AUTH_URL", "  https://auth.example.test/  ")
 
     with _build_client(config_manager) as client:
         configured = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
         monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "   ")
+        monkeypatch.delenv("NEKO_AUTH_URL")
         fallback = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
 
     assert configured.status_code == 200
     assert configured.json() == {
         "ok": True,
         "social_base_url": "https://social.example.test/api",
+        "auth_public_url": "https://auth.example.test",
         "enabled": True,
     }
     assert fallback.json()["social_base_url"] == "https://community.project-neko.cn"
+    assert fallback.json()["auth_public_url"] == "https://auth.project-neko.cn"
     assert "no-store" in configured.headers["Cache-Control"]
 
 

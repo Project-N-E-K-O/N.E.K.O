@@ -1082,7 +1082,7 @@
                     targetUrl.searchParams.set('cid', clientId);
                 }
                 url = targetUrl.toString();
-                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
+                // 先打开猫娘社区。桌面端的登录在设置页完成，这里不再另开浏览器。
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
@@ -1105,7 +1105,7 @@
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                     }
                 }
-                if (!communityLoggedIn) {
+                if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
                     let oauthLaunched = false;
@@ -1209,6 +1209,18 @@
                         }
                     }
                 } else {
+                    if (!communityLoggedIn && typeof window.showStatusToast === 'function') {
+                        const settingsPromptKey = 'app.socialSettingsLoginPrompt';
+                        const settingsPrompt = (typeof window.t === 'function')
+                            ? window.t(settingsPromptKey)
+                            : '';
+                        window.showStatusToast(
+                            (settingsPrompt && settingsPrompt !== settingsPromptKey)
+                                ? settingsPrompt
+                                : '请先在设置中登录 N.E.K.O 账号',
+                            4000
+                        );
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,

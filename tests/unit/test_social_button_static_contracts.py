@@ -534,8 +534,8 @@ const fetch = async (url, options = {}) => {
     advance(2000); await flush();
     await flow;
     assert.equal(delegateRequests, 1, 'reuse the late initial delegate instead of validating again');
-    assert.equal(requests.filter(request => request.url === '/api/card-drop/oauth/start').length,
-        oauthLaunchFailed ? 1 : 0);
+    assert.equal(requests.filter(request => request.url === '/api/card-drop/oauth/start').length, 0,
+        'the desktop app signs in from settings instead of launching the browser');
     assert.equal(ticketRequests, ticketDelay > 4000 ? 1 : 2);
     assert.equal(opened.length, 2);
     assert.equal(opened[0].url.hash.includes('native_sync'), ticketDelay <= 4000);
@@ -573,7 +573,7 @@ def test_social_native_delegate_is_the_fast_path_login_proof_with_safe_fallback(
     assert main_flow.index(unknown_guard) < main_flow.index(
         "fetch('/api/card-drop/auth-status', { cache: 'no-store' })"
     )
-    assert main_flow.index("if (!communityLoggedIn)") < main_flow.index(
+    assert main_flow.index("if (!communityLoggedIn && !isElectron)") < main_flow.index(
         "fetch('/api/card-drop/oauth/start'"
     )
     assert "initialNativeHandoff.nativeDelegate" in main_flow

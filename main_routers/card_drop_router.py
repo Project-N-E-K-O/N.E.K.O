@@ -846,6 +846,8 @@ def _persist_session_credentials(
     *,
     local_user_id: str,
     auth_source: str,
+    auth_public_url: str | None = None,
+    client_id: str | None = None,
 ) -> None:
     """Persist both desktop credential files from a worker thread."""
     auth_saved = _save_auth(auth_payload)
@@ -855,6 +857,8 @@ def _persist_session_credentials(
         refresh,
         local_user_id=local_user_id,
         auth_source=auth_source,
+        auth_public_url=auth_public_url,
+        client_id=client_id,
     )
     if not (auth_saved and social_saved):
         bind["local_save_failed"] = True
@@ -1113,6 +1117,8 @@ async def _store_session(
     *,
     auth_source: str = "legacy",
     bind_client: bool = True,
+    auth_public_url: str | None = None,
+    client_id: str | None = None,
 ) -> dict:
     """Store JWTs and optionally bind the legacy guest client to the user.
 
@@ -1120,6 +1126,10 @@ async def _store_session(
     and exposed through auth-status so client-binding conflicts are visible. A
     browser native-session sync deliberately skips client binding: forge credits
     belong to the installation and must remain readable after switching accounts.
+
+    ``oauth`` sessions additionally persist the issuer base and desktop client id:
+    without both, the Electron refresh manager cannot rebuild the refresh request
+    and the session dies at expiry as a non-retryable ``configuration_error``.
     """
     local_user_id = _normalize_local_user_id(user.get("id"))
     normalized_source = _normalize_auth_source(auth_source)
@@ -1160,6 +1170,14 @@ async def _store_session(
     if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
         raise _ClientBindingConflict()
 
+    oauth_issuer = ""
+    oauth_client_id = ""
+    if normalized_source == "oauth":
+        from main_routers import community_oauth as _co
+
+        oauth_issuer = (auth_public_url or _co._auth_public_url() or "").strip().rstrip("/")
+        oauth_client_id = (client_id or _co._desktop_client_id() or "").strip()
+
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,
@@ -1173,6 +1191,10 @@ async def _store_session(
         },
         "bind": bind,
     }
+    if oauth_issuer:
+        auth_payload["auth_public_url"] = oauth_issuer
+    if oauth_client_id:
+        auth_payload["client_id"] = oauth_client_id
     await asyncio.to_thread(
         _persist_session_credentials,
         auth_payload,
@@ -1182,6 +1204,8 @@ async def _store_session(
         refresh,
         local_user_id=local_user_id,
         auth_source=normalized_source,
+        auth_public_url=oauth_issuer or None,
+        client_id=oauth_client_id or None,
     )
     return bind
 
@@ -1951,6 +1975,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             status_code=lookup.status_code,
             headers=cors,
         )
+    # Platform OAuth tokens stay refused here. The browser must never hand a platform
+    # bearer to localhost -- Verse locks that down from the SPA side in
+    # ``test_web_native_handoff_never_sends_oauth_bearer_to_localhost``, and this check is
+    # the server-side half of the same boundary. The desktop adopts a community login by
+    # minting its own credentials through a silent PKCE authorize instead, so no caller
+    # needs this endpoint to accept ``oauth``.
     if lookup.identity.auth_source != "legacy":
         return JSONResponse(
             {"detail": _PLATFORM_TOKEN_SYNC_FORBIDDEN},

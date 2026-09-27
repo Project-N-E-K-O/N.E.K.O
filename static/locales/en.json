@@ -2562,6 +2562,7 @@
         "socialUnavailable": "Social service unavailable",
         "socialDisabled": "Social service is disabled",
         "socialOAuthPrompt": "Complete unified account login in your browser",
+        "socialSettingsLoginPrompt": "Sign in to the N.E.K.O account in Settings first",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",

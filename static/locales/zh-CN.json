@@ -2562,6 +2562,7 @@
         "socialUnavailable": "社交服务不可用",
         "socialDisabled": "社交服务已禁用",
         "socialOAuthPrompt": "请在浏览器完成统一账号登录",
+        "socialSettingsLoginPrompt": "请先在设置中登录 N.E.K.O 账号",
         "welcomeBack": "{{name}}回来了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",

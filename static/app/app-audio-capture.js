@@ -1292,12 +1292,39 @@
         }
     }
 
+    // 设置页的 15 秒试麦。和正式录音分开，结束时只关掉这次临时流。
+    let settingsMicVolumeTest = null;
+
+    function settingsMicTestLinearGain(gainDb) {
+        if (window.appUtils && typeof window.appUtils.dbToLinear === 'function') {
+            return window.appUtils.dbToLinear(gainDb);
+        }
+        return Math.pow(10, Number(gainDb) / 20);
+    }
+
+    function releaseSettingsMicVolumeProbe() {
+        const probe = settingsMicVolumeTest;
+        settingsMicVolumeTest = null;
+        if (!probe || probe.mode !== 'probe') return;
+        try {
+            if (probe.stream && typeof probe.stream.getTracks === 'function') {
+                probe.stream.getTracks().forEach(function (track) { track.stop(); });
+            }
+        } catch (_) {}
+        try {
+            if (probe.context && probe.context.state !== 'closed') probe.context.close();
+        } catch (_) {}
+    }
+
     // 更新麦克风增益（供外部调用，参数为分贝值）
     window.setMicrophoneGain = function (gainDb) {
         if (gainDb >= C.MIN_MIC_GAIN_DB && gainDb <= C.MAX_MIC_GAIN_DB) {
             S.microphoneGainDb = gainDb;
             if (S.micGainNode) {
                 S.micGainNode.gain.value = window.appUtils.dbToLinear(gainDb);
+            }
+            if (settingsMicVolumeTest && settingsMicVolumeTest.gain) {
+                settingsMicVolumeTest.gain.gain.value = settingsMicTestLinearGain(gainDb);
             }
             saveMicGainSetting();
             // 更新 UI 滑块（如果存在）
@@ -2463,6 +2490,73 @@
 
     // ======================== 音量可视化 ========================
 
+    // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
+    // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
+    let micVolumeSampleBuffer = null;
+
+    function sampleMicVolumeLevel() {
+        if (S.isRecording && S.inputAnalyser && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'probe') {
+            releaseSettingsMicVolumeProbe();
+            settingsMicVolumeTest = { mode: 'live' };
+        }
+        const analyser = (S.isRecording && S.inputAnalyser)
+            ? S.inputAnalyser
+            : (settingsMicVolumeTest && settingsMicVolumeTest.analyser);
+        if (!analyser) {
+            return { recording: false, percent: 0, tone: 'idle' };
+        }
+        // 用时域数据反映 worklet/AI 实际收到的线性振幅。
+        // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
+        // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
+        //
+        // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
+        // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
+        // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
+        const fftSize = analyser.fftSize;
+        if (!micVolumeSampleBuffer || micVolumeSampleBuffer.length !== fftSize) {
+            micVolumeSampleBuffer = new Float32Array(fftSize);
+        }
+        analyser.getFloatTimeDomainData(micVolumeSampleBuffer);
+
+        let peak = 0;
+        let sumSq = 0;
+        let clippedCount = 0;
+        for (let i = 0; i < fftSize; i++) {
+            const val = micVolumeSampleBuffer[i];
+            const abs = val < 0 ? -val : val;
+            if (abs > peak) peak = abs;
+            sumSq += val * val;
+            // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
+            // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
+            if (abs >= 0.999) clippedCount++;
+        }
+        const rms = Math.sqrt(sumSq / fftSize);
+
+        // 显示用 peak（更直观地反映"接近削顶"的距离），
+        // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
+        const volumePercent = Math.min(100, peak * 100);
+        // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
+        // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
+        // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
+        const isClipping = clippedCount >= fftSize * 0.005;
+        // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
+        // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
+        // 没说话时不能用警告色把用户吓到。
+        const hasSignal = rms >= 0.008;
+        const lowVolume = hasSignal && peak < 0.15;
+        // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
+        // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
+        // 守住会让"等待中"被误判为"音量较高"。
+        const high = hasSignal && !isClipping && peak > 0.85;
+
+        let tone = 'waiting';
+        if (isClipping) tone = 'clipping';
+        else if (high) tone = 'high';
+        else if (lowVolume) tone = 'low';
+        else if (hasSignal) tone = 'normal';
+        return { recording: true, percent: volumePercent, tone };
+    }
+
     // 启动麦克风音量可视化
     function startMicVolumeVisualization() {
         // 先停止现有的动画
@@ -2473,9 +2567,6 @@
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
         let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-        // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
-        // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
-        let timeDomainBuffer = null;
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -2498,63 +2589,19 @@
                 return;
             }
 
-            // 检查是否正在录音且有 analyser
-            if (S.isRecording && S.inputAnalyser) {
-                // 用时域数据反映 worklet/AI 实际收到的线性振幅。
-                // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
-                // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
-                //
-                // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
-                // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
-                // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
-                const fftSize = S.inputAnalyser.fftSize;
-                if (!timeDomainBuffer || timeDomainBuffer.length !== fftSize) {
-                    timeDomainBuffer = new Float32Array(fftSize);
-                }
-                S.inputAnalyser.getFloatTimeDomainData(timeDomainBuffer);
-
-                let peak = 0;
-                let sumSq = 0;
-                let clippedCount = 0;
-                for (let i = 0; i < fftSize; i++) {
-                    const val = timeDomainBuffer[i];
-                    const abs = val < 0 ? -val : val;
-                    if (abs > peak) peak = abs;
-                    sumSq += val * val;
-                    // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
-                    // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
-                    if (abs >= 0.999) clippedCount++;
-                }
-                const rms = Math.sqrt(sumSq / fftSize);
-
-                // 显示用 peak（更直观地反映"接近削顶"的距离），
-                // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
-                const volumePercent = Math.min(100, peak * 100);
-                // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
-                // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
-                // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
-                const isClipping = clippedCount >= fftSize * 0.005;
-                // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
-                // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
-                // 没说话时不能用警告色把用户吓到。
-                const hasSignal = rms >= 0.008;
-                const lowVolume = hasSignal && peak < 0.15;
-                // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
-                // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
-                // 守住会让"等待中"被误判为"音量较高"。
-                const high = hasSignal && !isClipping && peak > 0.85;
-
+            const sample = sampleMicVolumeLevel();
+            if (sample.recording) {
                 // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
-                cachedBarFill.style.width = `${volumePercent}%`;
+                cachedBarFill.style.width = `${sample.percent}%`;
 
                 // 根据状态设置颜色
-                if (isClipping) {
+                if (sample.tone === 'clipping') {
                     cachedBarFill.style.backgroundColor = '#dc3545'; // 红 - 过载（唯一警告）
-                } else if (high) {
+                } else if (sample.tone === 'high') {
                     cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙 - 接近过载
-                } else if (lowVolume) {
+                } else if (sample.tone === 'low') {
                     cachedBarFill.style.backgroundColor = '#ffc107'; // 黄 - 在说话但偏低
-                } else if (hasSignal) {
+                } else if (sample.tone === 'normal') {
                     cachedBarFill.style.backgroundColor = '#28a745'; // 绿 - 正常
                 } else {
                     cachedBarFill.style.backgroundColor = '#4f8cff'; // 蓝 - 静默/等待
@@ -2562,16 +2609,16 @@
 
                 // 更新状态文字
                 if (cachedStatus) {
-                    if (isClipping) {
+                    if (sample.tone === 'clipping') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeClipping') : '过载';
                         cachedStatus.style.color = '#dc3545';
-                    } else if (high) {
+                    } else if (sample.tone === 'high') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
                         cachedStatus.style.color = '#fd7e14';
-                    } else if (lowVolume) {
+                    } else if (sample.tone === 'low') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
                         cachedStatus.style.color = '#ffc107';
-                    } else if (hasSignal) {
+                    } else if (sample.tone === 'normal') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
                         cachedStatus.style.color = '#28a745';
                     } else {
@@ -2583,13 +2630,13 @@
                 // 更新提示文字（分支顺序与上面的 status 保持一致：
                 // clipping → high → lowVolume → hasSignal → idle）
                 if (cachedHint) {
-                    if (isClipping) {
+                    if (sample.tone === 'clipping') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintClipping') : '麦克风增益过高，音频被削顶，AI 可能识别异常，请调低增益';
-                    } else if (high) {
+                    } else if (sample.tone === 'high') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintHigh') : '音量偏高，建议调低增益';
-                    } else if (lowVolume) {
+                    } else if (sample.tone === 'low') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
-                    } else if (hasSignal) {
+                    } else if (sample.tone === 'normal') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
                     } else {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintWaiting') : '麦克风正在监听，请说话';
@@ -2686,6 +2733,72 @@
         }
     }
 
+    async function startSettingsMicVolumeTest() {
+        if (S.isRecording && S.inputAnalyser) {
+            releaseSettingsMicVolumeProbe();
+            settingsMicVolumeTest = { mode: 'live' };
+            return { ok: true, mode: 'live' };
+        }
+        releaseSettingsMicVolumeProbe();
+        const audio = {
+            noiseSuppression: false,
+            echoCancellation: true,
+            autoGainControl: true,
+            channelCount: 1,
+        };
+        if (S.selectedMicrophoneId) audio.deviceId = { exact: S.selectedMicrophoneId };
+        let stream = null;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio });
+        } catch (error) {
+            if (!S.selectedMicrophoneId) throw error;
+            const fallback = {
+                noiseSuppression: false,
+                echoCancellation: true,
+                autoGainControl: true,
+                channelCount: 1,
+            };
+            stream = await navigator.mediaDevices.getUserMedia({ audio: fallback });
+        }
+        if (!stream) throw new Error('microphone unavailable');
+        const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+        const context = new AudioContextConstructor();
+        try {
+            const source = context.createMediaStreamSource(stream);
+            const gain = context.createGain();
+            gain.gain.value = settingsMicTestLinearGain(S.microphoneGainDb);
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 2048;
+            analyser.smoothingTimeConstant = 0.8;
+            source.connect(gain);
+            gain.connect(analyser);
+            settingsMicVolumeTest = { mode: 'probe', stream, context, gain, analyser };
+            if (context.state === 'suspended') {
+                try { await context.resume(); } catch (_) {}
+            }
+            return { ok: true, mode: 'probe' };
+        } catch (error) {
+            try { stream.getTracks().forEach(function (track) { track.stop(); }); } catch (_) {}
+            try { if (context.state !== 'closed') context.close(); } catch (_) {}
+            throw error;
+        }
+    }
+
+    function stopSettingsMicVolumeTest() {
+        releaseSettingsMicVolumeProbe();
+        return { ok: true };
+    }
+
+    window.startSettingsMicVolumeTest = async function () {
+        try {
+            return await startSettingsMicVolumeTest();
+        } catch (_) {
+            releaseSettingsMicVolumeProbe();
+            return { ok: false };
+        }
+    };
+    window.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
+
     // ======================== 暴露到 window（向后兼容） ========================
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
@@ -2701,6 +2814,7 @@
     window.saveMicGainSetting = saveMicGainSetting;
     window.loadMicGainSetting = loadMicGainSetting;
     window.formatGainDisplay = formatGainDisplay;
+    window.sampleMicVolumeLevel = sampleMicVolumeLevel;
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
@@ -2805,6 +2919,9 @@
     mod.stopMicCapture = stopMicCapture;
     mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
+    mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
+    mod.startSettingsMicVolumeTest = startSettingsMicVolumeTest;
+    mod.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;

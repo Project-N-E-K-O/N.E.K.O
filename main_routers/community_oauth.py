@@ -654,6 +654,21 @@ async def oauth_start_endpoint(request: Request):
     }
 
 
+def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
+    source = user if isinstance(user, dict) else {}
+    display_name = source.get("display_name") or source.get("username") or source.get("name")
+    profile: dict[str, Any] = {
+        "display_name": display_name,
+        "email": source.get("email"),
+    }
+    if local_user_id:
+        profile = {"id": local_user_id, **profile}
+    phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
+    if isinstance(phone, str) and phone.strip():
+        profile["phone"] = phone.strip()
+    return profile
+
+
 @router.get("/oauth/status", summary="社区 OAuth 本地登录状态（不含 token）")
 async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
@@ -674,10 +689,7 @@ async def oauth_status_endpoint(request: Request):
         "logged_in": True,
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
-        "user": {
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": _public_user_profile(user),
     }
 
 
@@ -835,11 +847,7 @@ async def _handle_oauth_callback(
         "auth_source": "oauth",
         "auth_public_url": auth_public_url,
         "client_id": client_id,
-        "user": {
-            "id": local_user_id,
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": _public_user_profile(user, local_user_id),
         "bind": bind,
     }
     credentials_saved = await asyncio.to_thread(
