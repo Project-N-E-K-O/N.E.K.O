@@ -43,13 +43,15 @@
         inconsistent_segments: ['voiceIdentity.errorInconsistentSegments', '几段声音差异较大，请按提示重新录入。'],
         voice_samples_inconsistent: ['voiceIdentity.errorVoiceSamplesInconsistent', '几段声音差异较大，请按提示重新录入。'],
         owner_verification_failed: ['voiceIdentity.errorOwnerVerificationFailed', '声纹验证未通过，请重录当前段。'],
-        stale_enrollment: ['voiceIdentity.errorStaleEnrollment', '本次录入已过期，请重新开始。']
+        stale_enrollment: ['voiceIdentity.errorStaleEnrollment', '本次录入已过期，请重新开始。'],
+        insufficient_enrollment_time: ['voiceIdentity.errorInsufficientTime', '剩余时间不足以完成下一段，请重新开始录入。']
     });
 
     const state = {
         csrfToken: '',
         enrollmentId: null,
         enrollmentRemainingSeconds: null,
+        enrollmentStatusAt: 0,
         nextSegmentIndex: 1,
         profileId: null,
         profileAvailable: false,
@@ -61,6 +63,7 @@
         audioContext: null,
         captureAbort: null,
         captureFinish: null,
+        captureReady: false,
         recording: false,
         saving: false,
         cancelPending: false,
@@ -235,6 +238,7 @@
             const remainingSeconds = Number(rawRemainingSeconds);
             state.enrollmentRemainingSeconds = rawRemainingSeconds !== null
                 && Number.isFinite(remainingSeconds) ? remainingSeconds : null;
+            state.enrollmentStatusAt = performance.now();
             state.profileId = firstString(
                 [status, enrollment],
                 ['profile_id'],
@@ -450,7 +454,7 @@
         }
         if (elements.finish) {
             elements.finish.hidden = !state.recording;
-            elements.finish.disabled = !state.recording;
+            elements.finish.disabled = !state.recording || !state.captureReady;
             elements.finish.textContent = translate('voiceIdentity.finish', '说完了，保存');
         }
         if (elements.next) {
@@ -483,7 +487,7 @@
             else item.textContent = String(index + 1);
         });
         if (elements.stepTitle) elements.stepTitle.textContent = active ? translate('voiceIdentity.readingPromptLabel', '朗读提示语') : translate('voiceIdentity.privacyTitle', '录入 3 段声纹和 1 段验证语音');
-        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.privacyBody', '请使用平时聊天的自然音量和语速朗读下面这句话，说完后点击保存。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音，第 1 至 3 段最长 3 秒，第 4 段最长 5 秒，说完后点击保存。');
+        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.privacyBody', '请使用平时聊天的自然音量和语速朗读下面这句话，达到所需时长后会自动结束录音。') : translate('voiceIdentity.privacyBody', '按提示完成 3 段参考录音和 1 段验证录音，第 1 至 3 段需录满 3 秒，第 4 段需录满 5 秒，达到时长后会自动结束录音。');
         if (elements.prompt) {
             const prompt = active ? fixedPrompts()[state.segmentIndex - 1] : '';
             elements.prompt.textContent = prompt || '';
@@ -509,9 +513,10 @@
                 autoGainControl: true,
                 channelCount: 1
             };
-            if (selectedMicrophoneId) constraints.deviceId = { exact: selectedMicrophoneId };
+            const selectedConstraints = selectedMicrophoneId
+                ? { ...constraints, deviceId: { exact: selectedMicrophoneId } } : constraints;
             try {
-                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
+                state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: selectedConstraints, video: false });
             } catch (error) {
                 if (!selectedMicrophoneId || !['NotFoundError', 'OverconstrainedError'].includes(error && error.name)) throw error;
                 state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
@@ -580,6 +585,7 @@
         const mute = context.createGain();
         const chunks = [];
         let capturedSamples = 0;
+        state.captureReady = false;
         let startedAt = performance.now();
         let finishCapture = null;
         let flushTimeoutId = null;
@@ -614,7 +620,7 @@
                 state.voiceStatus = 'waiting';
                 renderEnrollment();
             }
-            if (elapsed >= maxRecordingMs && finishCapture) finishCapture();
+            if (elapsed >= maxRecordingMs && state.captureReady && finishCapture) finishCapture();
         }, 100);
         try {
             await new Promise(function (resolve, reject) {
@@ -660,6 +666,7 @@
                         if (tail.length) {
                             chunks.push(tail);
                             capturedSamples += tail.length;
+                            state.captureReady = capturedSamples >= TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
                             updateVoiceActivity(tail);
                         }
                         settle();
@@ -669,10 +676,28 @@
                     if (chunk.length === 0) return;
                     chunks.push(chunk);
                     capturedSamples += chunk.length;
+                    state.captureReady = capturedSamples >= TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
                     updateVoiceActivity(chunk);
                 };
             });
+            if (capturedSamples <= 0) throw new Error('incomplete_capture');
+            const requiredSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
+            const alignedSamples = Math.floor(
+                Math.min(capturedSamples, requiredSamples) / RUNTIME_CHUNK_SAMPLES
+            ) * RUNTIME_CHUNK_SAMPLES;
+            if (alignedSamples < requiredSamples) throw new Error('speech_too_short');
+            const pcm = new Int16Array(alignedSamples);
+            let offset = 0;
+            for (const chunk of chunks) {
+                const count = Math.min(chunk.length, pcm.length - offset);
+                if (count <= 0) break;
+                pcm.set(chunk.subarray(0, count), offset);
+                offset += count;
+            }
+            return pcm.buffer;
         } finally {
+            chunks.forEach(function (chunk) { chunk.fill(0); });
+            state.captureReady = false;
             state.captureAbort = null;
             state.captureFinish = null;
             window.clearInterval(timer);
@@ -685,22 +710,6 @@
             elements.timer.textContent = '';
         }
 
-        if (capturedSamples <= 0) throw new Error('incomplete_capture');
-        const maximumSamples = TARGET_SAMPLE_RATE * maxRecordingMs / 1000;
-        const minimumSamples = maximumSamples;
-        const alignedSamples = Math.floor(
-            Math.min(capturedSamples, maximumSamples) / RUNTIME_CHUNK_SAMPLES
-        ) * RUNTIME_CHUNK_SAMPLES;
-        if (alignedSamples < minimumSamples) throw new Error('speech_too_short');
-        const pcm = new Int16Array(alignedSamples);
-        let offset = 0;
-        for (const chunk of chunks) {
-            const remaining = pcm.length - offset;
-            if (remaining <= 0) break;
-            pcm.set(chunk.subarray(0, remaining), offset);
-            offset += Math.min(chunk.length, remaining);
-        }
-        return pcm.buffer;
     }
 
     function stopMicrophone(reason) {
@@ -766,6 +775,13 @@
         applyStatus(payload);
     }
 
+    function requireCaptureTime(durationMs) {
+        if (!Number.isFinite(state.enrollmentRemainingSeconds)) return;
+        const remainingMs = state.enrollmentRemainingSeconds * 1000
+            - (performance.now() - state.enrollmentStatusAt);
+        if (remainingMs <= durationMs) throw new Error('insufficient_enrollment_time');
+    }
+
     async function startEnrollment() {
         if (state.busy || state.filterPending || state.cancelPending) return;
         state.statusEpoch += 1;
@@ -813,18 +829,22 @@
                         const refreshed = await reconcileStatus();
                         if (!refreshed && !state.enrollmentId) throw new Error('status_unavailable');
                     }
+                    if (state.cancelPending || state.closeStarted) return;
                     if (!state.enrollmentId || (
                         Number.isFinite(state.enrollmentRemainingSeconds)
                         && state.enrollmentRemainingSeconds <= 0
                     )) {
                         throw new Error('stale_enrollment');
                     }
+                    requireCaptureTime(recordingDurationMs);
                     state.segmentPhase = 'preparing'; state.uiPhase = 'preparing';
                     state.recording = false;
                     state.saving = false;
                     render();
                     await ensureMicrophone();
                     if (state.cancelPending || state.closeStarted) return;
+                    requireCaptureTime(recordingDurationMs);
+                    state.captureReady = false;
                     state.segmentPhase = 'recording'; state.uiPhase = 'recording';
                     state.recording = true;
                     render();
@@ -834,9 +854,8 @@
                         finally { state.recording = false; stopMicrophone(); }
                     } catch (error) {
                         if (state.cancelPending || state.closeStarted) return;
-                        const retryable = ['incomplete_capture'].includes(error && error.message);
+                        const retryable = ['incomplete_capture', 'speech_too_short'].includes(error && error.message);
                         if (!retryable || !state.enrollmentId) throw error;
-                        if (window.__voiceIdentityTestAutoAdvance) throw error;
                         state.saving = false;
                         state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                         setMessage(enrollmentErrorMessage(error), true);
@@ -848,13 +867,21 @@
                         if (!proceed || state.cancelPending || state.closeStarted) return;
                         continue;
                     }
-                    if (state.cancelPending || state.closeStarted) return;
+                    if (state.cancelPending || state.closeStarted) {
+                        new Uint8Array(pcm16).fill(0);
+                        return;
+                    }
                     state.segmentPhase = 'checking'; state.uiPhase = 'checking';
                     state.saving = true;
                     render();
                     segmentRequestPending = true;
                     try {
-                        const payload = await apiRequest('/enrollment/segment', { method: 'PUT', body: pcm16, headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', [AUDIO_CONTRACT_HEADER]: AUDIO_CONTRACT_ID, [SESSION_HEADER]: state.enrollmentId, [PROFILE_HEADER]: state.profileId, [SEGMENT_HEADER]: String(segment) } });
+                        let payload;
+                        try {
+                            payload = await apiRequest('/enrollment/segment', { method: 'PUT', body: pcm16, headers: { 'Content-Type': 'audio/pcm;format=pcm_s16le;rate=48000;channels=1', [AUDIO_CONTRACT_HEADER]: AUDIO_CONTRACT_ID, [SESSION_HEADER]: state.enrollmentId, [PROFILE_HEADER]: state.profileId, [SEGMENT_HEADER]: String(segment) } });
+                        } finally {
+                            new Uint8Array(pcm16).fill(0);
+                        }
                         segmentRequestPending = false;
                         if (state.cancelPending || state.closeStarted) return;
                         applyStatus(payload);
@@ -918,7 +945,6 @@
                         }
                         if (!retryable || !state.enrollmentId) throw error;
                         segmentRequestPending = false;
-                        if (window.__voiceIdentityTestAutoAdvance) throw error;
                         state.saving = false;
                         state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                         setMessage(enrollmentErrorMessage(error), true);
@@ -1008,6 +1034,7 @@
 
     async function deleteProfile() {
         if (state.busy || state.filterPending) return;
+        state.statusEpoch += 1;
         state.busy = true;
         setMessage('');
         render();
@@ -1046,6 +1073,7 @@
 
     async function updateFilter() {
         if (state.filterPending || state.busy) return;
+        state.statusEpoch += 1;
         const desired = elements.filter.checked;
         state.filterPending = true;
         setMessage('');
@@ -1089,7 +1117,7 @@
         if (elements.retry) elements.retry.addEventListener('click', retryConnection);
         window.addEventListener('localechange', render);
         const refreshVisibleStatus = function () {
-            if (state.busy || state.cancelPending || document.visibilityState === 'hidden') return;
+            if (state.busy || state.filterPending || state.cancelPending || state.closeStarted || document.visibilityState === 'hidden') return;
             reconcileStatus().catch(function () {});
         };
         window.addEventListener('focus', refreshVisibleStatus);

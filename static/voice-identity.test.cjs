@@ -352,6 +352,7 @@ function createHarness({
                 'voiceIdentity.errorSilence': 'No speech detected.',
                 'voiceIdentity.errorSevereClipping': 'Recording is distorted.',
                 'voiceIdentity.errorIncompleteCapture': 'Recording did not finish.',
+                'voiceIdentity.errorInsufficientTime': 'Not enough time remains for the next recording.',
                 'voiceIdentity.deleteConfirm': 'Delete the profile?',
                 'voiceIdentity.delete': 'Delete voice profile',
             };
@@ -541,6 +542,12 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(upload.options.headers.get('x-voice-identity-profile'), 'profile-1');
     assert.equal(upload.options.headers.get('x-voice-identity-segment'), '4');
     assert.equal(upload.options.headers.get('x-voice-audio-contract'), AUDIO_CONTRACT_ID);
+    const segmentUploads = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.deepEqual(segmentUploads.slice(0, 3).map(call => call.options.body.byteLength), [
+        REFERENCE_SAMPLES * 2,
+        REFERENCE_SAMPLES * 2,
+        REFERENCE_SAMPLES * 2,
+    ]);
     assert.equal(harness.mediaRequests, 4);
     for (const call of harness.mediaConstraintCalls) {
         assert.equal(call.audio.noiseSuppression, false);
@@ -635,14 +642,15 @@ test('a late focus status response cannot clear a newly started enrollment', asy
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
 });
 
-test('a short remaining lease is still allowed to submit the fourth segment', async () => {
+test('a short remaining lease is rejected before starting a futile recording', async () => {
     const harness = createHarness({ remainingSeconds: 5 });
     await harness.initialize();
 
     await harness.emit('voice-identity-start');
 
-    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
-    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough time remains for the next recording.');
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 3);
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 1);
 });
 
 test('inconsistent third reference adopts the server reset and restarts at segment one', async () => {
@@ -660,11 +668,14 @@ test('inconsistent third reference adopts the server reset and restarts at segme
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/cancel`).length, 0);
 });
 
-test('underfilled capture cancels the lease and never uploads partial PCM', async () => {
+test('underfilled capture can be cancelled without uploading partial PCM', async () => {
     const harness = createHarness({ audioChunks: 100 });
     await harness.initialize();
 
-    await harness.emit('voice-identity-start');
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(6);
+    await harness.elements.get('voice-identity-cancel').emit('click');
+    await enrolling;
 
     assert.equal(
         harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/segment`),
@@ -681,7 +692,10 @@ test('server rejection for insufficient usable speech stays fail-safe and visibl
     const harness = createHarness({ profileError: 'speech_too_short' });
     await harness.initialize();
 
-    await harness.emit('voice-identity-start');
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    await harness.elements.get('voice-identity-cancel').emit('click');
+    await enrolling;
 
     assert.equal(
         harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/segment`),
@@ -694,7 +708,10 @@ test('server rejection for insufficient usable speech stays fail-safe and visibl
 test('canonical enrollment audio errors show localized messages', async () => {
     const invalid = createHarness({ profileError: 'invalid_pcm' });
     await invalid.initialize();
-    await invalid.emit('voice-identity-start');
+    const invalidEnrollment = invalid.emit('voice-identity-start');
+    await flush(8);
+    await invalid.elements.get('voice-identity-cancel').emit('click');
+    await invalidEnrollment;
     assert.equal(
         invalid.elements.get('voice-identity-message').textContent,
         'Invalid recording format.',
@@ -702,7 +719,10 @@ test('canonical enrollment audio errors show localized messages', async () => {
 
     const tooLong = createHarness({ profileError: 'audio_too_long' });
     await tooLong.initialize();
-    await tooLong.emit('voice-identity-start');
+    const tooLongEnrollment = tooLong.emit('voice-identity-start');
+    await flush(8);
+    await tooLong.elements.get('voice-identity-cancel').emit('click');
+    await tooLongEnrollment;
     assert.equal(
         tooLong.elements.get('voice-identity-message').textContent,
         'Recording is too long.',
