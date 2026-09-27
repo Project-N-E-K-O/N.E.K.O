@@ -26,8 +26,9 @@ const VERIFICATION_TIMEOUT_MS = VERIFICATION_RECORDING_MS + 1000;
 const WINDOW_CLOSE_START_WAIT_MS = 500;
 const REFERENCE_SAMPLES = TARGET_SAMPLE_RATE * REFERENCE_RECORDING_MS / 1000;
 const VERIFICATION_SAMPLES = TARGET_SAMPLE_RATE * VERIFICATION_RECORDING_MS / 1000;
-const CHUNK_SAMPLES = 512;
-const FULL_AUDIO_CHUNKS = Math.ceil(VERIFICATION_SAMPLES / CHUNK_SAMPLES);
+const CAPTURE_CHUNK_MS = 10;
+const CHUNK_SAMPLES = TARGET_SAMPLE_RATE * CAPTURE_CHUNK_MS / 1000;
+const FULL_AUDIO_CHUNKS = Math.ceil(VERIFICATION_RECORDING_MS / CAPTURE_CHUNK_MS);
 
 function deferred() {
     let resolve;
@@ -319,17 +320,43 @@ function createHarness({
             assert.equal(name, 'audio-processor');
             assert.equal(options.processorOptions.originalSampleRate, context.sampleRate);
             assert.equal(options.processorOptions.targetSampleRate, TARGET_SAMPLE_RATE);
+            this.originalSampleRate = context.sampleRate;
+            this.targetSampleRate = TARGET_SAMPLE_RATE;
+            this.inputSamples = 0;
+            this.outputSamples = 0;
+            this.pendingOutput = [];
+            const node = this;
             this.port = {
                 onmessage: null,
                 postMessage(message) {
                     if (message && message.type === 'flush') {
+                        const pcmData = Int16Array.from(node.pendingOutput);
+                        node.pendingOutput = [];
                         Promise.resolve().then(() => this.onmessage?.({
-                            data: { type: 'flush_complete', pcmData: new Int16Array(0) },
+                            data: { type: 'flush_complete', pcmData },
                         }));
                     }
                 },
             };
             processor = this;
+        }
+
+        emitInput(input) {
+            const samples = input instanceof Int16Array ? input : new Int16Array(input);
+            for (const sample of samples) {
+                const outputBefore = Math.floor(this.inputSamples * this.targetSampleRate / this.originalSampleRate);
+                this.inputSamples += 1;
+                const outputAfter = Math.floor(this.inputSamples * this.targetSampleRate / this.originalSampleRate);
+                for (let index = outputBefore; index < outputAfter; index += 1) {
+                    this.pendingOutput.push(sample);
+                    this.outputSamples += 1;
+                    if (this.pendingOutput.length === CHUNK_SAMPLES) {
+                        const pcmData = Int16Array.from(this.pendingOutput);
+                        this.pendingOutput = [];
+                        this.port.onmessage?.({ data: pcmData });
+                    }
+                }
+            }
         }
 
         connect() {}
@@ -389,14 +416,15 @@ function createHarness({
             if (delay === REFERENCE_TIMEOUT_MS || delay === VERIFICATION_TIMEOUT_MS) {
                 if (!manualAudio) {
                     Promise.resolve().then(() => {
-                        const targetChunks = delay === REFERENCE_TIMEOUT_MS
-                            ? Math.ceil(REFERENCE_SAMPLES / CHUNK_SAMPLES)
-                            : FULL_AUDIO_CHUNKS;
+                        const recordingMs = delay === REFERENCE_TIMEOUT_MS
+                            ? REFERENCE_RECORDING_MS : VERIFICATION_RECORDING_MS;
+                        const targetChunks = Math.ceil(recordingMs / CAPTURE_CHUNK_MS);
                         const chunksToEmit = Math.min(audioChunks, targetChunks);
+                        const inputChunkSamples = Math.round(
+                            audioContextSampleRate * CAPTURE_CHUNK_MS / 1000,
+                        );
                         for (let index = 0; index < chunksToEmit; index += 1) {
-                            processor?.port.onmessage?.({
-                                data: new Int16Array(CHUNK_SAMPLES).fill(1024),
-                            });
+                            processor?.emitInput(new Int16Array(inputChunkSamples).fill(1024));
                         }
                         if (audioChunks < targetChunks) callback();
                         else if (autoFinish) {
@@ -501,7 +529,7 @@ function createHarness({
             const chunk = samples instanceof Int16Array
                 ? samples
                 : new Int16Array(samples).fill(1024);
-            processor?.port.onmessage?.({ data: chunk });
+            processor?.emitInput(chunk);
         },
         async initialize() {
             await documentListeners.get('DOMContentLoaded')();
@@ -611,6 +639,21 @@ test('a browser 44.1 kHz context is resampled to the enrollment contract', async
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
     assert.equal(upload.options.headers.get('content-type'), PCM_CONTENT_TYPE);
+    assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+});
+
+test('clearing an active enrollment resets local segment state', async () => {
+    const harness = createHarness({ initialProfile: true, initialEnrollmentNextSegment: 3 });
+    await harness.initialize();
+
+    assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, false);
+    await harness.emit('voice-identity-cancel');
+    await flush(2);
+    assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-profile-actions').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-start').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
 });
 
 test('a lost enrollment-start response adopts the active server session', async () => {

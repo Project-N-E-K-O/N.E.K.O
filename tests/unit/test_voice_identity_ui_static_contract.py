@@ -16,6 +16,8 @@ from tests.node_harness import run_node_script
 ROOT = Path(__file__).resolve().parents[2]
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
+pytestmark = pytest.mark.frontend_contract
+
 
 def _contrast_ratio(foreground: str, background: str) -> float:
     def luminance(color: str) -> float:

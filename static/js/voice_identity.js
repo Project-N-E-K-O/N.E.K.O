@@ -273,6 +273,11 @@
             state.enrollmentRemainingSeconds = null;
             state.nextSegmentIndex = 1;
             state.profileId = null;
+            state.segmentIndex = 0;
+            state.segmentPhase = 'idle';
+            state.uiPhase = 'idle';
+            state.voiceStatus = 'waiting';
+            state.captureReady = false;
         }
 
         state.profileAvailable = firstBoolean(
