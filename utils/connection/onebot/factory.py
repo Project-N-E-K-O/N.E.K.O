@@ -27,7 +27,12 @@ def create_onebot_connection(
     ``settings_or_reader`` is either a settings dict or a zero-arg callable that
     returns the live settings dict. Passing a callable keeps the open-platform
     ``identity_probe`` reading live settings per event (a toggle flip takes effect
-    without a reconnect), matching the plugin's historical behavior.
+    without a reconnect), matching the plugin's historical behavior. The sandbox
+    toggle is read the same way but sampled once per ``connect()``, so changing it
+    takes effect on the next reconnect.
+
+    Everything else (mode, credentials, ``onebot_url``, ``token``) is read once
+    here; changing it means building a new connection.
     """
     get_settings = settings_or_reader if callable(settings_or_reader) else (lambda: settings_or_reader)
     settings = get_settings() or {}
@@ -43,7 +48,8 @@ def create_onebot_connection(
             ),
             emit_log=emit_log,
             # Sandbox environment: an unpublished bot is only reachable on the sandbox
-            # domain. Also passed as a callable so a settings change takes effect at once.
+            # domain. Passed as a callable, but the connection samples it once per
+            # connect() and pins it, so a settings change applies on the next reconnect.
             sandbox=lambda: bool(
                 get_settings().get("qq_open_sandbox_enabled", False)
             ),

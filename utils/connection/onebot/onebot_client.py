@@ -16,6 +16,25 @@ send wrappers); the only difference is the transport: it puts the single
 outbound socket into ``_main_client`` / ``_connected_clients`` and has
 ``_forward_receive_loop`` do a single-task receive loop with auto-redial on
 disconnect.
+
+OneBot v11 scope (what this client assumes of the implementation):
+
+- Auth follows v11: ``Authorization: Bearer <token>`` or ``?access_token=``,
+  accepted in reverse mode and sent in both forms in forward mode.
+- Reverse mode expects a ``Universal`` client: every connection is treated as
+  both the event stream and the API channel, and API calls go to the most recent
+  connection. The ``X-Client-Role`` / ``X-Self-ID`` headers are not read, so an
+  implementation configured with separate ``API`` + ``Event`` connections is
+  not supported.
+- Event ``message`` fields are expected in array (segment) format; with the
+  string (CQ-code) format, attachments, @-mentions and quoted replies are not
+  extracted (``raw_message`` still fills ``content``).
+- Only ``message`` (private/group) and the ``notify/poke`` and ``group_ban``
+  notices are handled; every other event (other notices, ``request``,
+  ``meta_event``) is dropped.
+- Wrappers cover the v11 public API plus many NapCat / go-cqhttp extension
+  actions (``send_poke``, ``get_file``, ``set_msg_emoji_like``, ``nc_*``, ...).
+  An implementation without an extension answers ``status: failed``.
 """
 
 import asyncio
@@ -54,7 +73,8 @@ class OneBotClient(OneBotConnectionBase):
         #: WS direction: "reverse"=reverse WS server (default) / "forward"=forward WS client.
         self.direction = str(direction or "reverse").strip().lower()
         #: Connection-mode flag the runtime uses to decide whether a reconnect is needed
-        #: (reverse→"napcat", forward→"napcat_forward"). See the mode comparison in runtime_ops_service.
+        #: (reverse→"napcat", forward→"napcat_forward"). See the mode comparison in the
+        #: qq_auto_reply plugin's runtime_ops_service.
         self.mode = "napcat_forward" if self.direction == "forward" else "napcat"
 
         if self.direction == "forward":
@@ -396,7 +416,7 @@ class OneBotClient(OneBotConnectionBase):
         ``_forward_ws_url`` appends the token to the query; if the full URL were
         written to a file log after a successful connect, the token would stay on
         disk forever. Keep only the host/path in the log and replace the token
-        with ``***`` (matching the plugin's ``_mask_token`` sanitizing habit).
+        with ``***`` (matching the qq_auto_reply plugin's ``_mask_token`` sanitizing habit).
         """
         if not url:
             return url
@@ -999,7 +1019,10 @@ class OneBotClient(OneBotConnectionBase):
             self.logger.debug(f"Sent segmented group message to {group_id}")
 
     async def send_group_poke(self, group_id: str, user_id: str) -> bool:
-        """Send a group poke."""
+        """Send a group poke via the NapCat ``send_poke`` extension action (not in v11).
+
+        Fire-and-forget: sent without an echo, so True only means the frame was
+        written, not that the implementation accepted it."""
         if not self._main_client:
             raise RuntimeError("No OneBot client connected")
         try:
@@ -1414,7 +1437,8 @@ class OneBotClient(OneBotConnectionBase):
         return await self.call_action("get_file", {"url": str(url), "thread_count": int(thread_count), "headers": headers or []}, timeout=60.0)
 
     async def get_file_by_id(self, file_id: str) -> Dict[str, Any]:
-        """Fetch file info by file_id (OneBot v11 standard ``get_file``).
+        """Fetch file info by file_id via ``get_file`` (a NapCat / go-cqhttp
+        extension; the v11 public API has no ``get_file``).
 
         Used when a group-file message has only ``file_id`` and no ``busid``, as a
         substitute for ``get_group_file_url`` (NapCat's needs a real busid; passing 0

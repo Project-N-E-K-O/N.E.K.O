@@ -12,14 +12,14 @@ class OneBotConnectionBase(ABC):
     """Abstract base for every connection type.
 
     Both NapCat (OneBot) and the QQ Open Platform implement this interface and
-    output a unified internal message format to the upper layers
-    (message_dispatcher, pipeline, ...).
+    output a unified internal message format to the consuming plugin.
     """
 
     # Internal message format fields (every subclass receive_message() must
     # return this shape):
     # {
     #     "message_type": "group" | "private",
+    #     "channel": str,              # observed transport: "onebot" | "open"
     #     "user_id": str,
     #     "user_nickname": str | None,
     #     "content": str,
@@ -35,6 +35,9 @@ class OneBotConnectionBase(ABC):
     #     "raw": dict,
     #     "attachments": [dict],
     # }
+    # OneBotClient additionally sets "quoted_sender_id" on group messages, and
+    # yields poke notices as {"message_type": "notice", "notice_type": "poke",
+    # "user_id", "group_id", "target_id", "timestamp", "raw", "channel"}.
 
     @abstractmethod
     async def connect(self) -> None:
@@ -99,7 +102,7 @@ class OneBotConnectionBase(ABC):
         """Record a sent message id (used by is_reply_to_bot detection)."""
         ...
 
-    token: str = ""  # access token (for settings_service direct attribute access)
+    token: str = ""  # access token (the consuming plugin's settings code reads it directly)
 
     @property
     def needs_attention(self) -> bool:
@@ -157,6 +160,9 @@ class OneBotConnectionBase(ABC):
     # calls it once per normalized inbound message. qq_auto_reply uses it to push
     # inbound QQ messages to other plugins; a plugin that owns its own connection
     # can also attach its own sink. Never blocks the message pipeline (best-effort).
+    # The sink is invoked from ``receive_message()``; the connection does not drain
+    # its queue on its own, so the owner must keep calling ``receive_message()``
+    # (the queue holds 100 messages and drops the oldest when full).
     _INBOUND_SINK_ATTR = "_inbound_sink"
     #: Cap on the inbound-sink task set; when full, cancel and drop the oldest.
     #: Same drop-oldest semantics as the SSE channel -- otherwise a slow or never-finishing sink grows the unfinished-task set with the message rate and takes the connector process down.
@@ -173,6 +179,9 @@ class OneBotConnectionBase(ABC):
         After each ``receive_message()`` yields a normalized message, the connection
         layer calls it and swallows every exception (the broadcast is best-effort and
         must never stall the pipeline). Pass ``None`` to unregister.
+
+        Registering a sink does not start delivery by itself: it only fires while
+        someone keeps calling ``receive_message()``.
         """
         setattr(self, self._INBOUND_SINK_ATTR, sink)
 
@@ -221,7 +230,7 @@ class OneBotConnectionBase(ABC):
             tasks.remove(task)
         except ValueError:
             # Already removed from the front by drop-oldest; the done_callback fires once more
-# after cancel -- ignore it.
+            # after cancel -- ignore it.
             pass
 
     def _cancel_inbound_sink_tasks(self) -> None:
@@ -252,7 +261,8 @@ class OneBotConnectionBase(ABC):
     @property
     @abstractmethod
     def onebot_url(self) -> str:
-        """Reverse WebSocket listen address (NapCat connects here as a WS client)."""
+        """Connection endpoint: the reverse-WS listen address, the forward-WS dial
+        target, or (Open Platform) the API base URL."""
         ...
 
     @onebot_url.setter

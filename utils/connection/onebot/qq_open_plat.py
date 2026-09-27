@@ -43,8 +43,9 @@ _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 # The official "unique identity mechanism" also answers the scope question: *the
 # same bot sees a different per-group unique id (member_openid) for the same user*.
 # So R11 is confirmed and `actor_scope = per_conversation`, taking the degraded
-# path per §2.15.4.3 (registration in `settings_service.declare_identity_scope`;
-# the manual-assertion UI is on the trusted-user page).
+# path per §2.15.4.3 (registration in the qq_auto_reply plugin's
+# `settings_service.declare_identity_scope`; the manual-assertion UI is on the
+# trusted-user page).
 #
 # The forensics constants / functions below are **kept**: the official doc field
 # table does not guarantee an exhaustive enumeration of the real payload (e.g. an
@@ -229,7 +230,7 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         #: (see module top). A callback (not a bool) so the toggle takes effect
         #: immediately without reconnecting.
         self._identity_probe = identity_probe
-        #: The plugin's in-memory log ring (what the UI "runtime logs" page reads).
+        #: The host plugin's in-memory log ring (what the UI "runtime logs" page reads).
         #: No-op by default, same convention as OneBotClient.
         self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
@@ -428,7 +429,7 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
             if emitted == _IDENTITY_PROBE_MAX_LINES:
                 # The counter lives on this connection object, and qq_auto_reply only
                 # sets it to None (rebuilding) when the **connection mode** changes
-                # (runtime_ops_service.py:44-48) -- the sidebar "stop -> start" does
+                # (its runtime_ops_service) -- the sidebar "stop -> start" does
                 # NOT rebuild it. So the only correct instruction here is "restart the
                 # app"; saying "restart auto-reply" would be a lie.
                 self._write_identity_probe(
@@ -514,8 +515,8 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
     def _expand_cq_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Expand CQ codes inside a text segment into typed segments.
 
-        reply_delivery_node embeds CQ-code strings (e.g. ``[CQ:reply,id=...]``) in the
-        text field; NapCat's OneBot protocol natively understands these codes, but the
+        The qq_auto_reply plugin's reply_delivery_node embeds CQ-code strings
+        (e.g. ``[CQ:reply,id=...]``) in the text field; NapCat's OneBot protocol natively understands these codes, but the
         Open Platform needs real typed segments. Here the CQ codes inside a text segment
         are split out.
         """
@@ -662,7 +663,7 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
             return None
 
     async def send_message(self, user_id: str, message: str) -> Optional[str]:
-        """Send private plain text (for voice_reply_service compatibility)."""
+        """Send private plain text (used by the qq_auto_reply plugin's voice_reply_service)."""
         return await self.send_private_message_segments(
             user_id, [{"type": "text", "data": {"text": message}}],
         )
@@ -774,8 +775,9 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
     ) -> bool:
         """Send a group Ark rich card (Open Platform only).
 
-        Called by ``reply_pipeline`` when ``supports_ark_cards`` is True; OneBot
-        backends degrade to text before reaching here. Card images must be pre-resolved
+        Called by the qq_auto_reply plugin's ``reply_pipeline`` when
+        ``supports_ark_cards`` is True; OneBot backends degrade to text before
+        reaching here. Card images must be pre-resolved
         to URLs in ``ark_obj``; no upload needed here.
         """
         try:
@@ -953,7 +955,7 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         author = data.get("author", {})
         # The Open Platform author has only an openid key, no username; this read
         # finds a value only if the protocol adds a key later. Missing nickname is
-        # bucketed by display_name_service.
+        # bucketed by the qq_auto_reply plugin's display_name_service.
         user_nickname = str(author.get("username") or "") or None
 
         if event_type == "C2C_MESSAGE_CREATE":
@@ -978,9 +980,9 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
 
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             content = str(data.get("content") or "")
-            # This channel's group identifier is itself an openid (see
-            # display_name_service's note); official v2 puts it on group_openid rather
-            # than group_id (bot-docs' GROUP_AT_MESSAGE_CREATE field table and example
+            # This channel's group identifier is itself an openid (see the
+            # qq_auto_reply plugin's display_name_service note); official v2 puts
+            # it on group_openid rather than group_id (bot-docs' GROUP_AT_MESSAGE_CREATE field table and example
             # JSON both have only group_openid), so the real effective branch has
             # always been this fallback. The order still cannot be reversed: when
             # group_id has a value it must keep being used, otherwise the group
