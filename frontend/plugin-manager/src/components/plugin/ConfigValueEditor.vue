@@ -246,7 +246,6 @@ import {
   hasConfigChangesAt,
   replacesBaseTable,
   REPLACE_MARKER,
-  DELETE_MARKER,
   type ConfigChange,
   type ConfigFilter,
 } from '@/utils/configEditor'
@@ -319,15 +318,7 @@ async function fieldCommand(k: string, command: string) {
   }
 }
 
-// Merge markers are reserved as well: a new field named after one would change how
-// its table merges instead of holding a value.
-const FORBIDDEN_KEYS = new Set([
-  '__proto__',
-  'prototype',
-  'constructor',
-  REPLACE_MARKER,
-  DELETE_MARKER,
-])
+const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 // Guards keys created through the Add-field dialog: dotted and reserved spellings
 // cannot be expressed as a path or a plain property.
 function isValidNewKey(key: string) {
@@ -335,6 +326,10 @@ function isValidNewKey(key: string) {
   if (key.includes('.')) return false
   if (FORBIDDEN_KEYS.has(key)) return false
   if (!props.path && key === 'plugin') return false
+  // In a nested table `__replace__` is the merge marker, so a new field by that name
+  // would replace the table instead of holding a value. At the root or in a top-level
+  // section it is ordinary data (config_profiles.py).
+  if (key === REPLACE_MARKER && (props.segments?.length ?? 0) >= 2) return false
   return true
 }
 

@@ -254,7 +254,7 @@ export function deepClone<T>(v: T): T {
 // Mirrors plugin/server/infrastructure/config_merge.py. Markers are ordinary data
 // except while merging into a table that already exists in the base, which is why
 // they are only interpreted here and never by `applyProfileOverlay`.
-export const DELETE_MARKER = '__DELETE__'
+const DELETE_MARKER = '__DELETE__'
 export const REPLACE_MARKER = '__replace__'
 
 /**

@@ -125,10 +125,11 @@ describe('literal configuration keys', () => {
       expect(await rowPaths({ net: { cache: {} } })).not.toContain('net.cache.ttl')
     })
 
-    const addField = async (overlay: any, name: string) => {
+    const addField = async (overlay: any, name: string, table = 'net.cache') => {
       const { host, emitted } = mountEditor(overlay, baseline, true)
       await nextTick()
-      host.querySelector<HTMLButtonElement>('[data-config-path="net.cache"] .add button')!.click()
+      const editor = host.querySelector(`[data-config-path="${table}"] .cve`)!
+      editor.querySelector<HTMLButtonElement>(':scope > .obj > .add button')!.click()
       await vi.waitFor(() => expect(document.querySelector('.el-dialog input')).not.toBeNull())
       const input = document.querySelector<HTMLInputElement>('.el-dialog input')!
       input.value = name
@@ -150,10 +151,16 @@ describe('literal configuration keys', () => {
       })
     })
 
-    it('refuses a new field named after a merge marker', async () => {
-      // It would change how the table merges instead of holding a value.
+    it('refuses a new __replace__ field in a nested table', async () => {
+      // There it is the merge marker and would replace the table instead of holding a value.
       expect(await addField({ net: { cache: {} } }, '__replace__')).toEqual([])
-      expect(await addField({ net: { cache: {} } }, '__DELETE__')).toEqual([])
+    })
+
+    it('accepts a new __replace__ field in a top-level section', async () => {
+      // A top-level section merges key by key, so the name is ordinary data there.
+      expect(lastEmit(await addField({ net: {} }, '__replace__', 'net'))).toEqual({
+        net: { __replace__: '' },
+      })
     })
 
     it('adds no marker to a nested table that merges with its base', async () => {
