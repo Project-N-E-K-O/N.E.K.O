@@ -555,7 +555,10 @@ export const useMarketInstallTaskStore = defineStore('marketInstallTask', () => 
       if (res.ok) {
         const body = (await res.json().catch(() => null)) as MarketInstallTask | null
         if (myGeneration !== generation) return 'unavailable'
-        if (body) task.value = body
+        // The body is the pre-cancel snapshot. A poll may already have seen the
+        // task finish and ended the loop; adopting the body then would bring a
+        // stopped task back as running and hold the install slot forever.
+        if (body && !done.value) task.value = body
         return 'ok'
       }
       // 409 = already inside a stage that cannot be torn down safely.

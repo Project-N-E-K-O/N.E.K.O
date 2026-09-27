@@ -570,6 +570,30 @@ describe('market install task store — cancel', () => {
     await p
   })
 
+  it('keeps a terminal state a poll saw before the cancel response arrived', async () => {
+    let releaseCancel: (value: unknown) => void = () => {}
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.9 }) as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseCancel = resolve as (value: unknown) => void }) as never)
+      .mockResolvedValueOnce(task({ task_id: 't', status: 'completed', stage: 'completed', progress: 1 }) as never)
+
+    const store = useMarketInstallTaskStore()
+    const p = store.track('t', context(), 'panel')
+    await tick()
+    const cancelling = store.cancel('panel')
+    await tick()
+    await expect(p).resolves.toEqual({ ok: true })
+
+    releaseCancel(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.9, cancel_requested: true }))
+    await expect(cancelling).resolves.toBe('ok')
+    // Regression guard: the pre-cancel snapshot used to overwrite the finished
+    // task after polling had stopped, leaving it "running" and the slot held.
+    expect(store.task?.status).toBe('completed')
+    expect(store.running).toBe(false)
+    expect(store.done).toBe(true)
+    store.dismiss()
+  })
+
   it('does not restore a dismissed task from a stale cancel response', async () => {
     let releaseCancel: (value: unknown) => void = () => {}
     vi.mocked(fetchBridge)
