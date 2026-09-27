@@ -10,11 +10,10 @@
     --voice-blue-dark: #245276;
     /* --voice-blue-dark: #075b80 (legacy contrast reference) */
     --voice-ink: #17354a;
-    --voice-muted: #61798a;
+    --voice-muted: #536b7b;
     --voice-border: #b9dcf3;
     --voice-panel: #ffffff;
-    --voice-danger: #c9485b;
-    /* --voice-danger: #b4233b (legacy contrast reference) */
+    --voice-danger: #b4233b;
     --voice-success: #198c6a;
     --voice-focus: #145679;
     /* linear-gradient(to right, #4bd4fd, #17a7ff) legacy action gradient */

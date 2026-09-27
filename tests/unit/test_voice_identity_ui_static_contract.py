@@ -136,6 +136,7 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert 'aria-labelledby="voice-identity-step-title"' in template
     assert 'id="voice-identity-step-title" tabindex="-1"' in template
     assert 'id="voice-identity-prompt"' in template
+    assert 'role="status" aria-live="polite" aria-atomic="true"></blockquote>' in template
     assert 'id="voice-identity-voice-state"' in template
     assert 'data-i18n="voiceIdentity.enrollAndEnable"' in template
     assert 'id="voice-identity-capture-status" hidden' in template
@@ -154,12 +155,13 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert ".switch input:focus-visible + .switch-track" in stylesheet
     assert "--voice-blue-dark: #075b80" in stylesheet
     assert "--voice-danger: #b4233b" in stylesheet
+    assert "--voice-muted: #536b7b" in stylesheet
     assert "--voice-focus: #082f45" in stylesheet
     assert "--voice-focus: #8edcff" in stylesheet
     assert "outline: 3px solid var(--voice-focus)" in stylesheet
     assert _contrast_ratio("#075b80", "#f8fcff") >= 4.5
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
-    assert _contrast_ratio("#61798a", "#ffffff") >= 4.5
+    assert _contrast_ratio("#536b7b", "#e9f5ff") >= 4.5
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     assert "padding: 18px 24px" in stylesheet
@@ -398,6 +400,7 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "microphoneDenied",
         "requestFailed",
         "deleteConfirm",
+        "retryConnection",
     }
     required_segment_keys = {
         "readingPrompt1",

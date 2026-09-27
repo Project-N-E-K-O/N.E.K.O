@@ -455,6 +455,8 @@ function createHarness({
                 }
             } else if (delay === 400) {
                 // Successful flush acknowledgement clears this watchdog.
+            } else if (delay === 1000) {
+                // Prompt-paint watchdog; the animation-frame callback normally settles it first.
             } else if (delay === 0) {
                 Promise.resolve().then(callback);
             } else if (delay === WINDOW_CLOSE_START_WAIT_MS) {

@@ -19,6 +19,7 @@
     const SILENCE_HINT_MS = 800;
     const ACTIVE_FRAME_RMS = 0.008;
     const WINDOW_CLOSE_START_WAIT_MS = 500;
+    const PROMPT_PAINT_TIMEOUT_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const PROFILE_HEADER = 'X-Voice-Identity-Profile';
     const API_ROOT = '/api/voice-identity';
@@ -72,6 +73,7 @@
         uploadAbort: null,
         startAbort: null,
         captureFinish: null,
+        promptPaintAbort: null,
         captureReady: false,
         recording: false,
         saving: false,
@@ -676,10 +678,21 @@
 
     function waitForPromptPaint() {
         return new Promise(function (resolve) {
+            let settled = false;
+            let timeoutId = null;
+            const finish = function () {
+                if (settled) return;
+                settled = true;
+                if (timeoutId !== null) window.clearTimeout(timeoutId);
+                if (state.promptPaintAbort === finish) state.promptPaintAbort = null;
+                resolve();
+            };
+            state.promptPaintAbort = finish;
+            timeoutId = window.setTimeout(finish, PROMPT_PAINT_TIMEOUT_MS);
             if (typeof window.requestAnimationFrame === 'function') {
-                window.requestAnimationFrame(function () { resolve(); });
+                window.requestAnimationFrame(finish);
             } else {
-                window.setTimeout(resolve, 0);
+                window.setTimeout(finish, 0);
             }
         });
     }
@@ -729,6 +742,13 @@
         processor.connect(mute);
         mute.connect(context.destination);
         await context.resume();
+        if (captureEpoch !== state.statusEpoch || state.cancelPending || state.closeStarted) {
+            processor.disconnect();
+            inputGain.disconnect();
+            source.disconnect();
+            mute.disconnect();
+            throw new Error('capture_cancelled');
+        }
 
         state.voiceStatus = 'waiting';
         state.lastVoiceAt = startedAt;
@@ -855,6 +875,9 @@
         const abort = state.captureAbort;
         state.captureAbort = null;
         if (abort) abort(new Error(reason || 'capture_cancelled'));
+        const promptPaintAbort = state.promptPaintAbort;
+        state.promptPaintAbort = null;
+        if (promptPaintAbort) promptPaintAbort();
         if (state.mediaStream) {
             state.mediaStream.getTracks().forEach(function (track) {
                 track.stop();
@@ -1108,7 +1131,15 @@
                             );
                             state.saving = false;
                             state.segmentPhase = 'retry'; state.uiPhase = 'retry';
-                            setMessage(verificationRetryMessage(verification), true);
+                            if (nextSegment === 1) {
+                                state.segmentIndex = 1;
+                                setMessage(translate(
+                                    'voiceIdentity.errorInconsistentSegments',
+                                    '参考录音需要重新开始，请从第 1 段录入。',
+                                ), true);
+                            } else {
+                                setMessage(verificationRetryMessage(verification), true);
+                            }
                             render();
                             const proceed = await waitForSegmentAdvance();
                             if (!proceed || state.cancelPending || state.closeStarted) return;
@@ -1226,7 +1257,7 @@
                 if (timeoutId !== null) window.clearTimeout(timeoutId);
             }
             await cancelSession(config);
-            if (!config.keepalive && !state.enrollmentId && pendingStart) {
+            if (!state.enrollmentId && pendingStart) {
                 const reconciled = await reconcileStatus();
                 if (reconciled && state.enrollmentId) await cancelSession(config);
             }
@@ -1342,16 +1373,7 @@
             state.closeStarted = true;
             state.cancelPending = true;
             stopMicrophone('capture_cancelled');
-            const pendingStart = state.startSettled;
-            if (pendingStart) {
-                let timeoutId = null;
-                const waitLimit = new Promise(function (resolve) {
-                    timeoutId = window.setTimeout(resolve, WINDOW_CLOSE_START_WAIT_MS);
-                });
-                await Promise.race([pendingStart, waitLimit]);
-                if (timeoutId !== null) window.clearTimeout(timeoutId);
-            }
-            cancelEnrollment({ keepalive: true, silent: true }).catch(function () {});
+            await cancelEnrollment({ keepalive: true, silent: true });
             return true;
         };
         window.addEventListener('pagehide', function () {
