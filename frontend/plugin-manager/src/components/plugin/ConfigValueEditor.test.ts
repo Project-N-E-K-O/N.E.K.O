@@ -93,31 +93,36 @@ describe('literal configuration keys', () => {
     expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
   })
 
-  it('does not list base fields under a nested table marked __replace__', async () => {
-    // The server replaces such a nested table outright, so base-only fields are not in
-    // effect. On a top-level section or the root the marker is ordinary data.
+  describe('__replace__ marker', () => {
+    // The server replaces a nested table carrying the marker outright, so its base-only
+    // fields are not in effect. On a top-level section or the root it is ordinary data.
+    // One mount per case keeps each within the default timeout on slow runners.
     const baseline = { net: { cache: { size: 1, ttl: 2 } }, top: 1 }
-    const rowPaths = (host: HTMLElement) =>
-      Array.from(host.querySelectorAll('[data-config-path]')).map((r) =>
+    const rowPaths = async (overlay: any) => {
+      const { host } = mountEditor(overlay, baseline, true)
+      await nextTick()
+      return Array.from(host.querySelectorAll('[data-config-path]')).map((r) =>
         r.getAttribute('data-config-path')
       )
+    }
 
-    const replaced = mountEditor({ net: { cache: { __replace__: true, size: 5 } } }, baseline, true)
-    await nextTick()
-    expect(rowPaths(replaced.host)).toContain('net.cache.size')
-    expect(rowPaths(replaced.host)).not.toContain('net.cache.ttl')
+    it('hides base-only fields under a nested marked table', async () => {
+      const paths = await rowPaths({ net: { cache: { __replace__: true, size: 5 } } })
+      expect(paths).toContain('net.cache.size')
+      expect(paths).not.toContain('net.cache.ttl')
+    })
 
-    const merged = mountEditor({ net: { cache: { size: 5 } } }, baseline, true)
-    await nextTick()
-    expect(rowPaths(merged.host)).toContain('net.cache.ttl')
+    it('keeps inherited fields under an unmarked nested table', async () => {
+      expect(await rowPaths({ net: { cache: { size: 5 } } })).toContain('net.cache.ttl')
+    })
 
-    const topLevel = mountEditor({ net: { __replace__: true } }, baseline, true)
-    await nextTick()
-    expect(rowPaths(topLevel.host)).toContain('net.cache.ttl')
+    it('treats the marker on a top-level section as data', async () => {
+      expect(await rowPaths({ net: { __replace__: true } })).toContain('net.cache.ttl')
+    })
 
-    const root = mountEditor({ __replace__: true }, baseline, true)
-    await nextTick()
-    expect(rowPaths(root.host)).toContain('top')
+    it('treats the marker at the root as data', async () => {
+      expect(await rowPaths({ __replace__: true })).toContain('top')
+    })
   })
 
   it('offers delete beside restore for base-named fields of a replacement table', async () => {
