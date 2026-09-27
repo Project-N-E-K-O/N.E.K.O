@@ -190,6 +190,29 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
     record.draft = draft
   }
 
+  // Applies a successful profile write to the local list before the follow-up refresh,
+  // so a failed refresh leaves the list, the active profile and the selection coherent.
+  // The server activates a stored profile when none was active (config_profiles_write.py).
+  function recordStoredProfile(name: string): boolean {
+    const state = profiles.value
+    if (!state) return false
+    const stored = state.config_profiles
+    profiles.value = {
+      ...state,
+      config_profiles: {
+        active: stored?.active || name,
+        files: {
+          ...(stored?.files || {}),
+          [name]:
+            stored && Object.prototype.hasOwnProperty.call(stored.files, name)
+              ? stored.files[name]!
+              : { path: '', resolved_path: null, exists: true },
+        },
+      },
+    }
+    return true
+  }
+
   async function saveProfile(): Promise<string | null> {
     if (!canSave.value || !selected.value || !current.value) return null
     const id = pluginId.value,
@@ -212,6 +235,9 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       }
       // Saving an earlier snapshot must not erase edits typed while it was in flight.
       record.original = deepClone(result.config || snapshot)
+      // Storing the virtual default creates the first profile; either way the server
+      // activates it when none was active. Reflect that before the fallible refresh.
+      recordStoredProfile(name)
       await loadAll()
       // Only the active profile changes what the running host should be using. When
       // the refresh worked it is authoritative; otherwise the pre-request snapshot is
@@ -236,10 +262,13 @@ export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
       // Keep the existing first-profile auto-activation behavior on the server.
       await api.upsertPluginProfileConfig(id, name, {}, false)
       if (!valid(id, epoch)) return
+      // Reflect the creation locally before refreshing, as deletion does: if the refresh
+      // fails, the list must still show the new profile, and the server has activated it
+      // when no profile was active (config_profiles_write.py).
+      if (recordStoredProfile(name)) selected.value = name
       await loadAll()
-      if (!valid(id, epoch) || !names.value.includes(name)) return
-      selected.value = name
-      await loadProfile(name)
+      if (valid(id, epoch) && selected.value && !records.has(selected.value))
+        await loadProfile(selected.value)
     } finally {
       if (valid(id, epoch)) saving.value = false
     }

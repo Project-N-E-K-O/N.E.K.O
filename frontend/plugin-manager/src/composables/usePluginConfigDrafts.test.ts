@@ -213,7 +213,8 @@ describe('config draft lifecycle', () => {
     drafts.updateDraft({ cache: { ttl: 9 } })
     await drafts.saveProfile()
 
-    expect(drafts.active.value).toBeNull()
+    // The local state reflects the server's implicit activation despite the failed refresh.
+    expect(drafts.active.value).toBe('other')
     expect(hasPendingReload('alpha')).toBe(true)
   })
 
@@ -578,6 +579,25 @@ describe('refresh failure after delete', () => {
     await drafts.deleteProfile('other')
 
     expect(drafts.names.value).toEqual(['prod'])
+    expect(drafts.selected.value).toBe('prod')
+    expect(drafts.current.value?.loaded).toBe(true)
+  })
+})
+
+describe('refresh failure after create', () => {
+  it('shows the created first profile as active even when the refresh fails', async () => {
+    const pluginId = ref('alpha')
+    scope = effectScope()
+    const drafts = scope.run(() => usePluginConfigDrafts(pluginId))!
+    await vi.waitFor(() => expect(drafts.current.value?.loaded).toBe(true))
+    expect(drafts.selected.value).toBe('default')
+
+    vi.mocked(getPluginProfilesState).mockRejectedValueOnce(new Error('offline'))
+    await drafts.createProfile('prod')
+
+    // The server activates the first profile it stores.
+    expect(drafts.names.value).toEqual(['prod'])
+    expect(drafts.active.value).toBe('prod')
     expect(drafts.selected.value).toBe('prod')
     expect(drafts.current.value?.loaded).toBe(true)
   })
