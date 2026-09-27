@@ -6,10 +6,9 @@
     const REFERENCE_RECORDING_MS = 3000;
     const VERIFICATION_RECORDING_MS = 5000;
     const MAX_RECORDING_MS = VERIFICATION_RECORDING_MS;
-    // Keep the server's model timeout available for normalization and
-    // validation after capture, rather than starting a request that
-    // is certain to race the enrollment lease.
-    const ENROLLMENT_PROCESSING_MARGIN_MS = 30000;
+    // Keep a bounded handoff window for worklet flush, upload, and the
+    // server response instead of starting a segment at lease expiry.
+    const ENROLLMENT_PROCESSING_MARGIN_MS = 5000;
     const ENROLLMENT_SEGMENT_COUNT = 4;
     const SEGMENT_HEADER = 'X-Voice-Identity-Segment';
     const AUDIO_CONTRACT_HEADER = 'X-Voice-Audio-Contract';
@@ -258,6 +257,7 @@
             state.nextSegmentIndex = Number.isInteger(nextSegment)
                 && nextSegment >= 1 && nextSegment <= ENROLLMENT_SEGMENT_COUNT
                 ? nextSegment : 1;
+            if (state.segmentIndex === 0) state.segmentIndex = state.nextSegmentIndex;
         } else if (
             Object.prototype.hasOwnProperty.call(status, 'enrollment_active')
             || Object.prototype.hasOwnProperty.call(status, 'enrollment')
@@ -801,7 +801,7 @@
         const profileWasAvailable = state.profileAvailable;
         const profileRevisionBefore = state.profileRevision;
         state.busy = true;
-        state.segmentIndex = 1;
+        state.segmentIndex = state.nextSegmentIndex;
         state.segmentPhase = 'preparing';
         state.uiPhase = 'preparing';
         setMessage('');
@@ -860,7 +860,7 @@
                     let pcm16;
                     try {
                         try { pcm16 = await capturePcm16(recordingDurationMs); }
-                        finally { state.recording = false; stopMicrophone(); }
+                        finally { state.recording = false; }
                     } catch (error) {
                         if (state.cancelPending || state.closeStarted) return;
                         const retryable = ['incomplete_capture', 'speech_too_short'].includes(error && error.message);

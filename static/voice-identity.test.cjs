@@ -116,6 +116,7 @@ function createElement() {
 function createHarness({
     initialProfile = false,
     initialRequested = false,
+    initialEnrollmentNextSegment = null,
     statusGate,
     startGate,
     mediaGate,
@@ -172,12 +173,15 @@ function createHarness({
     let serverProfileGeneration = initialProfile ? 'profile-0' : null;
     let serverRequested = initialRequested;
     let remainingVerificationFailures = verificationFailures;
-    let enrollmentId = null;
-    let serverNextSegment = 1;
+    let enrollmentId = initialEnrollmentNextSegment ? 'enrollment-1' : null;
+    let serverNextSegment = initialEnrollmentNextSegment || 1;
     let remainingInconsistentReferences = inconsistentReference ? 1 : 0;
     let statusRequestCount = 0;
     const mediaConstraintCalls = [];
     let timerId = 0;
+    let intervalCallback = null;
+    let fakeNow = 1000;
+    const autoFinishDurations = [];
     let audioContext = null;
 
     const statusPayload = () => ({
@@ -369,8 +373,9 @@ function createHarness({
         dispatchEvent(event) {
             return windowListeners.get(event.type)?.(event);
         },
-        setInterval() {
+        setInterval(callback) {
             timerId += 1;
+            intervalCallback = callback;
             return timerId;
         },
         clearInterval() {},
@@ -379,13 +384,25 @@ function createHarness({
             if (delay === REFERENCE_TIMEOUT_MS || delay === VERIFICATION_TIMEOUT_MS) {
                 if (!manualAudio) {
                     Promise.resolve().then(() => {
-                        for (let index = 0; index < audioChunks; index += 1) {
+                        const targetChunks = delay === REFERENCE_TIMEOUT_MS
+                            ? Math.ceil(REFERENCE_SAMPLES / CHUNK_SAMPLES)
+                            : FULL_AUDIO_CHUNKS;
+                        const chunksToEmit = Math.min(audioChunks, targetChunks);
+                        for (let index = 0; index < chunksToEmit; index += 1) {
                             processor?.port.onmessage?.({
                                 data: new Int16Array(CHUNK_SAMPLES).fill(1024),
                             });
                         }
-                if (audioChunks < FULL_AUDIO_CHUNKS) callback();
-                else if (autoFinish) elements.get('voice-identity-finish').emit('click');
+                        if (audioChunks < targetChunks) callback();
+                        else if (autoFinish) {
+                            autoFinishDurations.push(
+                                delay === REFERENCE_TIMEOUT_MS
+                                    ? REFERENCE_RECORDING_MS : VERIFICATION_RECORDING_MS,
+                            );
+                            fakeNow += delay === REFERENCE_TIMEOUT_MS
+                                ? REFERENCE_RECORDING_MS : VERIFICATION_RECORDING_MS;
+                            intervalCallback?.();
+                        }
                     });
                 }
             } else if (delay === 400) {
@@ -442,7 +459,7 @@ function createHarness({
         },
         Headers: MockHeaders,
         AudioWorkletNode: MockAudioWorkletNode,
-        performance: { now: () => 1000 },
+        performance: { now: () => fakeNow },
         console: { log() {}, warn() {}, error() {} },
         Uint8Array,
         Int16Array,
@@ -467,6 +484,7 @@ function createHarness({
         fetchCalls,
         mediaStreams,
         workletModules,
+        autoFinishDurations,
         getAudioContext() {
             return audioContext;
         },
@@ -544,6 +562,12 @@ test('one click records three reference segments and one five-second verificatio
         `${API_ROOT}/status`,
         `${API_ROOT}/enrollment/segment`,
     ]);
+    assert.deepEqual(harness.autoFinishDurations, [
+        REFERENCE_RECORDING_MS,
+        REFERENCE_RECORDING_MS,
+        REFERENCE_RECORDING_MS,
+        VERIFICATION_RECORDING_MS,
+    ]);
     const upload = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).at(-1);
     assert.equal(upload.options.method, 'PUT');
     assert.equal(upload.options.body.byteLength, VERIFICATION_SAMPLES * 2);
@@ -558,14 +582,14 @@ test('one click records three reference segments and one five-second verificatio
         REFERENCE_SAMPLES * 2,
         REFERENCE_SAMPLES * 2,
     ]);
-    assert.equal(harness.mediaRequests, 4);
+    assert.equal(harness.mediaRequests, 1);
     for (const call of harness.mediaConstraintCalls) {
         assert.equal(call.audio.noiseSuppression, false);
         assert.equal(call.audio.echoCancellation, true);
         assert.equal(call.audio.autoGainControl, true);
         assert.equal(call.audio.channelCount, 1);
     }
-    assert.deepEqual(harness.workletModules, ['/static/audio-processor.js', '/static/audio-processor.js', '/static/audio-processor.js', '/static/audio-processor.js']);
+    assert.deepEqual(harness.workletModules, ['/static/audio-processor.js']);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Enrollment complete.');
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
@@ -598,6 +622,16 @@ test('the upcoming prompt is visible while the first microphone is preparing', a
     assert.notEqual(harness.elements.get('voice-identity-prompt').textContent, '');
     mediaGate.resolve();
     await enrolling;
+});
+
+test('resumed enrollment shows the canonical segment prompt before microphone setup', async () => {
+    const harness = createHarness({ initialEnrollmentNextSegment: 3 });
+    await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-prompt').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, '今天也用自然的声音聊天。');
+    await harness.emit('voice-identity-start');
+    const firstUpload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(firstUpload.options.headers.get('x-voice-identity-segment'), '3');
 });
 
 test('failed fourth verification stays in the session and retries the holdout', async () => {
@@ -654,7 +688,7 @@ test('a late focus status response cannot clear a newly started enrollment', asy
 });
 
 test('a short remaining lease is rejected before starting a futile recording', async () => {
-    const harness = createHarness({ remainingSeconds: 34 });
+    const harness = createHarness({ remainingSeconds: 9 });
     await harness.initialize();
 
     await harness.emit('voice-identity-start');
