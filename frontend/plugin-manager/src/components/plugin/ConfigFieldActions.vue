@@ -1,7 +1,7 @@
 <template>
   <div
     class="field-actions"
-    :class="{ 'has-direct-actions': inline && (canUndo || canRestore || custom) }"
+    :class="{ 'has-direct-actions': inline && (canUndo || canRestore || canDelete) }"
   >
     <template v-if="inline">
       <el-button
@@ -23,7 +23,7 @@
         >{{ t('plugins.configUi.restoreInheritance') }}</el-button
       >
       <el-button
-        v-else-if="custom"
+        v-if="canDelete"
         link
         size="small"
         type="danger"
@@ -51,7 +51,7 @@
             <el-dropdown-item v-if="canRestore" command="reset">{{
               restoreLabel
             }}</el-dropdown-item>
-            <el-dropdown-item v-else-if="custom" command="delete">{{
+            <el-dropdown-item v-if="canDelete" command="delete">{{
               t('common.delete')
             }}</el-dropdown-item>
           </template>
@@ -74,7 +74,9 @@ const props = defineProps<{
   inline?: boolean
   canUndo?: boolean
   canRestore?: boolean
-  custom?: boolean
+  // Restore and delete can both apply: inside a replacement table, restoring writes the
+  // base value back while deleting leaves the field out of the effective table.
+  canDelete?: boolean
   baseline?: any
 }>()
 const emit = defineEmits<{ (e: 'command', command: string): void }>()

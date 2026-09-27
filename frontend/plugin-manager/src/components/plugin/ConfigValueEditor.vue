@@ -62,7 +62,7 @@
                 :type="valueType(k)"
                 :can-undo="!replacesBaseline && changedKey(k)"
                 :can-restore="isOverriddenKey(k)"
-                :custom="isCustomKey(k)"
+                :can-delete="isDeletableKey(k)"
                 :baseline="baselineChild(k)"
                 @command="fieldCommand(k, $event)"
               />
@@ -81,7 +81,7 @@
               :type="valueType(k)"
               :can-undo="!replacesBaseline && changedKey(k)"
               :can-restore="isOverriddenKey(k)"
-              :custom="isCustomKey(k)"
+              :can-delete="isDeletableKey(k)"
               :baseline="baselineChild(k)"
               @command="fieldCommand(k, $event)"
             />
@@ -496,6 +496,13 @@ function isOverriddenKey(k: string) {
 function isCustomKey(k: string) {
   if (kind.value !== 'object') return false
   return hasOverlayKey(k) && !hasBaselineKey(k)
+}
+
+// Removing a key from the overlay deletes it only where nothing is inherited: a
+// profile-only key, or any key of a replacement table, where omitting it is how the
+// field is left out of the effective configuration.
+function isDeletableKey(k: string) {
+  return isCustomKey(k) || (kind.value === 'object' && replacesBaseline.value && hasOverlayKey(k))
 }
 
 function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {

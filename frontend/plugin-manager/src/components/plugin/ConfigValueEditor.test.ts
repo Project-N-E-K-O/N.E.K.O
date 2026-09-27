@@ -120,6 +120,27 @@ describe('literal configuration keys', () => {
     expect(rowPaths(root.host)).toContain('top')
   })
 
+  it('offers delete beside restore for base-named fields of a replacement table', async () => {
+    // Omitting a key is how a replacement table leaves a field out; restoring writes
+    // the base value back instead. Both have to be reachable.
+    const baseline = { net: { cache: { size: 1, ttl: 2 } } }
+    const { host, emitted } = mountEditor(
+      { net: { cache: { __replace__: true, size: 5 } } },
+      baseline,
+      true
+    )
+    await nextTick()
+
+    const row = host.querySelector<HTMLElement>('[data-config-path="net.cache.size"]')!
+    const buttons = Array.from(row.querySelectorAll('.field-actions > button'))
+    const labels = buttons.map((b) => (b.textContent || '').trim())
+    expect(labels).toContain('plugins.configUi.restoreInheritance')
+    expect(labels).toContain('common.delete')
+    ;(buttons[labels.indexOf('common.delete')] as HTMLButtonElement).click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ net: { cache: { __replace__: true } } })
+  })
+
   it('keeps a quoted top-level "plugin.id" key editable', async () => {
     // It flattens to the same display path as [plugin].id, but only the top-level
     // plugin table is protected, and that table is not rendered at the root at all.
