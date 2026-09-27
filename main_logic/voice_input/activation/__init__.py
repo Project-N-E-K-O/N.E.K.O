@@ -15,6 +15,9 @@ from .contracts import (
     VerificationInput,
     VerificationRequest,
     VerificationResultKind,
+    WakeWordBatchResult,
+    WakeWordDetection,
+    WakeWordDetector,
 )
 from .controller import VoiceActivationConfig, VoiceActivationController
 
@@ -36,4 +39,7 @@ __all__ = [
     "VerificationResultKind",
     "VoiceActivationConfig",
     "VoiceActivationController",
+    "WakeWordBatchResult",
+    "WakeWordDetection",
+    "WakeWordDetector",
 ]

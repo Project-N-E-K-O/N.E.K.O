@@ -15,6 +15,7 @@ from plugin.neko_plugin_cli.public import (
     install_package,
     unpack_package,
 )
+from plugin.neko_plugin_cli.public.build import PluginBuilder
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
 
 pytestmark = pytest.mark.plugin_unit
@@ -79,6 +80,49 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:
     (plugin_dir / "__pycache__").mkdir()
     (plugin_dir / "__pycache__" / "module.pyc").write_bytes(b"pyc")
     return plugin_dir
+
+
+def _make_importable_plugin_dir(tmp_path: Path, plugin_id: str = "probe_plugin") -> Path:
+    """A plugin the metadata probe can really import: package, submodule and vendored dep."""
+    plugin_dir = tmp_path / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\nname = "Probe"\nversion = "1.0.0"\n'
+        f'entry = "plugins.{plugin_id}:Demo"\n',
+        encoding="utf-8",
+    )
+    (plugin_dir / "pyproject.toml").write_text(
+        f'[project]\nname = "{plugin_id}"\nversion = "1.0.0"\ndependencies = ["probedep>=1.0"]\n',
+        encoding="utf-8",
+    )
+    _write_vendor_dist(plugin_dir, "probedep", "1.0.0")
+    (plugin_dir / "vendor" / "probedep").mkdir()
+    (plugin_dir / "vendor" / "probedep" / "__init__.py").write_text(
+        'LABEL = "from vendor"\n', encoding="utf-8",
+    )
+    (plugin_dir / "child.py").write_text('VALUE = "from child"\n', encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "import probedep\n"
+        "from .child import VALUE\n"
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "class Demo:\n"
+        "    @plugin_entry(id='hello', name=VALUE + ' ' + probedep.LABEL)\n"
+        "    def hello(self): return VALUE\n",
+        encoding="utf-8",
+    )
+    return plugin_dir
+
+
+def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:
+    with zipfile.ZipFile(package_path) as archive:
+        names = archive.namelist()
+        leaked = [name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo"))]
+        assert leaked == []
+        for plugin_id in plugin_ids:
+            # 探测真的跑成了：没有元数据的包同样不会带 .pyc，那样这条断言就是空转。
+            meta = archive.read(f"payload/plugins/{plugin_id}/plugin.meta.json").decode("utf-8")
+            assert "from child from vendor" in meta
+            assert f"payload/plugins/{plugin_id}/vendor/probedep/__init__.py" in names
 
 
 def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
@@ -240,6 +284,39 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         dependency_text = archive.read("payload/dependencies.toml").decode("utf-8")
         assert 'python_requirements = ["httpx>=0.27", "pydantic>=2.0"]' in dependency_text
         assert 'vendor_path = "plugins/demo_plugin/vendor"' in dependency_text
+
+
+def test_build_plugin_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    plugin_dir = _make_importable_plugin_dir(tmp_path)
+    package_path = tmp_path / "probe_plugin.neko-plugin"
+
+    build_plugin(plugin_dir, package_path)
+
+    _assert_probed_without_bytecode(package_path, ["probe_plugin"])
+    assert inspect_package(package_path).payload_hash_verified is True
+
+
+def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    first = _make_importable_plugin_dir(tmp_path, "probe_one")
+    second = _make_importable_plugin_dir(tmp_path, "probe_two")
+    package_path = tmp_path / "probe.neko-bundle"
+
+    build_bundle([first, second], package_path, bundle_id="probe_bundle")
+
+    _assert_probed_without_bytecode(package_path, ["probe_one", "probe_two"])
+    assert inspect_package(package_path).payload_hash_verified is True
+
+
+def test_plugin_builder_default_import_mode_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    # 直接用 PluginBuilder() 的调用方走普通导入，探测会往暂存目录写 __pycache__；
+    # 这些字节码同样不能进包。
+    plugin_dir = _make_importable_plugin_dir(tmp_path)
+    package_path = tmp_path / "probe_plugin.neko-plugin"
+
+    PluginBuilder().build_plugin(plugin_dir, package_path)
+
+    _assert_probed_without_bytecode(package_path, ["probe_plugin"])
+    assert inspect_package(package_path).payload_hash_verified is True
 
 
 def test_build_plugin_rejects_pyproject_dependencies_without_vendor(tmp_path: Path) -> None:

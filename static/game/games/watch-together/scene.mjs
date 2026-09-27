@@ -74,6 +74,7 @@ export async function run(game, character) {
     $('discover-button').disabled=automatic.enabled || preparing || nextQueue.busy;
   };
   const nextQueue=createNextVideoQueue(game,state=>{
+    if(state.retry)queuedFor=null;
     if(state.candidate){seenVideos.add(state.candidate);if(seenVideos.size>512)seenVideos.delete(seenVideos.values().next().value);}
     if(state.history)void refreshHistory();
     if(state.status) {

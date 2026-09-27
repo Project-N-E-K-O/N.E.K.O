@@ -20,6 +20,7 @@ from .contracts import (
     VerificationRequest,
     VerificationInput,
     VerificationResultKind,
+    WakeWordDetection,
 )
 
 
@@ -89,6 +90,20 @@ class VoiceActivationController:
         self._lease_counter = 0
         self._claimed: OutputLease | None = None
         self._unavailable_reason: str | None = None
+        self._standby_epoch = 0
+
+    @property
+    def standby_epoch(self) -> int:
+        """A new microphone/standby round cannot reuse prior keyword work."""
+        return self._standby_epoch
+
+    def verification_is_current(self, request: VerificationRequest) -> bool:
+        return bool(
+            self._state is ActivationState.VERIFYING
+            and self._inflight is not None
+            and self._inflight.request is request
+            and self._accept_generation(request.generation)
+        )
 
     @property
     def state(self) -> ActivationState:
@@ -143,6 +158,7 @@ class VoiceActivationController:
         if self._state is ActivationState.CLOSED:
             return self._decision("controller_closed")
         self._reset_runtime()
+        self._standby_epoch += 1
         self._generation = generation
         self._state = ActivationState.PREPARING if enabled else ActivationState.DISABLED
         return self._decision("preparing" if enabled else "disabled")
@@ -164,6 +180,7 @@ class VoiceActivationController:
             self._buffer.clear()
             self._latest_voice_at = None
         self._state = ActivationState.WAITING
+        self._standby_epoch += 1
         self._unavailable_reason = None
         return self._decision("waiting_for_owner")
 
@@ -223,6 +240,7 @@ class VoiceActivationController:
             ActivationState.REPLAYING,
         } and self._idle_expired(frame.captured_at):
             self._state = ActivationState.WAITING
+            self._standby_epoch += 1
             self._latest_voice_at = None
             self._replay_cutoff_sequence = None
             # Existing output leases remain authorized. Their source frames
@@ -284,12 +302,7 @@ class VoiceActivationController:
     ) -> ActivationDecision:
         """Commit a verifier result only if its complete authority is current."""
 
-        if (
-            self._state is not ActivationState.VERIFYING
-            or self._inflight is None
-            or self._inflight.request is not request
-            or not self._accept_generation(request.generation)
-        ):
+        if not self.verification_is_current(request):
             return self._decision("stale_verification_result")
 
         if result is not VerificationResultKind.FAILED and not self._inflight.claimed:
@@ -313,13 +326,76 @@ class VoiceActivationController:
             self._queued_candidate = None
             return self._decision("verified_candidate_stale")
 
+        return self._commit_replay(request.replay_start_sequence, "owner_confirmed")
+
+    def apply_wake_word(
+        self,
+        detection: WakeWordDetection,
+        *,
+        now: float | None = None,
+    ) -> ActivationDecision:
+        """Commit keyword evidence without inventing an OWNER score.
+
+        Only a complete live PCM range may authorize replay. Capture time is
+        reconstructed from its owning frame, never from decoder wall time.
+        """
+        if (
+            self._state not in {ActivationState.WAITING, ActivationState.VERIFYING}
+            or not self._accept_generation(detection.generation)
+            or detection.epoch != self._standby_epoch
+        ):
+            return self._decision("stale_wake_word")
+        oldest = self._buffer.oldest_sequence
+        latest = self._buffer.latest_sequence
+        if oldest is None or latest is None:
+            return self._decision("wake_word_source_unavailable")
+        frames = self._buffer.get_range(oldest, latest)
+        start = next(
+            (
+                frame
+                for frame in frames
+                if frame.sample_start <= detection.sample_start < frame.sample_end
+            ),
+            None,
+        )
+        end = next(
+            (
+                frame
+                for frame in frames
+                if frame.sample_start < detection.sample_end <= frame.sample_end
+            ),
+            None,
+        )
+        if start is None or end is None:
+            return self._decision("wake_word_source_unavailable")
+        activity_at = (
+            end.captured_at
+            + (detection.sample_end - end.sample_start) / end.sample_rate
+        )
+        current = self._clock() if now is None else now
+        if current - activity_at >= self._config.idle_timeout_seconds:
+            return self._decision("wake_word_expired")
+        replay_start = self._buffer.replay_start_sequence(
+            start.sequence,
+            pre_roll_seconds=self._config.pre_roll_seconds,
+        )
+        self._latest_voice_at = max(self._latest_voice_at or activity_at, activity_at)
+        # Fence the scorer, but do not cancel its backend operation. A late
+        # FAILED result has no authority over this activation or the next one.
+        self._inflight = None
+        return self._commit_replay(replay_start, "wake_word_detected")
+
+    def _commit_replay(
+        self, replay_start_sequence: int, reason: str
+    ) -> ActivationDecision:
+        """Both independent evidence sources use one ordered output path."""
         cutoff = self._buffer.latest_sequence
         if cutoff is None:
             self._state = ActivationState.WAITING
             return self._decision("replay_source_empty")
         try:
             replay_frames = self._buffer.get_range(
-                request.replay_start_sequence,
+                replay_start_sequence,
                 cutoff,
             )
         except FrameRangeUnavailable:
@@ -333,7 +409,7 @@ class VoiceActivationController:
             if not self._enqueue_output(frame, OutputOrigin.REPLAY):
                 return self._decision("output_backlog_overflow")
         self._state = ActivationState.REPLAYING
-        return self._decision("owner_confirmed", replay_cutoff=cutoff)
+        return self._decision(reason, replay_cutoff=cutoff)
 
     def claim_verification_input(
         self,
@@ -379,6 +455,7 @@ class VoiceActivationController:
         if not self._idle_expired(current):
             return self._decision("still_active")
         self._state = ActivationState.WAITING
+        self._standby_epoch += 1
         self._latest_voice_at = None
         self._replay_cutoff_sequence = None
         self._buffer.clear()
@@ -436,6 +513,7 @@ class VoiceActivationController:
             self._replay_cutoff_sequence = None
             if self._idle_expired(self._clock() if now is None else now):
                 self._state = ActivationState.WAITING
+                self._standby_epoch += 1
                 self._latest_voice_at = None
                 return self._decision("idle_timeout_after_replay")
             return self._decision("replay_handed_off")

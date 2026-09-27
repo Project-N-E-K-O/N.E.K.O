@@ -103,6 +103,16 @@ dependencies = [
   "python-osc>=1.9.0",
 ]
 
+[project.optional-dependencies]
+# Optional local wake-word inference; model weights and the patched runtime are
+# provisioned separately. Keep this extra dependency-free: the upstream
+# 1.13.8 wheel is not compatible with the timestamp/decoder patches required by
+# the backend, and publishing a platform-specific custom wheel through the
+# lockfile would silently install the wrong runtime on unsupported platforms.
+# Install the locally built 1.13.8+neko.kws2 wheel as documented in
+# docs/development/wake-word-runtime.md.
+wake-word = []
+
 [tool.hatch.version]
 path = "config/application.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
