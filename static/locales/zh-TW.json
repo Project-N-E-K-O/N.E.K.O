@@ -565,7 +565,8 @@
         "cameraStreamFailed": "無法取得攝影機串流",
         "characterConfigFailed": "無法取得角色設定",
         "API_ARREARS": "💥 您的API已欠費。如使用第三方平台請盡快充值。",
-        "API_QUOTA_TIME": "💥 免費API限額已耗盡，請更換API或明天再試。",
+        "API_QUOTA_TIME": "💥 免費API限額已耗盡，請稍後再試或更換API。",
+        "API_ACCESS_DENIED": "💥 免費服務拒絕了目前網路的存取，已停止自動重新連線。",
         "API_RATE_LIMIT": "💥 API達到限額或請求過於頻繁(429)，請稍後再試。",
         "API_POLICY_VIOLATION": "💥 伺服器返回安全策略攔截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 會話斷開(1008)：{{msg}}",
@@ -2652,6 +2653,8 @@
             "never": "不再提醒"
         },
         "screenSource": {
+            "browserPickerHint": "開始分享時，瀏覽器會讓你選擇分頁、視窗或螢幕。",
+            "mobileCameraHint": "開始分享時，將使用你的攝影機。",
             "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",

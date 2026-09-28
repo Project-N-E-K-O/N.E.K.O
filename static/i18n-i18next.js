@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并双方：GLM 声音复刻新增 key + 主分支点歌台管理入口与排序锁提示等 locale key 同步。
-    const LOCALE_VERSION = '2026-09-28-glm-voice-clone-locale-key-sync';
+    // 合并双方：GLM 声音复刻新增 key + 主分支屏幕共享悬停提示、免费语音配额/拒绝访问提示等 locale key，递增版本让长期缓存重新拉取完整语言包。
+    const LOCALE_VERSION = '2026-09-28-glm-voice-clone-free-tts-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
