@@ -29,9 +29,8 @@ def _check_node(node: object, depth: int = 0) -> None:
         raise ValueError("Invalid configuration schema node")
     if "type" in node:
         declared = node["type"]
-        types = declared if isinstance(declared, list) else [declared]
-        allowed = {"object", "array", "string", "number", "integer", "boolean", "null"}
-        if not types or not all(isinstance(value, str) and value in allowed for value in types):
+        allowed = {"object", "array", "string", "number", "integer", "boolean"}
+        if not isinstance(declared, str) or declared not in allowed:
             raise ValueError("Invalid schema type")
     for key in ("title", "description"):
         if key in node and not isinstance(node[key], str):
@@ -51,8 +50,14 @@ def _check_node(node: object, depth: int = 0) -> None:
             _check_node(child, depth + 1)
     if "items" in node:
         _check_node(node["items"], depth + 1)
-    if "enum" in node and (not isinstance(node["enum"], list) or not node["enum"]):
-        raise ValueError("Invalid schema enum")
+    if "enum" in node:
+        values = node["enum"]
+        if not isinstance(values, list) or not values or not all(
+            isinstance(value, (str, bool))
+            or (isinstance(value, (int, float)) and math.isfinite(value))
+            for value in values
+        ):
+            raise ValueError("Invalid schema enum")
     for key in ("minimum", "maximum"):
         if key in node:
             value = node[key]

@@ -430,6 +430,7 @@ export default {
     addItem: '新增項目',
     fieldName: '欄位名稱',
     fieldNameRequired: '欄位名稱不能為空',
+    readOnlyField: '此欄位為唯讀，無法新增。',
     invalidFieldKey: '欄位名稱不合法',
     fieldType: '欄位類型',
     duplicateFieldKey: '欄位名稱已存在，請換一個',

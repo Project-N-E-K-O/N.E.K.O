@@ -448,3 +448,62 @@ describe('ConfigValueEditor — JSON Schema', () => {
     expect(keys).toEqual(['legacy'])
   })
 })
+
+describe('ConfigValueEditor — schema review regressions', () => {
+  it.each([false, true])('rejects adding a missing readOnly field (array item: %s)', async (inArray) => {
+    const locked: ConfigEditorSchema = { type: 'string', readOnly: true, default: 'locked default' }
+    const object: ConfigEditorSchema = { type: 'object', properties: { locked } }
+    const schema: ConfigEditorSchema = inArray
+      ? { type: 'object', properties: { rows: { type: 'array', items: object } } }
+      : object
+    const { host, emitted } = mountEditor(inArray ? { rows: [{}] } : {},
+      inArray ? { rows: [{ locked: 'baseline' }] } : {}, schema)
+    await nextTick()
+    ;(host.querySelector('.add button') as HTMLButtonElement).click()
+    await nextTick()
+    typeInto(document.querySelector('.el-dialog input')!, 'locked')
+    await nextTick()
+    const confirm = Array.from(document.querySelectorAll('.el-dialog button')).find(
+      (button) => button.textContent?.trim() === 'common.confirm',
+    ) as HTMLButtonElement
+    confirm.click()
+    await nextTick()
+    expect(emitted).toEqual([])
+    expect(document.body.textContent).toContain('plugins.readOnlyField')
+    // A rejected name must not prevent adding another writable field.
+    typeInto(document.querySelector('.el-dialog input')!, 'custom')
+    await nextTick()
+    confirm.click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual(inArray ? { rows: [{ custom: '' }] } : { custom: '' })
+  })
+
+  it.each([
+    { current: false, options: [true] },
+    { current: true, options: [false] },
+    { current: 0, options: [1, 2] },
+    { current: 'legacy', options: ['new'] },
+  ])('shows an out-of-enum value $current without changing its type or writing on load', async ({ current, options }) => {
+    for (const inherited of [true, false]) {
+      const { host, emitted } = mountEditor(inherited ? {} : { choice: current },
+        { choice: inherited ? current : options[0] }, { type: 'object', properties: {
+          choice: { enum: options },
+        } })
+      await nextTick()
+      const row = rowFor(host, 'choice')
+      expect(row.querySelector('.el-select__selected-item.el-select__placeholder')?.textContent).toBe(String(current))
+      expect(emitted).toEqual([])
+      ;(row.querySelector('.el-select__wrapper') as HTMLElement).click()
+      await nextTick()
+      const choices = Array.from(document.querySelectorAll('.el-select-dropdown__item'))
+      const valid = choices.find((item) => item.textContent?.trim() === String(options[0])) as HTMLElement
+      valid.click()
+      await nextTick()
+      expect(lastEmit(emitted)).toEqual({ choice: options[0] })
+      // Remove teleported options before testing the other value source.
+      const item = mounted.pop()!
+      item.unmount()
+      item.host.remove()
+    }
+  })
+})

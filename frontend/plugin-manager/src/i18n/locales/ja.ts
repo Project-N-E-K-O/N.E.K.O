@@ -430,6 +430,7 @@ export default {
     addItem: '項目を追加',
     fieldName: 'フィールド名',
     fieldNameRequired: 'フィールド名は必須です',
+    readOnlyField: 'この項目は読み取り専用のため追加できません。',
     invalidFieldKey: 'フィールド名が無効です',
     fieldType: 'フィールドタイプ',
     duplicateFieldKey: 'フィールド名は既に存在します。別の名前を使用してください。',

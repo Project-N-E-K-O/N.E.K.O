@@ -1,6 +1,6 @@
 /** Supported form annotations from a plugin's optional config.schema.json. */
 export interface ConfigEditorSchema {
-  type?: string | string[]
+  type?: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean'
   title?: string
   description?: string
   properties?: Record<string, ConfigEditorSchema>

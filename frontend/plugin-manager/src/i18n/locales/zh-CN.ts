@@ -430,6 +430,7 @@ export default {
     addItem: '新增项',
     fieldName: '字段名',
     fieldNameRequired: '字段名不能为空',
+    readOnlyField: '此字段为只读，无法添加。',
     invalidFieldKey: '字段名不合法',
     fieldType: '字段类型',
     duplicateFieldKey: '字段名已存在，请换一个',

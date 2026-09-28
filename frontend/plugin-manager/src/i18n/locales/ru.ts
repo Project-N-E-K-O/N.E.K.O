@@ -430,6 +430,7 @@ export default {
     addItem: 'Добавить элемент',
     fieldName: 'Имя поля',
     fieldNameRequired: 'Имя поля обязательно',
+    readOnlyField: 'Это поле доступно только для чтения, его нельзя добавить.',
     invalidFieldKey: 'Недопустимое имя поля',
     fieldType: 'Тип поля',
     duplicateFieldKey: 'Имя поля уже существует. Выберите другое.',

@@ -430,6 +430,7 @@ export default {
     addItem: 'Add Item',
     fieldName: 'Field Name',
     fieldNameRequired: 'Field name is required',
+    readOnlyField: 'This field is read-only and cannot be added.',
     invalidFieldKey: 'Invalid field name',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',

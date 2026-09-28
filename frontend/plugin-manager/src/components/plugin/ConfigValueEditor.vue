@@ -496,6 +496,11 @@ function confirmAddKey() {
     return
   }
 
+  if (isReadOnly.value || fieldSchema(key)?.readOnly) {
+    ElMessage.warning(t('plugins.readOnlyField'))
+    return
+  }
+
   next[key] = fieldSchema(key) ? newSchemaValue(fieldSchema(key)) : initialValueByType(newType.value)
   emitUpdate(next)
   addKeyDialog.value = false

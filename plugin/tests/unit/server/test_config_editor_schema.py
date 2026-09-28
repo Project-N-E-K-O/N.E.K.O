@@ -109,3 +109,32 @@ def test_schema_cannot_resolve_outside_plugin(manifest: Path, monkeypatch: pytes
     schema, warnings = load_config_editor_schema(manifest)
     assert schema is None
     assert warnings
+
+
+@pytest.mark.parametrize("field", [
+    {"type": ["string", "number"]},
+    {"type": ["string", "null"]},
+    {"type": ["string"]},
+    {"type": "null"},
+    {"enum": ["valid", None]},
+    {"enum": ["valid", {}]},
+    {"enum": ["valid", []]},
+    {"enum": []},
+])
+def test_unsupported_controls_warn_and_preserve_config(manifest: Path, field: dict) -> None:
+    schema = {"type": "object", "properties": {"search": {
+        "type": "object", "properties": {"max_results": field},
+    }}}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    payload = config_queries.load_plugin_effective_base_config("schema_demo")
+    assert payload["config_schema"] is None
+    assert payload["config"]["search"]["max_results"] == 8
+    assert any(w["code"] == "PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID" for w in payload["warnings"])
+
+
+def test_supported_scalar_enum_values_are_preserved(manifest: Path) -> None:
+    schema = {"type": "object", "properties": {"choice": {
+        "enum": ["", "value", 0, 1.5, False, True],
+    }}}
+    manifest.with_name("config.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    assert load_config_editor_schema(manifest) == (schema, [])

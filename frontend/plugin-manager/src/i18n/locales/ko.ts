@@ -430,6 +430,7 @@ export default {
     addItem: '항목 추가',
     fieldName: '필드 이름',
     fieldNameRequired: '필드 이름은 필수입니다',
+    readOnlyField: '이 필드는 읽기 전용이므로 추가할 수 없습니다.',
     invalidFieldKey: '잘못된 필드 이름입니다',
     fieldType: '필드 유형',
     duplicateFieldKey: '필드 이름이 이미 존재합니다. 다른 이름을 사용하세요.',
