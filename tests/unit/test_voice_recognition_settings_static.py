@@ -230,13 +230,26 @@ def test_local_asr_toggle_follows_the_independent_asr_gate() -> None:
         "function openVoiceRecognitionSubwindow()", maxsplit=1
     )[1].split("async function openMicDeviceSubwindow()", maxsplit=1)[0]
 
-    assert "'microphone.localAsr'" in voice_panel
-    assert "'microphone.localAsrHint'" in voice_panel
-    assert "? 'faster_whisper'" in voice_panel
+    local_setting = source.split(
+        "function createLocalAsrSetting(panelBody, beforeNode)", maxsplit=1
+    )[1].split("function reconcileLocalAsrSetting()", maxsplit=1)[0]
+    offer_gate = source.split("function shouldOfferLocalAsr()", maxsplit=1)[1].split(
+        "function createLocalAsrSetting", maxsplit=1
+    )[0]
+    capability_listener = source.split(
+        "function onCoreApiCapabilityChanged()", maxsplit=1
+    )[1].split("}", maxsplit=1)[0]
+
+    assert "if (shouldOfferLocalAsr())" in voice_panel
+    assert "'microphone.localAsr'" in local_setting
+    assert "'microphone.localAsrHint'" in local_setting
+    assert "? 'faster_whisper'" in local_setting
     assert "localAsrToggle.setDisabled(!enabled);" in source
     # Hidden unless the dependency is installed or the preference is already on.
-    assert "S.localAsrAvailable === true" in voice_panel
-    assert "|| S.independentAsrProviderPreference === 'faster_whisper'" in voice_panel
+    assert "S.localAsrAvailable === true" in offer_gate
+    assert "|| S.independentAsrProviderPreference === 'faster_whisper'" in offer_gate
+    # A capability refresh that lands while the panel is open re-reconciles it.
+    assert "reconcileLocalAsrSetting();" in capability_listener
     assert "localAsrAvailable: null" in APP_STATE.read_text(encoding="utf-8")
     websocket = (ROOT / "static" / "app" / "app-websocket.js").read_text(
         encoding="utf-8"

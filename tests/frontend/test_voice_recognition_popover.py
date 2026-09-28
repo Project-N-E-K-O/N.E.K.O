@@ -666,6 +666,79 @@ def test_local_asr_toggle_is_offered_only_when_available_or_already_on(
 
 
 @pytest.mark.frontend
+def test_local_asr_toggle_follows_availability_that_arrives_while_open(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = null;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+            function snapshot() {
+                const inputs = panel.querySelectorAll('input[type="checkbox"]');
+                const order = Array.from(
+                    panel.querySelectorAll(
+                        '[data-i18n], .neko-voice-recognition-status'
+                    )
+                ).map((node) => node.getAttribute('data-i18n') || 'status');
+                return { count: inputs.length, order };
+            }
+            const beforeRefresh = snapshot();
+
+            // The capability refresh resolves after the panel opened.
+            state.localAsrAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const afterAvailable = snapshot();
+            const inputs = panel.querySelectorAll('input[type="checkbox"]');
+            const lateInput = inputs[2];
+            lateInput.checked = true;
+            lateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const preferenceAfterLateToggle = state.independentAsrProviderPreference;
+
+            // Unavailable again, but the preference is on: keep it so it can
+            // be turned off.
+            state.localAsrAvailable = false;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const keptWhileOn = snapshot();
+
+            // Unavailable and the preference is off: drop the option.
+            state.independentAsrProviderPreference = 'auto';
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const afterUnavailable = snapshot();
+            return {
+                beforeRefresh,
+                afterAvailable,
+                preferenceAfterLateToggle,
+                keptWhileOn,
+                afterUnavailable,
+            };
+        }"""
+    )
+
+    assert result["beforeRefresh"]["count"] == 2
+    assert result["afterAvailable"]["count"] == 3
+    order = result["afterAvailable"]["order"]
+    # Same place as when created up front: after resource optimization and
+    # before the status line.
+    assert order.index("microphone.localAsr") > order.index(
+        "microphone.voiceResourceOptimizationHintOn"
+    )
+    assert order.index("microphone.localAsr") < order.index("status")
+    assert order[-1] == "status"
+    assert result["preferenceAfterLateToggle"] == "faster_whisper"
+    assert result["keptWhileOn"]["count"] == 3
+    assert result["afterUnavailable"]["count"] == 2
+    assert "microphone.localAsr" not in result["afterUnavailable"]["order"]
+
+
+@pytest.mark.frontend
 def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
     page: Page,
 ) -> None:

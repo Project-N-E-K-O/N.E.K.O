@@ -3428,6 +3428,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var optimizationToggle = null;
             var optimizationHint = null;
             var localAsrToggle = null;
+            var localAsrBlock = null;
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
@@ -3492,6 +3493,65 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 toggle.input.setAttribute('aria-describedby', hint.id);
                 panelBody.appendChild(block);
                 return hint;
+            }
+
+            // Packaged builds do not ship faster-whisper, so only offer the
+            // option where it can run. A preference persisted while it was
+            // installed stays visible so the user can still turn it off.
+            function shouldOfferLocalAsr() {
+                return S.localAsrAvailable === true
+                    || S.independentAsrProviderPreference === 'faster_whisper';
+            }
+
+            function createLocalAsrSetting(panelBody, beforeNode) {
+                localAsrToggle = createVoiceSettingToggle(
+                    S.independentAsrProviderPreference === 'faster_whisper',
+                    function (enabled) {
+                        if (coreApiDisablesIndependentAsr()) {
+                            updateVoiceRecognitionUi();
+                            return;
+                        }
+                        S.independentAsrProviderPreference = enabled
+                            ? 'faster_whisper'
+                            : 'auto';
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                var localAsrHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.localAsr',
+                    '本地语音识别',
+                    'microphone.localAsrHint',
+                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                    localAsrToggle
+                );
+                localAsrBlock = localAsrHint.parentNode;
+                // Keep the panel order stable when added late: after resource
+                // optimization, before the status line.
+                if (beforeNode && beforeNode.parentNode === panelBody) {
+                    panelBody.insertBefore(localAsrBlock, beforeNode);
+                }
+            }
+
+            // Availability can arrive after the panel opened (the capability
+            // refresh is asynchronous): add or drop the option in place.
+            function reconcileLocalAsrSetting() {
+                if (!voicePanel || !voicePanel.isConnected || !voiceStatus) return;
+                var panelBody = voiceStatus.parentNode;
+                if (!panelBody) return;
+                if (shouldOfferLocalAsr()) {
+                    if (!localAsrToggle) createLocalAsrSetting(panelBody, voiceStatus);
+                    return;
+                }
+                if (localAsrToggle) {
+                    if (localAsrBlock && localAsrBlock.parentNode) {
+                        localAsrBlock.parentNode.removeChild(localAsrBlock);
+                    }
+                    localAsrToggle = null;
+                    localAsrBlock = null;
+                }
             }
 
             function updateVoiceRecognitionUi() {
@@ -3626,6 +3686,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function onCoreApiCapabilityChanged() {
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
@@ -3657,6 +3718,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 optimizationToggle = null;
                 optimizationHint = null;
                 localAsrToggle = null;
+                localAsrBlock = null;
                 voiceStatus = null;
                 asrSummary = null;
                 if (
@@ -4285,37 +4347,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     optimizationToggle
                 );
 
-                // Packaged builds do not ship faster-whisper, so only offer the
-                // option where it can run. A preference persisted while it was
-                // installed stays visible so the user can still turn it off.
                 localAsrToggle = null;
-                if (
-                    S.localAsrAvailable === true
-                    || S.independentAsrProviderPreference === 'faster_whisper'
-                ) {
-                    localAsrToggle = createVoiceSettingToggle(
-                        S.independentAsrProviderPreference === 'faster_whisper',
-                        function (enabled) {
-                            if (coreApiDisablesIndependentAsr()) {
-                                updateVoiceRecognitionUi();
-                                return;
-                            }
-                            S.independentAsrProviderPreference = enabled
-                                ? 'faster_whisper'
-                                : 'auto';
-                            markVoiceSettingsPending();
-                            updateVoiceRecognitionUi();
-                            persistVoiceSettingChange();
-                        }
-                    );
-                    appendVoicePanelSetting(
-                        panelBody,
-                        'microphone.localAsr',
-                        '本地语音识别',
-                        'microphone.localAsrHint',
-                        '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
-                        localAsrToggle
-                    );
+                localAsrBlock = null;
+                if (shouldOfferLocalAsr()) {
+                    createLocalAsrSetting(panelBody, null);
                 }
 
                 voiceStatus = document.createElement('div');
