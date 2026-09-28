@@ -371,12 +371,19 @@
         } catch (_) { }
     }
 
+    // 与 storeRememberedWindowTitle 同一规则：超长标题整条不记，不截断保存，
+    // 否则落盘的是一个「记住窗口」本身都不认的标题。
+    function normalizeScreenSourceName(name) {
+        var value = String(name || '');
+        return value.length > MAX_REMEMBERED_WINDOW_TITLE_LENGTH ? '' : value;
+    }
+
     function normalizeScreenSourceMeta(source, screenIndex) {
         if (!source || typeof source.id !== 'string' || !source.id) return null;
         return {
             id: source.id,
             screenIndex: typeof screenIndex === 'number' && isFinite(screenIndex) ? screenIndex : null,
-            name: String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)
+            name: normalizeScreenSourceName(source.name)
         };
     }
 
@@ -452,7 +459,7 @@
         var nextIndex = screenIndex >= 0 && !partial ? screenIndex : null;
         var current = getKnownScreenSourceMeta(sourceId);
         if (current && current.screenIndex === nextIndex
-            && current.name === String(source.name || '').slice(0, MAX_REMEMBERED_WINDOW_TITLE_LENGTH)) {
+            && current.name === normalizeScreenSourceName(source.name)) {
             return;
         }
         rememberScreenSourceLabel(source, nextIndex);
@@ -707,7 +714,12 @@
             // 缓存的当前来源名称；屏幕序号变了也以落盘记录为准。
             var record = readPersistedScreenSourceMeta();
             if (!record) {
-                forgetKnownScreenSourceMeta(S.selectedScreenSourceId);
+                // 只丢被删记录对应的那个来源：本页可能选着另一个仍然有效的来源。
+                var removedRecord = null;
+                try { removedRecord = JSON.parse(e.oldValue || 'null'); } catch (_) { }
+                if (removedRecord && removedRecord.id === S.selectedScreenSourceId) {
+                    forgetKnownScreenSourceMeta(removedRecord.id);
+                }
             } else {
                 var known = getKnownScreenSourceMeta(record.id);
                 var recordScreenIndex = typeof record.screenIndex === 'number'

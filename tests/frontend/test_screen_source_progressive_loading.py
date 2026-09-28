@@ -736,6 +736,40 @@ def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) 
 
 
 @pytest.mark.frontend
+def test_overlong_window_title_is_not_saved_as_a_truncated_label(page: Page) -> None:
+    _install_screen_source_harness(
+        page, initial_storage={"screenSourceTitleMatchEnabled": "true"}
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources[1].name = 'x'.repeat(600);
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                label: window.getSelectedScreenSourceLabel(),
+                record: JSON.parse(
+                    window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+                ),
+                rememberedTitle: window.__storedValues.get('selectedScreenWindowTitle') || null,
+            };
+        }"""
+    )
+
+    # Same rule as the remembered title: rejected outright, never truncated.
+    assert result == {
+        "label": "app.screenSource.windows",
+        "record": {"id": "window:2"},
+        "rememberedTitle": None,
+    }
+
+
+@pytest.mark.frontend
 def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
@@ -747,6 +781,7 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
     result = page.evaluate(
         """async () => {
             function syncLabelRecord(value) {
+                const oldValue = window.__storedValues.get('selectedScreenSourceLabel') || null;
                 if (value === null) {
                     window.__storedValues.delete('selectedScreenSourceLabel');
                 } else {
@@ -754,6 +789,7 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
                 }
                 window.dispatchEvent(new StorageEvent('storage', {
                     key: 'selectedScreenSourceLabel',
+                    oldValue,
                     newValue: value,
                 }));
                 return window.getSelectedScreenSourceLabel();
@@ -773,7 +809,18 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
             const afterReindex = syncLabelRecord(
                 JSON.stringify({ id: 'screen:1', screenIndex: 1 })
             );
-            return { windowLabel, afterRemoval, screenLabel, afterReindex };
+            // Another window deletes the record of a source this page is not
+            // using; this page's own cached name must survive.
+            const keptScreen = await pick('screen:1');
+            window.__storedValues.set(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2' })
+            );
+            const afterOtherRemoval = syncLabelRecord(null);
+            return {
+                windowLabel, afterRemoval, screenLabel, afterReindex,
+                keptScreen, afterOtherRemoval,
+            };
         }"""
     )
 
@@ -782,6 +829,8 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
         "afterRemoval": "app.screenSource.windows",
         "screenLabel": "Screen 1",
         "afterReindex": "Screen 2",
+        "keptScreen": "Screen 1",
+        "afterOtherRemoval": "Screen 1",
     }
 
 
