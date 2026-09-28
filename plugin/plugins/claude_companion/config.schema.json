@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "plugin_runtime": {
+      "type": "object",
+      "title": "Runtime settings",
+      "description": "Plugin availability and automatic startup settings.",
+      "x-title-i18n": {
+        "zh-CN": "运行设置",
+        "zh-TW": "執行設定",
+        "en": "Runtime settings",
+        "ja": "実行設定",
+        "ko": "실행 설정",
+        "ru": "Настройки запуска",
+        "es": "Ajustes de ejecución",
+        "pt": "Configurações de execução"
+      },
+      "x-description-i18n": {
+        "zh-CN": "插件的启用与自动启动设置。",
+        "zh-TW": "外掛程式的啟用與自動啟動設定。",
+        "en": "Plugin availability and automatic startup settings.",
+        "ja": "プラグインの有効化と自動起動の設定。",
+        "ko": "플러그인 활성화 및 자동 시작 설정입니다.",
+        "ru": "Доступность плагина и его автоматический запуск.",
+        "es": "Disponibilidad del complemento e inicio automático.",
+        "pt": "Disponibilidade do plugin e inicialização automática."
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable plugin",
+          "description": "Allow this plugin to be loaded.",
+          "x-title-i18n": {
+            "zh-CN": "启用插件",
+            "zh-TW": "啟用外掛程式",
+            "en": "Enable plugin",
+            "ja": "プラグインを有効化",
+            "ko": "플러그인 활성화",
+            "ru": "Включить плагин",
+            "es": "Activar complemento",
+            "pt": "Ativar plugin"
+          },
+          "x-description-i18n": {
+            "zh-CN": "是否允许加载此插件。",
+            "zh-TW": "是否允許載入此外掛程式。",
+            "en": "Allow this plugin to be loaded.",
+            "ja": "このプラグインの読み込みを許可します。",
+            "ko": "이 플러그인을 로드할 수 있도록 합니다.",
+            "ru": "Разрешить загрузку этого плагина.",
+            "es": "Permitir que se cargue este complemento.",
+            "pt": "Permitir o carregamento deste plugin."
+          },
+          "default": true
+        },
+        "auto_start": {
+          "type": "boolean",
+          "title": "Start automatically",
+          "description": "Start this plugin when the plugin system starts.",
+          "x-title-i18n": {
+            "zh-CN": "自动启动",
+            "zh-TW": "自動啟動",
+            "en": "Start automatically",
+            "ja": "自動起動",
+            "ko": "자동 시작",
+            "ru": "Автоматический запуск",
+            "es": "Iniciar automáticamente",
+            "pt": "Iniciar automaticamente"
+          },
+          "x-description-i18n": {
+            "zh-CN": "插件系统启动时自动启动此插件。",
+            "zh-TW": "外掛程式系統啟動時自動啟動此外掛程式。",
+            "en": "Start this plugin when the plugin system starts.",
+            "ja": "プラグインシステムの起動時に自動起動します。",
+            "ko": "플러그인 시스템이 시작될 때 자동으로 시작합니다.",
+            "ru": "Запускать плагин при запуске системы плагинов.",
+            "es": "Iniciar este complemento al arrancar el sistema de complementos.",
+            "pt": "Iniciar este plugin quando o sistema de plugins iniciar."
+          },
+          "default": false
+        }
+      }
+    },
+    "claude_companion": {
+      "type": "object",
+      "title": "Claude companion settings",
+      "description": "Optional settings for the local Claude companion service.",
+      "x-title-i18n": {
+        "en": "Claude companion settings",
+        "zh-CN": "Claude 伙伴设置",
+        "zh-TW": "Claude 夥伴設定",
+        "ja": "Claude 連携設定",
+        "ko": "Claude 동반자 설정",
+        "ru": "Настройки компаньона Claude",
+        "es": "Ajustes del compañero Claude",
+        "pt": "Configurações do companheiro Claude"
+      },
+      "x-description-i18n": {
+        "en": "Optional settings for the local Claude companion service.",
+        "zh-CN": "本地 Claude 伙伴服务的可选设置。",
+        "zh-TW": "本機 Claude 夥伴服務的選用設定。",
+        "ja": "ローカルの Claude 連携サービスの任意設定。",
+        "ko": "로컬 Claude 동반자 서비스의 선택 설정입니다.",
+        "ru": "Необязательные настройки локального сервиса Claude.",
+        "es": "Ajustes opcionales del servicio local de Claude.",
+        "pt": "Configurações opcionais do serviço local do Claude."
+      },
+      "properties": {
+        "port": {
+          "type": "integer",
+          "title": "Local service port",
+          "description": "HTTP port for Claude companion events and API requests.",
+          "x-title-i18n": {
+            "en": "Local service port",
+            "zh-CN": "本地服务端口",
+            "zh-TW": "本機服務連接埠",
+            "ja": "ローカルサービスのポート",
+            "ko": "로컬 서비스 포트",
+            "ru": "Порт локального сервиса",
+            "es": "Puerto del servicio local",
+            "pt": "Porta do serviço local"
+          },
+          "x-description-i18n": {
+            "en": "HTTP port for Claude companion events and API requests.",
+            "zh-CN": "接收 Claude 伙伴事件与 API 请求的 HTTP 端口。",
+            "zh-TW": "接收 Claude 夥伴事件與 API 請求的 HTTP 連接埠。",
+            "ja": "Claude 連携のイベントと API リクエストを受け付ける HTTP ポート。",
+            "ko": "Claude 동반자 이벤트와 API 요청을 받을 HTTP 포트입니다.",
+            "ru": "HTTP-порт для событий Claude и запросов API.",
+            "es": "Puerto HTTP para eventos de Claude y solicitudes API.",
+            "pt": "Porta HTTP para eventos do Claude e solicitações de API."
+          },
+          "default": 48920,
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "cooldown_seconds": {
+          "type": "integer",
+          "title": "Notification cooldown (seconds)",
+          "description": "Minimum interval between companion notifications; 0 removes the cooldown.",
+          "x-title-i18n": {
+            "en": "Notification cooldown (seconds)",
+            "zh-CN": "通知冷却时间（秒）",
+            "zh-TW": "通知冷卻時間（秒）",
+            "ja": "通知クールダウン（秒）",
+            "ko": "알림 대기 시간(초)",
+            "ru": "Пауза между уведомлениями (секунды)",
+            "es": "Pausa entre avisos (segundos)",
+            "pt": "Intervalo entre avisos (segundos)"
+          },
+          "x-description-i18n": {
+            "en": "Minimum interval between companion notifications; 0 removes the cooldown.",
+            "zh-CN": "伙伴通知的最小间隔；0 表示不设冷却时间。",
+            "zh-TW": "夥伴通知的最小間隔；0 表示不設冷卻時間。",
+            "ja": "連携通知の最小間隔。0 はクールダウンなし。",
+            "ko": "동반자 알림의 최소 간격입니다. 0이면 대기 시간이 없습니다.",
+            "ru": "Минимальный интервал уведомлений; 0 убирает паузу.",
+            "es": "Intervalo mínimo entre avisos; 0 elimina la pausa.",
+            "pt": "Intervalo mínimo entre avisos; 0 remove a pausa."
+          },
+          "default": 60,
+          "minimum": 0
+        },
+        "api_token": {
+          "type": "string",
+          "title": "API access token",
+          "description": "Token for protected API endpoints. Empty uses NEKO_CLAUDE_COMPANION_TOKEN, or generates a temporary token if that is unset.",
+          "x-title-i18n": {
+            "en": "API access token",
+            "zh-CN": "API 访问令牌",
+            "zh-TW": "API 存取權杖",
+            "ja": "API アクセストークン",
+            "ko": "API 액세스 토큰",
+            "ru": "Токен доступа API",
+            "es": "Token de acceso API",
+            "pt": "Token de acesso à API"
+          },
+          "x-description-i18n": {
+            "en": "Token for protected API endpoints. Empty uses NEKO_CLAUDE_COMPANION_TOKEN, or generates a temporary token if that is unset.",
+            "zh-CN": "受保护 API 的访问令牌。留空时使用 NEKO_CLAUDE_COMPANION_TOKEN，环境变量也未设置时生成临时令牌。",
+            "zh-TW": "受保護 API 的存取權杖。留空時使用 NEKO_CLAUDE_COMPANION_TOKEN，環境變數也未設定時產生臨時權杖。",
+            "ja": "保護 API のトークン。空欄では NEKO_CLAUDE_COMPANION_TOKEN を使用し、未設定なら一時トークンを生成します。",
+            "ko": "보호된 API의 토큰입니다. 비워 두면 NEKO_CLAUDE_COMPANION_TOKEN을 사용하며, 없으면 임시 토큰을 생성합니다.",
+            "ru": "Токен защищённых API. Пустое значение использует NEKO_CLAUDE_COMPANION_TOKEN; если переменная не задана, создаётся временный токен.",
+            "es": "Token para API protegidas. Vacío usa NEKO_CLAUDE_COMPANION_TOKEN o genera uno temporal si no está definido.",
+            "pt": "Token para APIs protegidas. Vazio usa NEKO_CLAUDE_COMPANION_TOKEN ou gera um temporário se não estiver definido."
+          },
+          "default": ""
+        }
+      }
+    }
+  }
+}

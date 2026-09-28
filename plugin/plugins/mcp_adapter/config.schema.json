@@ -1,0 +1,444 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "plugin_runtime": {
+      "type": "object",
+      "title": "Runtime settings",
+      "description": "Plugin availability and automatic startup settings.",
+      "x-title-i18n": {
+        "zh-CN": "运行设置",
+        "zh-TW": "執行設定",
+        "en": "Runtime settings",
+        "ja": "実行設定",
+        "ko": "실행 설정",
+        "ru": "Настройки запуска",
+        "es": "Ajustes de ejecución",
+        "pt": "Configurações de execução"
+      },
+      "x-description-i18n": {
+        "zh-CN": "插件的启用与自动启动设置。",
+        "zh-TW": "外掛程式的啟用與自動啟動設定。",
+        "en": "Plugin availability and automatic startup settings.",
+        "ja": "プラグインの有効化と自動起動の設定。",
+        "ko": "플러그인 활성화 및 자동 시작 설정입니다.",
+        "ru": "Доступность плагина и его автоматический запуск.",
+        "es": "Disponibilidad del complemento e inicio automático.",
+        "pt": "Disponibilidade do plugin e inicialização automática."
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable plugin",
+          "description": "Allow this plugin to be loaded.",
+          "x-title-i18n": {
+            "zh-CN": "启用插件",
+            "zh-TW": "啟用外掛程式",
+            "en": "Enable plugin",
+            "ja": "プラグインを有効化",
+            "ko": "플러그인 활성화",
+            "ru": "Включить плагин",
+            "es": "Activar complemento",
+            "pt": "Ativar plugin"
+          },
+          "x-description-i18n": {
+            "zh-CN": "是否允许加载此插件。",
+            "zh-TW": "是否允許載入此外掛程式。",
+            "en": "Allow this plugin to be loaded.",
+            "ja": "このプラグインの読み込みを許可します。",
+            "ko": "이 플러그인을 로드할 수 있도록 합니다.",
+            "ru": "Разрешить загрузку этого плагина.",
+            "es": "Permitir que se cargue este complemento.",
+            "pt": "Permitir o carregamento deste plugin."
+          },
+          "default": true
+        },
+        "auto_start": {
+          "type": "boolean",
+          "title": "Start automatically",
+          "description": "Start this plugin when the plugin system starts.",
+          "x-title-i18n": {
+            "zh-CN": "自动启动",
+            "zh-TW": "自動啟動",
+            "en": "Start automatically",
+            "ja": "自動起動",
+            "ko": "자동 시작",
+            "ru": "Автоматический запуск",
+            "es": "Iniciar automáticamente",
+            "pt": "Iniciar automaticamente"
+          },
+          "x-description-i18n": {
+            "zh-CN": "插件系统启动时自动启动此插件。",
+            "zh-TW": "外掛程式系統啟動時自動啟動此外掛程式。",
+            "en": "Start this plugin when the plugin system starts.",
+            "ja": "プラグインシステムの起動時に自動起動します。",
+            "ko": "플러그인 시스템이 시작될 때 자동으로 시작합니다.",
+            "ru": "Запускать плагин при запуске системы плагинов.",
+            "es": "Iniciar este complemento al arrancar el sistema de complementos.",
+            "pt": "Iniciar este plugin quando o sistema de plugins iniciar."
+          },
+          "default": false
+        }
+      }
+    },
+    "plugin_state": {
+      "type": "object",
+      "title": "State persistence",
+      "description": "Storage backend and automatic state saving.",
+      "x-title-i18n": {
+        "en": "State persistence",
+        "zh-CN": "状态持久化",
+        "zh-TW": "狀態持久化",
+        "ja": "状態の永続化",
+        "ko": "상태 저장",
+        "ru": "Сохранение состояния",
+        "es": "Persistencia del estado",
+        "pt": "Persistência de estado"
+      },
+      "x-description-i18n": {
+        "en": "Storage backend and automatic state saving.",
+        "zh-CN": "状态存储后端与自动保存设置。",
+        "zh-TW": "狀態儲存後端與自動儲存設定。",
+        "ja": "状態の保存先と自動保存の設定。",
+        "ko": "상태 저장 방식과 자동 저장 설정입니다.",
+        "ru": "Хранилище и автоматическое сохранение состояния.",
+        "es": "Almacenamiento y guardado automático del estado.",
+        "pt": "Armazenamento e salvamento automático de estado."
+      },
+      "properties": {
+        "backend": {
+          "type": "string",
+          "title": "State storage",
+          "description": "file saves to disk, memory keeps state in memory, and off disables persistence.",
+          "x-title-i18n": {
+            "en": "State storage",
+            "zh-CN": "状态存储方式",
+            "zh-TW": "狀態儲存方式",
+            "ja": "状態の保存先",
+            "ko": "상태 저장 방식",
+            "ru": "Хранилище состояния",
+            "es": "Almacenamiento del estado",
+            "pt": "Armazenamento de estado"
+          },
+          "x-description-i18n": {
+            "en": "file saves to disk, memory keeps state in memory, and off disables persistence.",
+            "zh-CN": "file 保存到磁盘，memory 保存在内存，off 关闭持久化。",
+            "zh-TW": "file 儲存至磁碟，memory 儲存於記憶體，off 關閉持久化。",
+            "ja": "file はディスク、memory はメモリに保存し、off は保存を無効にします。",
+            "ko": "file은 디스크, memory는 메모리에 저장하고 off는 저장을 끕니다.",
+            "ru": "file — диск, memory — память, off — без сохранения.",
+            "es": "file guarda en disco, memory en memoria y off desactiva la persistencia.",
+            "pt": "file salva em disco, memory na memória e off desativa a persistência."
+          },
+          "default": "file",
+          "enum": [
+            "file",
+            "memory",
+            "off"
+          ]
+        },
+        "persist_mode": {
+          "type": "string",
+          "title": "State saving mode",
+          "description": "auto saves automatically, manual requires explicit saving, and off disables saving.",
+          "x-title-i18n": {
+            "en": "State saving mode",
+            "zh-CN": "状态保存模式",
+            "zh-TW": "狀態儲存模式",
+            "ja": "状態保存モード",
+            "ko": "상태 저장 모드",
+            "ru": "Режим сохранения",
+            "es": "Modo de guardado",
+            "pt": "Modo de salvamento"
+          },
+          "x-description-i18n": {
+            "en": "auto saves automatically, manual requires explicit saving, and off disables saving.",
+            "zh-CN": "auto 自动保存，manual 手动触发保存，off 关闭保存。",
+            "zh-TW": "auto 自動儲存，manual 手動觸發儲存，off 關閉儲存。",
+            "ja": "auto は自動保存、manual は明示的な保存、off は保存を無効にします。",
+            "ko": "auto는 자동 저장, manual은 명시적 저장, off는 저장을 끕니다.",
+            "ru": "auto — автоматически, manual — вручную, off — без сохранения.",
+            "es": "auto guarda automáticamente, manual requiere guardado explícito y off lo desactiva.",
+            "pt": "auto salva automaticamente, manual exige salvamento explícito e off o desativa."
+          },
+          "default": "auto",
+          "enum": [
+            "auto",
+            "manual",
+            "off"
+          ]
+        }
+      }
+    },
+    "mcp_servers": {
+      "type": "object",
+      "title": "MCP servers",
+      "description": "Configurations keyed by server name. Use the MCP panel to manage connections and transport-specific fields.",
+      "x-title-i18n": {
+        "en": "MCP servers",
+        "zh-CN": "MCP 服务器",
+        "zh-TW": "MCP 伺服器",
+        "ja": "MCP サーバー",
+        "ko": "MCP 서버",
+        "ru": "Серверы MCP",
+        "es": "Servidores MCP",
+        "pt": "Servidores MCP"
+      },
+      "x-description-i18n": {
+        "en": "Configurations keyed by server name. Use the MCP panel to manage connections and transport-specific fields.",
+        "zh-CN": "以服务器名称为键的配置。通过 MCP 面板管理连接和各传输方式的字段。",
+        "zh-TW": "以伺服器名稱為鍵的設定。透過 MCP 面板管理連線與各傳輸方式的欄位。",
+        "ja": "サーバー名ごとの設定。接続と通信方式固有の項目は MCP パネルで管理します。",
+        "ko": "서버 이름별 설정입니다. 연결과 전송 방식별 필드는 MCP 패널에서 관리합니다.",
+        "ru": "Настройки по именам серверов. Подключения и параметры транспорта настраиваются в панели MCP.",
+        "es": "Configuraciones por nombre. Gestiona conexiones y campos de transporte en el panel MCP.",
+        "pt": "Configurações por nome. Gerencie conexões e campos de transporte no painel MCP."
+      },
+      "properties": {}
+    },
+    "adapter": {
+      "type": "object",
+      "title": "Adapter routing",
+      "description": "Adapter operation mode and routing priority.",
+      "x-title-i18n": {
+        "en": "Adapter routing",
+        "zh-CN": "适配器路由",
+        "zh-TW": "介接器路由",
+        "ja": "アダプターのルーティング",
+        "ko": "어댑터 라우팅",
+        "ru": "Маршрутизация адаптера",
+        "es": "Enrutamiento del adaptador",
+        "pt": "Roteamento do adaptador"
+      },
+      "x-description-i18n": {
+        "en": "Adapter operation mode and routing priority.",
+        "zh-CN": "适配器运行模式与路由优先级。",
+        "zh-TW": "介接器執行模式與路由優先順序。",
+        "ja": "アダプターの動作モードとルーティング優先度。",
+        "ko": "어댑터 동작 모드와 라우팅 우선순위입니다.",
+        "ru": "Режим адаптера и приоритет маршрутизации.",
+        "es": "Modo del adaptador y prioridad de enrutamiento.",
+        "pt": "Modo do adaptador e prioridade de roteamento."
+      },
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "Adapter mode",
+          "description": "SDK adapter mode: gateway, router, bridge, or hybrid. MCP defaults to gateway.",
+          "x-title-i18n": {
+            "en": "Adapter mode",
+            "zh-CN": "适配器模式",
+            "zh-TW": "介接器模式",
+            "ja": "アダプターモード",
+            "ko": "어댑터 모드",
+            "ru": "Режим адаптера",
+            "es": "Modo del adaptador",
+            "pt": "Modo do adaptador"
+          },
+          "x-description-i18n": {
+            "en": "SDK adapter mode: gateway, router, bridge, or hybrid. MCP defaults to gateway.",
+            "zh-CN": "SDK 适配器模式：gateway、router、bridge 或 hybrid。MCP 默认为 gateway。",
+            "zh-TW": "SDK 介接器模式：gateway、router、bridge 或 hybrid。MCP 預設為 gateway。",
+            "ja": "SDK の動作モード：gateway、router、bridge、hybrid。MCP の既定値は gateway。",
+            "ko": "SDK 어댑터 모드: gateway, router, bridge, hybrid. MCP 기본값은 gateway입니다.",
+            "ru": "Режим SDK: gateway, router, bridge или hybrid. Для MCP по умолчанию gateway.",
+            "es": "Modo SDK: gateway, router, bridge o hybrid. MCP usa gateway por defecto.",
+            "pt": "Modo SDK: gateway, router, bridge ou hybrid. MCP usa gateway por padrão."
+          },
+          "default": "gateway",
+          "enum": [
+            "gateway",
+            "router",
+            "bridge",
+            "hybrid"
+          ]
+        },
+        "priority": {
+          "type": "integer",
+          "title": "Routing priority",
+          "description": "Higher numbers give this adapter higher routing priority.",
+          "x-title-i18n": {
+            "en": "Routing priority",
+            "zh-CN": "路由优先级",
+            "zh-TW": "路由優先順序",
+            "ja": "ルーティング優先度",
+            "ko": "라우팅 우선순위",
+            "ru": "Приоритет маршрутизации",
+            "es": "Prioridad de enrutamiento",
+            "pt": "Prioridade de roteamento"
+          },
+          "x-description-i18n": {
+            "en": "Higher numbers give this adapter higher routing priority.",
+            "zh-CN": "数字越大，此适配器的路由优先级越高。",
+            "zh-TW": "數字越大，此介接器的路由優先順序越高。",
+            "ja": "値が大きいほど、このアダプターのルーティング優先度が高くなります。",
+            "ko": "숫자가 클수록 이 어댑터의 라우팅 우선순위가 높습니다.",
+            "ru": "Чем больше число, тем выше приоритет адаптера.",
+            "es": "Los números mayores dan más prioridad al adaptador.",
+            "pt": "Números maiores dão mais prioridade ao adaptador."
+          },
+          "default": 0
+        }
+      }
+    },
+    "mcp_adapter": {
+      "type": "object",
+      "title": "MCP connection settings",
+      "description": "Connection timeouts and automatic reconnection policy.",
+      "x-title-i18n": {
+        "en": "MCP connection settings",
+        "zh-CN": "MCP 连接设置",
+        "zh-TW": "MCP 連線設定",
+        "ja": "MCP 接続設定",
+        "ko": "MCP 연결 설정",
+        "ru": "Настройки подключения MCP",
+        "es": "Ajustes de conexión MCP",
+        "pt": "Configurações de conexão MCP"
+      },
+      "x-description-i18n": {
+        "en": "Connection timeouts and automatic reconnection policy.",
+        "zh-CN": "连接超时与自动重连策略。",
+        "zh-TW": "連線逾時與自動重新連線策略。",
+        "ja": "接続タイムアウトと自動再接続の設定。",
+        "ko": "연결 시간 제한과 자동 재연결 정책입니다.",
+        "ru": "Тайм-ауты подключения и автоматическое переподключение.",
+        "es": "Tiempos de espera y política de reconexión automática.",
+        "pt": "Tempos limite e política de reconexão automática."
+      },
+      "properties": {
+        "connect_timeout": {
+          "type": "number",
+          "title": "Connection timeout (seconds)",
+          "description": "Time allowed to connect to an MCP server; non-positive values fall back to 30 seconds.",
+          "x-title-i18n": {
+            "en": "Connection timeout (seconds)",
+            "zh-CN": "连接超时（秒）",
+            "zh-TW": "連線逾時（秒）",
+            "ja": "接続タイムアウト（秒）",
+            "ko": "연결 시간 제한(초)",
+            "ru": "Тайм-аут подключения (секунды)",
+            "es": "Tiempo de conexión (segundos)",
+            "pt": "Tempo limite de conexão (segundos)"
+          },
+          "x-description-i18n": {
+            "en": "Time allowed to connect to an MCP server; non-positive values fall back to 30 seconds.",
+            "zh-CN": "连接 MCP 服务器的超时时间；非正数回退到 30 秒。",
+            "zh-TW": "連線 MCP 伺服器的逾時時間；非正數回退到 30 秒。",
+            "ja": "MCP サーバーへの接続時間。0 以下は 30 秒に戻ります。",
+            "ko": "MCP 서버 연결 시간 제한입니다. 0 이하는 30초로 대체됩니다.",
+            "ru": "Время подключения к MCP; значения ≤ 0 заменяются на 30 секунд.",
+            "es": "Tiempo para conectar con MCP; valores no positivos usan 30 segundos.",
+            "pt": "Tempo para conectar ao MCP; valores não positivos usam 30 segundos."
+          },
+          "default": 30
+        },
+        "tool_timeout": {
+          "type": "number",
+          "title": "Tool timeout (seconds)",
+          "description": "Time allowed for an MCP tool call; non-positive values fall back to 60 seconds.",
+          "x-title-i18n": {
+            "en": "Tool timeout (seconds)",
+            "zh-CN": "工具超时（秒）",
+            "zh-TW": "工具逾時（秒）",
+            "ja": "ツールタイムアウト（秒）",
+            "ko": "도구 시간 제한(초)",
+            "ru": "Тайм-аут инструмента (секунды)",
+            "es": "Tiempo de herramienta (segundos)",
+            "pt": "Tempo limite de ferramenta (segundos)"
+          },
+          "x-description-i18n": {
+            "en": "Time allowed for an MCP tool call; non-positive values fall back to 60 seconds.",
+            "zh-CN": "MCP 工具调用的超时时间；非正数回退到 60 秒。",
+            "zh-TW": "MCP 工具呼叫的逾時時間；非正數回退到 60 秒。",
+            "ja": "MCP ツール呼び出しの制限時間。0 以下は 60 秒に戻ります。",
+            "ko": "MCP 도구 호출 시간 제한입니다. 0 이하는 60초로 대체됩니다.",
+            "ru": "Время вызова инструмента MCP; значения ≤ 0 заменяются на 60 секунд.",
+            "es": "Tiempo para una llamada MCP; valores no positivos usan 60 segundos.",
+            "pt": "Tempo para uma chamada MCP; valores não positivos usam 60 segundos."
+          },
+          "default": 60
+        },
+        "auto_reconnect": {
+          "type": "boolean",
+          "title": "Reconnect automatically",
+          "description": "Try to reconnect after an MCP server connection is lost.",
+          "x-title-i18n": {
+            "en": "Reconnect automatically",
+            "zh-CN": "自动重连",
+            "zh-TW": "自動重新連線",
+            "ja": "自動再接続",
+            "ko": "자동 재연결",
+            "ru": "Автопереподключение",
+            "es": "Reconectar automáticamente",
+            "pt": "Reconectar automaticamente"
+          },
+          "x-description-i18n": {
+            "en": "Try to reconnect after an MCP server connection is lost.",
+            "zh-CN": "MCP 服务器连接断开后尝试重新连接。",
+            "zh-TW": "MCP 伺服器連線中斷後嘗試重新連線。",
+            "ja": "MCP サーバーとの接続が切れたら再接続を試みます。",
+            "ko": "MCP 서버 연결이 끊어지면 재연결을 시도합니다.",
+            "ru": "Повторять подключение при потере связи с сервером MCP.",
+            "es": "Intenta reconectar al perder la conexión con un servidor MCP.",
+            "pt": "Tenta reconectar após perder a conexão com um servidor MCP."
+          },
+          "default": true
+        },
+        "reconnect_interval": {
+          "type": "integer",
+          "title": "Reconnect interval (seconds)",
+          "description": "Delay before each reconnection attempt; 0 retries immediately.",
+          "x-title-i18n": {
+            "en": "Reconnect interval (seconds)",
+            "zh-CN": "重连间隔（秒）",
+            "zh-TW": "重新連線間隔（秒）",
+            "ja": "再接続間隔（秒）",
+            "ko": "재연결 간격(초)",
+            "ru": "Интервал переподключения (секунды)",
+            "es": "Intervalo de reconexión (segundos)",
+            "pt": "Intervalo de reconexão (segundos)"
+          },
+          "x-description-i18n": {
+            "en": "Delay before each reconnection attempt; 0 retries immediately.",
+            "zh-CN": "每次重连前的等待时间；0 表示立即重试。",
+            "zh-TW": "每次重新連線前的等待時間；0 表示立即重試。",
+            "ja": "各再接続試行前の待機時間。0 ではすぐに再試行します。",
+            "ko": "각 재연결 시도 전 대기 시간입니다. 0이면 즉시 재시도합니다.",
+            "ru": "Задержка перед каждой попыткой; 0 — немедленный повтор.",
+            "es": "Espera antes de cada intento; 0 reintenta inmediatamente.",
+            "pt": "Espera antes de cada tentativa; 0 tenta novamente imediatamente."
+          },
+          "default": 5,
+          "minimum": 0
+        },
+        "max_reconnect_attempts": {
+          "type": "integer",
+          "title": "Maximum reconnect attempts",
+          "description": "Maximum attempts per reconnection cycle; 0 disables reconnection attempts.",
+          "x-title-i18n": {
+            "en": "Maximum reconnect attempts",
+            "zh-CN": "重连次数上限",
+            "zh-TW": "重新連線次數上限",
+            "ja": "再接続の最大試行回数",
+            "ko": "최대 재연결 시도 횟수",
+            "ru": "Лимит попыток переподключения",
+            "es": "Máximo de intentos de reconexión",
+            "pt": "Máximo de tentativas de reconexão"
+          },
+          "x-description-i18n": {
+            "en": "Maximum attempts per reconnection cycle; 0 disables reconnection attempts.",
+            "zh-CN": "每轮重连的最多尝试次数；0 表示不尝试重连。",
+            "zh-TW": "每輪重新連線的最多嘗試次數；0 表示不嘗試重新連線。",
+            "ja": "再接続処理ごとの最大試行回数。0 では再接続を試みません。",
+            "ko": "재연결 주기당 최대 시도 횟수입니다. 0이면 재연결을 시도하지 않습니다.",
+            "ru": "Максимум попыток за цикл; 0 отключает попытки переподключения.",
+            "es": "Máximo de intentos por ciclo; 0 desactiva los intentos.",
+            "pt": "Máximo de tentativas por ciclo; 0 desativa as tentativas."
+          },
+          "default": 3,
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

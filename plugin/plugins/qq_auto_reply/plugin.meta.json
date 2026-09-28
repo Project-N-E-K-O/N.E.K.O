@@ -4779,7 +4779,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 2470196,
+  "source_bytes": 2473899,
   "source_files": [
     "__init__.py",
     "attention_gate_service.py",
@@ -4787,6 +4787,7 @@
     "backlog_models.py",
     "backlog_service.py",
     "backlog_store.py",
+    "config.schema.json",
     "config_store.py",
     "dashboard_service.py",
     "debug_focus_shift_retro.py",
@@ -4858,5 +4859,5 @@
     "ui_api.py",
     "voice_reply_service.py"
   ],
-  "source_sha256": "d62a374ab006df2f7ef14fe35ea5863ae11fe7cebbe4d5028c53860b5981de4a"
+  "source_sha256": "117a880f5faea44ea465aa5de7eeb9e167eb7effcca105aa9c75c1367b8869c6"
 }
