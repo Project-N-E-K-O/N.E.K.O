@@ -523,14 +523,64 @@ describe('ConfigValueEditor confidential controls', () => {
     expect(lastEmit(emitted)).toBe('fixture-replacement')
   })
 
-  it('does not expose an existing container when its schema declares a secret string', async () => {
+  it.each([
+    { source: 'baseline', value: { token: 'fixture-secret' } },
+    { source: 'baseline', value: ['fixture-secret'] },
+    { source: 'overlay', value: { token: 'fixture-secret' } },
+    { source: 'overlay', value: ['fixture-secret'] },
+  ])('allows replacing a hidden container from $source with a secret string', async ({ source, value }) => {
+    const { host, emitted } = mountEditor(
+      source === 'overlay' ? value : undefined,
+      source === 'baseline' ? value : 'fixture-baseline',
+      { type: 'string', writeOnly: true },
+    )
+    await nextTick()
+    const input = host.querySelector('input')!
+    expect(input.type).toBe('password')
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('')
+    expect(host.textContent).not.toContain('fixture-')
+    expect(emitted).toEqual([])
+    typeInto(input, 'fixture-replacement')
+    await nextTick()
+    expect(lastEmit(emitted)).toBe('fixture-replacement')
+    expect(host.textContent).not.toContain('fixture-')
+  })
+
+  it('keeps malformed read-only secrets disabled', async () => {
     const { host, emitted } = mountEditor(undefined, { token: 'fixture-secret' }, {
-      type: 'string', writeOnly: true,
+      type: 'string', writeOnly: true, readOnly: true,
     })
     await nextTick()
-    expect(host.querySelector('input')!.type).toBe('password')
-    expect(host.querySelector('input')!.disabled).toBe(true)
-    expect(host.textContent).not.toContain('fixture-secret')
+    const input = host.querySelector('input')!
+    expect(input.disabled).toBe(true)
+    expect(input.value).toBe('')
+    typeInto(input, 'fixture-replacement')
+    await nextTick()
+    expect(emitted).toEqual([])
+  })
+
+  it('clears a previous scalar value when a secret becomes a container', async () => {
+    const baseline = ref<unknown>('fixture-previous')
+    const emitted: unknown[] = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(defineComponent(() => () => h(ConfigValueEditor, {
+      modelValue: undefined,
+      baselineValue: baseline.value,
+      schema: { type: 'string', writeOnly: true },
+      'onUpdate:modelValue': (value: unknown) => emitted.push(value),
+    })))
+    app.use(ElementPlus)
+    app.mount(host)
+    mounted.push({ unmount: () => app.unmount(), host })
+    await nextTick()
+    expect(host.querySelector('input')!.value).toBe('fixture-previous')
+    baseline.value = { token: 'fixture-current' }
+    await nextTick()
+    expect(host.querySelector('input')!.value).toBe('')
+    expect(host.querySelector('input')!.disabled).toBe(false)
+    expect(host.textContent).not.toContain('fixture-')
     expect(emitted).toEqual([])
   })
 })

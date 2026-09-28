@@ -3,7 +3,7 @@
     <template v-if="schema?.writeOnly">
       <div class="input-wrap">
         <el-input v-model="strVal" type="password" autocomplete="new-password"
-          :disabled="isReadOnly || kind !== 'string'" :maxlength="schema?.maxLength"
+          :disabled="isReadOnly || (schema?.type !== 'string' && kind !== 'string')" :maxlength="schema?.maxLength"
           @change="emitUpdate(strVal)" />
       </div>
     </template>
@@ -264,9 +264,11 @@ const numVal = ref<number | undefined>(undefined)
 const boolVal = ref(false)
 
 watch(
-  [displayValue, () => props.schema?.type],
+  [displayValue, () => props.schema?.type, () => props.schema?.writeOnly],
   ([v]) => {
-    if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
+    // Keep malformed secret containers hidden and clear any previous scalar draft.
+    if (props.schema?.writeOnly && v !== null && typeof v === 'object') strVal.value = ''
+    else if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
     if (kind.value === 'boolean') boolVal.value = typeof v === 'boolean' ? v : false
   },
