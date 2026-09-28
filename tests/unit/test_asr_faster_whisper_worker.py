@@ -253,6 +253,50 @@ async def test_new_buffer_epoch_drops_inflight_final_of_old_epoch(pool) -> None:
     await _shutdown(task, requests, responses, buffer_epoch=1)
 
 
+async def test_decoding_is_serialized_per_session(pool) -> None:
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    await _send_utterance(requests, utterance_id=1)
+    await _send_utterance(requests, utterance_id=2)
+    for _ in range(100):
+        if model.calls:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.1)
+    # The second utterance waits for the first decoder thread to finish.
+    assert len(model.calls) == 1
+
+    model.release.set()
+    finals = [await _next_event(responses, "final") for _ in range(2)]
+    assert sorted(event.utterance_id for event in finals) == [1, 2]
+    await _shutdown(task, requests, responses)
+
+
+async def test_decode_backlog_is_bounded(pool) -> None:
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    await _next_event(responses, "ready")
+    try:
+        for utterance_id in range(1, faster_whisper._MAX_PENDING_DECODES + 2):
+            await _send_utterance(requests, utterance_id=utterance_id)
+        error = await _next_event(responses, "error")
+        assert error.error_code == "ASR_LOCAL_DECODE_BACKLOG"
+        assert error.utterance_id == faster_whisper._MAX_PENDING_DECODES + 1
+    finally:
+        model.release.set()
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 3)
+    # Only the admitted utterances ever reached the decoder.
+    assert len(model.calls) <= faster_whisper._MAX_PENDING_DECODES
+
+
 async def test_rejects_provider_endpointing(pool) -> None:
     loader = _RecordingLoader(_FakeModel())
     task, requests, responses = _start_worker(

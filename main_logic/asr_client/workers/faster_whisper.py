@@ -76,6 +76,11 @@ _FALLBACK_COMPUTE_CUDA = "int8_float16"
 
 _BEAM_SIZE = 5
 _MODEL_IDLE_RELEASE_SECONDS = 300.0
+# Committed utterances allowed to wait for (or be in) decoding per session.
+# Decoding is serialized, so a sender streaming faster than the model decodes
+# would otherwise pile up tasks and PCM without bound; past this the session
+# fails with ASR_LOCAL_DECODE_BACKLOG instead of lagging further behind.
+_MAX_PENDING_DECODES = 3
 
 # Whisper's own silence heuristics already drop the obvious cases; these gates
 # only decide whether an exact known hallucination phrase is trusted.
@@ -476,6 +481,9 @@ async def faster_whisper_asr_worker(
     buffers: dict[_UtteranceKey, bytearray] = {}
     committed: set[_UtteranceKey] = set()
     failure_sent = False
+    # One decoder thread per session at a time: keeps a single session from
+    # occupying the shared default executor.
+    decode_lock = asyncio.Lock()
 
     async def emit_error(
         code: str,
@@ -538,22 +546,24 @@ async def faster_whisper_asr_worker(
         assert model_task is not None
         # Shield: cancelling one utterance must not cancel the shared load.
         model = await asyncio.shield(model_task)
-        # Handing the PCM to the local decoder is this provider's transport
-        # write: from here on the audio may have been consumed.
-        evidence = begin_transport_write(request_queue)
-        try:
-            text = await asyncio.to_thread(_transcribe_pcm16, model, pcm16, language)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise _LocalAsrFailure(
-                "ASR_LOCAL_TRANSCRIBE_FAILED",
-                "faster-whisper transcription failed",
-            ) from exc
-        complete_transport_write(
-            evidence, len(pcm16), generation=generation,
-            buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,
-        )
+        async with decode_lock:
+            # Handing the PCM to the local decoder is this provider's transport
+            # write: from here on the audio may have been consumed. Waiting for
+            # the lock is not, so evidence starts only once it is held.
+            evidence = begin_transport_write(request_queue)
+            try:
+                text = await asyncio.to_thread(_transcribe_pcm16, model, pcm16, language)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise _LocalAsrFailure(
+                    "ASR_LOCAL_TRANSCRIBE_FAILED",
+                    "faster-whisper transcription failed",
+                ) from exc
+            complete_transport_write(
+                evidence, len(pcm16), generation=generation,
+                buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,
+            )
         return _AsrWorkerEvent(
             kind="final",
             generation=generation,
@@ -686,7 +696,14 @@ async def faster_whisper_asr_worker(
                                 pass
                             else:
                                 pcm16 = buffers.pop(key, None)
-                                if pcm16:
+                                if pcm16 and len(pending) >= _MAX_PENDING_DECODES:
+                                    await emit_error(
+                                        "ASR_LOCAL_DECODE_BACKLOG",
+                                        "faster-whisper cannot decode as fast as audio is committed",
+                                        item_key=key,
+                                    )
+                                    should_stop = True
+                                elif pcm16:
                                     committed.add(key)
                                     task = asyncio.create_task(
                                         transcribe(key, bytes(pcm16)),
