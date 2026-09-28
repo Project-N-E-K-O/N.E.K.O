@@ -2960,7 +2960,9 @@
 
             // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
             // 来源，它在结果里的位置不是物理屏幕序号。
-            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
+            // 与悬停延迟列来源一致：未声明该能力的旧版桌面端也按「可能弹窗」处理。
+            var isPortalPick = !!desktopProvider
+                && desktopProvider.sourceEnumerationMayPrompt !== false
                 && sources.length === 1;
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。

@@ -1250,10 +1250,10 @@ def test_deferred_enumeration_waits_for_the_load_button(page: Page) -> None:
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     ("prompting", "source_count", "adopted"),
-    [(True, 1, True), (True, 2, False), (False, 1, False)],
+    [(True, 1, True), (True, 2, False), (False, 1, False), (None, 1, True)],
 )
 def test_prompting_single_source_is_adopted_without_second_click(
-    page: Page, prompting: bool, source_count: int, adopted: bool,
+    page: Page, prompting: bool | None, source_count: int, adopted: bool,
 ) -> None:
     _install_screen_source_harness(page, source_enumeration_may_prompt=prompting)
 
