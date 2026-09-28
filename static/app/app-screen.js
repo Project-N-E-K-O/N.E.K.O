@@ -357,10 +357,17 @@
         }
         // 窗口标题 / 屏幕序号未知（其他窗口、重启后、系统对话框只返回一块屏幕）：
         // 只说是窗口或屏幕，不把某个具体名称安到可能已被复用的 id 上。
-        if (sourceId.startsWith('window:')) {
-            return window.t ? window.t('app.screenSource.windows') : '窗口';
+        return getGenericScreenSourceLabel(sourceId);
+    }
+
+    // 已选中但具体名称未知时的单数兜底文案。来源列表的分组标题
+    // app.screenSource.screens / windows 是复数，不能拿来当某一个来源的名字
+    // （英文会显示成 "Windows"）。
+    function getGenericScreenSourceLabel(sourceId) {
+        if (typeof sourceId === 'string' && sourceId.startsWith('window:')) {
+            return window.t ? window.t('app.screenSource.genericWindow') : '窗口';
         }
-        return window.t ? window.t('app.screenSource.screens') : '屏幕';
+        return window.t ? window.t('app.screenSource.genericScreen') : '屏幕';
     }
 
     function notifyScreenSourceChanged() {
@@ -3070,7 +3077,7 @@
                 // 系统对话框只返回用户选的那一块屏幕时，它在列表里排第一不代表
                 // 它是第 1 块显示器，与副标题一样只显示「屏幕」。
                 var displayName = isPortalPick && source.id.startsWith('screen:')
-                    ? (window.t ? window.t('app.screenSource.screens') : '屏幕')
+                    ? getGenericScreenSourceLabel(source.id)
                     : getScreenSourceDisplayName(source, screenIndex);
                 var option = document.createElement('div');
                 option.className = 'screen-source-option';
@@ -3268,7 +3275,7 @@
             if (isPortalPick) {
                 var portalSource = sources[0];
                 var portalLabel = portalSource.id.startsWith('screen:')
-                    ? (window.t ? window.t('app.screenSource.screens') : '屏幕')
+                    ? getGenericScreenSourceLabel(portalSource.id)
                     : getScreenSourceDisplayName(portalSource, null);
                 // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
                 // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。等重建

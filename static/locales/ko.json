@@ -2660,6 +2660,8 @@
             "noSources": "사용 가능한 화면 소스가 없습니다.",
             "loadFailed": "화면 소스를 로드하지 못했습니다.",
             "screens": "화면",
+            "genericScreen": "화면",
+            "genericWindow": "창",
             "screenLabel": "화면 {{index}}",
             "windows": "윈도우",
             "titleFilterPlaceholder": "창 제목 필터",

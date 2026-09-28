@@ -2660,6 +2660,8 @@
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
             "screens": "Screens",
+            "genericScreen": "Screen",
+            "genericWindow": "Window",
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "titleFilterPlaceholder": "Filter window titles",

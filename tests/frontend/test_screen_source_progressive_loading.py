@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -602,12 +603,12 @@ def test_selected_source_label_is_bound_to_the_selected_id(page: Page) -> None:
         "windowPick": {"label": "Editor", "record": {"id": "window:2"}},
         "screenPick": {"label": "Screen 1", "record": {"id": "screen:1", "screenIndex": 0}},
         # Unknown window title: say it is a window, never reuse another label.
-        "idBeforeLabel": "app.screenSource.windows",
+        "idBeforeLabel": "app.screenSource.genericWindow",
         "idWithLabel": "Browser",
         "events": [
             {"sourceId": "window:2", "sourceLabel": "Editor"},
             {"sourceId": "screen:1", "sourceLabel": "Screen 1"},
-            {"sourceId": "window:9", "sourceLabel": "app.screenSource.windows"},
+            {"sourceId": "window:9", "sourceLabel": "app.screenSource.genericWindow"},
             {"sourceId": "window:9", "sourceLabel": "Browser"},
         ],
     }
@@ -684,9 +685,9 @@ def test_disabling_remember_strips_title_from_a_record_this_page_did_not_write(
     assert result == {
         "before": "Editor",
         "record": {"id": "window:2"},
-        "after": "app.screenSource.windows",
+        "after": "app.screenSource.genericWindow",
         # This page gets no storage event for its own write; the row must refresh.
-        "events": ["app.screenSource.windows"],
+        "events": ["app.screenSource.genericWindow"],
     }
 
 
@@ -771,6 +772,41 @@ def test_overlong_window_title_is_not_saved_as_a_truncated_label(page: Page) -> 
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("locale", "window_label", "screen_label"),
+    [("en", "Window", "Screen"), ("pt", "Janela", "Tela"), ("es", "Ventana", "Pantalla")],
+)
+def test_unknown_source_name_uses_singular_label_not_group_header(
+    page: Page, locale: str, window_label: str, screen_label: str,
+) -> None:
+    # After a restart without "remember window" the title is unknown. The
+    # subtitle must not borrow the plural list header ("Windows" reads like
+    # the operating system).
+    strings = json.loads(
+        (ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+    )["app"]["screenSource"]
+    _install_screen_source_harness(
+        page, initial_storage={"selectedScreenSourceId": "window:9"}
+    )
+
+    result = page.evaluate(
+        """(strings) => {
+            window.t = (key) => key.startsWith('app.screenSource.')
+                ? strings[key.slice('app.screenSource.'.length)] : key;
+            const windowLabel = window.getSelectedScreenSourceLabel();
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'selectedScreenSourceId', newValue: 'screen:9',
+            }));
+            return { windowLabel, screenLabel: window.getSelectedScreenSourceLabel() };
+        }""",
+        strings,
+    )
+
+    assert result == {"windowLabel": window_label, "screenLabel": screen_label}
+    assert strings["windows"] != window_label
+
+
+@pytest.mark.frontend
 def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) -> None:
     _install_screen_source_harness(page)
     assert page.evaluate(
@@ -827,7 +863,7 @@ def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) 
 
     assert result == {
         "windowLabel": "Editor",
-        "afterRemoval": "app.screenSource.windows",
+        "afterRemoval": "app.screenSource.genericWindow",
         "screenLabel": "Screen 1",
         "afterReindex": "Screen 2",
         "keptScreen": "Screen 1",
@@ -927,7 +963,7 @@ def test_late_broadcast_for_another_source_keeps_this_pages_pick(page: Page) -> 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     ("source_id", "fallback"),
-    [("window:2", "app.screenSource.windows"), ("screen:1", "app.screenSource.screens")],
+    [("window:2", "app.screenSource.genericWindow"), ("screen:1", "app.screenSource.genericScreen")],
 )
 def test_source_missing_from_enumeration_drops_its_name(
     page: Page, source_id: str, fallback: str,
@@ -998,7 +1034,7 @@ def test_missing_source_keeps_another_windows_label_record(page: Page) -> None:
         }"""
     )
 
-    assert result == {"kept": True, "label": "app.screenSource.windows"}
+    assert result == {"kept": True, "label": "app.screenSource.genericWindow"}
 
 
 @pytest.mark.frontend
@@ -1037,9 +1073,9 @@ def test_enumeration_fills_label_for_selection_saved_before_labels(
 
     assert result == {
         "before": (
-            "app.screenSource.windows"
+            "app.screenSource.genericWindow"
             if source_id.startswith("window:")
-            else "app.screenSource.screens"
+            else "app.screenSource.genericScreen"
         ),
         "after": expected_label,
         "events": [expected_label],
@@ -1296,7 +1332,7 @@ def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
                         '.screen-source-option[data-source-id="screen:3"]'
                     ).textContent;
                     return {
-                        generic: text.includes('app.screenSource.screens'),
+                        generic: text.includes('app.screenSource.genericScreen'),
                         numbered: /Screen \d/.test(text),
                     };
                 })(),
@@ -1321,13 +1357,13 @@ def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
 
     assert result == {
         "selected": "screen:3",
-        "firstLabel": "app.screenSource.screens",
-        "label": "app.screenSource.screens",
+        "firstLabel": "app.screenSource.genericScreen",
+        "label": "app.screenSource.genericScreen",
         "record": {"id": "screen:3"},
         # Not even briefly announced as a numbered screen.
         "numberedEvents": [],
         "optionText": {"generic": True, "numbered": False},
-        "afterClick": "app.screenSource.screens",
+        "afterClick": "app.screenSource.genericScreen",
         "deferredSummaryShown": True,
     }
 

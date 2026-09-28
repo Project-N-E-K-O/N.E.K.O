@@ -2660,6 +2660,8 @@
             "noSources": "没有可用的屏幕源",
             "loadFailed": "获取屏幕源失败",
             "screens": "屏幕",
+            "genericScreen": "屏幕",
+            "genericWindow": "窗口",
             "screenLabel": "屏幕 {{index}}",
             "windows": "窗口",
             "titleFilterPlaceholder": "筛选窗口标题",

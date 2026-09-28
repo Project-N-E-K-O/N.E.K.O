@@ -4589,7 +4589,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             function getCurrentScreenSourceLabel() {
                 var sourceLabel = typeof window.getSelectedScreenSourceLabel === 'function'
                     ? window.getSelectedScreenSourceLabel() : '';
-                return sourceLabel || (window.t ? window.t('app.screenSource.screens') : 'Screens');
+                // 未选择来源时同样用单数的「屏幕」，不用来源列表的复数分组标题。
+                return sourceLabel || (window.t ? window.t('app.screenSource.genericScreen') : 'Screen');
             }
             var currentScreenSourceLabel = getCurrentScreenSourceLabel();
 

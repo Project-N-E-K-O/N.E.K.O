@@ -809,8 +809,8 @@ def test_screen_row_summary_follows_selected_source_label(page: Page) -> None:
         "initial": {"text": "Editor", "title": "Editor"},
         "changed": {"text": "Screen 2", "title": "Screen 2"},
         "cleared": {
-            "text": "app.screenSource.screens",
-            "title": "app.screenSource.screens",
+            "text": "app.screenSource.genericScreen",
+            "title": "app.screenSource.genericScreen",
         },
         "live": "polite",
     }

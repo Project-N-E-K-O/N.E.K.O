@@ -2660,6 +2660,8 @@
             "noSources": "Нет доступных источников экрана",
             "loadFailed": "Не удалось загрузить источники экрана",
             "screens": "Экраны",
+            "genericScreen": "Экран",
+            "genericWindow": "Окно",
             "screenLabel": "Экран {{index}}",
             "windows": "Окна",
             "titleFilterPlaceholder": "Фильтр заголовков окон",

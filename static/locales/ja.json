@@ -2660,6 +2660,8 @@
             "noSources": "利用可能な画面ソースがありません",
             "loadFailed": "画面ソースの読み込みに失敗しました",
             "screens": "画面",
+            "genericScreen": "画面",
+            "genericWindow": "ウィンドウ",
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
             "titleFilterPlaceholder": "ウィンドウ名を絞り込み",
