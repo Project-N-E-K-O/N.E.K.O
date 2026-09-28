@@ -491,3 +491,20 @@ def test_tilde_held_by_markdown_still_keeps_the_gap_at_turn_end():
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert mgr._request_tts_done_locked() == "queued"
     assert _drain(mgr.tts_request_queue) == [("s1", "3"), ("s1", " 5天"), (None, None)]
+
+
+def test_split_compound_emoji_leaves_no_joiner_in_the_next_chunk():
+    # 复合 emoji（人物 + 零宽连接符 + 电脑）被切成「写+人物」「零宽连接符+电脑+代码」两块：
+    # 后一块开头的零宽连接符不能单独送进 TTS。
+    mgr = _bare_tts_runtime()
+    for chunk in ("写\U0001f469", "\u200d\U0001f4bb代码"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "写"), ("s1", "代码")]
+
+
+def test_joiner_in_text_after_plain_chunk_is_kept():
+    # 天城文里正常使用的零宽连接符：上一块没有以符号结尾，不能被当成残余删掉。
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u0915\u094d", "\u200d\u0937"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d"), ("s1", "\u200d\u0937")]

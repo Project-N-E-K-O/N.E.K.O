@@ -35,7 +35,9 @@ from utils.frontend_utils import (
     is_only_punctuation,
     TtsMarkdownStripper,
     TtsBracketStripper,
+    strip_leading_emoji_joiners,
     strip_tts_muted_symbols,
+    tts_chunk_ends_in_muted_symbol,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -412,6 +414,7 @@ class TtsRuntimeMixin:
     def _reset_tts_symbol_gap(self) -> None:
         self._tts_last_spoken_char = ""
         self._tts_symbol_gap_pending = False
+        self._tts_prev_chunk_ended_muted = False
 
     def _strip_tts_symbols_across_chunks(self, text: str) -> str:
         """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
@@ -427,8 +430,16 @@ class TtsRuntimeMixin:
             # 纯空白分块原样放行（不经 normalizer 的流式 provider 靠它分隔
             # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
             self._tts_symbol_gap_pending = False
+            self._tts_prev_chunk_ended_muted = False
             self._tts_last_spoken_char = text[-1]
             return text
+        if getattr(self, "_tts_prev_chunk_ended_muted", False):
+            # 上一块以被删的符号结尾：这块开头的零宽连接符 / 变体选择符是被切开的
+            # 复合 emoji 的残余（「👩」「‍💻」），一并删掉。
+            text = strip_leading_emoji_joiners(text)
+            if not text:
+                return ""
+        self._tts_prev_chunk_ended_muted = tts_chunk_ends_in_muted_symbol(text)
         cleaned = strip_tts_muted_symbols(text)
         last = getattr(self, "_tts_last_spoken_char", "")
         if not cleaned or not cleaned.strip():
