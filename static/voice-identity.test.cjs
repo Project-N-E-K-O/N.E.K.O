@@ -129,6 +129,7 @@ function createHarness({
     autoFinish = true,
     autoAdvance = true,
     startResponseErrorAfterCreate = false,
+    startResponseErrorAfterAbort = false,
     profileError,
     verificationFailures = 0,
     profileTransportErrorAfterCommit = false,
@@ -227,6 +228,14 @@ function createHarness({
         if (call.url === `${API_ROOT}/enrollment/start`) {
             if (startGate) await startGate.promise;
             enrollmentId = 'enrollment-1';
+            if (startResponseErrorAfterAbort) {
+                await new Promise((resolve, reject) => {
+                    const signal = call.options.signal;
+                    const onAbort = () => reject(new Error('start_response_lost'));
+                    if (signal?.aborted) return onAbort();
+                    signal?.addEventListener('abort', onAbort, { once: true });
+                });
+            }
             if (startResponseErrorAfterCreate) throw new Error('start_response_lost');
             return jsonResponse(statusPayload());
         }
@@ -1426,6 +1435,24 @@ test('slow enrollment start uses keepalive cancellation after close wait expires
     startGate.resolve();
     await enrolling;
 
+    const cancel = harness.fetchCalls.find(call => (
+        call.url === `${API_ROOT}/enrollment/cancel`
+        && call.options.keepalive === true
+    ));
+    assert.ok(cancel);
+});
+
+test('close reconciles a server-created enrollment after start response abort', async () => {
+    const harness = createHarness({ startResponseErrorAfterAbort: true, manualAudio: true });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(2);
+    await harness.beforeClose();
+    await enrolling;
+
+    const statusCalls = harness.fetchCalls.filter(call => call.url === `${API_ROOT}/status`);
+    assert.equal(statusCalls.at(-1).options.keepalive, true);
     const cancel = harness.fetchCalls.find(call => (
         call.url === `${API_ROOT}/enrollment/cancel`
         && call.options.keepalive === true
