@@ -627,6 +627,13 @@ watch(
   padding: 0;
 }
 
+/* Element Plus transitions every card property, including flex-grow. The
+   configuration tab changes the card's flex layout, so limit the transition to
+   visual properties and let its height settle in one frame. */
+.plugin-detail > :deep(.el-card) {
+  transition-property: box-shadow, border-color, background-color;
+}
+
 /* Constrain only the configuration tab. Other detail tabs retain page scrolling.
    On very short windows the outer page can still scroll instead of clipping controls. */
 .config-layout-active {

@@ -151,6 +151,92 @@ test('normalises an unfinished number when the field loses focus', async ({ page
   await expect(field).toHaveValue('2.5')
 })
 
+test('switching to configuration does not animate the detail card layout', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('locale', 'zh-CN'))
+  await stubConfigEditor(page)
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}?tab=info`)
+  await expect(page.locator('[data-yui-guide-id="plugin-detail-card"]')).toBeVisible()
+
+  await page.evaluate(() => {
+    ;(window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated = false
+    const started = performance.now()
+    const sample = () => {
+      const card = document.querySelector('[data-yui-guide-id="plugin-detail-card"]')
+      if (
+        card?.getAnimations().some((animation) => {
+          const effect = animation.effect
+          return effect instanceof KeyframeEffect && effect.getKeyframes().some((frame) => 'flexGrow' in frame)
+        })
+      ) {
+        ;(window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated = true
+      }
+      if (performance.now() - started < 600) requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
+  await page.getByRole('tab', { name: '配置' }).click()
+  await expect(page.locator('.plugin-config-editor')).toBeVisible()
+  await page.waitForTimeout(650)
+  expect(
+    await page.evaluate(
+      () => (window as Window & { configCardFlexAnimated?: boolean }).configCardFlexAnimated
+    )
+  ).toBe(false)
+})
+
+test('saving a profile keeps the existing form visible during refresh', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('locale', 'zh-CN'))
+  await stubConfigEditor(page)
+  let saved = false
+  let refreshStarted = false
+  let releaseRefresh!: () => void
+  const refresh = new Promise<void>((resolve) => {
+    releaseRefresh = resolve
+  })
+  await page.route('**/plugin/*/config/profiles', async (route) => {
+    if (saved) {
+      refreshStarted = true
+      await refresh
+    }
+    await route.fulfill({
+      json: {
+        plugin_id: PLUGIN_ID,
+        profiles_path: 'profiles',
+        profiles_exists: true,
+        config_profiles: {
+          active: 'default',
+          files: { default: { path: 'profiles/default.toml', resolved_path: null, exists: true } },
+        },
+      },
+    })
+  })
+  await page.route('**/plugin/*/config/profiles/*', (route) => {
+    if (route.request().method() === 'PUT') saved = true
+    return route.fulfill({
+      json: {
+        plugin_id: PLUGIN_ID,
+        profile: { name: 'default', path: 'profiles/default.toml', resolved_path: null, exists: true },
+        config: { search: { max_results: saved ? 9 : 8 } },
+      },
+    })
+  })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}?tab=config`)
+  const field = page.locator(`input[aria-label="${NUMBER_FIELD}"]`)
+  await expect(field).toBeVisible()
+  await field.fill('9')
+  await page.getByRole('button', { name: '保存方案', exact: true }).click()
+  await expect.poll(() => refreshStarted).toBe(true)
+  try {
+    await expect(field).toBeVisible()
+    await expect(field).toHaveValue('9')
+    await expect(page.locator('.plugin-config-editor .el-skeleton')).toHaveCount(0)
+  } finally {
+    releaseRefresh()
+  }
+  await expect(page.locator('.plugin-config-editor')).toHaveAttribute('aria-busy', 'false')
+  await expect(field).toHaveValue('9')
+})
+
 // Check clipping and hit testing: toBeVisible alone also passes for controls
 // painted outside an overflow:hidden ancestor.
 async function expectReachable(control: Locator) {

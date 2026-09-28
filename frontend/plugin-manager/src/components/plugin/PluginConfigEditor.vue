@@ -182,7 +182,7 @@
           :closable="false"
           class="config-error"
         />
-        <el-skeleton v-if="loading || current?.loading" :rows="6" animated />
+        <el-skeleton v-if="(loading && !current?.loaded) || current?.loading" :rows="6" animated />
         <template v-else-if="current?.loaded">
           <div v-if="search || filter !== 'all'" class="search-scope">
             {{ t('plugins.configUi.searchScope') }}
