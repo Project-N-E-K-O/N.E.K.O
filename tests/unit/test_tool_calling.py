@@ -2502,6 +2502,8 @@ async def test_offline_openai_request_specific_tools_refusal_is_not_sticky():
         ("Error 400: tools are not supported by this model", "model"),
         ("tool use is not supported for this model", "model"),
         ("tool use is not supported with images", "request"),
+        ("this model does not support tools with images", "request"),
+        ("tool use is not supported with images for this model", "request"),
         ("tools are not supported in combination with response_format", "request"),
         ("upstream overloaded", None),
     ],

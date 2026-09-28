@@ -51,6 +51,18 @@ from config.prompts.prompts_tool import (
 )
 
 
+# 出现在「拒收 tools」报错里、说明只是这一次请求的组合不被支持的措辞。
+_TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
+    "with image",
+    "with vision",
+    "with audio",
+    "in combination with",
+    "together with",
+    "when using",
+    "for this request",
+)
+
+
 class _ToolingMixin:
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
@@ -118,17 +130,22 @@ class _ToolingMixin:
         text turns may still use them. ``None``: not a tools refusal.
         """
         msg = str(exc or "").lower()
-        if "does not support tools" in msg or "does not support function" in msg:
-            return "model"
-        if ("tools" in msg and "not support" in msg) or (
+        model_wide = "does not support tools" in msg or "does not support function" in msg
+        loose = ("tools" in msg and "not support" in msg) or (
             "tool use" in msg and ("unsupported" in msg or "not supported" in msg)
-        ):
-            # 措辞明确指向模型本身（"... not supported by / for this model"）
-            # 也是模型级：否则之后每轮都要先被拒一次再重发。
-            if "this model" in msg:
-                return "model"
+        )
+        if not (model_wide or loose):
+            return None
+        # 先看请求条件：带「with images / in combination with …」的拒收只针对这一种
+        # 组合，哪怕措辞是 "does not support tools" 或提到 this model，纯文本轮次
+        # 仍可用工具，不能记成会话级。
+        if any(qualifier in msg for qualifier in _TOOLS_REFUSAL_REQUEST_QUALIFIERS):
             return "request"
-        return None
+        # 措辞明确指向模型本身（"... not supported by / for this model"）也是
+        # 模型级：否则之后每轮都要先被拒一次再重发。
+        if model_wide or "this model" in msg:
+            return "model"
+        return "request"
 
     async def _astream_declining_tools(self, messages, overrides: dict):
         """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
