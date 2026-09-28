@@ -1250,7 +1250,10 @@ def test_deferred_enumeration_waits_for_the_load_button(page: Page) -> None:
 @pytest.mark.frontend
 @pytest.mark.parametrize(
     ("prompting", "source_count", "adopted"),
-    [(True, 1, True), (True, 2, False), (False, 1, False), (None, 1, True)],
+    # None: a legacy desktop bridge that never declared the capability. Only
+    # an explicit true adopts, so an older macOS build with one screen and no
+    # window list does not restart sharing every time the list opens.
+    [(True, 1, True), (True, 2, False), (False, 1, False), (None, 1, False)],
 )
 def test_prompting_single_source_is_adopted_without_second_click(
     page: Page, prompting: bool | None, source_count: int, adopted: bool,
@@ -1297,6 +1300,47 @@ def test_prompting_single_source_is_adopted_without_second_click(
             # Non-prompting providers still fetch thumbnails in a second pass.
             "enumerations": 1 if prompting else 2,
         }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("superseded", [False, True])
+def test_portal_pick_is_adopted_even_if_the_panel_closed_meanwhile(
+    page: Page, superseded: bool,
+) -> None:
+    # The pointer returning to the left menu closes the screen panel while
+    # the system dialog is open; the user's pick must not be dropped. Only a
+    # newer render in the same container takes over.
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    result = page.evaluate(
+        """async (superseded) => {
+            const popup = document.getElementById('live2d-popup-screen');
+            const pending = [];
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                pending.push(resolve);
+            });
+            const firstRender = window.renderFloatingScreenSourceList(popup);
+            if (superseded) {
+                window.renderFloatingScreenSourceList(popup);
+            } else {
+                popup.remove();
+            }
+            pending[0]([{ id: 'window:2', name: 'Editor', display_id: '' }]);
+            const rendered = await firstRender;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                rendered,
+                selected: window.getSelectedScreenSourceId(),
+                label: window.getSelectedScreenSourceLabel(),
+            };
+        }""",
+        superseded,
+    )
+
+    if superseded:
+        assert result == {"rendered": False, "selected": None, "label": ""}
+    else:
+        assert result == {"rendered": False, "selected": "window:2", "label": "Editor"}
 
 
 @pytest.mark.frontend

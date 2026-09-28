@@ -2871,6 +2871,25 @@
             targetPopup.appendChild(summary);
         }
 
+        // 采用系统对话框返回的唯一来源：它就是用户这次在系统层面的明确选择。
+        async function adoptPortalSource(portalSource) {
+            var portalLabel = portalSource.id.startsWith('screen:')
+                ? getGenericScreenSourceLabel(portalSource.id)
+                : getScreenSourceDisplayName(portalSource, null);
+            // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
+            // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
+            // id 相同时 selectScreenSource 不推进选择代次；这里手动推进，让还在
+            // 等待的分享启动像换了 id 一样作废，不会把上一次选的窗口分享出去。
+            if (S.selectedScreenSourceId === portalSource.id) {
+                markScreenSourceSelectionChanged();
+            }
+            try {
+                await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
+            } catch (error) {
+                console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
+            }
+        }
+
         // 用户取消系统对话框或列来源失败：保留提示，放回按钮以便重试。
         // 无论这次是从延迟按钮还是直接点击（含键盘）触发的都适用。
         function appendRetryButtonIfRequested() {
@@ -2937,7 +2956,20 @@
                 thumbnailSize: { width: 0, height: 0 }
             });
 
-            if (!isPopupAvailable()) return false;
+            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
+            // 来源，它在结果里的位置不是物理屏幕序号。
+            var isPortalPick = desktopSourceEnumerationMayPrompt(desktopProvider)
+                && !!sources && sources.length === 1;
+
+            if (!isPopupAvailable()) {
+                // 系统对话框期间面板被收起（例如对话框关闭后指针落回左侧菜单）。
+                // 这仍是用户在系统层面的明确选择，照常采用，只跳过渲染；同一个
+                // 容器已经开始了更新的一轮渲染时交给那一轮。
+                if (isPortalPick && screenPopup._screenSourceRenderToken === renderToken) {
+                    await adoptPortalSource(sources[0]);
+                }
+                return false;
+            }
 
             screenPopup.innerHTML = '';
 
@@ -2958,11 +2990,6 @@
             var windows = sources.filter(function (s) { return s.id.startsWith('window:'); });
             var previewHosts = new Map();
 
-            // Wayland 的 xdg-desktop-portal 只返回用户在系统对话框里选中的那一个
-            // 来源，它在结果里的位置不是物理屏幕序号。
-            // 与悬停延迟列来源一致：未声明该能力的旧版桌面端也按「可能弹窗」处理。
-            var isPortalPick = desktopProvider.sourceEnumerationMayPrompt !== false
-                && sources.length === 1;
             // Electron 的 source ID 只适合当前枚举结果；显式开启“记住窗口”后，
             // 用规范化标题重新解析当前 ID。只有唯一精确匹配才恢复，避免同名窗口误选。
             // 系统对话框的结果本身就是用户这次的明确选择，下面按新选择处理；
@@ -3274,32 +3301,15 @@
             // 系统对话框里选中的来源：用户已经选过一次，直接采用，不要求在列表里
             // 再点一次。屏幕不知道是第几块，名称退回通用的「屏幕」。
             if (isPortalPick) {
-                var portalSource = sources[0];
-                var portalLabel = portalSource.id.startsWith('screen:')
-                    ? getGenericScreenSourceLabel(portalSource.id)
-                    : getScreenSourceDisplayName(portalSource, null);
-                // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
-                // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。等重建
-                // 完成再露出「重新选择」，否则用户马上再选时，还没结束的重启会
-                // 把上一次的来源重新分享出去。
-                // id 相同时 selectScreenSource 不推进选择代次；这里手动推进，让还在
-                // 等待的分享启动像换了 id 一样作废，不会把上一次选的窗口分享出去。
-                if (S.selectedScreenSourceId === portalSource.id) {
-                    markScreenSourceSelectionChanged();
-                }
-                try {
-                    await selectScreenSource(portalSource.id, portalSource.name, portalLabel, null);
-                } catch (error) {
-                    console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
-                }
+                // 等重建完成再露出「重新选择」，否则用户马上再选时，还没结束的
+                // 重启会把上一次的来源重新分享出去。
+                await adoptPortalSource(sources[0]);
                 if (!isPopupAvailable()) return false;
             }
 
             // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
             // 一次必要枚举，此类 provider 不再为缩略图重复请求。
-            // 刚按系统对话框的结果采用了来源（含未声明能力的旧版桌面端）时同样
-            // 不再为缩略图枚举，否则可能再弹一次系统对话框。
-            if (desktopSourceEnumerationMayPrompt(desktopProvider) || isPortalPick) {
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
                 previewHosts.forEach(function (entry) {
                     renderPreviewFallback(entry.host, entry.source);
                 });
