@@ -1078,18 +1078,26 @@ def test_portal_screen_pick_does_not_claim_a_screen_number(page: Page) -> None:
                 record: JSON.parse(
                     window.__storedValues.get('selectedScreenSourceLabel') || 'null'
                 ),
-                namedEvents: events.filter(Boolean),
+                numberedEvents: events.filter((label) => /^Screen \d/.test(label)),
+                // Hovering the row again shows which source is chosen.
+                deferredSummaryShown: await (async () => {
+                    const popup = document.getElementById('live2d-popup-screen');
+                    await window.renderFloatingScreenSourceList(popup, { deferEnumeration: true });
+                    const summary = popup.querySelector('.screen-source-current');
+                    return !!summary && !summary.hidden;
+                })(),
             };
         }"""
     )
 
     assert result == {
         "selected": "screen:3",
-        "firstLabel": "",
-        "label": "",
+        "firstLabel": "app.screenSource.screens",
+        "label": "app.screenSource.screens",
         "record": {"id": "screen:3"},
         # Not even briefly announced as a numbered screen.
-        "namedEvents": [],
+        "numberedEvents": [],
+        "deferredSummaryShown": True,
     }
 
 
