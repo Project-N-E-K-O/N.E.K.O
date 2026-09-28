@@ -438,6 +438,7 @@ class TtsRuntimeMixin:
         self._tts_prev_chunk_ended_emoji = False
         self._tts_pending_minus = ""
         self._tts_pending_name_hash = ""
+        self._tts_deferred_symbols = ""
 
     def _strip_tts_symbols_across_chunks(self, text: str) -> str:
         """Apply ``strip_tts_muted_symbols`` to one streamed chunk, keeping the
@@ -460,6 +461,7 @@ class TtsRuntimeMixin:
             self._tts_prev_chunk_ended_emoji = False
             self._tts_pending_minus = ""
             self._tts_pending_name_hash = ""
+            self._tts_deferred_symbols = ""
             self._tts_last_spoken_char = text[-1]
             return pending_name_hash + text
         if getattr(self, "_tts_prev_chunk_ended_emoji", False):
@@ -473,7 +475,12 @@ class TtsRuntimeMixin:
         # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
         # 下一块以数字开头时再补回去。
         pending_minus = getattr(self, "_tts_pending_minus", "")
-        self._tts_pending_minus = tts_chunk_trailing_minus(text, last)
+        # 之前只有符号、还没念出来的分块接在前面一起判断，分块方式不改变结果：
+        # 「C」「#」「-」「5」与「C#-5」一样，「3」「%」「-」「5」与「3%-5」一样。
+        deferred_symbols = getattr(self, "_tts_deferred_symbols", "")
+        self._tts_pending_minus = tts_chunk_trailing_minus(
+            deferred_symbols + text, last
+        )
         # C# 可能被切开（「C」「#」「 dev」、「a#」「%」「b」）：块尾的「#」看不到
         # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
@@ -487,7 +494,9 @@ class TtsRuntimeMixin:
                 self._tts_pending_name_hash = held_name_hash
             if text and text.strip() and is_tts_word_char(last):
                 self._tts_symbol_gap_pending = True
+            self._tts_deferred_symbols = (deferred_symbols + text)[-16:]
             return ""
+        self._tts_deferred_symbols = ""
         self._tts_pending_name_hash = held_name_hash
         next_char = tts_first_unmuted_char(text)
         minus_follows = bool(pending_minus) and cleaned[0].isdigit()
