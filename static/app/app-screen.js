@@ -143,6 +143,8 @@
             clearRememberedWindowTitle();
         }
         syncPersistedScreenSourceTitle();
+        // 本窗口收不到自己写入的 storage 事件，关掉开关后标题可能退回「窗口」。
+        notifyScreenSourceChanged();
         updateScreenSourceTitleMatchToggleState();
     }
 
@@ -610,6 +612,8 @@
             return;
         }
         if (e.key === SCREEN_SOURCE_LABEL_KEY) {
+            // 另一个窗口写了新记录：以落盘记录为准，丢掉本窗口缓存的名称。
+            selectedScreenSourceMeta = null;
             notifyScreenSourceChanged();
             return;
         }
@@ -618,6 +622,7 @@
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
+        selectedScreenSourceMeta = null;
         markScreenSourceSelectionChanged();
         notifyScreenSourceChanged();
         try {

@@ -3348,7 +3348,12 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name, displayName);
+                                window.selectScreenSource(
+                                    source.id,
+                                    source.name,
+                                    displayName,
+                                    source.id.startsWith('screen:') ? index : null
+                                );
                             }
                         });
 

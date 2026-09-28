@@ -309,3 +309,17 @@ def test_capture_failure_copy_exists_in_all_supported_locales() -> None:
 
         assert screen_source["notAvailable"]
         assert screen_source["captureFailed"]
+
+
+def test_avatar_source_picker_passes_screen_index_to_selection() -> None:
+    # The settings row names a screen from its index; without it the row
+    # falls back to the generic "Screens" label.
+    avatar_popup = read_text("static/avatar/avatar-ui-popup.js")
+    assert (
+        "window.selectScreenSource(\n"
+        "                                    source.id,\n"
+        "                                    source.name,\n"
+        "                                    displayName,\n"
+        "                                    source.id.startsWith('screen:') ? index : null\n"
+        "                                );"
+    ) in avatar_popup
