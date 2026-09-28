@@ -490,10 +490,16 @@ class TtsRuntimeMixin:
             return ""
         self._tts_pending_name_hash = held_name_hash
         next_char = tts_first_unmuted_char(text)
-        if pending_name_hash and not (next_char.isascii() and next_char.isalnum()):
-            cleaned = pending_name_hash + cleaned
-        elif pending_minus and cleaned[0].isdigit():
-            cleaned = pending_minus + cleaned
+        minus_follows = bool(pending_minus) and cleaned[0].isdigit()
+        prefix = ""
+        if pending_name_hash and (
+            minus_follows or not (next_char.isascii() and next_char.isalnum())
+        ):
+            prefix += pending_name_hash
+        if minus_follows:
+            prefix += pending_minus
+        if prefix:
+            cleaned = prefix + cleaned
         elif (
             getattr(self, "_tts_symbol_gap_pending", False)
             and is_tts_word_char(last)

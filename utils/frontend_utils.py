@@ -128,37 +128,57 @@ _TTS_MINUS_SIGNS = frozenset("-－﹣")
 _TTS_HASH_SIGNS = frozenset("#＃")
 
 
-def _is_minus_sign(symbol: str, prev_char: str, next_char: str) -> bool:
-    # 数字前、且前面不是字母数字的「-」是负号（「-5」「温度-5℃」「x = -3」）；
-    # 「3-5」「well-known」里夹在字母数字之间的是连接号，照常换成空格。
-    return (
-        symbol in _TTS_MINUS_SIGNS
-        and next_char.isdigit()
-        and not is_tts_word_char(prev_char)
-    )
+# 只由 emoji、零宽连接符、变体选择符组成的一段（「🌡️」）。
+_TTS_EMOJI_RUN_RE = regex.compile(r"(?:\p{So}|[\u200d\ufe0e\ufe0f\u20e3])+")
+
+
+def _kept_symbols(symbol: str, prev_char: str, next_char: str) -> str | None:
+    """What a run of removable symbols keeps, or None to drop it as usual.
+
+    - "C#" / "F#": a "#" right after an ASCII letter, not followed by a
+      letter or digit, is part of the name ("C#😀 dev" keeps it as well);
+      "C#-5" keeps both the "#" and the minus sign.
+    - A minus sign before a digit: alone when no letter/digit precedes it
+      ("-5", "x = -3"), or when only emoji precede it within the run
+      ("🌡️-5°C"). After other removed symbols it is a separator like in
+      "3%-5", which is spoken as "3 5" whether or not it was split.
+    """
+    head, rest = symbol[0], symbol[1:]
+    if head in _TTS_HASH_SIGNS and prev_char.isascii() and prev_char.isalpha():
+        if rest in _TTS_MINUS_SIGNS and next_char.isdigit():
+            return symbol
+        if not (next_char.isascii() and next_char.isalnum()):
+            return head
+    if symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
+        lead = symbol[:-1]
+        if not lead and not is_tts_word_char(prev_char):
+            return symbol
+        if lead and _TTS_EMOJI_RUN_RE.fullmatch(lead):
+            return symbol[-1]
+    return None
+
+
+def _trailing_symbol_run(text: str):
+    run = None
+    for run in _TTS_MUTED_SYMBOL_RE.finditer(text or ""):
+        pass
+    return run if run is not None and run.end() == len(text) else None
 
 
 def tts_chunk_trailing_minus(text: str, before: str = "") -> str:
     """The minus sign a streamed chunk ends with, or ``""``.
 
-    ``before`` is the last character spoken before this chunk, for a chunk that
-    is nothing but the sign. The caller re-attaches it when the next chunk
-    starts with a digit ("x = -" + "5"); the filter itself cannot see that far.
+    It is a minus if it would be kept before a digit (see ``_kept_symbols``);
+    ``before`` is the last character spoken before this chunk, for a run that
+    starts the chunk. The caller re-attaches it when the next chunk starts
+    with a digit ("x = -" + "5"); the filter itself cannot see that far.
     """
-    if not text or text[-1] not in _TTS_MINUS_SIGNS:
+    run = _trailing_symbol_run(text)
+    if run is None or run.group(0)[-1] not in _TTS_MINUS_SIGNS:
         return ""
-    prev_char = text[-2] if len(text) > 1 else before
-    return "" if is_tts_word_char(prev_char) else text[-1]
-
-
-def _is_name_hash(symbol: str, prev_char: str, next_char: str) -> bool:
-    # C#、F# 这类名字：紧跟英文字母、后面不再接英文字母数字的「#」。
-    return (
-        symbol in _TTS_HASH_SIGNS
-        and prev_char.isascii()
-        and prev_char.isalpha()
-        and not (next_char.isascii() and next_char.isalnum())
-    )
+    prev_char = text[run.start() - 1] if run.start() > 0 else before
+    kept = _kept_symbols(run.group(0), prev_char, "0")
+    return run.group(0)[-1] if kept and kept[-1] in _TTS_MINUS_SIGNS else ""
 
 
 def tts_chunk_trailing_name_hash(text: str, before: str = "") -> str:
@@ -170,10 +190,8 @@ def tts_chunk_trailing_name_hash(text: str, before: str = "") -> str:
     what follows, which only the next chunk shows ("C#" + " dev" keeps it,
     "a#" + "b" does not), so the caller holds it until then.
     """
-    run = None
-    for run in _TTS_MUTED_SYMBOL_RE.finditer(text or ""):
-        pass
-    if run is None or run.end() != len(text) or run.group(0)[0] not in _TTS_HASH_SIGNS:
+    run = _trailing_symbol_run(text)
+    if run is None or run.group(0)[0] not in _TTS_HASH_SIGNS:
         return ""
     prev_char = text[run.start() - 1] if run.start() > 0 else before
     return run.group(0)[0] if prev_char.isascii() and prev_char.isalpha() else ""
@@ -196,15 +214,10 @@ def _muted_symbol_replacement(match, before: str = "") -> str:
     symbol = match.group(0)
     prev_char = text[start - 1] if start > 0 else before
     next_char = text[end] if end < len(text) else ""
-    if _is_minus_sign(symbol, prev_char, next_char):
-        return symbol
-    if len(symbol) > 1 and symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
-        # 「🌡️-5°C」「temp🌡️-5°C」：负号和前面的 emoji 连成了一段。紧挨着负号的是
-        # 被删的符号而不是字母数字，所以它是负号：emoji 删掉，负号留下。
-        return symbol[-1]
-    if symbol[0] in _TTS_HASH_SIGNS and _is_name_hash(symbol[0], prev_char, next_char):
-        # C#、F# 这类名字：删掉「#」名字就变了（后面紧跟的 emoji 等照删）。
-        return symbol[0]
+    # C# 的「#」和负号保留（「C#」「-5℃」「🌡️-5°C」），规则见 _kept_symbols。
+    kept = _kept_symbols(symbol, prev_char, next_char)
+    if kept is not None:
+        return kept
     prev_ok = is_tts_word_char(prev_char) if prev_char else True
     next_ok = is_tts_word_char(next_char) if next_char else True
     if prev_ok and next_ok and (is_tts_word_char(prev_char) or is_tts_word_char(next_char)):
