@@ -1103,8 +1103,11 @@ async def test_session_churn_during_a_download_shares_one_load(pool) -> None:
     model = _FakeModel()
     load_threads: list[str] = []
 
+    load_daemons: list[bool] = []
+
     def slow_loader(_spec: faster_whisper._ModelSpec) -> Any:
         load_threads.append(threading.current_thread().name)
+        load_daemons.append(threading.current_thread().daemon)
         gate.wait(5)
         return model
 
@@ -1132,6 +1135,9 @@ async def test_session_churn_during_a_download_shares_one_load(pool) -> None:
     assert len(load_jobs) == 1  # one shared job, not one queued per session
     assert len(load_threads) == 1
     assert load_threads[0].startswith("faster-whisper-load")
+    # A stalled first-use download must not hold up interpreter exit, which
+    # joins executor threads but not daemon threads.
+    assert load_daemons == [True]
     assert pool.loaded_count() == 1
     assert pool.lease_count(spec) == 0
 

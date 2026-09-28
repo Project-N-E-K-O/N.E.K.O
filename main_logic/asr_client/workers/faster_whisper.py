@@ -376,11 +376,12 @@ class _WhisperModelPool:
         self._state_lock = threading.Lock()
         self._load_locks: dict[_ModelSpec, threading.Lock] = {}
         self._entries: dict[_ModelSpec, _PoolEntry] = {}
-        # One in-flight load per spec, run on the pool's own single thread:
-        # sessions that start and end while a model downloads share that one
-        # load instead of each parking a thread of the default executor.
+        # One in-flight load per spec: sessions that start and end while a
+        # model downloads share that one load instead of each starting its own.
+        # Loads run on daemon threads, never a ThreadPoolExecutor: the
+        # interpreter joins executor threads at exit, so a stalled first-use
+        # download would otherwise hold up application shutdown.
         self._inflight: dict[_ModelSpec, concurrent.futures.Future[None]] = {}
-        self._loader_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._decoder_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._decode_slots_used = 0
 
@@ -435,13 +436,14 @@ class _WhisperModelPool:
             future = self._inflight.get(spec)
             if future is not None:
                 return future
-            if self._loader_executor is None:
-                self._loader_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1,
-                    thread_name_prefix="faster-whisper-load",
-                )
-            future = self._loader_executor.submit(self._load_unleased, spec, loader)
+            future = concurrent.futures.Future()
             self._inflight[spec] = future
+        threading.Thread(
+            target=self._run_load,
+            args=(future, spec, loader),
+            name="faster-whisper-load",
+            daemon=True,
+        ).start()
         future.add_done_callback(functools.partial(self._forget_inflight, spec))
         return future
 
@@ -451,6 +453,21 @@ class _WhisperModelPool:
         with self._state_lock:
             if self._inflight.get(spec) is future:
                 del self._inflight[spec]
+
+    def _run_load(
+        self,
+        future: concurrent.futures.Future[None],
+        spec: _ModelSpec,
+        loader: ModelLoader,
+    ) -> None:
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            self._load_unleased(spec, loader)
+        except BaseException as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(None)
 
     def _load_unleased(self, spec: _ModelSpec, loader: ModelLoader) -> None:
         # Loaded with no lease and an idle timer running: if every session
