@@ -18,7 +18,7 @@
 Why this exists — the regression pattern
 ----------------------------------------
 Production (Steam / Nuitka frozen) runs merged single-process mode:
-``launcher.run_merged_servers`` imports the three app modules
+``launcher_core.runtime.run_merged_servers`` imports the three app modules
 (memory/agent/main) **serially, before any port binds**, so every module
 pulled in at module scope is paid on the every-launch critical path
 between double-click and the Pet window becoming interactive.
@@ -87,8 +87,8 @@ from typing import Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Startup-chain source trees: everything launcher.run_merged_servers reaches
-# via `from app import memory_server / agent_server / main_server`, plus the
+# Startup-chain source trees: everything launcher_core.runtime.run_merged_servers
+# reaches via `from app import memory_server / agent_server / main_server`, plus the
 # launcher itself and the config package (imported by all of them).
 DEFAULT_PATHS: list[str] = [
     "app",

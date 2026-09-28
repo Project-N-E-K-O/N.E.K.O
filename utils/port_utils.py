@@ -227,8 +227,8 @@ def acquire_startup_lock() -> bool:
       fresh inode while a second one is still waiting on the old one.
 
     Uniqueness now lives in one place, and it publishes the winner's identity
-    instead of only saying "taken". This wrapper stays because ``launcher.py``
-    re-exports it and existing tests patch it by name.
+    instead of only saying "taken". This wrapper stays because existing tests
+    call it directly.
     """
     from utils import single_instance
 

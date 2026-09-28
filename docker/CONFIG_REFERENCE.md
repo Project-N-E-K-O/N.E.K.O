@@ -69,13 +69,9 @@
 > （见 `config/__init__.py` 顶部说明）。memory 子系统的 LLM 调用统一按 tier
 > 走 `config_manager.get_model_api_config(<tier>)`，嵌入服务走本地 ONNX。
 
-#### 通过 config_manager 动态获取的模型
-
-memory 子系统按 tier 走 `config_manager.get_model_api_config(<tier>)`；
-API 提供商与默认模型在 `config/__init__.py` 的 `DEFAULT_CORE_API_PROFILES`
-和 `DEFAULT_ASSIST_API_PROFILES` 中定义，不再支持单独的环境变量
-覆写（已删除未消费的 `NEKO_SUMMARY_MODEL` / `NEKO_CORRECTION_MODEL`
-/ `NEKO_EMOTION_MODEL` / `NEKO_VISION_MODEL`）。
+API 提供商与默认模型定义在 `config/api_profiles.py` 的
+`DEFAULT_CORE_API_PROFILES` / `DEFAULT_ASSIST_API_PROFILES`（经
+`config/__init__.py` 再导出），没有单独覆写某个模型的环境变量。
 
 ### 5. API 提供商详细配置
 

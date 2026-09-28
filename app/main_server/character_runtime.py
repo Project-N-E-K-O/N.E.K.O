@@ -652,10 +652,9 @@ class RoleState:
       later by websocket_router / _init_character_resources respectively.
 
     Legacy fields: ``sync_shutdown_event: ThreadEvent`` and ``sync_process:
-    Thread`` are semantically gone since cross_server merged into the main event
-    loop (no separate thread anymore). Lifecycle is now managed by ``sync_task:
+    Thread`` are gone since cross_server merged into the main event loop (no
+    separate thread anymore). Lifecycle is now managed by ``sync_task:
     asyncio.Task``, with shutdown via ``task.cancel()``.
-
     """
 
     sync_message_queue: _SyncMessageQueue

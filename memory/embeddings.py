@@ -716,7 +716,6 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
     return result
 
 
-
 def detect_avx2_details() -> tuple[bool, bool]:
     """Return ``(has_avx2, absence_confirmed)`` for x86; ARM is treated as
     "has a usable int8 SIMD path" (NEON is universal on ARM64).
