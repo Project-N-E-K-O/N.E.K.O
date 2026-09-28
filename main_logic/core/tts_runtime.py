@@ -345,6 +345,15 @@ class TtsRuntimeMixin:
             return
         # 最后一道：删掉会被念出来的符号（%、#、= …），句读标点保留
         text = self._strip_tts_symbols_across_chunks(text)
+        if getattr(self, "_tts_pending_name_hash", ""):
+            # 「C」「#」时 # 还没定：空闲软 flush 会先把「C」合成出去，C# 的读法
+            # 就丢了。等下一块或收尾把 # 定下来再说。
+            self._cancel_tts_soft_flush()
+            if text:
+                self.tts_request_queue.put((speech_id, text))
+                self._remember_tts_sent_chunk(speech_id, text)
+                self._remember_pending_ai_voice_echo(speech_id, text)
+            return
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
@@ -496,7 +505,8 @@ class TtsRuntimeMixin:
                 self._tts_symbol_gap_pending = True
             self._tts_deferred_symbols = (deferred_symbols + text)[-16:]
             return ""
-        self._tts_deferred_symbols = ""
+        # 本块尾暂存的「#」也算作还没念出的符号：「C#」「-」「5」与「C#-5」一样。
+        self._tts_deferred_symbols = held_name_hash
         self._tts_pending_name_hash = held_name_hash
         next_char = tts_first_unmuted_char(text)
         minus_follows = bool(pending_minus) and cleaned[0].isdigit()

@@ -517,6 +517,8 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         (("C#-", "5"), [("s1", "C"), ("s1", "#-5")]),
         # Symbol-only chunks before the minus count as if unsplit.
         (("C", "#", "-", "5"), [("s1", "C"), ("s1", "#-5")]),
+        (("C#", "-", "5"), [("s1", "C"), ("s1", "#-5")]),
+        (("C#", "%", "-", "5"), [("s1", "C"), ("s1", " 5")]),
         (("a", "\U0001f600", "-", "5"), [("s1", "a"), ("s1", "-5")]),
         (("3", "%", "-", "5"), [("s1", "3"), ("s1", " 5")]),
         (("温度\U0001f321\ufe0f-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
@@ -588,6 +590,24 @@ def test_tilde_held_by_markdown_still_keeps_the_gap_at_turn_end():
         mgr._enqueue_tts_text_chunk("s1", chunk)
     assert mgr._request_tts_done_locked() == "queued"
     assert _drain(mgr.tts_request_queue) == [("s1", "3"), ("s1", " 5天"), (None, None)]
+
+
+def test_soft_flush_waits_while_a_name_hash_is_unresolved():
+    # A realtime provider with soft flush: "C" arms the idle timer, then "#"
+    # is held. Flushing now would synthesize "C" alone and lose "C#".
+    mgr = _bare_tts_runtime()
+    armed: list[str] = []
+    cancelled: list[bool] = []
+    mgr._arm_tts_soft_flush = lambda speech_id: armed.append(speech_id)
+    mgr._cancel_tts_soft_flush = lambda: cancelled.append(True)
+    mgr._enqueue_tts_text_chunk("s1", "C")
+    assert armed == ["s1"] and cancelled == []
+    mgr._enqueue_tts_text_chunk("s1", "#")
+    assert cancelled == [True]
+    assert armed == ["s1"]
+    mgr._enqueue_tts_text_chunk("s1", " dev")
+    assert armed == ["s1", "s1"]
+    assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "# dev")]
 
 
 def test_held_name_hash_is_released_at_turn_end():

@@ -391,3 +391,21 @@ def test_server_authoritative_provider_preference_is_not_filtered_as_stale() -> 
     ]
     assert "meta.serverAuthoritativeKeys.indexOf(providerPreferenceKey) !== -1" in authoritative
     assert "Number.isInteger(meta.serverRevision)" in authoritative
+
+
+def test_adopted_server_provider_preference_reconciles_the_open_panel() -> None:
+    # The adopted value gets no handshake authority, but the voice panel must
+    # still hear about it through the pending-change event.
+    source = APP_SETTINGS.read_text(encoding="utf-8")
+    start = source.index("const providerPreferenceAdoptedFromServer =")
+    rule = source[start:source.index(";", start)]
+    assert "providerPreferenceValueDiffers" in rule
+    assert "providerPreferenceServerAuthoritative" in rule
+    gate_start = source.index("|| providerPreferenceAdoptedFromServer")
+    gate = source[gate_start:source.index("neko:voice-settings-pending-changed", gate_start)]
+    assert "window.dispatchEvent(new CustomEvent(" in gate
+    # No authority is granted for it.
+    authority = source[
+        source.index("if (providerPreferenceChangedByOtherWindow) {"):gate_start
+    ]
+    assert "providerPreferenceAdoptedFromServer" not in authority

@@ -2481,6 +2481,13 @@
                 && providerPreferenceValueDiffers
                 && !providerPreferenceChangedByOtherWindow
                 && !providerPreferenceServerAuthoritative;
+            // A newer server value adopted from a peer's merge is not this
+            // window's handshake authority, but an open voice panel must still
+            // reconcile the local-ASR toggle with it.
+            const providerPreferenceAdoptedFromServer =
+                providerPreferenceValueDiffers
+                && providerPreferenceServerAuthoritative
+                && !providerPreferenceChangedByOtherWindow;
             const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
                 ? (
                     S.independentAsrActive === true
@@ -2780,6 +2787,7 @@
                 asrChangedByOtherWindow
                 || optimizationChangedByOtherWindow
                 || providerPreferenceChangedByOtherWindow
+                || providerPreferenceAdoptedFromServer
             ) {
                 const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
                 if (
