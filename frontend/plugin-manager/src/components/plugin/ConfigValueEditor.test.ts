@@ -945,6 +945,25 @@ describe('ConfigValueEditor — schema review regressions', () => {
 })
 
 describe('ConfigValueEditor — schema bounds in the compact field', () => {
+  it('keeps an integer integral when its bounds are fractional', async () => {
+    const { host, emitted } = mountEditor({}, { count: 3 }, true, {
+      type: 'object',
+      properties: { count: { type: 'integer', minimum: 0.5, maximum: 4.5 } },
+    })
+    await nextTick()
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="count"]')!
+    input.value = '0'
+    input.dispatchEvent(new Event('input'))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ count: 1 })
+    input.value = '9'
+    input.dispatchEvent(new Event('input'))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ count: 4 })
+  })
+
   it('leaves a declared but absent number empty when blurred unchanged', async () => {
     // Nothing to fall back to: the field must not show the text "undefined".
     const { host, emitted } = mountEditor({}, {}, true, {

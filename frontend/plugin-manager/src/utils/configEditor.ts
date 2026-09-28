@@ -214,7 +214,16 @@ export function configNodeMatches(
     path.join('.').toLowerCase().includes(query.toLowerCase()) ||
     (Array.isArray(value) &&
       value.some((item, i) =>
-        configNodeMatches(item, undefined, [...path, String(i)], query, 'all', changes, true)
+        configNodeMatches(
+          item,
+          undefined,
+          [...path, String(i)],
+          query,
+          'all',
+          changes,
+          true,
+          schema?.items
+        )
       ))
   return matchesState && matchesQuery
 }

@@ -556,9 +556,14 @@ function numberFitsSchema(value: number) {
 }
 function fitNumberToSchema(value: number) {
   const s = props.schema
-  let next = s?.type === 'integer' ? Math.round(value) : value
-  if (typeof s?.minimum === 'number') next = Math.max(next, s.minimum)
-  if (typeof s?.maximum === 'number') next = Math.min(next, s.maximum)
+  const integer = s?.type === 'integer'
+  let next = integer ? Math.round(value) : value
+  // An integer field clamps to the integers inside fractional bounds, so clamping cannot
+  // turn the rounded value back into a fraction.
+  if (typeof s?.minimum === 'number')
+    next = Math.max(next, integer ? Math.ceil(s.minimum) : s.minimum)
+  if (typeof s?.maximum === 'number')
+    next = Math.min(next, integer ? Math.floor(s.maximum) : s.maximum)
   return next
 }
 

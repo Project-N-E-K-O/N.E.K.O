@@ -246,6 +246,22 @@ describe('configNodeMatches', () => {
     expect(configNodeMatches({}, baseline, [], '', 'configured', [], false, schema)).toBe(false)
   })
 
+  it('reaches array item fields that only the item schema declares', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        servers: {
+          type: 'array' as const,
+          items: { type: 'object' as const, properties: { host: { type: 'string' as const } } },
+        },
+      },
+    }
+    expect(configNodeMatches({}, { servers: [{}] }, [], 'host', 'all', [], false, schema)).toBe(
+      true
+    )
+    expect(configNodeMatches({}, { servers: [{}] }, [], 'host', 'all', [], false)).toBe(false)
+  })
+
   it('does not match the root as configured when the overlay is empty', () => {
     const overlay = {}
     const baseline = { cache: { ttl: 120 }, nested: { value: 1 } }
