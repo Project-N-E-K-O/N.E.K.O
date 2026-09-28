@@ -112,6 +112,17 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="最大 1024 字符/句；首包水印检测与裁剪",
     ),
+    "glm_tts": TTSProviderMeta(
+        name="glm_tts",
+        category="http_sentence",
+        protocol="HTTP POST + SSE (base64 音频块)",
+        input_streaming=False,
+        output_streaming=True,
+        client_sentence_split=True,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="GLM 克隆音色（voice_meta.provider 选中）；复用 cogtts worker，"
+              "voice=复刻音色 ID；最大 1024 字符/句；首包水印检测与裁剪",
+    ),
     "gemini": TTSProviderMeta(
         name="gemini",
         category="http_sentence",
