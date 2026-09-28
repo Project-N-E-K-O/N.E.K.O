@@ -605,23 +605,33 @@ async def faster_whisper_asr_worker(
         assert model_task is not None
         # Shield: cancelling one utterance must not cancel the shared load.
         model = await asyncio.shield(model_task)
-        # Handing the PCM to the local decoder is this provider's transport
-        # write: from here on the audio may have been consumed.
-        evidence = begin_transport_write(request_queue)
+        # The decoder actually starting on the PCM is this provider's transport
+        # write. Waiting in the decode queue is not: a job cancelled before it
+        # starts never reached the model and must stay a definite non-delivery.
+        decode_started = threading.Event()
+
+        def decode() -> str:
+            decode_started.set()
+            return _transcribe_pcm16(model, pcm16, language)
+
         try:
             # Cancelling this task (a new buffer epoch, session end) drops the
             # job if it has not started yet; one already running finishes on
             # the pool's single decode thread, which bounds decodes process-wide.
             text = await asyncio.get_running_loop().run_in_executor(
-                pool.decoder_executor(), _transcribe_pcm16, model, pcm16, language
+                pool.decoder_executor(), decode
             )
         except asyncio.CancelledError:
+            if decode_started.is_set():
+                begin_transport_write(request_queue)
             raise
         except Exception as exc:
+            begin_transport_write(request_queue)
             raise _LocalAsrFailure(
                 "ASR_LOCAL_TRANSCRIBE_FAILED",
                 "faster-whisper transcription failed",
             ) from exc
+        evidence = begin_transport_write(request_queue)
         complete_transport_write(
             evidence, len(pcm16), generation=generation,
             buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,

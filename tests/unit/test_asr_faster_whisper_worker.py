@@ -966,3 +966,31 @@ async def test_local_decodes_are_bounded_across_sessions(pool) -> None:
     assert all(name.startswith("faster-whisper-decode") for name in decode_threads)
     for task, requests, responses in (first, second):
         await _shutdown(task, requests, responses)
+
+
+async def test_decode_cancelled_while_queued_stays_a_definite_non_delivery(pool) -> None:
+    # A second session's decode waits behind the first on the shared decode
+    # thread; cancelled before it starts, its audio never reached the model.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    loader = _RecordingLoader(model)
+    first = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    second = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        await _next_event(first[2], "ready")
+        await _send_utterance(first[1])
+        for _ in range(100):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        await _next_event(second[2], "ready")
+        await _send_utterance(second[1])
+        await asyncio.wait_for(second[1].join(), 2)
+        await asyncio.sleep(0.05)
+        await _shutdown(*second)
+        assert delivery_evidence(second[1]).attempted is False
+    finally:
+        model.release.set()
+    await _next_event(first[2], "final")
+    await _shutdown(*first)
+    assert len(model.calls) == 1
