@@ -3115,7 +3115,12 @@
                 if (!reconciledToPortalSource) {
                     // id 与之前相同也走完整选择：来源 id 只是枚举快照，可能已经换成
                     // 另一个窗口，缓存的流和正在进行的分享都要按新选择重建。
-                    selectScreenSource(portalSource.id, portalSource.name, portalLabel)
+                    selectScreenSource(
+                        portalSource.id,
+                        portalSource.name,
+                        portalLabel,
+                        portalSource.id.startsWith('screen:') ? 0 : null
+                    )
                         .catch(function (error) {
                             console.warn('[屏幕源] 采用系统对话框选择的来源失败:', error);
                         });
@@ -3127,7 +3132,7 @@
                     if (isScreenSourceTitleMatchEnabled() && portalSource.id.startsWith('window:')) {
                         storeRememberedWindowTitle(portalSource.name || '');
                     }
-                    rememberScreenSourceLabel(portalSource.id, portalLabel);
+                    // 名称已由上面的 refreshSelectedScreenSourceLabelFromSources 按本次枚举记录。
                 }
             }
 
