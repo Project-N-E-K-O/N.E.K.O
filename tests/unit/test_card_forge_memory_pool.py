@@ -120,6 +120,57 @@ async def test_large_total_does_not_fabricate_five_usable_memories(query_pool):
     assert payload["fallbackReason"] == "insufficient_facts"
 
 
+_INTERACTION_LOG = (
+    "猫粮互动记录 755df5ae-4fa0-4e25-bcad-832e8a80caae：用户与 YUI 在 "
+    "2026-09-25T20:06:09+08:00 至 2026-09-25T20:06:35+08:00 的记录模式期间，"
+    "点击人物摸头 0 次，点击气泡询问余额或空闲状态 0 次。"
+)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (_INTERACTION_LOG, True),
+        ("记录755DF5AE-4FA0-4E25-BCAD-832E8A80CAAE完成", True),
+        ("在2026-09-25T20:06同步了一次状态", True),
+        ("２０２６-０９-２５T２０:０６", False),
+        ("2026-09-25T20:060", False),
+        ("2026-09-25 晚上 20:06 和主人一起看了电影", False),
+        ("主人的生日是 2026-09-25", False),
+        ("主人喜欢 hash-abc 这种命名", False),
+        ("755df5ae-4fa0-4e25-bcad", False),
+    ],
+)
+def test_machine_log_detection(text, expected):
+    assert F._looks_like_machine_log({"text": text}) is expected
+
+
+@pytest.mark.asyncio
+async def test_machine_logs_are_neither_candidates_nor_counted(query_pool):
+    # Garbled interaction logs must not surface as forge choices or lift the
+    # community's 15-memory threshold, whether active or archived.
+    payload = await query_pool(
+        [memory(f"usable-{i}") for i in range(5)]
+        + [memory(f"log-{i}", text=f"{_INTERACTION_LOG} #{i}") for i in range(8)],
+        [memory(f"archived-log-{i}", text=f"{_INTERACTION_LOG} @{i}") for i in range(4)],
+    )
+    assert {f["id"] for f in payload["facts"]} == {f"usable-{i}" for i in range(5)}
+    assert payload["totalMemoryCount"] == 5
+
+
+@pytest.mark.asyncio
+async def test_readable_copy_wins_shared_identity_over_machine_log(query_pool):
+    payload = await query_pool(
+        [
+            memory("dup-log", hash="hash-dup", text=_INTERACTION_LOG),
+            memory("dup", hash="hash-dup"),
+        ],
+        [],
+    )
+    assert payload["totalMemoryCount"] == payload["returnedCount"] == 1
+    assert [f["id"] for f in payload["facts"]] == ["dup"]
+
+
 @pytest.mark.asyncio
 async def test_undated_archive_memories_can_fill_empty_slots(query_pool):
     payload = await query_pool([], [memory(f"a-{i}", created_at=None) for i in range(15)])
