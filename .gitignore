@@ -85,6 +85,10 @@ __pycache__/
 /.pytest_tmp*/
 .DS_Store
 .codex
+# Local investigation material: raw provider responses, synthetic fixtures
+# and credential-reading probe scripts. Never commit these — the repository
+# is public and the incident record keeps such artifacts local on purpose.
+.codex-tmp/
 .venv
 .venv_monitor/
 .matplotlib/
