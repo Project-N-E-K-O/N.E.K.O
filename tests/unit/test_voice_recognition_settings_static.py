@@ -303,6 +303,18 @@ def test_preparing_status_informs_without_tearing_the_route_down() -> None:
     )
 
 
+def test_worker_dependency_failure_reason_uses_the_install_guidance() -> None:
+    block = _independent_asr_status_block()
+    terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]
+    branch = terminal.split(
+        "statusDetails.reason === 'ASR_LOCAL_DEPENDENCY_MISSING'", 1
+    )[1].split("return;", 1)[0]
+    assert "window.t('microphone.localAsrDependencyMissing')" in branch
+    assert terminal.index("'ASR_LOCAL_DEPENDENCY_MISSING'") < terminal.index(
+        "microphone.independentAsrFallback"
+    )
+
+
 def test_model_load_failure_reason_has_its_own_toast() -> None:
     block = _independent_asr_status_block()
     terminal = block.split("tearDownBlockedVoiceRoute();", 1)[1]

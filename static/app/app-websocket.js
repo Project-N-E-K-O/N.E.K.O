@@ -3977,6 +3977,17 @@
                             // The provider's own failure code, when it sent one:
                             // replaces the generic text the BLOCKED lifecycle
                             // event has just shown.
+                            if (statusDetails && statusDetails.reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
+                                // Installed but not importable (e.g. a broken native
+                                // CTranslate2 build): same guidance as not installed.
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.localAsrDependencyMissing')
+                                        : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
+                                );
+                                return;
+                            }
                             if (statusDetails && statusDetails.reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
                                 window.showStatusToast(
                                     window.t

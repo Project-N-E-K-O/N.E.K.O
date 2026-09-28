@@ -484,7 +484,7 @@ class TtsRuntimeMixin:
             return ""
         if leading_name_hash:
             text = text[1:]
-        cleaned = strip_tts_muted_symbols(text)
+        cleaned = strip_tts_muted_symbols(text, leading_name_hash or last)
         if leading_name_hash:
             cleaned = leading_name_hash + cleaned
         if pending_name_hash and (not cleaned or not cleaned.strip()):

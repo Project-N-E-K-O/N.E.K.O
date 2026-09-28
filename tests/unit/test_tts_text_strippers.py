@@ -419,6 +419,9 @@ def test_strip_tts_muted_symbols(text, expected):
         ("F#。", "F#。"),
         ("第#1名", "第1名"),
         ("a#b", "a b"),
+        # emoji 紧贴负号时：emoji 删掉，负号留下
+        ("\U0001f321\ufe0f-5°C", "-5°C"),
+        ("温度\U0001f321\ufe0f-5℃", "温度-5℃"),
         # 〜（U+301C）和 ~ / ～ 一样处理
         ("好的〜", "好的"),
         ("好的～", "好的"),
@@ -499,8 +502,12 @@ def test_symbol_only_chunk_between_cjk_adds_no_space():
         (("温度-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
         # A minus not followed by a digit is dropped, as before.
         (("温度", "-", "很低"), [("s1", "温度"), ("s1", "很低")]),
-        # Between two numbers it stays a range separator.
+        # Between two numbers it stays a range separator, also when the sign
+        # starts the next chunk.
         (("3", "-", "5天"), [("s1", "3"), ("s1", " 5天")]),
+        (("3", "-5天"), [("s1", "3"), ("s1", " 5天")]),
+        (("x = ", "-5"), [("s1", "x = "), ("s1", "-5")]),
+        (("温度", "-5℃"), [("s1", "温度"), ("s1", "-5℃")]),
         # The "#" of a name split off its letter is kept ...
         (("C", "#", " developer"), [("s1", "C"), ("s1", "# developer")]),
         (("C", "#", "。"), [("s1", "C"), ("s1", "#。")]),

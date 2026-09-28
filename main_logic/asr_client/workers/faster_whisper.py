@@ -797,6 +797,18 @@ async def faster_whisper_asr_worker(
                             request_queue
                         )
 
+        # A native decode cannot be interrupted and may outlive this session
+        # (which then returns its own lease). The job holds a lease of its own
+        # until it has left the decoder, so the idle timer cannot drop a model
+        # that is still decoding and a new session does not load a second copy.
+        job_lease = pool.try_lease(spec) is not None
+
+        def return_job_lease() -> None:
+            nonlocal job_lease
+            if job_lease:
+                job_lease = False
+                pool.release(spec)
+
         def decode() -> str | None:
             # Reaching the decoder ends this job's wait behind other sessions'
             # decodes; the per-utterance final timeout counts from here.
@@ -814,6 +826,7 @@ async def faster_whisper_asr_worker(
             finally:
                 leave_decoder()
                 pool.release_decode()
+                return_job_lease()
 
         try:
             decode_future = asyncio.get_running_loop().run_in_executor(
@@ -821,6 +834,7 @@ async def faster_whisper_asr_worker(
             )
         except BaseException:
             leave_decoder()
+            return_job_lease()
             raise
         handoff.submitted = True
         decode_future.add_done_callback(_consume_decode_outcome)

@@ -1449,6 +1449,36 @@ def test_session_reads_warmup_state_under_its_lock() -> None:
     assert state.pending is False and state.completed_at is not None
 
 
+async def test_running_decode_keeps_the_model_leased_after_its_session_ends(pool) -> None:
+    # A native decode cannot be interrupted and may outlive its session. Until
+    # it has left the decoder it holds a lease of its own, so the idle timer
+    # cannot drop the model under it and a new session does not load a copy.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    spec = faster_whisper._model_spec_from_env()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    try:
+        await _next_event(responses, "ready")
+        await _send_utterance(requests)
+        for _ in range(200):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        assert model.calls
+        await _shutdown(task, requests, responses)
+        assert pool.lease_count(spec) == 1
+    finally:
+        model.release.set()
+    for _ in range(200):
+        if pool.lease_count(spec) == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert pool.lease_count(spec) == 0
+    assert pool.loaded_count() == 1
+
+
 def test_warmup_snapshot_is_taken_under_the_lock() -> None:
     from main_logic.asr_client._infra import _RealtimeAsrSessionImpl
     from main_logic.asr_client.warmup import (

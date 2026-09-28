@@ -175,7 +175,7 @@ def tts_chunk_leading_name_hash(text: str, before: str = "") -> str:
     return text[0] if _is_name_hash(text[0], before, next_char) else ""
 
 
-def _muted_symbol_replacement(match) -> str:
+def _muted_symbol_replacement(match, before: str = "") -> str:
     # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
     # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
     # 会被念成另一个数 / 词。汉字、假名这类本来就不用空格分词的文字不补。
@@ -183,10 +183,13 @@ def _muted_symbol_replacement(match) -> str:
     text = match.string
     start, end = match.span()
     symbol = match.group(0)
-    prev_char = text[start - 1] if start > 0 else ""
+    prev_char = text[start - 1] if start > 0 else before
     next_char = text[end] if end < len(text) else ""
     if _is_minus_sign(symbol, prev_char, next_char):
         return symbol
+    if len(symbol) > 1 and _is_minus_sign(symbol[-1], prev_char, next_char):
+        # 「🌡️-5°C」：负号和前面的 emoji 连成了一段，emoji 删掉，负号留下。
+        return symbol[-1]
     if _is_name_hash(symbol, prev_char, next_char):
         # C#、F# 这类名字：删掉「#」名字就变了。
         return symbol
@@ -197,7 +200,7 @@ def _muted_symbol_replacement(match) -> str:
     return ""
 
 
-def strip_tts_muted_symbols(text: str) -> str:
+def strip_tts_muted_symbols(text: str, before: str = "") -> str:
     """Remove symbols a TTS engine would read aloud, keeping prose punctuation.
 
     Letters, digits, whitespace and sentence punctuation survive, as do
@@ -205,11 +208,15 @@ def strip_tts_muted_symbols(text: str) -> str:
     units, a minus sign before a number and the "#" of names like C#. A symbol between two letters/digits of a
     space-delimited script becomes a space so the neighbours are not read as
     one number or word. Safe for streaming chunks: the chunk's own
-    leading/trailing whitespace is left alone.
+    leading/trailing whitespace is left alone. ``before`` is the character
+    spoken just before a streamed chunk, so a symbol at the chunk's start is
+    judged as it would be unsplit ("3" + "-5" is a range, not a minus).
     """
     if not text:
         return text
-    cleaned = _TTS_MUTED_SYMBOL_RE.sub(_muted_symbol_replacement, text)
+    cleaned = _TTS_MUTED_SYMBOL_RE.sub(
+        lambda match: _muted_symbol_replacement(match, before), text
+    )
     # 删掉符号留下的连续空格压成一个，不动块首块尾原有的空格。
     return regex.sub(r" {2,}", " ", cleaned)
 
