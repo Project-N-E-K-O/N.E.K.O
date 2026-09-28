@@ -98,6 +98,15 @@ out.justBeforeCap = P.isStartupGreetingGateHolding();
 now += 1;
 out.atCap = P.isStartupGreetingGateHolding();
 
+// 8. A greeting that has started is not cut off at 45 s (slow generation /
+//    synthesis); only the wider lost-event cap opens it.
+P.armStartupGreetingGate('ws-open');
+fire('neko-assistant-turn-start');
+now += 60_000;
+out.startedTurnPast45s = P.isStartupGreetingGateHolding();
+now += 60_000;
+out.startedTurnAtLostEventCap = P.isStartupGreetingGateHolding();
+
 process.stdout.write(JSON.stringify(out));
 process.exit(0);
 """
@@ -127,6 +136,8 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "afterSpeechUnavailable": False,
         "justBeforeCap": True,
         "atCap": False,
+        "startedTurnPast45s": True,
+        "startedTurnAtLostEventCap": False,
     }
 
 
@@ -147,6 +158,13 @@ def test_both_timer_branches_consult_the_gate_after_the_speaking_guard():
         "if (isStartupGreetingGateHolding()) {",
         "if (isStartupGreetingGateHolding()) {",
     ]
+
+
+def test_text_trigger_rechecks_the_gate_right_before_sending():
+    source = PROACTIVE_JS.read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))
+    final_check = source.index("// 发送请求前最终检查：确保功能状态未在 await 期间改变")
+    send = source.index("var response = await _sendProactive();", final_check)
+    assert "isStartupGreetingGateHolding()" in source[final_check:send]
 
 
 def test_greeting_check_send_arms_the_gate():

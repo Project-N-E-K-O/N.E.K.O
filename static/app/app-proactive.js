@@ -610,9 +610,12 @@
     //      _isAssistantSpeaking() 为 false，所以 turn-end 本身不开阀；turn-end 之后
     //      STARTUP_GREETING_TEXT_ONLY_GRACE_MS 内仍没有语音开始，才按纯文本问候开阀。
     //   2. 兜底：后端判定不问候（刷新重连 ≤15s 等）时不会有任何 turn，
-    //      最迟 STARTUP_GREETING_GATE_MAX_MS 后自动开阀，绝不卡死主动搭话。
+    //      STARTUP_GREETING_GATE_MAX_MS 内还没有 turn 开始就自动开阀。问候已经开始
+    //      的话等它的结束事件，不因文本 / 合成慢而提前开阀；只留一个更宽的
+    //      STARTUP_GREETING_TURN_MAX_MS 防止事件丢失时卡死主动搭话。
     // 阀门关着时，定时器到点按「AI 正在说话」同样处理：跳过本次、不计数、排下一 tick。
     var STARTUP_GREETING_GATE_MAX_MS = 45000;
+    var STARTUP_GREETING_TURN_MAX_MS = 120000;
     var STARTUP_GREETING_TEXT_ONLY_GRACE_MS = 5000;
 
     function armStartupGreetingGate(reason) {
@@ -631,9 +634,12 @@
         var gate = S && S._startupGreetingGate;
         if (!gate) return false;
         var now = Date.now();
-        if (now - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
-            S._startupGreetingGate = null;
-            console.log('[ProactiveChat] 问候避让阀超时自动打开（' + (STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候完成）');
+        if (!gate.turnStarted && now - gate.armedAt >= STARTUP_GREETING_GATE_MAX_MS) {
+            _releaseStartupGreetingGate((STARTUP_GREETING_GATE_MAX_MS / 1000) + '秒内没有问候开始');
+            return false;
+        }
+        if (gate.turnStarted && now - gate.armedAt >= STARTUP_GREETING_TURN_MAX_MS) {
+            _releaseStartupGreetingGate('问候超过' + (STARTUP_GREETING_TURN_MAX_MS / 1000) + '秒仍未结束，按事件丢失处理');
             return false;
         }
         if (gate.turnEndedAt && !gate.speechStarted
@@ -1432,6 +1438,11 @@
             // 发送请求前最终检查：确保功能状态未在 await 期间改变
             if (!canTriggerProactively()) {
                 console.log('发送请求前检查失败，取消本次搭话');
+                return;
+            }
+            // 截图 / 窗口标题等待期间可能刚发出 greeting_check 关了避让阀。
+            if (isStartupGreetingGateHolding()) {
+                console.log('发送请求前发现问候还没说完，取消本次搭话');
                 return;
             }
 
