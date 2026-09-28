@@ -275,7 +275,7 @@ SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
 # 会把 memory_dir 下每一个不在导入角色名单里的**子目录** rmtree 掉，而
 # `delete_file_targets` 只认 `memory/<角色>/<白名单叶名>` 三段路径。根级平铺
 # 文件两条都躲开。先例：`app/memory_server/gates.py` 的
-# `idle_maintenance_state.json`、`main_logic/quota/ux_state.py`。
+# `idle_maintenance_state.json`。
 # 将来若要分片，只能是 `speaker_trust.<n>.json` 这种平铺文件名。
 SPEAKER_TRUST_POOL_FILENAME = "speaker_trust.json"
 

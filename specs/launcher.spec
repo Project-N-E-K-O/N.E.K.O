@@ -301,12 +301,8 @@ hiddenimports += [
     
     # brain 子模块
     'brain',
-    'brain.processor',
-    'brain.planner',
-    'brain.analyzer',
     'brain.computer_use',
     'brain.deduper',
-    'brain.mcp_client',
     
     # main_logic 子模块
     'main_logic',

@@ -652,21 +652,9 @@ class RoleState:
       later by websocket_router / _init_character_resources respectively.
 
     Legacy fields: ``sync_shutdown_event: ThreadEvent`` and ``sync_process:
-    Thread`` are semantically gone since cross_server merged into the main event
-    loop (no separate thread anymore). Lifecycle is now managed by ``sync_task:
+    Thread`` are gone since cross_server merged into the main event loop (no
+    separate thread anymore). Lifecycle is now managed by ``sync_task:
     asyncio.Task``, with shutdown via ``task.cancel()``.
-
-    However, ``main_routers/shared_state.py``'s ``_RoleStateFieldView`` still
-    exposes dict-like views for ``sync_shutdown_event`` / ``sync_process``
-    (the public router APIs ``get_sync_shutdown_event()`` /
-    ``get_sync_process()``). The view's ``__getitem__`` uses
-    ``getattr(rs, field)`` (no default) and would raise ``AttributeError`` if
-    the field didn't exist. Keeping these two ``Optional[Any] = None``
-    placeholder fields preserves the shim's "always-empty dict" semantics:
-    ``__contains__`` sees None and returns False, ``__getitem__`` goes to
-    ``raise KeyError``, and every caller gets a consistent empty state instead
-    of a crash. The two fields are never assigned anymore; remove them once
-    it's confirmed nothing external depends on them.
     """
 
     sync_message_queue: _SyncMessageQueue
@@ -676,9 +664,6 @@ class RoleState:
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
-    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
-    sync_shutdown_event: Optional[Any] = None
-    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问

@@ -25,6 +25,7 @@ from .bootstrap import (
     _configure_stdio_utf8,
     _get_project_venv_python,
     _maybe_reexec_into_project_venv,
+    _pin_project_root_first,
 )
 
 # Runtime helpers historically resolved __file__ to the repository launcher.
@@ -48,22 +49,16 @@ from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 
-# ``plugin/`` is also used as an import root for user-plugin processes and it
-# contains a sibling ``config`` package.  Keep the repository root first here,
+# Keep the repository root first before the top-level ``config`` import below,
 # otherwise a long-lived test process (or an embedded plugin host) can resolve
-# the launcher's top-level ``config`` imports to ``plugin.config`` instead.
-_PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
-while _PROJECT_ROOT in sys.path:
-    sys.path.remove(_PROJECT_ROOT)
-sys.path.insert(0, _PROJECT_ROOT)
+# it to ``plugin.config`` instead.
+_pin_project_root_first()
 
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
 from utils.port_utils import (
     probe_neko_health,
-    acquire_startup_lock,
-    release_startup_lock,
     get_hyperv_excluded_ranges,
     is_port_in_excluded_range,
     set_port_probe_reuse,
@@ -120,13 +115,12 @@ DEFAULT_PORTS = {
 }
 INTERNAL_DEFAULT_PORTS = {
     "USER_PLUGIN_SERVER_PORT": 48916,
-    "AGENT_MQ_PORT": 48917,
-    "MAIN_AGENT_EVENT_PORT": 48918,
     "ZMQ_SESSION_PUB_PORT": 48961,
     "ZMQ_AGENT_PUSH_PORT": 48962,
     "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
+# 48917/48918 已退役，仍保留：本机可能还跑着占用它们的旧版本。
 AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
 
 # 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
@@ -282,8 +276,6 @@ def _reload_runtime_config_from_env() -> None:
         },
         {
             "USER_PLUGIN_SERVER_PORT": int(reloaded.USER_PLUGIN_SERVER_PORT),
-            "AGENT_MQ_PORT": int(reloaded.AGENT_MQ_PORT),
-            "MAIN_AGENT_EVENT_PORT": int(reloaded.MAIN_AGENT_EVENT_PORT),
         },
     )
 

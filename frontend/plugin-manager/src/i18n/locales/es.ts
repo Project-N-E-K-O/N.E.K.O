@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: 'Todavía hay una versión anterior de este plugin instalada. Desinstala {plugin} antes de continuar.',
       blockedOwnershipUnknown: 'No se pudo verificar quién es propietario de la carpeta del plugin. Restaura el registro del origen de instalación antes de reintentarlo.',
       blockedInstallSourceReadOnly: 'El registro del origen de instalación no está disponible o es de solo lectura. Restáuralo antes de reintentarlo.',
+      installSucceeded: 'Instalación completada. Se procesaron {count} plugin(s).',
+      completedWithWarnings: '{plugin} se instaló, pero con advertencias: {reasons}',
       rollbackCompleted: 'La actualización falló y se restauró la versión anterior.',
       rollbackIncomplete: 'La actualización falló y la reversión quedó incompleta. Comprueba el estado del plugin antes de continuar.',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: 'El plugin.toml no es válido. Pide al autor que lo corrija y vuelva a empaquetarlo.',
         identityMismatch: 'El nombre de la carpeta del plugin no coincide con el ID de plugin.toml. Pide al autor que corrija el paquete.',
         hashMismatch: 'El contenido del paquete no coincide con los datos de verificación. Se rechazó la instalación y no se conservaron cambios.',
+        profileOwnershipConflict: 'Ya existe una carpeta de perfiles para este paquete que no le pertenece, posiblemente restos de una instalación anterior. No se instaló nada.',
         inspectFailed: 'No se pudo inspeccionar este paquete de plugin. Comprueba que el archivo exista y sea un paquete N.E.K.O válido, y vuelve a intentarlo.',
         verifyFailed: 'No se pudo verificar este paquete de plugin. Descárgalo de nuevo o pide al autor que lo vuelva a crear, y vuelve a intentarlo.',
         installFailed: 'No se pudo instalar este paquete de plugin. No se conservaron cambios de instalación sin confirmar.'

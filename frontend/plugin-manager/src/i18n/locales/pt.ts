@@ -592,6 +592,8 @@ export default {
       blockedLegacyPlugin: 'Uma versão anterior deste plugin ainda está instalada. Desinstale {plugin} antes de continuar.',
       blockedOwnershipUnknown: 'Não foi possível confirmar quem possui a pasta do plugin. Restaure o registro da origem de instalação antes de tentar novamente.',
       blockedInstallSourceReadOnly: 'O registro da origem de instalação está indisponível ou é somente leitura. Restaure-o antes de tentar novamente.',
+      installSucceeded: 'Instalação concluída. {count} plugin(s) processado(s).',
+      completedWithWarnings: '{plugin} foi instalado, mas com avisos: {reasons}',
       rollbackCompleted: 'A atualização falhou e a versão anterior foi restaurada.',
       rollbackIncomplete: 'A atualização falhou e a reversão ficou incompleta. Verifique o estado do plugin antes de continuar.',
       error: {
@@ -602,6 +604,7 @@ export default {
         pluginManifestInvalid: 'O plugin.toml é inválido. Peça ao autor para corrigi-lo e recriar o pacote.',
         identityMismatch: 'O nome da pasta do plugin e o ID em plugin.toml não coincidem. Peça ao autor para corrigir o pacote.',
         hashMismatch: 'O conteúdo do pacote não corresponde aos dados de verificação. A instalação foi recusada e nenhuma alteração foi mantida.',
+        profileOwnershipConflict: 'Já existe uma pasta de perfis para este pacote que não pertence a ele, possivelmente restos de uma instalação anterior. Nada foi instalado.',
         inspectFailed: 'Não foi possível inspecionar este pacote de plugin. Verifique se o arquivo existe e é um pacote N.E.K.O válido e tente novamente.',
         verifyFailed: 'Não foi possível verificar este pacote de plugin. Baixe-o novamente ou peça ao autor para recompilá-lo e tente novamente.',
         installFailed: 'Não foi possível instalar este pacote de plugin. Nenhuma alteração não confirmada foi mantida.'

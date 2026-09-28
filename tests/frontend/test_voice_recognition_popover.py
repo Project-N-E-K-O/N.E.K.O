@@ -19,6 +19,7 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:neko:voice-settings-pending-changed",
     "window:neko:core-api-capability-changed",
     "window:neko:speaker-device-changed",
+    "window:neko:screen-source-changed",
 )
 
 
@@ -721,6 +722,49 @@ def test_screen_source_hover_respects_current_provider(
     page.wait_for_function("window.__sourceRenderCalls === 1")
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
     assert page.evaluate("window.__screenToggleCalls") == 0
+
+
+@pytest.mark.frontend
+def test_screen_row_summary_follows_selected_source_label(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            window.__screenLabel = 'Editor';
+            window.getSelectedScreenSourceLabel = () => window.__screenLabel;
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            const summary = () => test.action('screen').querySelector(
+                '.neko-mic-action-sub-label'
+            );
+            const snapshot = () => ({
+                text: summary().textContent,
+                title: summary().title,
+            });
+            const initial = snapshot();
+            window.__screenLabel = 'Screen 2';
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed'));
+            const changed = snapshot();
+            window.__screenLabel = '';
+            window.dispatchEvent(new CustomEvent('neko:screen-source-changed'));
+            return {
+                initial,
+                changed,
+                cleared: snapshot(),
+                live: summary().getAttribute('aria-live'),
+            };
+        }"""
+    )
+
+    assert result == {
+        "initial": {"text": "Editor", "title": "Editor"},
+        "changed": {"text": "Screen 2", "title": "Screen 2"},
+        "cleared": {
+            "text": "app.screenSource.screens",
+            "title": "app.screenSource.screens",
+        },
+        "live": "polite",
+    }
 
 
 @pytest.mark.frontend

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Awaitable, Callable
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import TypeAlias
 
 
 class TurnDecision(Enum):
@@ -170,39 +170,3 @@ class TurnEvaluation:
                 raise ValueError("probability must be within [0, 1]")
         elif self.decision is not None or self.probability is not None:
             raise ValueError("non-OK evaluations must not carry a semantic result")
-
-
-@runtime_checkable
-class TurnDetector(Protocol):
-    """Contract consumed by the future ASR Controller."""
-
-    async def on_speech_started(self) -> None: ...
-
-    async def evaluate(self, audio_tail: bytes) -> TurnEvaluation: ...
-
-    async def reset(self) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AsrTurnCapabilities:
-    """Only the capability needed to choose an endpoint authority."""
-
-    semantic_endpoint: bool
-
-
-def requires_external_turn_detector(capabilities: AsrTurnCapabilities) -> bool:
-    """Return false for Soniox-like providers with authoritative endpoints."""
-
-    return not capabilities.semantic_endpoint
-
-
-def build_turn_detector_if_required(
-    capabilities: AsrTurnCapabilities, factory: Callable[[], TurnDetector]
-) -> TurnDetector | None:
-    """Construct only for providers without an authoritative semantic endpoint."""
-
-    if not requires_external_turn_detector(capabilities):
-        return None
-    return factory()

@@ -72,6 +72,26 @@ describe('market install task store — tracking', () => {
     expect(store.barStatus).toBe('success')
   })
 
+  it('marks a completed task with install warnings as a warning', async () => {
+    vi.mocked(fetchBridge).mockResolvedValueOnce(
+      task({
+        task_id: 't',
+        status: 'completed',
+        stage: 'completed',
+        progress: 1,
+        install_source_warning: 'lock unavailable; ledger not written',
+      }) as never,
+    )
+
+    const store = useMarketInstallTaskStore()
+    const pending = store.track('t', context(), 'panel')
+    await tick()
+    await expect(pending).resolves.toEqual({ ok: true })
+
+    expect(store.warnings).toEqual(['lock unavailable', 'ledger not written'])
+    expect(store.barStatus).toBe('warning')
+  })
+
   it('maps a failed task to its preserved stage and error key', async () => {
     vi.mocked(fetchBridge).mockResolvedValue(
       task({

@@ -20,6 +20,7 @@ import difflib
 import hashlib
 import re
 import time
+import unicodedata
 from contextlib import suppress
 from collections import deque
 from dataclasses import dataclass
@@ -379,8 +380,9 @@ _proactive_chat_history: dict[str, deque] = {}
 # {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
 # 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
 # MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
-# 雷同才回落到台词判定。进程内、重启清零——短期复读保护，与 _proactive_chat_
-# history / _mini_game_invite_state 同样是内存态即可。
+# 雷同才回落到台词判定（MEME 素材新鲜时仍拦逐字复读，见
+# ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS）。进程内、重启清零——短期复读保护，
+# 与 _proactive_chat_history / _mini_game_invite_state 同样是内存态即可。
 _proactive_material_history: dict[str, dict[str, deque]] = {}
 
 
@@ -912,6 +914,64 @@ def _find_similar_recent_proactive_chat(
         matched_text=best_text,
         common_fragment=best_fragment,
     )
+
+
+# Emoji glue that is not category P/S/Z: variation selectors (Mn), the ZWJ that
+# joins sequences (Cf), the keycap mark (Me) and the tag characters that spell
+# subdivision flags (Cf, U+E0020..U+E007F). Listed explicitly rather than
+# dropping every Mn/Cf so accents and other real combining marks survive.
+_VERBATIM_EMOJI_GLUE = frozenset(
+    "\ufe0e\ufe0f\u200d\u20e3" + "".join(map(chr, range(0xE0020, 0xE0080)))
+)
+
+
+def _is_verbatim_content_char(ch: str) -> bool:
+    return (
+        not ch.isspace()
+        and ch not in _VERBATIM_EMOJI_GLUE
+        and unicodedata.category(ch)[0] not in "PSZ"
+    )
+
+
+def _verbatim_key(text: str) -> str:
+    """Reduce *text* to its words: drop whitespace/punctuation/symbols/emoji, NFKC, lowercase."""
+    # Filter on the ORIGINAL categories first: NFKC expands compatibility
+    # symbols into letters (™ -> "TM", ℡ -> "TEL", ㈱ -> 株), which would make
+    # a trailing symbol count as content. Filter again afterwards because NFKC
+    # can also emit new separators (½ -> "1⁄2", NBSP -> space).
+    content = "".join(filter(_is_verbatim_content_char, text or ""))
+    normalized = unicodedata.normalize("NFKC", content).lower()
+    return "".join(filter(_is_verbatim_content_char, normalized))
+
+
+def _find_verbatim_recent_proactive_chat(
+    lanlan_name: str,
+    message: str,
+) -> ProactiveSimilarityMatch:
+    """Match only a recent proactive chat that says exactly the same words.
+
+    Stricter than the similarity guard on purpose: channels that push fresh
+    material (see ``ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS``) may reuse a similar
+    caption, and only a pure repeat that differs in punctuation, spacing or
+    emoji at most counts as a duplicate.
+    """
+    current = _verbatim_key(message)
+    history = _proactive_chat_history.get(lanlan_name)
+    if not current or not history:
+        return ProactiveSimilarityMatch()
+    now = time.time()
+    for entry in reversed(history):
+        ts, old_msg = entry[0], entry[1]
+        if now - ts >= _RECENT_CHAT_MAX_AGE_SECONDS:
+            continue
+        if _verbatim_key(old_msg) == current:
+            return ProactiveSimilarityMatch(
+                is_duplicate=True,
+                best_score=1.0,
+                matched_text=old_msg,
+                common_fragment=_normalize_text_for_similarity(message),
+            )
+    return ProactiveSimilarityMatch()
 
 
 def _is_similar_to_recent_proactive_chat(

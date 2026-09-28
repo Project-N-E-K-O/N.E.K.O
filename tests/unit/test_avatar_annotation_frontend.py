@@ -847,6 +847,7 @@ const canSendLiveVisionStreamFrame = () => true;
 const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
 const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
 const safeT = (_key, fallback) => fallback;
+const rememberScreenSourceLabel = () => {};
 const stopScreenSharing = async () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
 function stopScreening() {
@@ -977,6 +978,7 @@ const captureCanvasFrame = () => ({ dataUrl: 'data:image/jpeg;base64,OLD' });
 const buildStreamDataMessage = (dataUrl) => ({ dataUrl });
 const scheduleScreenCaptureIdleCheck = () => {};
 const safeT = (_key, fallback) => fallback;
+const rememberScreenSourceLabel = () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
 const stopButton = () => ({ disabled: false });
 const screenButton = () => ({ classList: { contains: () => true } });
