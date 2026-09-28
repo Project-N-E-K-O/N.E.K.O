@@ -138,10 +138,10 @@ def _kept_symbols(symbol: str, prev_char: str, next_char: str) -> str | None:
     - "C#" / "F#": a "#" right after an ASCII letter, not followed by a
       letter or digit, is part of the name ("C#😀 dev" keeps it as well);
       "C#-5" keeps both the "#" and the minus sign.
-    - A minus sign before a digit: alone when no letter/digit precedes it
-      ("-5", "x = -3"), or when only emoji precede it within the run
-      ("🌡️-5°C"). After other removed symbols it is a separator like in
-      "3%-5", which is spoken as "3 5" whether or not it was split.
+    - A minus sign before a digit, when no letter/digit precedes the run
+      ("-5", "x = -3", "~-5°C"), or when only emoji precede it within the run
+      ("temp🌡️-5°C"). Between a letter/digit and other removed symbols it is
+      a separator, as in "3%-5", spoken "3 5" whether or not it was split.
     """
     head, rest = symbol[0], symbol[1:]
     if head in _TTS_HASH_SIGNS and prev_char.isascii() and prev_char.isalpha():
@@ -151,8 +151,8 @@ def _kept_symbols(symbol: str, prev_char: str, next_char: str) -> str | None:
             return head
     if symbol[-1] in _TTS_MINUS_SIGNS and next_char.isdigit():
         lead = symbol[:-1]
-        if not lead and not is_tts_word_char(prev_char):
-            return symbol
+        if not is_tts_word_char(prev_char):
+            return symbol[-1]
         if lead and _TTS_EMOJI_RUN_RE.fullmatch(lead):
             return symbol[-1]
     return None
