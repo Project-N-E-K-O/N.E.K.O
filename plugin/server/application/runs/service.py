@@ -10,7 +10,7 @@ from plugin.server.application.contracts import UploadBlobResponse, UploadSessio
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import coerce_optional_int, normalize_non_empty_str
-from plugin.server.runs.manager import (
+from plugin.runs.manager import (
     ExportListResponse,
     RunRecord,
     cancel_run as manager_cancel_run,
@@ -19,8 +19,8 @@ from plugin.server.runs.manager import (
     list_runs as manager_list_runs,
     list_export_for_run as manager_list_export_for_run,
 )
-from plugin.server.runs.storage import UploadNotFoundError, blob_store
-from plugin.server.runs.tokens import issue_run_token
+from plugin.runs.storage import UploadNotFoundError, blob_store
+from plugin.runs.tokens import issue_run_token
 
 logger = get_logger("server.application.runs.service")
 

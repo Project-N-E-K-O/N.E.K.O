@@ -28,7 +28,6 @@ def _reset_shared_state_after_test(monkeypatch):
         steamworks=None,
         templates=None,
         config_manager=None,
-        logger=None,
     )
 
 
@@ -38,7 +37,6 @@ def _build_client():
         steamworks=None,
         templates=None,
         config_manager=None,
-        logger=None,
     )
     app = FastAPI()
     app.include_router(system_router_module.router)

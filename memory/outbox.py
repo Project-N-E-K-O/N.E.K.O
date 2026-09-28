@@ -67,9 +67,6 @@ logger = get_module_logger(__name__, "Memory")
 # 复读嗅探 + check_feedback + OFF-mode Stage-1 fallback——符号名随之更新，值保留。
 OP_POST_TURN_SIGNALS = "extract_facts"
 OP_PERSIST_PROMPT_LOCALE = "persist_prompt_locale"
-OP_SYNTH_REFLECTION = "synth_reflection"
-OP_CHECK_FEEDBACK = "check_feedback"
-OP_RESOLVE_CORRECTIONS = "resolve_corrections"
 
 
 # pending 记录在 outbox 中积累超过此阈值时触发自动 compact（启动期调用）

@@ -234,13 +234,3 @@ def annotate_keyword_hits(
             f"- {pid} [KEYWORD MATCH]:",
         )
     return plugins_desc
-
-
-def generate_short_description_prompt(plugin_id: str, full_description: str) -> str:
-    """Build a prompt to generate a short_description from a full description."""
-    return (
-        f"Generate a concise summary (under 300 characters, English) for this plugin.\n"
-        f"Plugin ID: {plugin_id}\n"
-        f"Full description: {full_description}\n\n"
-        f"Return ONLY the summary text, nothing else."
-    )

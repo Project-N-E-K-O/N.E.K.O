@@ -547,6 +547,537 @@ def test_window_selection_and_toggle_bound_the_remembered_title(page: Page) -> N
 
 
 @pytest.mark.frontend
+def test_selected_source_label_is_bound_to_the_selected_id(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail);
+            });
+            const record = () => JSON.parse(
+                window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+            );
+            async function pick(sourceId) {
+                document.querySelector(
+                    '.screen-source-option[data-source-id="' + sourceId + '"]'
+                ).click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return { label: window.getSelectedScreenSourceLabel(), record: record() };
+            }
+            function syncFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key,
+                    newValue: value,
+                }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const windowPick = await pick('window:2');
+            const screenPick = await pick('screen:1');
+            // Another window writes the id first, then its label record.
+            const idBeforeLabel = syncFromOtherWindow('selectedScreenSourceId', 'window:9');
+            const idWithLabel = syncFromOtherWindow(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:9', name: 'Browser' })
+            );
+            return {
+                windowPick,
+                screenPick,
+                idBeforeLabel,
+                idWithLabel,
+                events,
+            };
+        }"""
+    )
+
+    assert result == {
+        # "Remember window" is off: the title stays in memory, not in storage.
+        "windowPick": {"label": "Editor", "record": {"id": "window:2"}},
+        "screenPick": {"label": "Screen 1", "record": {"id": "screen:1", "screenIndex": 0}},
+        # Unknown window title: say it is a window, never reuse another label.
+        "idBeforeLabel": "app.screenSource.windows",
+        "idWithLabel": "Browser",
+        "events": [
+            {"sourceId": "window:2", "sourceLabel": "Editor"},
+            {"sourceId": "screen:1", "sourceLabel": "Screen 1"},
+            {"sourceId": "window:9", "sourceLabel": "app.screenSource.windows"},
+            {"sourceId": "window:9", "sourceLabel": "Browser"},
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_selected_window_title_is_stored_only_while_remembering(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const record = () => JSON.parse(
+                window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+            );
+            document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const off = record();
+            window.setScreenSourceTitleMatchEnabled(true);
+            const on = record();
+            window.setScreenSourceTitleMatchEnabled(false);
+            return {
+                off,
+                on,
+                offAgain: record(),
+                label: window.getSelectedScreenSourceLabel(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "off": {"id": "window:2"},
+        "on": {"id": "window:2", "name": "Editor"},
+        "offAgain": {"id": "window:2"},
+        # The current page keeps showing the title it already knows.
+        "label": "Editor",
+    }
+
+
+@pytest.mark.frontend
+def test_disabling_remember_strips_title_from_a_record_this_page_did_not_write(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:2",
+            "selectedScreenSourceLabel": '{"id":"window:2","name":"Editor"}',
+        },
+    )
+
+    result = page.evaluate(
+        """() => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail.sourceLabel);
+            });
+            const before = window.getSelectedScreenSourceLabel();
+            window.setScreenSourceTitleMatchEnabled(false);
+            return {
+                before,
+                record: JSON.parse(window.__storedValues.get('selectedScreenSourceLabel')),
+                after: window.getSelectedScreenSourceLabel(),
+                events,
+            };
+        }"""
+    )
+
+    assert result == {
+        "before": "Editor",
+        "record": {"id": "window:2"},
+        "after": "app.screenSource.windows",
+        # This page gets no storage event for its own write; the row must refresh.
+        "events": ["app.screenSource.windows"],
+    }
+
+
+@pytest.mark.frontend
+def test_cross_window_label_record_replaces_this_pages_cached_title(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            function syncFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            async function pickEditorHere() {
+                document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const cached = await pickEditorHere();
+            // Same id, newer title written by another window.
+            const renamed = syncFromOtherWindow(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2', name: 'Browser' })
+            );
+            await pickEditorHere();
+            // Another window moves away and back without a broadcast. Within a
+            // session the same id is the same window; renames arrive by
+            // broadcast or a record with a different title.
+            syncFromOtherWindow('selectedScreenSourceId', 'screen:1');
+            window.__storedValues.delete('selectedScreenSourceLabel');
+            const back = syncFromOtherWindow('selectedScreenSourceId', 'window:2');
+            return { cached, back, renamed };
+        }"""
+    )
+
+    assert result == {
+        "cached": "Editor",
+        "back": "Editor",
+        "renamed": "Browser",
+    }
+
+
+@pytest.mark.frontend
+def test_overlong_window_title_is_not_saved_as_a_truncated_label(page: Page) -> None:
+    _install_screen_source_harness(
+        page, initial_storage={"screenSourceTitleMatchEnabled": "true"}
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources[1].name = 'x'.repeat(600);
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                label: window.getSelectedScreenSourceLabel(),
+                record: JSON.parse(
+                    window.__storedValues.get('selectedScreenSourceLabel') || 'null'
+                ),
+                rememberedTitle: window.__storedValues.get('selectedScreenWindowTitle') || null,
+            };
+        }"""
+    )
+
+    # Same rule as the remembered title: never persisted (nor truncated),
+    # but this session still shows the full title.
+    assert result == {
+        "label": "x" * 600,
+        "record": {"id": "window:2"},
+        "rememberedTitle": None,
+    }
+
+
+@pytest.mark.frontend
+def test_cross_window_record_removal_and_screen_index_refresh_cache(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            function syncLabelRecord(value) {
+                const oldValue = window.__storedValues.get('selectedScreenSourceLabel') || null;
+                if (value === null) {
+                    window.__storedValues.delete('selectedScreenSourceLabel');
+                } else {
+                    window.__storedValues.set('selectedScreenSourceLabel', value);
+                }
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key: 'selectedScreenSourceLabel',
+                    oldValue,
+                    newValue: value,
+                }));
+                return window.getSelectedScreenSourceLabel();
+            }
+            async function pick(sourceId) {
+                document.querySelector(
+                    '.screen-source-option[data-source-id="' + sourceId + '"]'
+                ).click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                return window.getSelectedScreenSourceLabel();
+            }
+            const windowLabel = await pick('window:2');
+            // Another window found window:2 gone and deleted its record.
+            const afterRemoval = syncLabelRecord(null);
+            const screenLabel = await pick('screen:1');
+            // Another window saw the same screen id at a different position.
+            const afterReindex = syncLabelRecord(
+                JSON.stringify({ id: 'screen:1', screenIndex: 1 })
+            );
+            // Another window deletes the record of a source this page is not
+            // using; this page's own cached name must survive.
+            const keptScreen = await pick('screen:1');
+            window.__storedValues.set(
+                'selectedScreenSourceLabel',
+                JSON.stringify({ id: 'window:2' })
+            );
+            const afterOtherRemoval = syncLabelRecord(null);
+            return {
+                windowLabel, afterRemoval, screenLabel, afterReindex,
+                keptScreen, afterOtherRemoval,
+            };
+        }"""
+    )
+
+    assert result == {
+        "windowLabel": "Editor",
+        "afterRemoval": "app.screenSource.windows",
+        "screenLabel": "Screen 1",
+        "afterReindex": "Screen 2",
+        "keptScreen": "Screen 1",
+        "afterOtherRemoval": "Screen 1",
+    }
+
+
+@pytest.mark.frontend
+def test_window_title_reaches_other_windows_by_broadcast_not_storage(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            // Stands in for the Pet / Chat window on the same origin.
+            const other = new BroadcastChannel('neko-screen-source-label');
+            const received = [];
+            other.onmessage = (event) => received.push(event.data);
+            const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+            function storageFromOtherWindow(key, value) {
+                window.__storedValues.set(key, value);
+                window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+            }
+
+            document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await settle();
+            const sent = received.slice();
+            const stored = window.__storedValues.get('selectedScreenSourceLabel');
+
+            // The other window re-picks the same id, now titled differently. Its
+            // storage writes are identical, so only the broadcast carries this.
+            other.postMessage({ meta: { id: 'window:2', name: 'Browser', screenIndex: null } });
+            await settle();
+            const renamed = window.getSelectedScreenSourceLabel();
+            // Its title-less record for the same id must not wipe the title.
+            storageFromOtherWindow('selectedScreenSourceLabel', JSON.stringify({ id: 'window:2' }));
+            const afterTitleLessRecord = window.getSelectedScreenSourceLabel();
+
+            // A new pick whose broadcast arrives before the storage events.
+            other.postMessage({ meta: { id: 'window:7', name: 'Terminal', screenIndex: null } });
+            await settle();
+            storageFromOtherWindow('selectedScreenSourceId', 'window:7');
+            storageFromOtherWindow('selectedScreenSourceLabel', JSON.stringify({ id: 'window:7' }));
+            const broadcastFirst = window.getSelectedScreenSourceLabel();
+            other.close();
+            return { sent, stored, renamed, afterTitleLessRecord, broadcastFirst };
+        }"""
+    )
+
+    assert result == {
+        "sent": [{"meta": {"id": "window:2", "screenIndex": None, "name": "Editor"}}],
+        # "Remember window" is off: nothing with the title is written to disk.
+        "stored": '{"id":"window:2"}',
+        "renamed": "Browser",
+        "afterTitleLessRecord": "Browser",
+        "broadcastFirst": "Terminal",
+    }
+
+
+@pytest.mark.frontend
+def test_late_broadcast_for_another_source_keeps_this_pages_pick(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const other = new BroadcastChannel('neko-screen-source-label');
+            const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+            document.querySelector('.screen-source-option[data-source-id="window:2"]').click();
+            await settle();
+            // Sent by another window before this pick, delivered after it.
+            other.postMessage({ meta: { id: 'window:9', name: 'Old pick', screenIndex: null } });
+            await settle();
+            const afterLateBroadcast = window.getSelectedScreenSourceLabel();
+            // If that window's selection then syncs here, its title is known.
+            window.__storedValues.set('selectedScreenSourceId', 'window:9');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'selectedScreenSourceId', newValue: 'window:9',
+            }));
+            const afterItsSelection = window.getSelectedScreenSourceLabel();
+            other.close();
+            return { afterLateBroadcast, afterItsSelection };
+        }"""
+    )
+
+    assert result == {"afterLateBroadcast": "Editor", "afterItsSelection": "Old pick"}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("source_id", "fallback"),
+    [("window:2", "app.screenSource.windows"), ("screen:1", "app.screenSource.screens")],
+)
+def test_source_missing_from_enumeration_drops_its_name(
+    page: Page, source_id: str, fallback: str,
+) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async (sourceId) => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="' + sourceId + '"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const before = window.getSelectedScreenSourceLabel();
+            // The window closed / the monitor was unplugged.
+            window.__metadataSources = window.__metadataSources.filter(
+                (source) => source.id !== sourceId
+            );
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return {
+                before,
+                after: window.getSelectedScreenSourceLabel(),
+                record: window.__storedValues.get('selectedScreenSourceLabel') || null,
+            };
+        }""",
+        source_id,
+    )
+
+    assert result["before"] != fallback
+    assert result == {"before": result["before"], "after": fallback, "record": None}
+
+
+@pytest.mark.frontend
+def test_missing_source_keeps_another_windows_label_record(page: Page) -> None:
+    _install_screen_source_harness(page)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            document.querySelector(
+                '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            // Another window already selected screen:1 and wrote its record;
+            // this page has not processed that storage event yet.
+            const otherRecord = JSON.stringify({ id: 'screen:1', screenIndex: 0 });
+            window.__storedValues.set('selectedScreenSourceLabel', otherRecord);
+            window.__metadataSources = window.__metadataSources.filter(
+                (source) => source.id !== 'window:2'
+            );
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return {
+                kept: window.__storedValues.get('selectedScreenSourceLabel') === otherRecord,
+                label: window.getSelectedScreenSourceLabel(),
+            };
+        }"""
+    )
+
+    assert result == {"kept": True, "label": "app.screenSource.windows"}
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("source_id", "expected_label"),
+    [("window:2", "Editor"), ("screen:1", "Screen 1")],
+)
+def test_enumeration_fills_label_for_selection_saved_before_labels(
+    page: Page,
+    source_id: str,
+    expected_label: str,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={"selectedScreenSourceId": source_id},
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail.sourceLabel);
+            });
+            const before = window.getSelectedScreenSourceLabel();
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            const after = window.getSelectedScreenSourceLabel();
+            // A second enumeration with the same data does not re-announce.
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return { before, after, events };
+        }"""
+    )
+
+    assert result == {
+        "before": (
+            "app.screenSource.windows"
+            if source_id.startswith("window:")
+            else "app.screenSource.screens"
+        ),
+        "after": expected_label,
+        "events": [expected_label],
+    }
+
+
+@pytest.mark.frontend
+def test_screen_label_follows_locale_change(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "selectedScreenSourceId": "screen:1",
+            "selectedScreenSourceLabel": '{"id":"screen:1","screenIndex":0}',
+        },
+    )
+
+    result = page.evaluate(
+        """() => {
+            const events = [];
+            window.addEventListener('neko:screen-source-changed', (event) => {
+                events.push(event.detail.sourceLabel);
+            });
+            const before = window.getSelectedScreenSourceLabel();
+            const previousT = window.t;
+            window.t = (key, options = {}) => (
+                key === 'app.screenSource.screenLabel'
+                    ? `画面 ${options.index}`
+                    : previousT(key, options)
+            );
+            window.dispatchEvent(new CustomEvent('localechange'));
+            return { before, events };
+        }"""
+    )
+
+    assert result == {"before": "Screen 1", "events": ["画面 1"]}
+
+
+@pytest.mark.frontend
 def test_remember_toggle_uses_current_explicit_title_not_hidden_picker(
     page: Page,
 ) -> None:

@@ -4720,11 +4720,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 
+            function getCurrentScreenSourceLabel() {
+                var sourceLabel = typeof window.getSelectedScreenSourceLabel === 'function'
+                    ? window.getSelectedScreenSourceLabel() : '';
+                return sourceLabel || (window.t ? window.t('app.screenSource.screens') : 'Screens');
+            }
+            var currentScreenSourceLabel = getCurrentScreenSourceLabel();
+
             var firstContent = leftColumn.firstChild;
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
-                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                currentScreenSourceLabel,
                 'screen',
                 openScreenSourceSubwindow,
                 { openOnHover: function () {
@@ -4740,6 +4747,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 shareToggleButton
             );
             leftColumn.insertBefore(screenActionRow, firstContent);
+            var screenSummary = screenActionButton.querySelector('.neko-mic-action-sub-label');
+            if (screenSummary) {
+                screenSummary.setAttribute('aria-live', 'polite');
+                screenSummary.title = currentScreenSourceLabel;
+                // 选择、自动回退和其他窗口的选择都会派发该事件。
+                addVoiceWindowListener('neko:screen-source-changed', function () {
+                    var nextLabel = getCurrentScreenSourceLabel();
+                    screenSummary.textContent = nextLabel;
+                    screenSummary.title = nextLabel;
+                });
+            }
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
