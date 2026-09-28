@@ -52,7 +52,11 @@ import numpy as np
 from config.prompts.prompts_voice import WHISPER_SILENCE_HALLUCINATIONS
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
-from ..delivery import begin_transport_write, complete_transport_write
+from ..delivery import (
+    begin_transport_write,
+    complete_transport_write,
+    delivery_evidence,
+)
 from ..warmup import begin_provider_warmup, complete_provider_warmup
 from ._shared import MAX_SEGMENT_PCM_BYTES, PCM16_SAMPLE_WIDTH_BYTES
 
@@ -608,10 +612,14 @@ async def faster_whisper_asr_worker(
         # The decoder actually starting on the PCM is this provider's transport
         # write. Waiting in the decode queue is not: a job cancelled before it
         # starts never reached the model and must stay a definite non-delivery.
-        decode_started = threading.Event()
+        # The decode thread marks the attempt itself, before the model sees
+        # the audio, so a reader on the loop never finds a running decode still
+        # reported as not attempted. The evidence object is created here, on
+        # the loop, so the thread only flips one attribute on it.
+        evidence = delivery_evidence(request_queue)
 
         def decode() -> str:
-            decode_started.set()
+            begin_transport_write(request_queue)
             return _transcribe_pcm16(model, pcm16, language)
 
         try:
@@ -622,16 +630,12 @@ async def faster_whisper_asr_worker(
                 pool.decoder_executor(), decode
             )
         except asyncio.CancelledError:
-            if decode_started.is_set():
-                begin_transport_write(request_queue)
             raise
         except Exception as exc:
-            begin_transport_write(request_queue)
             raise _LocalAsrFailure(
                 "ASR_LOCAL_TRANSCRIBE_FAILED",
                 "faster-whisper transcription failed",
             ) from exc
-        evidence = begin_transport_write(request_queue)
         complete_transport_write(
             evidence, len(pcm16), generation=generation,
             buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,

@@ -994,3 +994,27 @@ async def test_decode_cancelled_while_queued_stays_a_definite_non_delivery(pool)
     await _next_event(first[2], "final")
     await _shutdown(*first)
     assert len(model.calls) == 1
+
+
+async def test_running_decode_is_already_reported_as_attempted(pool) -> None:
+    # While the model is decoding, a reader on the loop (e.g. a revocation)
+    # must see the audio as handed over, not as a definite non-delivery.
+    model = _FakeModel(_segment("x"))
+    model.release.clear()
+    task, requests, responses = _start_worker(
+        AsrSessionConfig(language="zh-CN"), _RecordingLoader(model), pool
+    )
+    try:
+        await _next_event(responses, "ready")
+        await _send_utterance(requests)
+        for _ in range(100):
+            if model.calls:
+                break
+            await asyncio.sleep(0.01)
+        assert model.calls
+        assert delivery_evidence(requests).attempted is True
+        assert delivery_evidence(requests).written_audio_bytes == 0
+    finally:
+        model.release.set()
+    await _next_event(responses, "final")
+    await _shutdown(task, requests, responses)
