@@ -104,7 +104,10 @@ class _RoleStateFieldView(MutableMapping):
     ``websocket_router``), which means "this catgirl no longer has a live
     session" — not "delete the catgirl".
 
-    The view does not actively block writes — it relies on convention +
+    Consumers must never assign ``sync_message_queue`` through this view:
+    ``RoleState`` builds it once per slot and never replaces it (see the
+    ``RoleState`` invariants in app/main_server/character_runtime.py). The
+    view does not actively block such writes — it relies on convention +
     code review.
     """
 

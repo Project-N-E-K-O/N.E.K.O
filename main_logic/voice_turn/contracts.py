@@ -170,4 +170,3 @@ class TurnEvaluation:
                 raise ValueError("probability must be within [0, 1]")
         elif self.decision is not None or self.probability is not None:
             raise ValueError("non-OK evaluations must not carry a semantic result")
-

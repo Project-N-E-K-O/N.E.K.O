@@ -5,7 +5,7 @@
 # （见 main_logic/quota/dropper.py）。真实配额由 Servers 仲裁。
 # 详见 N.E.K.O.Servers/.claude/contracts/quota-rules.md。
 #
-# M2-j v1 只实现 word_count + keywords 两类规则；emotion 留待后续真接情感判定模块。
+# 留档内容：M2-j v1 规则只定义了 word_count + keywords 两类；emotion 类未定义。
 
 ux_daily_show: 5
 

@@ -19,7 +19,7 @@ History
 This module originally carried two responsibilities:
 
 1. Reading ``memory/{name}/settings.json``. Still in use —
-   ``memory_server.py`` and the testbench/dump tools call ``get_settings`` /
+   ``app/memory_server/routes.py`` and the testbench/dump tools call ``get_settings`` /
    ``load_settings`` to merge the legacy on-disk fields into the prompt.
 2. Using an LLM to extract new settings from conversations + run LLM
    contradiction resolution. Fully superseded by the evidence / reflection

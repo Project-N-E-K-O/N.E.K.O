@@ -81,8 +81,8 @@ from main_logic.tool_calling import (
     ToolResult,
     # _MAX_TOOL_IMAGE_B64_BYTES / _MAX_TOOL_IMAGES 在此仅作再导出：
     # 测试从 router 导入它们做边界断言，生产消费方在 main_logic.tool_calling。
-    _MAX_TOOL_IMAGE_B64_BYTES,
-    _MAX_TOOL_IMAGES,
+    _MAX_TOOL_IMAGE_B64_BYTES,  # noqa: F401
+    _MAX_TOOL_IMAGES,  # noqa: F401
     looks_like_tool_envelope,
     tool_result_from_envelope,
 )
