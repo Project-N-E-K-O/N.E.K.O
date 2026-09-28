@@ -186,6 +186,7 @@ function createHarness({
     let serverRequested = initialRequested;
     let remainingVerificationFailures = verificationFailures;
     let enrollmentId = initialEnrollmentNextSegment ? 'enrollment-1' : null;
+    let enrollmentSerial = enrollmentId ? 1 : 0;
     let serverNextSegment = initialEnrollmentNextSegment || 1;
     let remainingInconsistentReferences = inconsistentReference ? 1 : 0;
     let statusRequestCount = 0;
@@ -230,7 +231,10 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/enrollment/start`) {
             if (startGate) await startGate.promise;
-            enrollmentId = 'enrollment-1';
+            if (!enrollmentId) {
+                enrollmentSerial += 1;
+                enrollmentId = `enrollment-${enrollmentSerial}`;
+            }
             if (startResponseErrorAfterAbort) {
                 await new Promise((resolve, reject) => {
                     const signal = call.options.signal;
@@ -278,8 +282,10 @@ function createHarness({
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/cancel`) {
-            if (cancelGate) await cancelGate.promise;
-            enrollmentId = null;
+            if (cancelGate && call.options.keepalive) await cancelGate.promise;
+            if (call.options.headers.get('x-voice-identity-enrollment') === enrollmentId) {
+                enrollmentId = null;
+            }
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/filter`) {
@@ -570,6 +576,9 @@ function createHarness({
         },
         get mediaRequests() {
             return mediaRequests;
+        },
+        get serverEnrollmentId() {
+            return enrollmentId;
         },
         fireStatusTimeouts() {
             const callbacks = [...statusTimeouts.values()];
@@ -1135,6 +1144,7 @@ test('inconsistent third reference adopts the server reset and restarts at segme
     await flush(12);
     assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 3);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, '今天我想和你分享一件趣事。');
     await harness.emit('voice-identity-next');
     await enrolling;
 
@@ -1551,6 +1561,51 @@ test('BFCache restore releases controls when keepalive cancellation times out', 
     await closing;
     await flush(4);
     assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+});
+
+test('starting after a restore timeout replaces the session targeted by the late keepalive cancel', async () => {
+    const cancelGate = deferred();
+    const harness = createHarness({
+        initialEnrollmentNextSegment: 1,
+        cancelGate,
+        manualAudio: true,
+        autoAdvance: false,
+    });
+    await harness.initialize();
+
+    const closing = harness.beforeClose();
+    await flush(3);
+    const restoring = harness.dispatch('pageshow', { persisted: true });
+    await flush(4);
+    harness.fireStatusTimeouts();
+    await restoring;
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush(8);
+    const explicitCancelIndex = harness.fetchCalls.findIndex(call => (
+        call.url === `${API_ROOT}/enrollment/cancel` && call.options.keepalive !== true
+    ));
+    const startIndex = harness.fetchCalls.findIndex(call => call.url === `${API_ROOT}/enrollment/start`);
+    assert.ok(explicitCancelIndex >= 0);
+    assert.ok(startIndex > explicitCancelIndex);
+    assert.equal(
+        harness.fetchCalls[explicitCancelIndex].options.headers.get('x-voice-identity-enrollment'),
+        'enrollment-1',
+    );
+    assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+
+    cancelGate.resolve();
+    await closing;
+    await flush(4);
+    assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+
+    harness.emitAudio(new Int16Array(REFERENCE_SAMPLES).fill(1024));
+    await flush(4);
+    const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+    assert.equal(upload.options.headers.get('x-voice-identity-enrollment'), 'enrollment-2');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
 });
 
 test('slow enrollment start uses keepalive cancellation after close wait expires', async () => {

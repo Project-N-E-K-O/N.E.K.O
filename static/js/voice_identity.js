@@ -93,6 +93,7 @@
         initialized: false,
         closeStarted: false,
         closeCancellationPromise: null,
+        closeCancellationEnrollmentId: null,
         startSettled: null,
         voiceStatus: 'waiting',
         lastVoiceAt: 0,
@@ -986,9 +987,11 @@
                 keepalive: true
             }).catch(function () {});
             state.closeCancellationPromise = cancellation;
+            state.closeCancellationEnrollmentId = enrollmentId;
             cancellation.then(function () {
                 if (state.closeCancellationPromise === cancellation) {
                     state.closeCancellationPromise = null;
+                    state.closeCancellationEnrollmentId = null;
                 }
             });
             return;
@@ -1115,6 +1118,20 @@
             const startController = typeof AbortController === 'function'
                 ? new AbortController() : null;
             state.startAbort = startController;
+            // A restore may release the page while the close-time keepalive
+            // cancellation is still in flight. Starting now would resume that
+            // session and let the late cancellation delete it, so cancel it
+            // explicitly first and let /enrollment/start create a new session.
+            const unsettledCloseEnrollmentId = state.closeCancellationPromise
+                ? state.closeCancellationEnrollmentId : null;
+            if (unsettledCloseEnrollmentId) {
+                await apiRequest('/enrollment/cancel', {
+                    method: 'POST',
+                    headers: { [SESSION_HEADER]: unsettledCloseEnrollmentId },
+                    signal: startController ? startController.signal : undefined
+                });
+                if (isStale()) return;
+            }
             let started;
             try {
                 started = await apiRequest('/enrollment/start', {
@@ -1272,6 +1289,7 @@
                                 && canonicalNext !== segment) {
                                 if (canonicalNext === 1 && segment === 3) {
                                     state.saving = false;
+                                    state.segmentIndex = 1;
                                     state.segmentPhase = 'retry'; state.uiPhase = 'retry';
                                     setMessage(enrollmentErrorMessage(error), true);
                                     render();
