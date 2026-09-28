@@ -136,6 +136,10 @@ export async function initializeAPlayer(options = {}, onReady = null) {
         return null;
     }
 
+    // The music request may have been dismissed while the library was loading.
+    // Check before touching a newer global player, creating DOM or starting media.
+    if (typeof options.isCurrentRequest === 'function' && !options.isCurrentRequest()) return null;
+
     if (window.aplayer) {
         const existingContainer = window.aplayer.container;
         const newContainer = options.container || document.getElementById('aplayer-core');

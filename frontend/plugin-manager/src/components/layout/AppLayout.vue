@@ -65,6 +65,9 @@
 
         <header class="app-header">
           <Header />
+          <!-- Absolutely positioned off the header's bottom-right so it can
+               never cover the custom titlebar's window controls above it. -->
+          <PluginUpdateFloatWindow v-if="updateFloatWindowLoaded" />
         </header>
 
         <main class="app-main" data-yui-guide-id="plugin-main">
@@ -80,7 +83,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, type WatchStopHandle } from 'vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
 import { useI18n } from 'vue-i18n'
@@ -88,7 +91,33 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+
+// The update check, its popup and the install-progress UI stay off the
+// cold-start path (payload-budget e2e): the store is imported when the boot
+// check fires, and the popup is fetched the first time it opens, then kept
+// mounted so its close-time cleanup still runs on every later close.
+const PluginUpdateFloatWindow = defineAsyncComponent(
+  () => import('@/components/plugin/PluginUpdateFloatWindow.vue'),
+)
+const updateFloatWindowLoaded = ref(false)
+let stopUpdatePopupWatch: WatchStopHandle | null = null
+let updateCheckTimer: number | null = null
+let updateCheckDisposed = false
+
+async function startUpdateCheck(): Promise<void> {
+  const { usePluginUpdatesStore } = await import('@/stores/pluginUpdates')
+  if (updateCheckDisposed) return
+  const pluginUpdatesStore = usePluginUpdatesStore()
+  // `immediate` also catches a popup the plugin list's toolbar button opened
+  // before this module finished loading.
+  stopUpdatePopupWatch = watch(() => pluginUpdatesStore.popupOpen, (open) => {
+    if (open) updateFloatWindowLoaded.value = true
+  }, { immediate: true })
+  await pluginUpdatesStore.checkOnBoot()
+}
 const PLUGIN_MANAGER_BOOT_SHELL_ID = 'plugin-manager-boot-shell'
+/** Let the first paint and the initial plugin fetch win the bandwidth race. */
+const UPDATE_CHECK_BOOT_DELAY_MS = 1200
 const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]
 const isMaximized = ref(false)
 const pinAvailable = ref(false)
@@ -234,6 +263,14 @@ onMounted(() => {
   void refreshMaximizeState()
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('focus', handleWindowFocus)
+  // Once per panel window; silent on failure and hidden when nothing is
+  // outdated, so it can never block the panel from being used.
+  updateCheckTimer = window.setTimeout(() => {
+    updateCheckTimer = null
+    startUpdateCheck().catch((err: unknown) => {
+      console.warn('[plugin-updates] boot check could not start', err)
+    })
+  }, UPDATE_CHECK_BOOT_DELAY_MS)
 })
 
 onBeforeUnmount(() => {
@@ -243,6 +280,9 @@ onBeforeUnmount(() => {
   pinPending.value = false
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('focus', handleWindowFocus)
+  updateCheckDisposed = true
+  if (updateCheckTimer !== null) window.clearTimeout(updateCheckTimer)
+  stopUpdatePopupWatch?.()
 })
 </script>
 
@@ -471,6 +511,12 @@ onBeforeUnmount(() => {
 }
 
 .app-header {
+  position: relative;
+  /* The update float window is anchored off this header and hangs into the
+     page area below. `backdrop-filter` already makes the header a stacking
+     context, so without an explicit z-index the scrolling `.app-main` would
+     paint its background over that overhang. */
+  z-index: 900;
   height: 54px;
   flex-shrink: 0;
   display: flex;

@@ -15,6 +15,7 @@ import asyncio
 import math
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,19 @@ _DEFAULT_SEND_RATE_HZ = 60
 _CONFIG_FILENAME = "vmc_config.json"
 _CONFIG_VERSION = 2
 _LOCAL_ROOT_TRANSFORM = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+# Per-frame caps. A humanoid rig has 55 bones, so 64 leaves headroom without
+# letting a malformed payload turn one frame into an unbounded UDP burst.
+# The first-party sampler caps expressions at the same number before sending
+# (MAX_EXPRESSIONS_PER_FRAME in static/vrm/vrm-vmc-sender.js); raising the
+# value here alone has no effect on browser publishers.
+_MAX_BONES_PER_FRAME = 64
+_MAX_EXPRESSIONS_PER_FRAME = 256
+
+# Upper bound on the enable broadcast. Browsers that miss it still recover via
+# the status sync their chat socket runs on connect, so failing fast here costs
+# nothing while keeping POST /api/vmc/enable responsive.
+_ENABLED_CALLBACK_TIMEOUT_SEC = 2.0
 
 _VRM_BONE_NAMES = (
     "hips", "spine", "chest", "upperChest", "neck", "head",
@@ -80,13 +94,24 @@ _EXPRESSION_NAME_MAP = {
     "blink": "Blink",
     "blinkLeft": "Blink_L",
     "blinkRight": "Blink_R",
+    "neutral": "Neutral",
+    "surprised": "Surprised",
+    "lookUp": "LookUp",
+    "lookDown": "LookDown",
+    "lookLeft": "LookLeft",
+    "lookRight": "LookRight",
 }
 
 
 class VmcSender:
     """Process-wide, lazily configured VMC UDP sender."""
 
-    def __init__(self, config_dir: Path | None) -> None:
+    def __init__(
+        self,
+        config_dir: Path | None,
+        *,
+        on_enabled_callback: Callable[[bool], Awaitable[None]] | None = None,
+    ) -> None:
         self._config_path = config_dir / _CONFIG_FILENAME if config_dir else None
         self._enabled = False
         self._host = _DEFAULT_HOST
@@ -108,6 +133,11 @@ class VmcSender:
         self._t_pose_generation = 0
         self._active_expression_names: set[str] = set()
         self._publisher_generation = 0
+        self._on_enabled_callback = on_enabled_callback
+        self._model_info: tuple[str, str] | None = None
+        self._model_info_sent = False
+        self._bone_overflow_warned = False
+        self._expression_overflow_warned = False
 
     @property
     def enabled(self) -> bool:
@@ -228,6 +258,7 @@ class VmcSender:
     ) -> dict[str, Any]:
         await self.ensure_config_loaded()
         async with self._lock:
+            was_enabled = self._enabled
             candidate_host = host if host is not None else self._host
             candidate_port = port if port is not None else self._port
             candidate_rate = (
@@ -273,7 +304,41 @@ class VmcSender:
                 self._port,
                 self._send_rate_hz,
             )
+        # Notify outside the lock: the callback reaches into the WebSocket
+        # layer, which must never be able to stall a subsequent enable/disable.
+        if not was_enabled:
+            await self._notify_enabled_changed(True)
+        # Re-read under the lock instead of returning the pre-broadcast
+        # snapshot: a disable() that lands during the broadcast would answer
+        # `enabled: false` first, and a stale snapshot here would then claim
+        # the sender is still on. The response must describe the state as of
+        # the moment it is produced.
+        async with self._lock:
             return self.status()
+
+    async def _notify_enabled_changed(self, enabled: bool) -> None:
+        callback = self._on_enabled_callback
+        if callback is None:
+            return
+        try:
+            # The callback fans out to every connected chat WebSocket. A single
+            # backpressured socket must not hang the control endpoint, and
+            # send_json() never completing is not an exception we could catch.
+            await asyncio.wait_for(
+                callback(enabled),
+                timeout=_ENABLED_CALLBACK_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            # Spelled via asyncio, not the builtin: the two are only aliases
+            # from 3.11 on, and on an older runtime the builtin would miss
+            # this entirely and fall through to the generic branch below.
+            logger.warning(
+                "VMC enabled-state callback timed out after %.1fs; "
+                "the sender stays enabled and browsers can still sync on connect",
+                _ENABLED_CALLBACK_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            logger.warning("VMC enabled-state callback failed: %s", exc)
 
     async def disable(self) -> dict[str, Any]:
         await self.ensure_config_loaded()
@@ -305,6 +370,7 @@ class VmcSender:
                 self._send_terminal_state_to_client(prior)
                 self._close_specific_client(prior)
                 self._active_expression_names.clear()
+                self._reset_model_info_locked()
             self._client = replacement
 
     def _disable_client(self) -> None:
@@ -314,7 +380,18 @@ class VmcSender:
             if self._client is not None:
                 self._send_terminal_state_to_client(self._client)
             self._active_expression_names.clear()
+            self._reset_model_info_locked()
             self._close_client_locked()
+
+    def _reset_model_info_locked(self) -> None:
+        """Forget which model the retired client was told about.
+
+        ``/VMC/Ext/VRM`` is sent once per model, so a new receiver would never
+        learn the model name if the cache survived the endpoint swap. Callers
+        must already hold ``_send_lock``.
+        """
+        self._model_info = None
+        self._model_info_sent = False
 
     def set_publisher_generation(self, generation: int) -> None:
         """Bind subsequent frames to the currently authenticated publisher."""
@@ -414,6 +491,7 @@ class VmcSender:
         try:
             self._client.send_message("/VMC/Ext/OK", [1])
             self._client.send_message("/VMC/Ext/T", [float(now - self._started_at)])
+            self._send_model_info(payload)
             if bool(payload.get("t_pose")):
                 payload_generation = payload.get("t_pose_generation")
                 if (
@@ -428,11 +506,30 @@ class VmcSender:
             self._send_root()
             bones = payload.get("bones")
             if isinstance(bones, list):
-                for bone in bones[:64]:
+                # Warn once per sender: this runs at the configured send rate,
+                # so an unconditional log would flood at 60 Hz.
+                if len(bones) > _MAX_BONES_PER_FRAME and not self._bone_overflow_warned:
+                    self._bone_overflow_warned = True
+                    logger.warning(
+                        "VMC frame carried %d bones; only the first %d are sent",
+                        len(bones),
+                        _MAX_BONES_PER_FRAME,
+                    )
+                for bone in bones[:_MAX_BONES_PER_FRAME]:
                     self._send_bone(bone)
             expressions = payload.get("expressions")
             if isinstance(expressions, list):
-                for expression in expressions[:256]:
+                if (
+                    len(expressions) > _MAX_EXPRESSIONS_PER_FRAME
+                    and not self._expression_overflow_warned
+                ):
+                    self._expression_overflow_warned = True
+                    logger.warning(
+                        "VMC frame carried %d expressions; only the first %d are sent",
+                        len(expressions),
+                        _MAX_EXPRESSIONS_PER_FRAME,
+                    )
+                for expression in expressions[:_MAX_EXPRESSIONS_PER_FRAME]:
                     sent_expression = self._send_blend_val(expression)
                     if sent_expression is not None:
                         name, value = sent_expression
@@ -448,6 +545,27 @@ class VmcSender:
         except Exception as exc:
             logger.warning("VMC frame send failed: %s", exc)
             return False
+
+    def _send_model_info(self, payload: dict[str, Any]) -> None:
+        """Announce the loaded VRM once per model, not once per frame.
+
+        ``/VMC/Ext/VRM`` is a low-frequency message: receivers use it to label
+        the incoming stream, so re-sending it at 60 Hz would be pure noise.
+        """
+        model = payload.get("model")
+        info: tuple[str, str] | None = None
+        if isinstance(model, dict):
+            path = model.get("path")
+            title = model.get("title")
+            if isinstance(path, str) and isinstance(title, str):
+                info = (path[:512], title[:256])
+        if info is None:
+            return
+        if self._model_info_sent and info == self._model_info:
+            return
+        self._client.send_message("/VMC/Ext/VRM", [info[0], info[1]])
+        self._model_info = info
+        self._model_info_sent = True
 
     def _send_root(self) -> None:
         self._client.send_message(
@@ -510,6 +628,7 @@ class VmcSender:
 
 
 _singleton: VmcSender | None = None
+_enabled_callback: Callable[[bool], Awaitable[None]] | None = None
 
 
 def get_vmc_sender() -> VmcSender:
@@ -524,5 +643,22 @@ def get_vmc_sender() -> VmcSender:
     except Exception as exc:
         logger.warning("Failed to resolve config_dir for VmcSender: %s", exc)
         config_dir = None
-    _singleton = VmcSender(config_dir)
+    _singleton = VmcSender(config_dir, on_enabled_callback=_enabled_callback)
     return _singleton
+
+
+def set_vmc_enabled_callback(
+    callback: Callable[[bool], Awaitable[None]] | None,
+) -> None:
+    """Register the process-wide hook fired when VMC becomes enabled.
+
+    Routers register at import time, long before the config manager is ready,
+    so this must not construct the singleton: doing so would resolve
+    ``config_dir`` to ``None`` and permanently disable config persistence.
+    The callback is parked in a module global and applied when the singleton
+    is eventually built (or patched onto it if it already exists).
+    """
+    global _enabled_callback
+    _enabled_callback = callback
+    if _singleton is not None:
+        _singleton._on_enabled_callback = callback

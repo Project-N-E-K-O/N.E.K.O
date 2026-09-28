@@ -3337,11 +3337,27 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "state.handleTouchMove = (event) => {",
         "desktop native return-ball touch drag start",
     )
-    _assert_source_order(
+    native_touch_lock_block = _source_slice_between(
         native_touch_drag_block,
+        "if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) {",
+        "const point = getTouchScreenPoint(event.touches[0]);",
+        "locked native touch returns before starting a drag",
+    )
+    assert "preventDefault" not in native_touch_lock_block
+    _assert_source_order(
+        native_touch_lock_block,
+        "locked native touch preserves tap activation while blocking drag propagation",
+        "event.stopImmediatePropagation();",
+        "return;",
+    )
+    # Scope the ordinary drag assertions past the early-return guard: the same
+    # propagation call occurs in both branches, and the helper finds the first.
+    native_touch_unlocked_block = native_touch_drag_block[
+        native_touch_drag_block.index("const point = getTouchScreenPoint(event.touches[0]);"):
+    ]
+    _assert_source_order(
+        native_touch_unlocked_block,
         "desktop native return-ball touch drag blocks default gestures before drag",
-        "state.handleTouchStart = (event) => {",
-        "if (isThoughtBubbleEventTarget(event)) return;",
         "const point = getTouchScreenPoint(event.touches[0]);",
         "if (!point) return;",
         "event.preventDefault();",

@@ -393,6 +393,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.dec, link: `${p}/plugins/decorators` },
         { text: t.tool, link: `${p}/plugins/tool-calling` },
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
+        ...(lang === 'ja' ? [] : [{ text: lang === 'zh-CN' ? 'HTML 聊天卡片' : 'HTML Chat Cards', link: `${p}/plugins/chat-cards` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
         { text: t.best, link: `${p}/plugins/best-practices` },

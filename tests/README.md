@@ -2,6 +2,33 @@
 
 This directory contains the automated test suite for Project N.E.K.O.
 
+## Voice input test organization
+
+- `unit/asr_runtime/` groups Core/independent ASR tests by routing, endpointing,
+  overlap/pre-roll, delivery, ownership, cancellation, and recovery.
+- `unit/activation/` keeps activation tests together; handoff tests are grouped
+  by success, failure, cancellation, and authority.
+- `unit/websocket_static/` groups frontend source contracts and Node harness
+  tests by status, preview, settings synchronization, and session/microphone control.
+  The Node CI shard also runs the microphone recovery route harness in
+  `tests/frontend/test_game_voice_control_runtime.js`.
+- `support/` contains shared fakes and environment construction. Package-local
+  `_scenarios.py` modules retain shared helpers with scenario assertions; helpers
+  used by only one test module stay in that module.
+
+Keep the existing test names, decorators, fixture scopes, and module markers
+when moving tests. In ASR files, `_contract` and `_runtime` suffixes preserve the
+`unit_fast` and `runtime` CI populations. Frontend `_contract` and `_process`
+suffixes distinguish source checks from subprocess tests where a theme has both.
+The CI shards discover `tests/unit` recursively and select by marker.
+
+Prefer behavior boundaries over a fixed line count. In particular,
+`unit/websocket_static/test_settings_cas_conflict.py` exceeds 1,000 lines because
+its single original test embeds a complete Node scenario. It remains intact to
+preserve its assertions and event ordering. Several other settings files contain
+only one or two substantial Node scenarios for the same reason; small source
+contracts stay separate from runtime/subprocess tests to preserve their CI markers.
+
 ## Prerequisites
 
 - Python 3.11+
@@ -166,3 +193,12 @@ Important:
 
 ---
 *(Note: Reports are gitignored and will not be committed to the repository)*
+
+## Unit test shards
+
+Pull requests run the four behavior markers in `unit-test-shards.yml`, while
+`unit-tests.yml` runs the remaining unmarked unit tests:
+`unit_fast`, `runtime`, `integration_serial`, and `frontend_contract`, plus the
+Node frontend contract test. Each Python shard performs a non-empty collection
+check before execution. The full `tests/unit` gate runs on pushes to `main` and
+manual dispatch, avoiding duplicate 45-minute execution on pull requests.

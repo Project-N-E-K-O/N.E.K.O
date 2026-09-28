@@ -299,6 +299,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=av"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
@@ -466,6 +467,7 @@ jobs:
         run: |
           set -euo pipefail
           .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
+          .venv/bin/python scripts/check_frozen_media.py dist/Xiao8
 
       # 与 build-desktop.yml 的同名步骤对偶（#2898）。这个 workflow 只有 linux x64
       # 一条腿，期望架构写死即可。

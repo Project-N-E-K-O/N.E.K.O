@@ -199,6 +199,29 @@ class DetectorDurationQueue(Generic[_AudioItem, _ControlItem]):
         self._idle = asyncio.Event()
         self._idle.set()
         self._unfinished_tasks = 0
+        self._capacity_changed = asyncio.Event()
+        self._capacity_epoch = 0
+
+    def invalidate_capacity_waiters(self) -> None:
+        """Reset/close never admits an old caller into a successor queue scope."""
+        self._capacity_epoch += 1
+        self._capacity_changed.set()
+
+    async def wait_audio_capacity(self, duration_us: int, deadline: float) -> bool:
+        """Wait for admission space only; leave payload ownership with caller."""
+        if duration_us <= 0 or duration_us > self.capacity_us:
+            return False
+        epoch = self._capacity_epoch
+        while epoch == self._capacity_epoch:
+            self._capacity_changed.clear()
+            if self.can_accept_audio(duration_us):
+                return True
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await self._capacity_changed.wait()
+            except TimeoutError:
+                return False
+        return False
 
     @property
     def audio_duration_us(self) -> int:
@@ -262,6 +285,7 @@ class DetectorDurationQueue(Generic[_AudioItem, _ControlItem]):
         if isinstance(queued, _QueuedAudio):
             self._audio_frames -= 1
             self._audio_duration_us -= queued.duration_us
+            self._capacity_changed.set()
             item: _AudioItem | _ControlItem = queued.value
         else:
             item = queued
@@ -276,6 +300,7 @@ class DetectorDurationQueue(Generic[_AudioItem, _ControlItem]):
         if isinstance(queued, _QueuedAudio):
             self._audio_frames -= 1
             self._audio_duration_us -= queued.duration_us
+            self._capacity_changed.set()
             item: _AudioItem | _ControlItem = queued.value
         else:
             item = queued
@@ -297,6 +322,7 @@ class DetectorDurationQueue(Generic[_AudioItem, _ControlItem]):
     def discard_audio(self) -> int:
         """Discard queued PCM while preserving control barriers and results."""
 
+        self.invalidate_capacity_waiters()
         kept: deque[_QueuedAudio[_AudioItem] | _ControlItem] = deque()
         discarded = 0
         for item in self._items:

@@ -81,6 +81,8 @@ class _ResponseMixin:
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
+            trace_enabled = bool(getattr(self, "_wire_trace_enabled", False))
+            wire_trace = getattr(self, "_wire_trace", None)
             arbiter = RealtimeResponseArbiter(
                 self.send_event,
                 abort_transport=getattr(self, "_abort_failed_transport", None),
@@ -90,6 +92,13 @@ class _ResponseMixin:
                     self,
                     "_realtime_protocol_capabilities",
                     STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+                ),
+                trace=trace_enabled,
+                trace_tag=getattr(wire_trace, "client_tag", None),
+                trace_generation=(
+                    (lambda: getattr(self, "_connection_generation", None))
+                    if trace_enabled
+                    else None
                 ),
             )
             self._response_arbiter = arbiter

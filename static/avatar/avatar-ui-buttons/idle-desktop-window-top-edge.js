@@ -302,6 +302,7 @@
         if (!state || currentAction !== state || state.phase === 'idle') return false;
         stopFramesAndTimer(state);
         state.phase = 'idle';
+        if (window.NekoEdgePeekController) window.NekoEdgePeekController.clear(state.button);
         clearOwnClasses(state);
         if (!options || options.restoreArt !== false) {
             restoreIdleArt(state);
@@ -328,6 +329,7 @@
         stopFramesAndTimer(state);
         setContainerPosition(state.container, state.target.left, state.target.top);
         state.phase = 'perched';
+            if (window.NekoEdgePeekController) { window.NekoEdgePeekController.setPhase(state.button, 'peeking'); window.NekoEdgePeekController.applyLock(state.button, window.edgePeekLockEnabled === true); }
         setOwnClasses(state);
         restoreIdleArt(state);
     }
@@ -422,6 +424,7 @@
             dropTimer: 0,
         };
         currentAction = state;
+        if (window.NekoEdgePeekController) { window.NekoEdgePeekController.begin({ button: state.button, container: state.container, mode: 'top-edge', edge: 'top', phase: 'walking', sourceRunner: window.NekoDesktopWindowTopEdge }); }
         bindRemovalObserver(state);
         targetState.opportunity = TARGET_OPPORTUNITY_CONSUMED;
         setOwnClasses(state);

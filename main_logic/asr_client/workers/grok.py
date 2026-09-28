@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 
 import websockets
 
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection, normalize_zh_en_language
 
@@ -447,6 +448,7 @@ async def grok_asr_worker(
 
         async def _send_requests() -> _ConnectionAction:
             nonlocal latest_audio_key, last_generation
+            delivery_evidence(request_queue)
             while True:
                 request = await request_queue.get()
                 try:
@@ -460,7 +462,12 @@ async def grok_asr_worker(
                     if request.kind == "audio":
                         latest_audio_key = key
                         if request.audio:
+                            delivery = begin_transport_write(request_queue)
                             await connection.send(request.audio)
+                            complete_transport_write(
+                                delivery, len(request.audio), generation=request.generation,
+                                buffer_epoch=request.buffer_epoch, provider="grok",
+                            )
                         continue
 
                     if request.kind == "commit":

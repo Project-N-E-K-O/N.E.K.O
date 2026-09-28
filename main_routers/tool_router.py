@@ -64,7 +64,8 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import asyncio
 import ipaddress
@@ -297,6 +298,13 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
     one callback_url origin → swept together) while avoiding collateral damage
     to other healthy endpoints when a single endpoint is misconfigured."""
     _consecutive_connect_failures.pop((source, origin), None)
+    # 台账也要一起扫，否则下一次角色重建会把死端点的工具重放回来。放在取
+    # session_manager 之前：拿不到 manager 时台账照样得清。
+    _ledger_forget(
+        lambda entry: entry.tool.metadata.get("source") == source
+        and _callback_origin(entry.tool.metadata.get("callback_url") or "") == origin,
+        None,
+    )
     try:
         session_manager = get_session_manager()
     except Exception as e:
@@ -443,6 +451,119 @@ def _resolve_target_managers(role: Optional[str]) -> List[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Remote registration ledger — replayed into rebuilt session managers
+# ---------------------------------------------------------------------------
+
+# 远端工具只登记在各角色 ``LLMSessionManager`` 自己的 ToolRegistry 里，而角色
+# 重载（保存 API 配置、改 voice_id 等）在该角色没有活跃会话时会整个重建 manager
+# （app/main_server/character_runtime.py 的重建分支），新 registry 只有内置工具。
+# 插件只在自己进程启动时注册一次，于是重建之后插件工具静默消失、模型再也看不到
+# （2026-09-12：保存 API 配置后 minecraft_task 一整晚没进过任何会话的工具列表）。
+#
+# 这里记下每次被接受的注册，新建 manager 时由 ``replay_remote_tools`` 重放。
+# 各写入口必须同步维护它，语义与各 manager registry 上发生的事逐条对偶
+# （registry 每个名字只存一份定义，register 是覆盖）：
+#   register 全局 → 记下 (None, name)，并删掉同名的 scoped 记录（各 registry 里已被覆盖）
+#   register X    → 记下 (X, name)，同名全局记录改为跳过 X（X 的那份全局副本已被覆盖）
+#                   同名重注册挪到队尾，重放时仍是后写者胜
+#   unregister → role=None 删该名字的全部记录；role=X 删 (X, name)，全局记录改为跳过 X
+#   clear      → 同 unregister，按 source 匹配
+#   死插件驱逐 → 删 (source, callback origin) 匹配的全部记录
+#   角色槽位删除（删角色 / 改名）→ ``forget_role``：manager 连同 registry 一起没了
+# 进程内状态：main_server 自身重启时台账一起清空，那种情况仍要靠插件重新注册。
+# 已知边界：所有目标都同步失败的注册仍会记账（registry 已写入），插件那边却按
+# ok=false 不跟踪它；这类工具会一直跨重建保留，直到对应 source 的 clear 成功。
+@dataclass
+class _LedgerEntry:
+    tool: ToolDefinition
+    role: Optional[str]
+    excluded_roles: set = field(default_factory=set)
+
+
+_remote_tool_ledger: Dict[Tuple[Optional[str], str], _LedgerEntry] = {}
+
+
+def _ledger_record(tool: ToolDefinition, role: Optional[str]) -> None:
+    """Record an accepted registration, applying the registries' overwrite rules.
+
+    A registry holds one definition per name, so a global registration
+    replaces the tool in every role's registry (scoped entries of that name
+    are gone), and a scoped registration replaces the global copy in that
+    one role's registry.
+    """
+    if role is None:
+        for key in [k for k in _remote_tool_ledger if k[0] is not None and k[1] == tool.name]:
+            del _remote_tool_ledger[key]
+    else:
+        shadowed_global = _remote_tool_ledger.get((None, tool.name))
+        if shadowed_global is not None:
+            shadowed_global.excluded_roles.add(role)
+    key = (role, tool.name)
+    _remote_tool_ledger.pop(key, None)
+    _remote_tool_ledger[key] = _LedgerEntry(tool=tool, role=role)
+
+
+def _ledger_forget(matches: Callable[[_LedgerEntry], bool], role: Optional[str]) -> None:
+    """Drop the ledger entries selected by ``matches`` the way the registries drop them.
+
+    With ``role`` None every matching entry goes. With a role, only that role
+    loses the tool: its own scoped entries are deleted, and a matching global
+    entry keeps applying to every other role but is skipped for this one.
+    """
+    for key, entry in list(_remote_tool_ledger.items()):
+        if not matches(entry):
+            continue
+        if role is None or entry.role == role:
+            del _remote_tool_ledger[key]
+        elif entry.role is None:
+            entry.excluded_roles.add(role)
+
+
+def forget_role(role_name: str) -> None:
+    """Drop every ledger trace of a character slot that no longer exists.
+
+    Deleting or renaming a character destroys its manager and registry, so
+    its scoped entries and its exclusions from global entries must not be
+    inherited by a later, unrelated character that reuses the name.
+    """
+    for key, entry in list(_remote_tool_ledger.items()):
+        if entry.role == role_name:
+            del _remote_tool_ledger[key]
+        else:
+            entry.excluded_roles.discard(role_name)
+
+
+def replay_remote_tools(mgr: Any, role_name: str) -> List[str]:
+    """Re-register the ledgered remote tools that apply to ``role_name``.
+
+    Meant for a freshly built ``LLMSessionManager`` that is not installed yet:
+    it has no session to sync, so the registry is written directly and the
+    first session snapshot picks the tools up. Returns the replayed names.
+    """
+    registry = getattr(mgr, "tool_registry", None)
+    if registry is None:
+        return []
+    replayed: List[str] = []
+    for entry in _remote_tool_ledger.values():
+        if entry.role is None:
+            if role_name in entry.excluded_roles:
+                continue
+        elif entry.role != role_name:
+            continue
+        registry.register(entry.tool, replace=True)
+        replayed.append(entry.tool.name)
+    replayed = list(dict.fromkeys(replayed))
+    if replayed:
+        if registry._remote_dispatcher is None:  # noqa: SLF001
+            registry._remote_dispatcher = _remote_dispatch  # noqa: SLF001
+        logger.info(
+            "ToolRegistry replay for %s: restored %d remote tool(s): %s",
+            role_name, len(replayed), replayed,
+        )
+    return replayed
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -464,6 +585,11 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "role": req.role,
         },
     )
+    # 先记台账再逐个注册：registry.register 在同步 wire 之前就已生效（同步失败
+    # 也留在 registry 里），而循环中途被重建的 manager 不在 targets 里，只能靠
+    # 台账重放拿到。一个 manager 都没有时 registry 什么也没发生，不记。
+    if targets:
+        _ledger_record(tool, req.role)
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
     for mgr in targets:
@@ -501,6 +627,9 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
 @router.post("/unregister")
 async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
+    # 解析成功之后、第一个 await 之前删台账：404 的请求不能改台账；而循环中途
+    # 重建的 manager 也不能再从台账里把它重放回来（两者之间没有 await）。
+    _ledger_forget(lambda entry: entry.tool.name == req.name, req.role)
     removed_any = False
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
@@ -529,6 +658,10 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
 @router.post("/clear")
 async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
+    # 与 unregister 对偶：解析成功后、第一个 await 之前删台账，再清各 manager。
+    _ledger_forget(
+        lambda entry: entry.tool.metadata.get("source") == req.source, req.role
+    )
     total = 0
     affected: List[str] = []
     failed: List[Dict[str, str]] = []

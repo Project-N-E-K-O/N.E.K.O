@@ -31,6 +31,7 @@ from utils import capture_bridge
 
 CAPTURE_HEALTH = "/api/capture/health"
 CAPTURE_SHOT = "/api/capture/screenshot"
+COMPUTER_USE_SHOT = "/api/capture/computer-use"
 APP_WEBSOCKET_JS = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 
 
@@ -207,6 +208,53 @@ def test_screenshot_rejects_non_loopback(monkeypatch):
     with _build_client() as client:
         resp = client.post(CAPTURE_SHOT, json={"target_id": "x", "pid": 1, "title": "t"})
     assert resp.status_code == 403
+
+
+@pytest.mark.unit
+def test_computer_use_capture_requires_renderer_and_rejects_browser_origin(monkeypatch):
+    with _build_client() as client:
+        assert client.post(COMPUTER_USE_SHOT).status_code == 503
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "has_computer_use_capture_client", lambda: True)
+    with _build_client() as client:
+        assert client.post(COMPUTER_USE_SHOT, headers={"Origin": "https://example.com"}).status_code == 403
+
+    async def _capture():
+        return {"image": "data:image/png;base64,YQ=="}
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "request_computer_use_screenshot", _capture)
+    with _build_client() as client:
+        response = client.post(COMPUTER_USE_SHOT)
+    assert response.status_code == 200
+    assert response.json()["image"] == "data:image/png;base64,YQ=="
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_computer_use_capture_releases_bridge_when_client_disconnects(monkeypatch):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_capture():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    class DisconnectedRequest:
+        client = SimpleNamespace(host="127.0.0.1")
+        headers = {}
+
+        async def is_disconnected(self):
+            await started.wait()
+            return True
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "has_computer_use_capture_client", lambda: True)
+    monkeypatch.setattr(capture_router_module.capture_bridge, "request_computer_use_screenshot", stalled_capture)
+    response = await capture_router_module.capture_computer_use_screen(DisconnectedRequest())
+    assert response.status_code == 499
+    assert cancelled.is_set()
 
 
 @pytest.mark.unit

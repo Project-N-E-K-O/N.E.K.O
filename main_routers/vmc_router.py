@@ -43,6 +43,13 @@ _publisher_generation = 0
 _pending_terminal_task: asyncio.Task[None] | None = None
 
 
+# The enable-broadcast hook that wakes browser samplers lives in
+# app/main_server/character_runtime.py, next to the connection registry it
+# broadcasts over. Reaching for it from here is a layer inversion
+# (main_routers L3 -> app L6) plus an import cycle; main_logic.vmc_sender's
+# set_vmc_enabled_callback() is the seam that lets the app layer own the wiring.
+
+
 def _claim_active_vmc_publisher(websocket: WebSocket) -> int | None:
     """Atomically grant the single process-wide VMC publishing lease."""
     global _active_vmc_publisher, _publisher_generation

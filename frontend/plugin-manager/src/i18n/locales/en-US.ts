@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * English language pack
  */
 export default {
+  modelApi: modelApiMessages['en-US'],
+  modelBindings: modelBindingsMessages['en-US'],
   development: {
     guidePurpose: "This interface does not develop plugins for you in one click. It helps developers package existing source code into importable plugins with one click and continue development.",
     navTitle: "Development plugins",
@@ -142,6 +147,8 @@ export default {
     installTaskLost: 'The install task is no longer available. Check the plugin state before retrying.',
     installDialogTitle: 'Installing {name}',
     installDialogTitleUpgrade: 'Upgrading {name}',
+    installFailedTitle: 'Install failed: {name}',
+    installFailedTitleUpgrade: 'Upgrade failed: {name}',
     installCompleted: 'Install completed',
     installCompletedUpgrade: 'Upgrade completed',
     rollbackRunning: 'Install failed; rolling back...',
@@ -157,6 +164,16 @@ export default {
       failed: 'Failed',
       canceled: 'Cancelled',
     },
+    installStep: {
+      download: 'Download',
+      verify: 'Verify',
+      install: 'Install',
+      replace: 'Replace files',
+      rollback: 'Roll back',
+      completed: 'Done',
+    },
+    installDetails: 'Details',
+    installDetailsHide: 'Hide details',
     noDownloadUrl: 'No download URL available',
     pairRequired: 'Bridge Token pairing required',
     recommended: 'Recommended',
@@ -235,6 +252,24 @@ export default {
     packageIdentityMismatch: 'The package identity does not match the target plugin.',
     confirmationChanged: 'The plugin or package changed after confirmation. Review the new plan and try again.',
     confirmationRequired: 'Confirm the current upgrade plan before installing.'
+  },
+  pluginUpdates: {
+    button: 'Check for updates',
+    buttonBusy: 'Checking…',
+    title: 'Plugin updates',
+    titleWithCount: 'Plugin updates ({count})',
+    checking: 'Checking for updates…',
+    refresh: 'Refresh',
+    close: 'Close',
+    dragHint: 'Drag to move',
+    allUpToDate: 'All plugins are up to date',
+    checkIncomplete: 'Some plugins could not be checked. See Server Logs for details.',
+    update: 'Update',
+    updating: 'Updating…',
+    updateAll: 'Update all',
+    updateAllProgress: 'Updating {done}/{total}',
+    updateSucceeded: 'Updated: {name}',
+    manualRequired: 'Update this one from the Plugin Market page',
   },
   settings: {
     channel: 'Update channel',
