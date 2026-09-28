@@ -36,16 +36,26 @@ def provider_warmup_state(queue: object) -> ProviderWarmupState | None:
     return state if isinstance(state, ProviderWarmupState) else None
 
 
-def begin_provider_warmup(queue: object) -> object:
-    """Start one warm-up wait and return the token that ends it.
+def ensure_provider_warmup_state(queue: object) -> ProviderWarmupState:
+    """Return the queue's warm-up state, creating it if needed.
 
-    Call on the event loop: the state object is created lazily here, so a
-    worker thread only ever mutates an existing one.
+    Call on the event loop. Once it exists, waits may begin and end on any
+    thread: the state is only mutated under its lock.
     """
     state = provider_warmup_state(queue)
     if state is None:
         state = ProviderWarmupState()
         setattr(queue, _ATTRIBUTE, state)
+    return state
+
+
+def begin_provider_warmup(queue: object) -> object:
+    """Start one warm-up wait and return the token that ends it.
+
+    Call on the event loop unless ``ensure_provider_warmup_state`` already ran
+    there: the state object is created lazily here.
+    """
+    state = ensure_provider_warmup_state(queue)
     token = object()
     with state.lock:
         state.waiters.add(token)

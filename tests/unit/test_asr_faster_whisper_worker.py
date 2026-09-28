@@ -1253,3 +1253,65 @@ async def test_waiting_behind_own_earlier_decode_does_not_pause_its_watchdog(poo
     for _ in range(2):
         await _next_event(responses, "final")
     await _shutdown(task, requests, responses)
+
+
+async def test_later_segment_left_behind_another_session_counts_as_warmup(pool) -> None:
+    # A long utterance split into segments: segment 2 is queued while segment
+    # 1 decodes, with another session's job in between. Once segment 1 leaves
+    # the decoder, segment 2 waits only on the other session and must be
+    # published as warming up until it reaches the decoder.
+    from main_logic.asr_client.warmup import provider_warmup_state
+
+    gates = [threading.Event() for _ in range(3)]
+    started: list[int] = []
+
+    class _GatedModel:
+        def transcribe(self, audio: Any, **kwargs: Any):
+            index = len(started)
+            started.append(index)
+            if not gates[index].wait(5):
+                raise TimeoutError("test model was never released")
+            return iter([_segment("x")]), SimpleNamespace()
+
+    async def wait_started(count: int) -> None:
+        for _ in range(200):
+            if len(started) >= count:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"decoder never started job {count}")
+
+    loader = _RecordingLoader(_GatedModel())
+    own = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    other = _start_worker(AsrSessionConfig(language="zh-CN"), loader, pool)
+    try:
+        await _next_event(own[2], "ready")
+        await _next_event(other[2], "ready")
+        await _send_utterance(own[1], utterance_id=1)
+        await wait_started(1)
+        await _send_utterance(other[1])
+        await asyncio.wait_for(other[1].join(), 2)
+        await _send_utterance(own[1], utterance_id=2)
+        await asyncio.wait_for(own[1].join(), 2)
+        await asyncio.sleep(0.05)
+        state = provider_warmup_state(own[1])
+        # Segment 1 is this session's own decode: no warm-up over it.
+        assert state is not None and state.pending is False
+
+        gates[0].set()
+        await _next_event(own[2], "final")
+        await wait_started(2)
+        await asyncio.sleep(0.05)
+        # Segment 2 now waits only on the other session's decode.
+        assert state.pending is True
+
+        gates[1].set()
+        await _next_event(other[2], "final")
+        await wait_started(3)
+        await asyncio.sleep(0.05)
+        assert state.pending is False and state.completed_at is not None
+    finally:
+        for gate in gates:
+            gate.set()
+    await _next_event(own[2], "final")
+    for worker in (own, other):
+        await _shutdown(*worker)
