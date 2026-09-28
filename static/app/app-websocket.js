@@ -3670,7 +3670,7 @@
                 } else if (response.type === 'greeting_check_done') {
                     if (window.appProactive &&
                         typeof window.appProactive.noteStartupGreetingCheckDone === 'function') {
-                        window.appProactive.noteStartupGreetingCheckDone();
+                        window.appProactive.noteStartupGreetingCheckDone(response.check_id);
                     }
 
                 // -------- catgirl_switched --------
@@ -6202,17 +6202,20 @@
                     : '';
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
+                S._greetingCheckSeq = (S._greetingCheckSeq || 0) + 1;
+                var greetingCheckId = Date.now().toString(36) + '-' + S._greetingCheckSeq;
                 var greetingMessage = {
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
                     render_language: greetingLang,
-                    reason: greetingReason
+                    reason: greetingReason,
+                    check_id: greetingCheckId
                 };
                 if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
                 S.socket.send(JSON.stringify(greetingMessage));
                 // 问候生成期间主动搭话不插话：问候那一轮结束或 45 秒兜底后才放行。
                 if (window.appProactive && typeof window.appProactive.armStartupGreetingGate === 'function') {
-                    window.appProactive.armStartupGreetingGate(greetingReason);
+                    window.appProactive.armStartupGreetingGate(greetingReason, greetingCheckId);
                 }
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;

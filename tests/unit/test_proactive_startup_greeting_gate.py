@@ -154,15 +154,25 @@ out.startedTurnAtLostEventCap = P.isStartupGreetingGateHolding();
 
 // 9. The backend settled the check without a greeting (refresh, recent
 //    conversation, ...): the gate opens at once instead of waiting 45 s.
-P.armStartupGreetingGate('ws-open');
+P.armStartupGreetingGate('ws-open', 'check-1');
 now += 1_000;
-P.noteStartupGreetingCheckDone();
+P.noteStartupGreetingCheckDone('check-1');
 out.checkDoneWithoutGreeting = P.isStartupGreetingGateHolding();
 
-// 9b. The greeting turn already started: its end, not the check, opens it.
-P.armStartupGreetingGate('ws-open');
-fire('neko-assistant-turn-start', 'greeting-turn');
+// 9a. A late done for an earlier check (quick character switch / resend), or
+//     one without an id, must not open a newer gate.
+P.armStartupGreetingGate('character-switch', 'check-3');
+P.noteStartupGreetingCheckDone('check-2');
+out.staleCheckDone = P.isStartupGreetingGateHolding();
 P.noteStartupGreetingCheckDone();
+out.checkDoneWithoutId = P.isStartupGreetingGateHolding();
+P.noteStartupGreetingCheckDone('check-3');
+out.ownCheckDone = P.isStartupGreetingGateHolding();
+
+// 9b. The greeting turn already started: its end, not the check, opens it.
+P.armStartupGreetingGate('ws-open', 'check-4');
+fire('neko-assistant-turn-start', 'greeting-turn');
+P.noteStartupGreetingCheckDone('check-4');
 out.checkDoneAfterGreetingStarted = P.isStartupGreetingGateHolding();
 fire('neko-assistant-speech-start', 'greeting-turn');
 fire('neko-assistant-speech-end', 'greeting-turn');
@@ -207,6 +217,9 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "startedTurnPast45s": True,
         "startedTurnAtLostEventCap": False,
         "checkDoneWithoutGreeting": False,
+        "staleCheckDone": True,
+        "checkDoneWithoutId": True,
+        "ownCheckDone": False,
         "checkDoneAfterGreetingStarted": True,
         "checkDoneThenSpeechEnd": False,
     }
@@ -254,9 +267,14 @@ def test_both_send_helpers_recheck_the_gate_after_awaiting_headers():
 def test_greeting_check_send_arms_the_gate():
     source = WEBSOCKET_JS.read_text(encoding="utf-8").replace("\r\n", "\n")
     send_at = source.index("S.socket.send(JSON.stringify(greetingMessage));")
-    arm_at = source.index("window.appProactive.armStartupGreetingGate(greetingReason)")
+    arm_at = source.index(
+        "window.appProactive.armStartupGreetingGate(greetingReason, greetingCheckId)"
+    )
     # Armed right after the send, before any other statement of the send path.
     assert 0 < arm_at - send_at < 300
+    # The request carries the id the gate is armed with.
+    message = source[source.rindex("var greetingMessage = {", 0, send_at):send_at]
+    assert "check_id: greetingCheckId" in message
 
 
 def test_websocket_reports_each_played_audio_chunk_to_the_gate():
@@ -287,24 +305,30 @@ def test_websocket_forwards_greeting_check_done_to_the_gate():
     source = WEBSOCKET_JS.read_text(encoding="utf-8")
     start = source.index("response.type === 'greeting_check_done'")
     branch = source[start:start + 400]
-    assert "window.appProactive.noteStartupGreetingCheckDone()" in branch
+    assert "window.appProactive.noteStartupGreetingCheckDone(response.check_id)" in branch
 
 
 ROUTER_PY = REPO_ROOT / "main_routers" / "websocket_router.py"
 
 
 def test_every_greeting_check_outcome_reports_done():
-    source = ROUTER_PY.read_text(encoding="utf-8")
+    source = ROUTER_PY.read_text(encoding="utf-8").replace("\r\n", "\n")
     start = source.index('elif action == "greeting_check":')
     end = source.index('elif action == "cat_greeting_check":', start)
     handler = source[start:end]
     scheduled = handler.count("_schedule_greeting_task(")
     assert scheduled == 2
     # Each scheduled greeting reports once its task settles ...
-    assert handler.count("_send_greeting_check_done_when_settled(lanlan_name, websocket)") == scheduled
+    assert handler.count('greeting_check_id = str(message.get("check_id") or "")') == 1
+    settled = (
+        "_send_greeting_check_done_when_settled(\n"
+        "                            lanlan_name, websocket, greeting_check_id\n"
+        "                        )"
+    )
+    assert handler.count(settled) == scheduled
     # ... and the refresh / reconnect skip reports at once.
     skip = handler[handler.index("→ skip (refresh/reconnect)"):]
-    assert "await _send_greeting_check_done(websocket)" in skip
+    assert "await _send_greeting_check_done(websocket, greeting_check_id)" in skip
 
 
 def test_greeting_check_done_waits_for_the_greeting_task():
@@ -321,7 +345,8 @@ def test_greeting_check_done_waits_for_the_greeting_task():
         async def send_text(self, text):
             raise RuntimeError("closed")
 
-    done = [{"type": "greeting_check_done"}]
+    def done(check_id):
+        return [{"type": "greeting_check_done", "check_id": check_id}]
 
     async def settle():
         for _ in range(5):
@@ -337,23 +362,24 @@ def test_greeting_check_done_waits_for_the_greeting_task():
         first, second, late = _Socket(), _Socket(), _Socket()
         try:
             assert websocket_router._schedule_greeting_task("Test", "ordinary", greeting)
-            websocket_router._send_greeting_check_done_when_settled("Test", first)
+            websocket_router._send_greeting_check_done_when_settled("Test", first, "a")
             # Another window's request coalesces onto the task in flight.
             assert not websocket_router._schedule_greeting_task("Test", "ordinary", greeting)
-            websocket_router._send_greeting_check_done_when_settled("Test", second)
+            websocket_router._send_greeting_check_done_when_settled("Test", second, "b")
             await settle()
             assert first.sent == [] and second.sent == []
 
             release.set()
             await settle()
-            assert first.sent == done and second.sent == done
+            # Each window gets its own request's id back.
+            assert first.sent == done("a") and second.sent == done("b")
 
             # Nothing in flight any more: reported right away.
-            websocket_router._send_greeting_check_done_when_settled("Test", late)
+            websocket_router._send_greeting_check_done_when_settled("Test", late, "c")
             await settle()
-            assert late.sent == done
+            assert late.sent == done("c")
             # A window that is already gone is ignored.
-            await websocket_router._send_greeting_check_done(_ClosedSocket())
+            await websocket_router._send_greeting_check_done(_ClosedSocket(), "d")
         finally:
             release.set()
             for task in list(websocket_router._greeting_tasks.values()):

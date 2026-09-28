@@ -624,11 +624,14 @@
     var STARTUP_GREETING_TURN_MAX_MS = 120000;
     var STARTUP_GREETING_TEXT_ONLY_GRACE_MS = 8000;
 
-    function armStartupGreetingGate(reason) {
+    // checkId 是这次 greeting_check 的编号，后端在 greeting_check_done 里原样带回；
+    // 快速切角色 / 重发时，上一次请求迟到的 done 编号对不上，不会打开新阀门。
+    function armStartupGreetingGate(reason, checkId) {
         if (!S) return;
         S._startupGreetingGate = {
             armedAt: Date.now(),
             reason: reason || '',
+            checkId: checkId ? String(checkId) : '',
             turnStarted: false,
             turnStartedAt: 0,
             turnEndedAt: 0,
@@ -696,10 +699,12 @@
     mod.noteStartupGreetingAudio = noteStartupGreetingAudio;
 
     // 后端的问候任务结束了（问候说完，或者判定不问候）。这一轮已经开始的话继续
-    // 跟着它的语音事件走；还没开始就说明这次没有问候，立刻开阀。
-    function noteStartupGreetingCheckDone() {
+    // 跟着它的语音事件走；还没开始就说明这次没有问候，立刻开阀。只认本次请求的
+    // 编号：没带编号或编号不同的是别的请求的 done，交给兜底。
+    function noteStartupGreetingCheckDone(checkId) {
         var gate = S && S._startupGreetingGate;
         if (!gate || gate.turnStarted) return;
+        if (!gate.checkId || !checkId || String(checkId) !== gate.checkId) return;
         _releaseStartupGreetingGate('后端这次没有问候');
     }
     mod.noteStartupGreetingCheckDone = noteStartupGreetingCheckDone;
