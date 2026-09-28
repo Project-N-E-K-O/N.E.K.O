@@ -655,6 +655,25 @@ def test_explicit_cpu_never_touches_cuda(monkeypatch) -> None:
     assert constructed == [("small", "cpu", "int8")]
 
 
+@pytest.mark.parametrize(
+    ("compute_env", "expected_compute"),
+    [(None, "int8"), ("int8_float32", "int8_float32"), ("float32", "float32")],
+)
+def test_auto_device_without_gpu_honors_explicit_compute(
+    monkeypatch, compute_env, expected_compute
+) -> None:
+    constructed = _install_fake_whisper(monkeypatch, cuda_ok=True)
+    monkeypatch.setattr(faster_whisper, "_cuda_device_count", lambda: 0)
+    monkeypatch.setenv("NEKO_WHISPER_DEVICE", "auto")
+    if compute_env is not None:
+        monkeypatch.setenv("NEKO_WHISPER_COMPUTE", compute_env)
+
+    model = faster_whisper._load_whisper_model(faster_whisper._model_spec_from_env())
+
+    assert model.device == "cpu"
+    assert constructed == [("base", "cpu", expected_compute)]
+
+
 def test_all_candidates_failing_reports_model_load_failure(monkeypatch) -> None:
     def broken(*_args: Any, **_kwargs: Any):
         raise OSError("download failed")

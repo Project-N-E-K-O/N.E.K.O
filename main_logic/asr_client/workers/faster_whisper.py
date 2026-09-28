@@ -193,7 +193,9 @@ def _device_candidates(spec: _ModelSpec) -> list[tuple[str, str]]:
     if spec.device == "cpu":
         return [("cpu", spec.compute_type or _DEFAULT_COMPUTE_CPU)]
     if spec.device == "auto" and _cuda_device_count() <= 0:
-        return [("cpu", _DEFAULT_COMPUTE_CPU)]
+        # No GPU: the explicit compute type is the user's choice for the only
+        # device left, so honor it just like an explicit "cpu" device.
+        return [("cpu", spec.compute_type or _DEFAULT_COMPUTE_CPU)]
     candidates = [("cuda", spec.compute_type or _DEFAULT_COMPUTE_CUDA)]
     if spec.compute_type is None:
         # Less VRAM, same device: useful on small GPUs before giving up.
