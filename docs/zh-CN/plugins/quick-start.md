@@ -315,6 +315,24 @@ uv run python launcher.py
 
 如果新建、删除或修改了 `plugin.toml`，请先点击插件列表右上角的“刷新”，让 N.E.K.O 重新读取插件配置；插件正在运行时，再点击“重载”。
 
+### 自动热重载
+
+启动 N.E.K.O 前设置 `NEKO_PLUGIN_HOT_RELOAD=true`，插件服务器会监视所有插件源码目录（内置目录、安装目录、开发模式注册的目录）。当 `*.py` 或 `plugin.toml` 的变更静默超过防抖窗口后，正在运行的插件会自动重载，无需再手动点按钮：
+
+```bash
+# PowerShell
+$env:NEKO_PLUGIN_HOT_RELOAD = "true"; uv run python launcher.py
+# bash
+NEKO_PLUGIN_HOT_RELOAD=true uv run python launcher.py
+```
+
+几点值得了解的行为：
+
+- 只重载**正在运行**的插件；被你手动停掉的插件不会因为文件变更被拉起。
+- 重载前会先做语法检查：写坏的编辑会保留当前运行实例并记录一条警告，下次保存后自动重试。
+- 防抖窗口（`NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE`，默认 1.5 秒）用于吸收多文件连写；轮询间隔为 `NEKO_PLUGIN_HOT_RELOAD_INTERVAL`（默认 1.0 秒）。
+- 自动重载与手动按钮走同一把操作锁；如果你正在执行其它插件操作，自动重载会等待并重试，不会插队。
+
 ## 10. 准备交付时再构建
 
 当插件开发完成，准备交给其他用户安装时，才需要构建 `.neko-plugin` 安装包：

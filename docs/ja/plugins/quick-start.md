@@ -283,6 +283,24 @@ uv run python launcher.py
 
 Reload は現在のプラグインを停止し、保存済みソースから再起動します。日常開発ではパッケージの build や import を繰り返す必要はありません。プラグインの追加・削除や `plugin.toml` の変更後は、先に一覧を refresh してください。
 
+### 自動ホットリロード
+
+N.E.K.O の起動前に `NEKO_PLUGIN_HOT_RELOAD=true` を設定すると、プラグインサーバーはすべてのプラグインソースディレクトリ（内蔵ルート・インストールルート・開発モード登録ディレクトリ）を監視します。`*.py` または `plugin.toml` の変更がデバウンス期間静まると、実行中のプラグインが自動的にリロードされます。ボタンを押す必要はありません：
+
+```bash
+# PowerShell
+$env:NEKO_PLUGIN_HOT_RELOAD = "true"; uv run python launcher.py
+# bash
+NEKO_PLUGIN_HOT_RELOAD=true uv run python launcher.py
+```
+
+知っておくとよい動作：
+
+- リロードされるのは**実行中**のプラグインだけです。手動で停止したプラグインがファイル変更で起動されることはありません。
+- リロード前に構文チェックが行われます。壊れた編集では現在のインスタンスがそのまま動き続け、警告が記録されます。次の保存で再試行されます。
+- デバウンス期間（`NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE`、デフォルト 1.5 秒）は複数ファイルの一括保存を吸収します。ポーリング間隔は `NEKO_PLUGIN_HOT_RELOAD_INTERVAL`（デフォルト 1.0 秒）です。
+- 自動リロードは手動ボタンと同じ操作ロックを使います。ほかのプラグイン操作の実行中は、割り込まず待ってから再試行します。
+
 ## 10. 配布するときだけ build する
 
 ほかのユーザーへインストール可能な形で渡すときに `.neko-plugin` を build します：

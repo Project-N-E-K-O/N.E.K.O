@@ -14,6 +14,7 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.hot_reload_service import hot_reload_service
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import (
     _CrossLoopLock,
@@ -117,6 +118,11 @@ class ServerLifecycleService:
         # Consecutive failed health probes against the CURRENT runner. Reset on a
         # healthy probe and whenever the runner is replaced.
         self._plane_probe_failures = 0
+        # Plugin source hot-reload watcher (no-op unless NEKO_PLUGIN_HOT_RELOAD
+        # is enabled). Must stop before the hosts below: a reload firing
+        # mid-teardown would race the shutdown it is being torn down by.
+        self._hot_reload_service = hot_reload_service
+        self._hot_reload_started = False
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -504,6 +510,9 @@ class ServerLifecycleService:
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.debug("metrics collector started")
+
+        # 关闭时是 no-op：PLUGIN_HOT_RELOAD 默认 false，必须显式开启。
+        self._hot_reload_started = self._hot_reload_service.start()
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -819,6 +828,17 @@ class ServerLifecycleService:
             logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
+
+        # 先停热重载 watcher 再动任何插件宿主：它触发的 reload 是完整的
+        # stop+start 事务，和关停流程并发会把插件留在半启动状态。in-flight
+        # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
+        if self._hot_reload_started or self._hot_reload_service.is_running:
+            try:
+                await self._hot_reload_service.stop()
+                self._hot_reload_started = False
+            except Exception as exc:
+                had_errors = True
+                logger.warning("failed to stop plugin hot-reload watcher: {}", exc)
 
         # Phase 1: sync signals (instant)
         for stop_fn, label in [
