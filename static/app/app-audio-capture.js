@@ -3503,11 +3503,19 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     || S.independentAsrProviderPreference === 'faster_whisper';
             }
 
+            // Local recognition is an independent-ASR provider choice: it is
+            // only actionable when the Core allows independent ASR and the
+            // master switch is on.
+            function localAsrChoiceActionable() {
+                return !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true;
+            }
+
             function createLocalAsrSetting(panelBody, beforeNode) {
                 localAsrToggle = createVoiceSettingToggle(
                     S.independentAsrProviderPreference === 'faster_whisper',
                     function (enabled) {
-                        if (coreApiDisablesIndependentAsr()) {
+                        if (!localAsrChoiceActionable()) {
                             updateVoiceRecognitionUi();
                             return;
                         }
@@ -3528,6 +3536,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     localAsrToggle
                 );
                 localAsrBlock = localAsrHint.parentNode;
+                // Disabled state is set here rather than left to the next
+                // updateVoiceRecognitionUi(), so a toggle added late never shows
+                // as operable while the master switch is off.
+                localAsrToggle.setDisabled(!localAsrChoiceActionable());
                 // Keep the panel order stable when added late: after resource
                 // optimization, before the status line.
                 if (beforeNode && beforeNode.parentNode === panelBody) {

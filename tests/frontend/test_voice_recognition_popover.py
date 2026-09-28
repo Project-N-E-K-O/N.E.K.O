@@ -739,6 +739,41 @@ def test_local_asr_toggle_follows_availability_that_arrives_while_open(
 
 
 @pytest.mark.frontend
+def test_late_local_asr_toggle_is_disabled_while_the_master_switch_is_off(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.localAsrAvailable = null;
+            state.independentAsrEnabled = false;
+            state.independentAsrProviderPreference = 'auto';
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+            const panel = test.panel();
+
+            state.localAsrAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:core-api-capability-changed'));
+            const lateInput = panel.querySelectorAll('input[type="checkbox"]')[2];
+            const disabled = lateInput.disabled;
+            lateInput.checked = true;
+            lateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            return {
+                disabled,
+                preference: state.independentAsrProviderPreference,
+            };
+        }"""
+    )
+
+    assert result["disabled"] is True
+    assert result["preference"] == "auto"
+
+
+@pytest.mark.frontend
 def test_local_asr_toggle_persists_provider_preference_behind_asr_gates(
     page: Page,
 ) -> None:
