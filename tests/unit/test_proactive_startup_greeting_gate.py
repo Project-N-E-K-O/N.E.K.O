@@ -49,7 +49,7 @@ global.location = { pathname: '/', search: '' };
 console.log = () => {};
 eval(fs.readFileSync(process.env.PROACTIVE_JS, 'utf8'));
 const P = window.appProactive;
-const fire = (type) => window.dispatchEvent({ type });
+const fire = (type, turnId) => window.dispatchEvent({ type, detail: turnId ? { turnId } : {} });
 const out = {};
 
 // 1. Not armed: never holds.
@@ -104,6 +104,17 @@ fire('neko-assistant-turn-start');
 fire('neko-assistant-speech-unavailable');
 out.afterSpeechUnavailable = P.isStartupGreetingGateHolding();
 
+// 6b. Character switch while the previous reply is still playing: that
+//     reply's speech-end / turn-end (another turnId) must not open the gate.
+P.armStartupGreetingGate('character-switch');
+fire('neko-assistant-turn-start', 'greeting-turn');
+fire('neko-assistant-speech-end', 'previous-turn');
+fire('neko-assistant-turn-end', 'previous-turn');
+out.previousTurnSpeechEnd = P.isStartupGreetingGateHolding();
+fire('neko-assistant-speech-start', 'greeting-turn');
+fire('neko-assistant-speech-end', 'greeting-turn');
+out.greetingTurnSpeechEnd = P.isStartupGreetingGateHolding();
+
 // 7. No greeting ever arrives (backend skipped): opens by itself at 45 s.
 P.armStartupGreetingGate('ws-open');
 now += 44_999;
@@ -149,6 +160,8 @@ def test_gate_follows_the_greeting_speech_with_text_only_and_45s_fallbacks(node_
         "audioArrivedSlowDecode": True,
         "audioArrivedAfterSpeechEnd": False,
         "afterSpeechUnavailable": False,
+        "previousTurnSpeechEnd": True,
+        "greetingTurnSpeechEnd": False,
         "justBeforeCap": True,
         "atCap": False,
         "startedTurnPast45s": True,

@@ -628,7 +628,8 @@
             turnStarted: false,
             turnEndedAt: 0,
             speechStarted: false,
-            speechIdAtTurnStart: null
+            speechIdAtTurnStart: null,
+            turnId: null
         };
     }
     mod.armStartupGreetingGate = armStartupGreetingGate;
@@ -663,25 +664,38 @@
         console.log('[ProactiveChat] 打开问候避让阀：' + why + '（' + (gate.reason || '-') + '）');
     }
 
-    window.addEventListener('neko-assistant-turn-start', function () {
+    // 只认问候这一轮的事件：切角色时上一轮语音可能还在播，它的 speech-end 会落在
+    // 新问候文本已开始、语音还没到的空窗里。事件没带 turnId（全局取消）照样算。
+    function _eventBelongsToGreetingTurn(gate, event) {
+        var turnId = event && event.detail ? event.detail.turnId : null;
+        if (!gate.turnId || turnId === null || turnId === undefined || turnId === '') return true;
+        return String(turnId) === String(gate.turnId);
+    }
+
+    window.addEventListener('neko-assistant-turn-start', function (event) {
         var gate = S && S._startupGreetingGate;
         if (!gate || gate.turnStarted) return;
         gate.turnStarted = true;
+        gate.turnId = event && event.detail && event.detail.turnId ? event.detail.turnId : null;
         gate.speechIdAtTurnStart = S.currentPlayingSpeechId || null;
     });
-    window.addEventListener('neko-assistant-turn-end', function () {
+    window.addEventListener('neko-assistant-turn-end', function (event) {
         var gate = S && S._startupGreetingGate;
         if (!gate || !gate.turnStarted || gate.turnEndedAt) return;
+        if (!_eventBelongsToGreetingTurn(gate, event)) return;
         gate.turnEndedAt = Date.now();
     });
-    window.addEventListener('neko-assistant-speech-start', function () {
+    window.addEventListener('neko-assistant-speech-start', function (event) {
         var gate = S && S._startupGreetingGate;
-        if (gate && gate.turnStarted) gate.speechStarted = true;
+        if (!gate || !gate.turnStarted) return;
+        if (!_eventBelongsToGreetingTurn(gate, event)) return;
+        gate.speechStarted = true;
     });
     ['neko-assistant-speech-end', 'neko-assistant-speech-cancel', 'neko-assistant-speech-unavailable'].forEach(function (name) {
-        window.addEventListener(name, function () {
+        window.addEventListener(name, function (event) {
             var gate = S && S._startupGreetingGate;
             if (!gate || !gate.turnStarted) return;
+            if (!_eventBelongsToGreetingTurn(gate, event)) return;
             // cancel / unavailable 可能在语音开始前就到（被打断、TTS 连不上），同样说明
             // 这一轮不会再有问候语音了。
             _releaseStartupGreetingGate('问候语音已结束');
