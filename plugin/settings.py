@@ -2,6 +2,7 @@
 import math
 import os
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -810,6 +811,57 @@ def validate_config() -> None:
 validate_config()
 
 
+# ========== 存量插件兼容别名 ==========
+# 宿主已经不读下面这些名字，但用户机器上已安装的插件可能还在
+# ``from plugin.settings import ...``，或在 ``get_system_config()`` 里读同名键。
+# 直接删掉会让这些插件在用户那边加载失败，所以改成按需解析：值与删除前一致，
+# 只有真被访问时才发 DeprecationWarning 提醒插件作者迁移。
+# 名字 -> (取值函数, 替代项；None 表示宿主已不再使用、没有替代)
+_DEPRECATED_ALIASES: dict[str, tuple[Callable[[], object], str | None]] = {
+    "PLUGIN_CONFIG_ROOT": (
+        lambda: BUILTIN_PLUGIN_CONFIG_ROOT,
+        "PLUGIN_CONFIG_ROOTS or USER_PLUGIN_CONFIG_ROOT",
+    ),
+    "MARKET_URL": (lambda: MARKET_API_URL, "MARKET_API_URL"),
+    "RESULT_CONSUMER_SLEEP_INTERVAL": (lambda: 0.1, None),
+    "PLUGIN_LOG_LEVEL": (lambda: "INFO", None),
+    "PLUGIN_LOG_MAX_BYTES": (lambda: 5 * 1024 * 1024, None),
+    "PLUGIN_LOG_BACKUP_COUNT": (lambda: 10, None),
+    "PLUGIN_LOG_MAX_FILES": (lambda: 20, None),
+    "NEKO_LOGURU_LEVEL": (lambda: os.getenv("NEKO_LOGURU_LEVEL", "INFO"), None),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Resolve deprecated aliases so already-installed plugins keep loading."""
+    alias = _DEPRECATED_ALIASES.get(name)
+    if alias is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    resolve, replacement = alias
+    hint = f"use {replacement} instead" if replacement else "the host no longer reads it"
+    warnings.warn(
+        f"plugin.settings.{name} is deprecated; {hint}.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return resolve()
+
+
+def get_public_system_config_value(key: str) -> object:
+    """Resolve one ``PUBLIC_SYSTEM_CONFIG_KEYS`` entry for the admin snapshot.
+
+    Deprecated aliases resolve silently here: the host building the snapshot is
+    not the caller that has to migrate. Unknown keys raise ``AttributeError``.
+    """
+    alias = _DEPRECATED_ALIASES.get(key)
+    if alias is not None:
+        return alias[0]()
+    try:
+        return globals()[key]
+    except KeyError:
+        raise AttributeError(key) from None
+
+
 # ========== 导出 ==========
 
 __all__ = [
@@ -894,6 +946,15 @@ __all__ = [
 
     # 验证函数
     "validate_config",
+
+    # 存量插件兼容别名（由模块级 __getattr__ 按需解析，见 _DEPRECATED_ALIASES）
+    "PLUGIN_CONFIG_ROOT",  # noqa: F822
+    "MARKET_URL",  # noqa: F822
+    "RESULT_CONSUMER_SLEEP_INTERVAL",  # noqa: F822
+    "PLUGIN_LOG_LEVEL",  # noqa: F822
+    "PLUGIN_LOG_MAX_BYTES",  # noqa: F822
+    "PLUGIN_LOG_BACKUP_COUNT",  # noqa: F822
+    "PLUGIN_LOG_MAX_FILES",  # noqa: F822
 ]
 
 
@@ -949,4 +1010,12 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "PLUGIN_STATE_BACKEND_DEFAULT",
     "RUN_EXECUTION_TIMEOUT",
     "RUN_STORE_MAX_COMPLETED",
+    # 存量插件兼容别名：已安装插件可能在 get_system_config() 里读这些键
+    "PLUGIN_CONFIG_ROOT",
+    "MARKET_URL",
+    "RESULT_CONSUMER_SLEEP_INTERVAL",
+    "PLUGIN_LOG_LEVEL",
+    "PLUGIN_LOG_MAX_BYTES",
+    "PLUGIN_LOG_BACKUP_COUNT",
+    "PLUGIN_LOG_MAX_FILES",
 )

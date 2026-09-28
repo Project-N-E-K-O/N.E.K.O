@@ -47,9 +47,13 @@ if __name__ == "__main__":
         )
 
         sys.exit(_run_voice_identity_release_smoke())
-    # Deferred so aux subprocesses (media smoke / metadata worker /
-    # voice-identity smoke) re-entering this file never pay the full
-    # runtime import chain (per PR #3182 review).
-    from launcher_core.runtime import start_launcher
 
+# Imported after the aux dispatch above so those entry points never pay the
+# full runtime import chain, but still at module scope: multiprocessing spawn
+# children re-enter this file as ``__mp_main__`` (``__parents_main__`` when
+# frozen) and keep getting the runtime's import-time setup there (repo root
+# pinned first on sys.path, config preloaded), same as the parent.
+from launcher_core.runtime import start_launcher  # noqa: E402
+
+if __name__ == "__main__":
     sys.exit(start_launcher())
